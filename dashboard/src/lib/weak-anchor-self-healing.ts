@@ -28,8 +28,9 @@
 // locally so the orchestration is self-contained.
 // ===========================================================================
 
-import * as fs from "fs";
-import * as path from "path";
+import type { Dirent } from "node:fs";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 import {
   type AnchorConfidence,
@@ -95,7 +96,7 @@ function fmScalar(rawFm: string, key: string): string {
 }
 
 function walkMarkdown(absDir: string, relDir: string, out: Array<{ abs: string; rel: string }>): void {
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(absDir, { withFileTypes: true });
   } catch {
@@ -212,7 +213,7 @@ function pickStrongerExistingCandidate(
 function snapshotGarden(gardenDir: string): Map<string, string> {
   const snap = new Map<string, string>();
   const walk = (abs: string): void => {
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(abs, { withFileTypes: true });
     } catch {

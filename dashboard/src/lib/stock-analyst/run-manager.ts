@@ -1,4 +1,4 @@
-// In-memory run manager for the Stock Analyst agent.
+// Worker-local run manager for the Stock Analyst agent.
 //
 // Unlike the ChatMock-driven agents, Breadboard does not run a tool loop here.
 // The cloned project owns a complete equity-analysis agent — its own loop, its
@@ -9,14 +9,19 @@
 // points it at ChatMock, asks one question, and translates the progress stream
 // into the same event shape every other agent's inline card reads.
 //
-// The clone's stream is one POST whose response body is the SSE: there is no
+// Runtime V2 owns and starts the backend and launches this module only inside a
+// fresh disposable worker. The clone's stream is one POST
+// whose response body is the SSE: there is no
 // separate stream to reconnect to, because reconnecting would mean asking the
 // question again. A dropped connection therefore ends the run, and whatever the
 // session already stored is read back before deciding it failed.
 
 import { randomUUID } from "node:crypto";
-import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
-import { ensureService, serviceLog, type StockAnalystService } from "./service.ts";
+import {
+  preparedService,
+  serviceLog,
+  type StockAnalystService,
+} from "./service.ts";
 import { invalidateHealth } from "./runtime.ts";
 import type { StockAnalystSettings } from "./settings.ts";
 import { stockAnalystRunLabel } from "./identity.ts";
@@ -45,6 +50,7 @@ interface RunState {
   streaming: AbortController;
   toolCalls: number;
   createdAt: number;
+  coldStart: boolean;
 }
 
 const globalRuns = globalThis as typeof globalThis & {
@@ -138,6 +144,12 @@ async function lastAssistantMessage(
 
 export interface StartRunInput {
   userId: number;
+  /** Runtime identity, present only inside the disposable worker. */
+  runtimeJobId?: string;
+  /** Effective model recorded by the trusted facade before service admission. */
+  runtimeServiceModel?: string;
+  /** Whether the dependency was stopped immediately before this job admission. */
+  runtimeColdStart?: boolean;
   task: string;
   /** The chat's model, used unless the settings pin one. */
   model: string;
@@ -156,8 +168,13 @@ export interface StartRunInput {
   conversationContext?: string;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
-  const runId = `sarun_${randomUUID().replaceAll("-", "")}`;
+function beginRun(
+  input: StartRunInput,
+  service: StockAnalystService,
+  options: { runId: string; coldStart: boolean },
+): { runId: string; status: RunStatus } {
+  const runId = options.runId;
+  if (runs.has(runId)) throw new Error("Stock Analyst Runtime identity was reused.");
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -170,18 +187,21 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
     streaming: new AbortController(),
     toolCalls: 0,
     createdAt: Date.now(),
+    coldStart: options.coldStart,
   };
   runs.set(runId, run);
 
   const timer = setTimeout(() => {
     if (["completed", "failed", "aborted"].includes(run.status)) return;
     run.aborted = true;
-    void cancelUpstream(run);
-    finish(run, "failed", { error: "The analysis ran past its time limit and was stopped." });
+    run.streaming.abort(new DOMException("Stock Analyst timed out", "AbortError"));
+    void cancelUpstream(run).finally(() => {
+      finish(run, "failed", { error: "The analysis ran past its time limit and was stopped." });
+    });
   }, RUN_TIMEOUT_MS);
   timer.unref?.();
 
-  void drive(run, input)
+  void drive(run, input, service)
     .catch((error: unknown) => {
       if (run.aborted) return;
       finish(run, "failed", {
@@ -189,12 +209,18 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
         detail: serviceLog(),
       });
     })
-    .finally(() => clearTimeout(timer));
+    .finally(() => {
+      clearTimeout(timer);
+    });
 
   return { runId, status: "queued" };
 }
 
-async function drive(run: RunState, input: StartRunInput): Promise<void> {
+async function drive(
+  run: RunState,
+  input: StartRunInput,
+  service: StockAnalystService,
+): Promise<void> {
   run.status = "running";
   emit(run, "run.started", {
     task: run.task,
@@ -204,19 +230,11 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   });
 
   emit(run, "service.starting", {});
-  const service = await ensureService({
-    baseUrl: input.baseUrl,
-    apiKey: chatmockApiKeyValue(),
-    model: input.model,
-    settings: input.settings,
-  });
   if (run.aborted) return;
   emit(run, "service.ready", {
     model: service.model,
-    // A service that was already up is the normal case after the first run, and
-    // it is the single most useful thing to know when a run feels slow.
     startedAt: service.startedAt,
-    coldStart: Date.now() - service.startedAt < 10_000,
+    coldStart: run.coldStart,
   });
 
   const sessionId = randomUUID();
@@ -232,6 +250,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     input.conversationContext ?? "",
   );
   await consume(run, response);
+  if (run.aborted) return;
 
   // The stream ended without a terminal event — the backend died, or the
   // connection dropped. Whatever the turn stored is still worth keeping, so read
@@ -272,10 +291,8 @@ async function streamRequest(
     signal: AbortSignal.any([run.streaming.signal, AbortSignal.timeout(RUN_TIMEOUT_MS)]),
   });
   if (!response.ok || !response.body) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(
-      `Stock Analyst refused the question (${response.status}). ${detail.slice(0, 300)}`.trim(),
-    );
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(`Stock Analyst refused the question (${response.status}).`);
   }
   return response;
 }
@@ -542,14 +559,36 @@ export function isTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;
-  void cancelUpstream(run);
+  run.streaming.abort(new DOMException("Stock Analyst was stopped", "AbortError"));
+  await cancelUpstream(run);
   finish(run, "aborted", {
     summary: "Stock Analyst stopped before it answered.",
     toolCalls: run.toolCalls,
   });
   return true;
 }
+
+/** Fixed entrypoint used only by the Runtime V2 outer-worker adapter. */
+export function startRuntimeWorkerRun(
+  input: StartRunInput & {
+    runtimeJobId: string;
+    runtimeServiceModel: string;
+    runtimeColdStart: boolean;
+  },
+): { runId: string; status: RunStatus } {
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId)) {
+    throw new Error("Stock Analyst Runtime identity is invalid.");
+  }
+  return beginRun(input, preparedService(input.runtimeServiceModel), {
+    runId: input.runtimeJobId,
+    coldStart: input.runtimeColdStart,
+  });
+}
+
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
+export const abortRuntimeWorkerRun = abortRun;

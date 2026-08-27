@@ -277,7 +277,7 @@ test("agent-result continuations stay in context without impersonating the user"
   );
   assert.match(
     garden,
-    /handleSubmit\(continuation, undefined, undefined, true\)/,
+    /handleSubmit\(\s*continuation,\s*undefined,\s*undefined,\s*true,\s*\(\)\s*=>\s*setPendingLaunchContinuation/,
   );
   // Both transcripts are virtualized, so the hand-back is dropped while the
   // row list is built rather than returned as a null row from a map. What is
@@ -314,7 +314,7 @@ test("a delegated research hand-back remains one populated assistant field", () 
     assert.match(
       sourceText,
       new RegExp(
-        `${messageName}\\.delegatedAgentPreamble \\? \\([\\s\\S]{0,900}<ActivityPanel`,
+        `${messageName}\\.delegatedAgentPreamble[\\s\\S]{0,1200}<ActivityPanel`,
       ),
       `${surface} must keep Thought metadata above the delegated preamble`,
     );
@@ -329,7 +329,7 @@ test("a delegated research hand-back remains one populated assistant field", () 
   assert.match(runtimePanel, /"Research synthesized"/);
   assert.match(
     runtimePanel,
-    /suppressActions=\{message\.delegatedAgentRun === true\}/,
+    /suppressActions=\{\s*message\.delegatedAgentRun === true \|\|\s*\(index === lastAssistantIndex && delegationInFlight\)\s*\}/,
   );
   assert.match(assistantActions, /if \(suppressActions\) return null;/);
 });
@@ -412,8 +412,17 @@ test("every model-launchable agent uses structured same-message delegation", asy
   assert.match(garden, /agentLaunchQueue\.queued \|\|\s+delegatedAgentLaunching/);
   assert.match(garden, /scopeKey: activeChatId/);
   assert.match(garden, /index === assistantIndex[\s\S]*persistChatSession\(session\.id, nextMessages\)/);
-  assert.match(runtimePanel, /message\.delegatedAgentRun \? "hidden" : "contents"/);
-  assert.match(garden, /msg\.delegatedAgentRun \? "hidden" : "contents"/);
+  // The owning worker row is omitted while the private continuation is shown;
+  // it is not merely hidden with CSS (which would leave duplicate semantics in
+  // the rendered transcript).
+  assert.match(
+    runtimePanel,
+    /storedMessage\.delegatedAgentRun === true &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+  );
+  assert.match(
+    garden,
+    /storedMessage\.delegatedAgentRun === true &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+  );
   assert.match(terminal, /continuedDelegatedTurnsRef/);
   assert.match(garden, /continuedDelegatedRunsRef/);
   assert.match(terminal, /externalAgentCardContent\(message\)/);

@@ -2,6 +2,11 @@
 // Prepare the vendored mcp-google-images-search clone so Breadboard's
 // `image_search` tool can spawn it as an MCP stdio server.
 //
+// EXTERNAL PROVISIONING BOUNDARY: this developer/build-time command is never
+// imported or launched by Electron or Next. Product setup is an authenticated
+// Runtime V2 managed-setup job that builds a copied source closure under the
+// Runtime data root; it has no direct-process fallback to this file.
+//
 // The clone is a pnpm project but has no workspace: dependencies, so npm
 // installs it fine (pnpm is not a Breadboard dependency — same doctrine as
 // openwork). The upstream `build` script pipes through

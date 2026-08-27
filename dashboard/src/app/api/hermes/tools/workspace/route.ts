@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 
 import { NextResponse } from "next/server";
 

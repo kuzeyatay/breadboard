@@ -3,15 +3,56 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 import time
 import traceback
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
+
+
+MAX_INVOCATION_BYTES = 1024 * 1024
+MAX_GRAPH_NODES = 128
+MAX_GRAPH_EDGES = 192
+MAX_PUBLIC_ARTIFACTS = 32
+MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024
+MAX_EVENT_TEXT_BYTES = 32 * 1024
+MAX_RESULT_SUMMARY_BYTES = 128 * 1024
+INVOCATION_KEYS = {
+    "protocolVersion",
+    "task",
+    "model",
+    "baseUrl",
+    "apiKey",
+    "reasoningEffort",
+    "maxSteps",
+    "maxSeconds",
+}
+
+
+def bounded_utf8(value: Any, maximum_bytes: int) -> str:
+    encoded = str(value or "").encode("utf-8")
+    if len(encoded) <= maximum_bytes:
+        return encoded.decode("utf-8")
+    return encoded[:maximum_bytes].decode("utf-8", errors="ignore")
+
+
+def bounded_json_value(value: Any, maximum_bytes: int) -> Any:
+    try:
+        encoded = json.dumps(value, ensure_ascii=True, default=str).encode("utf-8")
+    except (TypeError, ValueError):
+        encoded = str(value).encode("utf-8")
+    if len(encoded) <= maximum_bytes:
+        return value
+    return {
+        "truncated": True,
+        "preview": bounded_utf8(encoded.decode("utf-8", errors="replace"), maximum_bytes - 64),
+    }
 
 
 def emit(event_type: str, payload: dict[str, Any] | None = None) -> None:
@@ -28,17 +69,17 @@ def emit(event_type: str, payload: dict[str, Any] | None = None) -> None:
 def graph_snapshot(wiki_dir: Path) -> dict[str, list[dict[str, Any]]]:
     from agent.wiki_graph import _build_name_registry, extract_cross_refs, match_reference, parse_index
 
-    entries = parse_index(wiki_dir)
+    entries = parse_index(wiki_dir)[:MAX_GRAPH_NODES]
     for entry in entries:
         entry.title, entry.cross_refs = extract_cross_refs(wiki_dir / entry.rel_path)
     registry = _build_name_registry(entries)
     nodes = [
         {
             "id": entry.name,
-            "label": entry.name,
-            "title": entry.title or entry.name,
-            "category": entry.category or "source",
-            "path": entry.rel_path,
+            "label": bounded_utf8(entry.name, 256),
+            "title": bounded_utf8(entry.title or entry.name, 256),
+            "category": bounded_utf8(entry.category or "source", 128),
+            "path": bounded_utf8(entry.rel_path, 512),
         }
         for entry in entries
     ]
@@ -54,7 +95,15 @@ def graph_snapshot(wiki_dir: Path) -> dict[str, list[dict[str, Any]]]:
             if key in seen:
                 continue
             seen.add(key)
-            edges.append({"source": entry.name, "target": target, "label": reference})
+            edges.append(
+                {
+                    "source": bounded_utf8(entry.name, 256),
+                    "target": bounded_utf8(target, 256),
+                    "label": bounded_utf8(reference, 256),
+                }
+            )
+            if len(edges) >= MAX_GRAPH_EDGES:
+                return {"nodes": nodes, "edges": edges}
     return {"nodes": nodes, "edges": edges}
 
 
@@ -64,9 +113,23 @@ def artifact_snapshot(workspace: Path, session_id: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not artifacts_dir.is_dir():
         return rows
-    for file_path in sorted(path for path in artifacts_dir.rglob("*") if path.is_file()):
-        relative = file_path.relative_to(session_dir).as_posix()
-        content = file_path.read_text(encoding="utf-8", errors="replace")
+    canonical_session = session_dir.resolve(strict=True)
+    candidates: list[Path] = []
+    for candidate in artifacts_dir.rglob("*"):
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+        try:
+            canonical = candidate.resolve(strict=True)
+            canonical.relative_to(canonical_session)
+            if canonical.stat().st_size > MAX_ARTIFACT_BYTES:
+                continue
+        except (OSError, ValueError):
+            continue
+        candidates.append(canonical)
+    for file_path in sorted(candidates)[:MAX_PUBLIC_ARTIFACTS]:
+        relative = file_path.relative_to(canonical_session).as_posix()
+        with file_path.open("rb") as source:
+            preview = source.read(4804).decode("utf-8", errors="replace")[:1200]
         artifact_id = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:20]
         rows.append(
             {
@@ -75,31 +138,84 @@ def artifact_snapshot(workspace: Path, session_id: str) -> list[dict[str, Any]]:
                 "path": relative,
                 "kind": file_path.suffix.lstrip(".") or "text",
                 "size": file_path.stat().st_size,
-                "preview": content[:1200],
+                "preview": preview,
             }
         )
     return rows
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--openplanter-root", required=True)
-    parser.add_argument("--workspace", required=True)
-    parser.add_argument("--task", required=True)
-    parser.add_argument("--model", required=True)
-    parser.add_argument("--base-url", required=True)
-    parser.add_argument("--api-key", required=True)
-    parser.add_argument("--reasoning-effort", default="medium")
-    parser.add_argument("--max-steps", type=int, default=40)
-    parser.add_argument("--max-seconds", type=int, default=900)
-    return parser.parse_args()
+def _bounded_text(value: Any, maximum_bytes: int, *, empty: bool = False) -> bool:
+    return (
+        isinstance(value, str)
+        and (empty or bool(value.strip()))
+        and len(value.encode("utf-8")) <= maximum_bytes
+        and "\x00" not in value
+    )
+
+
+def _direct_environment_directory(name: str) -> Path:
+    raw = os.environ.get(name, "").strip()
+    candidate = Path(raw)
+    if not raw or not candidate.is_absolute() or candidate.is_symlink():
+        raise ValueError(f"{name} is unavailable")
+    resolved = candidate.resolve(strict=True)
+    absolute = Path(os.path.abspath(candidate))
+    if os.path.normcase(str(resolved)) != os.path.normcase(str(absolute)) or not resolved.is_dir():
+        raise ValueError(f"{name} is indirect")
+    return resolved
+
+
+def read_invocation() -> SimpleNamespace:
+    raw = sys.stdin.buffer.read(MAX_INVOCATION_BYTES + 1)
+    if not raw or len(raw) > MAX_INVOCATION_BYTES or not raw.endswith(b"\n"):
+        raise ValueError("OpenPlanter Runtime invocation is invalid")
+    try:
+        value = json.loads(raw[:-1])
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("OpenPlanter Runtime invocation is invalid JSON") from exc
+    if not isinstance(value, dict) or set(value) != INVOCATION_KEYS:
+        raise ValueError("OpenPlanter Runtime invocation shape is invalid")
+    parsed_url = urlsplit(value.get("baseUrl", ""))
+    if (
+        value.get("protocolVersion") != 1
+        or not _bounded_text(value.get("task"), 768 * 1024)
+        or not _bounded_text(value.get("model"), 256)
+        or "\n" in value["model"]
+        or value.get("reasoningEffort") not in {"none", "low", "medium", "high", "xhigh"}
+        or not _bounded_text(value.get("baseUrl"), 2048)
+        or parsed_url.scheme not in {"http", "https"}
+        or not parsed_url.hostname
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+        or bool(parsed_url.query)
+        or bool(parsed_url.fragment)
+        or not _bounded_text(value.get("apiKey"), 4096)
+        or "\n" in value["apiKey"]
+        or type(value.get("maxSteps")) is not int
+        or value["maxSteps"] != 40
+        or type(value.get("maxSeconds")) is not int
+        or value["maxSeconds"] != 900
+    ):
+        raise ValueError("OpenPlanter Runtime invocation values are invalid")
+    return SimpleNamespace(
+        task=value["task"],
+        model=value["model"],
+        base_url=value["baseUrl"],
+        api_key=value["apiKey"],
+        reasoning_effort=value["reasoningEffort"],
+        max_steps=value["maxSteps"],
+        max_seconds=value["maxSeconds"],
+    )
 
 
 def main() -> int:
-    args = parse_args()
-    openplanter_root = Path(args.openplanter_root).expanduser().resolve()
-    workspace = Path(args.workspace).expanduser().resolve()
-    workspace.mkdir(parents=True, exist_ok=True)
+    if len(sys.argv) != 1:
+        raise ValueError("OpenPlanter Runtime bridge accepts no command-line arguments")
+    args = read_invocation()
+    openplanter_root = _direct_environment_directory("OPENPLANTER_ROOT")
+    workspace = _direct_environment_directory("OPENPLANTER_RUNTIME_WORKSPACE")
+    if not (openplanter_root / "agent" / "runtime.py").is_file():
+        raise ValueError("The sealed OpenPlanter source is incomplete")
     baseline_wiki = openplanter_root / "wiki"
     workspace_wiki = workspace / "wiki"
     if baseline_wiki.is_dir() and not workspace_wiki.exists():
@@ -130,7 +246,7 @@ def main() -> int:
     emit(
         "run.started",
         {
-            "task": args.task,
+            "task": bounded_utf8(args.task, 128 * 1024),
             "model": args.model,
             "sessionId": runtime.session_id,
         },
@@ -140,7 +256,7 @@ def main() -> int:
     totals = {"steps": 0, "inputTokens": 0, "outputTokens": 0, "maxDepth": 0}
 
     def on_trace(message: str) -> None:
-        emit("trace", {"message": message})
+        emit("trace", {"message": bounded_utf8(message, MAX_EVENT_TEXT_BYTES)})
 
     def on_step(step: dict[str, Any]) -> None:
         totals["steps"] += 1
@@ -153,12 +269,17 @@ def main() -> int:
             {
                 "depth": step.get("depth", 0),
                 "step": step.get("step", totals["steps"]),
-                "objective": step.get("objective", ""),
+                "objective": bounded_utf8(step.get("objective", ""), MAX_EVENT_TEXT_BYTES),
                 "action": {
-                    "name": action.get("name", "model"),
-                    "arguments": action.get("arguments", {}),
+                    "name": bounded_utf8(action.get("name", "model"), 512),
+                    "arguments": bounded_json_value(
+                        action.get("arguments", {}), MAX_EVENT_TEXT_BYTES
+                    ),
                 },
-                "observation": str(step.get("observation") or step.get("model_text") or "")[:8000],
+                "observation": bounded_utf8(
+                    step.get("observation") or step.get("model_text") or "",
+                    MAX_EVENT_TEXT_BYTES,
+                ),
                 "elapsedSec": step.get("elapsed_sec", 0),
                 "isFinal": bool(step.get("is_final")),
                 **totals,
@@ -168,12 +289,13 @@ def main() -> int:
     result = runtime.solve(args.task, on_event=on_trace, on_step=on_step)
     runtime.store.write_artifact(runtime.session_id, "outputs", "result.md", result)
     artifacts = artifact_snapshot(workspace, runtime.session_id)
-    emit("artifacts.updated", {"artifacts": artifacts})
+    emit("artifacts.updated", {"sessionId": runtime.session_id, "artifacts": artifacts})
     emit("graph.updated", graph_snapshot(workspace / ".openplanter" / "wiki"))
     emit(
         "run.completed",
         {
-            "summary": result,
+            "summary": bounded_utf8(result, MAX_RESULT_SUMMARY_BYTES),
+            "sessionId": runtime.session_id,
             "elapsedSec": round(time.monotonic() - started_at, 3),
             "artifacts": artifacts,
             **totals,

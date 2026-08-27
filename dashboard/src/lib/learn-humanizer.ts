@@ -6,8 +6,8 @@
 // under learning/, then run the caller's full final-artifact verifier. A bad
 // candidate restores every changed byte before the staging garden can publish.
 
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   availableTextHumanizer,
   storedTextHumanizerForUser,

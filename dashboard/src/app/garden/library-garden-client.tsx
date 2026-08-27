@@ -12,6 +12,7 @@ import {
   type QuartzAssistantSelectionRequest,
   type QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
+import { useQuartzViewLease } from './use-quartz-view-lease';
 
 interface Props {
   src: string;
@@ -83,6 +84,7 @@ function isMarkdownDocumentSlug(slug: string, clusterSlug: string): boolean {
 
 export default function LibraryGardenClient({ src, title }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const quartzLease = useQuartzViewLease();
   const [loadedSource, setLoadedSource] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [activeCluster, setActiveCluster] = useState<string | null>(null);
@@ -106,7 +108,8 @@ export default function LibraryGardenClient({ src, title }: Props) {
     );
   }
 
-  const isLoaded = loadedSource === src && !loadFailed;
+  const quartzUnavailable = loadFailed || quartzLease.failed;
+  const isLoaded = quartzLease.ready && loadedSource === src && !quartzUnavailable;
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
@@ -346,9 +349,9 @@ export default function LibraryGardenClient({ src, title }: Props) {
                 ))}
               </div>
               <span className="text-xs tracking-widest text-gray-700 uppercase">
-                {loadFailed ? 'Quartz did not respond' : title}
+                {quartzUnavailable ? 'Quartz did not respond' : title}
               </span>
-              {loadFailed && (
+              {quartzUnavailable && (
                 <a
                   href={src}
                   target="_blank"
@@ -365,10 +368,11 @@ export default function LibraryGardenClient({ src, title }: Props) {
         <iframe
           ref={iframeRef}
           key={src}
-          src={src}
+          src={quartzLease.ready ? src : undefined}
           className="block h-full w-full border-0 bg-gray-950"
           title={title}
           onLoad={() => {
+            if (!quartzLease.ready) return;
             setLoadFailed(false);
             setLoadedSource(src);
           }}

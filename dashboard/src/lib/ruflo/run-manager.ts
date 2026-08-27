@@ -16,23 +16,16 @@
 //                 run cards consume.
 
 import { randomUUID } from "node:crypto";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
 import os from "node:os";
-import path from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   resolveClaudeExecutable,
   resolveRufloLauncher,
   runtimeAvailability,
   type RufloLauncher,
 } from "./runtime.ts";
-import { finalizeRunSnapshot } from "../agent-edits/snapshot.ts";
 import type { ChatMessageAttachment } from "../chat-attachments.ts";
 import type { GraftRunContext, GraftServer } from "../code-index/index-service.ts";
 
@@ -93,6 +86,8 @@ const MAX_PLAN_STDOUT = 200_000;
 const PLAN_TIMEOUT_MS = 10 * 60_000;
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const TERMINAL_RETENTION_MS = 30 * 60 * 1000;
+const cleanupScheduled = new WeakSet<RunState>();
 export const DEFAULT_WORKER_COUNT = 6;
 export const MIN_WORKER_COUNT = 1;
 export const MAX_WORKER_COUNT = 12;
@@ -105,6 +100,14 @@ export const CONSENSUS_STRATEGIES = [
   "crdt",
   "quorum",
 ] as const;
+
+function scheduleCleanup(run: RunState): void {
+  if (cleanupScheduled.has(run)) return;
+  cleanupScheduled.add(run);
+  const runId = run.runId;
+  const timer = setTimeout(() => runs.delete(runId), TERMINAL_RETENTION_MS);
+  timer.unref?.();
+}
 export const TOPOLOGIES = [
   "hierarchical-mesh",
   "hierarchical",
@@ -185,7 +188,7 @@ export function materializeRufloImageAttachments(
   }
 
   const repositoryRoot = path.resolve(repositoryPath);
-  const temporaryDirectory = mkdtempSync(
+  const temporaryDirectory = fs.mkdtempSync(
     path.join(repositoryRoot, ".breadboard-ruflo-"),
   );
   let cleaned = false;
@@ -195,7 +198,7 @@ export function materializeRufloImageAttachments(
     const resolved = path.resolve(temporaryDirectory);
     const expectedPrefix = `${repositoryRoot}${path.sep}.breadboard-ruflo-`;
     if (resolved.startsWith(expectedPrefix)) {
-      rmSync(resolved, { recursive: true, force: true });
+      fs.rmSync(resolved, { recursive: true, force: true });
     }
   };
 
@@ -217,7 +220,7 @@ export function materializeRufloImageAttachments(
           temporaryDirectory,
           `screenshot-${index + 1}.${extension}`,
         );
-        writeFileSync(filePath, bytes, { flag: "wx" });
+        fs.writeFileSync(filePath, bytes, { flag: "wx" });
         return filePath;
       });
     return { paths, cleanup };
@@ -258,9 +261,9 @@ function writeMcpConfig(
   cleanup: () => void;
 } {
   const directory = path.join(os.tmpdir(), "breadboard-ruflo", runId);
-  mkdirSync(directory, { recursive: true });
+  fs.mkdirSync(directory, { recursive: true });
   const configPath = path.join(directory, "ruflo.mcp.json");
-  writeFileSync(
+  fs.writeFileSync(
     configPath,
     JSON.stringify(
       {
@@ -293,21 +296,14 @@ function writeMcpConfig(
     cleanup: () => {
       if (cleaned) return;
       cleaned = true;
-      rmSync(directory, { recursive: true, force: true });
+      fs.rmSync(directory, { recursive: true, force: true });
     },
   };
 }
 
-/**
- * Closing the undo bracket here, rather than when a browser notices, keeps
- * edits the user makes after the run out of the run's own diff.
- */
 const TERMINAL_EVENTS = new Set(["run.completed", "run.failed", "run.aborted"]);
 
 function emit(run: RunState, type: string, payload: Record<string, unknown> = {}): void {
-  if (TERMINAL_EVENTS.has(type)) {
-    finalizeRunSnapshot(run.runId, run.repositoryPath);
-  }
   run.sequence += 1;
   run.events.push({
     sequenceNumber: run.sequence,
@@ -318,6 +314,7 @@ function emit(run: RunState, type: string, payload: Record<string, unknown> = {}
   if (run.events.length > MAX_EVENTS) {
     run.events.splice(0, run.events.length - MAX_EVENTS);
   }
+  if (TERMINAL_EVENTS.has(type)) scheduleCleanup(run);
 }
 
 function requireRun(userId: number, runId: string): RunState {
@@ -435,6 +432,7 @@ function ingestClaudeFrame(run: RunState, frame: Record<string, unknown>): void 
 
 export interface StartRunInput {
   userId: number;
+  requestId?: string;
   objective: string;
   instruction?: string;
   skill?: { id: string; slug: string; contentHash?: string };
@@ -446,10 +444,19 @@ export interface StartRunInput {
   repositoryName: string;
   gardenSlug: string;
   attachments?: readonly RufloImageAttachment[];
+  graftEnabled?: boolean;
+}
+
+export interface RufloRuntimeWorkerRunInput
+  extends Omit<StartRunInput, "requestId" | "graftEnabled"> {
+  runtimeJobId?: string;
   graft?: GraftRunContext | null;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
+/** Fixed Runtime worker entrypoint. Next.js routes must call `startRun`. */
+export function startRuntimeWorkerRun(
+  input: RufloRuntimeWorkerRunInput,
+): { runId: string; status: RunStatus } {
   const availability = runtimeAvailability();
   const launcher = resolveRufloLauncher();
   const claude = resolveClaudeExecutable();
@@ -463,7 +470,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   const topology = pick(TOPOLOGIES, input.topology, "hierarchical-mesh");
   const baseObjective = input.instruction?.trim() || input.objective.trim();
 
-  const runId = `rfrun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId ?? `rfrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -709,7 +716,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
         const promptFile = path.resolve(run.repositoryPath, parsed.promptFile);
         let prompt = "";
         try {
-          prompt = readFileSync(promptFile, "utf8");
+          prompt = fs.readFileSync(promptFile, "utf8");
         } catch {
           fail("Ruflo's coordination prompt could not be read.");
           return;
@@ -849,19 +856,23 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   return { runId, status: run.status };
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): RufloEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): RufloEvent[] {
   return requireRun(userId, runId).events.filter(
     (event) => event.sequenceNumber > since,
   );
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(
     requireRun(userId, runId).status,
   );
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.status = "aborted";
@@ -874,4 +885,51 @@ export function abortRun(userId: number, runId: string): boolean {
   run.cleanup = null;
   emit(run, "run.aborted", { summary: "Ruflo swarm stopped." });
   return true;
+}
+
+/** Public durable facade. Runtime V2, rather than Next.js, owns the process tree. */
+export async function startRun(
+  input: StartRunInput,
+): Promise<{ runId: string; status: RunStatus }> {
+  const { startOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return startOuterAgentRun({
+    kind: "ruflo",
+    userId: input.userId,
+    requestId: input.requestId,
+    requestPayload: {
+      objective: input.objective,
+      instruction: input.instruction ?? null,
+      skill: input.skill ?? null,
+      workers: clampWorkerCount(input.workers),
+      queenType: pick(QUEEN_TYPES, input.queenType, "strategic"),
+      consensus: pick(CONSENSUS_STRATEGIES, input.consensus, "byzantine"),
+      topology: pick(TOPOLOGIES, input.topology, "hierarchical-mesh"),
+      repositoryPath: input.repositoryPath,
+      repositoryName: input.repositoryName,
+      gardenSlug: input.gardenSlug,
+      attachmentCount: input.attachments?.length ?? 0,
+      graftEnabled: input.graftEnabled === true,
+    },
+    images: input.attachments?.map((attachment) => ({ dataUrl: attachment.dataUrl })),
+  }) as Promise<{ runId: string; status: RunStatus }>;
+}
+
+export async function getEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): Promise<RufloEvent[]> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  const view = await readOuterAgentRunView("ruflo", userId, runId, since);
+  return view.events as RufloEvent[];
+}
+
+export async function isTerminal(userId: number, runId: string): Promise<boolean> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  return (await readOuterAgentRunView("ruflo", userId, runId, 0)).terminal;
+}
+
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
+  const { abortOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return abortOuterAgentRun("ruflo", userId, runId);
 }

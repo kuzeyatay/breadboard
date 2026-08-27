@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import type {
   GeneratedVisualBrowserMountReceipt,
+  GeneratedVisualBrowserProfileCleanupReceipt,
   GeneratedVisualPreviewMatrixReceipt,
   GeneratedVisualRejectedAttempt,
 } from "./generated-visuals";
@@ -31,10 +32,20 @@ const BROWSER_COMPLETIONS = new Set([
   "process_exit",
   "observed_dom",
   "observed_capture",
+  "spawn_error",
+  "deadline",
+  "cancelled",
+  "output_overflow",
 ]);
 const BROWSER_CLEANUP_METHODS = new Set([
+  "none",
   "natural-exit",
+  "natural-exit-lineage",
+  "natural-exit-unconfirmed",
   "taskkill-tree",
+  "lineage-quiescence",
+  "natural-exit-race",
+  "process-group",
   "process-group-sigkill",
   "process-kill",
 ]);
@@ -233,6 +244,9 @@ function sanitizePreviewMatrixReceipt(
           : {}),
         ...(typeof attempt.timedOut === "boolean" ? { timedOut: attempt.timedOut } : {}),
         ...(attempt.errorCode ? { errorCode: boundedDiagnostic(attempt.errorCode, 96) } : {}),
+        ...(attempt.transientFailureCode
+          ? { transientFailureCode: boundedDiagnostic(attempt.transientFailureCode, 96) }
+          : {}),
         ...(safeBrowserCompletion(attempt.completion)
           ? { completion: safeBrowserCompletion(attempt.completion) }
           : {}),
@@ -275,11 +289,47 @@ function sanitizeMountReceipts(
       ...(safeBrowserCompletion(attempt.completion)
         ? { completion: safeBrowserCompletion(attempt.completion) }
         : {}),
+      ...(typeof attempt.browserExitedNaturally === "boolean"
+        ? { browserExitedNaturally: attempt.browserExitedNaturally }
+        : {}),
+      ...(safeBrowserCleanupMethod(attempt.cleanupMethod)
+        ? { cleanupMethod: safeBrowserCleanupMethod(attempt.cleanupMethod) }
+        : {}),
       ...(typeof attempt.cleanupConfirmed === "boolean"
         ? { cleanupConfirmed: attempt.cleanupConfirmed }
         : {}),
     })),
   }));
+}
+
+function sanitizeBrowserProfileCleanup(
+  receipt: GeneratedVisualBrowserProfileCleanupReceipt | undefined,
+): Record<string, unknown> | undefined {
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    return undefined;
+  }
+  const attempted = safeNumber(receipt.attempted, 0, 256);
+  const removed = safeNumber(receipt.removed, 0, 256);
+  const retries = safeNumber(receipt.retries, 0, 10_000);
+  const shapeValid = attempted !== undefined &&
+    removed !== undefined && removed <= attempted &&
+    retries !== undefined &&
+    typeof receipt.rootRemoved === "boolean" &&
+    typeof receipt.confirmed === "boolean";
+  const confirmed = shapeValid && receipt.confirmed === true &&
+    receipt.rootRemoved === true && removed === attempted;
+  const failureCode = typeof receipt.failureCode === "string" &&
+      /^[A-Z][A-Z0-9_]{0,95}$/u.test(receipt.failureCode)
+    ? receipt.failureCode
+    : "EPROFILECLEANUP";
+  return {
+    attempted: attempted ?? 0,
+    removed: removed ?? 0,
+    retries: retries ?? 0,
+    rootRemoved: receipt.rootRemoved === true,
+    confirmed,
+    ...(!confirmed ? { failureCode } : {}),
+  };
 }
 
 function buildReceipt(input: {
@@ -298,6 +348,9 @@ function buildReceipt(input: {
   const critic = attempt.evidence?.critic;
   const previewMatrixReceipt = sanitizePreviewMatrixReceipt(
     tests?.browser?.previewMatrixReceipt,
+  );
+  const profileCleanup = sanitizeBrowserProfileCleanup(
+    tests?.browser?.profileCleanup,
   );
   return {
     schemaVersion: 1,
@@ -360,6 +413,7 @@ function buildReceipt(input: {
                     ),
                     previewMatrixComplete: Boolean(tests.browser.previewMatrixComplete),
                     mountReceipts: sanitizeMountReceipts(tests.browser.mountReceipts),
+                    ...(profileCleanup ? { profileCleanup } : {}),
                   },
                 }
               : {}),

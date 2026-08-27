@@ -13,6 +13,8 @@ import {
   shouldPreserveQaRun,
 } from "../../environment";
 import { classifyProbeFailure, isRepairEligibleClassification } from "../../classification";
+import { resolveElectronQaHarnessLaunchOptions } from "../../harness-launch-options";
+import { sanitizePackagedChildEnvironment } from "../../packaged-environment";
 import {
   QaFixtureError,
   readQaFixture,
@@ -228,6 +230,129 @@ test.describe("fault category J: invalid or non-isolated run-root configuration"
     } finally {
       await run.cleanup("passed");
       fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("production-required config enables every integration and the packaged child keeps no QA override", async () => {
+    const runtimeRoot = sandbox();
+    const run = createQaEnvironment({
+      repoRoot: REPO_ROOT,
+      runtimeRoot,
+      preserve: "never",
+      desktopConfigProfile: "production-required",
+    });
+    try {
+      const config = JSON.parse(
+        fs.readFileSync(path.join(run.paths.dataDir, "config", "desktop-config.json"), "utf8"),
+      ) as Record<string, unknown>;
+      expect({
+        gbrainMode: config["gbrainMode"],
+        comfyUiMode: config["comfyUiMode"],
+        uiTarsMode: config["uiTarsMode"],
+        cadMode: config["cadMode"],
+        colpaliMode: config["colpaliMode"],
+        humanizerMode: config["humanizerMode"],
+        humanizerDevice: config["humanizerDevice"],
+        cliproxyMode: config["cliproxyMode"],
+        scriberrEnabled: config["scriberrEnabled"],
+      }).toEqual({
+        gbrainMode: "required",
+        comfyUiMode: "managed",
+        uiTarsMode: "required",
+        cadMode: "optional",
+        colpaliMode: "optional",
+        humanizerMode: "local",
+        humanizerDevice: "auto",
+        cliproxyMode: "required",
+        scriberrEnabled: true,
+      });
+
+      const source: NodeJS.ProcessEnv = {
+        ...run.env,
+        BREADBOARD_QA_PARITY_PACKAGE_RECEIPT_PATH: ".qa-results/stale.json",
+        BREADBOARD_RUNTIME_V2_BURN_IN: "1",
+        BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN: "disposable-token",
+        BREADBOARD_DASHBOARD_BUNDLER: "turbopack",
+        KEEP_NON_QA_VALUE: "kept",
+      };
+      const packaged = sanitizePackagedChildEnvironment(source);
+      for (const key of [
+        "BREADBOARD_QA_MODE",
+        "BREADBOARD_QA_PARITY_PACKAGE_RECEIPT_PATH",
+        "BREADBOARD_RUNTIME_V2_BURN_IN",
+        "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
+        "BREADBOARD_DASHBOARD_BUNDLER",
+        "BREADBOARD_DATA_DIR",
+        "BREADBOARD_REPO_ROOT",
+        "GBRAIN_MODE",
+        "UI_TARS_MODE",
+        "CAD_MODE",
+        "COLPALI_MODE",
+        "HUMANIZER_MODE",
+        "CLIPROXY_MODE",
+        "VIDEO_TRANSCRIPTION_ENABLED",
+        "CI",
+      ]) {
+        expect(packaged[key], `${key} must not override packaged behavior`).toBeUndefined();
+      }
+      expect(packaged["HOME"]).toBe(run.paths.homeDir);
+      expect(packaged["APPDATA"]).toBe(run.paths.appDataDir);
+      expect(packaged["KEEP_NON_QA_VALUE"]).toBe("kept");
+      expect(Object.values(packaged)).not.toContain("");
+      expect(source["BREADBOARD_QA_MODE"]).toBe("1");
+    } finally {
+      await run.cleanup("passed");
+      fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("production-required config rejects integration downgrades before creating a run", () => {
+    const runtimeRoot = sandbox();
+    try {
+      expect(() =>
+        createQaEnvironment({
+          repoRoot: REPO_ROOT,
+          runtimeRoot,
+          runId: "downgraded-production-profile",
+          desktopConfigProfile: "production-required",
+          gbrainMode: "disabled",
+        }),
+      ).toThrow(/cannot disable GBrain/);
+      expect(() =>
+        createQaEnvironment({
+          repoRoot: REPO_ROOT,
+          runtimeRoot,
+          runId: "downgraded-production-environment",
+          desktopConfigProfile: "production-required",
+          env: { CLIPROXY_MODE: "disabled" },
+        }),
+      ).toThrow(/cannot override CLIPROXY_MODE=required/);
+      expect(fs.readdirSync(runtimeRoot)).toEqual([]);
+    } finally {
+      fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("the harness accepts packaged launch mode only with one explicit Breadboard.exe", () => {
+    const root = sandbox();
+    try {
+      const executablePath = path.join(root, "Breadboard.exe");
+      fs.writeFileSync(executablePath, "packaged executable\n", "utf8");
+      expect(resolveElectronQaHarnessLaunchOptions()).toEqual({ mode: "development" });
+      expect(
+        resolveElectronQaHarnessLaunchOptions({ mode: "packaged", executablePath }),
+      ).toEqual({ mode: "packaged", executablePath: fs.realpathSync.native(executablePath) });
+      expect(() =>
+        resolveElectronQaHarnessLaunchOptions({
+          mode: "packaged",
+          executablePath: "Breadboard.exe",
+        }),
+      ).toThrow(/absolute Breadboard\.exe path/);
+      expect(() =>
+        resolveElectronQaHarnessLaunchOptions({ mode: "development", extra: true } as never),
+      ).toThrow(/require exactly/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 

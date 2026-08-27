@@ -125,6 +125,7 @@ export function composeReport(
 
 export interface StartRunInput {
   userId: number;
+  requestId?: string;
   request: TradingAgentsRequest;
   settings: TradingAgentsSettings;
   /** The chat's model, used for any role the settings leave on "follow chat". */
@@ -134,7 +135,14 @@ export interface StartRunInput {
   baseUrl: string;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
+export interface TradingAgentsRuntimeWorkerRunInput extends StartRunInput {
+  runtimeJobId?: string;
+}
+
+/** Fixed worker-local entrypoint. Next routes must call the durable `startRun`. */
+export function startRuntimeWorkerRun(
+  input: TradingAgentsRuntimeWorkerRunInput,
+): { runId: string; status: RunStatus } {
   const runtime = resolveTradingAgentsRoot();
   if (!runtime) throw new Error("The tradingagents clone was not found next to the dashboard.");
   const python = venvPython(runtime.root);
@@ -146,7 +154,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   const bridge = bridgeScriptPath();
   if (!bridge) throw new Error("Breadboard's Trading Agent bridge script is missing.");
 
-  const runId = `tarun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId ?? `tarun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -388,15 +396,19 @@ function scheduleCleanup(run: RunState): void {
   timer.unref?.();
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): TradingAgentsEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): TradingAgentsEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;
@@ -416,4 +428,43 @@ export function abortRun(userId: number, runId: string): boolean {
   });
   scheduleCleanup(run);
   return true;
+}
+
+/** Public durable facade. Runtime V2, rather than Next.js, owns Python. */
+export async function startRun(
+  input: StartRunInput,
+): Promise<{ runId: string; status: RunStatus }> {
+  const { startOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return startOuterAgentRun({
+    kind: "trading-agent",
+    userId: input.userId,
+    requestId: input.requestId,
+    requestPayload: {
+      request: input.request,
+      settings: input.settings,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      baseUrl: input.baseUrl,
+    },
+  }) as Promise<{ runId: string; status: RunStatus }>;
+}
+
+export async function getEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): Promise<TradingAgentsEvent[]> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  const view = await readOuterAgentRunView("trading-agent", userId, runId, since);
+  return view.events as TradingAgentsEvent[];
+}
+
+export async function isTerminal(userId: number, runId: string): Promise<boolean> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  return (await readOuterAgentRunView("trading-agent", userId, runId, 0)).terminal;
+}
+
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
+  const { abortOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return abortOuterAgentRun("trading-agent", userId, runId);
 }

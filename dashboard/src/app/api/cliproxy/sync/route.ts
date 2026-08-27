@@ -5,11 +5,15 @@ import {
   updateProvider,
 } from "@/lib/chatmock-providers";
 import { cliproxyApiKey, cliproxyBaseUrl } from "@/lib/cliproxy/config";
+import { isCliproxyInstalled } from "@/lib/cliproxy/config";
 import {
   CliproxyRequestError,
   CliproxyUnavailableError,
   listModels,
 } from "@/lib/cliproxy/management";
+import { withCliproxyLease } from "@/lib/cliproxy/runtime-lease";
+import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 import { requireUserId, routeErrorResponse, RouteError } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -27,11 +31,16 @@ const MAX_SYNCED_MODELS = 200;
  */
 export async function POST(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
 
     let models: string[];
     try {
-      models = await listModels();
+      models = isCliproxyInstalled()
+        ? await withCliproxyLease(
+            "subscription-model-sync",
+            () => listModels(userId, request.signal),
+          )
+        : await listModels(userId, request.signal);
     } catch (error) {
       if (error instanceof CliproxyUnavailableError) {
         return NextResponse.json({ error: error.message }, { status: 503 });
@@ -79,6 +88,11 @@ export async function POST(request: Request) {
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
+    if (error instanceof SupervisorResourceExhaustedError) {
+      return routeErrorResponse(error);
+    }
     if (error instanceof RouteError) return routeErrorResponse(error);
     const { status, message } = providerErrorResponseInit(error);
     return NextResponse.json({ error: message }, { status });

@@ -15,11 +15,13 @@
 // past. Ownership lives in the workspace too, so a finished video still plays in
 // an old transcript after a restart, when the in-memory run is long gone.
 
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import path from "node:path";
+import type { Dirent, Stats } from "node:fs";
 import yaml from "js-yaml";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { resolveOpenMontageRoot, workspaceRoot } from "./runtime.ts";
+
+const fsp = fs.promises;
 
 export interface WorkspaceOwner {
   runId: string;
@@ -135,6 +137,14 @@ export class WorkspaceError extends Error {
   }
 }
 
+function samePath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const normalized = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  };
+  return normalize(left) === normalize(right);
+}
+
 export function isRunId(value: string): boolean {
   return RUN_ID.test(value);
 }
@@ -214,8 +224,47 @@ export async function createWorkspace(input: {
   return { runDirectory: runPath, projectsDirectory: projectsPath };
 }
 
+function directRuntimeWorkspace(candidate: string): string {
+  const resolved = path.resolve(candidate);
+  try {
+    const metadata = fs.lstatSync(resolved);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !samePath(fs.realpathSync.native(resolved), resolved)
+    ) throw new Error("invalid");
+    return resolved;
+  } catch {
+    throw new WorkspaceError(
+      "invalid_runtime_workspace",
+      "The OpenMontage Runtime workspace is invalid.",
+    );
+  }
+}
+
+/** Create one private production root inside a fresh Runtime attempt. */
+export async function createRuntimeWorkspace(runtimeWorkspacePath: string): Promise<{
+  runDirectory: string;
+  projectsDirectory: string;
+}> {
+  const runPath = directRuntimeWorkspace(runtimeWorkspacePath);
+  const projectsPath = path.join(runPath, "projects");
+  if (fs.existsSync(projectsPath)) {
+    throw new WorkspaceError(
+      "runtime_workspace_not_fresh",
+      "The OpenMontage Runtime workspace is not fresh.",
+    );
+  }
+  await fsp.mkdir(projectsPath, { recursive: false });
+  return { runDirectory: runPath, projectsDirectory: projectsPath };
+}
+
 function readJson(file: string): Record<string, unknown> | null {
   try {
+    const metadata = fs.lstatSync(file);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 2 * 1024 * 1024) {
+      return null;
+    }
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
@@ -235,9 +284,19 @@ function str(value: unknown, max = 400): string {
  * is what identifies one.
  */
 export function resolveProjectDirectory(runId: string): string | null {
-  const root = projectsDirectory(runId);
-  let entries: fs.Dirent[];
+  return resolveProjectDirectoryFrom(projectsDirectory(runId));
+}
+
+export function resolveProjectDirectoryFrom(projectsRoot: string): string | null {
+  const root = path.resolve(projectsRoot);
+  let entries: Dirent[];
   try {
+    const metadata = fs.lstatSync(root);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !samePath(fs.realpathSync.native(root), root)
+    ) return null;
     entries = fs.readdirSync(root, { withFileTypes: true });
   } catch {
     return null;
@@ -245,7 +304,9 @@ export function resolveProjectDirectory(runId: string): string | null {
   const projects = entries
     .filter(
       (entry) =>
-        entry.isDirectory() && fs.existsSync(path.join(root, entry.name, "project.json")),
+        entry.isDirectory() &&
+        !entry.isSymbolicLink() &&
+        readJson(path.join(root, entry.name, "project.json")) !== null,
     )
     .map((entry) => path.join(root, entry.name));
   if (projects.length === 0) return null;
@@ -347,6 +408,10 @@ export function pipelineStages(
 }
 
 export function readProductionState(runId: string): ProductionState {
+  return readProductionStateFrom(projectsDirectory(runId));
+}
+
+export function readProductionStateFrom(projectsRoot: string): ProductionState {
   const empty: ProductionState = {
     projectId: null,
     title: "",
@@ -357,7 +422,7 @@ export function readProductionState(runId: string): ProductionState {
     decisions: [],
     spendUsd: 0,
   };
-  const projectPath = resolveProjectDirectory(runId);
+  const projectPath = resolveProjectDirectoryFrom(projectsRoot);
   if (!projectPath) return empty;
   const marker = readJson(path.join(projectPath, "project.json")) ?? {};
   const pipelineType = str(marker.pipeline_type, 120);
@@ -377,7 +442,7 @@ export function readProductionState(runId: string): ProductionState {
   };
 }
 
-function artifactId(relativePath: string): string {
+export function openMontageArtifactId(relativePath: string): string {
   return Buffer.from(relativePath, "utf8").toString("base64url");
 }
 
@@ -390,7 +455,7 @@ function relativeFromArtifactId(id: string): string | null {
 
 function walk(root: string, directory: string, collected: OpenMontageArtifact[]): void {
   if (collected.length >= MAX_SCAN_ENTRIES) return;
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(directory, { withFileTypes: true });
   } catch {
@@ -399,6 +464,7 @@ function walk(root: string, directory: string, collected: OpenMontageArtifact[])
   for (const entry of entries) {
     if (collected.length >= MAX_SCAN_ENTRIES) return;
     const absolute = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
       if (SKIPPED_DIRECTORIES.has(entry.name)) continue;
       walk(root, absolute, collected);
@@ -407,14 +473,14 @@ function walk(root: string, directory: string, collected: OpenMontageArtifact[])
     if (!entry.isFile()) continue;
     const descriptor = FILE_KINDS[path.extname(entry.name).toLowerCase()];
     if (!descriptor) continue;
-    let stats: fs.Stats;
+    let stats: Stats;
     try {
-      stats = fs.statSync(absolute);
+      stats = fs.lstatSync(absolute);
     } catch {
       continue;
     }
     collected.push({
-      id: artifactId(path.relative(root, absolute).split(path.sep).join("/")),
+      id: openMontageArtifactId(path.relative(root, absolute).split(path.sep).join("/")),
       relativePath: path.relative(root, absolute).split(path.sep).join("/"),
       name: entry.name,
       kind: descriptor.kind,
@@ -440,8 +506,22 @@ const KIND_ORDER: Record<OpenMontageArtifact["kind"], number> = {
  * checkpoint is the reason they exist.
  */
 export function scanArtifacts(runId: string): OpenMontageArtifact[] {
-  const root = projectsDirectory(runId);
+  return scanOpenMontageArtifacts(projectsDirectory(runId));
+}
+
+export function scanOpenMontageArtifacts(projectsRoot: string): OpenMontageArtifact[] {
+  const root = path.resolve(projectsRoot);
   if (!fs.existsSync(root)) return [];
+  try {
+    const metadata = fs.lstatSync(root);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !samePath(fs.realpathSync.native(root), root)
+    ) return [];
+  } catch {
+    return [];
+  }
   const collected: OpenMontageArtifact[] = [];
   walk(root, root, collected);
   return collected.sort((left, right) => {
@@ -492,7 +572,7 @@ export function resolveArtifact(runId: string, id: string): ResolvedArtifact {
     throw new WorkspaceError("artifact_not_found", "That output was not found.");
   }
   const descriptor = FILE_KINDS[path.extname(absolute).toLowerCase()];
-  let stats: fs.Stats;
+  let stats: Stats;
   try {
     stats = fs.statSync(absolute);
   } catch {

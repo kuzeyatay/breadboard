@@ -132,7 +132,7 @@ test("branch identity survives the canonical message persistence path", () => {
   assert.match(messageRoute, /branchGroupId: stringValue\(body\.branchGroupId\)/);
   assert.match(turnService, /branchGroupId\?: string/);
   assert.match(turnService, /\{ branchGroupId: input\.branchGroupId \}/);
-  assert.match(sessionPresentation, /presented\.metadata\.branchGroupId/);
+  assert.match(sessionPresentation, /metadata\.branchGroupId/);
   assert.match(conversationStore, /mergedMetadata/);
   assert.match(conversationStore, /parseObject\(row\.metadata\)/);
 });

@@ -10,7 +10,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { loopxPaths } from "./runtime.ts";
+import { loopxPaths } from "./state.ts";
 
 export const LOOPX_SNAPSHOT_SCHEMA = 1;
 

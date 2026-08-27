@@ -1,4 +1,12 @@
-import registryJson from "../../../shared/visualization-renderers.json" with { type: "json" };
+import { externalRuntimeReadUtf8 } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
+import { repositoryRoot } from "./runtime-paths.ts";
+
+const registryJson = JSON.parse(
+  externalRuntimeReadUtf8(
+    path.join(repositoryRoot(), "shared", "visualization-renderers.json"),
+  ),
+) as unknown;
 
 export type VisualizationInteractionGoal =
   | "manipulate_variables"

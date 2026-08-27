@@ -1,10 +1,22 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  RUNTIME_V2_BURN_IN,
+  readRuntimeV2BurnInReceipt,
+  resolveRuntimeV2BurnInSettleWindowMs,
+  validateRuntimeV2BurnInReceipt,
+} from "./runtime-v2-burn-in-contract.mjs";
+import {
+  readJson,
+  readLatestSuccessfulServiceEvidence,
+} from "./service-evidence-contract.mjs";
 
 const qaDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(qaDir, "..", "..");
@@ -26,6 +38,13 @@ function strictInteger(raw, fallback, key, min, max) {
     throw new Error(`${key} must be between ${min} and ${max}.`);
   }
   return value;
+}
+
+function strictBoolean(raw, fallback, key) {
+  if (raw === undefined || raw === "") return fallback;
+  if (raw === "true" || raw === "1") return true;
+  if (raw === "false" || raw === "0") return false;
+  throw new Error(`${key} must be true or false.`);
 }
 
 class Sampler {
@@ -144,11 +163,20 @@ async function supervisorStatus() {
 }
 
 function writeReport(summary) {
-  const outcome = summary.aborted ? "ABORTED SAFELY" : summary.workloadExitCode === 0 || mode === "smoke" ? "COMPLETED" : "FAILED";
+  const outcome = summary.aborted
+    ? "ABORTED SAFELY"
+    : !launchWorkload || (
+        summary.workloadExitCode === 0 &&
+        summary.burnInReceiptValidation?.ok !== false
+      )
+      ? "COMPLETED"
+      : "FAILED";
   const report = `# Breadboard Memory QA Report
 
 - Mode: ${mode}
 - Workload project: ${summary.workloadProject ?? "sampler-only"}
+- Workload repetitions: ${summary.workloadRepeatEach ?? "not launched"}
+- Desktop build skipped during sampling: ${summary.skippedDesktopBuild ?? "not launched"}
 - Outcome: ${outcome}
 - Metric source: ${summary.metricSource}
 - Samples: ${summary.sampleCount}
@@ -159,6 +187,7 @@ function writeReport(summary) {
 - Final QA-owned private bytes: ${Math.round(summary.finalOwnedPrivateBytes / 1048576)} MB
 - Reserve: ${Math.round(summary.minimumReserveMb)} MB
 - Workload exit code: ${summary.workloadExitCode ?? "not launched"}
+${summary.burnInReceiptPath ? `- Runtime V2 burn-in receipt: ${summary.burnInReceiptPath}\n` : ""}${summary.burnInReceiptValidation ? `- Runtime V2 burn-in receipt valid: ${summary.burnInReceiptValidation.ok}\n` : ""}
 ${summary.reason ? `- Reason: ${summary.reason}\n` : ""}
 Raw evidence is in \`latest-samples.ndjson\`; the machine-readable rollup is
 in \`latest-summary.json\`. A safe abort is not a memory pass.
@@ -181,6 +210,25 @@ const durationMs = strictInteger(
   args.get("--duration-ms"), mode === "smoke" ? 20_000 : 30 * 60_000,
   "duration", 5_000, 6 * 60 * 60_000,
 );
+const launchWorkload = strictBoolean(
+  args.get("--launch-workload"),
+  mode === "burn-in",
+  "launch workload",
+);
+const skipDesktopBuild = strictBoolean(
+  args.get("--skip-desktop-build"),
+  false,
+  "skip desktop build",
+);
+const workloadRepeatEach = strictInteger(
+  args.get("--workload-repeat-each"),
+  1,
+  "workload repeat-each",
+  1,
+  20,
+);
+const runtimeV2BurnInProject = "runtime-v2-burn-in";
+const runtimeV2BurnInCompletionGraceMs = 2 * 60 * 60_000;
 
 try {
   const initial = await sampler.sample();
@@ -189,14 +237,61 @@ try {
     process.env.BREADBOARD_MIN_FREE_COMMIT_MB, defaultReserve,
     "BREADBOARD_MIN_FREE_COMMIT_MB", 1_024, 32_768,
   );
-  const coldStartEstimateMb = mode === "burn-in" ? strictInteger(
+  const coldStartEstimateMb = launchWorkload ? strictInteger(
     process.env.BREADBOARD_MEMORY_QA_COLD_START_MB, 6_144,
     "BREADBOARD_MEMORY_QA_COLD_START_MB", 512, 16_384,
   ) : 0;
-  const workloadProject = process.env.BREADBOARD_MEMORY_QA_PROJECT?.trim() || "exploratory";
-  if (!new Set(["critical", "exploratory", "hermes"]).has(workloadProject)) {
-    throw new Error("BREADBOARD_MEMORY_QA_PROJECT must be critical, exploratory, or hermes.");
+  const workloadProject =
+    args.get("--workload-project")?.trim() ||
+    process.env.BREADBOARD_MEMORY_QA_PROJECT?.trim() ||
+    "exploratory";
+  if (!new Set(["critical", "exploratory", "hermes", runtimeV2BurnInProject]).has(workloadProject)) {
+    throw new Error(
+      "BREADBOARD_MEMORY_QA_PROJECT must be critical, exploratory, hermes, or runtime-v2-burn-in.",
+    );
   }
+  if (workloadProject === runtimeV2BurnInProject && workloadRepeatEach !== 1) {
+    throw new Error("The dedicated Runtime V2 burn-in owns its exact repetitions; repeat-each must be 1.");
+  }
+  if (
+    workloadProject === runtimeV2BurnInProject &&
+    durationMs !== RUNTIME_V2_BURN_IN.requiredDurationMs
+  ) {
+    throw new Error("The dedicated Runtime V2 burn-in duration must be exactly 21600000 ms.");
+  }
+  const burnInSettleWindowMs = workloadProject === runtimeV2BurnInProject
+    ? resolveRuntimeV2BurnInSettleWindowMs(
+        process.env.BREADBOARD_RUNTIME_V2_BURN_IN_SETTLE_WINDOW_MS,
+      )
+    : null;
+  const burnInReceiptPath = workloadProject === runtimeV2BurnInProject
+    ? path.join(
+        repoRoot,
+        ".qa-results",
+        "runtime-v2-burn-in",
+        `${Date.now()}-${randomUUID()}`,
+        "receipt.json",
+      )
+    : null;
+  const serviceEvidenceBinding = workloadProject === runtimeV2BurnInProject
+    ? readLatestSuccessfulServiceEvidence({
+        repoRoot,
+        serviceManifest: readJson(path.join(
+          repoRoot,
+          "desktop",
+          "runtime-v2",
+          "manifests",
+          "services.json",
+        )),
+        executionInventory: readJson(path.join(
+          repoRoot,
+          "qa",
+          "runtime-v2",
+          "execution-inventory.json",
+        )),
+      })
+    : null;
+  if (burnInReceiptPath) fs.mkdirSync(path.dirname(burnInReceiptPath), { recursive: true });
   const initialFreeCommitMb = initial.commitLimitMb - initial.commitTotalMb;
   const summary = {
     schemaVersion: 1,
@@ -213,10 +308,18 @@ try {
     sampleCount: 0,
     aborted: false,
     workloadExitCode: null,
-    workloadProject: mode === "burn-in" ? workloadProject : null,
+    workloadProject: launchWorkload ? workloadProject : null,
+    workloadRepeatEach: launchWorkload ? workloadRepeatEach : null,
+    skippedDesktopBuild: launchWorkload ? skipDesktopBuild : null,
+    burnInReceiptPath,
+    serviceEvidenceBinding,
+    burnInReceiptValidation: null,
+    requiredDurationMs: workloadProject === runtimeV2BurnInProject ? durationMs : null,
+    completionGraceMs:
+      workloadProject === runtimeV2BurnInProject ? runtimeV2BurnInCompletionGraceMs : null,
   };
 
-  if (mode === "burn-in" && initialFreeCommitMb < minimumReserveMb + coldStartEstimateMb) {
+  if (launchWorkload && initialFreeCommitMb < minimumReserveMb + coldStartEstimateMb) {
     const initialSample = {
       sampledAt: initial.sampledAt,
       commitTotalMb: initial.commitTotalMb,
@@ -245,20 +348,40 @@ try {
     writeReport(summary);
     process.exitCode = 2;
   } else {
-    if (mode === "burn-in") {
+    if (launchWorkload) {
       workload = spawn(process.execPath, [
         path.join(repoRoot, "qa", "electron", "run-qa.mjs"),
         `--project=${workloadProject}`,
+        ...(workloadRepeatEach > 1 ? [`--repeat-each=${workloadRepeatEach}`] : []),
+        ...(skipDesktopBuild ? ["--skip-desktop-build"] : []),
       ], {
         cwd: repoRoot,
-        env: { ...process.env, BREADBOARD_QA_DASHBOARD_MODE: "standalone" },
+        env: {
+          ...process.env,
+          BREADBOARD_QA_DASHBOARD_MODE: "standalone",
+          ...(burnInReceiptPath
+            ? {
+                BREADBOARD_RUNTIME_V2_BURN_IN: "1",
+                BREADBOARD_RUNTIME_V2_BURN_IN_RECEIPT_PATH: burnInReceiptPath,
+                BREADBOARD_RUNTIME_V2_BURN_IN_SETTLE_WINDOW_MS: String(burnInSettleWindowMs),
+                BREADBOARD_RUNTIME_V2_BURN_IN_SAMPLE_INTERVAL_MS: String(intervalMs),
+                BREADBOARD_RUNTIME_V2_BURN_IN_DURATION_MS: String(durationMs),
+                BREADBOARD_RUNTIME_V2_SERVICE_EVIDENCE_BINDING:
+                  JSON.stringify(serviceEvidenceBinding),
+                BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN: randomBytes(32).toString("hex"),
+                BREADBOARD_QA_NO_TRACE: "1",
+              }
+            : {}),
+        },
         stdio: "inherit",
         windowsHide: true,
       });
       workload.once("exit", (code) => { workloadExitCode = code ?? 1; });
     }
 
-    const deadline = Date.now() + durationMs;
+    const deadline = Date.now() + durationMs + (
+      workloadProject === runtimeV2BurnInProject ? runtimeV2BurnInCompletionGraceMs : 0
+    );
     do {
       const raw = await sampler.sample();
       const status = await supervisorStatus();
@@ -296,7 +419,7 @@ try {
         summary.reason = `emergency reserve crossed at ${Math.round(sample.freeCommitMb)} MB`;
         break;
       }
-      if (mode === "burn-in" && workloadExitCode !== null) break;
+      if (launchWorkload && workloadExitCode !== null) break;
       if (Date.now() >= deadline) break;
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     } while (!interrupted);
@@ -316,10 +439,36 @@ try {
       workloadExitCode = summary.aborted ? 2 : 124;
     }
     summary.workloadExitCode = workloadExitCode;
+    if (burnInReceiptPath) {
+      try {
+        const receipt = readRuntimeV2BurnInReceipt(burnInReceiptPath);
+        const validation = validateRuntimeV2BurnInReceipt(receipt);
+        summary.burnInReceiptValidation = {
+          ok: validation.ok,
+          errors: [...validation.errors],
+        };
+      } catch (error) {
+        summary.burnInReceiptValidation = {
+          ok: false,
+          errors: [
+            error instanceof Error
+              ? `Runtime V2 burn-in receipt could not be read: ${error.message}`
+              : "Runtime V2 burn-in receipt could not be read.",
+          ],
+        };
+      }
+      if (!summary.burnInReceiptValidation.ok) {
+        summary.reason = summary.burnInReceiptValidation.errors.join("; ");
+      }
+    }
     summary.finishedAt = new Date().toISOString();
     fs.writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
     writeReport(summary);
-    if (summary.aborted || (mode === "burn-in" && workloadExitCode !== 0)) process.exitCode = 1;
+    if (
+      summary.aborted ||
+      (launchWorkload && workloadExitCode !== 0) ||
+      summary.burnInReceiptValidation?.ok === false
+    ) process.exitCode = 1;
   }
 } finally {
   sampler.stop();

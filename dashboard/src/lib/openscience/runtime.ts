@@ -23,9 +23,10 @@
 // and OfficeCLI already make.
 
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+export { configRoot, dataRoot, stateRoot, workspaceRoot } from "./state-paths.ts";
 
 export interface OpenscienceLauncher {
   /** argv[0] used to invoke the CLI — always Node, running the package's bin. */
@@ -103,41 +104,6 @@ export function targetCliVersion(env: NodeJS.ProcessEnv = process.env): string {
 export function managedCliRoot(env: NodeJS.ProcessEnv = process.env): string {
   return (
     configured(env.OPENSCIENCE_CLI_ROOT) ?? path.join(dashboardDataDir(), "openscience-cli")
-  );
-}
-
-/**
- * Server state: the config directory Breadboard writes, and the data directory
- * holding sessions, logs and storage.
- *
- * Deliberately short. OpenScience writes session records through a temporary
- * file whose name carries the session id, a pid and a uuid; under a deep root
- * that path passes Windows' limit and every session creation fails with
- * ENAMETOOLONG — which surfaces only as "Session not found".
- */
-export function stateRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return (
-    configured(env.OPENSCIENCE_STATE_ROOT) ?? path.join(dashboardDataDir(), "openscience-state")
-  );
-}
-
-export function configRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(stateRoot(env), "config");
-}
-
-export function dataRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(stateRoot(env), "data");
-}
-
-/**
- * The workspace an OpenScience run works inside. Durable and shared across
- * runs: a research workspace accumulates scripts, datasets, figures and notes,
- * and that accumulation is the point — a run never gets a fresh empty one.
- */
-export function workspaceRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return (
-    configured(env.OPENSCIENCE_WORKSPACE_ROOT) ??
-    path.join(dashboardDataDir(), "openscience-workspace")
   );
 }
 

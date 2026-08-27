@@ -19,6 +19,7 @@ import {
 } from "./knowledge.ts";
 import { normalizeGardenFolder } from "./garden-documents.ts";
 import { publishQuartzAfterMutation } from "./quartz-publish.ts";
+import { acquireGardenMutationLease } from "./garden-mutation-lease.ts";
 import {
   GardenFilesystemError,
   gardenContentRoot as contentRoot,
@@ -83,7 +84,8 @@ function removePublicArtifacts(
   ]) {
     const resolved = path.resolve(target);
     if (!resolved.startsWith(clusterPublicDir + path.sep)) continue;
-    if (fs.existsSync(resolved)) fs.rmSync(resolved, { recursive: true, force: true });
+    if (fs.existsSync(resolved))
+      fs.rmSync(resolved, { recursive: true, force: true });
   }
 }
 
@@ -139,6 +141,7 @@ export function listGardenTree(input: { clusterSlug: string }): GardenTree {
 
 /** Create a folder. Its `_index.md` placeholder keeps it visible in Quartz. */
 export async function createGardenFolder(input: {
+  userId: number;
   clusterSlug: string;
   folder: unknown;
 }): Promise<{ folder: string }> {
@@ -147,19 +150,29 @@ export async function createGardenFolder(input: {
   const folder = normalizeGardenFolder(input.folder);
   if (!folder) throw new GardenFilesystemError("folder is required", 400);
 
-  const dir = resolveFolderDir(clusterDir, folder);
-  fs.mkdirSync(dir, { recursive: true });
-  const indexPath = path.join(dir, "_index.md");
-  if (!fs.existsSync(indexPath)) {
-    fs.writeFileSync(
-      indexPath,
-      `---\ntitle: ${JSON.stringify(gardenFolderTitle(folder))}\n---\n\n`,
-      "utf-8",
-    );
-  }
+  const lease = acquireGardenMutationLease(clusterDir, "create-folder");
+  try {
+    const dir = resolveFolderDir(clusterDir, folder);
+    fs.mkdirSync(dir, { recursive: true });
+    const indexPath = path.join(dir, "_index.md");
+    if (!fs.existsSync(indexPath)) {
+      fs.writeFileSync(
+        indexPath,
+        `---\ntitle: ${JSON.stringify(gardenFolderTitle(folder))}\n---\n\n`,
+        "utf-8",
+      );
+    }
 
-  refreshClusterIndex(contentPath, input.clusterSlug);
-  await publishQuartzAfterMutation(`create folder ${input.clusterSlug}/${folder}`);
+    refreshClusterIndex(contentPath, input.clusterSlug);
+  } finally {
+    lease.release();
+  }
+  await publishQuartzAfterMutation(
+    `create folder ${input.clusterSlug}/${folder}`,
+    {
+      userId: input.userId,
+    },
+  );
   return { folder };
 }
 
@@ -169,6 +182,7 @@ export async function createGardenFolder(input: {
  * shortest-path link resolution keeps every existing `[[wikilink]]` working.
  */
 export async function moveGardenDocument(input: {
+  userId: number;
   clusterSlug: string;
   slug: unknown;
   toFolder: unknown;
@@ -179,46 +193,54 @@ export async function moveGardenDocument(input: {
     throw new GardenFilesystemError("slug is required", 400);
   }
 
-  const folder = normalizeGardenFolder(input.toFolder);
-  const targetDir = resolveFolderDir(clusterDir, folder);
+  const lease = acquireGardenMutationLease(clusterDir, "move-document");
+  let moved: { slug: string; folder: string; relPath: string };
+  try {
+    const folder = normalizeGardenFolder(input.toFolder);
+    const targetDir = resolveFolderDir(clusterDir, folder);
 
-  const wantSlug = input.slug
-    .replace(/\\/g, "/")
-    .split("/")
-    .pop()!
-    .replace(/\.md$/i, "")
-    .trim();
+    const wantSlug = input.slug
+      .replace(/\\/g, "/")
+      .split("/")
+      .pop()!
+      .replace(/\.md$/i, "")
+      .trim();
 
-  const found = walkClusterMarkdown(clusterDir).find(
-    (item) => item.entry.replace(/\.md$/i, "") === wantSlug,
-  );
-  if (!found) throw new GardenFilesystemError("Document not found", 404);
-
-  const destPath = path.join(targetDir, found.entry);
-  if (path.resolve(destPath) === path.resolve(found.filePath)) {
-    return { slug: wantSlug, folder, relPath: found.relPath };
-  }
-  if (fs.existsSync(destPath)) {
-    throw new GardenFilesystemError(
-      "A note with that name already exists in the target folder",
-      409,
+    const found = walkClusterMarkdown(clusterDir).find(
+      (item) => item.entry.replace(/\.md$/i, "") === wantSlug,
     );
+    if (!found) throw new GardenFilesystemError("Document not found", 404);
+
+    const destPath = path.join(targetDir, found.entry);
+    if (path.resolve(destPath) === path.resolve(found.filePath)) {
+      return { slug: wantSlug, folder, relPath: found.relPath };
+    }
+    if (fs.existsSync(destPath)) {
+      throw new GardenFilesystemError(
+        "A note with that name already exists in the target folder",
+        409,
+      );
+    }
+
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.renameSync(found.filePath, destPath);
+    removePublicArtifacts(
+      contentPath,
+      input.clusterSlug,
+      found.relPath.replace(/\.md$/i, ""),
+    );
+
+    const relPath = path.relative(clusterDir, destPath).replace(/\\/g, "/");
+    refreshClusterIndex(contentPath, input.clusterSlug);
+    moved = { slug: wantSlug, folder, relPath };
+  } finally {
+    lease.release();
   }
-
-  fs.mkdirSync(targetDir, { recursive: true });
-  fs.renameSync(found.filePath, destPath);
-  removePublicArtifacts(
-    contentPath,
-    input.clusterSlug,
-    found.relPath.replace(/\.md$/i, ""),
-  );
-
-  const relPath = path.relative(clusterDir, destPath).replace(/\\/g, "/");
-  refreshClusterIndex(contentPath, input.clusterSlug);
   await publishQuartzAfterMutation(
-    `move document ${input.clusterSlug}/${wantSlug} -> ${folder || "root"}`,
+    `move document ${input.clusterSlug}/${moved.slug} -> ${moved.folder || "root"}`,
+    { userId: input.userId },
   );
-  return { slug: wantSlug, folder, relPath };
+  return moved;
 }
 
 /**
@@ -227,6 +249,7 @@ export async function moveGardenDocument(input: {
  * change, so links still resolve.
  */
 export async function renameGardenFolder(input: {
+  userId: number;
   clusterSlug: string;
   folder: unknown;
   name: unknown;
@@ -234,55 +257,69 @@ export async function renameGardenFolder(input: {
   const contentPath = contentRoot();
   const clusterDir = gardenDirectory(input.clusterSlug, contentPath);
 
-  const folder = normalizeGardenFolder(input.folder);
-  if (!folder) throw new GardenFilesystemError("folder is required", 400);
+  const lease = acquireGardenMutationLease(clusterDir, "rename-folder");
+  let renamed: { folder: string; newFolder: string };
+  try {
+    const folder = normalizeGardenFolder(input.folder);
+    if (!folder) throw new GardenFilesystemError("folder is required", 400);
 
-  const newName = normalizeGardenFolder(input.name);
-  if (!newName) throw new GardenFilesystemError("name is required", 400);
-  if (newName.includes("/")) {
-    throw new GardenFilesystemError("Folder name cannot contain slashes", 400);
+    const newName = normalizeGardenFolder(input.name);
+    if (!newName) throw new GardenFilesystemError("name is required", 400);
+    if (newName.includes("/")) {
+      throw new GardenFilesystemError(
+        "Folder name cannot contain slashes",
+        400,
+      );
+    }
+
+    const parent = folder.split("/").slice(0, -1).join("/");
+    const newFolder = parent ? `${parent}/${newName}` : newName;
+    if (newFolder === folder) return { folder, newFolder };
+
+    const oldDir = resolveFolderDir(clusterDir, folder);
+    const newDir = resolveFolderDir(clusterDir, newFolder);
+    if (oldDir === clusterDir || newDir === clusterDir) {
+      throw new GardenFilesystemError("Invalid folder path", 400);
+    }
+    if (!fs.existsSync(oldDir)) {
+      throw new GardenFilesystemError("Folder not found", 404);
+    }
+    if (fs.existsSync(newDir)) {
+      throw new GardenFilesystemError(
+        "A folder with that name already exists",
+        409,
+      );
+    }
+
+    fs.mkdirSync(path.dirname(newDir), { recursive: true });
+    fs.renameSync(oldDir, newDir);
+
+    // Keep the Quartz folder title in sync with the new name.
+    const indexPath = path.join(newDir, "_index.md");
+    const newTitle = JSON.stringify(gardenFolderTitle(newFolder));
+    if (fs.existsSync(indexPath)) {
+      const raw = fs.readFileSync(indexPath, "utf-8");
+      const updated = /^title:.*$/m.test(raw)
+        ? raw.replace(/^title:.*$/m, `title: ${newTitle}`)
+        : raw.replace(/^---\r?\n/, (match) => `${match}title: ${newTitle}\n`);
+      fs.writeFileSync(indexPath, updated, "utf-8");
+    } else {
+      fs.writeFileSync(indexPath, `---\ntitle: ${newTitle}\n---\n\n`, "utf-8");
+    }
+
+    // The old folder path (and every note inside it) has stale Quartz output.
+    removePublicArtifacts(contentPath, input.clusterSlug, folder);
+
+    refreshClusterIndex(contentPath, input.clusterSlug);
+    renamed = { folder, newFolder };
+  } finally {
+    lease.release();
   }
-
-  const parent = folder.split("/").slice(0, -1).join("/");
-  const newFolder = parent ? `${parent}/${newName}` : newName;
-  if (newFolder === folder) return { folder, newFolder };
-
-  const oldDir = resolveFolderDir(clusterDir, folder);
-  const newDir = resolveFolderDir(clusterDir, newFolder);
-  if (oldDir === clusterDir || newDir === clusterDir) {
-    throw new GardenFilesystemError("Invalid folder path", 400);
-  }
-  if (!fs.existsSync(oldDir)) {
-    throw new GardenFilesystemError("Folder not found", 404);
-  }
-  if (fs.existsSync(newDir)) {
-    throw new GardenFilesystemError("A folder with that name already exists", 409);
-  }
-
-  fs.mkdirSync(path.dirname(newDir), { recursive: true });
-  fs.renameSync(oldDir, newDir);
-
-  // Keep the Quartz folder title in sync with the new name.
-  const indexPath = path.join(newDir, "_index.md");
-  const newTitle = JSON.stringify(gardenFolderTitle(newFolder));
-  if (fs.existsSync(indexPath)) {
-    const raw = fs.readFileSync(indexPath, "utf-8");
-    const updated = /^title:.*$/m.test(raw)
-      ? raw.replace(/^title:.*$/m, `title: ${newTitle}`)
-      : raw.replace(/^---\r?\n/, (match) => `${match}title: ${newTitle}\n`);
-    fs.writeFileSync(indexPath, updated, "utf-8");
-  } else {
-    fs.writeFileSync(indexPath, `---\ntitle: ${newTitle}\n---\n\n`, "utf-8");
-  }
-
-  // The old folder path (and every note inside it) has stale Quartz output.
-  removePublicArtifacts(contentPath, input.clusterSlug, folder);
-
-  refreshClusterIndex(contentPath, input.clusterSlug);
   await publishQuartzAfterMutation(
-    `rename folder ${input.clusterSlug}/${folder} -> ${newFolder}`,
+    `rename folder ${input.clusterSlug}/${renamed.folder} -> ${renamed.newFolder}`,
+    { userId: input.userId },
   );
-  return { folder, newFolder };
+  return renamed;
 }
 
 /**
@@ -291,6 +328,7 @@ export async function renameGardenFolder(input: {
  * explicit instruction for this exact folder before calling.
  */
 export async function deleteGardenFolder(input: {
+  userId: number;
   clusterSlug: string;
   clusterId: number;
   folder: unknown;
@@ -298,32 +336,45 @@ export async function deleteGardenFolder(input: {
   const contentPath = contentRoot();
   const clusterDir = gardenDirectory(input.clusterSlug, contentPath);
 
-  const folder = normalizeGardenFolder(input.folder);
-  if (!folder) throw new GardenFilesystemError("folder is required", 400);
+  const lease = acquireGardenMutationLease(clusterDir, "delete-folder");
+  let deleted: { folder: string; deletedSlugs: string[] };
+  try {
+    const folder = normalizeGardenFolder(input.folder);
+    if (!folder) throw new GardenFilesystemError("folder is required", 400);
 
-  const dir = resolveFolderDir(clusterDir, folder);
-  if (dir === clusterDir) {
-    throw new GardenFilesystemError("Invalid folder path", 400);
-  }
-  if (!fs.existsSync(dir)) return { folder, deletedSlugs: [] };
+    const dir = resolveFolderDir(clusterDir, folder);
+    if (dir === clusterDir) {
+      throw new GardenFilesystemError("Invalid folder path", 400);
+    }
+    if (!fs.existsSync(dir)) return { folder, deletedSlugs: [] };
 
-  const deletedSlugs = walkClusterMarkdown(dir).map((item) =>
-    item.entry.replace(/\.md$/i, ""),
-  );
-
-  fs.rmSync(dir, { recursive: true, force: true });
-  removePublicArtifacts(contentPath, input.clusterSlug, folder);
-
-  if (deletedSlugs.length > 0) {
-    const deleteSavedPdf = db.prepare(
-      "DELETE FROM pdf_document_edits WHERE cluster_id = ? AND document_slug = ?",
+    const deletedSlugs = walkClusterMarkdown(dir).map((item) =>
+      item.entry.replace(/\.md$/i, ""),
     );
-    for (const slug of deletedSlugs) deleteSavedPdf.run(input.clusterId, slug);
-  }
 
-  refreshClusterIndex(contentPath, input.clusterSlug);
-  await publishQuartzAfterMutation(`delete folder ${input.clusterSlug}/${folder}`);
-  return { folder, deletedSlugs };
+    fs.rmSync(dir, { recursive: true, force: true });
+    removePublicArtifacts(contentPath, input.clusterSlug, folder);
+
+    if (deletedSlugs.length > 0) {
+      const deleteSavedPdf = db.prepare(
+        "DELETE FROM pdf_document_edits WHERE cluster_id = ? AND document_slug = ?",
+      );
+      for (const slug of deletedSlugs)
+        deleteSavedPdf.run(input.clusterId, slug);
+    }
+
+    refreshClusterIndex(contentPath, input.clusterSlug);
+    deleted = { folder, deletedSlugs };
+  } finally {
+    lease.release();
+  }
+  await publishQuartzAfterMutation(
+    `delete folder ${input.clusterSlug}/${deleted.folder}`,
+    {
+      userId: input.userId,
+    },
+  );
+  return deleted;
 }
 
 /** Exposed for callers that need the same normalization before validating. */

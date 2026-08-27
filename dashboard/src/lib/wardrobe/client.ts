@@ -84,30 +84,43 @@ async function call<T>(
   init: RequestInit & { timeoutMs?: number } = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), init.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  const abort = () => controller.abort();
+  init.signal?.addEventListener("abort", abort, { once: true });
+  if (init.signal?.aborted) controller.abort();
+  const timer = setTimeout(
+    () => controller.abort(),
+    init.timeoutMs ?? REQUEST_TIMEOUT_MS,
+  );
   try {
     const response = await fetch(`${baseUrl}${path}`, {
       ...init,
       signal: controller.signal,
-      headers: init.body ? { "content-type": "application/json", ...init.headers } : init.headers,
+      headers: init.body
+        ? { "content-type": "application/json", ...init.headers }
+        : init.headers,
     });
     const text = await response.text();
     const parsed = text ? (JSON.parse(text) as unknown) : null;
     if (!response.ok) {
       const message =
-        parsed && typeof parsed === "object" && typeof (parsed as { error?: unknown }).error === "string"
-          ? ((parsed as { error: string }).error)
+        parsed &&
+        typeof parsed === "object" &&
+        typeof (parsed as { error?: unknown }).error === "string"
+          ? (parsed as { error: string }).error
           : `Wardrobe request failed (${response.status})`;
       throw new WardrobeApiError(response.status, message);
     }
     return parsed as T;
   } finally {
     clearTimeout(timer);
+    init.signal?.removeEventListener("abort", abort);
   }
 }
 
 export function config(baseUrl: string): Promise<WardrobeConfig> {
-  return call<WardrobeConfig>(baseUrl, "/api/import/config", { timeoutMs: 5_000 });
+  return call<WardrobeConfig>(baseUrl, "/api/import/config", {
+    timeoutMs: 5_000,
+  });
 }
 
 /**
@@ -120,20 +133,33 @@ export function config(baseUrl: string): Promise<WardrobeConfig> {
 export function createJobs(
   baseUrl: string,
   imageDataUrl: string,
+  signal?: AbortSignal,
 ): Promise<{ jobs: ImportJob[]; noClothingDetected: boolean }> {
   return call(baseUrl, "/api/import/jobs", {
     method: "POST",
     body: JSON.stringify({ imageDataUrl }),
     timeoutMs: 180_000,
+    signal,
   });
 }
 
-export function getJob(baseUrl: string, jobId: string): Promise<ImportJob> {
-  return call<ImportJob>(baseUrl, `/api/import/jobs/${jobId}`);
+export function getJob(
+  baseUrl: string,
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<ImportJob> {
+  return call<ImportJob>(baseUrl, `/api/import/jobs/${jobId}`, { signal });
 }
 
-export function deleteJob(baseUrl: string, jobId: string): Promise<unknown> {
-  return call(baseUrl, `/api/import/jobs/${jobId}`, { method: "DELETE" });
+export function deleteJob(
+  baseUrl: string,
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return call(baseUrl, `/api/import/jobs/${jobId}`, {
+    method: "DELETE",
+    signal,
+  });
 }
 
 /**
@@ -146,11 +172,17 @@ export function decideStage(
   jobId: string,
   stage: StageName,
   decision: "approve" | "reject",
+  signal?: AbortSignal,
 ): Promise<ImportJob> {
-  return call<ImportJob>(baseUrl, `/api/import/jobs/${jobId}/stages/${stage}/${decision}`, {
-    method: "POST",
-    timeoutMs: 60_000,
-  });
+  return call<ImportJob>(
+    baseUrl,
+    `/api/import/jobs/${jobId}/stages/${stage}/${decision}`,
+    {
+      method: "POST",
+      timeoutMs: 60_000,
+      signal,
+    },
+  );
 }
 
 /**
@@ -164,33 +196,81 @@ export function regenerateStage(
   jobId: string,
   stage: Exclude<StageName, "crop">,
   prompt: string,
+  signal?: AbortSignal,
 ): Promise<ImportJob> {
-  return call<ImportJob>(baseUrl, `/api/import/jobs/${jobId}/stages/${stage}/regenerate`, {
-    method: "POST",
-    body: JSON.stringify({ prompt: prompt.slice(0, 1_200) }),
-  });
+  return call<ImportJob>(
+    baseUrl,
+    `/api/import/jobs/${jobId}/stages/${stage}/regenerate`,
+    {
+      method: "POST",
+      body: JSON.stringify({ prompt: prompt.slice(0, 1_200) }),
+      signal,
+    },
+  );
 }
 
-export function library(baseUrl: string): Promise<LibraryItem[]> {
-  return call<LibraryItem[]>(baseUrl, "/api/import/wardrobe");
+export function library(
+  baseUrl: string,
+  signal?: AbortSignal,
+): Promise<LibraryItem[]> {
+  return call<LibraryItem[]>(baseUrl, "/api/import/wardrobe", { signal });
 }
 
 /** Read one of the clone's own images back, for saving as an artifact. */
-export async function fetchAsset(baseUrl: string, assetPath: string): Promise<Buffer> {
+export async function fetchAsset(
+  baseUrl: string,
+  assetPath: string,
+  signal?: AbortSignal,
+): Promise<Buffer> {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) controller.abort();
   const timer = setTimeout(() => controller.abort(), 30_000);
   try {
-    const response = await fetch(`${baseUrl}${assetPath}`, { signal: controller.signal });
+    const response = await fetch(`${baseUrl}${assetPath}`, {
+      signal: controller.signal,
+    });
     if (!response.ok) {
-      throw new WardrobeApiError(response.status, `Could not read ${assetPath}.`);
+      throw new WardrobeApiError(
+        response.status,
+        `Could not read ${assetPath}.`,
+      );
     }
     return Buffer.from(await response.arrayBuffer());
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
   }
 }
 
 const SETTLED: StageStatus[] = ["review", "approved", "rejected", "failed"];
+
+function waitForPoll(
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(
+      new DOMException("The wardrobe import was stopped.", "AbortError"),
+    );
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(finish, milliseconds);
+    function finish() {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }
+    function abort() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      reject(
+        new DOMException("The wardrobe import was stopped.", "AbortError"),
+      );
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
 
 /**
  * Wait for a stage to stop moving.
@@ -208,13 +288,15 @@ export async function waitForStage(input: {
   timeoutMs: number;
   pollMs?: number;
   aborted: () => boolean;
+  signal?: AbortSignal;
   onProgress?: (job: ImportJob) => void;
 }): Promise<ImportJob> {
   const deadline = Date.now() + input.timeoutMs;
   let lastStatus: StageStatus | null = null;
   for (;;) {
-    if (input.aborted()) throw new WardrobeApiError(499, "The import was stopped.");
-    const job = await getJob(input.baseUrl, input.jobId);
+    if (input.aborted())
+      throw new WardrobeApiError(499, "The import was stopped.");
+    const job = await getJob(input.baseUrl, input.jobId, input.signal);
     const status = job.stages[input.stage].status;
     if (status !== lastStatus) {
       lastStatus = status;
@@ -227,6 +309,6 @@ export async function waitForStage(input: {
         `The ${input.stage} stage did not finish in time for “${job.metadata.name}”.`,
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, input.pollMs ?? 1_500));
+    await waitForPoll(input.pollMs ?? 1_500, input.signal);
   }
 }

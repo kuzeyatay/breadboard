@@ -3,15 +3,23 @@ import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { getTelegramStore } from "@/lib/telegram/instance.ts";
 import { telegramStatus } from "@/lib/telegram/status.ts";
+import {
+  runtimeGatewayStatus,
+} from "@/lib/runtime-v2/gateway-control.ts";
+import type { TelegramStatus } from "@/lib/telegram/status.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+async function currentStatus(userId: number): Promise<TelegramStatus> {
+  return (await runtimeGatewayStatus<TelegramStatus>("telegram", userId)) ?? telegramStatus(userId);
+}
 
 /** Everything the Settings panel renders for Telegram, in one poll. */
 export async function GET() {
   try {
     const userId = await requireUserId();
-    return NextResponse.json({ status: telegramStatus(userId) });
+    return NextResponse.json({ status: await currentStatus(userId) });
   } catch (error) {
     return apiErrorResponse(error);
   }
@@ -31,7 +39,7 @@ export async function PATCH(request: Request) {
       allowedUsers: body.allowedUsers,
       autostart: body.autostart,
     });
-    return NextResponse.json({ status: telegramStatus(userId) });
+    return NextResponse.json({ status: await currentStatus(userId) });
   } catch (error) {
     return apiErrorResponse(error);
   }

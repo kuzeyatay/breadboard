@@ -69,6 +69,7 @@ export async function POST(
       );
     }
     const snapshot = await getLearnStatusSnapshotForRoute({
+      userId,
       gardenId: cluster.slug,
       contentPath,
     });

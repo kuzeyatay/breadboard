@@ -14,17 +14,31 @@ import { planGardenVisualNecessity } from "../src/lib/visual-necessity.ts";
 import { pedagogyContractFromCompleteRepair } from "../src/lib/visualization-contract-validation.ts";
 import {
   buildGeneratedVisualBlock,
-  compileGeneratedVisualization,
-  createGeneratedVisualization,
+  createGeneratedVisualization as createGeneratedVisualizationWithCompiler,
   loadGeneratedVisualDefinition,
   loadGeneratedVisualManifest,
   normalizeDetailedGeneratedVisualCriticRecord,
   parseGeneratedVisualBlock,
   rollbackGeneratedVisualization,
-  runGeneratedVisualBrowserTests,
   runGeneratedVisualDeterministicTests,
   validateGeneratedVisualizationManifest,
 } from "../src/lib/generated-visuals.ts";
+import { compileGeneratedVisualization } from "../src/lib/generated-visual-compiler.ts";
+import {
+  runGeneratedVisualBrowserTestsLocally as runGeneratedVisualBrowserTests,
+} from "../src/lib/generated-visual-browser-tests.ts";
+
+const localCompilerRunner = async (sourceCode, opportunity) =>
+  compileGeneratedVisualization(sourceCode, opportunity);
+
+function createGeneratedVisualization(input) {
+  return createGeneratedVisualizationWithCompiler({
+    ...input,
+    compilerRunner: input.compilerRunner ?? localCompilerRunner,
+    browserTestRunner:
+      input.browserTestRunner ?? runGeneratedVisualBrowserTests,
+  });
+}
 
 function unit(overrides = {}) {
   return {
@@ -767,12 +781,12 @@ const browserAvailable = [
   "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
 ].some((candidate) => candidate && fs.existsSync(candidate));
 
-test("isolated browser runtime mounts at mobile and desktop sizes without overflow", { skip: !browserAvailable }, () => {
+test("isolated browser runtime mounts at mobile and desktop sizes without overflow", { skip: !browserAvailable }, async () => {
   const compiled = compileGeneratedVisualization(validSource);
   assert.ok(compiled.definition);
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-browser-"));
   try {
-    const result = runGeneratedVisualBrowserTests({ definition: compiled.definition, outputDir });
+    const result = await runGeneratedVisualBrowserTests({ definition: compiled.definition, outputDir });
     assert.ok(result.tests.every((candidate) => candidate.passed), JSON.stringify(result.tests));
     assert.equal(fs.existsSync(path.join(outputDir, "preview.png")), true);
   } finally {
@@ -1135,6 +1149,13 @@ test("a rejected preview matrix retains its labelled capture receipt in both att
       }],
     }],
   };
+  const profileCleanup = {
+    attempted: 8,
+    removed: 8,
+    retries: 1,
+    rootRemoved: true,
+    confirmed: true,
+  };
   try {
     const result = await createGeneratedVisualization({
       client: {},
@@ -1160,7 +1181,8 @@ test("a rejected preview matrix retains its labelled capture receipt in both att
           selectStateCount: 3,
           selectStateCoverageTruncated: false,
           previewMatrixComplete: false,
-          previewMatrixReceipt,
+           previewMatrixReceipt,
+           profileCleanup,
         },
         previews: [],
       }),
@@ -1194,8 +1216,10 @@ test("a rejected preview matrix retains its labelled capture receipt in both att
     );
     const tests = JSON.parse(fs.readFileSync(path.join(attemptDir, "tests.json"), "utf8"));
     assert.deepEqual(tests.browser.previewMatrixReceipt, previewMatrixReceipt);
+    assert.deepEqual(tests.browser.profileCleanup, profileCleanup);
     const browserEvent = events.find((event) => event.type === "visual_browser_tests_completed");
     assert.deepEqual(browserEvent?.data.previewMatrixReceipt, previewMatrixReceipt);
+    assert.deepEqual(browserEvent?.data.profileCleanup, profileCleanup);
     assert.doesNotMatch(JSON.stringify(browserEvent?.data.previewMatrixReceipt), /breadboard-preview-receipt-pipeline/i);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });

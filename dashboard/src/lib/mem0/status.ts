@@ -1,13 +1,14 @@
-// What the Settings → Memory panel says about semantic recall.
-//
-// The layer is designed to fail quietly, which is right for a turn and wrong
-// for a settings page: a user looking at their memories deserves to know
-// whether recall-by-meaning is actually working, and if not, why. This
-// reports the real state — configured, built, indexed — rather than the
-// intended one.
+// Observational Settings status for the Runtime V2-owned semantic-memory
+// service. Polling this module never imports mem0, acquires a lease, or starts
+// the service; the first real retrieval/extraction does that.
 
 import type Database from "better-sqlite3";
 import db from "../db.ts";
+import {
+  isRuntimeV2ServiceControlConfigured,
+  readSupervisedServiceSnapshot,
+  type SupervisedServiceLifecycleState,
+} from "../supervisor-control.ts";
 import { mem0Config } from "./config.ts";
 
 export interface SemanticMemoryStatus {
@@ -15,7 +16,7 @@ export interface SemanticMemoryStatus {
   enabled: boolean;
   /** Whether per-turn LLM fact extraction is on. */
   extractionEnabled: boolean;
-  /** Whether the vendored engine is actually present and loadable. */
+  /** Whether Runtime reports the staged engine installation as available. */
   engineAvailable: boolean;
   /** Embedding model and width the index is built in. */
   fingerprint: string;
@@ -23,9 +24,23 @@ export interface SemanticMemoryStatus {
   indexedMemories: number;
   /** Active memories in total, so partial coverage is visible. */
   totalMemories: number;
-  /** Plain-language reason recall is degraded, or null when it is healthy. */
+  /** Plain-language reason recall is degraded, or null when it can cold-start. */
   degradedReason: string | null;
 }
+
+const INSTALLATION_PRESENT_STATES = new Set<SupervisedServiceLifecycleState>([
+  "pending",
+  "starting",
+  "healthy",
+  "degraded",
+  "failed",
+  "stopping",
+  "stopped",
+  "available-but-stopped",
+  "ready",
+  "busy",
+  "resource-blocked",
+]);
 
 export async function semanticMemoryStatus(
   userId: number,
@@ -33,7 +48,17 @@ export async function semanticMemoryStatus(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<SemanticMemoryStatus> {
   const config = mem0Config(env);
-  const engine = await probeVendoredEngine();
+  let lifecycle: SupervisedServiceLifecycleState | null = null;
+  if (isRuntimeV2ServiceControlConfigured(env)) {
+    try {
+      lifecycle = (await readSupervisedServiceSnapshot(
+        "mem0-semantic-engine",
+        env,
+      ))?.state ?? null;
+    } catch {
+      lifecycle = null;
+    }
+  }
 
   const totals = database.prepare(`
     SELECT COUNT(*) AS n FROM durable_memories
@@ -50,17 +75,18 @@ export async function semanticMemoryStatus(
   return {
     enabled: config.enabled,
     extractionEnabled: config.extractionEnabled,
-    engineAvailable: engine.loadable,
+    engineAvailable:
+      lifecycle !== null && INSTALLATION_PRESENT_STATES.has(lifecycle),
     fingerprint: config.fingerprint,
     indexedMemories: indexed.n,
     totalMemories: totals.n,
-    degradedReason: degradedReason(config.enabled, engine, env),
+    degradedReason: degradedReason(config.enabled, lifecycle, env),
   };
 }
 
 function degradedReason(
   enabled: boolean,
-  engine: EngineProbe,
+  lifecycle: SupervisedServiceLifecycleState | null,
   env: NodeJS.ProcessEnv,
 ): string | null {
   const embeddingsOff = ["off", "0", "false"].includes(
@@ -72,59 +98,20 @@ function degradedReason(
   if (!enabled) {
     return "Semantic memory is switched off (BREADBOARD_MEM0), so memories are found by wording only.";
   }
-  if (!engine.loadable) {
-    // "Not installed" and "installed but broken" call for different repairs, so
-    // they get different sentences rather than one guess.
-    return engine.missing
-      ? "The mem0 engine has not been built yet. It builds itself on the next `npm run dev`, or run `npm run setup:mem0` now."
-      : `The mem0 engine is installed but failed to load (${engine.error}). Rebuild it with \`npm run setup:mem0\`.`;
+  if (!isRuntimeV2ServiceControlConfigured(env)) {
+    return "Semantic memory requires the Breadboard Runtime service owner, so memories are currently found by wording only.";
+  }
+  if (lifecycle === null) {
+    return "The semantic-memory service is unavailable, so memories are currently found by wording only.";
+  }
+  if (lifecycle === "installation-unavailable") {
+    return "The semantic-memory engine is not installed in this Breadboard runtime.";
+  }
+  if (lifecycle === "failed") {
+    return "The semantic-memory service failed to start; lexical memory remains available.";
+  }
+  if (lifecycle === "resource-blocked") {
+    return "Memory pressure is preventing semantic recall right now; lexical memory remains available.";
   }
   return null;
-}
-
-interface EngineProbe {
-  /** Whether `import("mem0ai/oss")` actually yields a usable engine here. */
-  loadable: boolean;
-  /** True when the package simply is not there, as opposed to broken. */
-  missing: boolean;
-  error: string;
-}
-
-type EngineProbeGlobal = typeof globalThis & { __breadboardMem0Loadable?: true };
-
-/**
- * The engine is a `file:` dependency on a clone that gitignores its own build
- * output, so "installed" and "built" are genuinely different states and only
- * the second one works.
- *
- * The check is the load itself, because that is the operation whose success
- * decides whether recall by meaning works. `require.resolve` reads like the
- * cheaper answer and is a wrong one: the bundler rewrites it to return the
- * module *id* (`"mem0ai/oss"`) rather than a path, so `existsSync` said no and
- * a perfectly good build reported itself as missing. Anything that reasons
- * about node_modules layout instead of asking the loader can drift the same way.
- *
- * Only success is memoised. A failure stays re-probed so that finishing the
- * build — which the stack launcher may be doing in the background right now —
- * shows up on the next settings visit instead of after a restart.
- */
-async function probeVendoredEngine(): Promise<EngineProbe> {
-  const cache = globalThis as EngineProbeGlobal;
-  if (cache.__breadboardMem0Loadable) return { loadable: true, missing: false, error: "" };
-  try {
-    const { Memory } = await import("mem0ai/oss");
-    if (typeof Memory !== "function") {
-      return { loadable: false, missing: false, error: "no Memory export" };
-    }
-    cache.__breadboardMem0Loadable = true;
-    return { loadable: true, missing: false, error: "" };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const code = (error as NodeJS.ErrnoException | null)?.code;
-    return {
-      loadable: false,
-      missing: code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND",
-      error: message.split("\n")[0].slice(0, 200),
-    };
-  }
 }

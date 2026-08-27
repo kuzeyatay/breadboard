@@ -10,7 +10,7 @@ const read = (relative, root = dashboardRoot) => fs.readFileSync(path.join(root,
 
 const identity = await import("../src/lib/shaper/identity.ts");
 const uploads = await import("../src/lib/shaper/uploads.ts");
-const runtime = await import("../src/lib/shaper/runtime.ts");
+const source = await import("../src/lib/shaper/source.ts");
 const artifacts = await import("../src/lib/hermes/artifact-import.ts");
 
 test("Formsmith has one canonical identity and accepts only a bare command", () => {
@@ -64,11 +64,11 @@ test("upload ids are user-scoped and cannot become paths", () => {
 });
 
 test("the local checkout and bridge are discovered without a configured path", () => {
-  const found = runtime.resolveShapeRRoot({});
+  const found = source.resolveShapeRRoot({});
   assert.ok(found);
   assert.equal(path.resolve(found.root), path.join(repositoryRoot, "ShapeR"));
-  assert.equal(runtime.isShapeRClone(found.root), true);
-  assert.equal(path.resolve(runtime.shapeRBridgePath()), path.join(repositoryRoot, "scripts", "shaper-bridge.py"));
+  assert.equal(source.isShapeRClone(found.root), true);
+  assert.equal(path.resolve(source.shapeRBridgePath()), path.join(repositoryRoot, "scripts", "shaper-bridge.py"));
 });
 
 test("the bridge and card agree on every streamed stage", () => {

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import type { Stats } from "node:fs";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 import {
   canonicalCouncilJsonV1,
@@ -1090,7 +1091,7 @@ export function mergeGeneratedVisualCouncilReceiptDirectory(input: {
         "Generated-visual receipt merge requires an exclusive live-garden mutation lease.",
       );
     }
-    let sourceStat: fs.Stats;
+    let sourceStat: Stats;
     try {
       sourceStat = fs.statSync(source);
     } catch (error) {

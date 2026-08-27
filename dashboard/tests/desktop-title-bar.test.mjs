@@ -66,7 +66,7 @@ test("Garden flower toolbars match the Electron caption surface", () => {
     /\.bb-neu-toolbar\.breadboard-flower-navbar\s*\{\s*background:\s*var\(--paper-surface\)/,
   );
   assert.match(globals, /--paper-surface:\s*#faf7ef/);
-  assert.match(globals, /--paper-surface:\s*#20211f/);
+  assert.match(globals, /--paper-surface:\s*#171916/);
   assert.match(
     globals,
     /html\[data-theme="dark"\] \.bb-neu-toolbar\s*\{\s*background:\s*var\(--paper-surface\)/,

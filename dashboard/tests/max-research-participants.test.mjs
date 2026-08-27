@@ -25,7 +25,7 @@ test("a run that ends without findings is not reported as a finding", () => {
   assert.match(participants, /function withRealFindings\(/);
   assert.match(
     participants,
-    /return withRealFindings\(input\.collect\(runId\)\);/,
+    /return withRealFindings\(await input\.collect\(runId\)\);/,
     "every run-owning participant has to pass through it, so it belongs at the one collect point",
   );
   assert.match(participants, /const MINIMUM_USEFUL_OUTPUT = \d+;/);

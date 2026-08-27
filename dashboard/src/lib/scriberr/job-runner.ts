@@ -73,6 +73,7 @@ export interface VideoTranscriptionRunnerDeps {
   createScriberrClient(): ScriberrOps;
   probeMedia(filePath: string): Promise<MediaProbeResult>;
   ingest(input: {
+    userId: number;
     contentPath: string;
     clusterSlug: string;
     sourceTitle: string;
@@ -87,6 +88,7 @@ export interface VideoTranscriptionRunnerDeps {
     onProgress?: (step: string) => void;
   }): Promise<TranscriptIngestResult>;
   resumeIndexing(input: {
+    userId: number;
     contentPath: string;
     clusterSlug: string;
   }): Promise<void>;
@@ -98,7 +100,9 @@ export interface VideoTranscriptionRunnerDeps {
     contentHash?: string | null;
   }): ExistingVideoSource | null;
   contentPath(): string;
-  withScriberrLease?<T>(reason: string, operation: () => Promise<T>): Promise<T>;
+  withScriberrLease<T>(reason: string, operation: () => Promise<T>): Promise<T>;
+  /** Rust Runtime cancellation for the one admitted finite job. */
+  signal?: AbortSignal;
   sleep?(ms: number): Promise<void>;
   log?(message: string): void;
 }
@@ -135,7 +139,97 @@ export class VideoTranscriptionRunner {
   }
 
   private sleep(ms: number): Promise<void> {
-    return (this.deps.sleep ?? defaultSleep)(ms);
+    const operation = (this.deps.sleep ?? defaultSleep)(ms);
+    const signal = this.deps.signal;
+    if (!signal) return operation;
+    if (signal.aborted) return Promise.reject(new CancelledSignal());
+    return new Promise<void>((resolve, reject) => {
+      const abort = () => done(new CancelledSignal());
+      const done = (error?: unknown) => {
+        signal.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else resolve();
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      void operation.then(() => done(), done);
+    });
+  }
+
+  /**
+   * Execute exactly one durable legacy job inside its admitted Runtime worker.
+   * The dashboard may create/read the SQLite projection, but it never drains
+   * this queue or owns any child process after the Runtime V2 cutover.
+   */
+  async runExact(
+    jobId: string,
+    mode: "start" | "retry" | "recover",
+  ): Promise<VideoTranscriptionJob | null> {
+    let job = this.deps.store.getJob(jobId);
+    if (!job) return null;
+    if (["completed", "cancelled"].includes(job.status)) return job;
+
+    const requestCancel = () => {
+      try {
+        this.deps.store.updateJob(jobId, { cancelRequested: true });
+      } catch {
+        // Native still owns and terminates the worker process tree.
+      }
+    };
+    this.deps.signal?.addEventListener("abort", requestCancel, { once: true });
+    try {
+      if (this.deps.signal?.aborted || job.cancelRequested) {
+        await this.finalizeCancelled(jobId);
+        return this.deps.store.getJob(jobId);
+      }
+
+      if (mode === "retry") {
+        this.deps.store.updateJob(jobId, {
+          errorCode: null,
+          errorMessage: null,
+          cancelRequested: false,
+          completedAt: null,
+        });
+        job = this.requireJob(jobId);
+      }
+
+      if (job.transcriptJson) {
+        this.deps.store.transition(jobId, "formatting_markdown", {
+          currentStage: "Formatting transcript",
+          progressPercent: 85,
+          completedAt: null,
+        });
+        await this.executeFromTranscript(jobId);
+      } else if (job.scriberrJobId) {
+        this.deps.store.transition(jobId, "transcribing", {
+          currentStage: "Transcribing",
+          progressPercent: 25,
+          completedAt: null,
+        });
+        await this.executeFromScriberrJob(jobId);
+      } else {
+        if (
+          job.inputKind === "upload" &&
+          (!job.mediaTempPath || !fs.existsSync(job.mediaTempPath))
+        ) {
+          this.deps.store.transition(jobId, "failed", {
+            errorCode: mode === "recover" ? "job_interrupted" : "media_missing",
+            errorMessage: new VideoTranscriptionError(
+              mode === "recover" ? "job_interrupted" : "media_missing",
+            ).userMessage,
+          });
+          return this.deps.store.getJob(jobId);
+        }
+        this.deps.store.transition(jobId, "validating", {
+          currentStage: null,
+          progressPercent: null,
+          completedAt: null,
+        });
+        await this.executeFromStart(this.requireJob(jobId));
+      }
+      return this.deps.store.getJob(jobId);
+    } finally {
+      this.deps.signal?.removeEventListener("abort", requestCancel);
+    }
   }
 
   /** Wake the scheduler: recover interrupted jobs, then drain the queue. */
@@ -265,8 +359,16 @@ export class VideoTranscriptionRunner {
     if (!job || job.status === "cancelled") return;
     if (job.scriberrJobId) {
       try {
-        await this.deps.createScriberrClient().killJob(job.scriberrJobId);
-      } catch {
+        await this.withScriberrLease(`transcription-cancel-${jobId}`, () =>
+          this.deps.createScriberrClient().killJob(job.scriberrJobId!),
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.name === "SupervisorResourceExhaustedError"
+        ) {
+          throw error;
+        }
         // Cancellation must succeed locally even if Scriberr is unreachable.
       }
     }
@@ -350,15 +452,18 @@ export class VideoTranscriptionRunner {
 
   private checkCancelled(jobId: string): void {
     const job = this.deps.store.getJob(jobId);
-    if (!job || job.cancelRequested || job.status === "cancelled") {
+    if (
+      this.deps.signal?.aborted ||
+      !job ||
+      job.cancelRequested ||
+      job.status === "cancelled"
+    ) {
       throw new CancelledSignal();
     }
   }
 
   private withScriberrLease<T>(reason: string, operation: () => Promise<T>): Promise<T> {
-    return this.deps.withScriberrLease
-      ? this.deps.withScriberrLease(reason, operation)
-      : operation();
+    return this.deps.withScriberrLease(reason, operation);
   }
 
   private startHeartbeat(jobId: string): () => void {
@@ -670,7 +775,11 @@ export class VideoTranscriptionRunner {
         progressPercent: 95,
       });
       try {
-        await this.deps.resumeIndexing({ contentPath, clusterSlug: job.gardenId });
+        await this.deps.resumeIndexing({
+          userId: job.userId,
+          contentPath,
+          clusterSlug: job.gardenId,
+        });
       } catch (error) {
         throw new VideoTranscriptionError("indexing_failed", { cause: error });
       }
@@ -689,6 +798,7 @@ export class VideoTranscriptionRunner {
     let result: TranscriptIngestResult;
     try {
       result = await this.deps.ingest({
+        userId: job.userId,
         contentPath,
         clusterSlug: job.gardenId,
         sourceTitle: transcript.title,

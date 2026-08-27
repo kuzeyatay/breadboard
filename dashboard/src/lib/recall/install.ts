@@ -2,11 +2,11 @@
 //
 // The engine is a ~130 MB prebuilt native binary published on npm. Installing
 // it is a long, network-bound job that must survive the request that started
-// it, so the installer runs detached and reports through a heartbeat file:
-// phase, message, and a pid, so the settings tab can tell "still downloading"
-// from "died twenty minutes ago" instead of showing a spinner forever.
+// it. The authenticated route submits one durable Runtime V2 job and returns;
+// a fresh disposable worker owns npm and reports through the existing bounded
+// heartbeat file so the Settings tab keeps exactly the same polling contract.
 
-import { spawn } from "child_process";
+import { randomUUID } from "node:crypto";
 import fs from "fs";
 import path from "path";
 
@@ -17,6 +17,10 @@ import {
   type RecallConfig,
 } from "./config.ts";
 import { RecallError } from "./errors.ts";
+import {
+  isRuntimeV2ServiceControlConfigured,
+  submitRuntimeJob,
+} from "../supervisor-control.ts";
 
 /** Native binary package per platform, mirroring the CLI's own map. */
 const PLATFORM_PACKAGES: Record<string, string> = {
@@ -72,15 +76,6 @@ const SETTLED_PHASES: ReadonlySet<string> = new Set([
 /** Generous next to the installer's 5s heartbeat, so a slow disk never lies. */
 export const INSTALL_HEARTBEAT_GRACE_MS = 60_000;
 
-export function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException | null)?.code === "EPERM";
-  }
-}
-
 /**
  * Turn the raw heartbeat file into an honest status. A phase that claims to be
  * running while its writer is gone, or has not been touched within the grace
@@ -105,13 +100,19 @@ export function parseInstallStatus(
     return null;
   }
   const now = options.now ?? Date.now();
-  const isAlive = options.isAlive ?? processAlive;
   const updatedAtMs = Date.parse(parsed.updatedAt);
   const pid =
-    typeof parsed.pid === "number" && Number.isFinite(parsed.pid) ? parsed.pid : null;
-  const writerGone = pid !== null && pid > 0 ? !isAlive(pid) : false;
+    typeof parsed.pid === "number" && Number.isFinite(parsed.pid)
+      ? parsed.pid
+      : null;
+  // Next no longer probes or signals worker PIDs. Runtime V2 owns that process;
+  // callers with authoritative liveness evidence may still supply it, while
+  // ordinary Settings polls use the bounded heartbeat age.
+  const writerGone =
+    pid !== null && pid > 0 && options.isAlive ? !options.isAlive(pid) : false;
   const overdue =
-    Number.isFinite(updatedAtMs) && now - updatedAtMs > INSTALL_HEARTBEAT_GRACE_MS;
+    Number.isFinite(updatedAtMs) &&
+    now - updatedAtMs > INSTALL_HEARTBEAT_GRACE_MS;
 
   return {
     phase: parsed.phase as RecallInstallPhase,
@@ -126,7 +127,9 @@ export function readInstallStatus(
   config: RecallConfig = getRecallConfig(),
 ): RecallInstallStatus | null {
   try {
-    return parseInstallStatus(fs.readFileSync(recallInstallStatusPath(config), "utf8"));
+    return parseInstallStatus(
+      fs.readFileSync(recallInstallStatusPath(config), "utf8"),
+    );
   } catch {
     return null;
   }
@@ -134,26 +137,47 @@ export function readInstallStatus(
 
 function writeInstallStatus(
   config: RecallConfig,
-  status: { phase: RecallInstallPhase; message: string; startedAt?: string; pid?: number },
+  status: {
+    phase: RecallInstallPhase;
+    message: string;
+    startedAt?: string;
+    pid?: number;
+  },
 ): void {
+  let temporary: string | null = null;
   try {
     fs.mkdirSync(config.home, { recursive: true });
-    fs.writeFileSync(
-      recallInstallStatusPath(config),
-      `${JSON.stringify({
-        ...status,
-        updatedAt: new Date().toISOString(),
-      })}\n`,
-      "utf8",
-    );
+    const target = recallInstallStatusPath(config);
+    temporary = `${target}.pending.${process.pid}.${randomUUID()}`;
+    const bytes = `${JSON.stringify({
+      ...status,
+      updatedAt: new Date().toISOString(),
+    })}\n`;
+    fs.writeFileSync(temporary, bytes, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    fs.renameSync(temporary, target);
+    temporary = null;
   } catch {
     // A status file we cannot write only costs progress reporting; never let it
     // take down the install itself.
+  } finally {
+    if (temporary) {
+      try {
+        fs.rmSync(temporary, { force: true });
+      } catch {
+        // Best-effort cleanup of a status-only temporary file.
+      }
+    }
   }
 }
 
 /** Absolute path of the installed native binary, or null when it is absent. */
-export function resolveBinaryPath(config: RecallConfig = getRecallConfig()): string | null {
+export function resolveBinaryPath(
+  config: RecallConfig = getRecallConfig(),
+): string | null {
   const pkg = platformPackage();
   if (!pkg) return null;
   const ext = process.platform === "win32" ? ".exe" : "";
@@ -171,7 +195,12 @@ function installedVersion(config: RecallConfig): string | null {
   try {
     const manifest = JSON.parse(
       fs.readFileSync(
-        path.join(recallCliRoot(config), "node_modules", "screenpipe", "package.json"),
+        path.join(
+          recallCliRoot(config),
+          "node_modules",
+          "screenpipe",
+          "package.json",
+        ),
         "utf8",
       ),
     ) as { version?: unknown };
@@ -181,7 +210,9 @@ function installedVersion(config: RecallConfig): string | null {
   }
 }
 
-export function installState(config: RecallConfig = getRecallConfig()): RecallInstallState {
+export function installState(
+  config: RecallConfig = getRecallConfig(),
+): RecallInstallState {
   const binaryPath = resolveBinaryPath(config);
   return {
     installed: binaryPath !== null,
@@ -192,121 +223,89 @@ export function installState(config: RecallConfig = getRecallConfig()): RecallIn
   };
 }
 
+const installSubmissionGlobal = globalThis as typeof globalThis & {
+  __breadboardRecallInstallSubmission?: Promise<void>;
+};
+
 /**
- * Kick off the install and return immediately. Progress is the heartbeat file;
- * the caller polls status rather than holding a request open for minutes.
+ * Submit the install and return once Runtime V2 durably accepted it. The route
+ * never owns npm or waits for the download; the existing status poll observes
+ * the disposable worker's heartbeat and terminal outcome.
  */
-export function startInstall(config: RecallConfig = getRecallConfig()): void {
+export async function startInstall(
+  userId: number,
+  config: RecallConfig = getRecallConfig(),
+): Promise<void> {
   if (!config.enabled) throw new RecallError("feature_disabled");
   if (!platformPackage()) throw new RecallError("unsupported_platform");
-
-  const current = readInstallStatus(config);
-  if (current && current.phase === "installing" && !current.stalled) {
-    throw new RecallError("install_in_progress");
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new RecallError("invalid_input", {
+      detail: "invalid Recall installer owner",
+    });
   }
 
-  const root = recallCliRoot(config);
-  try {
-    fs.mkdirSync(root, { recursive: true });
-    // npm refuses to install into a directory with no manifest of its own.
-    const manifest = path.join(root, "package.json");
-    if (!fs.existsSync(manifest)) {
-      fs.writeFileSync(
-        manifest,
-        `${JSON.stringify({ name: "breadboard-recall-cli", private: true, version: "0.0.0" }, null, 2)}\n`,
-        "utf8",
-      );
-    }
-  } catch (error) {
+  const current = readInstallStatus(config);
+  if (
+    installSubmissionGlobal.__breadboardRecallInstallSubmission ||
+    (current && current.phase === "installing" && !current.stalled)
+  ) {
+    throw new RecallError("install_in_progress");
+  }
+  if (!isRuntimeV2ServiceControlConfigured()) {
     throw new RecallError("install_failed", {
-      detail: "could not create the Recall home",
-      cause: error,
+      detail: "the authoritative Runtime V2 job owner is unavailable",
     });
   }
 
   const startedAt = new Date().toISOString();
-  writeInstallStatus(config, {
-    phase: "installing",
-    message: `Downloading the capture engine (${config.cliPackage}@${config.cliVersion})…`,
-    startedAt,
-  });
-
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  const child = spawn(
-    npm,
-    [
-      "install",
-      `${config.cliPackage}@${config.cliVersion}`,
-      "--no-audit",
-      "--no-fund",
-      "--loglevel=error",
-    ],
-    {
-      cwd: root,
-      detached: true,
-      windowsHide: true,
-      // npm on Windows is a .cmd shim, which cannot be spawned without a shell.
-      shell: process.platform === "win32",
-      stdio: ["ignore", "ignore", "pipe"],
-      env: { ...process.env, npm_config_yes: "true" },
-    },
-  );
-
-  // Heartbeat while npm works, so a long download is visibly alive.
-  const heartbeat = setInterval(() => {
-    writeInstallStatus(config, {
-      phase: "installing",
-      message: `Downloading the capture engine (${config.cliPackage}@${config.cliVersion})…`,
-      startedAt,
-      pid: child.pid,
-    });
-  }, 5_000);
-  heartbeat.unref?.();
-
-  let stderr = "";
-  child.stderr?.on("data", (chunk: Buffer) => {
-    // Bounded: npm's failure reason is at the end, and the whole thing is only
-    // ever summarized into a phase message.
-    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-4_000);
-  });
-
-  const timeout = setTimeout(() => {
+  const submission = (async () => {
     try {
-      child.kill();
-    } catch {
-      // Already gone.
-    }
-  }, config.installTimeoutMs);
-  timeout.unref?.();
-
-  child.on("error", (error) => {
-    clearInterval(heartbeat);
-    clearTimeout(timeout);
-    writeInstallStatus(config, {
-      phase: "error",
-      message: `Could not start npm: ${error.message}`,
-      startedAt,
-    });
-  });
-
-  child.on("exit", (code) => {
-    clearInterval(heartbeat);
-    clearTimeout(timeout);
-    if (code === 0 && resolveBinaryPath(config)) {
+      const snapshot = await submitRuntimeJob(
+        { userId, gardenId: null, conversationId: null },
+        {
+          jobType: "recall-install",
+          idempotencyKey: `recall-install-${randomUUID()}`,
+          requestPayload: { protocolVersion: 1, action: "install" },
+        },
+      );
+      if (
+        ![
+          "queued",
+          "admitted",
+          "starting",
+          "running",
+          "checkpointing",
+        ].includes(snapshot.state)
+      ) {
+        throw new Error(
+          `Runtime rejected the Recall install in state ${snapshot.state}.`,
+        );
+      }
       writeInstallStatus(config, {
-        phase: "installed",
-        message: `Capture engine ${config.cliVersion} installed.`,
+        phase: "installing",
+        message: `Downloading the capture engine (${config.cliPackage}@${config.cliVersion})…`,
         startedAt,
       });
-      return;
+    } catch (cause) {
+      writeInstallStatus(config, {
+        phase: "error",
+        message: "The capture engine install could not be scheduled.",
+        startedAt,
+      });
+      throw new RecallError("install_failed", {
+        detail: "Runtime V2 did not accept the Recall install",
+        cause,
+      });
     }
-    const reason = stderr.trim().split("\n").filter(Boolean).slice(-1)[0] ?? `npm exited ${code}`;
-    writeInstallStatus(config, {
-      phase: "error",
-      message: `Install failed: ${reason.slice(0, 300)}`,
-      startedAt,
-    });
-  });
-
-  child.unref();
+  })();
+  installSubmissionGlobal.__breadboardRecallInstallSubmission = submission;
+  try {
+    await submission;
+  } finally {
+    if (
+      installSubmissionGlobal.__breadboardRecallInstallSubmission === submission
+    ) {
+      installSubmissionGlobal.__breadboardRecallInstallSubmission = undefined;
+    }
+  }
 }

@@ -128,7 +128,7 @@ function archiveFixture() {
   return { root, database, storage: path.join(root, "storage"), workspace };
 }
 
-function importImage(fixture, { title, file, conversationId = 10, userId = 1 }) {
+async function importImage(fixture, { title, file, conversationId = 10, userId = 1 }) {
   fs.writeFileSync(path.join(fixture.workspace, file), ONE_PIXEL_PNG);
   return createImportedArtifact({
     userId,
@@ -144,16 +144,17 @@ function importImage(fixture, { title, file, conversationId = 10, userId = 1 }) 
     filename: file,
     authorizedRoot: fixture.workspace,
     filePath: file,
+    scrubProvenance: false,
     database: fixture.database,
     storageRoot: fixture.storage,
   });
 }
 
-test("the picker offers the user's own pictures, newest first", () => {
+test("the picker offers the user's own pictures, newest first", async () => {
   const fixture = archiveFixture();
   try {
-    const older = importImage(fixture, { title: "Older art", file: "older.png" });
-    const newer = importImage(fixture, {
+    const older = await importImage(fixture, { title: "Older art", file: "older.png" });
+    const newer = await importImage(fixture, {
       title: "Newer art",
       file: "newer.png",
       conversationId: 12,
@@ -188,17 +189,17 @@ test("the picker offers the user's own pictures, newest first", () => {
   }
 });
 
-test("the picker leaves out what a post could never carry", () => {
+test("the picker leaves out what a post could never carry", async () => {
   const fixture = archiveFixture();
   try {
-    const mine = importImage(fixture, { title: "Mine", file: "mine.png" });
-    const theirs = importImage(fixture, {
+    const mine = await importImage(fixture, { title: "Mine", file: "mine.png" });
+    const theirs = await importImage(fixture, {
       title: "Theirs",
       file: "theirs.png",
       conversationId: 16,
       userId: 2,
     });
-    const vanished = importImage(fixture, { title: "Vanished", file: "gone.png" });
+    const vanished = await importImage(fixture, { title: "Vanished", file: "gone.png" });
     createArtifact({
       userId: 1,
       runtimeSessionId: 20,

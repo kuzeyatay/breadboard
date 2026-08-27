@@ -1,25 +1,22 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { runtimeAvailability } from "@/lib/openscience/runtime.ts";
-import { setupStatus } from "@/lib/openscience/setup.ts";
-import { currentService } from "@/lib/openscience/service.ts";
+import { readOpenscienceRuntimeStatus } from "@/lib/openscience/runtime-service.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    await requireUserId();
-    const availability = runtimeAvailability();
-    const service = currentService();
+    const userId = await requireUserId();
+    const { availability, setup, service } = await readOpenscienceRuntimeStatus({ userId });
     return NextResponse.json({
       ok: true,
       available: availability.available,
       reason: availability.reason ?? null,
       missing: availability.missing,
-      setup: setupStatus(),
-      // A service is only reported when one is already running; health never
-      // starts the server, so opening a settings panel cannot cost a boot.
+      setup,
+      // The Runtime adapter may be awake for this check; this reports only the
+      // research server it owns, never the adapter itself.
       service: service
         ? {
             running: true,

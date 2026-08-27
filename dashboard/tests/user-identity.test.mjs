@@ -158,7 +158,7 @@ test("the name reaches every turn, including a chat that keeps nothing", () => {
 
 test("the profile page owns the field, and the greeting owns the fallback", () => {
   const client = source("src/app/profile/profile-client.tsx");
-  assert.match(client, /<NamePanel/);
+  assert.match(client, /<IdentityPanel/);
   assert.match(client, /autoComplete="given-name"/);
   assert.match(client, /autoComplete="family-name"/);
   assert.match(client, /fetch\("\/api\/profile\/identity", \{\s*method: "PATCH"/);
@@ -260,11 +260,14 @@ test("the assistant is told what they do and what they asked to be kept in mind"
 
 test("the profile page carries the about-you fields to the same route", () => {
   const client = source("src/app/profile/profile-client.tsx");
-  assert.match(client, /<AboutYouPanel/);
+  assert.match(client, /<IdentityPanel/);
   assert.match(client, /title="About you"/);
   assert.match(client, /What should breadboard call you\?/);
   assert.match(client, /Interests, values, or preferences to keep in mind/);
-  assert.match(client, /JSON\.stringify\(\{ nickname, occupation, about \}\)/);
+  assert.match(
+    client,
+    /JSON\.stringify\(\{ firstName, lastName, nickname, occupation, about \}\)/,
+  );
 
   // The page is server-rendered from the same row the assistant reads.
   const stats = source("src/lib/profile/stats.ts");

@@ -27,16 +27,8 @@ export async function GET() {
     try {
       const runtime = getAgentRuntime();
       const directory = runtime.managementDirectory(userId);
-      for (const connection of listMcpConnections(userId, true)) {
-        await runtime
-          .addMcpConnection(
-            directory,
-            connection.slug,
-            runtimeMcpConfig(connection),
-            userId,
-          )
-          .catch(() => null);
-      }
+      // Settings polling is observational. A local MCP process starts only
+      // for an explicit test/save or when a real turn selects the connection.
       const discovery = await runtime.listCapabilities(directory, userId);
       statuses = discovery.mcp;
       tools = discovery.tools;

@@ -3,9 +3,12 @@
 
 import { NextResponse } from "next/server";
 import { RouteError } from "../server-auth.ts";
-import { UITarsServiceError } from "./service.ts";
+import { runtimeAuthorityErrorResponse } from "../runtime-v2/authority-errors.ts";
+import { UITarsServiceError } from "./errors.ts";
 
 export function uiTarsErrorResponse(error: unknown): NextResponse {
+  const authorityResponse = runtimeAuthorityErrorResponse(error);
+  if (authorityResponse) return authorityResponse;
   if (error instanceof UITarsServiceError) {
     return NextResponse.json({ ok: false, error: error.code }, { status: error.status });
   }

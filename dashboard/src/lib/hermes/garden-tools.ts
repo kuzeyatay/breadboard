@@ -314,6 +314,7 @@ async function resyncGardenRetrieval(clusterId: number, reason: string): Promise
     const { enqueueGardenSync } = await import("../gbrain/sync.ts");
     enqueueGardenSync(clusterId, reason);
     const { ensureSyncWorkerStarted } = await import("../gbrain/sync-worker.ts");
+    // Bounded one-shot Runtime queue kick; it does not start a Next.js timer.
     ensureSyncWorkerStarted();
   } catch {
     // Retrieval indexing is derived state; the write itself already succeeded.
@@ -358,6 +359,7 @@ async function executeSaveNote(
 
   const { createGardenDocument } = await import("../garden-documents.ts");
   const document = await createGardenDocument({
+    userId: cluster.user_id,
     clusterSlug: cluster.slug,
     title,
     content: stored,
@@ -444,6 +446,7 @@ async function executeStructureTool(
     }
     if (tool === "garden_create_folder") {
       const result = await createGardenFolder({
+        userId: cluster.user_id,
         clusterSlug: cluster.slug,
         folder: args.folder,
       });
@@ -452,6 +455,7 @@ async function executeStructureTool(
     }
     if (tool === "garden_move_page") {
       const result = await moveGardenDocument({
+        userId: cluster.user_id,
         clusterSlug: cluster.slug,
         slug: args.slug ?? args.pageSlug,
         toFolder: args.toFolder ?? args.folder,
@@ -470,6 +474,7 @@ async function executeStructureTool(
     }
     if (tool === "garden_rename_folder") {
       const result = await renameGardenFolder({
+        userId: cluster.user_id,
         clusterSlug: cluster.slug,
         folder: args.folder,
         name: args.name ?? args.newName,
@@ -479,6 +484,7 @@ async function executeStructureTool(
     }
     if (tool === "garden_delete_folder") {
       const result = await deleteGardenFolder({
+        userId: cluster.user_id,
         clusterSlug: cluster.slug,
         clusterId: cluster.id,
         folder: args.folder,

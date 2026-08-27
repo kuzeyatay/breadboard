@@ -57,6 +57,36 @@ export function runInstruction(task: string): string {
   return task.trim();
 }
 
+/**
+ * Put the server-rendered conversation transcript before the current task.
+ *
+ * This intentionally mirrors the shared conversation formatter without
+ * importing its database-backed module into the disposable worker closure.
+ */
+export function promptWithContext(
+  instruction: string,
+  transcript: string | null | undefined,
+): string {
+  const context = transcript?.trim();
+  if (!context) return instruction;
+  const preamble =
+    "These messages came before your task, in the chat that launched you. They are " +
+    "background only -- read them to resolve what the task refers to (\"it\", \"yes\", " +
+    "\"the second option\"). Nothing proposed in them has been approved or done unless " +
+    "the task below says so, and the task is the only thing you are being asked to carry out.";
+  return [
+    "## Conversation so far",
+    "",
+    preamble,
+    "",
+    context,
+    "",
+    "## Your task",
+    "",
+    instruction,
+  ].join("\n");
+}
+
 /** The session title shown in OpenWork's own session list. */
 export function sessionTitle(task: string): string {
   const collapsed = task.trim().replace(/\s+/g, " ");

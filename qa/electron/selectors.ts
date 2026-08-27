@@ -144,8 +144,8 @@ export const SELECTORS = {
     clearSearch: role("button", "Clear search", true),
     edit: role("button", "Edit garden", true),
     export: role("button", "Export garden", true),
-    openView: role("link", "Open garden view", true),
-    openDashboard: role("link", "Open garden dashboard", true),
+    openView: role("link", "Explore", true),
+    openDashboard: role("link", "Workspace", true),
   },
   workspace: {
     documents: role("button", /^Documents(?: \(\d+(?:\/\d+)?\))?$/),
@@ -156,7 +156,6 @@ export const SELECTORS = {
     uploadComplete: text("Upload complete", true),
     cancelUpload: role("button", /^(?:Cancel|Cancel upload)$/),
     closeUpload: role("button", "Close", true),
-    backgroundUpload: role("button", "Close & continue in background", true),
     newChat: role("button", "New chat", true),
     chatComposer: placeholder("Ask about your documents…", true),
     renameChat: role("button", "Rename chat", true),

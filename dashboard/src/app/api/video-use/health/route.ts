@@ -5,10 +5,13 @@ import {
   probeVisualQc,
   videoUseHealth,
 } from "@/lib/video-use/runtime.ts";
-import { subsAiHealth } from "@/lib/subsai/runtime.ts";
+import {
+  SubsAiProbeError,
+  subsAiHealthViaRuntime,
+} from "@/lib/runtime-v2/subsai-probe-job.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 import {
   invalidateSpeechEngine,
-  resolveSpeechEngine,
   scriberrSpeechStatus,
 } from "@/lib/video-use/speech.ts";
 
@@ -24,7 +27,7 @@ export const runtime = "nodejs";
  */
 export async function GET(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     if (new URL(request.url).searchParams.get("refresh") === "1") {
       invalidateHealth();
       invalidateSpeechEngine();
@@ -33,15 +36,19 @@ export async function GET(request: Request) {
     // Starting a Python to see whether numpy imports costs seconds, so it is
     // asked for here — where a person is looking at a settings panel — and
     // never on the path of a run.
-    const visualQcReady = await probeVisualQc();
+    const visualQcReady = await probeVisualQc({
+      userId,
+      gardenId: null,
+      conversationId: null,
+    });
     // Speech comes from Scriberr when it is up and from the subsai venv when it
     // is not; the panel needs both answers to say what is possible and what to
     // do about it.
-    const subtitles = subsAiHealth();
-    const [scriberr, engine] = await Promise.all([
+    const [subtitles, scriberr] = await Promise.all([
+      subsAiHealthViaRuntime({ userId, signal: request.signal }),
       scriberrSpeechStatus(),
-      resolveSpeechEngine(),
     ]);
+    const engine = scriberr.ready ? "scriberr" : subtitles.available ? "subsai" : null;
     return NextResponse.json({
       ok: true,
       health: {
@@ -71,6 +78,11 @@ export async function GET(request: Request) {
       },
     });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
+    if (error instanceof SubsAiProbeError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+    }
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }

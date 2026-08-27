@@ -11,10 +11,10 @@
  * published garden is left completely intact (never a half-old/half-new tree).
  */
 
-import fs from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 export interface AtomicPromotionOptions {
   maxAttempts: number;
@@ -119,7 +119,8 @@ export async function promoteStagingGarden(input: {
           promoted: false,
           destination,
           attempts,
-          reason: "promoted tree failed manifest verification; destination untouched",
+          reason:
+            "promoted tree failed manifest verification; destination untouched",
         };
       }
 
@@ -150,7 +151,8 @@ export async function promoteStagingGarden(input: {
           promoted: false,
           destination,
           attempts,
-          reason: "incoming garden could not merge volatile state; destination untouched",
+          reason:
+            "incoming garden could not merge volatile state; destination untouched",
         };
       }
       if (destExists) fs.renameSync(destination, backup);
@@ -160,13 +162,18 @@ export async function promoteStagingGarden(input: {
         if (destExists) {
           let restoreError = "";
           let restored = false;
-          for (let restoreAttempt = 1; restoreAttempt <= options.maxAttempts; restoreAttempt += 1) {
+          for (
+            let restoreAttempt = 1;
+            restoreAttempt <= options.maxAttempts;
+            restoreAttempt += 1
+          ) {
             try {
               fs.renameSync(backup, destination);
               restored = true;
               break;
             } catch (error) {
-              restoreError = error instanceof Error ? error.message : String(error);
+              restoreError =
+                error instanceof Error ? error.message : String(error);
               if (restoreAttempt < options.maxAttempts) {
                 const delay = Math.min(
                   options.maxDelayMs,
@@ -180,7 +187,11 @@ export async function promoteStagingGarden(input: {
             // Never start another promotion attempt while the old destination
             // is displaced. Doing so could install the incoming tree and lose
             // the caller's only rollback pointer.
-            try { fs.rmSync(incomingContainer, { recursive: true, force: true }); } catch { /* preserve backup */ }
+            try {
+              fs.rmSync(incomingContainer, { recursive: true, force: true });
+            } catch {
+              /* preserve backup */
+            }
             return {
               promoted: false,
               destination,
@@ -189,7 +200,9 @@ export async function promoteStagingGarden(input: {
               reason:
                 `promotion swap failed and the previous garden could not be restored; ` +
                 `the previous tree remains at ${backup}. Swap error: ${
-                  swapError instanceof Error ? swapError.message : String(swapError)
+                  swapError instanceof Error
+                    ? swapError.message
+                    : String(swapError)
                 }. Restore error: ${restoreError}`,
             };
           }
@@ -197,7 +210,11 @@ export async function promoteStagingGarden(input: {
         throw swapError;
       }
 
-      try { fs.rmdirSync(incomingContainer); } catch { /* empty staging container is harmless */ }
+      try {
+        fs.rmdirSync(incomingContainer);
+      } catch {
+        /* empty staging container is harmless */
+      }
 
       // 4. Success: retain the previous version until the swap succeeded, then
       //    clean it up best-effort.
@@ -205,7 +222,12 @@ export async function promoteStagingGarden(input: {
       if (destExists) {
         previousPreservedAt = backup;
         if (!input.retainPreviousUntilCallerCommit) {
-          try { fs.rmSync(backup, { recursive: true, force: true }); previousPreservedAt = undefined; } catch { /* keep backup */ }
+          try {
+            fs.rmSync(backup, { recursive: true, force: true });
+            previousPreservedAt = undefined;
+          } catch {
+            /* keep backup */
+          }
         }
       }
       return {
@@ -218,9 +240,16 @@ export async function promoteStagingGarden(input: {
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
       // Clean the incoming temp dir before retrying.
-      try { fs.rmSync(incomingContainer, { recursive: true, force: true }); } catch { /* ignore */ }
+      try {
+        fs.rmSync(incomingContainer, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
       if (!isLockError(error) || attempt === options.maxAttempts) break;
-      const delay = Math.min(options.maxDelayMs, options.initialDelayMs * 2 ** (attempt - 1));
+      const delay = Math.min(
+        options.maxDelayMs,
+        options.initialDelayMs * 2 ** (attempt - 1),
+      );
       await sleep(delay);
     }
   }
@@ -240,12 +269,16 @@ export async function promoteStagingGarden(input: {
     attempts,
     previousPreservedAt,
     reason: destinationRestored
-      ? "promotion failed after " + attempts +
-        " attempt(s); previous published garden restored. Last error: " + lastError
-      : "promotion failed after " + attempts +
+      ? "promotion failed after " +
+        attempts +
+        " attempt(s); previous published garden restored. Last error: " +
+        lastError
+      : "promotion failed after " +
+        attempts +
         " attempt(s); destination recovery is required" +
         (previousPreservedAt ? " from " + previousPreservedAt : "") +
-        ". Last error: " + lastError,
+        ". Last error: " +
+        lastError,
   };
 }
 
@@ -261,6 +294,10 @@ export interface GardenLearnLock {
   heartbeatAt: string;
   /** Fencing token for this particular ownership period. */
   leaseId?: string;
+  /** Optional process-bound extension used by a blocked finite mutation worker. */
+  processId?: number;
+  hostname?: string;
+  processBoundExpiresAt?: string;
 }
 
 const LEGACY_LOCK_REL = ".breadboard/learn-build.lock.json";
@@ -269,6 +306,7 @@ const STABLE_LOCK_SUFFIX = ".learn-build.lock.json";
 export const LOCK_STALE_MS = 5 * 60 * 1000;
 /** Auto-renew well before the stale boundary, leaving room for transient I/O. */
 export const DEFAULT_LOCK_HEARTBEAT_INTERVAL_MS = Math.floor(LOCK_STALE_MS / 3);
+export const MAX_PROCESS_BOUND_STALE_MS = 24 * 60 * 60 * 1000;
 
 const MUTATION_GUARD_SUFFIX = ".guard";
 const MUTATION_GUARD_RECORD = "owner.json";
@@ -280,6 +318,12 @@ interface LockOwner {
   gardenSlug: string;
   jobId: string;
   buildId: string;
+}
+
+interface ProcessBoundLockOwner {
+  processId: number;
+  hostname: string;
+  expiresAt: string;
 }
 
 interface LockMutationGuard {
@@ -303,6 +347,17 @@ export interface GardenLearnLeaseOptions {
   resumeLeaseId?: string;
   /** Called once if a heartbeat proves that ownership has been lost. */
   onLeaseLost?: (conflict: GardenLearnLock | null) => void;
+  /**
+   * Keep a live local owner authoritative beyond the heartbeat stale window.
+   * This is reserved for finite workers whose event loop can be synchronously
+   * blocked; the absolute expiry keeps abandoned PID-reuse cases bounded.
+   */
+  processBoundStaleMs?: number;
+  /**
+   * Refuse to replace an expired/dead process-bound owner. Ordinary Garden
+   * writers use this so only journal recovery can cross an ingestion crash.
+   */
+  refuseStaleProcessBoundTakeover?: boolean;
 }
 
 export type GardenLearnLeaseOwnership = "owned" | "lost" | "uncertain";
@@ -336,7 +391,10 @@ function lockPath(gardenDir: string): string {
   const garden = path.resolve(gardenDir);
   // Publication renames the entire garden directory. Keeping the canonical
   // lease beside it ensures ownership remains visible throughout that swap.
-  return path.join(path.dirname(garden), `.${path.basename(garden)}${STABLE_LOCK_SUFFIX}`);
+  return path.join(
+    path.dirname(garden),
+    `.${path.basename(garden)}${STABLE_LOCK_SUFFIX}`,
+  );
 }
 
 function legacyLockPath(gardenDir: string): string {
@@ -356,7 +414,15 @@ function isGardenLearnLock(value: unknown): value is GardenLearnLock {
     typeof lock.buildId === "string" &&
     typeof lock.acquiredAt === "string" &&
     typeof lock.heartbeatAt === "string" &&
-    (lock.leaseId === undefined || typeof lock.leaseId === "string")
+    (lock.leaseId === undefined || typeof lock.leaseId === "string") &&
+    ((lock.processId === undefined &&
+      lock.hostname === undefined &&
+      lock.processBoundExpiresAt === undefined) ||
+      (Number.isSafeInteger(lock.processId) &&
+        Number(lock.processId) > 0 &&
+        typeof lock.hostname === "string" &&
+        typeof lock.processBoundExpiresAt === "string" &&
+        Number.isFinite(Date.parse(lock.processBoundExpiresAt))))
   );
 }
 
@@ -390,7 +456,9 @@ function readLockFile(filePath: string): GardenLearnLock | null {
 }
 
 export function readGardenLearnLock(gardenDir: string): GardenLearnLock | null {
-  return readLockFile(lockPath(gardenDir)) ?? readLockFile(legacyLockPath(gardenDir));
+  return (
+    readLockFile(lockPath(gardenDir)) ?? readLockFile(legacyLockPath(gardenDir))
+  );
 }
 
 function readGardenLearnLockState(gardenDir: string): GardenLearnLockRead {
@@ -406,7 +474,10 @@ function readGardenLearnLockState(gardenDir: string): GardenLearnLockRead {
 function readMutationGuard(gardenDir: string): LockMutationGuard | null {
   try {
     const parsed = JSON.parse(
-      fs.readFileSync(path.join(mutationGuardPath(gardenDir), MUTATION_GUARD_RECORD), "utf-8"),
+      fs.readFileSync(
+        path.join(mutationGuardPath(gardenDir), MUTATION_GUARD_RECORD),
+        "utf-8",
+      ),
     ) as Partial<LockMutationGuard>;
     if (
       typeof parsed.token !== "string" ||
@@ -417,7 +488,8 @@ function readMutationGuard(gardenDir: string): LockMutationGuard | null {
       typeof parsed.owner.gardenSlug !== "string" ||
       typeof parsed.owner.jobId !== "string" ||
       typeof parsed.owner.buildId !== "string"
-    ) return null;
+    )
+      return null;
     return parsed as LockMutationGuard;
   } catch {
     return null;
@@ -425,7 +497,9 @@ function readMutationGuard(gardenDir: string): LockMutationGuard | null {
 }
 
 function sleepSync(ms: number): void {
-  const signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  const signal = new Int32Array(
+    new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
+  );
   Atomics.wait(signal, 0, 0, ms);
 }
 
@@ -453,7 +527,8 @@ function recoverStaleMutationGuard(gardenDir: string, now: number): boolean {
     existing?.hostname === os.hostname() &&
     Number.isInteger(existing.processId) &&
     localProcessIsAlive(existing.processId)
-  ) return false;
+  )
+    return false;
   const abandoned = `${guardDir}.abandoned-${process.pid}-${crypto.randomUUID()}`;
   try {
     fs.renameSync(guardDir, abandoned);
@@ -475,7 +550,10 @@ function localProcessIsAlive(processId: number): boolean {
 }
 
 /** Serialize every lock read/check/write transition with an atomic mkdir. */
-function acquireMutationGuard(gardenDir: string, owner: LockOwner): LockMutationGuard | null {
+function acquireMutationGuard(
+  gardenDir: string,
+  owner: LockOwner,
+): LockMutationGuard | null {
   const guardDir = mutationGuardPath(gardenDir);
   fs.mkdirSync(path.dirname(guardDir), { recursive: true });
   const deadline = Date.now() + MUTATION_GUARD_WAIT_MS;
@@ -501,7 +579,8 @@ function acquireMutationGuard(gardenDir: string, owner: LockOwner): LockMutation
       }
       return guard;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") throw error;
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST")
+        throw error;
     }
 
     if (recoverStaleMutationGuard(gardenDir, Date.now())) continue;
@@ -529,7 +608,9 @@ function writeGardenLearnLock(
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   const temporary = `${abs}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify(lock, null, 2)}\n`, { flag: "wx" });
+    fs.writeFileSync(temporary, `${JSON.stringify(lock, null, 2)}\n`, {
+      flag: "wx",
+    });
     // Readers observe either the old complete JSON or the new complete JSON.
     if (!ownsMutationGuard(gardenDir, mutationGuardToken)) {
       throw new Error("Learn lock transition ownership was lost before commit");
@@ -543,11 +624,31 @@ function writeGardenLearnLock(
       // Stable ownership is already committed and always takes precedence.
     }
   } finally {
-    try { fs.rmSync(temporary, { force: true }); } catch { /* best effort */ }
+    try {
+      fs.rmSync(temporary, { force: true });
+    } catch {
+      /* best effort */
+    }
   }
 }
 
 function lockIsFresh(lock: GardenLearnLock, now: number): boolean {
+  const processBoundExpiry = Date.parse(lock.processBoundExpiresAt ?? "");
+  const localProcessBoundOwner = Boolean(
+    lock.hostname === os.hostname() &&
+      Number.isSafeInteger(lock.processId) &&
+      Number(lock.processId) > 0 &&
+      Number.isFinite(processBoundExpiry),
+  );
+  if (localProcessBoundOwner) {
+    // A process-bound lease is specifically for synchronously blocked local
+    // workers. Process death is stronger evidence than a recently persisted
+    // heartbeat, so crash recovery does not wait out the ordinary five-minute
+    // stale window. Its absolute expiry bounds PID reuse and leaked live owners.
+    return (
+      now < processBoundExpiry && localProcessIsAlive(Number(lock.processId))
+    );
+  }
   const heartbeat = Date.parse(lock.heartbeatAt);
   return Number.isFinite(heartbeat) && now - heartbeat < LOCK_STALE_MS;
 }
@@ -560,7 +661,11 @@ function sameLockOwner(lock: GardenLearnLock, owner: LockOwner): boolean {
   );
 }
 
-function transientConflict(gardenDir: string, owner: LockOwner, now: number): GardenLearnLock {
+function transientConflict(
+  gardenDir: string,
+  owner: LockOwner,
+  now: number,
+): GardenLearnLock {
   const existing = readGardenLearnLock(gardenDir);
   if (existing) return existing;
   const guard = readMutationGuard(gardenDir);
@@ -613,9 +718,15 @@ function acquireGardenLearnLockInternal(
   owner: LockOwner,
   now: number,
   expectedLeaseId: string | undefined,
+  processBoundOwner?: ProcessBoundLockOwner,
+  refuseStaleProcessBoundTakeover = false,
 ): GardenLearnLockResult {
   const guard = acquireMutationGuard(gardenDir, owner);
-  if (!guard) return { acquired: false, conflict: transientConflict(gardenDir, owner, now) };
+  if (!guard)
+    return {
+      acquired: false,
+      conflict: transientConflict(gardenDir, owner, now),
+    };
   try {
     let existing = readLockFile(lockPath(gardenDir));
     if (!existing) {
@@ -636,38 +747,77 @@ function acquireGardenLearnLockInternal(
           guard.token,
           legacyLockPath(gardenDir),
         );
-        if (unreadableLegacy) return { acquired: false, conflict: unreadableLegacy };
+        if (unreadableLegacy)
+          return { acquired: false, conflict: unreadableLegacy };
       }
     }
     const matchingOwner = existing ? sameLockOwner(existing, owner) : false;
     const authenticatedResume = Boolean(
       existing?.leaseId &&
-      matchingOwner &&
-      expectedLeaseId === existing.leaseId,
+        matchingOwner &&
+        expectedLeaseId === existing.leaseId,
     );
-    const legacyMigration = Boolean(existing && matchingOwner && !existing.leaseId);
+    const legacyMigration = Boolean(
+      existing && matchingOwner && !existing.leaseId,
+    );
+    const staleProcessBoundOwner = Boolean(
+      existing?.processId !== undefined && !lockIsFresh(existing, now),
+    );
 
     if (expectedLeaseId !== undefined && !authenticatedResume) {
       // A resume request is capability-authenticated. Never silently turn a
       // bad token into a new acquisition, even when the observed lock is old.
-      return { acquired: false, conflict: existing ?? transientConflict(gardenDir, owner, now) };
+      return {
+        acquired: false,
+        conflict: existing ?? transientConflict(gardenDir, owner, now),
+      };
     }
-    if (existing && !authenticatedResume && !legacyMigration && lockIsFresh(existing, now)) {
+    if (
+      existing &&
+      staleProcessBoundOwner &&
+      refuseStaleProcessBoundTakeover &&
+      !authenticatedResume &&
+      !legacyMigration
+    ) {
+      return { acquired: false, conflict: existing };
+    }
+    if (
+      existing &&
+      !authenticatedResume &&
+      !legacyMigration &&
+      lockIsFresh(existing, now)
+    ) {
       // Fresh leases are deliberately non-reentrant. Job/build IDs are often
       // deterministic and can be repeated by concurrent recovery processes.
       return { acquired: false, conflict: existing };
     }
 
-    const continuingLease = authenticatedResume || legacyMigration ? existing : null;
+    const continuingLease =
+      authenticatedResume || legacyMigration ? existing : null;
     const lock: GardenLearnLock = {
       gardenSlug: owner.gardenSlug,
       jobId: owner.jobId,
       buildId: owner.buildId,
-      acquiredAt: continuingLease ? continuingLease.acquiredAt : new Date(now).toISOString(),
+      acquiredAt: continuingLease
+        ? continuingLease.acquiredAt
+        : new Date(now).toISOString(),
       heartbeatAt: new Date(now).toISOString(),
       // A stale normal acquisition is a new ownership period, even if its
       // public owner fields happen to match the previous job.
       leaseId: continuingLease?.leaseId ?? crypto.randomUUID(),
+      ...(continuingLease?.processId !== undefined
+        ? {
+            processId: continuingLease.processId,
+            hostname: continuingLease.hostname,
+            processBoundExpiresAt: continuingLease.processBoundExpiresAt,
+          }
+        : processBoundOwner
+          ? {
+              processId: processBoundOwner.processId,
+              hostname: processBoundOwner.hostname,
+              processBoundExpiresAt: processBoundOwner.expiresAt,
+            }
+          : {}),
     };
     writeGardenLearnLock(gardenDir, lock, guard.token);
     return { acquired: true, lock };
@@ -691,7 +841,8 @@ export function resumeGardenLearnLock(
   leaseId: string,
   now: number = Date.now(),
 ): GardenLearnLockResult {
-  if (!leaseId) throw new TypeError("leaseId is required to resume a Learn lock");
+  if (!leaseId)
+    throw new TypeError("leaseId is required to resume a Learn lock");
   return acquireGardenLearnLockInternal(gardenDir, owner, now, leaseId);
 }
 
@@ -734,7 +885,10 @@ export function heartbeatGardenLearnLock(
   jobId: string,
   now: number = Date.now(),
 ): boolean {
-  return heartbeatFencedGardenLearnLock(gardenDir, jobId, undefined, now).status === "renewed";
+  return (
+    heartbeatFencedGardenLearnLock(gardenDir, jobId, undefined, now).status ===
+    "renewed"
+  );
 }
 
 function releaseFencedGardenLearnLock(
@@ -751,7 +905,8 @@ function releaseFencedGardenLearnLock(
   try {
     const existing = readGardenLearnLock(gardenDir);
     if (!existing || existing.jobId !== jobId) return false;
-    if (expectedLeaseId !== undefined && existing.leaseId !== expectedLeaseId) return false;
+    if (expectedLeaseId !== undefined && existing.leaseId !== expectedLeaseId)
+      return false;
     if (!ownsMutationGuard(gardenDir, guard.token)) return false;
     try {
       fs.rmSync(legacyLockPath(gardenDir), { recursive: true, force: true });
@@ -779,19 +934,53 @@ export function acquireGardenLearnLease(
   owner: LockOwner,
   options: GardenLearnLeaseOptions = {},
 ): GardenLearnLeaseResult {
-  const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_LOCK_HEARTBEAT_INTERVAL_MS;
+  const heartbeatIntervalMs =
+    options.heartbeatIntervalMs ?? DEFAULT_LOCK_HEARTBEAT_INTERVAL_MS;
   if (
     !Number.isFinite(heartbeatIntervalMs) ||
     heartbeatIntervalMs <= 0 ||
     heartbeatIntervalMs >= LOCK_STALE_MS
   ) {
-    throw new RangeError(`heartbeatIntervalMs must be greater than 0 and less than ${LOCK_STALE_MS}`);
+    throw new RangeError(
+      `heartbeatIntervalMs must be greater than 0 and less than ${LOCK_STALE_MS}`,
+    );
   }
   const now = options.now ?? Date.now;
-  const acquired = options.resumeLeaseId !== undefined
-    ? resumeGardenLearnLock(gardenDir, owner, options.resumeLeaseId, now())
-    : acquireGardenLearnLock(gardenDir, owner, now());
-  if ("conflict" in acquired) return { acquired: false, conflict: acquired.conflict };
+  const acquiredAt = now();
+  if (
+    options.processBoundStaleMs !== undefined &&
+    (!Number.isFinite(options.processBoundStaleMs) ||
+      options.processBoundStaleMs <= LOCK_STALE_MS ||
+      options.processBoundStaleMs > MAX_PROCESS_BOUND_STALE_MS)
+  ) {
+    throw new RangeError(
+      `processBoundStaleMs must be greater than ${LOCK_STALE_MS} and at most ${MAX_PROCESS_BOUND_STALE_MS}`,
+    );
+  }
+  const processBoundOwner =
+    options.processBoundStaleMs === undefined
+      ? undefined
+      : {
+          processId: process.pid,
+          hostname: os.hostname(),
+          expiresAt: new Date(
+            acquiredAt + options.processBoundStaleMs,
+          ).toISOString(),
+        };
+  const acquired = acquireGardenLearnLockInternal(
+    gardenDir,
+    owner,
+    acquiredAt,
+    options.resumeLeaseId,
+    processBoundOwner,
+    // A process-bound owner represents a journaled mutation. Even after that
+    // process dies or its absolute lease expires, admitting an ordinary Learn
+    // or visualization writer before journal recovery could let a later
+    // rollback clobber the new write. Recovery callers must opt in explicitly.
+    options.refuseStaleProcessBoundTakeover ?? true,
+  );
+  if ("conflict" in acquired)
+    return { acquired: false, conflict: acquired.conflict };
 
   let lock = acquired.lock;
   let lost = false;
@@ -806,13 +995,33 @@ export function acquireGardenLearnLease(
   const reportLoss = () => {
     if (lossReported) return;
     lossReported = true;
-    try { options.onLeaseLost?.(readGardenLearnLock(gardenDir)); } catch { /* observer only */ }
+    try {
+      options.onLeaseLost?.(readGardenLearnLock(gardenDir));
+    } catch {
+      /* observer only */
+    }
   };
   const confirmOwnership = (): GardenLearnLeaseOwnership => {
     if (released || lost) return "lost";
+    const observedNow = now();
+    const processBoundExpiry = Date.parse(lock.processBoundExpiresAt ?? "");
+    if (
+      Number.isFinite(processBoundExpiry) &&
+      observedNow >= processBoundExpiry
+    ) {
+      lost = true;
+      stopTimer();
+      reportLoss();
+      return "lost";
+    }
     let result: ReturnType<typeof heartbeatFencedGardenLearnLock>;
     try {
-      result = heartbeatFencedGardenLearnLock(gardenDir, lock.jobId, lock.leaseId, now());
+      result = heartbeatFencedGardenLearnLock(
+        gardenDir,
+        lock.jobId,
+        lock.leaseId,
+        observedNow,
+      );
     } catch {
       // A transient filesystem failure must not crash the process or surrender
       // ownership. The next interval (and phase-boundary heartbeat) can retry.
@@ -831,8 +1040,12 @@ export function acquireGardenLearnLease(
   const heartbeat = (): boolean => confirmOwnership() === "owned";
 
   const lease: GardenLearnLease = {
-    get lock() { return lock; },
-    get lost() { return lost; },
+    get lock() {
+      return lock;
+    },
+    get lost() {
+      return lost;
+    },
     confirmOwnership,
     heartbeat,
     release(): boolean {

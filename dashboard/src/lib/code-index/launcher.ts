@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import path from "node:path";
+import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 /**
  * Locating the graft CLI (`@nanonets/graft`).
@@ -69,7 +69,7 @@ export function resolveGraftLauncher(
     const resolved = path.resolve(candidate);
     if (seen.has(resolved)) continue;
     seen.add(resolved);
-    if (existsSync(resolved)) {
+    if (externalRuntimePathExists(resolved)) {
       return {
         command: process.execPath,
         args: [resolved],

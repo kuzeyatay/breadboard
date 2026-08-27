@@ -50,7 +50,7 @@ test("QA dev mode uses repo programs and isolates every mutable path", () => {
   assert.equal(paths.runtimeRoot, path.join(fakeRepo, "desktop", "build-resources"));
   assert.equal(
     paths.dashboardServerDir,
-    path.join(userData, "Data", "dashboard-workspace"),
+    path.join(fakeRepo, "dashboard"),
   );
   assert.equal(paths.hermesAppDir, path.join(fakeRepo, "hermes-agent"));
   for (const dir of mutableDirectories(paths)) {

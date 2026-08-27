@@ -1348,7 +1348,7 @@ async function generateModelTool(
     projectId: project.id,
     revision: outcome.revision,
     status: outcome.status,
-    validationPassed: true,
+    validationPassed: errors.length === 0,
     measurements: outcome.measurements,
     issues: (outcome.issues ?? []).filter((issue) => issue.severity !== "info"),
     attemptsRemaining: context.attemptsRemaining,

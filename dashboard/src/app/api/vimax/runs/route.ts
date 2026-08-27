@@ -5,7 +5,7 @@ import { ensureConversationForLegacyChatSession } from "@/lib/conversations/stor
 import { parseVimaxRequest } from "@/lib/vimax/identity.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { vimaxDefaults } from "@/lib/agent-settings/defaults.ts";
-import { startRun } from "@/lib/vimax/run-manager.ts";
+import { startRun } from "@/lib/vimax/runtime-run-manager.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 

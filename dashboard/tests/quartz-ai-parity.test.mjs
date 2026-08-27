@@ -115,7 +115,14 @@ test("quartz panel markup gains terminal-style controls", () => {
   assert.match(component, /breadboard-ai-effort/);
   assert.match(component, />Assistant<\/span>/);
   assert.doesNotMatch(component, /breadboard-ai-selection-menu/);
-  assert.match(layout, /afterBody: \[Component\.Highlighter\(\)\]/);
+  assert.match(
+    layout,
+    /afterBody: \[Component\.Highlighter\(\), Component\.BreadboardAI\(\)\]/,
+  );
+  assert.match(component, /class="breadboard-ai"\s+hidden/);
+  const embeddedGuard = inline.indexOf("if (window.parent !== window) return");
+  const topLevelReveal = inline.indexOf("root.hidden = false");
+  assert.ok(embeddedGuard >= 0 && topLevelReveal > embeddedGuard);
 });
 
 test("quartz inline script wires the terminal capability set", () => {

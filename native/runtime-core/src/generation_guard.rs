@@ -256,6 +256,10 @@ impl CurrentGenerationMembership {
         self.scope == *scope
     }
 
+    pub(crate) fn authority_scope(&self) -> RuntimeGenerationScope {
+        self.scope.clone()
+    }
+
     /// Read-only verification that an exact owned child handle already belongs
     /// to this generation Job Object. This neither assigns the process nor
     /// accepts a caller-supplied PID, so tests and the native host can prove

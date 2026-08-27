@@ -20,7 +20,6 @@ import {
 import { authorizeRuntimeReference } from "@/lib/hermes/session-service.ts";
 import {
   listMcpConnections,
-  runtimeMcpConfig,
 } from "@/lib/hermes/mcp-connections.ts";
 import { decideCapabilityMode } from "@/lib/hermes/capability-policy.ts";
 
@@ -78,16 +77,8 @@ export async function GET(request: Request) {
           : getAgentRuntime();
         const directory =
           session?.activeDirectory ?? runtime.managementDirectory(userId);
-        for (const connection of connections.filter((candidate) => candidate.enabled)) {
-          await runtime
-            .addMcpConnection(
-              directory,
-              connection.slug,
-              runtimeMcpConfig(connection),
-              userId,
-            )
-            .catch(() => null);
-        }
+        // Opening the command palette is status inspection, not process
+        // authority. A selected connection is started when the turn begins.
         const discovery = await runtime.listCapabilities(directory, userId);
         for (const item of connectionItems) {
           const status = discovery.mcp[item.slug];

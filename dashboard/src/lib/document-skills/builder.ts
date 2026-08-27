@@ -15,7 +15,10 @@
 import type OpenAI from "openai";
 import { withCouncil, type CouncilMode } from "../council.ts";
 import { createChatmockClient, DEFAULT_MODEL } from "../knowledge.ts";
-import { segmentDocument } from "./bridge.ts";
+import {
+  segmentDocumentSkillViaRuntime,
+  type RuntimeV2OfficeScope,
+} from "../office/runtime-v2.ts";
 import {
   chapterBudget,
   chapterHeading,
@@ -53,6 +56,7 @@ export interface BuildSkillInput {
   /** Best available title; refined by the analysis step. */
   title: string;
   origin: DocumentSkillOrigin;
+  runtimeScope: RuntimeV2OfficeScope;
   baseURL?: string;
   bookType?: BookType;
   depth?: SkillDepth;
@@ -318,7 +322,10 @@ export async function buildDocumentSkill(input: BuildSkillInput): Promise<BuildS
   const progress = input.onProgress ?? (() => {});
 
   progress({ phase: "segmenting", completed: 0, total: 1, message: "Detecting the document's structure" });
-  const structure = await segmentDocument(text);
+  const structure = await segmentDocumentSkillViaRuntime(input.runtimeScope, text, {
+    idempotencySeed: `${contentHash}:segment`,
+    signal: input.signal,
+  });
   const chapters = planChapters(text, mergeToLimit(structure.chapters));
 
   const record =
@@ -514,7 +521,7 @@ export async function buildDocumentSkill(input: BuildSkillInput): Promise<BuildS
     writeSkillFile(record.slug, "SKILL.md", skillMarkdown);
 
     progress({ phase: "validating", completed: 0, total: 1, message: "Validating the generated skill" });
-    const validation = await validateGeneratedSkill(record.slug);
+    const validation = await validateGeneratedSkill(record.slug, input.runtimeScope, input.signal);
     warnings.push(...validation.warnings);
 
     markSkillReady(record.id, chapters.length);

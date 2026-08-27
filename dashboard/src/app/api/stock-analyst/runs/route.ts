@@ -5,12 +5,13 @@ import { findConfigurableAgent } from "@/lib/agent-settings/catalog.ts";
 import { composeAgentMemoryContext } from "@/lib/conversations/agent-memory-context.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { STOCK_ANALYST_AGENT_ID } from "@/lib/stock-analyst/identity.ts";
-import { startRun } from "@/lib/stock-analyst/run-manager.ts";
+import { startRun } from "@/lib/stock-analyst/runtime-run-manager.ts";
 import {
   DEFAULT_STOCK_ANALYST_SETTINGS,
   stockAnalystSettingsFrom,
 } from "@/lib/stock-analyst/settings.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -53,8 +54,13 @@ export async function POST(request: Request) {
     });
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const clientMessageId =
+      typeof body.clientMessageId === "string" ? body.clientMessageId.trim() : "";
+    const run = await startRun({
       userId,
+      ...(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(clientMessageId)
+        ? { requestId: clientMessageId }
+        : {}),
       task,
       model,
       baseUrl: baseURL,
@@ -66,15 +72,15 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
     }
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
-    return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "runtime_error" },
-      { status: 502 },
-    );
+    // Filesystem/upstream errors may contain private paths or response detail.
+    return NextResponse.json({ ok: false, error: "runtime_error" }, { status: 502 });
   }
 }

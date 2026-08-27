@@ -14,6 +14,10 @@ const learnSource = fs.readFileSync(
   new URL("../src/lib/learn.ts", import.meta.url),
   "utf8",
 );
+const learnStatusProjectionSource = fs.readFileSync(
+  new URL("../src/lib/learn-status-projection.ts", import.meta.url),
+  "utf8",
+);
 const workspaceSource = fs.readFileSync(
   new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
   "utf8",
@@ -464,12 +468,12 @@ describe("Learn syllabus API surface", () => {
   test("the status snapshot reports the syllabus and drops a deleted one", () => {
     assert.match(learnSource, /syllabusSourceId: string \| null;/);
     assert.match(
-      learnSource,
-      /const latestJobBoundMapId =[\s\S]*?latestJob\?\.proposedLearningMapId \?\? latestJob\?\.confirmedLearningMapId[\s\S]*?const persistedSelection = persistedLearnSelection<SyllabusCoverage>\(\s*latestJob,\s*latestJob \? latestJobBoundMap : contractProposed,\s*confirmedMap,/,
+      learnStatusProjectionSource,
+      /const latestJobBoundMapId =[\s\S]*?latestJob\?\.proposedLearningMapId \?\? latestJob\?\.confirmedLearningMapId[\s\S]*?const selection = persistedLearnSelection\(\s*latestJob,\s*latestJob \? latestJobBoundMap : contractProposed,\s*confirmedMap,/,
     );
     assert.match(
-      learnSource,
-      /const persistedCoverage = persistedSelection\?\.syllabusCoverage \?\? null/,
+      learnStatusProjectionSource,
+      /const coverage = selection\?\.syllabusCoverage \?\? null;[\s\S]*?const syllabusCoverage =\s*syllabusSourceId && coverage/,
     );
   });
 });

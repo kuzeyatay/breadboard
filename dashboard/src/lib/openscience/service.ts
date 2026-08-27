@@ -13,6 +13,7 @@
 // so this is the difference between a 20-second and a 2-second second run.
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import {
@@ -22,8 +23,9 @@ import {
   trustStatus,
   type Connection,
 } from "./client.ts";
-import { declaredModels, writeConfig } from "./config.ts";
-import { configRoot, dataRoot, resolveLauncher, workspaceRoot } from "./runtime.ts";
+import { readConfig } from "./config.ts";
+import { resolveLauncher } from "./runtime.ts";
+import { configRoot, dataRoot, workspaceRoot } from "./state-paths.ts";
 import { ensureWorkspace } from "./setup.ts";
 
 export interface OpenscienceService {
@@ -37,8 +39,7 @@ export interface OpenscienceService {
 
 interface ServiceState extends OpenscienceService {
   child: ChildProcess;
-  chatmockBaseUrl: string;
-  apiKey: string;
+  configFingerprint: string;
 }
 
 const runtimeGlobal = globalThis as typeof globalThis & {
@@ -49,21 +50,17 @@ const runtimeGlobal = globalThis as typeof globalThis & {
 const READY_TIMEOUT_MS = 180_000;
 const READY_POLL_MS = 500;
 
-export interface StartOptions {
-  /** ChatMock's OpenAI-compatible base URL, e.g. `http://127.0.0.1:8765/v1`. */
-  baseUrl: string;
-  apiKey: string;
-  /** The model this run wants, so a config without it forces a restart. */
-  model: string;
-}
-
-/** Two services differ only in what the written config would say. */
-function sameShape(state: ServiceState, options: StartOptions): boolean {
-  return (
-    state.chatmockBaseUrl === options.baseUrl &&
-    state.apiKey === options.apiKey &&
-    state.models.includes(options.model)
-  );
+function preparedConfiguration(): { fingerprint: string; models: string[] } {
+  const config = readConfig();
+  const provider = (config?.provider as Record<string, unknown> | undefined)?.chatmock;
+  const models = (provider as Record<string, unknown> | undefined)?.models;
+  if (!config || !models || typeof models !== "object" || !Object.keys(models).length) {
+    throw new Error("The trusted OpenScience service profile has not been prepared.");
+  }
+  return {
+    fingerprint: createHash("sha256").update(JSON.stringify(config)).digest("hex"),
+    models: Object.keys(models),
+  };
 }
 
 function freePort(): Promise<number> {
@@ -148,7 +145,7 @@ async function ensureTrust(connection: Connection): Promise<string> {
   return project.id;
 }
 
-async function start(options: StartOptions): Promise<OpenscienceService> {
+async function start(configuration: { fingerprint: string; models: string[] }): Promise<OpenscienceService> {
   const launcher = resolveLauncher();
   if (!launcher) {
     throw new Error(
@@ -159,11 +156,6 @@ async function start(options: StartOptions): Promise<OpenscienceService> {
   const workspace = ensureWorkspace();
   fs.mkdirSync(configRoot(), { recursive: true });
   fs.mkdirSync(dataRoot(), { recursive: true });
-  writeConfig({
-    baseUrl: options.baseUrl,
-    apiKey: options.apiKey,
-    models: [options.model, ...declaredModels()],
-  });
 
   const port = await freePort();
   const child = spawn(launcher.command, [...launcher.baseArgs, "serve", "--port", String(port)], {
@@ -201,11 +193,10 @@ async function start(options: StartOptions): Promise<OpenscienceService> {
       baseUrl: connection.baseUrl,
       projectId,
       workspacePath: workspace,
-      models: declaredModels(),
+      models: configuration.models,
       startedAt: Date.now(),
       child,
-      chatmockBaseUrl: options.baseUrl,
-      apiKey: options.apiKey,
+      configFingerprint: configuration.fingerprint,
     };
     runtimeGlobal.__breadboardOpenscienceService = state;
     return currentService() as OpenscienceService;
@@ -219,17 +210,22 @@ async function start(options: StartOptions): Promise<OpenscienceService> {
  * The running service, started if there is none and restarted when the config
  * it booted with no longer matches what this run needs.
  */
-export function ensureService(options: StartOptions): Promise<OpenscienceService> {
+export async function ensureService(): Promise<OpenscienceService> {
+  const configuration = preparedConfiguration();
   const existing = runtimeGlobal.__breadboardOpenscienceService;
-  if (existing && sameShape(existing, options)) {
+  if (existing && existing.configFingerprint === configuration.fingerprint) {
     const service = currentService();
-    if (service) return Promise.resolve(service);
+    if (service) return service;
   }
   if (runtimeGlobal.__breadboardOpenscienceStarting) {
-    return runtimeGlobal.__breadboardOpenscienceStarting;
+    // A second authenticated facade may add another declared model while the
+    // first profile is still booting. Re-check the durable fingerprint after
+    // that boot settles instead of handing the second worker a stale service.
+    await runtimeGlobal.__breadboardOpenscienceStarting;
+    return ensureService();
   }
   if (existing) stopService();
-  const request = start(options).finally(() => {
+  const request = start(configuration).finally(() => {
     runtimeGlobal.__breadboardOpenscienceStarting = null;
   });
   runtimeGlobal.__breadboardOpenscienceStarting = request;

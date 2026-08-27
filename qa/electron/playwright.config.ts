@@ -29,6 +29,13 @@ export default defineConfig({
       testMatch: /critical\/.*\.spec\.ts/,
     },
     {
+      // A short, isolated development-only proof that the mandatory on-demand
+      // GBrain service cold-starts through the real authenticated product path.
+      name: "gbrain-hot",
+      testMatch: /gbrain-hot\/.*\.spec\.ts/,
+      timeout: 15 * 60_000,
+    },
+    {
       name: "exploratory",
       testMatch: /exploratory\/.*\.spec\.ts/,
     },
@@ -39,6 +46,24 @@ export default defineConfig({
     {
       name: "packaged",
       testMatch: /packaged\/.*\.spec\.ts/,
+    },
+    {
+      // One sealed package, one production-required profile, and the complete
+      // frozen inventory. The observation contract supplies the stricter
+      // twelve-hour freshness ceiling; the spec stops at eleven hours so an
+      // overlong run cannot publish stale evidence.
+      name: "packaged-parity",
+      testMatch: /packaged-parity\/.*\.spec\.ts/,
+      timeout: 11 * 60 * 60_000,
+    },
+    {
+      // Completion-quality memory evidence. This project owns its exact 10x
+      // sequential and 5x mixed workload; Playwright repetition is forbidden.
+      name: "runtime-v2-burn-in",
+      testMatch: /runtime-v2-burn-in\/.*\.spec\.ts/,
+      // The receipt requires six measured hours. The outer memory runner owns
+      // the stricter eight-hour hard stop; this margin lets it collect cleanup.
+      timeout: 9 * 60 * 60_000,
     },
     {
       // Harness self-tests: they exercise the QA layer itself, never Breadboard.

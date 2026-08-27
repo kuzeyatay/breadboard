@@ -28,14 +28,14 @@ export function OPTIONS(): Response {
 }
 
 async function getContext(clusterSlug: unknown): Promise<
-  { error: NextResponse } | { clusterSlug: string; clusterId: number }
+  { error: NextResponse } | { clusterSlug: string; clusterId: number; userId: number }
 > {
   if (typeof clusterSlug !== 'string' || !clusterSlug.trim()) {
     return { error: json({ error: 'clusterSlug is required' }, { status: 400 }) };
   }
   try {
-    const { cluster } = await requireOwnedClusterFromSlug(clusterSlug);
-    return { clusterSlug: cluster.slug, clusterId: cluster.id };
+    const { cluster, userId } = await requireOwnedClusterFromSlug(clusterSlug);
+    return { clusterSlug: cluster.slug, clusterId: cluster.id, userId };
   } catch (error) {
     return { error: routeErrorResponse(error) };
   }
@@ -57,6 +57,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   try {
     const result = await createGardenFolder({
+      userId: context.userId,
       clusterSlug: context.clusterSlug,
       folder: body.folder,
     });
@@ -74,6 +75,7 @@ export async function PATCH(request: Request): Promise<NextResponse> {
 
   try {
     const result = await moveGardenDocument({
+      userId: context.userId,
       clusterSlug: context.clusterSlug,
       slug: body.slug,
       toFolder: body.toFolder,
@@ -93,6 +95,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
 
   try {
     const result = await renameGardenFolder({
+      userId: context.userId,
       clusterSlug: context.clusterSlug,
       folder: body.folder,
       name: body.name,
@@ -111,6 +114,7 @@ export async function DELETE(request: Request): Promise<NextResponse> {
 
   try {
     const result = await deleteGardenFolder({
+      userId: context.userId,
       clusterSlug: context.clusterSlug,
       clusterId: context.clusterId,
       folder: body.folder,

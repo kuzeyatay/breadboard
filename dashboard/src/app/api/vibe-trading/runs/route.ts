@@ -4,12 +4,13 @@ import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 import { findConfigurableAgent } from "@/lib/agent-settings/catalog.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { VIBE_TRADING_AGENT_ID } from "@/lib/vibe-trading/identity.ts";
-import { startRun } from "@/lib/vibe-trading/run-manager.ts";
+import { startRun } from "@/lib/vibe-trading/runtime-run-manager.ts";
 import {
   DEFAULT_VIBE_TRADING_SETTINGS,
   vibeTradingSettingsFrom,
 } from "@/lib/vibe-trading/settings.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -51,7 +52,7 @@ export async function POST(request: Request) {
       : DEFAULT_VIBE_TRADING_SETTINGS;
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
       task,
       model,
@@ -64,15 +65,15 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
     }
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
-    return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "runtime_error" },
-      { status: 502 },
-    );
+    // Filesystem/upstream errors may contain private paths or response detail.
+    return NextResponse.json({ ok: false, error: "runtime_error" }, { status: 502 });
   }
 }

@@ -14,7 +14,6 @@ import {
 } from "@/lib/quartz-garden-index";
 import { organizationIdsForUser } from "@/lib/organizations/store";
 import LibraryGardenClient from "./library-garden-client";
-import { withServiceLease } from "@/lib/supervisor-control";
 
 type QuartzView = "private" | "organization" | "public";
 
@@ -37,7 +36,6 @@ export default async function GardenHomePage({
 }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/auth/login");
-  await withServiceLease("quartz", "garden-preview", async () => undefined);
 
   const userId = Number((session.user as { id?: string }).id);
   const { view: rawView } = await searchParams;

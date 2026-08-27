@@ -4,7 +4,7 @@ import {
   isLoopbackHostname,
   requestHostname,
 } from "@/lib/speech/system-microphone-settings";
-import { readSystemLocation } from "@/lib/system-location";
+import { readSystemLocationViaRuntime } from "@/lib/runtime-v2/system-location-job";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -23,7 +23,7 @@ export const runtime = "nodejs";
  */
 export async function POST(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     if (!isLoopbackHostname(requestHostname(request))) {
       return NextResponse.json(
         {
@@ -33,7 +33,10 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    return NextResponse.json(await readSystemLocation());
+    return NextResponse.json(await readSystemLocationViaRuntime({
+      userId,
+      signal: request.signal,
+    }));
   } catch (error) {
     return routeErrorResponse(error);
   }

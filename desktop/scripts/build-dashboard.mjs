@@ -10,11 +10,21 @@ import {
   refreshStandaloneDashboardAssets,
   writeDashboardBuildManifest,
 } from "./dashboard-build-cache.mjs";
+import { assertWindowsCommitHeadroom } from "./commit-preflight.mjs";
+import { assertSafeDashboardTraces } from "./dashboard-trace-safety.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const dashboardDir = path.join(repoRoot, "dashboard");
 const nextBin = path.join(dashboardDir, "node_modules", "next", "dist", "bin", "next");
 const traceGuard = path.join(repoRoot, "desktop", "scripts", "next-trace-guard.cjs");
+
+// This file is also called directly by packaging and Electron QA, outside the
+// lean development launcher. Keep resource admission at the heavy boundary so
+// no caller can accidentally bypass the Windows commit reserve.
+assertWindowsCommitHeadroom({
+  operation: "standalone dashboard build",
+  estimateMb: 11_264,
+});
 
 // The vendored mem0 engine has to exist before the build, not after: file
 // tracing can only follow `import("mem0ai/oss")` into the package if the clone
@@ -27,9 +37,10 @@ const mem0 = spawnSync(
   { cwd: repoRoot, stdio: "inherit" },
 );
 if (mem0.status !== 0) {
-  console.warn(
-    "[desktop] mem0 provisioning failed; the packaged app will fall back to lexical memory recall.",
+  console.error(
+    "[desktop] mem0 provisioning failed; refusing to build a dashboard without semantic memory.",
   );
+  process.exit(mem0.status ?? 1);
 }
 
 // GenOffice Docs is deliberately a static iframe bundle, outside Next's route
@@ -43,10 +54,10 @@ const genofficeEditor = spawnSync(
 );
 if (genofficeEditor.status !== 0) process.exit(genofficeEditor.status ?? 1);
 
-// The 518-route production graph needs more than V8's default ~4 GiB heap, but
-// this allowance exists only for the one-time transactional build. The lean
-// runtime keeps its independently bounded heap, and dev-fast's commit monitor
-// still terminates this exact tree before it consumes the Windows reserve.
+// Turbopack keeps the route graph in its Rust worker instead of retaining the
+// whole graph in V8. Keep the existing one-time ceiling for Next's JavaScript
+// orchestration and output tracing; the lean runtime remains independently
+// bounded, and dev-fast's commit monitor still protects the Windows reserve.
 const dashboardBuildHeapMb = 8_192;
 beginDashboardBuild(repoRoot);
 const result = spawnSync(process.execPath, [
@@ -55,7 +66,7 @@ const result = spawnSync(process.execPath, [
   traceGuard,
   nextBin,
   "build",
-  "--webpack",
+  "--turbopack",
 ], {
   cwd: dashboardDir,
   stdio: "inherit",
@@ -74,6 +85,7 @@ if (result.status !== 0) {
 // Complete the runnable tree here so every caller (lean dev, QA, packaging)
 // gets the same production-like artifact rather than each copying a subset.
 try {
+  assertSafeDashboardTraces(repoRoot);
   refreshStandaloneDashboardAssets(repoRoot);
   writeDashboardBuildManifest(repoRoot);
   completeDashboardBuild(repoRoot);

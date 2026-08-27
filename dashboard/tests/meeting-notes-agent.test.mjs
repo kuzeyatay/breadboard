@@ -527,12 +527,21 @@ test("the run kind, the transcript field and the agent id agree", () => {
   assert.equal(externalRuns.parseExternalAgentRun({ kind: "meeting_notes" }), null);
 });
 
-test("the card guards its stream, closes on error, and renders what was saved", () => {
+test("the card guards its stream, delegates cleanup, and renders what was saved", () => {
   const card = source("src/app/components/hermes/inline-meeting-notes-run.tsx");
   // A finished run is gone from the manager's memory and its endpoint errors.
   assert.match(card, /if \(replaying\) return;/);
-  // EventSource reconnects on error by default, forever.
-  assert.match(card, /source\.close\(\)/);
+  // EventSource reconnects on error by default, forever. The shared owner
+  // bounds recovery and route teardown closes the source plus any live probe.
+  assert.match(
+    card,
+    /import \{ closeAgentRunStream, resolveAgentRunStreamError \} from "@\/lib\/agent-run-stream";/,
+  );
+  assert.match(
+    card,
+    /source\.onerror = \(\) => \{\s*resolveAgentRunStreamError\(\{\s*source,\s*base,/,
+  );
+  assert.match(card, /return \(\) => closeAgentRunStream\(source\);/);
   assert.match(card, /persistedContent/);
 });
 
@@ -584,10 +593,12 @@ test("the run route resolves ChatMock rather than reading the env var itself", (
 });
 
 test("stopping a run really stops the work, not just the card", () => {
-  const manager = source("src/lib/meeting-notes/run-manager.ts");
-  // The transcription job and the model call both take the signal.
-  assert.match(manager, /run\.controller\.abort\(\)/);
-  assert.match(manager, /signal: run\.controller\.signal/);
-  // A run id must never be readable by another account.
-  assert.match(manager, /run\.userId !== userId/);
+  const facade = source("src/lib/meeting-notes/runtime-run-manager.ts");
+  const worker = source("src/lib/meeting-notes/runtime-worker-run-manager.ts");
+  // Rust cancellation addresses the authenticated durable mapping; the worker
+  // relays the stop into transcription, ffmpeg, Scriberr and model calls.
+  assert.match(facade, /abortOuterAgentRun\("meeting-notes", userId, runId\)/);
+  assert.match(worker, /run\.controller\.abort\(\)/);
+  assert.match(worker, /signal: run\.controller\.signal/);
+  assert.match(worker, /run\.userId !== userId/);
 });

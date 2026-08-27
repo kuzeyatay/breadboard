@@ -7,9 +7,12 @@ import { findConfigurableAgent } from "@/lib/agent-settings/catalog.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
-import { parseWardrobeRequest, WARDROBE_AGENT_ID } from "@/lib/wardrobe/identity.ts";
-import { runtimeAvailability } from "@/lib/wardrobe/runtime.ts";
-import { startRun } from "@/lib/wardrobe/run-manager.ts";
+import {
+  parseWardrobeRequest,
+  WARDROBE_AGENT_ID,
+} from "@/lib/wardrobe/identity.ts";
+import { readWardrobeRuntimeStatus } from "@/lib/wardrobe/runtime-service.ts";
+import { startRun } from "@/lib/wardrobe/runtime-run-manager.ts";
 import {
   DEFAULT_WARDROBE_SETTINGS,
   requestDefaultsFrom,
@@ -26,7 +29,10 @@ export async function POST(request: Request) {
     const text = await request.text();
     // Ten full-resolution photographs arrive in this body as data URLs.
     if (text.length > 40 * 1024 * 1024) {
-      return NextResponse.json({ ok: false, error: "payload_too_large" }, { status: 413 });
+      return NextResponse.json(
+        { ok: false, error: "payload_too_large" },
+        { status: 413 },
+      );
     }
     const body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     const task = typeof body.task === "string" ? body.task.trim() : "";
@@ -38,7 +44,9 @@ export async function POST(request: Request) {
     // conversation is resolved (or created) here. The pictures a run produces
     // are stored as artifacts of that chat.
     let conversationPublicId =
-      typeof body.conversationPublicId === "string" ? body.conversationPublicId.trim() : "";
+      typeof body.conversationPublicId === "string"
+        ? body.conversationPublicId.trim()
+        : "";
     if (!conversationPublicId && typeof body.chatSessionId === "number") {
       try {
         conversationPublicId = ensureConversationForLegacyChatSession(
@@ -51,10 +59,16 @@ export async function POST(request: Request) {
     }
 
     if (!model) {
-      return NextResponse.json({ ok: false, error: "model_not_configured" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "model_not_configured" },
+        { status: 400 },
+      );
     }
     if (task.length > 4_000) {
-      return NextResponse.json({ ok: false, error: "task_too_long" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "task_too_long" },
+        { status: 400 },
+      );
     }
     // The photos are the request, so a message with none of them would start a
     // run that could only fail. Refused here, where it can still be explained.
@@ -72,10 +86,14 @@ export async function POST(request: Request) {
     // The clone will not accept a photo until an identity reference exists, so a
     // missing one is refused with the sentence that says how to fix it rather
     // than surfacing as a 503 from a server the person never sees.
-    const availability = runtimeAvailability();
+    const { availability } = await readWardrobeRuntimeStatus({ userId });
     if (!availability.available) {
       return NextResponse.json(
-        { ok: false, error: "wardrobe_unavailable", message: availability.reason },
+        {
+          ok: false,
+          error: "wardrobe_unavailable",
+          message: availability.reason,
+        },
         { status: 503 },
       );
     }
@@ -84,7 +102,10 @@ export async function POST(request: Request) {
     // capability token would arrive as prose. Refused rather than swallowed.
     const conflict = findCapabilityConflict({
       text: task,
-      surface: typeof body.chatSessionId === "number" ? "garden_chat" : "dashboard_terminal",
+      surface:
+        typeof body.chatSessionId === "number"
+          ? "garden_chat"
+          : "dashboard_terminal",
       activeRuntimeAgentId: WARDROBE_AGENT_ID,
     });
     if (conflict) {
@@ -100,11 +121,21 @@ export async function POST(request: Request) {
     const settings = findConfigurableAgent(WARDROBE_AGENT_ID)
       ? wardrobeSettingsFrom(agentSettingsFor(userId, WARDROBE_AGENT_ID))
       : DEFAULT_WARDROBE_SETTINGS;
-    const wardrobeRequest = parseWardrobeRequest(task, requestDefaultsFrom(settings));
+    const wardrobeRequest = parseWardrobeRequest(
+      task,
+      requestDefaultsFrom(settings),
+    );
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const clientMessageId =
+      typeof body.clientMessageId === "string"
+        ? body.clientMessageId.trim()
+        : "";
+    const run = await startRun({
       userId,
+      ...(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(clientMessageId)
+        ? { requestId: clientMessageId }
+        : {}),
       request: wardrobeRequest,
       attachments,
       model,
@@ -117,7 +148,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {
     if (error instanceof SyntaxError) {
-      return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "invalid_json" },
+        { status: 400 },
+      );
     }
     // A rejected attachment is the user's problem to fix, so it keeps its own
     // message instead of arriving as a generic 502.
@@ -128,10 +162,16 @@ export async function POST(request: Request) {
       );
     }
     if (error instanceof RouteError) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+      return NextResponse.json(
+        { ok: false, error: error.message },
+        { status: error.status },
+      );
     }
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "runtime_error" },
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : "runtime_error",
+      },
       { status: 502 },
     );
   }

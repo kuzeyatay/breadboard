@@ -20,6 +20,8 @@ const SOURCE_DOCUMENT_TYPES = new Set(["source-document", "source-index"]);
 
 export interface PrepareDocumentContextInput {
   userId: number;
+  /** Canonical conversation public id, or null for the user-global build API. */
+  conversationId?: string | null;
   attachments?: readonly ChatAttachment[];
   /** Present for Garden Chat: the documents the user ticked in the sidebar. */
   garden?: {
@@ -73,6 +75,11 @@ export async function prepareDocumentContext(
   const records: DocumentSkillRecord[] = [];
   const warnings: string[] = [];
   const inlineAttachments: ChatAttachment[] = [];
+  const runtimeScope = {
+    userId: input.userId,
+    gardenId: input.garden?.clusterSlug ?? null,
+    conversationId: input.conversationId ?? null,
+  };
 
   const report = (document: string) => (progress: DocumentSkillProgress) =>
     input.onProgress?.({ ...progress, document });
@@ -92,6 +99,7 @@ export async function prepareDocumentContext(
         text: attachment.text,
         title: attachmentTitle(attachment.name),
         origin: { kind: "upload", fileName: attachment.name },
+        runtimeScope,
         baseURL: input.baseURL,
         model: input.model,
         signal: input.signal,
@@ -128,6 +136,8 @@ export async function prepareDocumentContext(
           node.relPath,
           body,
           node.sourceFile || node.sourcePdf || undefined,
+          runtimeScope,
+          input.signal,
         );
         const result = await ensureDocumentSkill({
           userId: input.userId,
@@ -139,6 +149,7 @@ export async function prepareDocumentContext(
             documentSlug: node.slug,
             fileName: node.sourceFile || node.fileName,
           },
+          runtimeScope,
           baseURL: input.baseURL,
           model: input.model,
           signal: input.signal,

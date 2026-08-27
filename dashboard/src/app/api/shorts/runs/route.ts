@@ -59,7 +59,7 @@ export async function POST(request: Request) {
     const defaults = shortsDefaults(agentSettingsFor(userId, SHORTS_AGENT_ID));
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
       conversationPublicId,
       request: validated.request,

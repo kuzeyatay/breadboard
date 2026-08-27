@@ -82,6 +82,43 @@ test("the runtime agent table covers every agent and every agent has a run route
   }
 });
 
+test("surface declarations and selectors match the agents each composer can actually run", () => {
+  assert.deepEqual(runtimeAgentById("video-use").surfaces, ["dashboard_terminal"]);
+
+  const garden = fs.readFileSync(
+    path.join(root, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
+    "utf8",
+  );
+  assert.match(garden, /meetingNotesAgent=\{meetingNotesAgent\}/);
+  assert.match(garden, /onSelectMeetingNotes=\{\(\) => void selectMeetingNotes\(\)\}/);
+
+  const terminal = fs.readFileSync(
+    path.join(root, "src", "app", "components", "hermes", "dashboard-agent-terminal.tsx"),
+    "utf8",
+  );
+  assert.match(
+    terminal,
+    /\(getDocAgent && "get-doc"\) \|\|\s*\(meetingNotesAgent && "meeting-notes"\) \|\|/,
+  );
+
+  const commandHub = fs.readFileSync(
+    path.join(root, "src", "app", "components", "hermes", "command-hub.tsx"),
+    "utf8",
+  );
+  const visibleStart = commandHub.indexOf("const hasVisibleAgents =");
+  const visibleEnd = commandHub.indexOf("useEffect", visibleStart);
+  const visiblePredicate = commandHub.slice(visibleStart, visibleEnd);
+  for (const selector of [
+    "showMeetingNotes",
+    "showDeepTutor",
+    "showParametricCad",
+    "showMaxResearch",
+    "showWardrobe",
+  ]) {
+    assert.match(visiblePredicate, new RegExp(`\\b${selector}\\b`));
+  }
+});
+
 test("stacksCapabilities matches which run routes actually resolve capability tokens", () => {
   for (const agent of RUNTIME_AGENT_PROFILES) {
     const source = routeSource(...RUN_ROUTES[agent.id]);

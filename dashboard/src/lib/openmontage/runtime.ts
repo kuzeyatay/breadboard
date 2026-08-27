@@ -18,9 +18,16 @@
 // install needs no admin rights and no second copy of anything.
 
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
-import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import {
+  dashboardDataDir,
+  repositoryRoot,
+  runtimeV2ServiceVenv,
+} from "../runtime-paths.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
 
 export interface ToolchainPiece {
   found: boolean;
@@ -51,6 +58,7 @@ export interface RuntimeAvailability {
 }
 
 const PROBE_TIMEOUT_MS = 20_000;
+const TOOL_CACHE_MS = 60_000;
 
 /** Modules from `requirements.txt` that every production path needs. */
 const REQUIRED_MODULES = ["yaml", "pydantic", "jsonschema", "dotenv", "PIL", "numpy", "requests"];
@@ -60,10 +68,14 @@ function configured(value: string | undefined): string | null {
   return trimmed ? path.resolve(trimmed) : null;
 }
 
+export function openMontageRuntimeRoot(): string {
+  return path.join(dashboardDataDir(), "runtime-v2", "toolchains", "openmontage");
+}
+
 function firstExisting(candidates: readonly (string | null)[]): string | null {
   return (
     candidates.find(
-      (candidate): candidate is string => Boolean(candidate) && fs.existsSync(candidate as string),
+      (candidate): candidate is string => Boolean(candidate) && externalRuntimePathExists(candidate as string),
     ) ?? null
   );
 }
@@ -77,23 +89,22 @@ export function resolveOpenMontageRoot(env: NodeJS.ProcessEnv = process.env): st
   const explicit = configured(env.OPENMONTAGE_ROOT);
   if (env.BREADBOARD_QA_MODE === "1") {
     return explicit &&
-      fs.existsSync(path.join(explicit, "AGENT_GUIDE.md")) &&
-      fs.existsSync(path.join(explicit, "tools", "tool_registry.py"))
+      externalRuntimePathExists(path.join(explicit, "AGENT_GUIDE.md")) &&
+      externalRuntimePathExists(path.join(explicit, "tools", "tool_registry.py"))
       ? explicit
       : null;
   }
   const candidates = [
+    openMontageRuntimeRoot(),
     explicit,
     path.join(repositoryRoot(), "OpenMontage"),
-    path.resolve(process.cwd(), "OpenMontage"),
-    path.resolve(process.cwd(), "..", "OpenMontage"),
   ];
   return (
     candidates.find(
       (candidate) =>
         Boolean(candidate) &&
-        fs.existsSync(path.join(candidate as string, "AGENT_GUIDE.md")) &&
-        fs.existsSync(path.join(candidate as string, "tools", "tool_registry.py")),
+        externalRuntimePathExists(path.join(candidate as string, "AGENT_GUIDE.md")) &&
+        externalRuntimePathExists(path.join(candidate as string, "tools", "tool_registry.py")),
     ) ?? null
   );
 }
@@ -106,10 +117,10 @@ export function workspaceRoot(env: NodeJS.ProcessEnv = process.env): string {
   );
 }
 
-/** The virtualenv Breadboard creates inside the clone for the Python tools. */
-export function venvDirectory(env: NodeJS.ProcessEnv = process.env): string | null {
-  const root = resolveOpenMontageRoot(env);
-  return root ? path.join(root, ".venv") : null;
+/** The Runtime-owned virtualenv for the Python tools. */
+export function venvDirectory(env: NodeJS.ProcessEnv = process.env): string {
+  void env;
+  return runtimeV2ServiceVenv("openmontage");
 }
 
 function venvPython(env: NodeJS.ProcessEnv = process.env): string | null {
@@ -172,15 +183,9 @@ function hasDependencies(python: string): boolean {
 }
 
 function resolvePython(env: NodeJS.ProcessEnv): OpenMontageToolchain["python"] {
-  const explicit = configured(env.OPENMONTAGE_PYTHON);
   const candidates: { path: string; source: string }[] = [];
-  if (explicit && fs.existsSync(explicit)) candidates.push({ path: explicit, source: "configured" });
   const venv = venvPython(env);
   if (venv) candidates.push({ path: venv, source: "venv" });
-  for (const name of ["python", "python3"]) {
-    const found = onPath(name);
-    if (found) candidates.push({ path: found, source: "path" });
-  }
   for (const candidate of candidates) {
     const version = probe(candidate.path, ["--version"]);
     if (version === null) continue;
@@ -226,7 +231,7 @@ function resolveMediaBinary(
     { path: path.join(root, "desktop", "node_modules", "ffmpeg-static", exe), source: "ffmpeg-static" },
   ];
   for (const candidate of candidates) {
-    if (candidate.path && fs.existsSync(candidate.path) && fs.statSync(candidate.path).isFile()) {
+    if (candidate.path && externalRuntimePathExists(candidate.path) && externalRuntimeStat(candidate.path).isFile()) {
       return { found: true, path: candidate.path, source: candidate.source };
     }
   }
@@ -238,7 +243,7 @@ function resolveMediaBinary(
 
 function resolveNode(env: NodeJS.ProcessEnv): OpenMontageToolchain["node"] {
   const explicit = configured(env.OPENMONTAGE_NODE);
-  const candidate = explicit && fs.existsSync(explicit) ? explicit : (onPath("node") ?? process.execPath);
+  const candidate = explicit && externalRuntimePathExists(explicit) ? explicit : (onPath("node") ?? process.execPath);
   const version = probe(candidate, ["--version"]);
   return version === null
     ? { found: false, path: "", source: "", version: "" }
@@ -252,12 +257,11 @@ function resolveNode(env: NodeJS.ProcessEnv): OpenMontageToolchain["node"] {
 
 /** Remotion is one of three render runtimes and the only one needing install. */
 function resolveRemotion(env: NodeJS.ProcessEnv): ToolchainPiece {
-  const root = resolveOpenMontageRoot(env);
-  if (!root) return { found: false, path: "", source: "" };
-  const composer = path.join(root, "remotion-composer");
+  void env;
+  const composer = path.join(openMontageRuntimeRoot(), "remotion-composer");
   const modules = path.join(composer, "node_modules");
-  return fs.existsSync(modules)
-    ? { found: true, path: composer, source: "clone" }
+  return externalRuntimePathExists(modules)
+    ? { found: true, path: composer, source: "runtime" }
     : { found: false, path: composer, source: "" };
 }
 
@@ -285,6 +289,13 @@ export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): Runti
   const toolchain = resolveToolchain(env);
   const missing: string[] = [];
   if (!root) missing.push("the OpenMontage clone");
+  const managedRoot = path.resolve(openMontageRuntimeRoot());
+  const managedSource = Boolean(root) && (
+    process.platform === "win32"
+      ? path.resolve(root ?? "").toLowerCase() === managedRoot.toLowerCase()
+      : path.resolve(root ?? "") === managedRoot
+  );
+  if (root && !managedSource) missing.push("the managed Runtime source");
   if (!toolchain.python.found) missing.push("Python");
   else if (!toolchain.python.dependencies) missing.push("the Python dependencies");
   if (!toolchain.ffmpeg.found) missing.push("ffmpeg");
@@ -347,4 +358,55 @@ export function openMontageEnv(
     PYTHONUNBUFFERED: "1",
     NO_COLOR: "1",
   };
+}
+
+export interface ToolAvailability {
+  available: number;
+  total: number;
+  reason: string;
+}
+
+const toolCacheGlobal = globalThis as typeof globalThis & {
+  __breadboardOpenMontageTools?: { at: number; value: ToolAvailability };
+};
+
+/** Read the upstream registry without putting process ownership in setup code. */
+export function toolAvailability(env: NodeJS.ProcessEnv = process.env): ToolAvailability {
+  const cached = toolCacheGlobal.__breadboardOpenMontageTools;
+  if (cached && Date.now() - cached.at < TOOL_CACHE_MS) return cached.value;
+
+  const root = resolveOpenMontageRoot(env);
+  const toolchain = resolveToolchain(env);
+  let value: ToolAvailability;
+  if (!root || !toolchain.python.found || !toolchain.python.dependencies) {
+    value = { available: 0, total: 0, reason: "Python and the dependencies are not installed yet." };
+  } else {
+    const result = spawnSync(
+      toolchain.python.path,
+      [
+        "-c",
+        "from tools.tool_registry import ToolRegistry\nr = ToolRegistry()\nr.discover()\nprint(len(r.get_available()), len(r.list_all()))",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 90_000,
+        env: openMontageEnv(toolchain, { projectsDirectory: path.join(root, "projects") }, env),
+      },
+    );
+    const line = (result.stdout ?? "").trim().split(/\r?\n/).pop() ?? "";
+    const match = /^(\d+)\s+(\d+)$/u.exec(line.trim());
+    value = match
+      ? { available: Number(match[1]), total: Number(match[2]), reason: "" }
+      : {
+          available: 0,
+          total: 0,
+          reason:
+            (result.stderr ?? "").trim().split(/\r?\n/).slice(-1)[0]?.slice(0, 200) ||
+            "The tool registry could not be read.",
+        };
+  }
+  toolCacheGlobal.__breadboardOpenMontageTools = { at: Date.now(), value };
+  return value;
 }

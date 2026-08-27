@@ -7,9 +7,9 @@
  * on-disk tree against it to decide what is current, foreign, or obsolete.
  */
 
-import fs from "node:fs";
-import path from "node:path";
 import crypto from "node:crypto";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 export const ACTIVE_BUILD_MANIFEST_REL = ".breadboard/active-build-manifest.json";
 export const ACTIVE_BUILD_MANIFEST_SCHEMA_VERSION = 1;

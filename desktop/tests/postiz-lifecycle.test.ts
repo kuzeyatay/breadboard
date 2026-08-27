@@ -17,13 +17,11 @@ import {
   startupPolicyOf,
   type DesktopServiceDefinition,
 } from "../src/main/service-manager";
-import { buildServiceDefinitions, serviceUrls } from "../src/main/service-definitions";
+import { buildServiceDefinitions } from "../src/main/service-definitions";
 import { resolvePaths } from "../src/main/path-resolver";
 import {
   defaultPersistentConfig,
   mintLaunchSecrets,
-  redactSecrets,
-  redactedConfigSummary,
   type DesktopRuntimeConfig,
 } from "../src/main/runtime-config";
 
@@ -73,7 +71,6 @@ function desktopFixture(): DesktopRuntimeConfig {
       chatmock: 4301,
       hermes: 4305,
       postiz: 4306,
-      postizSupervisor: 4307,
       quartz: 4303,
       quartzWs: 4304,
       voicebox: 4310,
@@ -92,12 +89,6 @@ function definitionsFor(mode: "dev" | "packaged" = "packaged") {
   const config = desktopFixture();
   const binaries = { node: "C:/rt/node.exe", bun: "C:/rt/bun.exe", python: "C:/rt/python.exe" };
   return { paths, config, definitions: buildServiceDefinitions({ paths, config, binaries }) };
-}
-
-function find(definitions: DesktopServiceDefinition[], id: string): DesktopServiceDefinition {
-  const found = definitions.find((definition) => definition.id === id);
-  assert.ok(found, `expected a "${id}" service definition`);
-  return found;
 }
 
 // ------------------------------------------------------------ startup policy
@@ -215,34 +206,18 @@ test("a required service still fails startup, unchanged by the policy field", as
 
 // --------------------------------------------------- the registered service
 
-test("the registered Postiz service is the coordinator, not the container stack", () => {
+test("Electron has no Postiz service definition or coordinator fallback", () => {
   const { definitions } = definitionsFor();
-  const postiz = find(definitions, "postiz");
-
-  assert.equal(postiz.required, false);
-  assert.equal(startupPolicyOf(postiz), "eager");
-  // The entrypoint is the coordinator script; nothing here is a Docker command.
-  assert.match(postiz.args.at(-1) ?? "", /start-postiz-supervisor\.mjs$/);
+  assert.equal(definitions.some((definition) => definition.id === "postiz"), false);
   assert.equal(
-    postiz.args.some((arg) => /docker|compose/i.test(arg)),
+    definitions.some((definition) =>
+      definition.args.some((argument) => /start-postiz-supervisor\.mjs$/u.test(argument))),
     false,
   );
-  assert.equal(/docker/i.test(postiz.command), false);
-});
-
-test("Postiz readiness means the coordinator answers, never that containers are up", () => {
-  const { definitions } = definitionsFor();
-  const postiz = find(definitions, "postiz");
-  assert.equal(postiz.healthCheck?.type, "http");
-  assert.match(postiz.healthCheck?.url ?? "", /^http:\/\/127\.0\.0\.1:\d+\/health$/);
-  // The old contract required `"ready":true`, which the previous supervisor
-  // only published after nine containers were running.
-  assert.equal(postiz.healthCheck?.expectBodyIncludes, '"ok":true');
-  // Seconds, not the twenty minutes a cold Docker start and image pull needed.
-  assert.ok(
-    postiz.startupTimeoutMs <= 60_000,
-    `coordinator startup budget should be seconds, got ${postiz.startupTimeoutMs}ms`,
-  );
+  const dashboard = definitions.find((definition) => definition.id === "dashboard");
+  assert.ok(dashboard);
+  assert.equal("POSTIZ_COORDINATOR_URL" in dashboard.env, false);
+  assert.equal("POSTIZ_COORDINATOR_TOKEN" in dashboard.env, false);
 });
 
 test("no service definition asks Breadboard to run Docker at startup", () => {
@@ -263,53 +238,6 @@ test("no service definition asks Breadboard to run Docker at startup", () => {
   }
 });
 
-// --------------------------------------------------------- capability secret
-
-test("the coordinator token reaches the coordinator and the dashboard, and nothing else", () => {
-  const { config, definitions } = definitionsFor();
-  const token = config.launchSecrets?.postizCoordinatorToken ?? "";
-  assert.ok(token.length >= 32);
-
-  const holders = definitions.filter((definition) =>
-    Object.values(definition.env).some((value) => value.includes(token)),
-  );
-  assert.deepEqual(
-    holders.map((definition) => definition.id).sort(),
-    ["dashboard", "postiz"],
-  );
-  assert.equal(find(definitions, "postiz").env["POSTIZ_COORDINATOR_TOKEN"], token);
-  assert.equal(find(definitions, "dashboard").env["POSTIZ_COORDINATOR_TOKEN"], token);
-  assert.match(
-    find(definitions, "dashboard").env["POSTIZ_COORDINATOR_URL"] ?? "",
-    /^http:\/\/127\.0\.0\.1:\d+$/,
-  );
-});
-
-test("the coordinator token is redacted from logs and absent from the renderer summary", () => {
-  const config = desktopFixture();
-  const token = config.launchSecrets?.postizCoordinatorToken ?? "";
-  const line = redactSecrets(
-    `[postiz-coordinator] authorization: Bearer ${token}`,
-    config.persistent,
-    Object.values(config.launchSecrets ?? {}),
-  );
-  assert.equal(line.includes(token), false);
-  assert.match(line, /\[redacted\]/);
-
-  // The diagnostics summary is renderer-visible; nothing secret may be in it.
-  assert.equal(JSON.stringify(redactedConfigSummary(config)).includes(token), false);
-});
-
-test("a fresh launch mints a different coordinator token", () => {
-  assert.notEqual(
-    mintLaunchSecrets().postizCoordinatorToken,
-    mintLaunchSecrets().postizCoordinatorToken,
-  );
-});
-
-test("the published endpoints file never carries the coordinator token", () => {
-  const config = desktopFixture();
-  const token = config.launchSecrets?.postizCoordinatorToken ?? "";
-  // `serviceUrls` is exactly what app-lifecycle writes into endpoints.json.
-  assert.equal(JSON.stringify(serviceUrls(config)).includes(token), false);
+test("Electron mints only its Runtime control capability", () => {
+  assert.deepEqual(Object.keys(mintLaunchSecrets()), ["supervisorControlToken"]);
 });

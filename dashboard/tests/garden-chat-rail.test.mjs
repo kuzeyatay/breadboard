@@ -67,7 +67,7 @@ test("the garden rail keeps its green surface; the Terminal's stays paper", () =
   assert.match(sidebar, /surface = "paper"/);
   assert.match(
     sidebar,
-    /style=\{surface === "paper" \? \{ background: "var\(--paper-surface\)" \} : undefined\}/,
+    /\.\.\.\(surface === "paper" \? \{ background: "var\(--paper-surface\)" \} : null\)/,
   );
   assert.match(workspace, /surface="tinted"/);
 });
@@ -153,7 +153,7 @@ test("search, uploads, schedules, hooks and processes are all garden-scoped", ()
   // Each panel is handed this garden and only this garden.
   for (const wiring of [
     /<UploadsPanel[\s\S]{0,220}gardenSlug=\{clusterSlug\}/,
-    /<TerminalScheduledPanel surface="garden_chat" gardenSlug=\{clusterSlug\}/,
+    /<TerminalScheduledPanel[\s\S]{0,120}surface="garden_chat"[\s\S]{0,120}gardenSlug=\{clusterSlug\}/,
     /<HooksPanel gardenSlug=\{clusterSlug\}/,
     /<ProcessesPanel[\s\S]{0,120}gardenSlug=\{clusterSlug\}/,
   ]) {

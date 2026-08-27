@@ -606,7 +606,10 @@ test("Learn's executability provider uses strict exact JSON and preserves malfor
   );
   const callJson = learnSource.slice(callJsonStart, callJsonEnd);
   assert.match(callJson, /preserveExactContent\s*=\s*false/);
-  assert.match(callJson, /preserveExactContent,\s*\n\s*\}\)/);
+  assert.match(
+    callJson,
+    /preserveExactContent,\s*\n\s*planningCheckpoint,\s*\n\s*ordinaryCheckpoint,\s*\n\s*\}\)/,
+  );
 
   const valid = JSON.stringify(response([{
     unitId: "U3",

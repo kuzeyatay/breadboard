@@ -3,7 +3,6 @@ import { requireUserId } from "@/lib/server-auth";
 import { getAgentRuntime } from "@/lib/agent-runtime/runtime.ts";
 import { readHermesConfig } from "@/lib/hermes/config.ts";
 import { apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
-import { ensureDevelopmentHermesRuntime } from "@/lib/hermes/development-runtime.ts";
 import {
   acquireServiceLease,
   readSupervisedServiceSnapshot,
@@ -41,16 +40,13 @@ async function runtimeHealth(ensureRuntime: boolean) {
 
     try {
       if (ensureRuntime) {
-        // `null` is the supported bare-dashboard development case, where there
-        // is no lifecycle control plane. The desktop branch starts a stopped
-        // or failed service here; the development fallback below runs the same
-        // checked-in launcher as `npm run dev:hermes`.
+        // The desktop Runtime V2 supervisor is the only in-product process
+        // owner. A null lease is the supported bare-dashboard development
+        // case: probe an explicitly started Hermes instance, but never launch
+        // a detached child from the Next server. `npm run dev` supplies the
+        // supervisor. Focused dashboard development can run the separate,
+        // explicit `npm run dev:hermes` developer process.
         lease = await acquireServiceLease("hermes", "terminal-reconnect");
-        if (!lease) {
-          await ensureDevelopmentHermesRuntime(async () =>
-            (await runtime.health()).healthy,
-          );
-        }
       } else {
         const service = await readSupervisedServiceSnapshot("hermes");
         if (

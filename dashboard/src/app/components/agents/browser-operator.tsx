@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 
 import Image from "next/image";
 import AgentTarsRunMetrics from "@/app/components/agent-tars-run-metrics";
 import AgentTarsScreenshotGallery from "@/app/components/agent-tars-screenshot-gallery";
+import { appendBoundedAgentRunEvent } from "@/lib/agent-run-history";
 import {
   CHATMOCK_PROVIDER,
   DEFAULT_ASSISTANT_MODELS,
@@ -77,6 +78,13 @@ interface PendingApproval {
   expiresAt: string;
 }
 
+const RUN_STREAM_END_EVENTS = new Set([
+  "run.completed",
+  "run.failed",
+  "run.aborted",
+  "runtime.disconnected",
+]);
+
 const STATE_STYLE: Record<RuntimeState, { label: string; dot: string; text: string }> = {
   available: { label: "Available", dot: "bg-[var(--botanical)]", text: "text-[var(--botanical)]" },
   starting: { label: "Starting", dot: "bg-[#8a6f00]", text: "text-[#8a6f00]" },
@@ -136,7 +144,6 @@ function BackIcon() {
 export default function BrowserOperatorPanel({ compact = false }: { compact?: boolean }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [adapter, setAdapter] = useState<AdapterHealth | null>(null);
-  const [mode, setMode] = useState<string>("optional");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [configuring, setConfiguring] = useState<Agent | null>(null);
@@ -144,10 +151,9 @@ export default function BrowserOperatorPanel({ compact = false }: { compact?: bo
 
   const load = useCallback(async () => {
     try {
-      const data = await api<{ agents: Agent[]; adapter: AdapterHealth; mode: string }>("/api/ui-tars/agents");
+      const data = await api<{ agents: Agent[]; adapter: AdapterHealth }>("/api/ui-tars/agents");
       setAgents(data.agents);
       setAdapter(data.adapter);
-      setMode(data.mode);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -177,7 +183,7 @@ export default function BrowserOperatorPanel({ compact = false }: { compact?: bo
           <span className={`h-2 w-2 rounded-full ${adapterOk ? "bg-emerald-400" : "bg-rose-400"}`} />
           Runtime adapter:&nbsp;
           <span className={adapterOk ? "text-emerald-300" : "text-rose-300"}>
-            {mode === "disabled" ? "disabled" : adapterOk ? `available${adapter?.realBrowser ? "" : " · simulated"}` : "unavailable"}
+            {adapterOk ? `available${adapter?.realBrowser ? "" : " · simulated"}` : "unavailable"}
           </span>
         </div>
       </div>
@@ -612,10 +618,11 @@ function RunWorkspace({ agent, onClose }: { agent: Agent; onClose: () => void })
   const seqRef = useRef(0);
   const timelineRef = useRef<HTMLUListElement | null>(null);
   const followTimelineRef = useRef(true);
+  const launchRequestRef = useRef<{ task: string; requestId: string } | null>(null);
 
   const applyEvent = useCallback((e: RunEvent) => {
     seqRef.current = Math.max(seqRef.current, e.sequenceNumber);
-    setEvents((prev) => (prev.some((p) => p.sequenceNumber === e.sequenceNumber) ? prev : [...prev, e].sort((a, b) => a.sequenceNumber - b.sequenceNumber)));
+    setEvents((previous) => appendBoundedAgentRunEvent(previous, e));
     if (e.type === "observation.page") {
       const url = (e.payload as { url?: string }).url;
       if (url) setPageUrl(url);
@@ -636,13 +643,25 @@ function RunWorkspace({ agent, onClose }: { agent: Agent; onClose: () => void })
   const connect = useCallback((rid: string, since: number) => {
     esRef.current?.close();
     const es = new EventSource(`/api/ui-tars/agents/${agent.id}/runs/${rid}/events?since=${since}`);
-    es.onmessage = (m) => { try { applyEvent(JSON.parse(m.data) as RunEvent); } catch { /* ignore */ } };
+    const handleMessage = (message: MessageEvent) => {
+      try {
+        const event = JSON.parse(message.data) as RunEvent;
+        applyEvent(event);
+        if (RUN_STREAM_END_EVENTS.has(event.type) && esRef.current === es) {
+          esRef.current = null;
+          es.close();
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    es.onmessage = handleMessage;
     [
       "run.started", "run.status", "agent.thinking", "agent.usage", "observation.page", "observation.screenshot", "action.proposed", "approval.requested",
       "approval.approved", "approval.rejected", "action.started", "action.completed", "action.failed", "run.completed",
       "run.failed", "run.aborted", "runtime.disconnected",
     ].forEach((t) => {
-      es.addEventListener(t, (m) => { try { applyEvent(JSON.parse((m as MessageEvent).data) as RunEvent); } catch { /* ignore */ } });
+      es.addEventListener(t, handleMessage as EventListener);
     });
     esRef.current = es;
   }, [agent.id, applyEvent]);
@@ -663,11 +682,19 @@ function RunWorkspace({ agent, onClose }: { agent: Agent; onClose: () => void })
 
   const launch = async () => {
     setErr(null);
+    const normalizedTask = task.trim();
+    const prior = launchRequestRef.current;
+    const request =
+      prior?.task === normalizedTask
+        ? prior
+        : { task: normalizedTask, requestId: crypto.randomUUID() };
+    launchRequestRef.current = request;
     try {
       const res = await api<{ run: { id: string; status: string } }>(`/api/ui-tars/agents/${agent.id}/runs`, {
         method: "POST",
-        body: JSON.stringify({ task }),
+        body: JSON.stringify(request),
       });
+      launchRequestRef.current = null;
       setRunId(res.run.id);
       setStatus(res.run.status);
       setEvents([]);

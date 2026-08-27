@@ -6,10 +6,13 @@
 // second distillation — the second caller joins the first build and sees the
 // same progress.
 
-import fs from "node:fs";
-import path from "node:path";
 import type { BuildSkillResult } from "./builder.ts";
-import { CLONE_ONLY_EXTENSIONS, extractWithClone } from "./bridge.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import {
+  extractDocumentSkillViaRuntime,
+  type RuntimeV2OfficeScope,
+} from "../office/runtime-v2.ts";
 import { shouldDistill } from "./planning.ts";
 import {
   documentContentHash,
@@ -27,9 +30,10 @@ interface ActiveBuild {
 }
 
 const activeBuilds = new Map<string, ActiveBuild>();
+const CLONE_ONLY_EXTENSIONS = new Set(["epub", "rtf", "mobi", "azw", "azw3"]);
 
-function buildKey(userId: number, contentHash: string): string {
-  return `${userId}:${contentHash}`;
+function buildKey(scope: RuntimeV2OfficeScope, contentHash: string): string {
+  return `${scope.userId}:${scope.gardenId ?? "-"}:${scope.conversationId ?? "-"}:${contentHash}`;
 }
 
 export { shouldDistill };
@@ -39,6 +43,7 @@ export interface EnsureSkillInput {
   text: string;
   title: string;
   origin: DocumentSkillOrigin;
+  runtimeScope: RuntimeV2OfficeScope;
   baseURL?: string;
   model?: string;
   onProgress?: (progress: DocumentSkillProgress) => void;
@@ -51,7 +56,10 @@ export interface EnsureSkillInput {
  */
 export async function ensureDocumentSkill(input: EnsureSkillInput): Promise<BuildSkillResult> {
   const contentHash = documentContentHash(input.text);
-  const key = buildKey(input.userId, contentHash);
+  if (input.runtimeScope.userId !== input.userId) {
+    throw new TypeError("Document skill Runtime scope does not match its user.");
+  }
+  const key = buildKey(input.runtimeScope, contentHash);
 
   const ready = findSkillByHash(input.userId, contentHash);
   if (ready?.status === "ready" && readSkillIndex(ready.slug)) {
@@ -85,6 +93,7 @@ export async function ensureDocumentSkill(input: EnsureSkillInput): Promise<Buil
     text: input.text,
     title: input.title,
     origin: input.origin,
+    runtimeScope: input.runtimeScope,
     baseURL: input.baseURL,
     model: input.model,
     signal: input.signal,
@@ -101,7 +110,11 @@ export async function ensureDocumentSkill(input: EnsureSkillInput): Promise<Buil
 
 /** Progress of an in-flight build, for a client that reconnected to it. */
 export function activeBuildProgress(userId: number, contentHash: string): DocumentSkillProgress | null {
-  return activeBuilds.get(buildKey(userId, contentHash))?.progress ?? null;
+  const suffix = `:${contentHash}`;
+  for (const [key, build] of activeBuilds) {
+    if (key.startsWith(`${userId}:`) && key.endsWith(suffix)) return build.progress;
+  }
+  return null;
 }
 
 /**
@@ -118,14 +131,19 @@ export async function gardenDocumentText(
   relPath: string,
   body: string,
   sourceFile?: string,
+  runtimeScope?: RuntimeV2OfficeScope,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (sourceFile) {
     const extension = path.extname(sourceFile).toLowerCase().replace(".", "");
     if (CLONE_ONLY_EXTENSIONS.has(extension)) {
       const candidate = path.resolve(contentPath, clusterSlug, sourceFile);
       const root = path.resolve(contentPath, clusterSlug);
-      if (candidate.startsWith(`${root}${path.sep}`) && fs.existsSync(candidate)) {
-        const extracted = await extractWithClone(candidate);
+      if (candidate.startsWith(`${root}${path.sep}`) && fs.existsSync(candidate) && runtimeScope) {
+        const extracted = await extractDocumentSkillViaRuntime(runtimeScope, candidate, "text", {
+          idempotencySeed: `${clusterSlug}:${relPath}:extract`,
+          signal,
+        });
         if (extracted?.text) return extracted.text;
       }
     }

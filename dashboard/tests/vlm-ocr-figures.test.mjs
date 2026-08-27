@@ -216,15 +216,20 @@ test('without a saver the pipeline behaves exactly as it did before', async () =
   assert.ok(!result.markdown.includes('(147,90)'), 'coordinates still stripped');
 });
 
-test('the ingest route persists figures as page assets and counts them', () => {
+test('the Runtime V2 ingest worker persists figures as page assets and counts them', () => {
   const route = source('../src/app/api/ingest/route.ts');
-  assert.match(route, /function vlmFigureSaver\(/);
+  const worker = source('../src/lib/runtime-v2/ingest-executor.ts');
+  // The thin Next route owns authentication, upload staging, and the Runtime
+  // submission only. Figure extraction belongs to the finite worker.
+  assert.match(route, /jobType: "document-ingestion"/);
+  assert.doesNotMatch(route, /function vlmFigureSaver\(/);
+  assert.match(worker, /function vlmFigureSaver\(/);
   // Both the PDF and the single-image path pass a saver.
-  assert.equal((route.match(/saveFigure: vlmFigureSaver\(/g) ?? []).length, 2);
+  assert.equal((worker.match(/saveFigure: vlmFigureSaver\(/g) ?? []).length, 2);
   // The count that reaches the persisted payload has to come from the VLM
   // result rather than being recomputed or defaulted. The local variable it is
   // carried in is not the contract, so this pins the derivation and the
   // destination instead of the identifier.
-  assert.match(route, /figureCount = vlm\.figureCount/);
-  assert.match(route, /^\s*figureCount,$/m);
+  assert.equal((worker.match(/figureCount = vlm\.figureCount/g) ?? []).length, 2);
+  assert.match(worker, /^\s*figureCount,$/m);
 });

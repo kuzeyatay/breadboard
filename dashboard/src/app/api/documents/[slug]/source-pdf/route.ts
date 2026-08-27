@@ -1,9 +1,10 @@
-import fs from "fs";
-import path from "path";
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { NextResponse } from "next/server";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import db from "@/lib/db";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
-import { walkClusterMarkdown } from "@/lib/knowledge";
+import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
+import { resolveSourcePdfMarkdownPath } from "@/lib/source-pdf-garden";
 import {
   requireOwnedClusterFromSlug,
   requireReadableClusterFromSlug,
@@ -45,19 +46,30 @@ function decodeSlug(value: string): string {
   return current;
 }
 
-function normalizeDocumentSlug(clusterSlug: string, slug: string): string | null {
+function normalizeDocumentSlug(
+  clusterSlug: string,
+  slug: string,
+): string | null {
   const cluster = clusterSlug.trim();
   const cleaned = decodeSlug(slug)
     .replace(/\\/g, "/")
     .replace(/[?#].*$/, "")
     .replace(/\.md$/i, "")
     .trim();
-  let segments = cleaned.split("/").map((segment) => segment.trim()).filter(Boolean);
+  let segments = cleaned
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
   const clusterIndex = segments.findIndex((segment) => segment === cluster);
   if (clusterIndex >= 0) segments = segments.slice(clusterIndex + 1);
-  if (segments[0] === "garden" && segments[1] === cluster) segments = segments.slice(2);
+  if (segments[0] === "garden" && segments[1] === cluster)
+    segments = segments.slice(2);
   const noteSlug = segments.at(-1);
-  if (!noteSlug || noteSlug.toLowerCase() === "index" || noteSlug.toLowerCase() === "_index") {
+  if (
+    !noteSlug ||
+    noteSlug.toLowerCase() === "index" ||
+    noteSlug.toLowerCase() === "_index"
+  ) {
     return null;
   }
   return noteSlug;
@@ -89,26 +101,17 @@ function parseFrontmatter(content: string): Frontmatter {
   return data;
 }
 
-function safeClusterDir(contentPath: string, clusterSlug: string): string | null {
-  const root = path.resolve(contentPath);
-  const clusterDir = path.resolve(root, clusterSlug.trim());
+function safeClusterDir(
+  contentPath: string,
+  clusterSlug: string,
+): string | null {
+  const root = path.resolve(/* turbopackIgnore: true */ contentPath);
+  const clusterDir = path.resolve(
+    /* turbopackIgnore: true */ root,
+    clusterSlug.trim(),
+  );
   if (!clusterDir.startsWith(root + path.sep)) return null;
   return clusterDir;
-}
-
-function resolveMarkdownPath(clusterDir: string, slug: string): string | null {
-  if (!slug || slug.includes("/") || slug.includes("\\")) return null;
-  // Source notes live in the sources/ sub-folder, so find by basename slug.
-  const wanted = slug.replace(/\.md$/i, "");
-  for (const item of walkClusterMarkdown(clusterDir)) {
-    if (item.entry.replace(/\.md$/i, "") === wanted) {
-      const found = path.resolve(item.filePath);
-      return found.startsWith(clusterDir + path.sep) ? found : null;
-    }
-  }
-  const filePath = path.resolve(clusterDir, `${slug}.md`);
-  if (!filePath.startsWith(clusterDir + path.sep)) return null;
-  return filePath;
 }
 
 function resolveSourcePdfPath(
@@ -124,11 +127,19 @@ function resolveSourcePdfPath(
   if (!normalized.startsWith(prefix)) return null;
 
   const assetName = normalized.slice(prefix.length);
-  if (!assetName || assetName.includes("/") || !assetName.toLowerCase().endsWith(".pdf")) {
+  if (
+    !assetName ||
+    assetName.includes("/") ||
+    !assetName.toLowerCase().endsWith(".pdf")
+  ) {
     return null;
   }
 
-  const pdfPath = path.resolve(clusterDir, "assets", assetName);
+  const pdfPath = path.resolve(
+    /* turbopackIgnore: true */ clusterDir,
+    "assets",
+    assetName,
+  );
   if (!pdfPath.startsWith(clusterDir + path.sep)) return null;
   return pdfPath;
 }
@@ -147,12 +158,16 @@ async function getSourcePdfContext(
   const clusterSlug = searchParams.get("clusterSlug");
 
   if (!clusterSlug) {
-    return NextResponse.json({ error: "clusterSlug is required" }, { status: 400 });
+    return NextResponse.json(
+      { error: "clusterSlug is required" },
+      { status: 400 },
+    );
   }
 
-  const { cluster, userId } = access === "read"
-    ? await requireReadableClusterFromSlug(clusterSlug)
-    : await requireOwnedClusterFromSlug(clusterSlug);
+  const { cluster, userId } =
+    access === "read"
+      ? await requireReadableClusterFromSlug(clusterSlug)
+      : await requireOwnedClusterFromSlug(clusterSlug);
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath) {
     return NextResponse.json(
@@ -167,23 +182,30 @@ async function getSourcePdfContext(
     return NextResponse.json({ error: "Invalid path" }, { status: 400 });
   }
 
-  const markdownPath = resolveMarkdownPath(clusterDir, documentSlug);
-  if (!markdownPath || !fs.existsSync(markdownPath)) {
+  const markdownPath = resolveSourcePdfMarkdownPath(clusterDir, documentSlug);
+  if (!markdownPath || !fs.existsSync(/* turbopackIgnore: true */ markdownPath)) {
     return NextResponse.json({ error: "Document not found" }, { status: 404 });
   }
 
-  const frontmatter = parseFrontmatter(fs.readFileSync(markdownPath, "utf-8"));
+  const frontmatter = parseFrontmatter(
+    fs.readFileSync(/* turbopackIgnore: true */ markdownPath, "utf-8"),
+  );
   const sourcePdf = frontmatter.source_pdf ?? "";
   const pdfPath = resolveSourcePdfPath(contentPath, cluster.slug, sourcePdf);
-  if (!pdfPath || !fs.existsSync(pdfPath)) {
-    return NextResponse.json({ error: "Source PDF not found" }, { status: 404 });
+  if (!pdfPath || !fs.existsSync(/* turbopackIgnore: true */ pdfPath)) {
+    return NextResponse.json(
+      { error: "Source PDF not found" },
+      { status: 404 },
+    );
   }
 
   return {
     clusterId: cluster.id,
     clusterSlug: cluster.slug,
     documentSlug,
-    fileName: contentDispositionName(frontmatter.source_file ?? path.basename(pdfPath)),
+    fileName: contentDispositionName(
+      frontmatter.source_file ?? path.basename(pdfPath),
+    ),
     pdfPath,
     sourcePdf,
     userId,
@@ -196,7 +218,9 @@ function isSourcePdfContext(
   return "pdfPath" in value;
 }
 
-function latestSavedPdf(context: SourcePdfContext): SourcePdfRecord | undefined {
+function latestSavedPdf(
+  context: SourcePdfContext,
+): SourcePdfRecord | undefined {
   return db
     .prepare(
       `SELECT pdf_data, byte_length, updated_at
@@ -223,7 +247,7 @@ export async function GET(
     const savedPdf = latestSavedPdf(context);
     const pdfBytes = savedPdf
       ? Buffer.from(savedPdf.pdf_data)
-      : fs.readFileSync(context.pdfPath);
+      : fs.readFileSync(/* turbopackIgnore: true */ context.pdfPath);
 
     return new Response(pdfBytes, {
       headers: {
@@ -250,18 +274,31 @@ export async function PUT(
     const arrayBuffer = await request.arrayBuffer();
     const pdfBytes = Buffer.from(arrayBuffer);
     if (pdfBytes.length === 0) {
-      return NextResponse.json({ error: "PDF payload is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "PDF payload is required" },
+        { status: 400 },
+      );
     }
     if (pdfBytes.length > MAX_PDF_BYTES) {
-      return NextResponse.json({ error: "PDF payload is too large" }, { status: 413 });
+      return NextResponse.json(
+        { error: "PDF payload is too large" },
+        { status: 413 },
+      );
     }
     if (!isPdf(pdfBytes)) {
-      return NextResponse.json({ error: "Payload is not a PDF" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Payload is not a PDF" },
+        { status: 400 },
+      );
     }
 
-    // Push current version to history before overwriting — isolated so any failure never blocks the save
+    const gardenDir = path.dirname(path.dirname(context.pdfPath));
+    const lease = acquireGardenMutationLease(gardenDir, "update-source-pdf");
     try {
-      db.prepare(`
+      // Push current version to history before overwriting — isolated so any failure never blocks the save
+      try {
+        db.prepare(
+          `
         INSERT INTO pdf_document_edit_history
           (cluster_id, document_slug, source_pdf_path, pdf_data, byte_length, saved_by_user_id, saved_at)
         SELECT cluster_id, document_slug, source_pdf_path, pdf_data, byte_length, updated_by_user_id, updated_at
@@ -272,9 +309,16 @@ export async function PUT(
             WHERE h.cluster_id = ? AND h.document_slug = ?
               AND h.saved_at > datetime('now', '-30 seconds')
           )
-      `).run(context.clusterId, context.documentSlug, context.clusterId, context.documentSlug);
+      `,
+        ).run(
+          context.clusterId,
+          context.documentSlug,
+          context.clusterId,
+          context.documentSlug,
+        );
 
-      db.prepare(`
+        db.prepare(
+          `
         DELETE FROM pdf_document_edit_history
         WHERE cluster_id = ? AND document_slug = ?
           AND id NOT IN (
@@ -283,16 +327,22 @@ export async function PUT(
             ORDER BY id DESC
             LIMIT 50
           )
-      `).run(context.clusterId, context.documentSlug, context.clusterId, context.documentSlug);
-    } catch {
-      // History push is best-effort; never block the main save
-    }
+      `,
+        ).run(
+          context.clusterId,
+          context.documentSlug,
+          context.clusterId,
+          context.documentSlug,
+        );
+      } catch {
+        // History push is best-effort; never block the main save
+      }
 
-    const updatedAt = new Date().toISOString();
-    fs.mkdirSync(path.dirname(context.pdfPath), { recursive: true });
-    fs.writeFileSync(context.pdfPath, pdfBytes);
-    db.prepare(
-      `INSERT INTO pdf_document_edits (
+      const updatedAt = new Date().toISOString();
+      fs.mkdirSync(path.dirname(context.pdfPath), { recursive: true });
+      fs.writeFileSync(context.pdfPath, pdfBytes);
+      db.prepare(
+        `INSERT INTO pdf_document_edits (
          cluster_id,
          document_slug,
          source_pdf_path,
@@ -316,25 +366,29 @@ export async function PUT(
          byte_length = excluded.byte_length,
          updated_by_user_id = excluded.updated_by_user_id,
          updated_at = excluded.updated_at`,
-    ).run(
-      context.clusterId,
-      context.documentSlug,
-      context.sourcePdf,
-      pdfBytes,
-      pdfBytes.length,
-      context.userId,
-      updatedAt,
-    );
-    await publishQuartzAfterMutation(
-      `update source PDF ${context.clusterSlug}/${context.documentSlug}`,
-    );
+      ).run(
+        context.clusterId,
+        context.documentSlug,
+        context.sourcePdf,
+        pdfBytes,
+        pdfBytes.length,
+        context.userId,
+        updatedAt,
+      );
+      await publishQuartzAfterMutation(
+        `update source PDF ${context.clusterSlug}/${context.documentSlug}`,
+        { userId: context.userId },
+      );
 
-    return NextResponse.json({
-      success: true,
-      slug: context.documentSlug,
-      byteLength: pdfBytes.length,
-      updatedAt,
-    });
+      return NextResponse.json({
+        success: true,
+        slug: context.documentSlug,
+        byteLength: pdfBytes.length,
+        updatedAt,
+      });
+    } finally {
+      lease.release();
+    }
   } catch (error) {
     return routeErrorResponse(error);
   }

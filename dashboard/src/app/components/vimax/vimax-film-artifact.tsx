@@ -17,6 +17,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { ReclaimingVideo } from "@/app/components/reclaiming-media";
 import { productionDuration } from "@/lib/vimax/types.ts";
 import type {
   VimaxCharacter,
@@ -281,7 +282,7 @@ export default function VimaxFilmArtifact({
           // An encoded film is the film. The animatic below it is how the same
           // production is reviewed shot by shot, which the video cannot do.
           <div className="flex flex-col gap-3">
-            <video
+            <ReclaimingVideo
               className="w-full rounded-2xl border border-[var(--line)] bg-black"
               src={frameUrl(film.artifactId, conversationId)}
               controls

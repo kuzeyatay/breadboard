@@ -11,15 +11,6 @@
 // send lives in sendNextReview, so this file only has to decide *whether it is
 // yet time* and never double-fires.
 
-const TICK_INTERVAL_MS = 30_000;
-
-type SchedulerGlobals = typeof globalThis & {
-  __breadboardReviewScheduler?: ReturnType<typeof setInterval>;
-  __breadboardReviewSchedulerRunning?: boolean;
-};
-
-const globals = globalThis as SchedulerGlobals;
-
 export interface ReviewTickResult {
   considered: number;
   sent: number;
@@ -56,27 +47,4 @@ export async function runDueReviews(now: Date = new Date()): Promise<ReviewTickR
     }
   }
   return result;
-}
-
-/** Start the process-wide tick. Safe to call repeatedly (dev hot reloads). */
-export function startReviewScheduler(): void {
-  if (globals.__breadboardReviewScheduler) return;
-
-  const tick = async () => {
-    // Never overlap ticks: a slow bridge send must not stack up timers.
-    if (globals.__breadboardReviewSchedulerRunning) return;
-    globals.__breadboardReviewSchedulerRunning = true;
-    try {
-      await runDueReviews();
-    } catch {
-      // Nothing to record here: every card stays due, so the next tick retries.
-    } finally {
-      globals.__breadboardReviewSchedulerRunning = false;
-    }
-  };
-
-  setTimeout(() => void tick(), 10_000);
-  const timer = setInterval(() => void tick(), TICK_INTERVAL_MS);
-  timer.unref();
-  globals.__breadboardReviewScheduler = timer;
 }

@@ -417,13 +417,16 @@ const read = (relative) => fs.readFileSync(path.join(SRC, relative), "utf8");
 
 test("the ingest route runs the scan, and runs it before the model sees the text", () => {
   const route = read("app/api/ingest/route.ts");
+  const worker = read("lib/runtime-v2/ingest-executor.ts");
 
-  assert.match(route, /scanDocumentForHiddenContent\(/);
-  assert.match(route, /emit\("Checking for hidden text and prompt injection/);
+  assert.match(route, /jobType: "document-ingestion"/);
+  assert.doesNotMatch(route, /scanDocumentForHiddenContent\(/);
+  assert.match(worker, /scanDocumentForHiddenContent\(/);
+  assert.match(worker, /emit\("Checking for hidden text and prompt injection/);
 
-  const scanAt = route.indexOf("scanDocumentForHiddenContent({");
-  const extractionAt = route.indexOf("await extractDocumentKnowledge({");
-  const saveAt = route.indexOf("await writeDocumentKnowledge({");
+  const scanAt = worker.indexOf("scanDocumentForHiddenContent({");
+  const extractionAt = worker.indexOf("await extractDocumentKnowledge({");
+  const saveAt = worker.indexOf("await writeDocumentKnowledge({");
   assert.ok(scanAt > 0 && extractionAt > 0 && saveAt > 0);
   // Ordering is the point: the callout and the frontmatter are both assembled
   // from the report, so the scan has to precede the save, and it precedes the
@@ -434,10 +437,12 @@ test("the ingest route runs the scan, and runs it before the model sees the text
 });
 
 test("the report reaches the note, the frontmatter and the uploader", () => {
-  const route = read("app/api/ingest/route.ts");
-  assert.match(route, /renderSafetyCallout\(safetyReport\)/);
-  assert.match(route, /safetyFrontmatter\(safetyReport\)/);
-  assert.match(route, /hiddenContentWarning: safetyReport\?\.message/);
+  const worker = read("lib/runtime-v2/ingest-executor.ts");
+  const compatibility = read("lib/runtime-v2/ingest-compatibility.ts");
+  assert.match(worker, /renderSafetyCallout\(safetyReport\)/);
+  assert.match(worker, /safetyFrontmatter\(safetyReport\)/);
+  assert.match(worker, /hiddenContentWarning: safetyReport\?\.message/);
+  assert.match(compatibility, /"hiddenContentWarning"/);
 
   for (const client of ["app/dashboard/dashboard-client.tsx", "app/gardens/[clusterSlug]/workspace-client.tsx"]) {
     const source = read(client);

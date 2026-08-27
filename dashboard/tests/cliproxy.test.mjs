@@ -99,9 +99,12 @@ test("Claude authentication is owned by the official Claude Code CLI", () => {
   assert.equal(status.subscriptionType, "pro");
 
   const implementation = source("src/lib/claude-code.ts");
-  assert.match(implementation, /\["auth", "status", "--json"\]/);
-  assert.match(implementation, /\["auth", "logout"\]/);
   assert.doesNotMatch(implementation, /\.credentials\.json|readFileSync|CLIPROXY_MANAGEMENT_KEY/);
+  assert.doesNotMatch(implementation, /node:child_process|\bexecFile\s*\(|\bspawn\s*\(/);
+  assert.match(implementation, /runClaudeAccountJob/);
+  const executor = source("scripts/runtime-v2-managed-setup-executor.mjs");
+  assert.match(executor, /\["auth", "status", "--json"\]/);
+  assert.match(executor, /\["auth", "logout"\]/);
 
   const management = source("src/lib/cliproxy/management.ts");
   assert.match(management, /spec\.id === "claude"/);
@@ -313,7 +316,10 @@ test("usage limits are scoped to the plan they actually describe", () => {
   assert.match(popover, /isGoogleSubscriptionModel/);
   assert.match(popover, /isClaudeSubscriptionModel/);
   assert.match(popover, /query\.set\("model", activeModel\)/);
-  assert.match(popover, /!isChatgptModel\(activeModel\) && !googleUsageActive && !claudeUsageActive/);
+  assert.match(
+    popover,
+    /!isChatgptModel\(activeModel\)\s*&&\s*!googleUsageActive\s*&&\s*!claudeUsageActive/,
+  );
   assert.match(popover, /Google-reported model quota/);
   assert.match(popover, /Anthropic-reported subscription usage/);
 

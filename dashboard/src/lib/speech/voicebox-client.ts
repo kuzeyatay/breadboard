@@ -1,11 +1,12 @@
 import "server-only";
 
-import fs from "node:fs";
-import path from "node:path";
 import { RouteError } from "@/lib/server-auth";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   acquireServiceLease,
   releaseSupervisorLease,
+  SupervisorResourceExhaustedError,
   type SupervisorLease,
 } from "@/lib/supervisor-control";
 import { parseStartupStatus, type VoiceboxStartupStatus } from "./startup-status";
@@ -49,21 +50,29 @@ function detailMessage(value: unknown): string | null {
   return detailMessage(record.detail) || detailMessage(record.error);
 }
 
-export async function voiceboxFetch(
+async function fetchVoicebox(
   pathname: string,
   init: RequestInit = {},
   timeoutMs = 30_000,
+  observational = false,
 ): Promise<Response> {
   if (!pathname.startsWith("/")) throw new RouteError(500, "Invalid Voicebox request path.");
   const controller = new AbortController();
   const callerSignal = init.signal;
-  const abortFromCaller = () => controller.abort();
-  if (callerSignal?.aborted) controller.abort();
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) controller.abort(callerSignal.reason);
   else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let lease: SupervisorLease | null = null;
+  let cleanedUp = false;
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+  };
   try {
-    if (pathname !== "/health") {
+    if (!observational && pathname !== "/health") {
       lease = await acquireServiceLease("voicebox", "speech-operation");
     }
     const response = await fetch(`${voiceboxBaseUrl()}${pathname}`, {
@@ -71,9 +80,10 @@ export async function voiceboxFetch(
       cache: "no-store",
       signal: controller.signal,
     });
-    if (!lease || !response.body) {
+    if (!response.body) {
       await releaseSupervisorLease(lease);
       lease = null;
+      cleanup();
       return response;
     }
     const heldLease = lease;
@@ -84,6 +94,7 @@ export async function voiceboxFetch(
       if (released) return;
       released = true;
       await releaseSupervisorLease(heldLease);
+      cleanup();
     };
     const body = new ReadableStream<Uint8Array>({
       async pull(stream) {
@@ -116,6 +127,8 @@ export async function voiceboxFetch(
   } catch (error) {
     await releaseSupervisorLease(lease);
     lease = null;
+    cleanup();
+    if (error instanceof SupervisorResourceExhaustedError) throw error;
     if (error instanceof RouteError) throw error;
     const timedOut =
       error instanceof Error && error.name === "AbortError" && !callerSignal?.aborted;
@@ -125,10 +138,24 @@ export async function voiceboxFetch(
         ? "Voicebox took too long to respond. It may still be loading a speech model."
         : "Voicebox is not ready yet. Breadboard starts it with the other local services.",
     );
-  } finally {
-    clearTimeout(timer);
-    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
+}
+
+export function voiceboxFetch(
+  pathname: string,
+  init: RequestInit = {},
+  timeoutMs = 30_000,
+): Promise<Response> {
+  return fetchVoicebox(pathname, init, timeoutMs, false);
+}
+
+/** Read-only status projection: never acquires a lease or starts Voicebox. */
+export function voiceboxObservationFetch(
+  pathname: string,
+  init: RequestInit = {},
+  timeoutMs = 5_000,
+): Promise<Response> {
+  return fetchVoicebox(pathname, init, timeoutMs, true);
 }
 
 export async function voiceboxJson<T>(
@@ -137,6 +164,22 @@ export async function voiceboxJson<T>(
   timeoutMs = 30_000,
 ): Promise<T> {
   const response = await voiceboxFetch(pathname, init, timeoutMs);
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new RouteError(
+      response.status >= 400 && response.status < 500 ? response.status : 502,
+      detailMessage(body) || `Voicebox returned ${response.status}.`,
+    );
+  }
+  return body as T;
+}
+
+export async function voiceboxObservationJson<T>(
+  pathname: string,
+  init: RequestInit = {},
+  timeoutMs = 5_000,
+): Promise<T> {
+  const response = await voiceboxObservationFetch(pathname, init, timeoutMs);
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     throw new RouteError(

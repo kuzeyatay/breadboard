@@ -63,7 +63,7 @@ interface AgentResponse extends ToolResponse {
 // Helper function to get the tool ID from a block type
 const getToolIdFromBlock = (blockType: string): string | undefined => {
   try {
-    const { getAllBlocks } = require('@/blocks/registry')
+    const { getAllBlocks } = require('@/lib/sim/blocks/registry')
     const blocks = getAllBlocks()
     const block = blocks.find(
       (b: { type: string; tools?: { access?: string[] } }) => b.type === blockType

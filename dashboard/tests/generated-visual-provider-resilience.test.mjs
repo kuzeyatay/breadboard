@@ -13,18 +13,32 @@ import {
   GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
   GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS,
   GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
-  createGeneratedVisualization,
+  createGeneratedVisualization as createGeneratedVisualizationWithCompiler,
   generateVisualizationCandidate,
   isGeneratedVisualProviderTransportError,
   loadGeneratedVisualManifest,
   normalizeDetailedGeneratedVisualCriticRecord,
   retryGeneratedVisualProviderRequest,
 } from "../src/lib/generated-visuals.ts";
+import { compileGeneratedVisualization } from "../src/lib/generated-visual-compiler.ts";
+import { runGeneratedVisualBrowserTestsLocally } from "../src/lib/generated-visual-browser-tests.ts";
 import {
   GENERATED_VISUAL_CAPABILITY_MANIFEST,
   GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
 } from "../src/lib/generated-visual-capabilities.ts";
 import { attachLearnTokenUsageTracking } from "../src/lib/learn-token-usage.ts";
+
+const localCompilerRunner = async (sourceCode, opportunity) =>
+  compileGeneratedVisualization(sourceCode, opportunity);
+
+function createGeneratedVisualization(input) {
+  return createGeneratedVisualizationWithCompiler({
+    ...input,
+    compilerRunner: input.compilerRunner ?? localCompilerRunner,
+    browserTestRunner:
+      input.browserTestRunner ?? runGeneratedVisualBrowserTestsLocally,
+  });
+}
 
 const validSource = `import { defineVisualization } from "@breadboard/visual-sdk";
 export default defineVisualization({
@@ -119,6 +133,14 @@ function providerAbortError() {
     name: "AbortError",
     code: "ABORT_ERR",
   });
+}
+
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((fulfill) => {
+    resolve = fulfill;
+  });
+  return { promise, resolve };
 }
 
 function rejectWithAbortWhenSignalled(signal) {
@@ -551,39 +573,67 @@ test("the visual boundary never delegates replay eligibility to an outer session
   }
 });
 
-test("a throwing late-result wait observer cannot abandon the original result", async () => {
+test("a throwing late-result wait observer cannot abandon the original result", async (context) => {
+  let clockMs = 0;
+  context.mock.method(performance, "now", () => clockMs);
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const providerStarted = createDeferred();
+  const providerResult = createDeferred();
+  const waitObserved = createDeferred();
   let calls = 0;
-  const result = await retryGeneratedVisualProviderRequest({
+  const operation = retryGeneratedVisualProviderRequest({
     timeoutMs: 5,
     lateResultGraceMs: 50,
     work: async () => {
       calls += 1;
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      return "original result after broken wait telemetry";
+      providerStarted.resolve();
+      return providerResult.promise;
     },
     onLateResultWait: () => {
+      waitObserved.resolve();
       throw new Error("wait event ledger fixture failed");
     },
   });
+  await providerStarted.promise;
+  clockMs = 5;
+  context.mock.timers.tick(5);
+  await waitObserved.promise;
+  providerResult.resolve("original result after broken wait telemetry");
+  const result = await operation;
 
   assert.equal(result, "original result after broken wait telemetry");
   assert.equal(calls, 1);
 });
 
-test("a throwing late-result recovered observer cannot replace the adopted result", async () => {
+test("a throwing late-result recovered observer cannot replace the adopted result", async (context) => {
+  let clockMs = 0;
+  context.mock.method(performance, "now", () => clockMs);
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const providerStarted = createDeferred();
+  const providerResult = createDeferred();
+  const waitObserved = createDeferred();
   let calls = 0;
-  const result = await retryGeneratedVisualProviderRequest({
+  const operation = retryGeneratedVisualProviderRequest({
     timeoutMs: 5,
     lateResultGraceMs: 50,
     work: async () => {
       calls += 1;
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      return "adopted result before broken recovered telemetry";
+      providerStarted.resolve();
+      return providerResult.promise;
+    },
+    onLateResultWait: () => {
+      waitObserved.resolve();
     },
     onLateResultRecovered: () => {
       throw new Error("recovered event ledger fixture failed");
     },
   });
+  await providerStarted.promise;
+  clockMs = 5;
+  context.mock.timers.tick(5);
+  await waitObserved.promise;
+  providerResult.resolve("adopted result before broken recovered telemetry");
+  const result = await operation;
 
   assert.equal(result, "adopted result before broken recovered telemetry");
   assert.equal(calls, 1);
@@ -613,7 +663,8 @@ test("hard ambiguity preserves its timeout when the wait observer also throws", 
   assert.equal(calls, 1);
 });
 
-test("the hard-timeout race winner remains authoritative over later provider rejection and cancellation", async () => {
+test("the hard-timeout race winner remains authoritative over later provider rejection and cancellation", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
   const controller = new AbortController();
   const lateProviderFailure = new Error("provider rejected after hard timeout");
   const lateCancellation = new Error("external cancellation arrived after hard timeout");
@@ -632,6 +683,13 @@ test("the hard-timeout race winner remains authoritative over later provider rej
   });
   setTimeout(() => rejectProvider?.(lateProviderFailure), 25);
   setTimeout(() => controller.abort(lateCancellation), 30);
+  await Promise.resolve();
+  assert.equal(typeof rejectProvider, "function");
+  // Resolve the soft timer, then starve its async continuation while advancing
+  // beyond every logical deadline. The absolute 10ms hard timeout must retain
+  // authority even though the provider and cancellation callbacks are due too.
+  context.mock.timers.tick(5);
+  context.mock.timers.tick(25);
   await assert.rejects(
     operation,
     (error) =>

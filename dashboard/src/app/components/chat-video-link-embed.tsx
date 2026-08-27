@@ -16,6 +16,7 @@
 // card appears for exactly the links the runtime would act on.
 
 import { useMemo, useState } from "react";
+import { ReclaimingVideo } from "@/app/components/reclaiming-media";
 import type { ChatMessageAttachment } from "@/lib/chat-attachments";
 import { videoSourceFor, videoUrlsIn, type VideoSource } from "@/lib/video-sources/identity";
 
@@ -178,7 +179,7 @@ export default function ChatVideoLinkEmbeds({ text, attachments }: Props) {
             ) : vertical ? (
               <VerticalEmbed source={source} />
             ) : (
-              <video
+              <ReclaimingVideo
                 controls
                 // The file can be gigabytes; nothing is fetched until played.
                 preload="metadata"

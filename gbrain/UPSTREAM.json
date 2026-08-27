@@ -7,11 +7,25 @@
   "upstreamCommitSha": "UNKNOWN — the GBrain source is committed directly inside the Breadboard repository (no nested .git, no submodule pin), so the exact upstream commit SHA cannot be derived from this checkout.",
   "importedAt": "2026-07-18",
   "importMethod": "vendored (copied into gbrain/ and committed to the Breadboard repository)",
-  "localPatches": [],
-  "localPatchPolicy": "Zero modifications were made to gbrain/src by the Breadboard GBrain integration. The integration lives entirely in gbrain-adapter/ and dashboard/, importing GBrain only through its public interfaces. `git status gbrain/src` is clean.",
+  "localPatches": [
+    {
+      "id": "breadboard-pglite-init-error-diagnostics",
+      "appliedAt": "2026-08-27",
+      "files": [
+        "gbrain/src/core/pglite-engine.ts",
+        "gbrain/test/pglite-init-classifier.test.ts"
+      ],
+      "justification": "PGlite/Emscripten can reject initialization with a plain object. Preserve a bounded, JSON-safe snapshot of its own diagnostic fields instead of collapsing the production failure to [object Object].",
+      "verification": [
+        "bun test test/pglite-init-classifier.test.ts",
+        "bun run typecheck"
+      ]
+    }
+  ],
+  "localPatchPolicy": "One narrow Breadboard diagnostic patch is retained in gbrain/src/core/pglite-engine.ts and recorded above with its focused test. The production adapter otherwise imports GBrain only through its public interfaces; future source drift must be added to localPatches with justification and verification.",
   "contentChecksums": {
-    "method": "git tree object SHA-1 (canonical, reproducible from `git rev-parse`)",
-    "gbrainSrcTreeSha": "79b05994504cbfe559f65cfff461d25bdef1f826",
+    "method": "git tree object SHA-1 (canonical, reproducible from `git rev-parse`); gbrainSrcTreeSha is the reviewed patched source tree, while gbrainTreeSha is the imported whole-tree baseline at breadboardCommit",
+    "gbrainSrcTreeSha": "6789d243367aa1eeccceb0cdae187025a31008b5",
     "gbrainTreeSha": "fa2608e11d625628736e15e929ed4ab399bb99a4",
     "breadboardCommit": "539a7d24b77ad1ecf7a2e69f2630611784393a29",
     "trackedSourceFileCount": 804
@@ -22,7 +36,7 @@
       "1. Obtain the upstream GBrain source for the tagged release v0.42.62.0 (from the upstream distribution the tree was vendored from).",
       "2. Copy the vendored tree to a scratch dir: `cp -r gbrain /tmp/gbrain-vendored` and remove build artifacts (`rm -rf /tmp/gbrain-vendored/node_modules`).",
       "3. Remove build artifacts from the upstream checkout too, then diff: `diff -ru <upstream>/src /tmp/gbrain-vendored/src`.",
-      "4. An empty diff confirms the vendored tree matches upstream v0.42.62.0. Any diff lines are local drift and MUST be added to localPatches above with justification.",
+      "4. The diff must contain only changes recorded in localPatches above; any additional diff lines are unreviewed local drift and MUST be recorded with justification before release.",
       "5. Re-derive the current vendored tree SHA at any time with `git rev-parse HEAD:gbrain/src` and compare against contentChecksums.gbrainSrcTreeSha."
     ]
   },

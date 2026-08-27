@@ -19,6 +19,7 @@ import {
 } from "../src/lib/inbox-zero/stack.ts";
 import { resolveInboxZeroConfig } from "../src/lib/inbox-zero/config.ts";
 import { signSessionToken } from "../src/lib/inbox-zero/session.ts";
+import { runAssistantTurn } from "../src/lib/inbox-zero/client.ts";
 import { inboxZeroDefaults } from "../src/lib/agent-settings/defaults.ts";
 import { CONFIGURABLE_AGENTS } from "../src/lib/agent-settings/catalog.ts";
 import {
@@ -43,6 +44,43 @@ const CREDENTIALS = {
   microsoftClientSecret: "",
   createdAt: "2026-08-12T00:00:00.000Z",
 };
+
+test("the mailbox assistant stream is cancelled at its hard response bound", async (t) => {
+  const chunk = new Uint8Array(1024 * 1024);
+  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(chunk);
+      controller.enqueue(chunk);
+      controller.enqueue(chunk);
+      controller.close();
+    },
+  }), { status: 200 }));
+
+  await assert.rejects(
+    runAssistantTurn({
+      config: { baseUrl: "http://127.0.0.1:4021" },
+      session: {
+        cookie: "better-auth.session_token=test",
+        identity: {
+          userId: "user-1",
+          emailAccountId: "mailbox-1",
+          email: "user@example.com",
+          provider: "google",
+        },
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+      chatId: "chat-1",
+      message: "Summarize my inbox.",
+      signal: new AbortController().signal,
+    }, {
+      onText() {},
+      onToolCall() {},
+      onToolResult() {},
+      onError() {},
+    }),
+    /inbox_zero_chat_(?:response|frame)_too_large/u,
+  );
+});
 
 test("the command token is recognised, and prose does not become an instruction", () => {
   assert.equal(taskFromInboxZeroCommand("what is in my inbox"), null);
@@ -231,21 +269,25 @@ test("the run route refuses a stacked capability and needs a model", () => {
 
 test("health never starts the stack", () => {
   // Opening a settings panel must not cost a four-image pull, so the read-only
-  // path observes and only a run may start containers.
+  // path asks the Runtime-owned controller to observe; only a run may start
+  // containers. Next itself cannot import the Compose owner.
   const health = source("src/app/api/inbox-zero/health/route.ts");
-  assert.match(health, /setupStatus\(config\)/);
+  assert.match(health, /readInboxZeroStatus/);
   assert.doesNotMatch(health, /startStack/);
-  const service = source("src/lib/inbox-zero/service.ts");
-  assert.match(service, /allowStart/);
+  assert.doesNotMatch(health, /inbox-zero\/(?:stack|service|session)\.ts/);
+  const runtime = source("../dashboard/scripts/runtime-v2-inbox-zero-service.mjs");
+  assert.match(runtime, /setupStatus\(config\)/);
+  assert.match(runtime, /routePath === "\/v1\/status"/);
 });
 
 test("the settings panel never echoes a secret back", () => {
-  const health = source("src/app/api/inbox-zero/health/route.ts");
+  const runtime = source("../dashboard/scripts/runtime-v2-inbox-zero-service.mjs");
   // Only the presence of a client is reported, never its value.
-  assert.match(health, /google: Boolean\(/);
-  assert.doesNotMatch(health, /googleClientSecret:\s*credentials/);
+  assert.match(runtime, /google: Boolean\(/);
+  assert.doesNotMatch(runtime, /googleClientSecret:\s*credentials\.googleClientSecret[,}]/);
   const setup = source("src/app/api/inbox-zero/setup/route.ts");
   // An empty field keeps what is stored: the panel shows secrets as blank, so
-  // submitting the form must not erase one the user never saw.
-  assert.match(setup, /text\(body\.googleClientSecret\) \|\| credentials\.googleClientSecret/);
+  // the Runtime service, not Next, applies the preserve-on-empty rule.
+  assert.match(setup, /runInboxZeroSetup/);
+  assert.match(runtime, /oauthValue\(input\.googleClientSecret[\s\S]*\|\| credentials\.googleClientSecret/);
 });

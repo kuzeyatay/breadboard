@@ -44,6 +44,9 @@ export function ensureVideoTranscriptionSchema(db: Db): void {
       error_code           TEXT,
       error_message        TEXT,
       cancel_requested     INTEGER NOT NULL DEFAULT 0,
+      runtime_job_id       TEXT,
+      runtime_idempotency_key TEXT,
+      runtime_generation   INTEGER NOT NULL DEFAULT 0,
       heartbeat_at         TEXT,
       created_at           TEXT NOT NULL,
       updated_at           TEXT NOT NULL,
@@ -55,6 +58,22 @@ export function ensureVideoTranscriptionSchema(db: Db): void {
     CREATE INDEX IF NOT EXISTS idx_video_transcription_jobs_status
       ON video_transcription_jobs(status);
   `);
+
+  const columns = db.prepare("PRAGMA table_info(video_transcription_jobs)").all() as Array<{
+    name: string;
+  }>;
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has("runtime_job_id")) {
+    db.exec("ALTER TABLE video_transcription_jobs ADD COLUMN runtime_job_id TEXT");
+  }
+  if (!names.has("runtime_idempotency_key")) {
+    db.exec("ALTER TABLE video_transcription_jobs ADD COLUMN runtime_idempotency_key TEXT");
+  }
+  if (!names.has("runtime_generation")) {
+    db.exec(
+      "ALTER TABLE video_transcription_jobs ADD COLUMN runtime_generation INTEGER NOT NULL DEFAULT 0",
+    );
+  }
 }
 
 interface JobRow {
@@ -82,6 +101,9 @@ interface JobRow {
   error_code: string | null;
   error_message: string | null;
   cancel_requested: number;
+  runtime_job_id: string | null;
+  runtime_idempotency_key: string | null;
+  runtime_generation: number;
   heartbeat_at: string | null;
   created_at: string;
   updated_at: string;
@@ -132,6 +154,9 @@ function rowToJob(row: JobRow): VideoTranscriptionJob {
     errorCode: row.error_code,
     errorMessage: row.error_message,
     cancelRequested: row.cancel_requested === 1,
+    runtimeJobId: row.runtime_job_id,
+    runtimeIdempotencyKey: row.runtime_idempotency_key,
+    runtimeGeneration: row.runtime_generation,
     heartbeatAt: row.heartbeat_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -170,6 +195,9 @@ export interface VideoTranscriptionJobPatch {
   errorCode?: string | null;
   errorMessage?: string | null;
   cancelRequested?: boolean;
+  runtimeJobId?: string | null;
+  runtimeIdempotencyKey?: string | null;
+  runtimeGeneration?: number;
   heartbeatAt?: string | null;
   completedAt?: string | null;
 }
@@ -190,6 +218,9 @@ const PATCH_COLUMNS: Record<keyof VideoTranscriptionJobPatch, string> = {
   errorCode: "error_code",
   errorMessage: "error_message",
   cancelRequested: "cancel_requested",
+  runtimeJobId: "runtime_job_id",
+  runtimeIdempotencyKey: "runtime_idempotency_key",
+  runtimeGeneration: "runtime_generation",
   heartbeatAt: "heartbeat_at",
   completedAt: "completed_at",
 };

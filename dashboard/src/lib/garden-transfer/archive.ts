@@ -13,10 +13,11 @@
  * directory with no Next.js or SQLite in the way.
  */
 
-import fs from "node:fs";
-import path from "node:path";
+import type { Dirent } from "node:fs";
 import AdmZip from "adm-zip";
 
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   TransferError,
   isSafeArchivePath,
@@ -102,7 +103,7 @@ export function packDirectory(
   let bytes = 0;
 
   const walk = (dir: string, relDir: string): void => {
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {

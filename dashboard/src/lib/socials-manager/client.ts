@@ -171,6 +171,7 @@ export async function draftPosts(request: DraftRequest): Promise<DraftedPost[]> 
   const timer = setTimeout(() => controller.abort(), DRAFT_TIMEOUT_MS);
   const onAbort = () => controller.abort();
   request.signal?.addEventListener("abort", onAbort);
+  if (request.signal?.aborted) controller.abort();
 
   try {
     const response = await fetch(url, {

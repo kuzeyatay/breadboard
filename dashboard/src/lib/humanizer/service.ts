@@ -131,28 +131,31 @@ async function call(
   // signal is forwarded so the fetch is torn down, and `/cancel` below tells the
   // service to stop between chunks rather than finish the job for nobody.
   const forwardAbort = () => controller.abort(new Error("cancelled"));
-  init.signal?.addEventListener("abort", forwardAbort, { once: true });
+  if (init.signal?.aborted) forwardAbort();
+  else init.signal?.addEventListener("abort", forwardAbort, { once: true });
   try {
-    const perform = async () => fetch(`${humanizerBaseUrl(env)}${route}`, {
-      method: init.method,
-      headers: {
-        Authorization: `Bearer ${secret}`,
-        ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-      signal: controller.signal,
-    });
-    const response = route === "/health"
+    const perform = async () => {
+      const response = await fetch(`${humanizerBaseUrl(env)}${route}`, {
+        method: init.method,
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let parsed: unknown;
+      try {
+        parsed = text ? JSON.parse(text) : undefined;
+      } catch {
+        parsed = undefined;
+      }
+      return { status: response.status, body: parsed };
+    };
+    return route === "/health"
       ? await perform()
       : await withServiceLease("humanizer", "rewrite", perform, env);
-    const text = await response.text();
-    let parsed: unknown;
-    try {
-      parsed = text ? JSON.parse(text) : undefined;
-    } catch {
-      parsed = undefined;
-    }
-    return { status: response.status, body: parsed };
   } catch (error) {
     if (error instanceof SupervisorResourceExhaustedError) throw error;
     // A service that is not running is the ordinary case on a machine that

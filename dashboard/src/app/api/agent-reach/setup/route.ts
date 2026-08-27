@@ -7,7 +7,6 @@
 
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { doctor, runtimeAvailability } from "@/lib/agent-reach/runtime.ts";
 import {
   configure,
   importCookies,
@@ -15,11 +14,15 @@ import {
   setupCatalog,
   SetupError,
 } from "@/lib/agent-reach/setup.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
+import { runAgentReachDoctorJob } from "@/lib/runtime-v2/agent-reach-setup-job.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 function fail(error: unknown): NextResponse {
+  const runtimeResponse = runtimeAuthorityErrorResponse(error);
+  if (runtimeResponse) return runtimeResponse;
   if (error instanceof SetupError) {
     return NextResponse.json(
       { ok: false, error: error.code, reason: error.message },
@@ -34,16 +37,15 @@ function fail(error: unknown): NextResponse {
 
 export async function GET(request: Request) {
   try {
-    await requireUserId();
-    const availability = runtimeAvailability();
+    const userId = await requireUserId();
     const refresh = new URL(request.url).searchParams.get("refresh") === "1";
-    const channels = availability.available ? await doctor({ force: refresh }) : [];
+    const health = await runAgentReachDoctorJob({ userId, force: refresh, signal: request.signal });
     return NextResponse.json({
       ok: true,
-      available: availability.available,
-      cloned: availability.cloned,
-      reason: availability.reason ?? null,
-      channels: channels.map((channel) => ({
+      available: health.available,
+      cloned: health.cloned,
+      reason: health.reason,
+      channels: health.channels.map((channel) => ({
         channel: channel.channel,
         status: channel.status,
         tier: channel.tier,
@@ -60,7 +62,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const text = await request.text();
     if (text.length > 64 * 1024) {
       return NextResponse.json({ ok: false, error: "payload_too_large" }, { status: 413 });
@@ -68,21 +70,25 @@ export async function POST(request: Request) {
     const body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     const result =
       body.action === "install"
-        ? await install(body.target)
+        ? await install(body.target, userId, request.signal)
         : body.action === "configure"
-          ? await configure(body.key, body.value)
+          ? await configure(body.key, body.value, userId, request.signal)
           : body.action === "import-cookies"
-            ? await importCookies(body.browser, body.platform)
+            ? await importCookies(body.browser, body.platform, userId, request.signal)
             : null;
     if (!result) {
       return NextResponse.json({ ok: false, error: "unknown_action" }, { status: 400 });
     }
     // The next doctor read must see the new state, not the cached one.
-    const channels = result.ok ? await doctor({ force: true }) : await doctor();
+    const health = await runAgentReachDoctorJob({
+      userId,
+      force: result.ok,
+      signal: request.signal,
+    });
     return NextResponse.json({
       ok: result.ok,
       output: result.output,
-      channels: channels.map((channel) => ({
+      channels: health.channels.map((channel) => ({
         channel: channel.channel,
         status: channel.status,
         tier: channel.tier,

@@ -9,6 +9,15 @@ struct ShutdownState {
     store: Option<Weak<JobStore>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdmissionOpenError {
+    /// The terminal gate won the coordinator lock first. Admission must stay
+    /// closed, but this is not evidence that startup admission failed.
+    ShutdownRequested,
+    /// No live authoritative store could be opened for new work.
+    Unavailable,
+}
+
 /// One serialized gate coordinates parent disconnect, authenticated shutdown,
 /// and the durable admission gate. This avoids a race where admission could be
 /// reopened after another thread had already requested shutdown.
@@ -29,22 +38,43 @@ impl Default for ShutdownCoordinator {
 impl ShutdownCoordinator {
     pub(crate) fn attach_store(&self, store: &Arc<JobStore>) {
         let mut state = self.lock();
-        store.set_accepting_work(false);
+        if state.requested {
+            store.close_for_runtime_shutdown();
+        } else {
+            store.pause_accepting_work();
+        }
         state.store = Some(Arc::downgrade(store));
         state.accepting_work = false;
     }
 
-    pub(crate) fn open_admission(&self) -> Result<(), ()> {
+    pub(crate) fn open_admission(&self) -> Result<(), AdmissionOpenError> {
         let mut state = self.lock();
         if state.requested {
-            return Err(());
+            return Err(AdmissionOpenError::ShutdownRequested);
         }
-        let store = state.store.as_ref().and_then(Weak::upgrade).ok_or(())?;
-        store.set_accepting_work(true);
+        let store = state
+            .store
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .ok_or(AdmissionOpenError::Unavailable)?;
+        store
+            .open_accepting_work()
+            .map_err(|_| AdmissionOpenError::Unavailable)?;
         state.accepting_work = true;
         drop(state);
         self.changed.notify_all();
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_admission_for_control_test(&self) {
+        let mut state = self.lock();
+        assert!(!state.requested, "test admission cannot reopen shutdown");
+        assert!(
+            state.store.is_none(),
+            "test admission must not bypass a store"
+        );
+        state.accepting_work = true;
     }
 
     /// Idempotently closes admission before any process-drain work begins.
@@ -54,7 +84,7 @@ impl ShutdownCoordinator {
         state.requested = true;
         state.accepting_work = false;
         if let Some(store) = state.store.as_ref().and_then(Weak::upgrade) {
-            store.set_accepting_work(false);
+            store.close_for_runtime_shutdown();
         }
         drop(state);
         self.changed.notify_all();
@@ -101,6 +131,21 @@ impl ShutdownCoordinator {
         state.requested
     }
 
+    /// Waits without spinning until shutdown is requested or one bounded
+    /// socket-poll interval expires. Unlike the dispatcher wait, unrelated
+    /// admission notifications do not end this wait early.
+    pub(crate) fn wait_for_shutdown(&self, timeout: Duration) -> bool {
+        let state = self.lock();
+        if state.requested {
+            return true;
+        }
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| !state.requested)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.requested
+    }
+
     fn lock(&self) -> MutexGuard<'_, ShutdownState> {
         self.state
             .lock()
@@ -120,7 +165,20 @@ mod tests {
         let coordinator = ShutdownCoordinator::default();
         assert!(coordinator.request_shutdown());
         assert!(!coordinator.request_shutdown());
-        assert!(coordinator.open_admission().is_err());
+        assert_eq!(
+            coordinator.open_admission(),
+            Err(AdmissionOpenError::ShutdownRequested)
+        );
+        assert!(!coordinator.is_accepting_work());
+    }
+
+    #[test]
+    fn admission_without_a_live_store_remains_unavailable() {
+        let coordinator = ShutdownCoordinator::default();
+        assert_eq!(
+            coordinator.open_admission(),
+            Err(AdmissionOpenError::Unavailable)
+        );
         assert!(!coordinator.is_accepting_work());
     }
 

@@ -57,7 +57,7 @@ export async function POST(request: Request) {
       : DEFAULT_TRADINGAGENTS_SETTINGS;
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
       request: validated.request,
       settings,

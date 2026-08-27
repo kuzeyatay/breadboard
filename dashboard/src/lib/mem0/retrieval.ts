@@ -33,7 +33,11 @@ import {
   type ConversationRow,
 } from "../conversations/store.ts";
 import { reciprocalRankFusion } from "../semantic-retrieval.ts";
-import { semanticMemoryClient, type SemanticMemoryHit } from "./client.ts";
+import {
+  withSemanticMemoryClient,
+  type SemanticMemoryClient,
+  type SemanticMemoryHit,
+} from "./client.ts";
 import { mem0Config } from "./config.ts";
 import { reconcileSemanticMirrors } from "./mirror.ts";
 
@@ -61,12 +65,9 @@ export async function hybridDurableMemories(
   clientOverride?: import("./client.ts").SemanticMemoryClient | null,
 ): Promise<RankedDurableMemory[] | null> {
   const config = mem0Config();
-  const client = clientOverride !== undefined
-    ? clientOverride
-    : config.enabled ? await semanticMemoryClient() : null;
-  if (!client) return null;
-
-  try {
+  const retrieve = async (
+    client: SemanticMemoryClient,
+  ): Promise<RankedDurableMemory[] | null> => {
     // Warm the index before searching it: budgeted, so a large backlog
     // spreads across turns instead of stalling this one.
     await reconcileSemanticMirrors({
@@ -103,6 +104,14 @@ export async function hybridDurableMemories(
         return memory ? [memory] : [];
       })
       .slice(0, limit);
+  };
+
+  try {
+    if (clientOverride !== undefined) {
+      return clientOverride ? await retrieve(clientOverride) : null;
+    }
+    if (!config.enabled) return null;
+    return await withSemanticMemoryClient("retrieval", retrieve);
   } catch {
     return null;
   }

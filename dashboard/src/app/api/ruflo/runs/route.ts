@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth.ts";
 import { resolveConnectedRepository } from "@/lib/opencode/repository.ts";
-import { graftRunContext } from "@/lib/code-index/garden.ts";
+import {
+  graftEnabledForGarden,
+  prepareGraftIndex,
+} from "@/lib/code-index/garden.ts";
 import { startRun } from "@/lib/ruflo/run-manager.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { rufloDefaults } from "@/lib/agent-settings/defaults.ts";
-import {
-  captureSnapshot,
-  rememberRunSnapshot,
-} from "@/lib/agent-edits/snapshot.ts";
 import { resolveCommandMessage } from "@/lib/hermes/commands.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
 import { normalizeChatMessageAttachments } from "@/lib/chat-attachments.ts";
@@ -55,14 +54,22 @@ export async function POST(request: Request) {
     const selectedSkill = resolved.invocations.find(
       (invocation) => invocation.kind === "skill",
     );
-    // Snapshot before the swarm can write anything, so the run stays undoable.
-    const snapshotBefore = captureSnapshot(repository.path);
     // The swarm's shape comes from the user's settings unless this request
     // states it. Before the settings page existed nothing sent these at all, so
     // every swarm ran at the hardcoded six strategic workers.
     const swarm = rufloDefaults(agentSettingsFor(userId, "ruflo"));
-    const run = startRun({
+    const requestId =
+      typeof body.clientMessageId === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(body.clientMessageId.trim())
+        ? body.clientMessageId.trim()
+        : undefined;
+    const graftEnabled = graftEnabledForGarden(userId, repository.gardenSlug);
+    if (graftEnabled) {
+      await prepareGraftIndex(userId, repository.path);
+    }
+    const run = await startRun({
       userId,
+      requestId,
       objective: task,
       // The chat this was typed into, so an objective that refers back to it
       // resolves instead of reaching the swarm as a bare fragment.
@@ -86,9 +93,8 @@ export async function POST(request: Request) {
       repositoryName: repository.name,
       gardenSlug: repository.gardenSlug,
       attachments,
-      graft: graftRunContext(userId, repository),
+      graftEnabled,
     });
-    rememberRunSnapshot(run.runId, repository.path, snapshotBefore);
     return NextResponse.json(
       {
         ok: true,

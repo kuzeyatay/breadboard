@@ -16,8 +16,8 @@
 // assets" and name the provider that was chosen, which no amount of watching
 // command lines scroll past would give.
 
-import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
@@ -25,11 +25,10 @@ import { resolveCodexLauncher, type CodexLauncher } from "../codex/run-manager.t
 import { runInstruction } from "./prompt.ts";
 import { openMontageEnv, runtimeAvailability, type OpenMontageToolchain } from "./runtime.ts";
 import {
-  createWorkspace,
+  createRuntimeWorkspace,
   primaryVideo,
-  projectsDirectory,
-  readProductionState,
-  scanArtifacts,
+  readProductionStateFrom,
+  scanOpenMontageArtifacts,
   WorkspaceError,
   type OpenMontageArtifact,
   type ProductionState,
@@ -43,12 +42,6 @@ export interface OpenMontageEvent {
   at: string;
 }
 
-export interface OpenMontageTerminalResult {
-  outcome: "completed" | "failed" | "aborted";
-  content: string;
-  usage?: ChatTokenUsage;
-}
-
 type RunStatus = "queued" | "running" | "completed" | "failed" | "aborted";
 
 interface RunState {
@@ -56,6 +49,8 @@ interface RunState {
   userId: number;
   brief: string;
   projectId: string;
+  workspaceRoot: string;
+  projectsRoot: string;
   status: RunStatus;
   sequence: number;
   events: OpenMontageEvent[];
@@ -69,8 +64,6 @@ interface RunState {
   artifacts: OpenMontageArtifact[];
   production: ProductionState | null;
   usage?: ChatTokenUsage;
-  terminalResult?: OpenMontageTerminalResult;
-  terminalHandler?: (result: OpenMontageTerminalResult) => void;
 }
 
 const runtimeGlobal = globalThis as typeof globalThis & {
@@ -82,7 +75,29 @@ runtimeGlobal.__breadboardOpenMontageRuns = runs;
 const MAX_EVENTS = 5_000;
 const MAX_STDERR = 32_000;
 const MAX_OUTPUT_PARTS = 200;
+const MAX_STDOUT_RECORD_BYTES = 4 * 1024 * 1024;
 const SCAN_INTERVAL_MS = 2_000;
+const RUNTIME_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+const TERMINAL_STATUSES = new Set<RunStatus>(["completed", "failed", "aborted"]);
+
+function directWorkspace(candidate: string): string | null {
+  const resolved = path.resolve(candidate);
+  const normalize = (value: string) => {
+    const normalized = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  };
+  try {
+    const metadata = fs.lstatSync(resolved);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      normalize(fs.realpathSync.native(resolved)) !== normalize(resolved)
+    ) return null;
+    return resolved;
+  } catch {
+    return null;
+  }
+}
 
 function emit(run: RunState, type: string, payload: Record<string, unknown> = {}): void {
   run.sequence += 1;
@@ -94,16 +109,6 @@ function emit(run: RunState, type: string, payload: Record<string, unknown> = {}
   });
   if (run.events.length > MAX_EVENTS) {
     run.events.splice(0, run.events.length - MAX_EVENTS);
-  }
-}
-
-function publishTerminal(run: RunState, result: OpenMontageTerminalResult): void {
-  if (run.terminalResult) return;
-  run.terminalResult = result;
-  try {
-    run.terminalHandler?.(result);
-  } catch {
-    // The run stays replayable even when transcript persistence fails.
   }
 }
 
@@ -150,7 +155,7 @@ function refresh(run: RunState, options: { force?: boolean } = {}): void {
 
   let production: ProductionState;
   try {
-    production = readProductionState(run.runId);
+    production = readProductionStateFrom(run.projectsRoot);
   } catch {
     return;
   }
@@ -165,7 +170,7 @@ function refresh(run: RunState, options: { force?: boolean } = {}): void {
 
   let artifacts: OpenMontageArtifact[];
   try {
-    artifacts = scanArtifacts(run.runId);
+    artifacts = scanOpenMontageArtifacts(run.projectsRoot);
   } catch {
     return;
   }
@@ -326,6 +331,7 @@ function launcherArgs(input: {
 }
 
 function finish(run: RunState, code: number | null): void {
+  if (TERMINAL_STATUSES.has(run.status)) return;
   refresh(run, { force: true });
   const elapsedSec = Math.max(0, (Date.now() - run.startedAt) / 1_000);
   const video = primaryVideo(run.artifacts);
@@ -344,7 +350,6 @@ function finish(run: RunState, code: number | null): void {
       production: run.production,
       video,
     });
-    publishTerminal(run, { outcome: "completed", content: summary, usage: run.usage });
     return;
   }
   const error =
@@ -359,7 +364,107 @@ function finish(run: RunState, code: number | null): void {
     artifacts: run.artifacts,
     production: run.production,
   });
-  publishTerminal(run, { outcome: "failed", content: error, usage: run.usage });
+}
+
+const PASSTHROUGH_ENV = [
+  "SystemRoot",
+  "WINDIR",
+  "SystemDrive",
+  "PATH",
+  "PATHEXT",
+  "ComSpec",
+  "PROGRAMDATA",
+  "PROGRAMFILES",
+  "PROGRAMFILES(X86)",
+  "LANG",
+  "LC_ALL",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  "FONTCONFIG_FILE",
+  "FONTCONFIG_PATH",
+  "FAL_KEY",
+  "FAL_AI_API_KEY",
+  "REPLICATE_API_TOKEN",
+  "HIGGSFIELD_API_KEY",
+  "HIGGSFIELD_API_SECRET",
+  "KLING_API_KEY",
+  "KLING_API_BASE_URL",
+  "GOOGLE_API_KEY",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+  "ELEVENLABS_API_KEY",
+  "OPENAI_API_KEY",
+  "XAI_API_KEY",
+  "DOUBAO_SPEECH_API_KEY",
+  "DOUBAO_SPEECH_VOICE_TYPE",
+  "DASHSCOPE_API_KEY",
+  "SUNO_API_KEY",
+  "HEYGEN_API_KEY",
+  "RUNWAY_API_KEY",
+  "VOLC_ACCESSKEY",
+  "VOLC_SECRETKEY",
+  "VIDEO_GEN_LOCAL_ENABLED",
+  "VIDEO_GEN_LOCAL_MODEL",
+  "MODAL_LTX2_ENDPOINT_URL",
+  "PEXELS_API_KEY",
+  "PIXABAY_API_KEY",
+  "UNSPLASH_ACCESS_KEY",
+  "HF_TOKEN",
+  "AZURE_SPEECH_KEY",
+  "AZURE_SPEECH_REGION",
+] as const;
+
+function childEnvironment(
+  run: RunState,
+  toolchain: OpenMontageToolchain,
+  input: {
+    root: string;
+    projectsPath: string;
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+  },
+): NodeJS.ProcessEnv {
+  const home = path.join(run.workspaceRoot, ".runtime-home");
+  const temporary = path.join(run.workspaceRoot, ".runtime-temp");
+  const appData = path.join(home, "AppData", "Roaming");
+  const localAppData = path.join(home, "AppData", "Local");
+  const codexHome = path.join(home, ".codex");
+  for (const directory of [home, temporary, appData, localAppData, codexHome]) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+  const base: NodeJS.ProcessEnv = {
+    NODE_ENV: process.env.NODE_ENV ?? "production",
+    OPENMONTAGE_ROOT: input.root,
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: appData,
+    LOCALAPPDATA: localAppData,
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+    XDG_CACHE_HOME: path.join(home, ".cache"),
+    XDG_DATA_HOME: path.join(home, ".local", "share"),
+    TEMP: temporary,
+    TMP: temporary,
+  };
+  for (const key of PASSTHROUGH_ENV) {
+    const value = process.env[key];
+    if (value !== undefined) base[key] = value;
+  }
+  return {
+    ...openMontageEnv(toolchain, { projectsDirectory: input.projectsPath }, base),
+    CODEX_HOME: codexHome,
+    CHATMOCK_BASE_URL: input.baseUrl,
+    CHATMOCK_API_KEY: input.apiKey,
+    CHATMOCK_MODEL: input.model,
+  };
 }
 
 function spawnAgent(
@@ -376,10 +481,6 @@ function spawnAgent(
     instruction: string;
   },
 ): void {
-  const codexHome =
-    process.env.CODEX_HOME?.trim() || path.resolve(process.cwd(), ".runtime", "codex-agent");
-  // Codex refuses to start when CODEX_HOME names a directory that is not there.
-  mkdirSync(codexHome, { recursive: true });
   const child = spawn(
     codex.command,
     launcherArgs({
@@ -392,13 +493,13 @@ function spawnAgent(
       cwd: input.workingDirectory,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...openMontageEnv(toolchain, { projectsDirectory: input.projectsPath }),
-        CODEX_HOME: codexHome,
-        CHATMOCK_BASE_URL: input.baseUrl,
-        CHATMOCK_API_KEY: input.apiKey,
-        CHATMOCK_MODEL: input.model,
-      },
+      env: childEnvironment(run, toolchain, {
+        root: input.workingDirectory,
+        projectsPath: input.projectsPath,
+        baseUrl: input.baseUrl,
+        apiKey: input.apiKey,
+        model: input.model,
+      }),
     },
   ) as ChildProcessWithoutNullStreams;
   child.stdin.end(input.instruction);
@@ -410,6 +511,19 @@ function spawnAgent(
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
+    if (
+      Buffer.byteLength(stdout, "utf8") + Buffer.byteLength(chunk, "utf8") >
+      MAX_STDOUT_RECORD_BYTES
+    ) {
+      stdout = "";
+      run.runtimeError = "The production agent emitted an oversized event.";
+      try {
+        child.kill();
+      } catch {
+        // Runtime remains the final process-tree authority.
+      }
+      return;
+    }
     stdout += chunk;
     const lines = stdout.split(/\r?\n/);
     stdout = lines.pop() ?? "";
@@ -434,7 +548,6 @@ function spawnAgent(
     if (run.status === "aborted") return;
     run.status = "failed";
     emit(run, "run.failed", { error: error.message });
-    publishTerminal(run, { outcome: "failed", content: error.message, usage: run.usage });
   });
   child.on("exit", (code) => {
     if (run.child === child) run.child = null;
@@ -443,8 +556,10 @@ function spawnAgent(
   });
 }
 
-export function startRun(input: {
+export function startRuntimeWorkerRun(input: {
   userId: number;
+  runtimeJobId: string;
+  runtimeWorkspacePath: string;
   brief: string;
   model: string;
   reasoningEffort: string;
@@ -465,14 +580,21 @@ export function startRun(input: {
   }
   const root = availability.root;
 
-  const runId = `omrun_${randomUUID().replaceAll("-", "")}`;
+  if (!input.brief || !RUNTIME_JOB_ID.test(input.runtimeJobId) || runs.has(input.runtimeJobId)) {
+    throw new Error("OpenMontage Runtime identity is invalid.");
+  }
+  const workspaceRoot = directWorkspace(input.runtimeWorkspacePath);
+  if (!workspaceRoot) throw new Error("OpenMontage Runtime workspace is invalid.");
+  const runId = input.runtimeJobId;
   const run: RunState = {
     runId,
     userId: input.userId,
     brief: input.brief,
     // Upstream project ids are directory names; deriving one from the run id
     // keeps the card, the workspace and the checkpoints naming the same thing.
-    projectId: runId.replace("omrun_", "production-").slice(0, 24),
+    projectId: `production-${createHash("sha256").update(runId).digest("hex").slice(0, 13)}`,
+    workspaceRoot,
+    projectsRoot: path.join(workspaceRoot, "projects"),
     status: "queued",
     sequence: 0,
     events: [],
@@ -490,11 +612,7 @@ export function startRun(input: {
 
   void (async () => {
     try {
-      const workspace = await createWorkspace({
-        runId,
-        userId: input.userId,
-        brief: input.brief,
-      });
+      const workspace = await createRuntimeWorkspace(workspaceRoot);
       if (run.status === "aborted") return;
       emit(run, "run.started", {
         model: input.model,
@@ -533,14 +651,17 @@ export function startRun(input: {
           : "The production workspace could not be prepared.";
       run.status = "failed";
       emit(run, "run.failed", { error: message });
-      publishTerminal(run, { outcome: "failed", content: message, usage: run.usage });
     }
   })();
 
   return { runId, status: run.status };
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): OpenMontageEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): OpenMontageEvent[] {
   const run = requireRun(userId, runId);
   // A long stage can pass with no Codex event at all — assets generate inside a
   // single tool call. Polling here means the card still advances between them.
@@ -548,36 +669,13 @@ export function getEventsSince(userId: number, runId: string, since = 0): OpenMo
   return run.events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
-  return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
+  return TERMINAL_STATUSES.has(requireRun(userId, runId).status);
 }
 
-/** Live artifacts for a run still held in memory, or null when it is not. */
-export function liveArtifacts(userId: number, runId: string): OpenMontageArtifact[] | null {
-  const run = runs.get(runId);
-  if (!run || run.userId !== userId) return null;
-  return run.artifacts;
-}
-
-/**
- * Attaches durable transcript persistence after the run descriptor has been
- * recorded. A run that failed while preparing its workspace can already be
- * terminal by the time the caller subscribes, so a stored result is delivered
- * immediately instead of being lost between launch and subscription.
- */
-export function setRunTerminalHandler(
-  userId: number,
-  runId: string,
-  handler: (result: OpenMontageTerminalResult) => void,
-): void {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
-  run.terminalHandler = handler;
-  if (run.terminalResult) handler(run.terminalResult);
-}
-
-export function abortRun(userId: number, runId: string): boolean {
-  const run = requireRun(userId, runId);
-  if (["completed", "failed", "aborted"].includes(run.status)) return false;
+  if (TERMINAL_STATUSES.has(run.status)) return false;
   run.status = "aborted";
   try {
     run.child?.kill();
@@ -590,15 +688,5 @@ export function abortRun(userId: number, runId: string): boolean {
     artifacts: run.artifacts,
     production: run.production,
   });
-  publishTerminal(run, {
-    outcome: "aborted",
-    content: "Production stopped.",
-    usage: run.usage,
-  });
   return true;
-}
-
-/** Where a run's productions live — used by the artifact routes. */
-export function runProjectsDirectory(runId: string): string {
-  return projectsDirectory(runId);
 }

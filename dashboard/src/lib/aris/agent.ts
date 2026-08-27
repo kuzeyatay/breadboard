@@ -1,12 +1,12 @@
 import {
-  existsSync,
-  lstatSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
-import path from "node:path";
+  externalRuntimeLstat,
+  externalRuntimePathExists,
+  externalRuntimePortableRealpath,
+  externalRuntimeReadDirectoryEntries,
+  externalRuntimeReadUtf8,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   ARIS_AGENT_ID,
   ARIS_AGENT_NAME,
@@ -65,11 +65,11 @@ function rootCandidates(env: NodeJS.ProcessEnv): string[] {
 
 function resolveRoot(env: NodeJS.ProcessEnv = process.env): ResolvedRoot | null {
   for (const candidate of rootCandidates(env)) {
-    if (!existsSync(candidate)) continue;
+    if (!externalRuntimePathExists(candidate)) continue;
     try {
-      const info = lstatSync(candidate);
+      const info = externalRuntimeLstat(candidate);
       if (!info.isDirectory() || info.isSymbolicLink()) continue;
-      return { root: realpathSync(candidate), installed: true };
+      return { root: externalRuntimePortableRealpath(candidate), installed: true };
     } catch {
       // Try the next trusted local candidate.
     }
@@ -79,13 +79,13 @@ function resolveRoot(env: NodeJS.ProcessEnv = process.env): ResolvedRoot | null 
 
 function regularFilePath(root: string, relativePath: string, maxBytes: number): string | null {
   const candidate = path.resolve(root, relativePath);
-  if (!isInside(root, candidate) || !existsSync(candidate)) return null;
+  if (!isInside(root, candidate) || !externalRuntimePathExists(candidate)) return null;
   try {
-    const info = lstatSync(candidate);
+    const info = externalRuntimeLstat(candidate);
     if (!info.isFile() || info.isSymbolicLink() || info.size <= 0 || info.size > maxBytes) {
       return null;
     }
-    const resolved = realpathSync(candidate);
+    const resolved = externalRuntimePortableRealpath(candidate);
     if (!isInside(root, resolved)) return null;
     return resolved;
   } catch {
@@ -97,7 +97,7 @@ function regularFile(root: string, relativePath: string, maxBytes: number): stri
   const resolved = regularFilePath(root, relativePath, maxBytes);
   if (!resolved) return null;
   try {
-    return readFileSync(resolved, "utf8").replace(/^\uFEFF/, "").trim();
+    return externalRuntimeReadUtf8(resolved).replace(/^\uFEFF/, "").trim();
   } catch {
     return null;
   }
@@ -106,7 +106,7 @@ function regularFile(root: string, relativePath: string, maxBytes: number): stri
 function mainSkillSlugs(root: string): string[] {
   const skillsRoot = path.join(root, "skills");
   try {
-    return readdirSync(skillsRoot, { withFileTypes: true })
+    return externalRuntimeReadDirectoryEntries(skillsRoot)
       .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
       .map((entry) => entry.name)
       .filter((name) => !name.startsWith("skills-") && name !== "shared-references")
@@ -281,7 +281,7 @@ export function arisSourceModifiedAt(env: NodeJS.ProcessEnv = process.env): stri
   const availability = arisAvailability(env);
   if (!availability.root) return null;
   try {
-    return statSync(path.join(availability.root, "AGENT_GUIDE.md")).mtime.toISOString();
+    return externalRuntimeStat(path.join(availability.root, "AGENT_GUIDE.md")).mtime.toISOString();
   } catch {
     return null;
   }

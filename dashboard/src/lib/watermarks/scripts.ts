@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { repositoryRoot } from "../runtime-paths.ts";
 
 // watermarks-remover (github.com/guillaumemeyer/watermarks-remover) strips AI
@@ -8,15 +7,9 @@ import { repositoryRoot } from "../runtime-paths.ts";
 // manifests, EXIF/XMP blocks and document container properties. The vendored
 // clone is pinned in `watermarks-remover/BREADBOARD_UPSTREAM_COMMIT`.
 //
-// The whole thing is Python 3.10+ *stdlib* — no virtualenv, no install step,
-// nothing to provision. That is why this file is so much smaller than its
-// OfficeCLI counterpart: resolving the interpreter and the script directory is
-// the entire runtime story.
-
-const SCRIPT_TIMEOUT_MS = 120_000;
-
-/** Output ceiling per run. A directory audit is the only thing that gets near it. */
-const MAX_OUTPUT_BYTES = 512 * 1024;
+// Python execution belongs exclusively to the fresh Runtime V2 watermark
+// worker. This module deliberately retains only source discovery and path
+// containment; importing it in Next can never launch an interpreter.
 
 export class WatermarkError extends Error {
   readonly status: number;
@@ -52,139 +45,6 @@ export function scriptPath(name: string): string {
 /** Whether the vendored scripts are present, checked on the unified router. */
 export function scriptsAvailable(): boolean {
   return fs.existsSync(scriptPath("clean_file.py")) && fs.existsSync(scriptPath("inspect_file.py"));
-}
-
-/**
- * Interpreter candidates, most specific first. `python3` does not exist on a
- * default Windows install — worse, the App Execution Alias makes it *resolve*
- * and then fail with a Microsoft Store advertisement, so the Windows order has
- * to put plain `python` first rather than treating `python3` as the portable
- * name.
- */
-function pythonCandidates(): string[] {
-  const configured = process.env.WATERMARKS_REMOVER_PYTHON?.trim();
-  return [
-    ...(configured ? [configured] : []),
-    ...(process.platform === "win32" ? ["python.exe", "python", "python3"] : ["python3", "python"]),
-  ];
-}
-
-export interface ScriptRun {
-  code: number;
-  stdout: string;
-  stderr: string;
-  truncated: boolean;
-  timedOut: boolean;
-}
-
-function spawnOnce(python: string, argv: string[], cwd: string): Promise<ScriptRun | null> {
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(python, argv, {
-        cwd,
-        shell: false,
-        windowsHide: true,
-        // The scripts print codepoint labels ("U+200B ZERO WIDTH SPACE"); a
-        // legacy console codepage would mangle them into a decode error that
-        // reads like the file was unreadable.
-        env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
-      });
-    } catch {
-      resolve(null);
-      return;
-    }
-    let stdout = "";
-    let stderr = "";
-    let truncated = false;
-    let timedOut = false;
-    let settled = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, SCRIPT_TIMEOUT_MS);
-
-    const collect = (chunk: Buffer, into: "out" | "err") => {
-      const text = chunk.toString("utf8");
-      if (into === "out") {
-        if (stdout.length + text.length > MAX_OUTPUT_BYTES) {
-          stdout = (stdout + text).slice(0, MAX_OUTPUT_BYTES);
-          truncated = true;
-        } else stdout += text;
-      } else if (stderr.length < MAX_OUTPUT_BYTES) {
-        stderr = (stderr + text).slice(0, MAX_OUTPUT_BYTES);
-      }
-    };
-    child.stdout?.on("data", (chunk: Buffer) => collect(chunk, "out"));
-    child.stderr?.on("data", (chunk: Buffer) => collect(chunk, "err"));
-
-    child.on("error", () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      // ENOENT for this candidate interpreter — let the caller try the next.
-      resolve(null);
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ code: code ?? -1, stdout, stderr, truncated, timedOut });
-    });
-  });
-}
-
-/**
- * Run one vendored script. Tries each interpreter candidate in turn so a
- * machine whose `python3` is the Windows Store stub still works, and reports a
- * missing interpreter as its own actionable error rather than as a failed run.
- */
-export async function runScript(script: string, args: string[], cwd: string): Promise<ScriptRun> {
-  if (!scriptsAvailable()) {
-    throw new WatermarkError(
-      503,
-      "watermarks_scripts_unavailable",
-      `The watermarks-remover scripts are not installed at ${scriptsDir()}. Clone ` +
-        "github.com/guillaumemeyer/watermarks-remover into the repository root, or set " +
-        "WATERMARKS_REMOVER_ROOT to the checkout.",
-    );
-  }
-  const file = scriptPath(script);
-  if (!fs.existsSync(file)) {
-    throw new WatermarkError(503, "watermarks_script_missing", `${script} is missing from the vendored checkout.`);
-  }
-  for (const python of pythonCandidates()) {
-    const run = await spawnOnce(python, [file, ...args], cwd);
-    if (run) return run;
-  }
-  throw new WatermarkError(
-    503,
-    "watermarks_python_unavailable",
-    "Python 3.10+ was not found. Install it, or set WATERMARKS_REMOVER_PYTHON to the interpreter path.",
-  );
-}
-
-/**
- * Parse a `--json` report. The scripts print JSON on stdout and diagnostics on
- * stderr, so a parse failure means the run itself failed — surfacing stderr is
- * what makes that legible instead of "unexpected token".
- */
-export function parseReport(run: ScriptRun, what: string): Record<string, unknown> {
-  const text = run.stdout.trim();
-  if (text) {
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
-      }
-    } catch {
-      // Fall through to the error below with stderr attached.
-    }
-  }
-  const detail = run.timedOut
-    ? "it timed out"
-    : run.stderr.trim().split("\n").slice(-4).join(" ").slice(0, 400) || `it exited with code ${run.code}`;
-  throw new WatermarkError(502, "watermarks_script_failed", `${what} failed: ${detail}`);
 }
 
 /**

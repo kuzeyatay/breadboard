@@ -1,14 +1,10 @@
 import "server-only";
 
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { spawn } from "node:child_process";
-import { databaseDir } from "../runtime-paths.ts";
 import { ApiError } from "../hermes/route-core.ts";
+import { readSpotifyPlaybackRuntimeStatus } from "./runtime-service.ts";
 
 const DEVICE_FRESH_MS = 20_000;
-const LAUNCH_COOLDOWN_MS = 20_000;
 const TICKET_TTL_MS = 8 * 60 * 60 * 1_000;
 
 type EngineRegistration = {
@@ -16,14 +12,8 @@ type EngineRegistration = {
   updatedAt: number;
 };
 
-type EngineLaunch = {
-  launchedAt: number;
-  error: string | null;
-};
-
 type EngineState = {
   registrations: Map<number, EngineRegistration>;
-  launches: Map<number, EngineLaunch>;
 };
 
 const globalWithSpotifyEngine = globalThis as typeof globalThis & {
@@ -34,7 +24,6 @@ const state =
   globalWithSpotifyEngine.spotifyPlaybackEngineState ??
   (globalWithSpotifyEngine.spotifyPlaybackEngineState = {
     registrations: new Map(),
-    launches: new Map(),
   });
 
 function signingSecret(): string {
@@ -57,7 +46,10 @@ function signature(payload: string): string {
     .digest("base64url");
 }
 
-function engineTicket(userId: number): string {
+export function issueSpotifyPlaybackEngineTicket(userId: number): string {
+  if (!Number.isSafeInteger(userId) || userId < 1) {
+    throw new TypeError("Spotify playback user scope is invalid.");
+  }
   const payload = Buffer.from(
     JSON.stringify({
       userId,
@@ -121,116 +113,22 @@ export function registerSpotifyPlaybackEngine(input: {
   });
 }
 
-export function spotifyPlaybackEngineStatus(userId: number): {
+export async function spotifyPlaybackEngineStatus(userId: number): Promise<{
   ready: boolean;
   deviceId: string | null;
   status: "ready" | "starting" | "unavailable";
   error: string | null;
-} {
+}> {
   const registration = state.registrations.get(userId);
   if (registration && Date.now() - registration.updatedAt <= DEVICE_FRESH_MS) {
     return { ready: true, deviceId: registration.deviceId, status: "ready", error: null };
   }
   if (registration) state.registrations.delete(userId);
-  const launch = state.launches.get(userId);
+  const runtime = await readSpotifyPlaybackRuntimeStatus(userId);
   return {
     ready: false,
     deviceId: null,
-    status: launch?.error ? "unavailable" : "starting",
-    error: launch?.error ?? null,
+    status: runtime.status,
+    error: runtime.error,
   };
-}
-
-function browserExecutable(): string | null {
-  const configured = process.env.BREADBOARD_SPOTIFY_BROWSER_PATH?.trim();
-  const candidates = [
-    configured,
-    process.platform === "win32"
-      ? path.join(process.env["PROGRAMFILES(X86)"] ?? "", "Microsoft", "Edge", "Application", "msedge.exe")
-      : null,
-    process.platform === "win32"
-      ? path.join(process.env.PROGRAMFILES ?? "", "Microsoft", "Edge", "Application", "msedge.exe")
-      : null,
-    process.platform === "win32"
-      ? path.join(process.env.LOCALAPPDATA ?? "", "Microsoft", "Edge", "Application", "msedge.exe")
-      : null,
-    process.platform === "win32"
-      ? path.join(process.env.PROGRAMFILES ?? "", "Google", "Chrome", "Application", "chrome.exe")
-      : null,
-    process.platform === "darwin" ? "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" : null,
-    process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : null,
-    process.platform === "linux" ? "/usr/bin/microsoft-edge" : null,
-    process.platform === "linux" ? "/usr/bin/google-chrome" : null,
-    process.platform === "linux" ? "/usr/bin/chromium" : null,
-  ].filter((candidate): candidate is string => Boolean(candidate));
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
-}
-
-function safeEngineOrigin(value: string): string {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new ApiError(503, "spotify_engine_unavailable", "Breadboard's browser player is unavailable.");
-  }
-  const loopback =
-    url.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
-  if ((url.protocol !== "https:" && !loopback) || url.username || url.password) {
-    throw new ApiError(503, "spotify_engine_unavailable", "Breadboard's browser player is unavailable.");
-  }
-  return url.origin;
-}
-
-export function ensureSpotifyPlaybackEngine(userId: number, requestOrigin: string) {
-  const current = spotifyPlaybackEngineStatus(userId);
-  if (current.ready) return current;
-  const recent = state.launches.get(userId);
-  if (recent && Date.now() - recent.launchedAt < LAUNCH_COOLDOWN_MS) return current;
-
-  const executable = browserExecutable();
-  if (!executable) {
-    state.launches.set(userId, {
-      launchedAt: Date.now(),
-      error: "Microsoft Edge or Google Chrome is required for protected Spotify playback.",
-    });
-    return spotifyPlaybackEngineStatus(userId);
-  }
-  const profileDirectory = path.join(databaseDir(), "spotify-browser-player");
-  fs.mkdirSync(profileDirectory, { recursive: true });
-  const url = new URL("/api/hermes/connections/spotify/engine", safeEngineOrigin(requestOrigin));
-  url.searchParams.set("mode", "page");
-  url.searchParams.set("ticket", engineTicket(userId));
-
-  state.launches.set(userId, { launchedAt: Date.now(), error: null });
-  try {
-    const child = spawn(
-      executable,
-      [
-        "--headless=new",
-        `--user-data-dir=${profileDirectory}`,
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-sync",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-renderer-backgrounding",
-        "--autoplay-policy=no-user-gesture-required",
-        url.toString(),
-      ],
-      { detached: true, stdio: "ignore", windowsHide: true },
-    );
-    child.once("error", () => {
-      state.launches.set(userId, {
-        launchedAt: Date.now(),
-        error: "Breadboard could not start its protected-audio browser.",
-      });
-    });
-    child.unref();
-  } catch {
-    state.launches.set(userId, {
-      launchedAt: Date.now(),
-      error: "Breadboard could not start its protected-audio browser.",
-    });
-  }
-  return spotifyPlaybackEngineStatus(userId);
 }

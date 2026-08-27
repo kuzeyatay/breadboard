@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 import { parseDocumentSearchRequest } from "@/lib/get-doc/identity.ts";
-import { startRun } from "@/lib/get-doc/run-manager.ts";
+import { startRun } from "@/lib/get-doc/runtime-run-manager.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { getDocDefaults } from "@/lib/agent-settings/defaults.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "empty_task" }, { status: 400 });
     }
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
       request: searchRequest,
       model,

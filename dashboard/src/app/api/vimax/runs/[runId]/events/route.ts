@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { getEventsSince, isTerminal } from "@/lib/vimax/run-manager.ts";
+import { getEventsSince, isTerminal } from "@/lib/vimax/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

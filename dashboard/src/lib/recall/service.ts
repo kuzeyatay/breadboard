@@ -10,10 +10,7 @@
 //     because history captured before a window was excluded is still history
 //     the user has since said they do not want read back.
 
-import {
-  getRecallConfig,
-  type RecallConfig,
-} from "./config.ts";
+import { getRecallConfig, type RecallConfig } from "./config.ts";
 import {
   RecallClient,
   recallClient,
@@ -24,10 +21,7 @@ import {
 } from "./client.ts";
 import { RecallError } from "./errors.ts";
 import {
-  engineProcessState,
-  readEngineLogTail,
-  startEngine,
-  stopEngine,
+  projectRecallProcessState,
   type RecallProcessState,
 } from "./engine.ts";
 import {
@@ -44,6 +38,12 @@ import {
   type RecallAutoStartOutcome,
   type ShapedSearch,
 } from "./policy.ts";
+import {
+  readRecallRuntimeStatus,
+  recallRuntimeManaged,
+  reconcileRecallRuntime,
+  type RecallRuntimeStatus,
+} from "./runtime-service.ts";
 import { getRecallSettings, type RecallSettings } from "./settings.ts";
 
 export interface RecallStatus {
@@ -89,7 +89,18 @@ export async function getRecallStatus(
 ): Promise<RecallStatus> {
   const settings = getRecallSettings(userId);
   const install = installState(config);
-  const process_ = engineProcessState(config);
+  const managed = recallRuntimeManaged();
+  let runtimeStatus: RecallRuntimeStatus | null = null;
+  if (managed) {
+    try {
+      runtimeStatus = await readRecallRuntimeStatus(userId);
+    } catch {
+      // Status is observational. A temporarily unavailable Runtime must not
+      // turn a Settings poll into a process start or leak its control details.
+      runtimeStatus = null;
+    }
+  }
+  const process_ = projectRecallProcessState(runtimeStatus, managed);
 
   let health: RecallHealth | null = null;
   if (config.enabled) {
@@ -109,14 +120,20 @@ export async function getRecallStatus(
     reachable: health !== null,
     health,
     settings,
-    logTail: health === null && process_.managed ? readEngineLogTail(config) : [],
+    logTail:
+      health === null && process_.managed ? (runtimeStatus?.logTail ?? []) : [],
   };
 }
 
 /** Shared preconditions for every read of captured history. */
-function assertReadable(settings: RecallSettings, config: RecallConfig, forAgent: boolean): void {
+function assertReadable(
+  settings: RecallSettings,
+  config: RecallConfig,
+  forAgent: boolean,
+): void {
   if (!config.enabled) throw new RecallError("feature_disabled");
-  if (forAgent && !settings.agentAccess) throw new RecallError("agent_access_disabled");
+  if (forAgent && !settings.agentAccess)
+    throw new RecallError("agent_access_disabled");
 }
 
 export async function searchRecall(
@@ -133,7 +150,8 @@ export async function searchRecall(
 
   const cap = Math.min(settings.maxResults, config.maxResults);
   const limit = Math.min(Math.max(args.limit ?? cap, 1), cap);
-  const start = args.startTime?.trim() || `${settings.defaultLookbackHours}h ago`;
+  const start =
+    args.startTime?.trim() || `${settings.defaultLookbackHours}h ago`;
   const end = args.endTime?.trim() || "now";
 
   // Over-fetch a little so exclusions removing rows do not silently shrink the
@@ -168,7 +186,8 @@ export async function recallActivitySummary(
 ): Promise<Record<string, unknown>> {
   const settings = getRecallSettings(userId);
   assertReadable(settings, config, forAgent);
-  const start = args.startTime?.trim() || `${settings.defaultLookbackHours}h ago`;
+  const start =
+    args.startTime?.trim() || `${settings.defaultLookbackHours}h ago`;
   const end = args.endTime?.trim() || "now";
   const summary = await (client ?? recallClient(config)).activitySummary({
     startTime: start,
@@ -207,10 +226,12 @@ export async function recallMeetings(
     const meeting = await api.meeting(args.meetingId);
     const result: RecallMeetingsResult = { meetings: [meeting] };
     if (args.includeTranscript) {
-      result.transcript = (await api.meetingTranscript(args.meetingId)).map((segment) => ({
-        ...segment,
-        text: truncateCapturedText(segment.text, config.maxResultChars),
-      }));
+      result.transcript = (await api.meetingTranscript(args.meetingId)).map(
+        (segment) => ({
+          ...segment,
+          text: truncateCapturedText(segment.text, config.maxResultChars),
+        }),
+      );
     }
     return result;
   }
@@ -238,15 +259,20 @@ export async function recallFrameContext(
   const settings = getRecallSettings(userId);
   assertReadable(settings, config, forAgent);
   if (!Number.isFinite(frameId)) {
-    throw new RecallError("invalid_input", { detail: "frameId must be a number" });
+    throw new RecallError("invalid_input", {
+      detail: "frameId must be a number",
+    });
   }
   const context = await (client ?? recallClient(config)).frameContext(frameId);
 
   // The frame's own app/window is enough to honour an exclusion added after
   // capture; without it the caller could read back exactly what they excluded.
   const app = typeof context.app_name === "string" ? context.app_name : null;
-  const window = typeof context.window_name === "string" ? context.window_name : null;
-  if (isExcluded({ appName: app, windowName: window }, settings.excludedWindows)) {
+  const window =
+    typeof context.window_name === "string" ? context.window_name : null;
+  if (
+    isExcluded({ appName: app, windowName: window }, settings.excludedWindows)
+  ) {
     throw new RecallError("invalid_input", {
       userMessage: "That moment is from a window you excluded from Recall.",
       detail: "frame excluded by user policy",
@@ -255,12 +281,33 @@ export async function recallFrameContext(
   return context;
 }
 
-export type RecallControlAction = "start" | "stop" | "start-audio" | "stop-audio";
+export type RecallControlAction =
+  | "start"
+  | "stop"
+  | "start-audio"
+  | "stop-audio";
 
 export interface RecallControlResult {
   action: RecallControlAction;
   state: RecallProcessState;
   message: string;
+}
+
+async function observedRecallRuntimeStatus(
+  userId: number,
+): Promise<RecallRuntimeStatus | null> {
+  if (!recallRuntimeManaged()) return null;
+  return readRecallRuntimeStatus(userId).catch(() => null);
+}
+
+function reconciledProcessState(running: boolean): RecallProcessState {
+  return {
+    running,
+    pid: null,
+    startedAt: null,
+    launchedWith: null,
+    managed: true,
+  };
 }
 
 /**
@@ -280,23 +327,51 @@ export async function controlRecall(
 
   switch (action) {
     case "start": {
-      const state = startEngine(settings, config);
-      return { action, state, message: "Recall capture is starting." };
-    }
-    case "stop": {
-      await stopEngine(config);
+      if (!settings.captureEnabled) throw new RecallError("capture_disabled");
+      if (!installState(config).installed)
+        throw new RecallError("not_installed");
+      const before = await readRecallRuntimeStatus(userId).catch((cause) => {
+        throw new RecallError("engine_start_failed", {
+          detail: "could not inspect managed Recall state before start",
+          cause,
+        });
+      });
+      if (before?.desiredState === "running") {
+        throw new RecallError("engine_already_running");
+      }
+      await reconcileRecallRuntime(userId, "running", settings);
       return {
         action,
-        state: engineProcessState(config),
+        state: reconciledProcessState(true),
+        message: "Recall capture is starting.",
+      };
+    }
+    case "stop": {
+      const before = await readRecallRuntimeStatus(userId).catch((cause) => {
+        throw new RecallError("engine_stop_failed", {
+          detail: "could not inspect managed Recall state before stop",
+          cause,
+        });
+      });
+      if (!before || before.desiredState === "stopped") {
+        throw new RecallError("engine_not_running");
+      }
+      await reconcileRecallRuntime(userId, "stopped", null);
+      return {
+        action,
+        state: reconciledProcessState(false),
         message: "Recall capture stopped.",
       };
     }
     case "start-audio":
     case "stop-audio": {
-      await (client ?? recallClient(config)).setAudioCapture(action === "start-audio");
+      await (client ?? recallClient(config)).setAudioCapture(
+        action === "start-audio",
+      );
+      const runtimeStatus = await observedRecallRuntimeStatus(userId);
       return {
         action,
-        state: engineProcessState(config),
+        state: projectRecallProcessState(runtimeStatus, recallRuntimeManaged()),
         message:
           action === "start-audio"
             ? "Microphone capture started."
@@ -304,7 +379,9 @@ export async function controlRecall(
       };
     }
     default:
-      throw new RecallError("invalid_input", { detail: `unknown action ${String(action)}` });
+      throw new RecallError("invalid_input", {
+        detail: `unknown action ${String(action)}`,
+      });
   }
 }
 
@@ -333,11 +410,21 @@ export async function autoStartRecallCapture(
   }: { config?: RecallConfig; client?: RecallClient } = {},
 ): Promise<RecallAutoStartResult> {
   const settings = getRecallSettings(userId);
-  const state = engineProcessState(config);
+  const managed = recallRuntimeManaged();
+  const runtimeStatus = await observedRecallRuntimeStatus(userId);
+  const state = projectRecallProcessState(runtimeStatus, managed);
   const install = installState(config);
 
-  let engineRunning = state.running;
-  if (config.enabled && settings.autoStartCapture && settings.captureEnabled && !engineRunning) {
+  // A persisted running intent that has failed or is resource-blocked remains
+  // native recovery authority. App load must not turn it into an unbounded
+  // automatic retry; only a later explicit Start may request another attempt.
+  let engineRunning = runtimeStatus?.desiredState === "running";
+  if (
+    config.enabled &&
+    settings.autoStartCapture &&
+    settings.captureEnabled &&
+    !engineRunning
+  ) {
     engineRunning = await (client ?? recallClient(config))
       .health()
       .then(() => true)
@@ -353,8 +440,18 @@ export async function autoStartRecallCapture(
   if (decision !== "start") return { started: false, outcome: decision, state };
 
   try {
-    return { started: true, outcome: "start", state: startEngine(settings, config) };
+    await reconcileRecallRuntime(userId, "running", settings);
+    return {
+      started: true,
+      outcome: "start",
+      state: reconciledProcessState(true),
+    };
   } catch {
-    return { started: false, outcome: "start_failed", state: engineProcessState(config) };
+    const after = await observedRecallRuntimeStatus(userId);
+    return {
+      started: false,
+      outcome: "start_failed",
+      state: projectRecallProcessState(after, managed),
+    };
   }
 }

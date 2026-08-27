@@ -8,9 +8,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { startRun, getEventsSince, isTerminal, setRunTerminalHandler } = await import(
-  "../src/lib/hardware/run-manager.ts"
-);
+const {
+  startRuntimeWorkerRun: startRun,
+  getRuntimeWorkerEventsSince: getEventsSince,
+  isRuntimeWorkerTerminal: isTerminal,
+  setRuntimeWorkerTerminalHandler: setRunTerminalHandler,
+} = await import("../src/lib/hardware/run-manager.ts");
 const { parseHardwareBlueprintRequest } = await import("../src/lib/hardware/identity.ts");
 
 const ACCEPTANCE_BRIEF =

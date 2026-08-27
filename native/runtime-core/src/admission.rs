@@ -1,10 +1,20 @@
-use breadboard_runtime_protocol::ResourceClass;
+use breadboard_runtime_protocol::{ResourceClass, RuntimeMode};
 use serde::{Deserialize, Serialize};
 
-/// Runtime V2 never authorizes new work below this system-commit reserve.
-/// Trusted configuration may raise either policy reserve, but no constructor
-/// available to downstream callers can reduce them below this floor.
+/// Packaged Runtime V2 admission never authorizes jobs or services below this
+/// system-commit reserve. Development modes use the bounded adaptive reserve
+/// below so the compiler and finite workers can share machines with smaller
+/// commit limits without weakening packaged acceptance.
 pub const ADMISSION_RESERVE_FLOOR_MB: u64 = 8 * 1024;
+
+// Development admission and the Hot dashboard's live supervisor guard share
+// this formula: preserve at least 4 GiB, otherwise 10% of the machine's commit
+// limit (bounded to 1.5-8 GiB), plus a 256 MiB sampling/growth guard. Every
+// process tree still has its independently enforced manifest hard limit.
+const DEVELOPMENT_RESERVE_FLOOR_MB: u64 = 4 * 1024;
+const DEVELOPMENT_DERIVED_RESERVE_MIN_MB: u64 = 1536;
+const DEVELOPMENT_DERIVED_RESERVE_MAX_MB: u64 = 8 * 1024;
+const DEVELOPMENT_RESERVE_GUARD_MB: u64 = 256;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +98,13 @@ pub struct AdmissionPolicy {
     pub(crate) minimum_reserve_mb: u64,
     pub(crate) critical_reserve_mb: u64,
     pub(crate) one_heavyweight_at_a_time: bool,
+    pub(crate) reserve_strategy: AdmissionReserveStrategy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdmissionReserveStrategy {
+    Fixed,
+    Development,
 }
 
 impl Default for AdmissionPolicy {
@@ -168,6 +185,45 @@ impl AdmissionPolicy {
             minimum_reserve_mb: minimum_reserve_mb.max(ADMISSION_RESERVE_FLOOR_MB),
             critical_reserve_mb: critical_reserve_mb.max(ADMISSION_RESERVE_FLOOR_MB),
             one_heavyweight_at_a_time: true,
+            reserve_strategy: AdmissionReserveStrategy::Fixed,
+        }
+    }
+
+    /// Development process trees retain manifest hard caps, heavyweight
+    /// serialization, and a live commit sample at each durable reservation.
+    /// This policy lowers only the idle system reserve; packaged mode keeps the
+    /// fixed architecture floor above.
+    pub(crate) fn for_runtime_mode(mode: RuntimeMode) -> Self {
+        if mode == RuntimeMode::Packaged {
+            return Self::default();
+        }
+        Self {
+            minimum_reserve_mb: DEVELOPMENT_RESERVE_FLOOR_MB,
+            critical_reserve_mb: DEVELOPMENT_RESERVE_FLOOR_MB,
+            one_heavyweight_at_a_time: true,
+            reserve_strategy: AdmissionReserveStrategy::Development,
+        }
+    }
+
+    fn effective_reserve_mb(self, commit_limit_mb: u64) -> u64 {
+        match self.reserve_strategy {
+            AdmissionReserveStrategy::Fixed => self.minimum_reserve_mb,
+            AdmissionReserveStrategy::Development => {
+                let derived_reserve_mb = (commit_limit_mb / 10).clamp(
+                    DEVELOPMENT_DERIVED_RESERVE_MIN_MB,
+                    DEVELOPMENT_DERIVED_RESERVE_MAX_MB,
+                );
+                DEVELOPMENT_RESERVE_FLOOR_MB
+                    .max(derived_reserve_mb)
+                    .saturating_add(DEVELOPMENT_RESERVE_GUARD_MB)
+            }
+        }
+    }
+
+    fn effective_critical_reserve_mb(self, commit_limit_mb: u64) -> u64 {
+        match self.reserve_strategy {
+            AdmissionReserveStrategy::Fixed => self.critical_reserve_mb,
+            AdmissionReserveStrategy::Development => self.effective_reserve_mb(commit_limit_mb),
         }
     }
 
@@ -182,8 +238,9 @@ impl AdmissionPolicy {
         load: &RuntimeLoad,
     ) -> AdmissionDecision {
         let reserve = self
-            .minimum_reserve_mb
+            .effective_reserve_mb(commit.limit_mb)
             .max(request.reserve_floor_mb.unwrap_or(0));
+        let critical_reserve = self.effective_critical_reserve_mb(commit.limit_mb);
         let required = reserve.saturating_add(request.estimated_cold_start_commit_mb);
         let available = commit.free_mb();
         if !load.accepting_work {
@@ -191,11 +248,11 @@ impl AdmissionPolicy {
                 required, available,
             ));
         }
-        if available <= self.critical_reserve_mb {
+        if available <= critical_reserve {
             return AdmissionDecision::Denied(AdmissionDenial {
                 code: "BREADBOARD_RESOURCE_EXHAUSTED".into(),
                 resource: "windows_commit_critical".into(),
-                required_headroom_mb: self.critical_reserve_mb.saturating_add(1),
+                required_headroom_mb: critical_reserve.saturating_add(1),
                 available_headroom_mb: available,
                 retryable: false,
                 reason: "Windows commit headroom is already at the critical reserve".into(),
@@ -218,7 +275,10 @@ impl AdmissionPolicy {
                 reason: "another heavyweight class is active".into(),
             });
         }
-        if available < required {
+        // Equality is not enough: consuming the full cold-start estimate from
+        // an exactly-sized allowance would leave free commit at the reserve,
+        // while Runtime V2's invariant is that it remains strictly above it.
+        if available <= required {
             return AdmissionDecision::Denied(AdmissionDenial {
                 code: "BREADBOARD_RESOURCE_EXHAUSTED".into(),
                 resource: "windows_commit".into(),
@@ -306,11 +366,152 @@ mod tests {
     }
 
     #[test]
+    fn exact_reserve_plus_cold_start_headroom_is_denied() {
+        let reserve = ADMISSION_RESERVE_FLOOR_MB;
+        let estimate = 4_096;
+        let AdmissionDecision::Denied(denial) = AdmissionPolicy::default().decide(
+            AdmissionRequest {
+                resource_class: ResourceClass::Core,
+                estimated_cold_start_commit_mb: estimate,
+                reserve_floor_mb: None,
+            },
+            SystemCommit {
+                total_mb: 20_000,
+                limit_mb: 20_000 + reserve + estimate,
+            },
+            &empty_load(),
+        ) else {
+            panic!("exact equality must not be admitted")
+        };
+        assert_eq!(denial.required_headroom_mb, reserve + estimate);
+        assert_eq!(denial.available_headroom_mb, reserve + estimate);
+        assert_eq!(denial.resource, "windows_commit");
+    }
+
+    #[test]
     fn policy_construction_clamps_both_architecture_reserves() {
         let policy = AdmissionPolicy::with_reserve_floors(0, 1);
         assert_eq!(policy.minimum_reserve_mb(), ADMISSION_RESERVE_FLOOR_MB);
         assert_eq!(policy.critical_reserve_mb(), ADMISSION_RESERVE_FLOOR_MB);
         assert!(policy.one_heavyweight_at_a_time());
+    }
+
+    #[test]
+    fn development_reserve_tracks_commit_limit_and_includes_guard_band() {
+        let policy = AdmissionPolicy::for_runtime_mode(RuntimeMode::Hot);
+        let estimate = 3_072;
+
+        for (commit_limit_mb, protected_reserve_mb) in
+            [(20 * 1024, 4_352), (60 * 1024, 6_400), (100 * 1024, 8_448)]
+        {
+            let required = protected_reserve_mb + estimate;
+            let request = AdmissionRequest {
+                resource_class: ResourceClass::Core,
+                estimated_cold_start_commit_mb: estimate,
+                reserve_floor_mb: None,
+            };
+            let exactly_sized = SystemCommit {
+                total_mb: commit_limit_mb - required,
+                limit_mb: commit_limit_mb,
+            };
+            let AdmissionDecision::Denied(denial) =
+                policy.decide(request, exactly_sized, &empty_load())
+            else {
+                panic!("the exact protected reserve plus estimate must be denied")
+            };
+            assert_eq!(denial.required_headroom_mb, required);
+            assert_eq!(denial.available_headroom_mb, required);
+            assert_eq!(denial.resource, "windows_commit");
+
+            let one_mb_more = SystemCommit {
+                total_mb: exactly_sized.total_mb - 1,
+                limit_mb: commit_limit_mb,
+            };
+            assert_eq!(
+                policy.decide(request, one_mb_more, &empty_load()),
+                AdmissionDecision::Admitted
+            );
+        }
+    }
+
+    #[test]
+    fn packaged_mode_retains_the_fixed_architecture_reserve() {
+        let request = AdmissionRequest {
+            resource_class: ResourceClass::DocumentProcessing,
+            estimated_cold_start_commit_mb: 4_096,
+            reserve_floor_mb: None,
+        };
+        let commit = SystemCommit {
+            total_mb: 40 * 1024 - 9_000,
+            limit_mb: 40 * 1024,
+        };
+
+        assert_eq!(
+            AdmissionPolicy::for_runtime_mode(RuntimeMode::Lean).decide(
+                request,
+                commit,
+                &empty_load()
+            ),
+            AdmissionDecision::Admitted
+        );
+        assert_eq!(
+            AdmissionPolicy::for_runtime_mode(RuntimeMode::Hot).decide(
+                request,
+                commit,
+                &empty_load()
+            ),
+            AdmissionDecision::Admitted
+        );
+        let AdmissionDecision::Denied(denial) = AdmissionPolicy::for_runtime_mode(
+            RuntimeMode::Packaged,
+        )
+        .decide(request, commit, &empty_load()) else {
+            panic!("packaged admission must retain the fixed reserve")
+        };
+        assert_eq!(denial.required_headroom_mb, 12_288);
+        assert_eq!(denial.available_headroom_mb, 9_000);
+    }
+
+    #[test]
+    fn recorded_development_document_headroom_is_admitted_without_weakening_packaged() {
+        let request = AdmissionRequest {
+            resource_class: ResourceClass::DocumentProcessing,
+            estimated_cold_start_commit_mb: 4_096,
+            reserve_floor_mb: None,
+        };
+        let recorded = SystemCommit {
+            total_mb: 40_221 - 9_249,
+            limit_mb: 40_221,
+        };
+
+        for mode in [RuntimeMode::Lean, RuntimeMode::Hot] {
+            assert_eq!(
+                AdmissionPolicy::for_runtime_mode(mode).decide(request, recorded, &empty_load()),
+                AdmissionDecision::Admitted
+            );
+        }
+        let AdmissionDecision::Denied(packaged) = AdmissionPolicy::for_runtime_mode(
+            RuntimeMode::Packaged,
+        )
+        .decide(request, recorded, &empty_load()) else {
+            panic!("the recorded packaged sample must remain denied")
+        };
+        assert_eq!(packaged.required_headroom_mb, 12_288);
+        assert_eq!(packaged.available_headroom_mb, 9_249);
+
+        let development_required = 4_352 + 4_096;
+        let equality = SystemCommit {
+            total_mb: recorded.limit_mb - development_required,
+            limit_mb: recorded.limit_mb,
+        };
+        let AdmissionDecision::Denied(equality_denial) = AdmissionPolicy::for_runtime_mode(
+            RuntimeMode::Hot,
+        )
+        .decide(request, equality, &empty_load()) else {
+            panic!("development reserve equality must fail closed")
+        };
+        assert_eq!(equality_denial.required_headroom_mb, development_required);
+        assert_eq!(equality_denial.available_headroom_mb, development_required);
     }
 
     #[test]

@@ -21,10 +21,15 @@ import path from "node:path";
 import type { DeckSource } from "./schemas.ts";
 import {
   appSourcePath,
+  appSourcePathAt,
   authoredDirectory,
+  authoredDirectoryAt,
   baseStylesPath,
+  baseStylesPathAt,
   indexHtmlPath,
+  indexHtmlPathAt,
   tokensPath,
+  tokensPathAt,
 } from "./workspace.ts";
 
 /**
@@ -149,34 +154,57 @@ export interface AppliedDeck {
 }
 
 export function applyDeckSource(runId: string, deck: DeckSource): AppliedDeck {
+  return applyDeckSourceToPaths(deck, {
+    app: appSourcePath(runId),
+    authored: authoredDirectory(runId),
+    base: baseStylesPath(runId),
+    index: indexHtmlPath(runId),
+    tokens: tokensPath(runId),
+  });
+}
+
+/** Apply source only inside the exact attempt workspace selected by Runtime. */
+export function applyDeckSourceAt(workspaceRoot: string, deck: DeckSource): AppliedDeck {
+  return applyDeckSourceToPaths(deck, {
+    app: appSourcePathAt(workspaceRoot),
+    authored: authoredDirectoryAt(workspaceRoot),
+    base: baseStylesPathAt(workspaceRoot),
+    index: indexHtmlPathAt(workspaceRoot),
+    tokens: tokensPathAt(workspaceRoot),
+  });
+}
+
+function applyDeckSourceToPaths(
+  deck: DeckSource,
+  files: { app: string; authored: string; base: string; index: string; tokens: string },
+): AppliedDeck {
   const written: string[] = [];
 
-  fs.writeFileSync(appSourcePath(runId), `${deck.appTsx.replace(/\s*$/, "")}\n`, "utf8");
+  fs.writeFileSync(files.app, `${deck.appTsx.replace(/\s*$/, "")}\n`, "utf8");
   written.push("src/App.tsx");
 
-  const tokens = fs.readFileSync(tokensPath(runId), "utf8");
-  fs.writeFileSync(tokensPath(runId), mergeRootBlock(tokens, deck.tokensRoot), "utf8");
+  const tokens = fs.readFileSync(files.tokens, "utf8");
+  fs.writeFileSync(files.tokens, mergeRootBlock(tokens, deck.tokensRoot), "utf8");
   written.push("src/styles/tokens.css");
 
   const fontImport = deck.fontImport.trim();
   if (fontImport) {
-    const base = fs.readFileSync(baseStylesPath(runId), "utf8");
+    const base = fs.readFileSync(files.base, "utf8");
     // `@import` is only valid before any other rule, so it goes at the very top
     // — which is also where the clone keeps its own.
-    fs.writeFileSync(baseStylesPath(runId), `${fontImport}\n${base}`, "utf8");
+    fs.writeFileSync(files.base, `${fontImport}\n${base}`, "utf8");
     written.push("src/styles/base.css");
   }
 
-  const html = fs.readFileSync(indexHtmlPath(runId), "utf8");
-  fs.writeFileSync(indexHtmlPath(runId), rewriteIndexHtml(html, deck), "utf8");
+  const html = fs.readFileSync(files.index, "utf8");
+  fs.writeFileSync(files.index, rewriteIndexHtml(html, deck), "utf8");
   written.push("index.html");
 
   if (deck.components.length) {
-    const directory = authoredDirectory(runId);
-    fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(files.authored, { recursive: true });
     for (const component of deck.components) {
       fs.writeFileSync(
-        path.join(directory, `${component.name}.tsx`),
+        path.join(files.authored, `${component.name}.tsx`),
         `${component.source.replace(/\s*$/, "")}\n`,
         "utf8",
       );

@@ -1,13 +1,13 @@
-import {
-  existsSync,
-  lstatSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
-import path from "node:path";
 import { load as loadYaml, JSON_SCHEMA } from "js-yaml";
+import {
+  externalRuntimeLstat,
+  externalRuntimePathExists,
+  externalRuntimePortableRealpath,
+  externalRuntimeReadDirectoryEntries,
+  externalRuntimeReadUtf8,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   loadArisAgentDefinition,
 } from "../aris/agent.ts";
@@ -186,7 +186,7 @@ function configuredRoot(options: LoadAgencyAgentCatalogOptions): {
   // and permanently mask the valid catalog shipped beside Breadboard.
   if (process.env.AGENCY_AGENTS_PATH?.trim()) {
     const environmentRoot = path.resolve(process.env.AGENCY_AGENTS_PATH.trim());
-    if (existsSync(path.join(environmentRoot, "divisions.json"))) {
+    if (externalRuntimePathExists(path.join(environmentRoot, "divisions.json"))) {
       return { rootPath: environmentRoot, source: "environment" };
     }
   }
@@ -199,7 +199,7 @@ function configuredRoot(options: LoadAgencyAgentCatalogOptions): {
       process.env.BREADBOARD_REPO_ROOT.trim(),
       "agency-agents",
     );
-    if (existsSync(path.join(managedRoot, "divisions.json"))) {
+    if (externalRuntimePathExists(path.join(managedRoot, "divisions.json"))) {
       return { rootPath: managedRoot, source: "managed" };
     }
   }
@@ -211,7 +211,7 @@ function configuredRoot(options: LoadAgencyAgentCatalogOptions): {
       path.resolve(process.cwd(), "..", "agency-agents"),
     ];
     const developmentRoot = candidates.find((candidate) =>
-      existsSync(path.join(candidate, "divisions.json")),
+      externalRuntimePathExists(path.join(candidate, "divisions.json")),
     );
     if (developmentRoot) {
       return { rootPath: developmentRoot, source: "development_fallback" };
@@ -243,14 +243,14 @@ function parseDivisions(
 ): { divisions: AgencyAgentDivision[]; diagnostic?: AgencyAgentDiagnostic } {
   const divisionsPath = path.join(root, "divisions.json");
   try {
-    const divisionsInfo = lstatSync(divisionsPath);
+    const divisionsInfo = externalRuntimeLstat(divisionsPath);
     if (divisionsInfo.isSymbolicLink() || !divisionsInfo.isFile()) {
       throw new Error("divisions.json must be a regular file.");
     }
     if (divisionsInfo.size > MAX_AGENT_FILE_BYTES) {
       throw new Error("divisions.json is too large.");
     }
-    const realDivisionsPath = realpathSync(divisionsPath);
+    const realDivisionsPath = externalRuntimePortableRealpath(divisionsPath);
     if (!pathInside(root, realDivisionsPath)) {
       return {
         divisions: [],
@@ -261,7 +261,7 @@ function parseDivisions(
         },
       };
     }
-    const raw = JSON.parse(readFileSync(realDivisionsPath, "utf8")) as {
+    const raw = JSON.parse(externalRuntimeReadUtf8(realDivisionsPath)) as {
       divisions?: Record<string, unknown>;
     };
     if (!raw || typeof raw !== "object" || !raw.divisions || typeof raw.divisions !== "object") {
@@ -318,7 +318,7 @@ function collectDivisionFiles(
     }
     let entries;
     try {
-      entries = readdirSync(directory, { withFileTypes: true });
+      entries = externalRuntimeReadDirectoryEntries(directory);
     } catch {
       diagnostics.push({
         code: "read_failed",
@@ -339,7 +339,7 @@ function collectDivisionFiles(
       const candidate = path.join(directory, entry.name);
       let info;
       try {
-        info = lstatSync(candidate);
+        info = externalRuntimeLstat(candidate);
       } catch {
         diagnostics.push({
           code: "read_failed",
@@ -358,7 +358,7 @@ function collectDivisionFiles(
       }
       let realCandidate: string;
       try {
-        realCandidate = realpathSync(candidate);
+        realCandidate = externalRuntimePortableRealpath(candidate);
       } catch {
         diagnostics.push({
           code: "read_failed",
@@ -400,9 +400,9 @@ function collectDivisionFiles(
 
   for (const division of divisions) {
     const directory = path.join(root, division.slug);
-    if (!existsSync(directory)) continue;
+    if (!externalRuntimePathExists(directory)) continue;
     try {
-      const info = lstatSync(directory);
+      const info = externalRuntimeLstat(directory);
       if (info.isSymbolicLink() || !info.isDirectory()) {
         diagnostics.push({
           code: "symlink_skipped",
@@ -411,7 +411,7 @@ function collectDivisionFiles(
         });
         continue;
       }
-      const realDirectory = realpathSync(directory);
+      const realDirectory = externalRuntimePortableRealpath(directory);
       if (!pathInside(root, realDirectory)) {
         diagnostics.push({
           code: "path_escape",
@@ -456,7 +456,7 @@ function normalizeServices(value: unknown): AgencyAgentService[] {
 }
 
 function parseAgentFile(file: DivisionFile): AgencyAgentDefinition {
-  const markdown = readFileSync(file.fullPath, "utf8").replace(/^\uFEFF/, "");
+  const markdown = externalRuntimeReadUtf8(file.fullPath).replace(/^\uFEFF/, "");
   const match = markdown.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)([\s\S]*)$/);
   if (!match) throw new Error("missing_frontmatter");
   let parsed: unknown;
@@ -509,7 +509,7 @@ function parseAgentFile(file: DivisionFile): AgencyAgentDefinition {
 }
 
 function catalogSignature(root: string, files: DivisionFile[]): string {
-  const divisions = statSync(path.join(root, "divisions.json"));
+  const divisions = externalRuntimeStat(path.join(root, "divisions.json"));
   return [
     `${divisions.size}:${divisions.mtimeMs}`,
     ...files.map((file) => `${file.relativePath}:${file.size}:${file.modifiedMs}`),
@@ -524,19 +524,19 @@ export function loadAgencyAgentsCatalog(
   options: LoadAgencyAgentCatalogOptions = {},
 ): AgencyAgentCatalog {
   const configured = configuredRoot(options);
-  if (!configured.rootPath || !existsSync(configured.rootPath)) {
+  if (!configured.rootPath || !externalRuntimePathExists(configured.rootPath)) {
     return emptyCatalog("missing", configured.source);
   }
   let root: string;
   try {
-    const info = lstatSync(configured.rootPath);
+    const info = externalRuntimeLstat(configured.rootPath);
     if (info.isSymbolicLink() || !info.isDirectory()) {
       return emptyCatalog("invalid", configured.source, [{
         code: "path_escape",
         message: "The configured catalog root must be a regular directory.",
       }]);
     }
-    root = realpathSync(configured.rootPath);
+    root = externalRuntimePortableRealpath(configured.rootPath);
   } catch {
     return emptyCatalog("invalid", configured.source);
   }

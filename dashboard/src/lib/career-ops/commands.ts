@@ -21,8 +21,12 @@
 //      that escapes is refused rather than rewritten, because a rewritten path
 //      would silently change which tracker or report a script edits.
 
-import fs from "node:fs";
 import path from "node:path";
+import {
+  externalRuntimeLstat,
+  externalRuntimeReadDirectory,
+  externalRuntimeRealpath,
+} from "../external-runtime-filesystem.ts";
 
 export interface ParsedCommand {
   /** The clone-root script to run, e.g. "tracker.mjs". */
@@ -127,16 +131,146 @@ export interface ResolvedPath {
   relative: string;
 }
 
+type ExistingPathKind = "any" | "file" | "directory";
+
+interface RootAuthority {
+  /** The spelling supplied by the runtime, before following a root alias. */
+  lexical: string;
+  /** The actual directory that defines this run's filesystem authority. */
+  canonical: string;
+}
+
+function comparablePath(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function samePath(left: string, right: string): boolean {
+  return comparablePath(left) === comparablePath(right);
+}
+
+function isInside(candidate: string, root: string): boolean {
+  const comparableCandidate = comparablePath(candidate);
+  const comparableRoot = comparablePath(root);
+  return (
+    comparableCandidate === comparableRoot ||
+    comparableCandidate.startsWith(
+      comparableRoot.endsWith(path.sep) ? comparableRoot : `${comparableRoot}${path.sep}`,
+    )
+  );
+}
+
+function isMissingPathError(error: unknown): boolean {
+  if (!error || typeof error !== "object" || !("code" in error)) return false;
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+/**
+ * The configured clone root is the authority granted to Career Ops. It may
+ * itself be a deliberate alias (for example a managed-runtime junction), so we
+ * canonicalize that one boundary. Links below it are data controlled by the
+ * workspace and are never allowed to enlarge the authority.
+ */
+function rootAuthority(root: string): RootAuthority | null {
+  try {
+    const lexical = path.resolve(root);
+    const canonical = path.resolve(externalRuntimeRealpath(lexical));
+    if (!externalRuntimeLstat(canonical).isDirectory()) return null;
+    return { lexical, canonical };
+  } catch {
+    return null;
+  }
+}
+
+function resolveWithAuthority(
+  value: string,
+  root: string,
+  options: { allowMissing: boolean; kind: ExistingPathKind },
+): ResolvedPath | null {
+  if (value.includes("\0")) return null;
+  const authority = rootAuthority(root);
+  if (!authority) return null;
+
+  const lexicalCandidate = path.isAbsolute(value)
+    ? path.resolve(value)
+    : path.resolve(authority.lexical, value);
+  if (!isInside(lexicalCandidate, authority.lexical)) return null;
+
+  const relative = path.relative(authority.lexical, lexicalCandidate);
+  const canonicalCandidate = path.resolve(authority.canonical, relative);
+  if (!isInside(canonicalCandidate, authority.canonical)) return null;
+
+  const segments = relative ? relative.split(path.sep).filter(Boolean) : [];
+  let current = authority.canonical;
+  for (let index = 0; index < segments.length; index += 1) {
+    current = path.join(current, segments[index]);
+    let info;
+    try {
+      // lstat is intentional: stat would follow the very link this boundary is
+      // meant to reject. On Windows, directory junctions report as links too.
+      info = externalRuntimeLstat(current);
+    } catch (error) {
+      if (options.allowMissing && isMissingPathError(error)) {
+        return {
+          absolute: canonicalCandidate,
+          relative: relative.split(path.sep).join("/"),
+        };
+      }
+      return null;
+    }
+
+    if (info.isSymbolicLink()) return null;
+    const final = index === segments.length - 1;
+    if (!final && !info.isDirectory()) return null;
+    // A hard-linked file can alias a secret or executable named outside the
+    // workspace even though realpath has no alternate pathname to reveal.
+    if (final && info.isFile() && info.nlink > 1) return null;
+
+    try {
+      const actual = path.resolve(externalRuntimeRealpath(current));
+      // The realpath equality check also catches reparse-point behavior that a
+      // platform-specific lstat implementation might not label as a symlink.
+      if (!isInside(actual, authority.canonical) || !samePath(actual, current)) return null;
+    } catch {
+      return null;
+    }
+
+    if (final) {
+      if (options.kind === "file" && !info.isFile()) return null;
+      if (options.kind === "directory" && !info.isDirectory()) return null;
+    }
+  }
+
+  if (!segments.length && options.kind === "file") return null;
+  return {
+    absolute: canonicalCandidate,
+    relative: relative.split(path.sep).join("/"),
+  };
+}
+
 /**
  * Resolve a path argument against the clone root and refuse anything that
  * escapes it. Absolute paths are accepted only when they are already inside.
  */
 export function resolveInsideRoot(value: string, root: string): ResolvedPath | null {
-  const base = path.resolve(root);
-  const absolute = path.isAbsolute(value) ? path.resolve(value) : path.resolve(base, value);
-  if (absolute !== base && !absolute.startsWith(`${base}${path.sep}`)) return null;
-  const relative = path.relative(base, absolute).split(path.sep).join("/");
-  return { absolute, relative };
+  return resolveWithAuthority(value, root, { allowMissing: true, kind: "any" });
+}
+
+/** Resolve an existing direct child path without following links or junctions. */
+export function resolveExistingInsideRoot(
+  value: string,
+  root: string,
+  kind: ExistingPathKind = "any",
+): ResolvedPath | null {
+  return resolveWithAuthority(value, root, { allowMissing: false, kind });
+}
+
+/** A process entry point must be a direct, regular root-level clone script. */
+export function resolveExecutableScript(script: string, root: string): ResolvedPath | null {
+  const normalized = script.replace(/^\.[\\/]/, "").replace(/\\/g, "/");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.mjs$/.test(normalized)) return null;
+  const resolved = resolveExistingInsideRoot(normalized, root, "file");
+  return resolved?.relative === normalized ? resolved : null;
 }
 
 export type WriteDecision = { ok: true; path: ResolvedPath } | { ok: false; reason: string };
@@ -199,7 +333,7 @@ export function resolveReadablePath(value: string, root: string): WriteDecision 
 export function availableScripts(root: string): string[] {
   let entries: string[];
   try {
-    entries = fs.readdirSync(root);
+    entries = externalRuntimeReadDirectory(root);
   } catch {
     return [];
   }
@@ -209,7 +343,7 @@ export function availableScripts(root: string): string[] {
         entry.endsWith(".mjs") &&
         !isTestHarness(entry) &&
         !(entry in REFUSED_SCRIPTS) &&
-        fs.statSync(path.join(root, entry)).isFile(),
+        Boolean(resolveExecutableScript(entry, root)),
     )
     .sort();
 }
@@ -280,7 +414,7 @@ export function parseCommand(raw: string, root: string): CommandDecision {
   if (isTestHarness(script)) {
     return { ok: false, reason: "The upstream test harnesses are not part of a job-search task." };
   }
-  if (!fs.existsSync(path.join(root, script))) {
+  if (!resolveExecutableScript(script, root)) {
     return {
       ok: false,
       reason: `There is no ${script} in this career-ops clone. Read docs/SCRIPTS.md for the scripts this version ships.`,

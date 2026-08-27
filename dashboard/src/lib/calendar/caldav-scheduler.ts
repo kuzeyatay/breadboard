@@ -31,18 +31,6 @@ export const PENDING_INTERVAL_MS = 60_000;
 /** However many times a server has refused us, stop waiting longer than this. */
 export const MAX_BACKOFF_MS = 6 * 60 * 60_000;
 
-const TICK_INTERVAL_MS = 60_000;
-
-/** Give the server room to boot before the first outbound request. */
-const FIRST_TICK_DELAY_MS = 20_000;
-
-type SchedulerGlobals = typeof globalThis & {
-  __breadboardCaldavScheduler?: ReturnType<typeof setInterval>;
-  __breadboardCaldavSchedulerRunning?: boolean;
-};
-
-const globals = globalThis as SchedulerGlobals;
-
 function configuredInterval(): number {
   const raw = Number(process.env.BREADBOARD_CALDAV_SYNC_INTERVAL_MS);
   // A floor rather than trust: a misconfigured interval of "1" would turn this
@@ -205,29 +193,4 @@ export async function runDueCaldavSyncs(
   }
 
   return result;
-}
-
-/** Start the process-wide tick. Safe to call repeatedly (dev hot reloads). */
-export function startCaldavScheduler(): void {
-  if (globals.__breadboardCaldavScheduler) return;
-
-  const tick = async () => {
-    // Never overlap ticks in this process: a slow server must not stack timers.
-    // The database lease covers the other process sharing this file.
-    if (globals.__breadboardCaldavSchedulerRunning) return;
-    globals.__breadboardCaldavSchedulerRunning = true;
-    try {
-      await runDueCaldavSyncs();
-    } catch {
-      // Nothing to record here: each calendar's own outcome is already on its
-      // row, and the next tick comes round in a minute.
-    } finally {
-      globals.__breadboardCaldavSchedulerRunning = false;
-    }
-  };
-
-  setTimeout(() => void tick(), FIRST_TICK_DELAY_MS);
-  const timer = setInterval(() => void tick(), TICK_INTERVAL_MS);
-  timer.unref();
-  globals.__breadboardCaldavScheduler = timer;
 }

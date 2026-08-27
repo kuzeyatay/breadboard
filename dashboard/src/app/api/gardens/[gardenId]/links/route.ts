@@ -55,7 +55,10 @@ function fallbackTitleForUrl(url: string): string {
   }
 }
 
-function fallbackExtraction(title: string, markdown: string): KnowledgeExtraction {
+function fallbackExtraction(
+  title: string,
+  markdown: string,
+): KnowledgeExtraction {
   const summary = markdown.trim()
     ? markdown.trim().replace(/\s+/g, " ").slice(0, 300)
     : `Imported URL source ${title}.`;
@@ -92,7 +95,7 @@ export async function POST(
 ) {
   try {
     const { gardenId } = await params;
-    const { cluster } = await requireOwnedClusterFromSlug(gardenId);
+    const { cluster, userId } = await requireOwnedClusterFromSlug(gardenId);
     const contentPath = contentPathOrResponse();
     if (contentPath instanceof NextResponse) return contentPath;
 
@@ -166,6 +169,7 @@ export async function POST(
       plainText: converted.markdown,
       pages,
       extraction,
+      publicationUserId: userId,
       sourceMetadata: {
         original_url: converted.originalUrl,
         canonical_url: converted.canonicalUrl ?? "",
@@ -198,7 +202,8 @@ export async function POST(
       links: readGardenLinks(contentPath, cluster.slug),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to save link";
+    const message =
+      error instanceof Error ? error.message : "Failed to save link";
     if (
       message === "Link URL is required" ||
       message === "Enter a valid link URL" ||
@@ -237,7 +242,8 @@ export async function DELETE(
       links: readGardenLinks(contentPath, cluster.slug),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to delete link";
+    const message =
+      error instanceof Error ? error.message : "Failed to delete link";
     if (message === "Link id is required") {
       return NextResponse.json({ error: message }, { status: 400 });
     }

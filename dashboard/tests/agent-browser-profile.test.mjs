@@ -41,8 +41,10 @@ test("a run inherits the profile only once someone has signed into it", () => {
 
 test("the run manager hands that profile to the CLI, and only when there is one", () => {
   const manager = source("src/lib/agent-browser/run-manager.ts");
-  assert.match(manager, /const profile = activeProfileDir\(\);/);
-  assert.match(manager, /\.\.\.\(profile \? \{ AGENT_BROWSER_PROFILE: profile \} : \{\}\)/);
+  assert.match(manager, /profilePath: activeProfileDir\(\)/);
+  const executor = source("scripts/runtime-v2-agent-browser-executor.mjs");
+  assert.match(executor, /current\.request\.profilePath/);
+  assert.match(executor, /AGENT_BROWSER_PROFILE: current\.request\.profilePath/);
 });
 
 test("the sign-in window is open only while its own process is alive", () => {
@@ -78,8 +80,8 @@ test("the sign-in window is open only while its own process is alive", () => {
 });
 
 test("only web addresses reach the browser's command line", () => {
-  assert.throws(() => profile.openSignInWindow("file:///etc/passwd", {}), /invalid_url/);
-  assert.throws(() => profile.openSignInWindow("not a url", {}), /invalid_url/);
+  assert.throws(() => profile.normalizeBrowserProfileStartUrl("file:///etc/passwd"), /invalid_url/);
+  assert.throws(() => profile.normalizeBrowserProfileStartUrl("not a url"), /invalid_url/);
 });
 
 test("forgetting the sign-ins refuses anything that is not the profile", () => {
@@ -101,7 +103,7 @@ test("a run and the sign-in window never hold the same browser profile", () => {
   );
 
   const route = source("src/app/api/agent-browser/browser-profile/route.ts");
-  assert.match(route, /if \(hasActiveRun\(\)\) throw new BrowserProfileError\(409, "run_in_progress"\)/);
+  assert.match(route, /if \(await hasActiveRun\(\)\) throw new BrowserProfileError\(409, "run_in_progress"\)/);
 
   // And the refusal reaches the person as a sentence with a fix in it.
   assert.match(identity.agentBrowserStartFailure("sign_in_window_open"), /profile page/);
@@ -117,7 +119,7 @@ test("a run and the sign-in window never hold the same browser profile", () => {
 
 test("the profile page carries the sign-in card, read on the server", () => {
   const page = source("src/app/profile/page.tsx");
-  assert.match(page, /browserProfile=\{browserProfileState\(\)\}/);
+  assert.match(page, /browserProfile=\{await browserProfileState\(\)\}/);
 
   const client = source("src/app/profile/profile-client.tsx");
   assert.match(client, /import BrowserProfilePanel from "\.\/browser-profile-panel";/);

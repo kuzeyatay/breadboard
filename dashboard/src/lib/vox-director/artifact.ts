@@ -135,17 +135,17 @@ export function closeVoxArtifactContext(
 }
 
 /** Store one poster as an ordinary image artifact. Returns its id, or null. */
-export function storePoster(input: {
+export async function storePoster(input: {
   context: VoxArtifactContext;
   absolutePath: string;
   title: string;
   prompt: string;
   backend: string;
   key: string;
-}): string | null {
+}): Promise<string | null> {
   try {
     const buffer = fs.readFileSync(input.absolutePath);
-    const artifact = importArtifactImage({
+    const artifact = await importArtifactImage({
       context: {
         userId: input.context.userId,
         conversationPublicId: input.context.conversationPublicId,
@@ -182,16 +182,16 @@ export function storePoster(input: {
  * the transcript, downloadable, and editable by Video Use — rather than needing
  * a viewer of its own.
  */
-export function publishFilm(input: {
+export async function publishFilm(input: {
   context: VoxArtifactContext;
   production: VoxProduction;
   absolutePath: string;
   workspaceRoot: string;
   productionArtifactId?: string | null;
-}): { ok: true; artifactId: string; filename: string } | { ok: false; reason: string } {
+}): Promise<{ ok: true; artifactId: string; filename: string } | { ok: false; reason: string }> {
   try {
     const video = input.production.renderPlan.video;
-    const artifact = createImportedArtifact({
+    const artifact = await createImportedArtifact({
       userId: input.context.userId,
       runtimeSessionId: input.context.runtimeSessionId,
       hermesSessionId: input.context.hermesSessionId,

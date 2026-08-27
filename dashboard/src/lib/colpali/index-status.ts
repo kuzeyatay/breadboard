@@ -12,6 +12,7 @@
 // the whole document exactly as Breadboard always did. Every state other than
 // `ready` means precisely that.
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -72,10 +73,21 @@ export function writeIndexStatus(
   status: Omit<ColpaliIndexStatus, "updatedAt">,
 ): void {
   const payload: ColpaliIndexStatus = { ...status, updatedAt: new Date().toISOString() };
+  const target = statusPath(blobPath);
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(statusPath(blobPath), JSON.stringify(payload, null, 2), "utf8");
+    fs.writeFileSync(temporary, JSON.stringify(payload, null, 2), { encoding: "utf8", flag: "wx", mode: 0o600 });
+    const descriptor = fs.openSync(temporary, "r+");
+    try {
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.renameSync(temporary, target);
   } catch {
     // A status that cannot be written costs a re-index, not a failed upload.
+  } finally {
+    fs.rmSync(temporary, { force: true });
   }
 }
 

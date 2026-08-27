@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { runtimeAvailability } from "@/lib/openplanter/run-manager.ts";
+import { runtimeAvailability } from "@/lib/openplanter/runtime.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

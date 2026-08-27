@@ -1,7 +1,4 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import db from "../db.ts";
 import {
   activateArtifactVersion,
@@ -17,14 +14,10 @@ import {
 } from "./artifact-store.ts";
 import {
   cancelInteractiveVisualizerWork,
-  runInteractiveVisualizerBrowserTests,
+  runInteractiveVisualizerPublicationViaRuntime,
 } from "./interactive-visualizer-browser.ts";
-import { bundleInteractiveVisualizer } from "./interactive-visualizer-runtime.ts";
-import {
-  bundleCustomInteractiveVisualizer,
-  compileCustomInteractiveVisualizerPackage,
-  isCustomInteractiveVisualizerPackage,
-  type CustomInteractiveVisualizerPackage,
+import type {
+  CustomInteractiveVisualizerPackage,
 } from "./interactive-visualizer-custom.ts";
 import {
   INTERACTIVE_VISUALIZER_MAX_REPAIR_ATTEMPTS,
@@ -32,16 +25,14 @@ import {
   INTERACTIVE_VISUALIZER_THREE_VERSION,
   type InteractiveVisualizerBrowserTests,
   type InteractiveVisualizerLifecycleStatus,
-  type InteractiveVisualizerManifest,
   type InteractiveVisualizerPackage,
   type InteractiveVisualizerPlan,
   type InteractiveVisualizerValidation,
   type InteractiveVisualizerVersionManifest,
 } from "./interactive-visualizer-types.ts";
 import {
-  compileInteractiveVisualizerPackage,
   validateInteractiveVisualizerPlan,
-} from "./interactive-visualizer-validator.ts";
+} from "./interactive-visualizer-plan.ts";
 import { interactiveVisualizerConfig } from "./interactive-visualizer-config.ts";
 import {
   isInlineInteractiveVisualizerSkill,
@@ -375,26 +366,6 @@ export async function createInteractiveVisualizer(input: {
   });
 }
 
-function safeTempDirectory(): string {
-  const base = path.resolve(os.tmpdir());
-  const directory = path.resolve(fs.mkdtempSync(path.join(base, "breadboard-visualizer-")));
-  const relation = path.relative(base, directory);
-  if (!relation || relation.startsWith("..") || path.isAbsolute(relation)) {
-    throw new Error("Could not create a controlled visualizer staging directory.");
-  }
-  return directory;
-}
-
-function removeTempDirectory(directory: string): void {
-  const base = path.resolve(os.tmpdir());
-  const target = path.resolve(directory);
-  const relation = path.relative(base, target);
-  if (!relation || relation.startsWith("..") || path.isAbsolute(relation) || !path.basename(target).startsWith("breadboard-visualizer-")) {
-    return;
-  }
-  fs.rmSync(target, { recursive: true, force: true });
-}
-
 export async function generateInteractiveVisualizer(input: {
   context: InteractiveVisualizerToolContext;
   artifact: ArtifactRow;
@@ -464,24 +435,6 @@ export async function generateInteractiveVisualizer(input: {
   const plan = JSON.parse(visualizer.plan_json) as InteractiveVisualizerPlan;
   setLifecycle({ artifactId: input.artifact.id, status: "validating" });
   updateJob({ id: jobId, status: "validating" });
-  const compiled = isCustomInteractiveVisualizerPackage(input.packageValue)
-    ? (() => {
-        const custom = compileCustomInteractiveVisualizerPackage(plan, input.packageValue);
-        return {
-          definition: null,
-          manifest: custom.manifest,
-          plan: custom.plan,
-          html: "",
-          css: "",
-          validation: custom.validation,
-          sourceHash: custom.sourceHash,
-          customPackage: custom.package,
-        };
-      })()
-    : {
-        ...compileInteractiveVisualizerPackage(plan, input.packageValue),
-        customPackage: null,
-      };
   recordArtifactPipelineEvent({
     artifact: input.artifact,
     runId: input.context.runId,
@@ -492,9 +445,80 @@ export async function generateInteractiveVisualizer(input: {
       phase: "validating",
       jobId,
       candidateVersion,
-      valid: compiled.validation.valid,
     },
   });
+  const unavailableValidation: InteractiveVisualizerValidation = {
+    valid: false,
+    checkedAt: new Date().toISOString(),
+    astNodeCount: 0,
+    sourceBytes: 0,
+    imports: [],
+    errors: ["Interactive visualizer validation did not complete."],
+    warnings: [],
+  };
+  let validation = unavailableValidation;
+  let tests: InteractiveVisualizerBrowserTests | undefined;
+  let buildingRecorded = false;
+  let browserTestingRecorded = false;
+  const recordBuilding = () => {
+    if (buildingRecorded) return;
+    buildingRecorded = true;
+    updateArtifactMetadata(input.artifact.id, { lifecycleStatus: "building" });
+    recordArtifactPipelineEvent({
+      artifact: input.artifact,
+      runId: input.context.runId,
+      assistantMessageId: input.context.assistantMessageId,
+      type: "interactive_visualizer_building",
+      version: candidateVersion,
+      payload: { artifactType: "interactive-visualizer", attempt },
+    });
+  };
+  const recordBrowserTesting = () => {
+    if (browserTestingRecorded) return;
+    recordBuilding();
+    browserTestingRecorded = true;
+    setLifecycle({ artifactId: input.artifact.id, status: "browser_testing" });
+    updateJob({ id: jobId, status: "browser_testing" });
+    recordArtifactPipelineEvent({
+      artifact: input.artifact,
+      runId: input.context.runId,
+      assistantMessageId: input.context.assistantMessageId,
+      type: "interactive_visualizer_browser_testing",
+      version: candidateVersion,
+      payload: { artifactType: "interactive-visualizer", attempt },
+    });
+  };
+  try {
+    const publication = await runInteractiveVisualizerPublicationViaRuntime({
+      scope: {
+        userId: input.context.userId,
+        runtimeSessionId: input.context.runtimeSessionId,
+        conversationId: input.context.conversationId,
+        clusterId: input.context.clusterId,
+      },
+      localJobId: jobId,
+      plan,
+      packageValue: input.packageValue,
+      onStage: (stage) => {
+        if (stage === "generating") recordBuilding();
+        if (stage === "processing" || stage === "persisting") {
+          recordBrowserTesting();
+        }
+      },
+    });
+    validation = publication.validation;
+    tests = publication.tests ?? undefined;
+    const compiled = {
+      validation,
+      manifest: publication.manifest,
+      sourceHash: publication.sourceHash,
+      customPackage: publication.customPackage ? true : null,
+      definition: publication.customPackage ? null : true,
+    };
+    const bundle = {
+      html: publication.bundleHtml ?? "",
+      hash: publication.bundleHash ?? "",
+    };
   if (
     !compiled.validation.valid ||
     !compiled.manifest ||
@@ -568,43 +592,16 @@ export async function generateInteractiveVisualizer(input: {
     };
   }
 
-  let tempDirectory = "";
-  let tests: InteractiveVisualizerBrowserTests | undefined;
-  try {
-    updateArtifactMetadata(input.artifact.id, { lifecycleStatus: "building" });
-    recordArtifactPipelineEvent({
-      artifact: input.artifact,
-      runId: input.context.runId,
-      assistantMessageId: input.context.assistantMessageId,
-      type: "interactive_visualizer_building",
-      version: candidateVersion,
-      payload: { artifactType: "interactive-visualizer", attempt },
+    recordBuilding();
+    recordBrowserTesting();
+    updateJob({
+      id: jobId,
+      status: "browser_testing",
+      validation: compiled.validation,
     });
-    const bundle = compiled.customPackage
-      ? await bundleCustomInteractiveVisualizer(compiled.customPackage)
-      : await bundleInteractiveVisualizer({
-          definition: compiled.definition!,
-          manifest: compiled.manifest as InteractiveVisualizerManifest,
-          html: compiled.html,
-          css: compiled.css,
-        });
-    setLifecycle({ artifactId: input.artifact.id, status: "browser_testing" });
-    updateJob({ id: jobId, status: "browser_testing", validation: compiled.validation });
-    recordArtifactPipelineEvent({
-      artifact: input.artifact,
-      runId: input.context.runId,
-      assistantMessageId: input.context.assistantMessageId,
-      type: "interactive_visualizer_browser_testing",
-      version: candidateVersion,
-      payload: { artifactType: "interactive-visualizer", attempt },
-    });
-    tempDirectory = safeTempDirectory();
-    tests = await runInteractiveVisualizerBrowserTests({
-      html: bundle.html,
-      mode: compiled.manifest.mode,
-      outputDir: tempDirectory,
-      runtimeSessionId: input.context.runtimeSessionId,
-    });
+    if (!tests) {
+      throw new Error("Runtime returned no interactive visualizer browser evidence.");
+    }
     if (!tests.passed) {
       const error = {
         code: "interactive_visualizer_browser_tests_failed",
@@ -680,6 +677,9 @@ export async function generateInteractiveVisualizer(input: {
     }
     if (visualizerRow(input.artifact.id).cancellation_requested) {
       throw new Error("interactive visualizer cancelled by user");
+    }
+    if (!compiled.sourceHash || !bundle.hash || !bundle.html) {
+      throw new Error("Runtime returned an incomplete interactive visualizer publication.");
     }
     const currentArtifact = getArtifactById(input.artifact.id)!;
     const sourcePackage = input.packageValue as
@@ -796,7 +796,7 @@ export async function generateInteractiveVisualizer(input: {
     updateJob({
       id: jobId,
       status: cancelled ? "cancelled" : "failed",
-      validation: compiled.validation,
+      validation,
       tests,
       error: safe,
     });
@@ -827,7 +827,7 @@ export async function generateInteractiveVisualizer(input: {
     }
     return {
       artifact: presentArtifact(getArtifactById(input.artifact.id)!),
-      validation: compiled.validation,
+      validation,
       tests,
       repairable: !cancelled && attempt < maxAttempts,
       attemptsRemaining: cancelled
@@ -835,8 +835,6 @@ export async function generateInteractiveVisualizer(input: {
         : maxAttempts - attempt,
       failureCategory: cancelled ? "cancelled" : "publication",
     };
-  } finally {
-    if (tempDirectory) removeTempDirectory(tempDirectory);
   }
 }
 

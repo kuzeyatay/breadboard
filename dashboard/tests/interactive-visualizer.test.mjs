@@ -20,9 +20,9 @@ import {
 } from "../src/lib/hermes/interactive-visualizer-custom.ts";
 import {
   appendBoundedBrowserOutput,
-  cancelInteractiveVisualizerWork,
-  runInteractiveVisualizerBrowserTests,
-} from "../src/lib/hermes/interactive-visualizer-browser.ts";
+  removeOwnedBrowserProfile,
+  runInteractiveVisualizerBrowserTestsInWorker as runInteractiveVisualizerBrowserTests,
+} from "../scripts/runtime-v2-interactive-visualizer-executor.mjs";
 import {
   compileInteractiveVisualizerPackage,
 } from "../src/lib/hermes/interactive-visualizer-validator.ts";
@@ -383,6 +383,57 @@ test("browser output capture preserves DOM markers when a dump exceeds 750k", ()
   assert.ok(output.length <= 750_000);
 });
 
+test("owned browser profile cleanup retries transient Windows release races and fails closed", async () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-profile-cleanup-test-"));
+  const realRemove = fs.rmSync.bind(fs);
+  try {
+    const recoveredProfile = fs.mkdtempSync(path.join(outputDir, ".browser-profile-"));
+    let recoveredAttempts = 0;
+    let recoveredElapsedMs = 0;
+    await removeOwnedBrowserProfile(outputDir, recoveredProfile, {
+      platform: "win32",
+      now: () => recoveredElapsedMs,
+      wait: async (milliseconds) => {
+        recoveredElapsedMs += milliseconds;
+      },
+      remove: (target, options) => {
+        recoveredAttempts += 1;
+        if (recoveredAttempts <= 3) {
+          const error = new Error("The browser profile is still releasing handles.");
+          error.code = "EPERM";
+          throw error;
+        }
+        realRemove(target, options);
+      },
+    });
+    assert.equal(recoveredAttempts, 4);
+    assert.equal(fs.existsSync(recoveredProfile), false);
+    assert.ok(recoveredElapsedMs > 0 && recoveredElapsedMs < 5_000);
+
+    const lockedProfile = fs.mkdtempSync(path.join(outputDir, ".browser-profile-"));
+    let lockedElapsedMs = 0;
+    await assert.rejects(
+      removeOwnedBrowserProfile(outputDir, lockedProfile, {
+        platform: "win32",
+        now: () => lockedElapsedMs,
+        wait: async (milliseconds) => {
+          lockedElapsedMs += milliseconds;
+        },
+        remove: () => {
+          const error = new Error("The browser profile remained locked.");
+          error.code = "EPERM";
+          throw error;
+        },
+      }),
+      /remained locked/,
+    );
+    assert.equal(lockedElapsedMs, 5_000);
+    assert.equal(fs.existsSync(lockedProfile), true);
+  } finally {
+    realRemove(outputDir, { recursive: true, force: true });
+  }
+});
+
 test("schema-2 rejects theme-breaking text, ambiguous transport controls, and unreviewed geometry", () => {
   const fixture = customWaveFixture();
 
@@ -436,6 +487,12 @@ test("schema-2 custom visualizers pass the real responsive browser gate", { time
       runtimeSessionId: 91_003,
     });
     assert.equal(result.passed, true, JSON.stringify(result.checks, null, 2));
+    assert.equal(
+      result.checks
+        .filter((check) => /^(browser mount|desktop preview|mobile preview)/.test(check.name))
+        .every((check) => /process tree closed/.test(check.detail)),
+      true,
+    );
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }
@@ -455,7 +512,17 @@ test("schema-2 custom visualizers receive pinned Three.js and an accessible WebG
       runtimeSessionId: 91_004,
     });
     assert.equal(result.passed, true, JSON.stringify(result.checks, null, 2));
-    assert.equal(result.checks.some((check) => check.name === "WebGL unavailable fallback" && check.passed), true);
+    const fallback = result.checks.find(
+      (check) => check.name === "WebGL unavailable fallback",
+    );
+    assert.equal(fallback?.passed, true);
+    assert.match(fallback?.detail ?? "", /Accessible fallback rendered.*process tree closed/);
+    assert.equal(
+      result.checks
+        .filter((check) => /^(browser mount|desktop preview|mobile preview)/.test(check.name))
+        .every((check) => /process tree closed/.test(check.detail)),
+      true,
+    );
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }
@@ -618,17 +685,17 @@ test("malicious packages and pathological resource requests are rejected before 
 test("browser testing can be cancelled and terminates its active process tree", { timeout: 45_000 }, async () => {
   const { bundle } = await compiledBundle(pendulumFixture());
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-cancel-test-"));
-  const runtimeSessionId = 91_099;
+  const controller = new AbortController();
   try {
     const work = runInteractiveVisualizerBrowserTests({
       html: bundle.html,
       mode: "2d",
       outputDir,
-      runtimeSessionId,
+      signal: controller.signal,
     });
     const rejected = assert.rejects(work, /cancel/i);
     await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.equal(await cancelInteractiveVisualizerWork(runtimeSessionId), true);
+    controller.abort(new Error("interactive visualizer cancelled by user"));
     await rejected;
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
@@ -738,7 +805,11 @@ test("first-party skill and tools are available only to authenticated Terminal a
   const quartzSkills = listFirstPartySkills("quartz_ai");
   assert.equal(terminalSkills.some((skill) => skill.slug === "interactive-visualizer" && skill.availability === "ready"), true);
   assert.equal(gardenSkills.some((skill) => skill.slug === "interactive-visualizer" && skill.availability === "ready"), true);
-  assert.equal(quartzSkills.some((skill) => skill.availability === "ready"), false);
+  assert.equal(
+    quartzSkills.some((skill) =>
+      skill.slug === "interactive-visualizer" && skill.availability === "ready"),
+    false,
+  );
 
   const grant = (surface, userId) => brokerCapabilities({
     plan: planTask({ request: "Create an interactive visualization", authenticated: userId !== null }),

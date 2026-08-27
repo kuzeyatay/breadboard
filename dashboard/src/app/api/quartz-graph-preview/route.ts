@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
+import { externalRuntimeFilesystem as fs } from '@/lib/external-runtime-filesystem';
 import { QUARTZ_BASE_URL, quartzUrl } from '@/lib/quartz-url';
 import { requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 

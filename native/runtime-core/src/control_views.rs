@@ -2,8 +2,9 @@ use crate::store::{JobEventRecord, JobRecord, StoreError};
 use breadboard_runtime_protocol::{
     JobState, ResourceClass, RuntimeJobEventPayload, RuntimeJobEventRecord, RuntimeJobEventType,
     RuntimeJobEventsResponse, RuntimeJobResponse, RuntimeJobStatus, RuntimePublicArtifactKind,
-    RuntimePublicFailureCode, RuntimePublicStage, WorkerEvent, MAX_JOB_EVENT_REPLAY_RECORDS,
-    MAX_PROTOCOL_LINE_BYTES, RUNTIME_CONTROL_PROTOCOL_VERSION, SANITIZED_RUNTIME_FAILURE_MESSAGE,
+    RuntimePublicFailureCode, RuntimePublicStage, RuntimeResourceExhaustion, WorkerEvent,
+    MAX_JOB_EVENT_REPLAY_RECORDS, MAX_PROTOCOL_LINE_BYTES, RUNTIME_CONTROL_PROTOCOL_VERSION,
+    SANITIZED_RUNTIME_FAILURE_MESSAGE,
 };
 
 const EVENT_REPLAY_ENVELOPE_RESERVE_BYTES: usize = 4 * 1024;
@@ -51,6 +52,33 @@ fn public_failure_code(record: &JobRecord) -> Option<RuntimePublicFailureCode> {
     })
 }
 
+fn public_resource_exhaustion(
+    record: &JobRecord,
+) -> Result<Option<RuntimeResourceExhaustion>, StoreError> {
+    match (
+        record.resource_exhaustion_resource.as_deref(),
+        record.resource_exhaustion_required_headroom_mb,
+        record.resource_exhaustion_available_headroom_mb,
+    ) {
+        (None, None, None) => Ok(None),
+        (Some(_), Some(required_headroom_mb), Some(available_headroom_mb))
+            if record.state == JobState::ResourceExhausted =>
+        {
+            let evidence = RuntimeResourceExhaustion {
+                resource: "windows_commit".into(),
+                required_headroom_mb,
+                available_headroom_mb,
+                retryable: false,
+            };
+            evidence
+                .validate()
+                .map_err(|_| StoreError::CorruptState(record.job_id.clone()))?;
+            Ok(Some(evidence))
+        }
+        _ => Err(StoreError::CorruptState(record.job_id.clone())),
+    }
+}
+
 /// Projects the durable authority row into the deliberately narrower private
 /// control-plane schema. This is the only projection used by the host, so
 /// filesystem paths, request payloads, owner principals, and idempotency
@@ -80,6 +108,7 @@ pub fn runtime_job_response(record: &JobRecord) -> Result<RuntimeJobResponse, St
             .failure_message
             .as_ref()
             .map(|_| SANITIZED_RUNTIME_FAILURE_MESSAGE.to_string()),
+        resource_exhaustion: public_resource_exhaustion(record)?,
         cancellation_requested: record.cancellation_requested,
     };
     status.validate()?;
@@ -363,13 +392,59 @@ fn project_runtime_event(
         "uncertain" => (RuntimeJobEventType::JobUncertain, Some(JobState::Uncertain)),
         _ => return Err(StoreError::CorruptState(event.job_id.clone())),
     };
+    let resource_exhaustion = if event_type == RuntimeJobEventType::JobResourceExhausted {
+        public_resource_exhaustion_event(event)?
+    } else {
+        None
+    };
     Ok((
         event_type,
         RuntimeJobEventPayload {
             state,
+            resource_exhaustion,
             ..RuntimeJobEventPayload::default()
         },
     ))
+}
+
+fn public_resource_exhaustion_event(
+    event: &JobEventRecord,
+) -> Result<Option<RuntimeResourceExhaustion>, StoreError> {
+    let Some(denial) = event.payload.get("admissionDenial") else {
+        return Ok(None);
+    };
+    let resource = denial.get("resource").and_then(serde_json::Value::as_str);
+    let required_headroom_mb = denial
+        .get("requiredHeadroomMb")
+        .and_then(serde_json::Value::as_u64);
+    let available_headroom_mb = denial
+        .get("availableHeadroomMb")
+        .and_then(serde_json::Value::as_u64);
+    let retryable = denial.get("retryable").and_then(serde_json::Value::as_bool);
+    if !resource.is_some_and(|value| {
+        matches!(
+            value,
+            "windows_commit_critical"
+                | "heavyweight_concurrency"
+                | "windows_commit"
+                | "worker_concurrency"
+        )
+    }) || retryable != Some(false)
+    {
+        return Err(StoreError::CorruptState(event.job_id.clone()));
+    }
+    let evidence = RuntimeResourceExhaustion {
+        resource: "windows_commit".into(),
+        required_headroom_mb: required_headroom_mb
+            .ok_or_else(|| StoreError::CorruptState(event.job_id.clone()))?,
+        available_headroom_mb: available_headroom_mb
+            .ok_or_else(|| StoreError::CorruptState(event.job_id.clone()))?,
+        retryable: false,
+    };
+    evidence
+        .validate()
+        .map_err(|_| StoreError::CorruptState(event.job_id.clone()))?;
+    Ok(Some(evidence))
 }
 
 fn parse_resource_class(record: &JobRecord) -> Result<ResourceClass, StoreError> {

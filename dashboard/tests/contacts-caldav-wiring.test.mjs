@@ -50,7 +50,7 @@ const syncPanel = source("../src/app/profile/calendar-sync-panel.tsx");
 const credentials = source("../src/lib/calendar/caldav-credentials.ts");
 const calendarStore = source("../src/lib/calendar/store.ts");
 const calendarSchema = source("../src/lib/calendar/schema.ts");
-const instrumentation = source("../src/instrumentation-node.ts");
+const backgroundExecutor = source("../scripts/runtime-v2-background-executor.mjs");
 
 const ROUTES = [
   "../src/app/api/contacts/route.ts",
@@ -144,12 +144,10 @@ test("the password never leaves the server", () => {
   );
 });
 
-test("syncing runs on its own, from the process that is always up", () => {
-  assert.match(
-    instrumentation,
-    /import \{ startCaldavScheduler \} from "\.\/lib\/calendar\/caldav-scheduler\.ts"/,
-  );
-  assert.match(instrumentation, /^startCaldavScheduler\(\);$/m);
+test("syncing runs in a fresh native-scheduled worker", () => {
+  assert.match(backgroundExecutor, /case "caldav-sync"/);
+  assert.match(backgroundExecutor, /lib\/calendar\/caldav-scheduler\.ts/);
+  assert.match(backgroundExecutor, /await runDueCaldavSyncs\(\)/);
 });
 
 test("a subscribed calendar and a synced one stay different things", () => {

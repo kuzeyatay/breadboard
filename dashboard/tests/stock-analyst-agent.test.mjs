@@ -166,14 +166,14 @@ test("stages and status lines are readable, and the clone's fixed Chinese is tra
 
 // ---- containment ------------------------------------------------------------
 
-test("the clone's own deployment is never read, run, or written to", () => {
+test("the clone's deployment stays isolated behind a private Runtime profile", () => {
   const service = source("src/lib/stock-analyst/service.ts");
 
   // The user's `.env` holds their API keys, their watchlist, their webhooks and
-  // possibly SCHEDULE_ENABLED=true. ENV_FILE is what keeps setup_env() away from
-  // it, and it must point at Breadboard's own file.
-  assert.match(service, /ENV_FILE:\s*envFile/);
-  assert.match(service, /breadboard\.env/);
+  // possibly SCHEDULE_ENABLED=true. Only closed env-file contents are handed to
+  // the Runtime launcher; no checkout path is accepted from the request.
+  assert.match(service, /envFileContents:\s*settingsEnvFile\(options\.settings\)/);
+  assert.doesNotMatch(service, /path\.join\([^\n]*,"\.env"\)/);
 
   // Nothing may run the daily pipeline or fire a notification.
   assert.match(service, /DSA_RUNTIME_SCHEDULER_SUPPRESS_START:\s*"1"/);
@@ -182,19 +182,21 @@ test("the clone's own deployment is never read, run, or written to", () => {
 
   // State belongs outside the checkout, not in the ./data and ./logs a user's
   // own `python main.py` writes to.
-  assert.match(service, /DATABASE_PATH:\s*path\.join\(home,\s*"data"/);
-  assert.match(service, /LOG_DIR:\s*path\.join\(home,\s*"logs"/);
+  assert.match(service, /database:\s*"data\/stock_analysis\.db"/);
+  assert.match(service, /logs:\s*"logs"/);
 
-  // The only file written anywhere is Breadboard's own env file, under its own
-  // runtime directory.
+  // The only dashboard write is its private, atomic Runtime profile under the
+  // product data directory; process ownership and environment deletion are not
+  // present in any adapter source.
   const stateHome = source("src/lib/stock-analyst/runtime.ts");
   assert.match(stateHome, /\.runtime",\s*"stock-analyst"/);
   for (const file of ["service.ts", "run-manager.ts", "setup.ts", "runtime.ts"]) {
     const text = source(`src/lib/stock-analyst/${file}`);
-    for (const [, argument] of text.matchAll(/writeFileSync\(([^,]+),/g)) {
-      assert.match(argument, /envFile|file/, `${file} writes somewhere unexpected`);
-    }
+    assert.doesNotMatch(text, /node:child_process|spawn\(|detached:|stopService/);
   }
+  assert.match(service, /runtimeServiceConfigPath\(\)/);
+  assert.match(service, /flag:\s*"wx"/);
+  assert.match(service, /mode:\s*0o600/);
 });
 
 test("the model layer is ChatMock, stated rather than inferred", () => {

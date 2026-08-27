@@ -1,10 +1,12 @@
 import { EventEmitter } from "node:events";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   MAX_RUNTIME_PROTOCOL_LINE_BYTES,
+  RUNTIME_PRODUCT_ENVIRONMENT_NAMES,
   RUNTIME_EXECUTABLE_NAME,
   RuntimeProcess,
   RuntimeProcessError,
@@ -21,6 +23,7 @@ const DASHBOARD_SERVICE: RuntimeServiceStatus = {
   id: "dashboard",
   displayName: "Breadboard workspace",
   required: true,
+  startupPolicy: "eager",
   state: "ready",
   lastError: null,
   restarts: 0,
@@ -61,6 +64,7 @@ interface SpawnCall {
 function createHarness(
   fetchImpl?: typeof fetch,
   onLog?: (source: "stdout" | "stderr", line: string) => void,
+  hostEnvironment?: NodeJS.ProcessEnv,
 ): {
   readonly runtime: RuntimeProcess;
   readonly child: FakeRuntimeChild;
@@ -77,7 +81,7 @@ function createHarness(
   const binDir = path.resolve("runtime-process-test", "bin");
   const dependencies: Partial<RuntimeProcessDependencies> = {
     binaryExists: () => true,
-    hostEnvironment: {
+    hostEnvironment: hostEnvironment ?? {
       PATH: "safe-test-path",
       SystemRoot: "C:\\Windows",
       BREADBOARD_LEGACY_COMMAND: "must-not-cross-runtime-boundary",
@@ -177,6 +181,96 @@ test("launches only the fixed Runtime V2 executable and keeps handshake authorit
   assert.doesNotMatch(publicJson, /43121/);
 });
 
+test("forwards the exact native-gated product vocabulary and no arbitrary environment", async () => {
+  const productEnvironment = Object.fromEntries(
+    RUNTIME_PRODUCT_ENVIRONMENT_NAMES.map((name, index) => [name, `value-${index}`]),
+  );
+  const harness = createHarness(undefined, undefined, {
+    SystemRoot: "C:\\Windows",
+    PATH: "must-not-cross",
+    BREADBOARD_ARBITRARY_PROCESS_COMMAND: "must-not-cross",
+    ...productEnvironment,
+  });
+  const started = harness.runtime.start();
+  sendReady(harness.child);
+  await started;
+
+  const forwarded = harness.spawnCalls[0]?.options.env ?? {};
+  assert.deepEqual(
+    Object.keys(forwarded).sort(),
+    ["SYSTEMROOT", ...RUNTIME_PRODUCT_ENVIRONMENT_NAMES].sort(),
+  );
+  for (const [name, value] of Object.entries(productEnvironment)) {
+    assert.equal(forwarded[name], value);
+  }
+  assert.equal(forwarded.PATH, undefined);
+  assert.equal(forwarded.BREADBOARD_ARBITRARY_PROCESS_COMMAND, undefined);
+});
+
+test("keeps empty denied credentials in Electron but represents them as absent to native", async () => {
+  const harness = createHarness(undefined, undefined, {
+    SystemRoot: "C:\\Windows",
+    OPENAI_API_KEY: "",
+    GOOGLE_API_KEY: "",
+    HF_TOKEN: "",
+    CHATMOCK_MODEL: "configured-model",
+  });
+  const started = harness.runtime.start();
+  sendReady(harness.child);
+  await started;
+
+  const forwarded = harness.spawnCalls[0]?.options.env ?? {};
+  assert.equal(forwarded.SYSTEMROOT, "C:\\Windows");
+  assert.equal(forwarded.CHATMOCK_MODEL, "configured-model");
+  assert.equal(forwarded.OPENAI_API_KEY, undefined);
+  assert.equal(forwarded.GOOGLE_API_KEY, undefined);
+  assert.equal(forwarded.HF_TOKEN, undefined);
+});
+
+test("desktop and native product environment allowlists cannot drift", () => {
+  const repositoryRoot = path.resolve(__dirname, "..", "..", "..");
+  const nativeSource = fs.readFileSync(
+    path.join(repositoryRoot, "native", "runtime-core", "src", "service_environment.rs"),
+    "utf8",
+  );
+  const block = nativeSource.match(
+    /const OPTIONAL_ELECTRON_GATED_PRODUCT_ENVIRONMENT_NAMES: &\[&str\] = &\[([\s\S]*?)\n\];/u,
+  )?.[1];
+  assert.ok(block, "native product environment allowlist must remain explicit");
+  const nativeNames = [...block.matchAll(/"([A-Z0-9_]+)"/gu)].map((match) => match[1]);
+  assert.deepEqual([...RUNTIME_PRODUCT_ENVIRONMENT_NAMES], nativeNames);
+});
+
+test("the native hot dashboard heap bound is trusted and mode-scoped", async () => {
+  assert.equal(
+    new Set<string>(RUNTIME_PRODUCT_ENVIRONMENT_NAMES).has("NODE_OPTIONS"),
+    false,
+    "caller-controlled NODE_OPTIONS must not cross the Electron bootstrap boundary",
+  );
+  const harness = createHarness(undefined, undefined, {
+    SystemRoot: "C:\\Windows",
+    NODE_OPTIONS: "--require=must-not-cross",
+  });
+  const started = harness.runtime.start();
+  sendReady(harness.child);
+  await started;
+  assert.equal(harness.spawnCalls[0]?.options.env?.NODE_OPTIONS, undefined);
+
+  const repositoryRoot = path.resolve(__dirname, "..", "..", "..");
+  const nativeSource = fs.readFileSync(
+    path.join(repositoryRoot, "native", "runtime-core", "src", "service_environment.rs"),
+    "utf8",
+  );
+  assert.match(
+    nativeSource,
+    /const HOT_DASHBOARD_NODE_OPTIONS: &str = "--max-old-space-size=4096";/u,
+  );
+  assert.match(
+    nativeSource,
+    /builder\.insert\(\s*"NODE_OPTIONS",\s*if is_hot \{\s*HOT_DASHBOARD_NODE_OPTIONS\s*\} else \{\s*""\s*\},\s*\)\?;/u,
+  );
+});
+
 test("requires runtimeRoot to be an absolute private bootstrap authority", () => {
   assert.throws(
     () =>
@@ -226,6 +320,34 @@ test("rejects duplicate starts instead of spawning a second owner or legacy fall
   assert.equal(harness.spawnCalls.length, 1);
 });
 
+test("fatal termination signals only the fixed Runtime V2 root", async () => {
+  const harness = createHarness();
+  const started = harness.runtime.start();
+  sendReady(harness.child);
+  await started;
+
+  harness.runtime.terminateNow();
+  harness.runtime.terminateNow();
+
+  assert.deepEqual(harness.child.killSignals, ["SIGKILL"]);
+  assert.equal(harness.child.stdin.writableEnded, true);
+  assert.equal(harness.spawnCalls.length, 1);
+  assert.equal(harness.runtime.state, "stopped");
+});
+
+test("fatal termination before launch is a no-op that permanently closes ownership", async () => {
+  const harness = createHarness();
+  harness.runtime.terminateNow();
+
+  assert.equal(harness.runtime.state, "stopped");
+  assert.equal(harness.spawnCalls.length, 0);
+  await assert.rejects(
+    harness.runtime.start(),
+    (error: unknown) =>
+      error instanceof RuntimeProcessError && error.code === "DUPLICATE_START",
+  );
+});
+
 test("fails closed on a mismatched PID, non-loopback authority, or oversized ready line", async (t) => {
   await t.test("mismatched PID", async () => {
     const harness = createHarness();
@@ -260,6 +382,16 @@ test("fails closed on a mismatched PID, non-loopback authority, or oversized rea
     const started = harness.runtime.start();
     sendReady(harness.child, { hiddenAuthority: "must-not-be-accepted" });
     await assert.rejects(started, /missing or unknown fields/);
+    assert.deepEqual(harness.child.killSignals, ["SIGKILL"]);
+  });
+
+  await t.test("unknown service startup policy", async () => {
+    const harness = createHarness();
+    const started = harness.runtime.start();
+    sendReady(harness.child, {
+      services: [{ ...DASHBOARD_SERVICE, startupPolicy: "sometimes" }],
+    });
+    await assert.rejects(started, /startupPolicy is invalid/);
     assert.deepEqual(harness.child.killSignals, ["SIGKILL"]);
   });
 });
@@ -320,6 +452,179 @@ test("authenticates bounded status and shutdown requests without exposing the to
   );
   assert.doesNotMatch(JSON.stringify(harness.runtime.snapshot()), new RegExp(CONTROL_TOKEN));
   assert.equal(harness.child.stdin.writableEnded, true);
+});
+
+test("retries one timed-out passive status read while the same runtime remains ready", async () => {
+  let calls = 0;
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    calls += 1;
+    if (calls === 1) {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const rejectAborted = () => reject(new DOMException("aborted", "AbortError"));
+        if (!signal) {
+          reject(new Error("status request did not carry an abort signal"));
+        } else if (signal.aborted) {
+          rejectAborted();
+        } else {
+          signal.addEventListener("abort", rejectAborted, { once: true });
+        }
+      });
+    }
+    return new Response(
+      JSON.stringify({
+        type: "runtime-status",
+        protocolVersion: 1,
+        runtimePid: RUNTIME_PID,
+        acceptingWork: true,
+        services: [DASHBOARD_SERVICE],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  const harness = createHarness(fetchImpl);
+  const started = harness.runtime.start();
+  sendReady(harness.child);
+  await started;
+
+  const status = await harness.runtime.status();
+
+  assert.equal(status.acceptingWork, true);
+  assert.equal(calls, 2);
+});
+
+test("does not retry a rejected passive status request", async () => {
+  let calls = 0;
+  const harness = createHarness(async () => {
+    calls += 1;
+    return new Response("{}", { status: 503 });
+  });
+  const started = harness.runtime.start();
+  sendReady(harness.child);
+  await started;
+
+  await assert.rejects(
+    harness.runtime.status(),
+    (error: unknown) =>
+      error instanceof RuntimeProcessError && error.code === "CONTROL_REJECTED",
+  );
+  assert.equal(calls, 1);
+});
+
+test("service retry is lifecycle-authenticated, closed, and exact-response validated", async (t) => {
+  await t.test("rejects malformed ids before issuing a control request", async () => {
+    let calls = 0;
+    const harness = createHarness(async () => {
+      calls += 1;
+      throw new Error("unexpected request");
+    });
+    const started = harness.runtime.start();
+    sendReady(harness.child);
+    await started;
+    await assert.rejects(
+      harness.runtime.retryService("../dashboard"),
+      (error: unknown) =>
+        error instanceof RuntimeProcessError && error.code === "INVALID_CONFIGURATION",
+    );
+    assert.equal(calls, 0);
+  });
+
+  await t.test("posts an empty object with the private lifecycle bearer", async () => {
+    const calls: Array<{
+      url: string;
+      method: string;
+      authorization: string | null;
+      contentType: string | null;
+      body: BodyInit | null | undefined;
+    }> = [];
+    const harness = createHarness(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      calls.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        authorization: headers.get("authorization"),
+        contentType: headers.get("content-type"),
+        body: init?.body,
+      });
+      return new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          ok: true,
+          serviceId: "dashboard",
+          accepted: true,
+          state: "starting",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const started = harness.runtime.start();
+    sendReady(harness.child);
+    await started;
+    assert.deepEqual(await harness.runtime.retryService("dashboard"), {
+      protocolVersion: 1,
+      ok: true,
+      serviceId: "dashboard",
+      accepted: true,
+      state: "starting",
+    });
+    assert.deepEqual(calls, [
+      {
+        url: "http://127.0.0.1:43121/v1/lifecycle/services/dashboard/retry",
+        method: "POST",
+        authorization: `Bearer ${CONTROL_TOKEN}`,
+        contentType: "application/json",
+        body: "{}",
+      },
+    ]);
+  });
+
+  await t.test("maps an unknown manifest service to a rejected control request", async () => {
+    const harness = createHarness(async () => new Response("{}", { status: 404 }));
+    const started = harness.runtime.start();
+    sendReady(harness.child);
+    await started;
+    await assert.rejects(
+      harness.runtime.retryService("unknown-service"),
+      (error: unknown) =>
+        error instanceof RuntimeProcessError && error.code === "CONTROL_REJECTED",
+    );
+  });
+
+  await t.test("rejects extra fields and mismatched service identity", async () => {
+    for (const response of [
+      {
+        protocolVersion: 1,
+        ok: true,
+        serviceId: "hermes",
+        accepted: true,
+        state: "starting",
+      },
+      {
+        protocolVersion: 1,
+        ok: true,
+        serviceId: "dashboard",
+        accepted: true,
+        state: "starting",
+        hiddenAuthority: "forbidden",
+      },
+    ]) {
+      const harness = createHarness(
+        async () =>
+          new Response(JSON.stringify(response), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      );
+      const started = harness.runtime.start();
+      sendReady(harness.child);
+      await started;
+      await assert.rejects(
+        harness.runtime.retryService("dashboard"),
+        (error: unknown) =>
+          error instanceof RuntimeProcessError && error.code === "PROTOCOL_VIOLATION",
+      );
+    }
+  });
 });
 
 test("signals only the runtime root when authenticated shutdown cannot be requested", async () => {

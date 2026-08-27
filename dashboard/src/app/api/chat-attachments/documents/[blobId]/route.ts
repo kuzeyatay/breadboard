@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import fs from "node:fs";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
 import { DOCUMENT_ATTACHMENT_FORMATS } from "@/lib/document-attachments.ts";

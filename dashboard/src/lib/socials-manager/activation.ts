@@ -1,19 +1,25 @@
-// The dashboard's one way to ask for Postiz.
+// Authenticated dashboard client for the Runtime V2-owned Postiz coordinator.
 //
-// In desktop mode the Electron supervisor runs a Postiz coordinator and hands
-// this process its loopback URL and a per-launch capability token. Every
-// activation, stop and status read then goes through that coordinator, so
-// exactly one component in the whole application runs Docker commands, and two
-// simultaneous Socials Manager operations cannot issue two `compose up`s.
-//
-// In a bare `npm run dev:dashboard` checkout there is no coordinator, and this
-// falls back to driving `stack.ts` directly. The fallback cannot race the
-// coordinator, because the two are mutually exclusive by construction: it is
-// selected precisely when no coordinator URL was configured.
+// This module is intentionally process-free. It can acquire a native Runtime
+// service lease and call one credentialed loopback HTTP service; it cannot
+// import Docker, Compose, WSL, or the coordinator's execution helpers. A
+// missing/unreachable coordinator therefore fails closed to local drafting.
 
 import type { SocialsManagerConfig } from "./config.ts";
 import type { ActivationReason, PostizStackState, StackOwnership } from "./coordinator-core.ts";
-import { stackStatus, startStack, stopStack, waitForReady, type StackStatus } from "./stack.ts";
+import { reachable, type StackStatus } from "./local-state.ts";
+import {
+  acquireServiceLease,
+  isRuntimeV2ServiceControlConfigured,
+  readSupervisedServiceSnapshot,
+  releaseSupervisorLease,
+} from "../supervisor-control.ts";
+
+export interface PostizControlScope {
+  userId: number;
+  runId?: string;
+  conversationPublicId?: string;
+}
 
 export interface CoordinatorEndpoint {
   url: string;
@@ -27,55 +33,122 @@ export interface ActivationOutcome {
   reason?: string;
   /** Release with `releaseActivation` when the operation finishes. */
   leaseId?: string;
-  /** Which component actually decided: the coordinator, or the local fallback. */
-  via: "coordinator" | "direct";
+  via: "coordinator";
 }
 
+const LOOPBACK = new Set(["127.0.0.1", "[::1]"]);
 const CONTROL_TIMEOUT_MS = 5_000;
+const MAX_REQUEST_BYTES = 8 * 1024;
+const MAX_RESPONSE_BYTES = 64 * 1024;
+const MIN_TOKEN_BYTES = 32;
+const MAX_TOKEN_BYTES = 1024;
 
-/**
- * The coordinator, if this process was told about one.
- *
- * Both halves are required. A URL without a token would produce control calls
- * that are refused, which is worse than falling back cleanly.
- */
 export function resolveCoordinatorEndpoint(
   env: NodeJS.ProcessEnv = process.env,
 ): CoordinatorEndpoint | null {
-  const url = env.POSTIZ_COORDINATOR_URL?.trim();
-  const token = env.POSTIZ_COORDINATOR_TOKEN?.trim();
-  if (!url || !token) return null;
+  const raw =
+    env.BREADBOARD_POSTIZ_COORDINATOR_SERVICE_URL?.trim() ||
+    env.POSTIZ_COORDINATOR_URL?.trim();
+  const token =
+    env.BREADBOARD_POSTIZ_COORDINATOR_SERVICE_TOKEN?.trim() ||
+    env.POSTIZ_COORDINATOR_TOKEN?.trim();
+  if (!raw || !token) return null;
+  const tokenBytes = Buffer.byteLength(token, "utf8");
+  if (
+    tokenBytes < MIN_TOKEN_BYTES ||
+    tokenBytes > MAX_TOKEN_BYTES ||
+    !/^[\x21-\x7e]+$/u.test(token)
+  ) {
+    return null;
+  }
   try {
-    const parsed = new URL(url);
-    // Loopback only, always. A coordinator anywhere else is a configuration
-    // mistake, and sending the capability token to it would leak it.
-    if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") return null;
+    const parsed = new URL(raw);
+    if (
+      parsed.protocol !== "http:" ||
+      !LOOPBACK.has(parsed.hostname) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return null;
+    }
     return { url: parsed.origin, token };
   } catch {
     return null;
   }
 }
 
-async function control<T>(
-  endpoint: CoordinatorEndpoint,
-  path: string,
-  init: { method: "GET" | "POST"; body?: unknown; timeoutMs?: number },
-): Promise<T | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), init.timeoutMs ?? CONTROL_TIMEOUT_MS);
+function validateScope(scope: PostizControlScope): void {
+  if (!Number.isSafeInteger(scope.userId) || scope.userId < 1) {
+    throw new TypeError("A valid Postiz user scope is required.");
+  }
+  for (const value of [scope.runId, scope.conversationPublicId]) {
+    if (
+      value !== undefined &&
+      (!value || Buffer.byteLength(value, "utf8") > 256 || /\p{Cc}/u.test(value))
+    ) {
+      throw new TypeError("The Postiz operation scope is invalid.");
+    }
+  }
+}
+
+async function boundedJson(response: Response): Promise<Record<string, unknown> | null> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) return null;
+  const reader = response.body?.getReader();
+  if (!reader) return {};
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
   try {
-    const response = await fetch(`${endpoint.url}${path}`, {
-      method: init.method,
+    const value: unknown = total
+      ? JSON.parse(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8"))
+      : {};
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function control(
+  endpoint: CoordinatorEndpoint,
+  path: "/status" | "/ensure-ready" | "/release" | "/stop",
+  body: Record<string, unknown>,
+  timeoutMs = CONTROL_TIMEOUT_MS,
+): Promise<Record<string, unknown> | null> {
+  const encoded = JSON.stringify(body);
+  if (Buffer.byteLength(encoded, "utf8") > MAX_REQUEST_BYTES) {
+    throw new TypeError("The Postiz control request exceeded its bound.");
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(new URL(path, endpoint.url), {
+      method: "POST",
       headers: {
         authorization: `Bearer ${endpoint.token}`,
-        ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+        "content-type": "application/json",
       },
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+      body: encoded,
       cache: "no-store",
+      redirect: "error",
       signal: controller.signal,
     });
     if (!response.ok) return null;
-    return (await response.json()) as T;
+    return boundedJson(response);
   } catch {
     return null;
   } finally {
@@ -83,143 +156,169 @@ async function control<T>(
   }
 }
 
-export interface ActivateInput {
-  /** A closed category, never free text: it is logged and echoed back. */
-  reason: ActivationReason;
-  /** How long the caller will wait before degrading to local drafting. */
-  timeoutMs: number;
-  /** Pin the stack until `releaseActivation`. Use for the length of a run. */
-  hold?: boolean;
-  /** The caller's own next scheduled publish, so idle shutdown can see it. */
-  nextScheduledAt?: string | null;
+async function withCoordinatorLease<T>(
+  reason: string,
+  operation: (endpoint: CoordinatorEndpoint) => Promise<T>,
+  env: NodeJS.ProcessEnv,
+): Promise<T> {
+  const lease = await acquireServiceLease("postiz-coordinator", reason, env);
+  if (isRuntimeV2ServiceControlConfigured(env) && !lease) {
+    throw new Error("The Postiz coordinator did not grant a Runtime service lease.");
+  }
+  try {
+    const endpoint = resolveCoordinatorEndpoint(env);
+    if (!endpoint) throw new Error("The Postiz coordinator is not configured.");
+    return await operation(endpoint);
+  } finally {
+    await releaseSupervisorLease(lease, env);
+  }
 }
 
 /**
- * Ask for a running, authenticated Postiz.
- *
- * This is the *only* function in the dashboard that may cause Docker to start,
- * and it is reached only from an authenticated server-side operation that
- * genuinely needs Postiz.
+ * Keep the Runtime-owned coordinator admitted while performing a bounded
+ * operation against an already-running stack. This does not ask the
+ * coordinator to start Docker or Compose; it only prevents a process-free
+ * "if running" caller from bypassing Runtime admission.
  */
+export async function withPostizCoordinatorServiceLease<T>(
+  scope: PostizControlScope,
+  reason: string,
+  operation: () => Promise<T>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<T> {
+  validateScope(scope);
+  return withCoordinatorLease(`postiz:${reason}`, async () => operation(), env);
+}
+
+export interface ActivateInput {
+  scope: PostizControlScope;
+  reason: ActivationReason;
+  timeoutMs: number;
+  hold?: boolean;
+  nextScheduledAt?: string | null;
+}
+
+/** Ask the Runtime-owned coordinator for a running, authenticated Postiz. */
 export async function activateStack(
-  config: SocialsManagerConfig,
+  _config: SocialsManagerConfig,
   input: ActivateInput,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ActivationOutcome> {
-  const endpoint = resolveCoordinatorEndpoint(env);
-  if (endpoint) {
-    const result = await control<{
-      ready: boolean;
-      state: PostizStackState;
-      ownership: StackOwnership;
-      reason?: string;
-      leaseId?: string;
-    }>(endpoint, "/ensure-ready", {
-      method: "POST",
-      body: {
+  validateScope(input.scope);
+  return withCoordinatorLease<ActivationOutcome>(`postiz:${input.reason}`, async (endpoint) => {
+    const result = await control(
+      endpoint,
+      "/ensure-ready",
+      {
+        scope: input.scope,
         reason: input.reason,
         timeoutMs: input.timeoutMs,
-        ...(input.hold ? { hold: true } : {}),
-        ...(input.nextScheduledAt ? { nextScheduledAt: input.nextScheduledAt } : {}),
+        hold: input.hold === true,
+        nextScheduledAt: input.nextScheduledAt ?? null,
       },
-      // The coordinator answers within the caller's own budget; allow it a
-      // little more than that before giving up on the coordinator itself.
-      timeoutMs: input.timeoutMs + CONTROL_TIMEOUT_MS,
-    });
-    if (result) {
+      input.timeoutMs + CONTROL_TIMEOUT_MS,
+    );
+    if (
+      !result ||
+      typeof result.ready !== "boolean" ||
+      !["stopped", "starting", "ready", "stopping", "failed"].includes(String(result.state)) ||
+      !["unknown", "pre-existing", "breadboard"].includes(String(result.ownership))
+    ) {
       return {
-        ready: result.ready,
-        state: result.state,
-        ownership: result.ownership,
+        ready: false,
+        state: "failed",
+        ownership: "unknown",
         via: "coordinator",
-        ...(result.reason ? { reason: result.reason } : {}),
-        ...(result.leaseId ? { leaseId: result.leaseId } : {}),
+        reason: "The Postiz coordinator did not respond.",
       };
     }
-    // The coordinator is configured but unreachable. Falling through to a
-    // direct `compose up` here would create the second launcher this design
-    // exists to remove, so report honestly and let the caller draft locally.
     return {
-      ready: false,
-      state: "failed",
-      ownership: "unknown",
+      ready: result.ready,
+      state: result.state as PostizStackState,
+      ownership: result.ownership as StackOwnership,
       via: "coordinator",
-      reason: "The Postiz coordinator did not respond.",
+      ...(typeof result.reason === "string" && result.reason
+        ? { reason: result.reason.slice(0, 500) }
+        : {}),
+      ...(typeof result.leaseId === "string" && result.leaseId
+        ? { leaseId: result.leaseId }
+        : {}),
     };
-  }
-
-  // The dashboard-only fallback. `startStack` returns as soon as Compose exits,
-  // which is before Postiz has migrated, so this keeps the caller's own budget
-  // rather than reporting "starting" the instant the containers exist.
-  const status = await startStack(config);
-  const ready =
-    status.state === "running" ||
-    (status.state === "starting" && (await waitForReady(config, input.timeoutMs)));
-  return {
-    ready,
-    state: ready ? "ready" : status.state === "starting" ? "starting" : "stopped",
-    ownership: "breadboard",
-    via: "direct",
-    ...(ready ? {} : status.reason ? { reason: status.reason } : {}),
-  };
+  }, env).catch((error: unknown): ActivationOutcome => ({
+    ready: false,
+    state: "failed",
+    ownership: "unknown",
+    via: "coordinator",
+    reason: error instanceof Error ? error.message.slice(0, 500) : "The Postiz coordinator did not respond.",
+  }));
 }
 
-/** Drop a hold taken by `activateStack({ hold: true })`. Always safe to call. */
 export async function releaseActivation(
+  scope: PostizControlScope,
   leaseId: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
   if (!leaseId) return;
-  const endpoint = resolveCoordinatorEndpoint(env);
-  if (!endpoint) return;
-  await control(endpoint, "/release", { method: "POST", body: { leaseId } });
+  validateScope(scope);
+  await withCoordinatorLease("postiz:release", async (endpoint) => {
+    await control(endpoint, "/release", { scope, leaseId });
+  }, env).catch(() => undefined);
 }
 
-/** Explicitly bring the stack down. Never deletes volumes. */
+/** Explicitly bring only the Postiz Compose project down. Volumes are retained. */
 export async function deactivateStack(
-  config: SocialsManagerConfig,
+  _config: SocialsManagerConfig,
+  scope: PostizControlScope,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<boolean> {
-  const endpoint = resolveCoordinatorEndpoint(env);
-  if (endpoint) {
-    const result = await control<{ stopped: boolean }>(endpoint, "/stop", {
-      method: "POST",
-      timeoutMs: 180_000,
-    });
+  validateScope(scope);
+  return withCoordinatorLease("postiz:user-stop", async (endpoint) => {
+    const result = await control(endpoint, "/stop", { scope }, 180_000);
     return result?.stopped === true;
-  }
-  return stopStack(config);
+  }, env).catch(() => false);
 }
 
 /**
- * Read the stack's state without changing it.
- *
- * Nothing here starts Docker, and by default nothing here *runs* Docker at all:
- * the coordinator answers from its state machine, and the fallback answers from
- * one plain HTTP probe of the Postiz backend. `probeDocker` opts a caller into
- * a read-only engine check for diagnostics.
+ * Observe without waking Docker. Ordinary polling also avoids starting a
+ * stopped coordinator; an explicit Docker diagnostic may lease it so the
+ * process owner, rather than Next, performs `docker info`.
  */
 export async function observeStack(
   config: SocialsManagerConfig,
+  scope: PostizControlScope,
   options: { probeDocker?: boolean } = {},
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<StackStatus & { coordinator?: Record<string, unknown> }> {
+  validateScope(scope);
+  const snapshot = await readSupervisedServiceSnapshot("postiz-coordinator", env).catch(() => null);
+  const serviceActive = !snapshot || ["starting", "healthy", "degraded", "ready", "busy"].includes(snapshot.state);
   const endpoint = resolveCoordinatorEndpoint(env);
-  if (endpoint) {
-    const snapshot = await control<Record<string, unknown>>(endpoint, "/status", {
-      method: "GET",
+  if (endpoint && (serviceActive || options.probeDocker)) {
+    const read = async (target: CoordinatorEndpoint) => control(target, "/status", {
+      scope,
+      probeDocker: options.probeDocker === true,
     });
-    if (snapshot) {
-      const state = snapshot.state as PostizStackState;
+    const coordinator = options.probeDocker && !serviceActive
+      ? await withCoordinatorLease("postiz:docker-diagnostic", read, env).catch(() => null)
+      : await read(endpoint);
+    if (coordinator) {
+      const state = coordinator.state as PostizStackState;
       return {
         state: state === "ready" ? "running" : state === "starting" ? "starting" : "stopped",
         reachable: state === "ready",
-        coordinator: snapshot,
-        ...(typeof snapshot.reason === "string" && snapshot.reason
-          ? { reason: snapshot.reason }
+        coordinator,
+        ...(coordinator.docker && typeof coordinator.docker === "object"
+          ? { docker: coordinator.docker as StackStatus["docker"] }
+          : {}),
+        ...(typeof coordinator.reason === "string" && coordinator.reason
+          ? { reason: coordinator.reason.slice(0, 500) }
           : {}),
       };
     }
   }
-  return stackStatus(config, options);
+
+  // A plain loopback probe is process-free and keeps status accurate after a
+  // coordinator restart while the scheduled Postiz containers remain alive.
+  const running = await reachable(config);
+  return { state: running ? "running" : "stopped", reachable: running };
 }

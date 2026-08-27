@@ -12,7 +12,7 @@
 // rather than burned-in text: no font handling, no escaping, and the words stay
 // selectable.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -43,11 +43,16 @@ function executableName(base: string): string {
 
 /**
  * The ffmpeg this machine already has. Checked in the order that costs least:
- * an explicit setting, the desktop shell's bundled binary, the portable copy
- * Agent Reach installs for its own media work, then PATH.
+ * the Runtime profile's native-minted path, an explicit development setting,
+ * then repository-pinned copies. The worker never executes `where`/`which` or
+ * accepts a renderer-selected executable.
  */
 export function resolveFfmpeg(env: NodeJS.ProcessEnv = process.env): string | null {
-  const explicit = env.VIMAX_FFMPEG_PATH?.trim() || env.HYPERFRAMES_FFMPEG_PATH?.trim();
+  const explicit =
+    env.BREADBOARD_RUNTIME_V2_VIMAX_FFMPEG_PATH?.trim() ||
+    env.BREADBOARD_RUNTIME_V2_VOX_FFMPEG_PATH?.trim() ||
+    env.VIMAX_FFMPEG_PATH?.trim() ||
+    env.HYPERFRAMES_FFMPEG_PATH?.trim();
   if (explicit && fs.existsSync(explicit)) return explicit;
 
   const root = repositoryRoot();
@@ -60,17 +65,20 @@ export function resolveFfmpeg(env: NodeJS.ProcessEnv = process.env): string | nu
     if (fs.existsSync(candidate)) return candidate;
   }
 
-  const probe = spawnSyncQuiet(process.platform === "win32" ? "where" : "which", ["ffmpeg"]);
-  const first = probe.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
-  return first && fs.existsSync(first) ? first : null;
+  return null;
 }
 
-function spawnSyncQuiet(command: string, args: string[]): string {
-  try {
-    return spawnSync(command, args, { encoding: "utf8", windowsHide: true }).stdout ?? "";
-  } catch {
-    return "";
+function childEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const answer: NodeJS.ProcessEnv = {
+    NODE_ENV: env.NODE_ENV ?? "production",
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+  };
+  for (const name of ["SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOME"]) {
+    const value = env[name]?.trim();
+    if (value && !/[\u0000\r\n]/u.test(value)) answer[name] = value;
   }
+  return answer;
 }
 
 function run(
@@ -78,14 +86,26 @@ function run(
   args: string[],
   signal?: AbortSignal,
 ): Promise<{ code: number; stderr: string }> {
+  if (signal?.aborted) return Promise.resolve({ code: -1, stderr: "The render was cancelled." });
   return new Promise((resolve) => {
-    const child = spawn(binary, args, { windowsHide: true });
+    const child = spawn(binary, args, {
+      windowsHide: true,
+      env: childEnvironment(),
+      detached: process.platform !== "win32",
+    });
     let stderr = "";
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
       if (stderr.length > 20_000) stderr = stderr.slice(-20_000);
     });
-    const onAbort = () => child.kill("SIGKILL");
+    const onAbort = () => {
+      try {
+        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        // The encoder already exited.
+      }
+    };
     signal?.addEventListener("abort", onAbort);
     child.on("error", (error) => {
       signal?.removeEventListener("abort", onAbort);

@@ -12,7 +12,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ ag
     const userId = await requireUserId();
     const { agentId, runId } = await params;
     service.requireAgent(userId, agentId);
-    const ok = abortRun(userId, runId);
+    const ok = await abortRun(userId, agentId, runId);
     return NextResponse.json({ ok });
   } catch (error) {
     return agentBrowserErrorResponse(error);

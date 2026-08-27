@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import { load as loadYaml, JSON_SCHEMA } from "js-yaml";
+import {
+  externalRuntimeFilesystem as fs,
+  externalRuntimePortableRealpath,
+} from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 import {
   getSkillsCatalogStore,
@@ -69,7 +72,7 @@ export function localEngineeringSkillsRepository(): string | null {
     const hasSkills = fs.readdirSync(tree, { withFileTypes: true }).some((entry) =>
       entry.isDirectory() && fs.existsSync(path.join(tree, entry.name, "SKILL.md"))
     );
-    if (hasSkills) return fs.realpathSync(candidate);
+    if (hasSkills) return externalRuntimePortableRealpath(candidate);
   }
   return null;
 }
@@ -208,7 +211,7 @@ function loadSnapshot(repository: string, force: boolean): LocalEngineeringSnaps
 }
 
 function readSkillFiles(root: string): Array<{ relativePath: string; contents: Buffer }> {
-  const rootRealPath = fs.realpathSync(root);
+  const rootRealPath = externalRuntimePortableRealpath(root);
   const files: Array<{ relativePath: string; contents: Buffer }> = [];
   let totalBytes = 0;
   const visit = (directory: string) => {
@@ -220,7 +223,7 @@ function readSkillFiles(root: string): Array<{ relativePath: string; contents: B
         continue;
       }
       if (!entry.isFile()) continue;
-      const resolved = fs.realpathSync(absolute);
+      const resolved = externalRuntimePortableRealpath(absolute);
       const relative = path.relative(rootRealPath, resolved);
       if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
         throw new Error(`Engineering skill file escapes its source directory: ${absolute}`);

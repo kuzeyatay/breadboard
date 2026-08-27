@@ -6,9 +6,17 @@
 // the server.
 
 import QRCode from "qrcode";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
-import { getWhatsAppBridge, type WhatsAppBridgeState } from "./bridge.ts";
-import { whatsAppFeatureEnabled } from "./config.ts";
+import type { WhatsAppBridgeSnapshot, WhatsAppBridgeState } from "./bridge.ts";
+import {
+  whatsAppBridgeDir,
+  whatsAppBridgePort,
+  whatsAppBridgeScript,
+  whatsAppFeatureEnabled,
+  whatsAppSessionDir,
+} from "./config.ts";
 import { getWhatsAppStore } from "./instance.ts";
 import type { WhatsAppMode } from "./identity.ts";
 import type { WhatsAppChatRow } from "./store.ts";
@@ -55,11 +63,34 @@ function presentChat(row: WhatsAppChatRow): WhatsAppChatSummary {
   };
 }
 
-export async function whatsAppStatus(userId: number): Promise<WhatsAppStatus> {
+export function disconnectedWhatsAppBridgeSnapshot(): WhatsAppBridgeSnapshot {
+  const sessionDir = whatsAppSessionDir();
+  const bridgeAvailable = fs.existsSync(whatsAppBridgeScript());
+  const bridgeInstalled = fs.existsSync(
+    path.join(whatsAppBridgeDir(), "node_modules", "@whiskeysockets", "baileys"),
+  );
+  return {
+    state: "disconnected",
+    qr: null,
+    qrAt: null,
+    error: null,
+    paired: fs.existsSync(path.join(sessionDir, "creds.json")),
+    linkedNumber: null,
+    linkedName: null,
+    bridgeInstalled,
+    bridgeAvailable,
+    sessionDir,
+    port: whatsAppBridgePort(),
+    log: [],
+  };
+}
+
+export async function whatsAppStatus(
+  userId: number,
+  snapshot: WhatsAppBridgeSnapshot = disconnectedWhatsAppBridgeSnapshot(),
+): Promise<WhatsAppStatus> {
   const store = getWhatsAppStore();
   const settings = store.settings();
-  const bridge = getWhatsAppBridge();
-  const snapshot = bridge.snapshot();
   const owned = settings.ownerUserId === null || settings.ownerUserId === userId;
 
   const qrImage =

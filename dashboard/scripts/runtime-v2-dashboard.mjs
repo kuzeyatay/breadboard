@@ -11,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // launcher never falls back to Next dev or starts a compiler.
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const candidates = [
-  path.resolve(scriptDirectory, "..", ".next-desktop", "standalone", "dashboard", "server.js"),
+  path.resolve(scriptDirectory, "..", ".next-desktop", "standalone", "server.js"),
   path.resolve(
     scriptDirectory,
     "..",

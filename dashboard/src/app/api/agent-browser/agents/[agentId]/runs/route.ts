@@ -12,7 +12,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
     const { agentId } = await params;
     const body = await readBody(request);
     const task = typeof body.task === "string" ? body.task : "";
-    const result = service.startRun(userId, agentId, task);
+    const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
+    const result = await service.startRun(userId, agentId, task, requestId);
     return NextResponse.json({ ok: true, run: result }, { status: 201 });
   } catch (error) {
     return agentBrowserErrorResponse(error);

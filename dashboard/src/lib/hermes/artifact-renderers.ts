@@ -1,9 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import type { ArtifactKind, ArtifactRendererId } from "./artifact-types.ts";
-import { parseFrontmatter, renderMarkdownToPdf } from "../markdown-render/pdf.ts";
-import { markdownToDocxPreviewHtml, renderMarkdownToDocx } from "../markdown-render/docx.ts";
-import { themeFromMetadata } from "../markdown-render/theme.ts";
 
 export interface ArtifactRenderContext {
   directory: string;
@@ -40,20 +37,6 @@ function atomicWrite(target: string, content: string | Buffer): void {
   fs.renameSync(temporary, target);
 }
 
-function titleFromFilename(filename: string): string {
-  const base = filename.replace(/\.[a-z0-9]+$/i, "").replace(/[-_]+/g, " ").trim();
-  return base ? base.replace(/\b\w/g, (c) => c.toUpperCase()) : "Document";
-}
-
-function documentTitle(
-  content: string,
-  context: ArtifactRenderContext,
-): { body: string; title: string } {
-  const { body, title: frontmatterTitle } = parseFrontmatter(content);
-  const title = context.title?.trim() || frontmatterTitle || titleFromFilename(context.filename);
-  return { body, title };
-}
-
 const textRenderer = (id: "text" | "markdown", kind: "text" | "markdown"): ArtifactRenderer => ({
   id,
   kind,
@@ -77,15 +60,8 @@ const docxRenderer: ArtifactRenderer = {
   async validate(content) {
     return content.trim() ? { ok: true } : { ok: false, error: "Document content is empty." };
   },
-  async render(content, context) {
-    const outputPath = path.join(context.directory, context.filename);
-    const { body } = documentTitle(content, context);
-    const theme = themeFromMetadata(context.metadata);
-    const docx = renderMarkdownToDocx(body, { theme });
-    atomicWrite(outputPath, docx);
-    const previewPath = path.join(context.directory, "preview.html");
-    atomicWrite(previewPath, markdownToDocxPreviewHtml(body, { theme }));
-    return { outputPath, previewPath, mimeType: this.mimeType };
+  async render() {
+    throw new Error("DOCX artifacts must render in the Runtime V2 Office worker.");
   },
 };
 
@@ -97,13 +73,8 @@ const pdfRenderer: ArtifactRenderer = {
   async validate(content) {
     return content.trim() ? { ok: true } : { ok: false, error: "PDF content is empty." };
   },
-  async render(content, context) {
-    const outputPath = path.join(context.directory, context.filename);
-    const { body, title } = documentTitle(content, context);
-    const theme = themeFromMetadata(context.metadata);
-    const pdf = await renderMarkdownToPdf([{ content: body, title }], { title, theme });
-    atomicWrite(outputPath, pdf);
-    return { outputPath, previewPath: outputPath, mimeType: this.mimeType };
+  async render() {
+    throw new Error("PDF artifacts must render in the Runtime V2 Office worker.");
   },
 };
 

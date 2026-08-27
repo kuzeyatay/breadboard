@@ -24,7 +24,7 @@ import {
 } from "../hermes/runtime-store.ts";
 import { getConversationForUser } from "../conversations/store.ts";
 import { findExternalAgentAssistantMessage } from "../conversations/external-agent-turns.ts";
-import { distDirectory } from "./workspace.ts";
+import { distDirectory, distDirectoryAt } from "./workspace.ts";
 import type { DeckPlan } from "./schemas.ts";
 
 export const BOLT_SLIDES_ARTIFACT_TOOL = "bolt_slides_deck";
@@ -107,11 +107,35 @@ function escapeClosingTags(source: string): string {
   return source.replace(/<\/(script|style)/gi, "<\\/$1");
 }
 
+const MAX_INDEX_BYTES = 4 * 1024 * 1024;
+const MAX_INLINE_ASSET_BYTES = 64 * 1024 * 1024;
+
+function samePath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const resolved = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(left) === normalize(right);
+}
+
+function contained(candidate: string, root: string): boolean {
+  const normalizedCandidate = process.platform === "win32" ? candidate.toLowerCase() : candidate;
+  const normalizedRoot = process.platform === "win32" ? root.toLowerCase() : root;
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
+}
+
 function readAsset(root: string, reference: string): string | null {
   const cleaned = reference.replace(/^\.?\//, "").split(/[?#]/)[0];
   const absolute = path.resolve(root, cleaned);
-  if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) return null;
+  if (!contained(absolute, root)) return null;
   try {
+    const metadata = fs.lstatSync(absolute);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size > MAX_INLINE_ASSET_BYTES ||
+      !samePath(fs.realpathSync.native(absolute), absolute)
+    ) return null;
     return fs.readFileSync(absolute, "utf8");
   } catch {
     return null;
@@ -128,8 +152,29 @@ function readAsset(root: string, reference: string): string | null {
  * stylesheet.
  */
 export function inlineBuiltDeck(runId: string): string {
-  const root = path.resolve(distDirectory(runId));
-  let html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+  return inlineBuiltDeckFromDist(path.resolve(distDirectory(runId)));
+}
+
+export function inlineBuiltDeckAt(workspaceRoot: string): string {
+  return inlineBuiltDeckFromDist(path.resolve(distDirectoryAt(workspaceRoot)));
+}
+
+function inlineBuiltDeckFromDist(root: string): string {
+  const index = path.join(root, "index.html");
+  const rootMetadata = fs.lstatSync(root);
+  const indexMetadata = fs.lstatSync(index);
+  if (
+    !rootMetadata.isDirectory() ||
+    rootMetadata.isSymbolicLink() ||
+    !indexMetadata.isFile() ||
+    indexMetadata.isSymbolicLink() ||
+    indexMetadata.size > MAX_INDEX_BYTES ||
+    !samePath(fs.realpathSync.native(root), root) ||
+    !samePath(fs.realpathSync.native(index), index)
+  ) {
+    throw new Error("The built Bolt Slides deck is indirect or too large.");
+  }
+  let html = fs.readFileSync(index, "utf8");
 
   html = html.replace(/[ \t]*<link[^>]*rel="modulepreload"[^>]*>\s*\n?/gi, "");
 
@@ -179,6 +224,23 @@ export function saveDeckArtifact(input: {
   plan: DeckPlan;
   brief: string;
 }): ArtifactRow {
+  return saveDeckArtifactContent(input, inlineBuiltDeck(input.runId));
+}
+
+export function saveRuntimeDeckArtifact(input: {
+  context: BoltSlidesArtifactContext;
+  workspaceRoot: string;
+  plan: DeckPlan;
+  brief: string;
+}): ArtifactRow {
+  return saveDeckArtifactContent(input, inlineBuiltDeckAt(input.workspaceRoot));
+}
+
+function saveDeckArtifactContent(input: {
+  context: BoltSlidesArtifactContext;
+  plan: DeckPlan;
+  brief: string;
+}, content: string): ArtifactRow {
   return createArtifact({
     userId: input.context.userId,
     runtimeSessionId: input.context.runtimeSessionId,
@@ -191,7 +253,7 @@ export function saveDeckArtifact(input: {
     kind: "presentation",
     rendererId: "presentation-html",
     title: input.plan.title.slice(0, 240),
-    content: inlineBuiltDeck(input.runId),
+    content,
     metadata: deckMetadata({
       plan: input.plan,
       brief: input.brief,

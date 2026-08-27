@@ -9,8 +9,11 @@ import {
   duplicateStackWarning,
   readDevInstanceRecord,
   releaseDevInstance,
+  requiresExclusiveHotCheckout,
   type DevInstanceRecord,
 } from "../src/main/dev-instance-lock";
+
+const DESKTOP_ROOT = path.resolve(__dirname, "..", "..");
 
 function tempRepo(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "bb-devlock-"));
@@ -28,6 +31,124 @@ test("the first claim writes a record identifying owner, pid, start time and che
   assert.equal(record?.pid, 4242);
   assert.equal(path.resolve(record?.checkout ?? ""), path.resolve(repoRoot));
   assert.ok(!Number.isNaN(Date.parse(record?.startedAt ?? "")));
+  assert.match(record?.claimId ?? "", /^[0-9a-f-]{36}$/i);
+  fs.rmSync(repoRoot, { recursive: true, force: true });
+});
+
+test("the exclusive Hot guard applies to ordinary and QA dev, but not lean or packaged launches", () => {
+  assert.equal(
+    requiresExclusiveHotCheckout({
+      desktopMode: "dev",
+      launchMode: "hot",
+      qaMode: false,
+    }),
+    true,
+  );
+  assert.equal(
+    requiresExclusiveHotCheckout({
+      desktopMode: "dev",
+      launchMode: "hot",
+      qaMode: true,
+    }),
+    true,
+  );
+  assert.equal(
+    requiresExclusiveHotCheckout({
+      desktopMode: "dev",
+      launchMode: "lean",
+      qaMode: false,
+    }),
+    false,
+  );
+  assert.equal(
+    requiresExclusiveHotCheckout({
+      desktopMode: "packaged",
+      launchMode: "packaged",
+      qaMode: false,
+    }),
+    false,
+  );
+});
+
+test("AppLifecycle reports a Hot claim failure before constructing or starting Runtime V2", () => {
+  const source = fs.readFileSync(
+    path.join(DESKTOP_ROOT, "src", "main", "app-lifecycle.ts"),
+    "utf8",
+  );
+  const launchMode = source.indexOf(
+    "const launchMode = runtimeLaunchMode(this.paths.mode);",
+  );
+  const guard = source.indexOf("requiresExclusiveHotCheckout({", launchMode);
+  const claim = source.indexOf("claimDevInstance({ repoRoot", guard);
+  const successfulOwnership = source.indexOf(
+    "this.devInstanceLockRepoRoot = repoRoot;",
+    claim,
+  );
+  const constructionGate = source.indexOf(
+    "if (hotCheckoutFailure === null)",
+    claim,
+  );
+  const runtimeConstruction = source.indexOf("new RuntimeProcess({", constructionGate);
+  const startupScreen = source.indexOf(
+    "await this.windows.showStartupScreen();",
+    runtimeConstruction,
+  );
+  const failureGate = source.indexOf(
+    "if (hotCheckoutFailure !== null)",
+    startupScreen,
+  );
+  const dataPreparation = source.indexOf("await this.prepareDataLayer();", failureGate);
+  const runtimeStart = source.indexOf("await this.startRuntime();", dataPreparation);
+
+  assert.ok(
+    [
+      launchMode,
+      guard,
+      claim,
+      successfulOwnership,
+      constructionGate,
+      runtimeConstruction,
+      startupScreen,
+      failureGate,
+      dataPreparation,
+      runtimeStart,
+    ].every((position) => position >= 0),
+    "the complete Hot guard and existing startup-failure flow must remain present",
+  );
+  assert.ok(launchMode < guard && guard < claim);
+  assert.ok(claim < successfulOwnership && successfulOwnership < constructionGate);
+  assert.ok(constructionGate < runtimeConstruction && runtimeConstruction < startupScreen);
+  assert.ok(startupScreen < failureGate && failureGate < dataPreparation);
+  assert.ok(dataPreparation < runtimeStart);
+});
+
+test("an interleaved first claim cannot overwrite the exclusive winner", () => {
+  const repoRoot = tempRepo();
+  const lockPath = devInstanceLockPath(repoRoot);
+  let competitorStarted = false;
+
+  const first = claimDevInstance({
+    repoRoot,
+    owner: "desktop-a",
+    pid: 111,
+    isAlive: (pid) => pid === 222,
+    createExclusive: (file, contents) => {
+      if (!competitorStarted && file === lockPath) {
+        competitorStarted = true;
+        const competitor = claimDevInstance({
+          repoRoot,
+          owner: "desktop-b",
+          pid: 222,
+        });
+        assert.equal(competitor.conflict, false);
+      }
+      fs.writeFileSync(file, contents, { encoding: "utf8", flag: "wx" });
+    },
+  });
+
+  assert.equal(first.conflict, true);
+  assert.equal(first.existing?.pid, 222);
+  assert.equal(readDevInstanceRecord(lockPath)?.pid, 222);
   fs.rmSync(repoRoot, { recursive: true, force: true });
 });
 
@@ -120,17 +241,20 @@ test("release only removes the lock this process owns", () => {
   fs.rmSync(repoRoot, { recursive: true, force: true });
 });
 
-test("an unwritable location degrades to advisory rather than throwing", () => {
+test("an unwritable Hot lock fails closed", () => {
   const repoRoot = tempRepo();
-  const result = claimDevInstance({
-    repoRoot,
-    owner: "desktop",
-    pid: 5,
-    writeFile: () => {
-      throw new Error("EACCES");
-    },
-  });
-  assert.equal(result.conflict, false);
+  assert.throws(
+    () =>
+      claimDevInstance({
+        repoRoot,
+        owner: "desktop",
+        pid: 5,
+        createExclusive: () => {
+          throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+        },
+      }),
+    /could not secure the Hot development lock/,
+  );
   fs.rmSync(repoRoot, { recursive: true, force: true });
 });
 
@@ -149,4 +273,5 @@ test("the warning names the owner, pid and start time and carries no paths or se
     !warning.includes("C:/Users/someone"),
     "the warning must not echo a filesystem path back at the user",
   );
+  assert.match(warning, /second compiler.*not allowed/i);
 });

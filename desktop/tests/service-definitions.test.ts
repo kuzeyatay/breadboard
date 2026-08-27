@@ -36,7 +36,6 @@ function fixture(mode: "dev" | "packaged", overrides: Partial<ReturnType<typeof 
       chatmock: 4301,
       hermes: 4305,
       postiz: 4306,
-      postizSupervisor: 4307,
       quartz: 4303,
       quartzWs: 4304,
       voicebox: 4310,
@@ -55,6 +54,14 @@ test("all service URLs bind loopback only", () => {
   for (const url of Object.values(serviceUrls(config))) {
     assert.match(url, /^http:\/\/127\.0\.0\.1:\d+/);
   }
+});
+
+test("Runtime V2 mode cannot select the legacy Electron service graph", () => {
+  const { paths, config, binaries } = fixture("packaged");
+  assert.throws(
+    () => buildServiceDefinitions({ paths, config, binaries, lifecycleOwner: "runtime-v2" }),
+    /manifest-only.*not a fallback/i,
+  );
 });
 
 test("dashboard env propagates dynamic ports, secrets and data locations", () => {
@@ -311,9 +318,9 @@ test("dev dashboard retains the historical dashboard/db data layout", () => {
   assert.equal(dashboard.env["BREADBOARD_BACKGROUND_COORDINATOR_HEAP_MB"], "1024");
   assert.equal(dashboard.env["BREADBOARD_MEMORY_TELEMETRY_INTERVAL_MS"], "15000");
   assert.equal(dashboard.env["BREADBOARD_MEMORY_TELEMETRY_SAMPLES"], "240");
-  assert.ok(!dashboard.args.includes("--webpack"));
+  assert.ok(dashboard.args.includes("--webpack"));
   assert.ok(!dashboard.args.includes("--turbopack"));
-  assert.equal(dashboard.env["BREADBOARD_DASHBOARD_BUNDLER"], "turbopack");
+  assert.equal(dashboard.env["BREADBOARD_DASHBOARD_BUNDLER"], "webpack");
 });
 
 test("fast dev dashboard uses an existing standalone build", () => {
@@ -323,7 +330,6 @@ test("fast dev dashboard uses an existing standalone build", () => {
     dashboardRoot,
     ".next-desktop",
     "standalone",
-    "dashboard",
     "server.js",
   );
   fs.mkdirSync(path.dirname(server), { recursive: true });
@@ -595,7 +601,7 @@ test("GBrain is present by default, absent only when explicitly disabled", () =>
   assert.ok(dashOff);
   assert.equal(dashOff.env["GBRAIN_MODE"], "disabled");
 
-  // Enabled: a supervised Bun sidecar with a per-install secret, loopback health,
+  // Enabled: a supervised bundled-Node sidecar with a per-install secret, loopback health,
   // and mutable data under the desktop data dir (never in packaged resources).
   const on = fixture("packaged", { gbrainMode: "preferred" });
   const gbrain = on.definitions.find((d) => d.id === "gbrain");
@@ -603,7 +609,12 @@ test("GBrain is present by default, absent only when explicitly disabled", () =>
   if (!gbrain.healthCheck || gbrain.healthCheck.type !== "http") {
     throw new Error("gbrain should use an HTTP health check");
   }
-  assert.equal(gbrain.command, "C:/rt/bun.exe");
+  assert.equal(gbrain.command, "C:/rt/node.exe");
+  assert.deepEqual(gbrain.args, [
+    "--no-warnings",
+    "--experimental-transform-types",
+    path.join(on.paths.appRoot, "gbrain-adapter", "src", "node-entrypoint.mjs"),
+  ]);
   assert.match(gbrain.healthCheck.url, /^http:\/\/127\.0\.0\.1:\d+\/health$/);
   assert.equal(gbrain.env["GBRAIN_ADAPTER_SECRET"], on.config.persistent.gbrainAdapterSecret);
   assert.ok((gbrain.env["GBRAIN_ADAPTER_SECRET"] ?? "").length >= 8);
@@ -743,31 +754,14 @@ test("Codex is a dashboard-launched coding agent, not a supervised chat runtime"
   assert.equal(dashboard.env["CODEX_HOME"], paths.codexHome);
 });
 
-test("only the lightweight Postiz coordinator starts eagerly", () => {
-  const { definitions, paths } = fixture("packaged");
+test("Postiz has no Electron-owned coordinator fallback", () => {
+  const { definitions } = fixture("packaged");
   const postiz = definitions.find((definition) => definition.id === "postiz");
   const dashboard = definitions.find((definition) => definition.id === "dashboard");
-  assert.ok(postiz && dashboard);
-  assert.equal(postiz.required, false);
-  // The small coordinator joins the core; the Docker stack it owns still
-  // starts only when an authenticated operation asks for it.
-  assert.equal(postiz.startPolicy, "eager");
-  assert.equal(postiz.command, "C:/rt/node.exe");
-  assert.deepEqual(postiz.args, [
-    "--experimental-strip-types",
-    path.join(paths.appRoot, "scripts", "start-postiz-supervisor.mjs"),
-  ]);
-  assert.equal(postiz.env["SOCIALS_MANAGER_MODE"], "stack");
-  assert.equal(postiz.env["SOCIALS_MANAGER_URL"], "http://127.0.0.1:4306");
-  assert.equal(postiz.env["SOCIALS_MANAGER_ROOT"], path.join(paths.appRoot, "postiz-app"));
-  assert.equal(postiz.env["SOCIALS_MANAGER_SUPPRESS_DOCKER_UI"], "true");
-  if (!postiz.healthCheck || postiz.healthCheck.type !== "http") {
-    throw new Error("Postiz should use the supervisor readiness endpoint");
-  }
-  assert.equal(postiz.healthCheck.url, "http://127.0.0.1:4307/health");
-  // Coordinator liveness, not stack readiness.
-  assert.equal(postiz.healthCheck.expectBodyIncludes, '"ok":true');
-  assert.ok(!(dashboard.dependsOn ?? []).includes("postiz"));
+  assert.equal(postiz, undefined);
+  assert.ok(dashboard);
+  assert.equal(dashboard.env["POSTIZ_COORDINATOR_URL"], undefined);
+  assert.equal(dashboard.env["POSTIZ_COORDINATOR_TOKEN"], undefined);
   assert.equal(dashboard.env["SOCIALS_MANAGER_SUPPRESS_DOCKER_UI"], "true");
 });
 

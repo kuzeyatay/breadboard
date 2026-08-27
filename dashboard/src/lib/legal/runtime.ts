@@ -24,9 +24,9 @@
 // builds it behind a run: the Agents tab asks and the user agrees.
 
 import { spawn } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import { repositoryRoot } from "../runtime-paths.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { repositoryRoot, runtimeV2ServiceVenv } from "../runtime-paths.ts";
 
 export interface LegalRuntime {
   /** Directory of the cloned repository — the cwd of every command. */
@@ -86,23 +86,18 @@ export function resolveLegalRoot(env: NodeJS.ProcessEnv = process.env): LegalRun
   }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({ root: path.join(repositoryRoot(), "harvey-labs"), source: "repository" });
-  candidates.push({ root: path.resolve(process.cwd(), "harvey-labs"), source: "cwd" });
-  candidates.push({ root: path.resolve(process.cwd(), "..", "harvey-labs"), source: "cwd" });
   return candidates.find((candidate) => isClone(candidate.root)) ?? null;
 }
 
 /** The bridge script, which is Breadboard's own file and not part of the clone. */
 export function bridgeScriptPath(): string | null {
-  const candidates = [
-    path.join(repositoryRoot(), "scripts", "legal-bridge.py"),
-    path.resolve(process.cwd(), "scripts", "legal-bridge.py"),
-    path.resolve(process.cwd(), "..", "scripts", "legal-bridge.py"),
-  ];
+  const candidates = [path.join(repositoryRoot(), "scripts", "legal-bridge.py")];
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
 export function venvDirectory(root: string): string {
-  return path.join(root, ".venv");
+  void root;
+  return runtimeV2ServiceVenv("legal");
 }
 
 /** The Python inside the clone's virtual environment, if it has been built. */
@@ -240,6 +235,7 @@ export function runCommand(
     maxOutputChars?: number;
     onChild?: (kill: () => void) => void;
     onStdout?: (chunk: string) => void;
+    signal?: AbortSignal;
   },
 ): Promise<CommandResult> {
   const limit = options.maxOutputChars ?? 200_000;
@@ -251,6 +247,7 @@ export function runCommand(
         windowsHide: true,
         env: legalEnv(options.env ?? {}),
         stdio: ["ignore", "pipe", "pipe"],
+        ...(options.signal ? { signal: options.signal } : {}),
       });
     } catch (error) {
       resolve({
@@ -336,7 +333,7 @@ const PROBE_SOURCE = [
   "print(json.dumps({'ok': True, 'pandoc': bool(pandoc), 'tools': len(get_all_tool_definitions())}))",
 ].join("\n");
 
-async function probe(): Promise<LegalHealth> {
+async function probe(signal?: AbortSignal): Promise<LegalHealth> {
   const runtime = resolveLegalRoot();
   const bridgeFound = Boolean(bridgeScriptPath());
   const shellAvailable = Boolean(findShell());
@@ -382,6 +379,7 @@ async function probe(): Promise<LegalHealth> {
   const result = await runCommand(python, ["-c", PROBE_SOURCE, runtime.root], {
     cwd: runtime.root,
     timeoutMs: PROBE_TIMEOUT_MS,
+    signal,
   });
   let parsed: { ok?: boolean; pandoc?: boolean } = {};
   try {
@@ -432,7 +430,9 @@ async function probe(): Promise<LegalHealth> {
 }
 
 /** Cached because the probe really starts a Python interpreter. */
-export async function health(options: { force?: boolean } = {}): Promise<LegalHealth> {
+export async function health(
+  options: { force?: boolean; signal?: AbortSignal } = {},
+): Promise<LegalHealth> {
   const cached = globalCache.__breadboardLegalHealth;
   if (!options.force && cached && Date.now() - cached.at < HEALTH_CACHE_MS) {
     return cached.health;
@@ -440,7 +440,7 @@ export async function health(options: { force?: boolean } = {}): Promise<LegalHe
   if (globalCache.__breadboardLegalHealthInFlight) {
     return globalCache.__breadboardLegalHealthInFlight;
   }
-  const request = probe()
+  const request = probe(options.signal)
     .then((result) => {
       globalCache.__breadboardLegalHealth = { at: Date.now(), health: result };
       return result;

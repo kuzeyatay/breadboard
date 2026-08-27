@@ -1,12 +1,12 @@
 // Downloading one of a run's deliverables.
 //
-// The bytes come from the workspace outbox through the OpenWork server rather
-// than from the filesystem, so the server's own path containment applies in
-// addition to the run-manager's check that the id is one this run produced.
+// The disposable worker copied the bytes into its fixed Runtime workspace.
+// This route opens only the file named by the authenticated run's sealed event
+// receipt, so downloads survive both a dashboard restart and service retirement.
 
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { readRunArtifact } from "@/lib/openwork/run-manager.ts";
+import { readRunArtifact } from "@/lib/openwork/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,13 +19,13 @@ export async function GET(
     const userId = await requireUserId();
     const { runId, artifactId } = await params;
     const artifact = await readRunArtifact(userId, runId, artifactId);
-    return new Response(new Uint8Array(artifact.bytes), {
+    return new Response(artifact.stream, {
       headers: {
         "content-type": artifact.contentType,
-        "content-length": String(artifact.bytes.length),
+        "content-length": String(artifact.size),
         // Model-authored files are never rendered inline on the dashboard's own
         // origin; they download.
-        "content-disposition": `attachment; filename="${artifact.path.split("/").pop() ?? "artifact"}"`,
+        "content-disposition": `attachment; filename="${artifact.filename}"`,
         "cache-control": "no-store",
       },
     });

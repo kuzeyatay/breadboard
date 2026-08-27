@@ -82,7 +82,7 @@ export function requireWorkspaceOwner(userId: number, runId: string): Resource2S
   throw new Resource2SkillWorkspaceError("run_not_found", "That Resource2Skill run was not found.");
 }
 
-function artifactId(relativePath: string): string {
+export function resource2SkillArtifactId(relativePath: string): string {
   return Buffer.from(relativePath, "utf8").toString("base64url");
 }
 
@@ -90,6 +90,7 @@ function collect(root: string, directory: string, output: Resource2SkillArtifact
   if (output.length >= 2_000) return;
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const absolute = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
       collect(root, absolute, output);
       continue;
@@ -97,18 +98,43 @@ function collect(root: string, directory: string, output: Resource2SkillArtifact
     if (!entry.isFile() || SKIP.has(entry.name)) continue;
     const type = TYPES[path.extname(entry.name).toLowerCase()];
     if (!type) continue;
-    const stats = fs.statSync(absolute);
+    const stats = fs.lstatSync(absolute);
+    if (!stats.isFile() || stats.isSymbolicLink()) continue;
     const relativePath = path.relative(root, absolute).split(path.sep).join("/");
-    output.push({ id: artifactId(relativePath), relativePath, name: entry.name, ...type, size: stats.size, modifiedAt: stats.mtime.toISOString() });
+    const id = resource2SkillArtifactId(relativePath);
+    if (id.length > 512) continue;
+    output.push({ id, relativePath, name: entry.name, ...type, size: stats.size, modifiedAt: stats.mtime.toISOString() });
   }
+}
+
+function samePath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const resolved = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(left) === normalize(right);
+}
+
+export function scanResource2SkillArtifacts(rootDirectory: string): Resource2SkillArtifact[] {
+  const root = path.resolve(rootDirectory);
+  try {
+    const metadata = fs.lstatSync(root);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !samePath(fs.realpathSync.native(root), root)
+    ) return [];
+  } catch {
+    return [];
+  }
+  const artifacts: Resource2SkillArtifact[] = [];
+  collect(root, root, artifacts);
+  return artifacts.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
 }
 
 export function scanArtifacts(runId: string): Resource2SkillArtifact[] {
   const root = outputDirectory(runId);
-  if (!fs.existsSync(root)) return [];
-  const artifacts: Resource2SkillArtifact[] = [];
-  collect(root, root, artifacts);
-  return artifacts.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  return scanResource2SkillArtifacts(root);
 }
 
 export function resolveArtifact(runId: string, id: string): { record: Resource2SkillArtifact; absolutePath: string } {

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import db from "@/lib/db";
 import {
   ApiError,
   apiErrorResponse,
@@ -18,11 +19,9 @@ import {
 } from "@/lib/hermes/runtime-store.ts";
 import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
 import {
-  FactcheckServiceError,
-  runFactcheck,
-} from "@/lib/hermes/factcheck-service.ts";
-import { readHermesConfig } from "@/lib/hermes/config.ts";
-import { directoryForWorkspaceKey } from "@/lib/hermes/workspace.ts";
+  FactcheckRuntimeError,
+  runFactcheckViaRuntime,
+} from "@/lib/runtime-v2/factcheck-job.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -54,6 +53,18 @@ export async function POST(request: Request) {
         403,
         "factcheck_session_scope_mismatch",
         "Fact-check session scope is invalid.",
+      );
+    }
+    const conversation = db.prepare(
+      "SELECT public_id FROM conversations WHERE id = ? AND user_id = ?",
+    ).get(session.conversation_id, session.user_id) as
+      | { public_id: string }
+      | undefined;
+    if (!conversation?.public_id) {
+      throw new ApiError(
+        403,
+        "factcheck_conversation_scope_mismatch",
+        "Fact-check conversation scope is invalid.",
       );
     }
     const run = getActiveRuntimeRun(session.id);
@@ -93,12 +104,14 @@ export async function POST(request: Request) {
       gardenId: session.garden_id,
       payload: { runId: run.id, command: commandName },
     });
-    const result = await runFactcheck({
+    const result = await runFactcheckViaRuntime({
+      scope: {
+        userId: session.user_id,
+        gardenId: session.garden_id,
+        conversationId: conversation.public_id,
+      },
+      workspaceKey: session.workspace_key,
       arguments: commandArguments,
-      workspaceDirectory: directoryForWorkspaceKey(
-        readHermesConfig(),
-        session.workspace_key,
-      ),
       signal: request.signal,
     });
     recordAuditEvent({
@@ -121,7 +134,7 @@ export async function POST(request: Request) {
         runtimeSessionId,
         payload: {
           reason:
-            error instanceof FactcheckServiceError
+            error instanceof FactcheckRuntimeError
               ? error.code
               : error instanceof ApiError
                 ? error.code
@@ -129,24 +142,8 @@ export async function POST(request: Request) {
         },
       });
     }
-    if (error instanceof FactcheckServiceError) {
-      const status =
-        error.code === "factcheck_runtime_unavailable"
-          ? 503
-          : error.code === "factcheck_timeout"
-            ? 504
-            : error.code === "factcheck_cancelled"
-              ? 409
-              : error.code === "factcheck_launch_failed" ||
-                  error.code === "factcheck_workspace_unavailable"
-                ? 502
-                : error.code === "factcheck_command_denied" ||
-                    error.code === "factcheck_flag_denied" ||
-                    error.code === "factcheck_source_denied" ||
-                    error.code === "factcheck_path_denied"
-                  ? 403
-                  : 400;
-      return apiErrorResponse(new ApiError(status, error.code, error.message));
+    if (error instanceof FactcheckRuntimeError) {
+      return apiErrorResponse(new ApiError(error.status, error.code, error.message));
     }
     return apiErrorResponse(error);
   }

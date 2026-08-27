@@ -13,6 +13,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import {
+  externalRuntimePathExists,
+  externalRuntimeReadDirectoryEntries,
+  externalRuntimeReadUtf8,
+} from "../external-runtime-filesystem.ts";
 import { skillsRoot } from "./runtime.ts";
 
 /** Skill directories that exist in this clone, as `/name` router entries. */
@@ -20,11 +25,11 @@ export function installedSkills(env: NodeJS.ProcessEnv = process.env): string[] 
   const root = skillsRoot(env);
   if (!root) return [];
   try {
-    return fs
-      .readdirSync(root, { withFileTypes: true })
+    return externalRuntimeReadDirectoryEntries(root)
       .filter(
         (entry) =>
-          entry.isDirectory() && fs.existsSync(path.join(root, entry.name, "SKILL.md")),
+          entry.isDirectory() &&
+          externalRuntimePathExists(path.join(root, entry.name, "SKILL.md")),
       )
       .map((entry) => entry.name)
       .sort();
@@ -114,7 +119,7 @@ export function writeProjectGuidance(input: Omit<PromptInput, "brief">): void {
   const file = path.join(input.projectDirectory, "AGENTS.md");
   let existing = "";
   try {
-    existing = fs.readFileSync(file, "utf8");
+    existing = externalRuntimeReadUtf8(file);
   } catch {
     existing = "";
   }

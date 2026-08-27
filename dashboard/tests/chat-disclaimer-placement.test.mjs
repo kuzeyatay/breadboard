@@ -30,10 +30,11 @@ test("every chat surface closes its transcript with the disclaimer", () => {
       /from ["']@\/app\/components\/chat\/chat-disclaimer["']/,
       `${surface} does not import the disclaimer`,
     );
-    // In the flow, and only under a conversation — never over the greeting.
-    assert.match(
-      code,
-      /\{messages\.length > 0 \? <ChatDisclaimer \/> : null\}/,
+    // In the flow after the virtualized transcript, never pinned to the composer.
+    const transcript = code.indexOf("<VirtualizedMessageList");
+    const disclaimer = code.indexOf("<ChatDisclaimer", transcript);
+    assert.ok(
+      transcript >= 0 && disclaimer > transcript,
       `${surface} does not render the disclaimer after its messages`,
     );
   }

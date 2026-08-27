@@ -23,8 +23,8 @@
 // server's source instead of installing the package.
 
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
 
 export interface OpencodeLauncher {

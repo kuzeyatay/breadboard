@@ -99,6 +99,14 @@ export async function POST(request: Request) {
         ? (body.args as Record<string, unknown>)
         : {};
     const workspace = watermarkWorkspaceFor(session);
+    const watermarkRuntime = {
+      scope: {
+        userId: session.user_id,
+        gardenId: session.cluster_id === null ? null : String(session.cluster_id),
+        conversationId: String(session.conversation_id),
+      },
+      signal: request.signal,
+    };
     // Only paid for when a source could be an attachment: the audit sweeps the
     // workspace and never looks at the transcript.
     const attachments =
@@ -111,11 +119,11 @@ export async function POST(request: Request) {
 
     let data: unknown;
     if (toolName === "watermark_inspect") {
-      data = await inspectSource(workspace, args, attachments);
+      data = await inspectSource(workspace, args, attachments, watermarkRuntime);
     } else if (toolName === "watermark_audit") {
-      data = await auditWorkspace(workspace, args);
+      data = await auditWorkspace(workspace, args, watermarkRuntime);
     } else {
-      const staged = await cleanSource(workspace, args, attachments);
+      const staged = await cleanSource(workspace, args, attachments, watermarkRuntime);
       try {
         // Inline text goes straight back as text; there is no file to deliver.
         if (staged.cleanedText !== undefined) {
@@ -130,7 +138,7 @@ export async function POST(request: Request) {
           const run = getActiveRuntimeRun(session.id);
           const artifact =
             run && staged.artifactKind && staged.outputPath
-              ? createImportedArtifact({
+              ? await createImportedArtifact({
                   userId: session.user_id,
                   runtimeSessionId: session.id,
                   hermesSessionId: runtimeExternalSessionId(session)!,
@@ -147,6 +155,7 @@ export async function POST(request: Request) {
                   sourceHermesTool: "watermark_clean",
                   authorizedRoot: workspace,
                   filePath: staged.outputPath,
+                  signal: request.signal,
                 })
               : null;
           data = {

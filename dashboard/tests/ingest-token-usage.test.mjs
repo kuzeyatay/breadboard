@@ -52,6 +52,14 @@ test("ingestion streams actual usage and both document-upload interfaces render 
     new URL("../src/app/api/ingest/route.ts", import.meta.url),
     "utf8",
   );
+  const worker = fs.readFileSync(
+    new URL("../scripts/runtime-v2-document-ingestion-worker.mjs", import.meta.url),
+    "utf8",
+  );
+  const compatibility = fs.readFileSync(
+    new URL("../src/lib/runtime-v2/ingest-compatibility.ts", import.meta.url),
+    "utf8",
+  );
   const dashboard = fs.readFileSync(
     new URL("../src/app/dashboard/dashboard-client.tsx", import.meta.url),
     "utf8",
@@ -65,10 +73,13 @@ test("ingestion streams actual usage and both document-upload interfaces render 
     "utf8",
   );
 
-  assert.match(route, /attachIngestTokenUsageTracking/);
-  assert.match(route, /send\(\{ type: "usage", tokenUsage: \{ \.\.\.tokenUsage, model \} \}\)/);
-  assert.match(route, /type: "result",[\s\S]*?tokenUsage/);
-  assert.match(route, /type: "error",[\s\S]*?tokenUsage/);
+  assert.match(route, /jobType: "document-ingestion"/);
+  assert.doesNotMatch(route, /attachIngestTokenUsageTracking/);
+  assert.match(worker, /attachIngestTokenUsageTracking/);
+  assert.match(worker, /progress\.usage\(\{ \.\.\.tokenUsage, model: request\.model \}\)/);
+  assert.match(compatibility, /send\(\{ type: "usage", tokenUsage \}\)/);
+  assert.match(compatibility, /send\(\{ type: "result", \.\.\.result \}\)/);
+  assert.match(compatibility, /terminalErrorEvent\([\s\S]*?tokenUsage/);
   assert.match(dashboard, /<DocumentIngestionTokenUsage/);
   assert.match(workspace, /<DocumentIngestionTokenUsage/);
   assert.match(dashboard, /usage=\{ingestionTokenUsage\}[\s\S]*?pending=\{isUploading\}/);
@@ -94,6 +105,14 @@ test("the ingestion warning appears only for explicit ChatMock vision errors", (
     new URL("../src/app/api/ingest/route.ts", import.meta.url),
     "utf8",
   );
+  const worker = fs.readFileSync(
+    new URL("../src/lib/runtime-v2/ingest-executor.ts", import.meta.url),
+    "utf8",
+  );
+  const compatibility = fs.readFileSync(
+    new URL("../src/lib/runtime-v2/ingest-compatibility.ts", import.meta.url),
+    "utf8",
+  );
   const dashboard = fs.readFileSync(
     new URL("../src/app/dashboard/dashboard-client.tsx", import.meta.url),
     "utf8",
@@ -110,8 +129,10 @@ test("the ingestion warning appears only for explicit ChatMock vision errors", (
     "utf8",
   );
 
-  assert.match(route, /visionError: visionError \|\| undefined/);
-  assert.match(route, /err instanceof ChatmockVisionError/);
+  assert.match(route, /jobType: "document-ingestion"/);
+  assert.match(worker, /visionError: visionError \|\| undefined/);
+  assert.match(worker, /new ChatmockVisionError/);
+  assert.match(compatibility, /visionError: failure\.visionError/);
   assert.doesNotMatch(dashboard, /hasPdfFile && <DocumentIngestion/);
   assert.doesNotMatch(workspace, /hasPdfFile && <DocumentIngestion/);
   assert.match(dashboard, /<DocumentIngestionVisionError errors=\{ingestionVisionErrors\}/);

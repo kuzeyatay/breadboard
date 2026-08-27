@@ -35,9 +35,71 @@ export type AgentRunStreamFailure = "run_not_found" | "stream_unavailable";
 // `EventSource` can dispatch another error while the first terminal-state
 // probe is still in flight. One probe per source prevents duplicate history
 // downloads and, more importantly, duplicate replay of the terminal event.
-// The WeakSet itself adds no persistent strong owner after the request chain
+// The WeakMap itself adds no persistent strong owner after the request chain
 // releases its normal callback closure.
-const activeErrorProbes = new WeakSet<EventSource>();
+interface ActiveErrorProbe {
+  controller: AbortController;
+  timeout: ReturnType<typeof globalThis.setTimeout>;
+}
+
+const activeErrorProbes = new WeakMap<EventSource, ActiveErrorProbe>();
+const consecutiveProbeFailures = new WeakMap<EventSource, number>();
+const closedAgentRunStreams = new WeakSet<EventSource>();
+const ERROR_PROBE_TIMEOUT_MS = 5_000;
+const MAX_CONSECUTIVE_PROBE_FAILURES = 3;
+
+/** Close a card-owned EventSource and abort any error probe it still owns. */
+export function closeAgentRunStream(source: EventSource): void {
+  closedAgentRunStreams.add(source);
+  consecutiveProbeFailures.delete(source);
+  const probe = activeErrorProbes.get(source);
+  if (probe) {
+    activeErrorProbes.delete(source);
+    globalThis.clearTimeout(probe.timeout);
+    probe.controller.abort(new DOMException("Run stream closed", "AbortError"));
+  }
+  source.close();
+}
+
+function markProbeFailure(
+  source: EventSource,
+  onUnavailable: (reason: AgentRunStreamFailure) => void,
+): void {
+  const failures = (consecutiveProbeFailures.get(source) ?? 0) + 1;
+  if (failures < MAX_CONSECUTIVE_PROBE_FAILURES) {
+    consecutiveProbeFailures.set(source, failures);
+    return;
+  }
+  closeAgentRunStream(source);
+  onUnavailable("stream_unavailable");
+}
+
+function selectLatestTerminalEvent(
+  events: unknown[],
+): AgentRunStreamEvent | undefined {
+  let latest: AgentRunStreamEvent | undefined;
+  for (const candidate of events) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const event = candidate as Partial<AgentRunStreamEvent>;
+    if (
+      typeof event.type !== "string" ||
+      !RUN_STREAM_TERMINAL_EVENTS.has(event.type) ||
+      !Number.isSafeInteger(event.sequenceNumber) ||
+      (event.sequenceNumber ?? -1) < 0 ||
+      !event.payload ||
+      typeof event.payload !== "object" ||
+      Array.isArray(event.payload) ||
+      typeof event.at !== "string"
+    ) {
+      continue;
+    }
+    const validated = event as AgentRunStreamEvent;
+    if (!latest || validated.sequenceNumber > latest.sequenceNumber) {
+      latest = validated;
+    }
+  }
+  return latest;
+}
 
 /**
  * Called from an `EventSource`'s `onerror`. `replayEnding` receives the run's
@@ -56,34 +118,67 @@ export function resolveAgentRunStreamError({
   replayEnding?: (event: AgentRunStreamEvent) => void;
   onUnavailable: (reason: AgentRunStreamFailure) => void;
 }): void {
-  if (activeErrorProbes.has(source)) return;
-  activeErrorProbes.add(source);
-  void fetch(`${base}/events?since=0`)
+  if (closedAgentRunStreams.has(source) || activeErrorProbes.has(source)) return;
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(
+    () => controller.abort(new DOMException("Run-state probe timed out", "TimeoutError")),
+    ERROR_PROBE_TIMEOUT_MS,
+  );
+  const probe = { controller, timeout };
+  activeErrorProbes.set(source, probe);
+  void fetch(`${base}/events?since=0`, { signal: controller.signal })
     .then(async (response) => {
       const data = (await response.json().catch(() => ({}))) as {
         error?: string;
         events?: unknown;
       };
       if (!response.ok) {
-        source.close();
+        closeAgentRunStream(source);
         onUnavailable(
           data.error === "run_not_found" ? "run_not_found" : "stream_unavailable",
         );
         return;
       }
       const events = Array.isArray(data.events)
-        ? (data.events as AgentRunStreamEvent[])
+        ? data.events
         : [];
-      const ending = events.filter((event) =>
-        RUN_STREAM_TERMINAL_EVENTS.has(event?.type),
-      );
-      if (!ending.length) return;
+      const ending = selectLatestTerminalEvent(events);
+      const hasMalformedTerminal = events.some(
+        (event) =>
+          Boolean(event) &&
+          typeof event === "object" &&
+          RUN_STREAM_TERMINAL_EVENTS.has(
+            (event as { type?: unknown }).type as string,
+          ),
+      ) && !ending;
+      if (hasMalformedTerminal || !Array.isArray(data.events)) {
+        closeAgentRunStream(source);
+        onUnavailable("stream_unavailable");
+        return;
+      }
+      if (!ending) {
+        // A valid live-run response proves the transient probe path recovered.
+        consecutiveProbeFailures.delete(source);
+        return;
+      }
       // The stream ended because the run did. Hand the card the ending it was
       // disconnected before seeing, then stop: there is nothing further to
       // reconnect for.
-      for (const event of ending) replayEnding?.(event);
-      source.close();
+      closeAgentRunStream(source);
+      replayEnding?.(ending);
     })
-    .catch(() => undefined)
-    .finally(() => activeErrorProbes.delete(source));
+    .catch(() => {
+      // Route cleanup aborts the active request after marking the source
+      // closed. Timeouts and network failures, by contrast, get a small retry
+      // budget so transient drops recover without retrying forever.
+      if (!closedAgentRunStreams.has(source)) {
+        markProbeFailure(source, onUnavailable);
+      }
+    })
+    .finally(() => {
+      if (activeErrorProbes.get(source) === probe) {
+        globalThis.clearTimeout(timeout);
+        activeErrorProbes.delete(source);
+      }
+    });
 }

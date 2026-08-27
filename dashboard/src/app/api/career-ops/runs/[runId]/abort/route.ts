@@ -12,7 +12,7 @@ export async function POST(
   try {
     const userId = await requireUserId();
     const { runId } = await params;
-    return NextResponse.json({ ok: abortRun(userId, runId) });
+    return NextResponse.json({ ok: await abortRun(userId, runId) });
   } catch (error) {
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });

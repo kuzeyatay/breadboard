@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  DEFAULT_BREADBOARD_SKILLS_CATALOG_URL,
   SKILLS_SH_MAX_PAGE_SIZE,
   SkillsCatalogProxyError,
   SkillsShClient,
@@ -78,18 +79,18 @@ function mockClient(allTimePages, hooks = {}) {
   };
 }
 
-test("shared instrumentation isolates the Node-only catalog scheduler", () => {
+test("shared instrumentation leaves catalog refresh to a finite Runtime worker", () => {
   const shared = fs.readFileSync(new URL("../src/instrumentation.ts", import.meta.url), "utf8");
   const runtime = fs.readFileSync(new URL("../src/instrumentation-runtime.ts", import.meta.url), "utf8");
-  const nodeOnly = fs.readFileSync(new URL("../src/instrumentation-node.ts", import.meta.url), "utf8");
+  const worker = fs.readFileSync(new URL("../scripts/runtime-v2-background-executor.mjs", import.meta.url), "utf8");
   assert.match(shared, /NEXT_RUNTIME === ["']nodejs["']/);
   assert.match(shared, /import\(["']\.\/instrumentation-runtime\.ts["']\)/);
   assert.doesNotMatch(shared, /skills-catalog-(?:store|sync)/);
   assert.doesNotMatch(runtime, /skills-catalog-(?:store|sync)/);
-  assert.match(runtime, /startBackgroundCoordinator\(\)/);
-  assert.match(nodeOnly, /import ["']server-only["']/);
-  assert.match(nodeOnly, /skills-catalog-store\.ts/);
-  assert.match(nodeOnly, /skills-catalog-sync\.ts/);
+  assert.doesNotMatch(runtime, /startBackgroundCoordinator|setInterval|setTimeout/);
+  assert.match(worker, /case "skills-catalog-refresh"/);
+  assert.match(worker, /skills-catalog-store\.ts/);
+  assert.match(worker, /skills-catalog-sync\.ts/);
 });
 
 test("official client clamps per_page and validates one-page catalog", async () => {
@@ -122,6 +123,32 @@ test("proxy URL configuration rejects missing, malformed, credentialed, and dire
   assert.throws(() => normalizeCatalogProxyUrl("http://catalog.example/api/v1"), SkillsCatalogConfigurationError);
   assert.throws(() => normalizeCatalogProxyUrl("https://skills.sh/api/v1"), /cannot connect directly/i);
   assert.equal(normalizeCatalogProxyUrl("http://127.0.0.1:4555/api/v1/"), "http://127.0.0.1:4555/api/v1");
+});
+
+test("official client has a sealed proxy default when Runtime omits the optional override", async () => {
+  const configured = process.env.BREADBOARD_SKILLS_CATALOG_URL;
+  let requestedUrl = "";
+  try {
+    delete process.env.BREADBOARD_SKILLS_CATALOG_URL;
+    const client = new SkillsShClient({
+      retries: 0,
+      fetchImpl: async (url) => {
+        requestedUrl = String(url);
+        return Response.json({
+          data: [],
+          pagination: { page: 0, perPage: 500, total: 0, hasMore: false },
+        });
+      },
+    });
+    await client.listSkills({ page: 0 });
+    assert.equal(
+      new URL(requestedUrl).origin + new URL(requestedUrl).pathname.replace(/\/skills$/u, ""),
+      DEFAULT_BREADBOARD_SKILLS_CATALOG_URL,
+    );
+  } finally {
+    if (configured === undefined) delete process.env.BREADBOARD_SKILLS_CATALOG_URL;
+    else process.env.BREADBOARD_SKILLS_CATALOG_URL = configured;
+  }
 });
 
 test("429 exposes Retry-After and rate-limit state", async () => {
@@ -398,6 +425,11 @@ test("a cloned scientific skills repository overlays complete local metadata and
 
     const result = synchronizeLocalScientificSkillsCatalog({ store: fixture.store, force: true });
     assert.equal(result.total, 2);
+    assert.equal(result.root, fs.realpathSync(path.join(clone, "skills")));
+    if (process.platform === "win32") {
+      assert.match(result.root, /^[A-Za-z]:\\/u);
+      assert.doesNotMatch(result.root, /^[A-Za-z]:$/u);
+    }
     assert.equal(fixture.store.status().totalAvailable, 2);
     const stored = fixture.store.get("k-dense-ai/scientific-agent-skills/alpha");
     assert.equal(stored.name, "Alpha Science");
@@ -422,6 +454,26 @@ test("a cloned scientific skills repository overlays complete local metadata and
     else process.env.SCIENTIFIC_AGENT_SKILLS_ROOT = previousRoot;
     fs.rmSync(clone, { recursive: true, force: true });
     fixture.cleanup();
+  }
+});
+
+test("reviewed local skills keep drive-qualified realpaths behind the opaque runtime boundary", () => {
+  for (const moduleName of [
+    "scientific",
+    "reverse",
+    "design",
+    "omh",
+    "engineering",
+    "hallmark",
+    "office",
+    "bullshit",
+  ]) {
+    const source = fs.readFileSync(
+      new URL(`../src/lib/hermes/${moduleName}-skills-source.ts`, import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /externalRuntimePortableRealpath/, moduleName);
+    assert.doesNotMatch(source, /\bfs\.realpathSync(?:\.native)?\s*\(/u, moduleName);
   }
 });
 

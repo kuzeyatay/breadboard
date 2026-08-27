@@ -1,36 +1,16 @@
-import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import { runGoogleImageSearch } from "./image-search-runtime-v2.ts";
+import { ImageSearchServiceError } from "./image-search-errors.ts";
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import {
-  StdioClientTransport,
-  getDefaultEnvironment,
-} from "@modelcontextprotocol/sdk/client/stdio.js";
-
-import { repositoryRoot } from "../runtime-paths.ts";
+export { ImageSearchServiceError } from "./image-search-errors.ts";
 
 // The `image_search` tool has two backends behind one contract. With Google
-// credentials configured it runs the REAL vendored mcp-google-images-search
-// clone as an MCP stdio child — the clone validates the upstream response
-// shape itself (Zod) and its patched search_image handler appends the
-// structured result (titles, thumbnails, context links) as one JSON content
-// item. Without credentials it falls back to DuckDuckGo's keyless image
-// endpoint (the vqd-token + i.js flow the keyless image-search libraries
-// use), so a fresh deployment shows images with zero setup.
-const CONNECT_TIMEOUT_MS = 20_000;
-const CALL_TIMEOUT_MS = 30_000;
+// credentials configured, a disposable Runtime V2 worker runs the real
+// vendored mcp-google-images-search clone. The dashboard never owns that stdio
+// child and never receives either Google credential. Without credentials it
+// uses DuckDuckGo's process-free HTTP endpoint, so a fresh deployment still
+// shows images with zero setup.
 const KEYLESS_FETCH_TIMEOUT_MS = 15_000;
 const MAX_COUNT = 10;
-
-export class ImageSearchServiceError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "ImageSearchServiceError";
-    this.code = code;
-  }
-}
 
 export interface ImageSearchDisplayItem {
   title: string;
@@ -56,145 +36,35 @@ export interface ImageSearchInput {
   startIndex?: number;
 }
 
-function trimmedEnv(name: string): string {
-  return process.env[name]?.trim() ?? "";
+export interface ImageSearchRuntimeScope {
+  userId: number;
+  gardenId: string | null;
+  conversationId: string;
 }
 
-function googleImagesApiKey(): string {
-  return trimmedEnv("BREADBOARD_GOOGLE_IMAGES_API_KEY");
-}
-
-function googleImagesEngineId(): string {
-  return trimmedEnv("BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID");
-}
-
-/** Env override first, else the vendored clone; the built entry file is the availability probe. */
-export function resolveImageSearchEntry(): string | null {
-  const configured = trimmedEnv("BREADBOARD_GOOGLE_IMAGES_ROOT");
-  const root = configured
-    ? path.resolve(configured)
-    : path.join(repositoryRoot(), "mcp-google-images-search");
-  const entry = path.join(root, "src", "index.js");
-  return fs.existsSync(entry) ? entry : null;
+export interface ImageSearchExecutionOptions {
+  scope?: ImageSearchRuntimeScope;
+  signal?: AbortSignal;
 }
 
 /**
  * Google is used only when both credentials are present; otherwise the keyless
  * DuckDuckGo backend serves the same display contract with zero setup.
  */
-export function imageSearchMode(): "google" | "keyless" {
-  return googleImagesApiKey() && googleImagesEngineId() ? "google" : "keyless";
+export function imageSearchMode(env: NodeJS.ProcessEnv = process.env): "google" | "keyless" {
+  return env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED?.trim().toLowerCase() === "true"
+    ? "google"
+    : "keyless";
 }
 
-interface ServiceState {
-  client: Client;
-  fingerprint: string;
+export interface CanonicalImageSearchRequest {
+  query: string;
+  count: number;
+  safe: "off" | "medium" | "high" | null;
+  startIndex: number | null;
 }
 
-// Pinned to globalThis so Next dev HMR cannot strand a connected child behind a
-// reloaded module copy, with an in-flight guard so concurrent chat turns do not
-// each spawn their own MCP process.
-const runtimeGlobal = globalThis as typeof globalThis & {
-  __breadboardImageSearch?: ServiceState | null;
-  __breadboardImageSearchStarting?: Promise<ServiceState> | null;
-};
-
-function fingerprintOf(entry: string): string {
-  return crypto
-    .createHash("sha256")
-    .update(JSON.stringify([entry, googleImagesApiKey(), googleImagesEngineId()]))
-    .digest("hex");
-}
-
-async function connect(entry: string): Promise<ServiceState> {
-  const client = new Client({ name: "breadboard-image-search", version: "1.0.0" });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [entry],
-    cwd: path.dirname(path.dirname(entry)),
-    env: {
-      ...getDefaultEnvironment(),
-      // The clone's env schema hard-exits the process on a missing key, and
-      // stderr is ignored, so both values are verified before spawning.
-      API_KEY: googleImagesApiKey(),
-      SEARCH_ENGINE_ID: googleImagesEngineId(),
-    },
-    // Never inherit the child's stderr into Breadboard logs, where it could
-    // print the API key from a request URL.
-    stderr: "ignore",
-  });
-  await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
-  return { client, fingerprint: fingerprintOf(entry) };
-}
-
-async function ensureClient(): Promise<Client> {
-  const entry = resolveImageSearchEntry();
-  if (!entry) {
-    throw new ImageSearchServiceError(
-      "image_search_runtime_unavailable",
-      "The image search runtime is not prepared. Run `node scripts/setup-google-images.mjs` to build mcp-google-images-search/.",
-    );
-  }
-  const wanted = fingerprintOf(entry);
-  const existing = runtimeGlobal.__breadboardImageSearch;
-  if (existing && existing.fingerprint === wanted) return existing.client;
-  if (existing) {
-    void existing.client.close().catch(() => {});
-    runtimeGlobal.__breadboardImageSearch = null;
-  }
-  const starting = runtimeGlobal.__breadboardImageSearchStarting;
-  if (starting) return (await starting).client;
-  const attempt = connect(entry)
-    .then((state) => {
-      runtimeGlobal.__breadboardImageSearch = state;
-      return state;
-    })
-    .finally(() => {
-      runtimeGlobal.__breadboardImageSearchStarting = null;
-    });
-  runtimeGlobal.__breadboardImageSearchStarting = attempt;
-  try {
-    return (await attempt).client;
-  } catch {
-    throw new ImageSearchServiceError(
-      "image_search_launch_failed",
-      "The image search server could not start.",
-    );
-  }
-}
-
-function dropClient(): void {
-  const existing = runtimeGlobal.__breadboardImageSearch;
-  if (existing) {
-    void existing.client.close().catch(() => {});
-    runtimeGlobal.__breadboardImageSearch = null;
-  }
-}
-
-interface CloneSearchItem {
-  title?: unknown;
-  link?: unknown;
-  displayLink?: unknown;
-  image?: {
-    contextLink?: unknown;
-    dimensions?: unknown;
-    thumbnail?: { link?: unknown };
-  };
-}
-
-interface CloneResultPayload {
-  summary?: { query?: unknown; pagination?: { nextPageStartIndex?: unknown } };
-  items?: CloneSearchItem[];
-}
-
-function parseDimensions(value: unknown): { w?: number; h?: number } {
-  if (typeof value !== "string") return {};
-  const match = value.match(/^(\d+)x(\d+)$/);
-  if (!match) return {};
-  return { w: Number(match[1]), h: Number(match[2]) };
-}
-
-function normalizeArgs(input: ImageSearchInput): Record<string, unknown> {
+function normalizeArgs(input: ImageSearchInput): CanonicalImageSearchRequest {
   const query = typeof input.query === "string" ? input.query.trim() : "";
   if (!query || query.length > 512) {
     throw new ImageSearchServiceError(
@@ -204,7 +74,12 @@ function normalizeArgs(input: ImageSearchInput): Record<string, unknown> {
   }
   // The clone's own default is 2, which reads as a broken grid next to the
   // "give me 5 images" phrasing these turns arrive with — default to 5.
-  const args: Record<string, unknown> = { query, count: 5 };
+  const args: CanonicalImageSearchRequest = {
+    query,
+    count: 5,
+    safe: null,
+    startIndex: null,
+  };
   if (input.count !== undefined) {
     const count = Number(input.count);
     if (!Number.isInteger(count) || count < 1 || count > MAX_COUNT) {
@@ -247,10 +122,15 @@ const BROWSER_HEADERS = {
 } as const;
 
 /** The per-query token DuckDuckGo embeds in its search page and requires on i.js. */
-async function fetchVqdToken(query: string): Promise<string> {
+function fetchSignal(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(KEYLESS_FETCH_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+async function fetchVqdToken(query: string, signal?: AbortSignal): Promise<string> {
   const response = await fetch(
     `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`,
-    { headers: BROWSER_HEADERS, signal: AbortSignal.timeout(KEYLESS_FETCH_TIMEOUT_MS) },
+    { headers: BROWSER_HEADERS, signal: fetchSignal(signal) },
   );
   if (!response.ok) {
     throw new ImageSearchServiceError(
@@ -286,11 +166,26 @@ function hostnameOf(url: string): string {
   }
 }
 
-async function searchImagesKeyless(args: Record<string, unknown>): Promise<ImageSearchResult> {
-  const query = String(args.query);
-  const count = Number(args.count);
-  const startIndex = typeof args.startIndex === "number" ? args.startIndex : 1;
-  const vqd = await fetchVqdToken(query);
+async function searchImagesKeyless(
+  args: CanonicalImageSearchRequest,
+  signal?: AbortSignal,
+): Promise<ImageSearchResult> {
+  const query = args.query;
+  const count = args.count;
+  const startIndex = args.startIndex ?? 1;
+  let vqd: string;
+  try {
+    vqd = await fetchVqdToken(query, signal);
+  } catch (error) {
+    if (error instanceof ImageSearchServiceError) throw error;
+    if (signal?.aborted) {
+      throw new ImageSearchServiceError("image_search_aborted", "The image search was cancelled.");
+    }
+    throw new ImageSearchServiceError(
+      "image_search_failed",
+      "The image search did not answer. Try again once.",
+    );
+  }
   const params = new URLSearchParams({
     l: "us-en",
     o: "json",
@@ -306,7 +201,7 @@ async function searchImagesKeyless(args: Record<string, unknown>): Promise<Image
   try {
     const response = await fetch(`https://duckduckgo.com/i.js?${params.toString()}`, {
       headers: BROWSER_HEADERS,
-      signal: AbortSignal.timeout(KEYLESS_FETCH_TIMEOUT_MS),
+      signal: fetchSignal(signal),
     });
     if (!response.ok) {
       throw new ImageSearchServiceError(
@@ -317,6 +212,9 @@ async function searchImagesKeyless(args: Record<string, unknown>): Promise<Image
     payload = (await response.json()) as { results?: DdgImageResult[]; next?: unknown };
   } catch (error) {
     if (error instanceof ImageSearchServiceError) throw error;
+    if (signal?.aborted) {
+      throw new ImageSearchServiceError("image_search_aborted", "The image search was cancelled.");
+    }
     throw new ImageSearchServiceError(
       "image_search_failed",
       "The image search did not answer. Try again once.",
@@ -352,83 +250,11 @@ async function searchImagesKeyless(args: Record<string, unknown>): Promise<Image
 
 // ── entry point ──────────────────────────────────────────────────────────────
 
-export async function searchImages(input: ImageSearchInput): Promise<ImageSearchResult> {
+export async function searchImages(
+  input: ImageSearchInput,
+  options: ImageSearchExecutionOptions = {},
+): Promise<ImageSearchResult> {
   const args = normalizeArgs(input);
-  if (imageSearchMode() === "keyless") return searchImagesKeyless(args);
-  return searchImagesGoogle(args);
-}
-
-async function searchImagesGoogle(args: Record<string, unknown>): Promise<ImageSearchResult> {
-  const client = await ensureClient();
-  let result: Awaited<ReturnType<Client["callTool"]>>;
-  try {
-    result = await client.callTool({ name: "search_image", arguments: args }, undefined, {
-      timeout: CALL_TIMEOUT_MS,
-    });
-  } catch {
-    // A dead child (machine sleep, crash) surfaces here; drop the connection so
-    // the next turn respawns instead of failing forever on a closed transport.
-    dropClient();
-    throw new ImageSearchServiceError(
-      "image_search_failed",
-      "The image search did not answer. Try again once.",
-    );
-  }
-
-  const meta = (result as { _meta?: { error?: { message?: unknown } } })._meta;
-  if (meta?.error) {
-    const message =
-      typeof meta.error.message === "string" && meta.error.message
-        ? meta.error.message
-        : "Google image search rejected the request.";
-    throw new ImageSearchServiceError("image_search_upstream_error", message);
-  }
-
-  const content = Array.isArray(result.content) ? result.content : [];
-  let parsed: CloneResultPayload | null = null;
-  for (const item of content) {
-    if (item?.type !== "text" || typeof item.text !== "string") continue;
-    if (!item.text.startsWith('{"imageResults":')) continue;
-    try {
-      parsed =
-        (JSON.parse(item.text) as { imageResults?: CloneResultPayload }).imageResults ?? null;
-    } catch {
-      parsed = null;
-    }
-  }
-  if (!parsed || !Array.isArray(parsed.items)) {
-    throw new ImageSearchServiceError(
-      "image_search_failed",
-      "The image search returned no readable results.",
-    );
-  }
-
-  const displayItems: ImageSearchDisplayItem[] = parsed.items.flatMap((item) => {
-    const link = typeof item.link === "string" ? item.link : "";
-    if (!link) return [];
-    const thumb =
-      typeof item.image?.thumbnail?.link === "string" ? item.image.thumbnail.link : "";
-    return [
-      {
-        title: typeof item.title === "string" ? item.title : "",
-        image: link,
-        thumb,
-        page: typeof item.image?.contextLink === "string" ? item.image.contextLink : "",
-        site: typeof item.displayLink === "string" ? item.displayLink : "",
-        ...parseDimensions(item.image?.dimensions),
-      },
-    ];
-  });
-
-  const query =
-    typeof parsed.summary?.query === "string" && parsed.summary.query
-      ? parsed.summary.query
-      : String(args.query);
-  const nextRaw = parsed.summary?.pagination?.nextPageStartIndex;
-  return {
-    query,
-    itemsReturned: displayItems.length,
-    ...(typeof nextRaw === "number" ? { nextPageStartIndex: nextRaw } : {}),
-    display: { query, items: displayItems },
-  };
+  if (imageSearchMode() === "keyless") return searchImagesKeyless(args, options.signal);
+  return runGoogleImageSearch(args, options.scope, options.signal);
 }

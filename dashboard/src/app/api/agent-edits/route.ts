@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth.ts";
 import { resolveConnectedRepository } from "@/lib/opencode/repository.ts";
 import {
-  agentEditPatch,
-  finalizeRunSnapshot,
+  agentEditsFromRunEvents,
   isSnapshotId,
-  summarizeAgentEdits,
-  undoAgentEdits,
-} from "@/lib/agent-edits/snapshot.ts";
+  runAgentEditsOperation,
+  streamAgentEditsArtifact,
+} from "@/lib/agent-edits/runtime-client.ts";
+import { readOuterAgentRunView } from "@/lib/runtime-v2/outer-agent-run.ts";
+import { RuntimeJobControlError } from "@/lib/supervisor-control.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -36,6 +37,12 @@ function failure(error: unknown): NextResponse {
   if (error instanceof RouteError) {
     return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
   }
+  if (error instanceof RuntimeJobControlError) {
+    return NextResponse.json(
+      { ok: false, error: error.code, message: error.message },
+      { status: error.status },
+    );
+  }
   const code = error instanceof Error ? error.message : "internal_error";
   const status = ["garden_not_found", "repository_not_connected", "repository_unavailable"].includes(
     code,
@@ -51,18 +58,16 @@ export async function GET(request: Request) {
     const params = new URL(request.url).searchParams;
     const repositoryPath = repositoryFor(userId, params.get("gardenSlug"));
     const ref = snapshotRef(params.get("before"), params.get("after"));
-    const summary = summarizeAgentEdits(repositoryPath, ref);
-
     const filePath = params.get("path");
-    if (filePath === null) return NextResponse.json({ ok: true, ...summary });
-    if (!summary.files.some((file) => file.path === filePath)) {
-      throw new RouteError(404, "file_not_in_run");
-    }
-    return NextResponse.json({
-      ok: true,
-      path: filePath,
-      patch: agentEditPatch(repositoryPath, ref, filePath),
+    const artifact = await runAgentEditsOperation({
+      userId,
+      operation: filePath === null ? "summary" : "patch",
+      repositoryPath,
+      ref,
+      ...(filePath === null ? {} : { filePath }),
+      signal: request.signal,
     });
+    return streamAgentEditsArtifact(artifact);
   } catch (error) {
     return failure(error);
   }
@@ -77,18 +82,46 @@ export async function POST(request: Request) {
     if (body.action === "finalize") {
       const runId = typeof body.runId === "string" ? body.runId.trim() : "";
       if (!runId) throw new RouteError(400, "run_required");
-      const ref = finalizeRunSnapshot(runId, repositoryPath);
-      // A run that started before this server did simply has no undo.
+      const agentKind =
+        body.agentKind === "codex" ||
+        body.agentKind === "opencode" ||
+        body.agentKind === "ruflo"
+          ? body.agentKind
+          : null;
+      if (!agentKind) throw new RouteError(400, "agent_kind_required");
+      let view;
+      try {
+        view = await readOuterAgentRunView(agentKind, userId, runId, 0);
+      } catch (error) {
+        // A card saved by a pre-Runtime build has no durable job correlation
+        // and therefore preserves its historical no-undo degradation.
+        if (error instanceof Error && error.message === "run_not_found") {
+          return NextResponse.json({ ok: true, edits: null });
+        }
+        throw error;
+      }
+      const ref = view.terminal ? agentEditsFromRunEvents(view.events) : null;
       if (!ref) return NextResponse.json({ ok: true, edits: null });
-      return NextResponse.json({
-        ok: true,
-        edits: { ...ref, ...summarizeAgentEdits(repositoryPath, ref) },
+      const artifact = await runAgentEditsOperation({
+        userId,
+        operation: "finalize",
+        repositoryPath,
+        ref,
+        signal: request.signal,
       });
+      return streamAgentEditsArtifact(artifact);
     }
 
     if (body.action === "undo") {
       const ref = snapshotRef(body.before, body.after);
-      return NextResponse.json({ ok: true, ...undoAgentEdits(repositoryPath, ref) });
+      const artifact = await runAgentEditsOperation({
+        userId,
+        operation: "undo",
+        repositoryPath,
+        ref,
+        signal: request.signal,
+      });
+      return streamAgentEditsArtifact(artifact);
     }
 
     throw new RouteError(400, "unknown_action");

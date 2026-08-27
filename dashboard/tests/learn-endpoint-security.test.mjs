@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -137,9 +140,9 @@ function freshState(overrides = {}) {
   return state;
 }
 
-async function withContentPath(callback) {
+async function withContentPath(callback, contentPath = "C:\\trusted\\quartz\\content") {
   const previous = process.env.QUARTZ_CONTENT_PATH;
-  process.env.QUARTZ_CONTENT_PATH = "C:\\trusted\\quartz\\content";
+  process.env.QUARTZ_CONTENT_PATH = contentPath;
   try {
     await callback();
   } finally {
@@ -191,6 +194,7 @@ test("Learn status uses the authorized canonical garden slug", async () => {
       {
         operation: "status",
         input: {
+          userId: 7,
           gardenId: "canonical-owned-garden",
           contentPath: "C:\\trusted\\quartz\\content",
         },
@@ -199,7 +203,16 @@ test("Learn status uses the authorized canonical garden slug", async () => {
   });
 });
 
-test("Learn validation report remains a private no-store response", async () => {
+test("Learn validation report remains a private streamed no-store response", async (t) => {
+  const contentPath = fs.mkdtempSync(path.join(os.tmpdir(), "bb-learn-report-route-"));
+  t.after(() => fs.rmSync(contentPath, { recursive: true, force: true }));
+  const reportDir = path.join(contentPath, "canonical-owned-garden", ".breadboard");
+  fs.mkdirSync(reportDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(reportDir, "validation-report.md"),
+    "# Private validation details",
+  );
+
   await withContentPath(async () => {
     const state = freshState();
     const response = await reportRoute.GET(new Request("http://local/report"), {
@@ -210,7 +223,41 @@ test("Learn validation report remains a private no-store response", async () => 
     assert.equal(await response.text(), "# Private validation details");
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.match(response.headers.get("content-type") ?? "", /^text\/markdown/i);
-    assert.equal(state.learnCalls[0].input.gardenId, "canonical-owned-garden");
-    assert.equal(state.learnCalls[0].input.maxChars, Number.MAX_SAFE_INTEGER);
-  });
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.deepEqual(state.learnCalls, []);
+  }, contentPath);
+});
+
+test("Learn validation report rejects oversized files without reading them", async (t) => {
+  const contentPath = fs.mkdtempSync(path.join(os.tmpdir(), "bb-learn-report-limit-"));
+  t.after(() => fs.rmSync(contentPath, { recursive: true, force: true }));
+  const reportDir = path.join(contentPath, "canonical-owned-garden", ".breadboard");
+  fs.mkdirSync(reportDir, { recursive: true });
+  const reportPath = path.join(reportDir, "validation-report.md");
+  fs.writeFileSync(reportPath, "# report\n");
+  fs.truncateSync(reportPath, 16 * 1024 * 1024 + 1);
+
+  await withContentPath(async () => {
+    freshState();
+    const response = await reportRoute.GET(new Request("http://local/report"), {
+      params: Promise.resolve({ gardenId: "requested-slug" }),
+    });
+    assert.equal(response.status, 413);
+  }, contentPath);
+});
+
+test("Learn validation report route has no heavyweight Learn import or whole-file read", () => {
+  const route = fs.readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/app/api/gardens/[gardenId]/learn/validation-report/route.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  assert.doesNotMatch(route, /@\/lib\/learn(?:["'])/);
+  assert.doesNotMatch(route, /readFileSync|Number\.MAX_SAFE_INTEGER/);
+  assert.match(route, /createReadStream\(report\.filePath\)/);
+  assert.match(route, /MAX_VALIDATION_REPORT_BYTES = 16 \* 1024 \* 1024/);
 });

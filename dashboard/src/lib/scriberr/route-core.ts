@@ -4,19 +4,12 @@
 // behavior (auth rejection, both/neither inputs, oversized media, playlist
 // URLs, access control, cancel/retry, sanitized failures) without Next.js.
 
-import crypto from "crypto";
-import fs from "fs";
-import path from "path";
-
 import {
   VideoTranscriptionError,
   sanitizeErrorForClient,
 } from "./errors.ts";
 import {
-  ensureJobTempDir,
   isSupportedVideoExtension,
-  randomMediaFilename,
-  removePathWithRetries,
   sanitizeDisplayFilename,
   titleFromFilename,
 } from "./paths.ts";
@@ -44,10 +37,24 @@ export interface VideoTranscriptionRouteDeps {
   /** Throws RouteError(401/404) exactly like the rest of the app. */
   requireOwnedGarden(gardenId: string): Promise<AuthorizedGarden>;
   contentPath(): string | null;
-  runnerKick(): void;
+  runnerKick(clusterId: number): void | Promise<void>;
+  runnerStart(
+    jobId: string,
+    upload: SealedVideoTranscriptionUpload | null,
+  ): Promise<VideoTranscriptionJob | null>;
   runnerCancel(jobId: string): Promise<VideoTranscriptionJob | null>;
   runnerRetry(jobId: string): Promise<VideoTranscriptionJob | null>;
-  inspectYouTube(parsed: {
+  sealUpload(input: {
+    garden: AuthorizedGarden;
+    file: File;
+    displayFilename: string;
+    signal: AbortSignal;
+  }): Promise<SealedVideoTranscriptionUpload>;
+  abandonUpload(
+    garden: AuthorizedGarden,
+    uploadId: string,
+  ): Promise<void>;
+  inspectYouTube(garden: AuthorizedGarden, parsed: {
     videoId: string;
     canonicalUrl: string;
     originalUrl: string;
@@ -60,9 +67,17 @@ export interface VideoTranscriptionRouteDeps {
     contentHash?: string | null;
   }): ExistingVideoSource | null;
   checkHealth(input: {
+    userId: number;
+    gardenId: string;
     contentPath: string | null;
     clusterSlug: string | null;
   }): Promise<VideoTranscriptionHealth>;
+}
+
+export interface SealedVideoTranscriptionUpload {
+  uploadId: string;
+  sha256: string;
+  sizeBytes: number;
 }
 
 export interface RouteResult {
@@ -104,43 +119,6 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
   return parsed && typeof parsed === "object" && !Array.isArray(parsed)
     ? (parsed as Record<string, unknown>)
     : {};
-}
-
-/** Stream an uploaded File to disk, hashing while writing, enforcing the cap. */
-export async function saveUploadStream(
-  file: { stream(): ReadableStream<Uint8Array>; size: number },
-  destinationPath: string,
-  maxBytes: number,
-): Promise<{ sha256: string; bytes: number }> {
-  const hash = crypto.createHash("sha256");
-  let bytes = 0;
-  const handle = fs.createWriteStream(destinationPath, { flags: "wx" });
-  const reader = file.stream().getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bytes += value.byteLength;
-      if (bytes > maxBytes) {
-        throw new VideoTranscriptionError("media_too_large", { httpStatus: 413 });
-      }
-      hash.update(value);
-      if (!handle.write(Buffer.from(value))) {
-        await new Promise<void>((resolve, reject) => {
-          handle.once("drain", resolve);
-          handle.once("error", reject);
-        });
-      }
-    }
-    await new Promise<void>((resolve, reject) => {
-      handle.end(() => resolve());
-      handle.once("error", reject);
-    });
-    return { sha256: hash.digest("hex"), bytes };
-  } catch (error) {
-    handle.destroy();
-    throw error;
-  }
 }
 
 export async function handleCreateVideoTranscription(
@@ -249,7 +227,7 @@ export async function handleCreateVideoTranscription(
       // on the Breadboard side degrades gracefully — Scriberr does its own
       // download — but a metadata failure for the video itself is fatal.
       try {
-        youtube.metadata = await deps.inspectYouTube(youtube.parsed);
+        youtube.metadata = await deps.inspectYouTube(garden, youtube.parsed);
       } catch (error) {
         if (
           error instanceof VideoTranscriptionError &&
@@ -309,7 +287,7 @@ export async function handleCreateVideoTranscription(
           youtube.metadata?.title ?? `YouTube video ${youtube.parsed.videoId}`,
         videoMetadata: youtube.metadata,
       });
-      deps.runnerKick();
+      await deps.runnerStart(job.id, null);
       return { status: 202, body: { success: true, job: jobResponse(job) } };
     }
 
@@ -318,25 +296,15 @@ export async function handleCreateVideoTranscription(
       throw new VideoTranscriptionError("invalid_input", { httpStatus: 400 });
     }
 
-    // Save to a job-scoped random temp path (never the original filename),
-    // hashing while streaming so dedup needs no second pass.
-    const provisionalId = `up-${crypto.randomBytes(8).toString("hex")}`;
-    const tempDir = ensureJobTempDir(deps.config.tempDir, provisionalId);
-    const mediaPath = path.join(
-      tempDir,
-      randomMediaFilename(upload.displayFilename),
-    );
-    let sha256: string;
-    try {
-      ({ sha256 } = await saveUploadStream(
-        upload.file,
-        mediaPath,
-        deps.config.maxUploadBytes,
-      ));
-    } catch (error) {
-      await removePathWithRetries(tempDir, { root: deps.config.tempDir });
-      throw error;
-    }
+    // Native Runtime seals and hashes the bounded body before any worker can
+    // observe it. Next never writes a media temp file or passes a local path.
+    const sealedUpload = await deps.sealUpload({
+      garden,
+      file: upload.file,
+      displayFilename: upload.displayFilename,
+      signal: request.signal,
+    });
+    const sha256 = sealedUpload.sha256;
 
     if (!retranscribe) {
       const existingSource = deps.findExistingVideoSource({
@@ -345,7 +313,7 @@ export async function handleCreateVideoTranscription(
         mediaSha256: sha256,
       });
       if (existingSource) {
-        await removePathWithRetries(tempDir, { root: deps.config.tempDir });
+        await deps.abandonUpload(garden, sealedUpload.uploadId).catch(() => undefined);
         return {
           status: 200,
           body: { success: true, duplicate: true, source: existingSource },
@@ -356,7 +324,7 @@ export async function handleCreateVideoTranscription(
         mediaSha256: sha256,
       });
       if (existingJob) {
-        await removePathWithRetries(tempDir, { root: deps.config.tempDir });
+        await deps.abandonUpload(garden, sealedUpload.uploadId).catch(() => undefined);
         return {
           status: 200,
           body: {
@@ -368,18 +336,25 @@ export async function handleCreateVideoTranscription(
       }
     }
 
-    const job = deps.store.createJob({
-      clusterId: garden.clusterId,
-      gardenSlug: garden.clusterSlug,
-      userId: garden.userId,
-      inputKind: "upload",
-      originalFilename: upload.displayFilename,
-      sourceTitle: titleFromFilename(upload.displayFilename),
-      mediaTempPath: mediaPath,
-      mediaSha256: sha256,
-    });
-    deps.runnerKick();
-    return { status: 202, body: { success: true, job: jobResponse(job) } };
+    try {
+      const job = deps.store.createJob({
+        clusterId: garden.clusterId,
+        gardenSlug: garden.clusterSlug,
+        userId: garden.userId,
+        inputKind: "upload",
+        originalFilename: upload.displayFilename,
+        sourceTitle: titleFromFilename(upload.displayFilename),
+        mediaTempPath: null,
+        mediaSha256: sha256,
+      });
+      await deps.runnerStart(job.id, sealedUpload);
+      return { status: 202, body: { success: true, job: jobResponse(job) } };
+    } catch (error) {
+      // Harmless if Runtime already atomically claimed the upload; the native
+      // owner rejects abandonment of an attached blob.
+      await deps.abandonUpload(garden, sealedUpload.uploadId).catch(() => undefined);
+      throw error;
+    }
   } catch (error) {
     return errorResult(error);
   }
@@ -394,7 +369,7 @@ export async function handleListVideoTranscriptions(
     requireEnabled(deps.config);
     const garden = await deps.requireOwnedGarden(gardenId);
     // A visit is a natural moment to resume interrupted jobs after restarts.
-    deps.runnerKick();
+    await deps.runnerKick(garden.clusterId);
     const jobs = deps.store
       .listJobsForCluster(garden.clusterId, { activeOnly, limit: 20 })
       .map(jobResponse);
@@ -412,7 +387,7 @@ export async function handleGetVideoTranscription(
   try {
     requireEnabled(deps.config);
     const garden = await deps.requireOwnedGarden(gardenId);
-    deps.runnerKick();
+    await deps.runnerKick(garden.clusterId);
     const job = deps.store.getJobForCluster(jobId, garden.clusterId);
     if (!job) return { status: 404, body: { error: "Job not found" } };
     return { status: 200, body: { job: jobResponse(job) } };
@@ -474,13 +449,13 @@ export async function handleInspectYouTube(
 ): Promise<RouteResult> {
   try {
     requireEnabled(deps.config);
-    await deps.requireOwnedGarden(gardenId);
+    const garden = await deps.requireOwnedGarden(gardenId);
     const body = await readJsonBody(request);
     const parsed = parseYouTubeUrl(body.url ?? body.youtubeUrl);
     let metadata: YouTubeMediaMetadata | null = null;
     let metadataAvailable = true;
     try {
-      metadata = await deps.inspectYouTube(parsed);
+      metadata = await deps.inspectYouTube(garden, parsed);
     } catch (error) {
       if (
         error instanceof VideoTranscriptionError &&
@@ -513,6 +488,8 @@ export async function handleVideoTranscriptionHealth(
   try {
     const garden = await deps.requireOwnedGarden(gardenId);
     const health = await deps.checkHealth({
+      userId: garden.userId,
+      gardenId: garden.clusterSlug,
       contentPath: deps.contentPath(),
       clusterSlug: garden.clusterSlug,
     });

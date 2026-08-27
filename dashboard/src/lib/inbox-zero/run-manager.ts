@@ -12,9 +12,12 @@
 import { randomUUID } from "node:crypto";
 
 import { newChatId, runAssistantTurn, summarizeToolValue } from "./client.ts";
-import { resolveInboxZeroConfig } from "./config.ts";
 import { instruction } from "./identity.ts";
-import { ensureReady, type SetupStatus } from "./service.ts";
+import {
+  ensureInboxZeroReady,
+  withInboxZeroStackLease,
+} from "./runtime-service.ts";
+import type { SetupStatus } from "./contract.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface InboxZeroEvent {
@@ -63,6 +66,7 @@ interface RunState {
   mailbox: string | null;
   parts: Map<string, string>;
   partOrder: string[];
+  answerChars: number;
   actions: InboxZeroAction[];
   abort: AbortController;
   aborted: boolean;
@@ -84,6 +88,8 @@ runtimeGlobal.__breadboardInboxZeroChats = chats;
 const MAX_EVENTS = 3_000;
 const MAX_ANSWER_CHARS = 60_000;
 const MAX_ACTIONS = 100;
+/** Bound retained upstream conversation ids and evict least-recently used entries. */
+const MAX_CHAT_CONTEXTS = 1_024;
 /** A mailbox turn is interactive work, not a research project. */
 const RUN_TIMEOUT_MS = 10 * 60_000;
 const RETENTION_MS = 2 * 60 * 60_000;
@@ -188,6 +194,10 @@ function describeTool(toolName: string, input: unknown): InboxZeroAction {
 
 export interface StartRunInput {
   userId: number;
+  /** Runtime identity. Present only inside the disposable worker. */
+  runtimeJobId?: string;
+  /** Durable per-conversation upstream id minted by the authenticated facade. */
+  runtimeChatId?: string;
   task: string;
   /** Ties follow-up turns to the same Inbox Zero conversation. */
   conversationKey?: string;
@@ -197,6 +207,7 @@ export interface StartRunInput {
   chatmockBaseUrl: string;
   chatmockApiKey: string;
   model: string;
+  conversationPublicId?: string;
   /** The chat this was launched from, so a request can refer back to it. */
   conversationContext?: string;
 }
@@ -204,7 +215,7 @@ export interface StartRunInput {
 
 export function startRun(input: StartRunInput): InboxZeroRunSummary {
   const run: RunState = {
-    runId: randomUUID(),
+    runId: input.runtimeJobId ?? randomUUID(),
     userId: input.userId,
     task: input.task,
     status: "queued",
@@ -215,6 +226,7 @@ export function startRun(input: StartRunInput): InboxZeroRunSummary {
     mailbox: null,
     parts: new Map(),
     partOrder: [],
+    answerChars: 0,
     actions: [],
     abort: new AbortController(),
     aborted: false,
@@ -235,89 +247,117 @@ async function execute(run: RunState, input: StartRunInput): Promise<void> {
   timeout.unref?.();
 
   try {
-    run.status = "running";
-    emit(run, "run.connecting", {});
-    const ready = await ensureReady({
-      allowStart: true,
-      chatmockBaseUrl: input.chatmockBaseUrl,
-      chatmockApiKey: input.chatmockApiKey,
-      model: input.model,
-      preferredEmail: input.preferredEmail,
+    const scope = {
+      userId: run.userId,
+      runId: run.runId,
+      ...(input.conversationPublicId
+        ? { conversationPublicId: input.conversationPublicId }
+        : {}),
+    };
+    await withInboxZeroStackLease(scope, "active-mailbox-run", async () => {
+      if (run.aborted) return;
+      run.status = "running";
+      emit(run, "run.connecting", {});
+      const ready = await ensureInboxZeroReady(
+        scope,
+        {
+          chatmockBaseUrl: input.chatmockBaseUrl,
+          chatmockApiKey: input.chatmockApiKey,
+          model: input.model,
+          ...(input.preferredEmail ? { preferredEmail: input.preferredEmail } : {}),
+        },
+        run.abort.signal,
+      );
+      if (!ready.ok || !ready.session) {
+        emit(run, "run.setup_required", { ...ready.setup });
+        finish(run, "failed", setupMessage(ready.setup));
+        return;
+      }
+      if (run.aborted) {
+        finish(run, "aborted", "Stopped before it reached the mailbox.");
+        return;
+      }
+      if (!ready.baseUrl) throw new Error("Inbox Zero did not return its sealed endpoint.");
+
+      run.mailbox = ready.session.identity.email;
+      emit(run, "run.connected", { mailbox: run.mailbox });
+      setStage(run, "working");
+
+      // Scope the upstream conversation again at the owner boundary. A caller
+      // accidentally reusing a chat-session key can never join another user's
+      // mailbox context.
+      const key = `${run.userId}:${input.conversationKey ?? run.runId}`;
+      const chatId = input.runtimeChatId ?? chats.get(key) ?? newChatId();
+      if (!input.runtimeChatId) {
+        chats.delete(key);
+        chats.set(key, chatId);
+        while (chats.size > MAX_CHAT_CONTEXTS) {
+          const oldest = chats.keys().next().value;
+          if (oldest === undefined) break;
+          chats.delete(oldest);
+        }
+      }
+
+      let streamError: string | null = null;
+      await runAssistantTurn(
+        {
+          config: { baseUrl: ready.baseUrl },
+          session: ready.session,
+          chatId,
+          message: promptWithContext(
+            instruction(run.task, input.allowActions),
+            input.conversationContext,
+          ),
+          signal: run.abort.signal,
+        },
+        {
+          onText: (partId, delta) => {
+            const boundedDelta = delta.slice(0, Math.max(0, MAX_ANSWER_CHARS - run.answerChars));
+            if (!boundedDelta) return;
+            if (!run.parts.has(partId)) {
+              run.parts.set(partId, "");
+              run.partOrder.push(partId);
+            }
+            run.answerChars += boundedDelta.length;
+            run.parts.set(partId, `${run.parts.get(partId) ?? ""}${boundedDelta}`);
+            setStage(run, "answering");
+            emit(run, "run.text", { partId, delta: boundedDelta });
+          },
+          onToolCall: (toolName, toolInput) => {
+            if (run.actions.length >= MAX_ACTIONS) return;
+            const action = describeTool(toolName, toolInput);
+            run.actions.push(action);
+            setStage(run, "working");
+            emit(run, "run.action", { ...action });
+          },
+          onToolResult: (toolName, output) => {
+            emit(run, "run.action_result", {
+              tool: toolName,
+              summary: summarizeToolValue(output).slice(0, 400),
+            });
+          },
+          onError: (message) => {
+            streamError = message.slice(0, 600);
+            emit(run, "run.error", { message: streamError });
+          },
+        },
+      );
+
+      if (run.aborted) {
+        finish(run, "aborted", answerText(run) || "Stopped.");
+        return;
+      }
+      const answer = answerText(run);
+      if (streamError && !answer) {
+        finish(run, "failed", streamError);
+        return;
+      }
+      finish(
+        run,
+        "completed",
+        answer || "Inbox Zero finished the turn without writing an answer.",
+      );
     });
-    if (!ready.ok || !ready.session) {
-      emit(run, "run.setup_required", { ...ready.setup });
-      finish(run, "failed", setupMessage(ready.setup));
-      return;
-    }
-    if (run.aborted) {
-      finish(run, "aborted", "Stopped before it reached the mailbox.");
-      return;
-    }
-
-    run.mailbox = ready.session.identity.email;
-    emit(run, "run.connected", { mailbox: run.mailbox });
-    setStage(run, "working");
-
-    const key = input.conversationKey ?? run.runId;
-    const chatId = chats.get(key) ?? newChatId();
-    chats.set(key, chatId);
-
-    let streamError: string | null = null;
-    await runAssistantTurn(
-      {
-        config: resolveInboxZeroConfig(),
-        session: ready.session,
-        chatId,
-        message: promptWithContext(
-          instruction(run.task, input.allowActions),
-          input.conversationContext,
-        ),
-        signal: run.abort.signal,
-      },
-      {
-        onText: (partId, delta) => {
-          if (!run.parts.has(partId)) {
-            run.parts.set(partId, "");
-            run.partOrder.push(partId);
-          }
-          run.parts.set(partId, `${run.parts.get(partId) ?? ""}${delta}`);
-          setStage(run, "answering");
-          emit(run, "run.text", { partId, delta });
-        },
-        onToolCall: (toolName, toolInput) => {
-          if (run.actions.length >= MAX_ACTIONS) return;
-          const action = describeTool(toolName, toolInput);
-          run.actions.push(action);
-          setStage(run, "working");
-          emit(run, "run.action", { ...action });
-        },
-        onToolResult: (toolName, output) => {
-          emit(run, "run.action_result", {
-            tool: toolName,
-            summary: summarizeToolValue(output).slice(0, 400),
-          });
-        },
-        onError: (message) => {
-          streamError = message;
-          emit(run, "run.error", { message });
-        },
-      },
-    );
-
-    if (run.aborted) {
-      finish(run, "aborted", answerText(run) || "Stopped.");
-      return;
-    }
-    const answer = answerText(run);
-    if (streamError && !answer) {
-      finish(run, "failed", streamError);
-      return;
-    }
-    finish(
-      run,
-      "completed",
-      answer || "Inbox Zero finished the turn without writing an answer.",
-    );
   } catch (error) {
     if (run.aborted) {
       finish(run, "aborted", answerText(run) || "Stopped.");
@@ -390,3 +430,22 @@ export function onTerminal(
   run.terminalHandler = handler;
   if (run.terminalResult) handler(run.terminalResult);
 }
+
+/** Worker-only entrypoint selected by the fixed Runtime adapter. */
+export function startRuntimeWorkerRun(
+  input: StartRunInput & { runtimeJobId: string; runtimeChatId: string },
+): InboxZeroRunSummary {
+  if (
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      input.runtimeChatId,
+    )
+  ) {
+    throw new Error("Inbox Zero Runtime identity is invalid.");
+  }
+  return startRun(input);
+}
+
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
+export const abortRuntimeWorkerRun = abortRun;

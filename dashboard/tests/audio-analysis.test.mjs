@@ -35,7 +35,6 @@ import {
   runAudioComparison,
   AudioAnalyzerError,
 } from "../src/lib/audio-analyzer/service.ts";
-import { readAudioAnalyzerConfig } from "../src/lib/audio-analyzer/config.ts";
 import { audioAnalyzerInstalled, audioAnalyzerStatus } from "../src/lib/audio-analyzer/runtime.ts";
 import {
   audioBlobPath,
@@ -44,6 +43,7 @@ import {
 } from "../src/lib/conversations/audio-blob-store.ts";
 import { allowedToolsForSurface } from "../src/lib/hermes/tool-scopes.ts";
 import { BROKERED_TOOLS } from "../src/lib/hermes/capability-broker.ts";
+import { validateAudioAnalyzerRequest } from "../scripts/runtime-v2-audio-analyzer-worker.mjs";
 
 function source(relativePath) {
   return fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
@@ -395,23 +395,89 @@ test("analysis options are bounded here rather than in the route", () => {
   }
 });
 
-test("the analyzer binary is provisioned and answers a handshake", async () => {
-  const config = readAudioAnalyzerConfig();
-  assert.equal(
-    audioAnalyzerInstalled(),
-    true,
-    `expected the analyzer at ${config.serverExecutable}; run \`npm run setup:audio-analyzer\``,
+test("audio status is observational and the dashboard owns no analyzer process", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-audio-status-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const server = path.join(root, process.platform === "win32" ? "mcp-server.exe" : "mcp-server");
+  const saved = process.env.AUDIO_ANALYZER_SERVER;
+  const savedDataRoot = process.env.BREADBOARD_DATA_DIR;
+  const savedRuntimeV2 = process.env.BREADBOARD_RUNTIME_V2_ACTIVE;
+  t.after(() => {
+    if (saved === undefined) delete process.env.AUDIO_ANALYZER_SERVER;
+    else process.env.AUDIO_ANALYZER_SERVER = saved;
+    if (savedDataRoot === undefined) delete process.env.BREADBOARD_DATA_DIR;
+    else process.env.BREADBOARD_DATA_DIR = savedDataRoot;
+    if (savedRuntimeV2 === undefined) delete process.env.BREADBOARD_RUNTIME_V2_ACTIVE;
+    else process.env.BREADBOARD_RUNTIME_V2_ACTIVE = savedRuntimeV2;
+  });
+  delete process.env.BREADBOARD_DATA_DIR;
+  delete process.env.BREADBOARD_RUNTIME_V2_ACTIVE;
+  process.env.AUDIO_ANALYZER_SERVER = server;
+  assert.equal(audioAnalyzerInstalled(), false);
+  assert.equal((await audioAnalyzerStatus()).state, "not_installed");
+  fs.writeFileSync(server, "provisioned");
+  assert.equal(audioAnalyzerInstalled(), true);
+  assert.equal((await audioAnalyzerStatus()).state, "ready");
+
+  process.env.BREADBOARD_RUNTIME_V2_ACTIVE = "true";
+  process.env.BREADBOARD_DATA_DIR = root;
+  assert.equal(audioAnalyzerInstalled(), false, "Runtime mode ignores the legacy executable override");
+  const runtimeServer = path.join(
+    root,
+    "runtime-v2",
+    "audio-analyzer",
+    "bin",
+    process.platform === "win32" ? "mcp-server.exe" : "mcp-server",
   );
-  const status = await audioAnalyzerStatus();
-  assert.equal(status.state, "ready", status.detail);
+  fs.mkdirSync(path.dirname(runtimeServer), { recursive: true });
+  fs.writeFileSync(runtimeServer, "runtime-provisioned");
+  assert.equal(audioAnalyzerInstalled(), true);
+  assert.equal((await audioAnalyzerStatus()).state, "ready");
+
+  const runtimeSource = source("src/lib/audio-analyzer/runtime.ts");
+  const serviceSource = source("src/lib/audio-analyzer/service.ts");
+  assert.doesNotMatch(runtimeSource + serviceSource, /node:child_process|\bspawn\s*\(/u);
+  assert.match(serviceSource, /submitRuntimeJob\(authority/);
+  assert.match(serviceSource, /reserveRuntimeJobInput\(authority/);
+  assert.doesNotMatch(serviceSource, /audioAnalyzerInstalled|AUDIO_ANALYZER_SERVER/u);
+  assert.match(
+    source("scripts/runtime-v2-audio-analyzer-worker.mjs"),
+    /BREADBOARD_AUDIO_ANALYZER_SERVER/u,
+  );
+  assert.equal(fs.existsSync(new URL("../src/lib/audio-analyzer/mcp-client.ts", import.meta.url)), false);
 });
 
-test("a real analysis measures the file rather than guessing at it", async (t) => {
+test("the disposable audio worker rejects non-canonical requests before launching MCP", () => {
+  assert.deepEqual(validateAudioAnalyzerRequest({ operation: "compare" }), { operation: "compare" });
+  const canonical = {
+    operation: "analyze",
+    analysis: "rhythm",
+    resolution: "low",
+    startTime: 1,
+    endTime: 3,
+    minBpm: 80,
+    maxBpm: 160,
+  };
+  assert.equal(validateAudioAnalyzerRequest(canonical), canonical);
+  for (const invalid of [
+    { ...canonical, executable: "C:/arbitrary.exe" },
+    { ...canonical, analysis: "everything" },
+    { ...canonical, startTime: 3, endTime: 1 },
+    { operation: "compare", pathA: "C:/secret.wav" },
+  ]) assert.throws(() => validateAudioAnalyzerRequest(invalid), /canonical audio-analysis request/);
+});
+
+const liveAudioRuntime = process.env.BREADBOARD_RUNTIME_V2_AUDIO_LIVE === "true";
+
+test("a real Runtime analysis measures the file rather than guessing at it", {
+  skip: liveAudioRuntime ? false : "set BREADBOARD_RUNTIME_V2_AUDIO_LIVE=true for the installed Runtime integration",
+}, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-audio-run-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const track = writeTestWav(path.join(root, "loop.wav"));
+  const scope = { userId: 1, gardenId: null, conversationId: "audio-live-test" };
 
-  const full = await runAudioAnalysis({ path: track, options: parseAnalysisOptions({}) });
+  const full = await runAudioAnalysis({ path: track, options: parseAnalysisOptions({}), scope });
   // An A minor triad at 120 BPM, which is what the fixture actually is.
   assert.match(full.report, /Estimated key: A minor/);
   assert.match(full.report, /Tempo: 120/);
@@ -421,25 +487,34 @@ test("a real analysis measures the file rather than guessing at it", async (t) =
   const section = await runAudioAnalysis({
     path: track,
     options: parseAnalysisOptions({ analysis: "rhythm", startTime: 1, endTime: 3, resolution: "low" }),
+    scope,
   });
   assert.match(section.report, /Tempo/);
 
-  const info = await runAudioAnalysis({ path: track, options: parseAnalysisOptions({ analysis: "info" }) });
+  const info = await runAudioAnalysis({
+    path: track,
+    options: parseAnalysisOptions({ analysis: "info" }),
+    scope,
+  });
   assert.match(info.report, /44100/);
 
   const other = writeTestWav(path.join(root, "quiet.wav"), { seconds: 4 });
-  const compared = await runAudioComparison({ pathA: track, pathB: other });
+  const compared = await runAudioComparison({ pathA: track, pathB: other, scope });
   assert.match(compared.report, /loop\.wav|Track A/i);
 
   // A file the decoder cannot read fails as an unreadable file, not as a crash.
   const bogus = path.join(root, "not-audio.wav");
   fs.writeFileSync(bogus, "this is not a waveform");
   await assert.rejects(
-    runAudioAnalysis({ path: bogus, options: parseAnalysisOptions({}) }),
+    runAudioAnalysis({ path: bogus, options: parseAnalysisOptions({}), scope }),
     (error) => error instanceof AudioAnalyzerError,
   );
   await assert.rejects(
-    runAudioAnalysis({ path: path.join(root, "gone.wav"), options: parseAnalysisOptions({}) }),
+    runAudioAnalysis({
+      path: path.join(root, "gone.wav"),
+      options: parseAnalysisOptions({}),
+      scope,
+    }),
     (error) => error instanceof AudioAnalyzerError && error.code === "audio_analyzer_file_missing",
   );
 });

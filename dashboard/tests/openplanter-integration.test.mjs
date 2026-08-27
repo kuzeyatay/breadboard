@@ -27,14 +27,22 @@ test("OpenPlanter slash command parsing is canonical and case-insensitive", () =
 test("OpenPlanter runs through ChatMock and persists as an external chat turn", () => {
   const route = source("src/app/api/openplanter/runs/route.ts");
   const manager = source("src/lib/openplanter/run-manager.ts");
+  const facade = source("src/lib/openplanter/runtime-run-manager.ts");
+  const runtime = source("src/lib/openplanter/runtime.ts");
   const runner = source("scripts/openplanter-chatmock-runner.py");
   const terminal = source("src/app/components/hermes/dashboard-agent-terminal.tsx");
 
   assert.match(route, /resolveChatmockBaseUrl\(request\)/);
-  assert.match(route, /chatmockApiKeyValue\(\)/);
-  assert.match(manager, /openplanter-chatmock-runner\.py/);
+  assert.match(route, /await startRun\(/);
+  assert.doesNotMatch(route, /chatmockApiKeyValue\(\)/);
+  assert.match(facade, /startOuterAgentRun\(/);
+  assert.match(manager, /openPlanterRunnerPath\(\)/);
+  assert.match(runtime, /openplanter-chatmock-runner\.py/);
+  assert.match(manager, /startRuntimeWorkerRun/);
+  assert.match(manager, /trustedSecret|apiKey/);
   assert.match(runner, /config\.provider = "openai"/);
   assert.match(runner, /config\.openai_base_url = config\.base_url/);
+  assert.match(runner, /read_invocation\(\)/);
   assert.match(terminal, /taskFromOpenPlanterCommand\(text\)/);
   assert.match(terminal, /kind: "openplanter"/);
   assert.match(terminal, /appendExternalAgentTurn\(/);
@@ -50,7 +58,7 @@ test("OpenPlanter renders graph, trail, output, and final-result widgets inline"
   assert.match(widget, /Investigation result/);
   assert.match(widget, /graph\.updated/);
   assert.match(widget, /artifacts\.updated/);
-  assert.match(widget, /bb-agent-run-inset/);
+  assert.match(widget, /bb-agent-run-card/);
   assert.match(panel, /<InlineOpenPlanterRun/);
 });
 
@@ -61,7 +69,7 @@ test("normal Hermes chats keep thinking metadata and response action buttons", (
 
   assert.match(panel, /AssistantMessageActions/);
   assert.match(activity, /AssistantResponseMeta/);
-  assert.match(responseMeta, />Thinking</);
+  assert.match(responseMeta, /label = "Thinking"/);
   assert.match(responseMeta, /tokens unavailable/);
   assert.match(activity, /Permission required/);
 });

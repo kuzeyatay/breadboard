@@ -2,9 +2,9 @@
 //
 // These are Breadboard-owned, narrow tools — NOT the raw GBrain MCP surface. The
 // model never sees arbitrary source ids, paths, database names, credentials, or
-// admin operations. Each tool reads the short-lived capability token from this
-// session's isolated workspace and calls Breadboard's internal GBrain route over
-// loopback. Breadboard intersects every requested garden with the token's
+// admin operations. Each tool authenticates its runtime session to Breadboard's
+// internal GBrain route over loopback, where a short-lived capability is minted
+// from server-owned state. Breadboard intersects every requested garden with the token's
 // server-derived authorized set and validates every citation before returning it.
 //
 // Distinctions the model must honor (spelled out in each description):

@@ -14,6 +14,8 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -31,6 +33,9 @@ import { boltSlidesDefaults } from "../src/lib/agent-settings/defaults.ts";
 import { CONFIGURABLE_AGENTS } from "../src/lib/agent-settings/catalog.ts";
 import { deckSourceSchema, importSpecifiers, parseWithSchema } from "../src/lib/bolt-slides/schemas.ts";
 import { buildFailure } from "../src/lib/bolt-slides/build.ts";
+const { resolveBoltSlidesArtifactPath, resolveBoltSlidesDeckPath } = await import(
+  "../src/lib/bolt-slides/runtime-run-manager.ts"
+);
 
 const source = (relative) =>
   fs.readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
@@ -277,12 +282,27 @@ test("the run manager's events and the card's subscriptions are the same list", 
 
 test("a run's deck and its files are addressed under that run and nowhere else", () => {
   const workspace = source("../src/lib/bolt-slides/workspace.ts");
+  const runtimeFilesystem = source("../src/lib/external-runtime-filesystem.ts");
   // The deck route serves files by relative path out of a directory a model
-  // wrote into, so the containment check is the whole of its safety.
-  assert.match(workspace, /startsWith\(`\$\{root\}\$\{path\.sep\}`\)/);
+  // wrote into, so containment plus non-linked canonical files are the whole
+  // of its safety. Runtime paths use an opaque wrapper so the Next tracer does
+  // not bundle mutable user data; prove that it still delegates to native
+  // lstat and realpath rather than weakening either check.
+  assert.match(workspace, /function contained\(candidate: string, root: string\)/);
+  assert.match(workspace, /externalRuntimeRealpath/);
+  assert.match(workspace, /externalRuntimeLstat/);
+  assert.match(
+    runtimeFilesystem,
+    /function externalRuntimeRealpath[\s\S]*?runtimeFilesystem\.realpathSync\.native/,
+  );
+  assert.match(
+    runtimeFilesystem,
+    /function externalRuntimeLstat[\s\S]*?runtimeFilesystem\.lstatSync/,
+  );
   assert.match(workspace, /\^bsrun_\[0-9a-f\]\{32\}\$/);
 
-  // Every run-scoped route proves ownership before it reads anything.
+  // Every run-scoped route authenticates, then resolves the durable
+  // Runtime-owned correlation before it reads an attempt file.
   for (const route of [
     "../src/app/api/bolt-slides/runs/[runId]/deck/[[...path]]/route.ts",
     "../src/app/api/bolt-slides/runs/[runId]/artifacts/route.ts",
@@ -290,7 +310,105 @@ test("a run's deck and its files are addressed under that run and nowhere else",
   ]) {
     const text = source(route);
     assert.match(text, /requireUserId\(\)/, `${route} does not authenticate`);
-    assert.match(text, /requireWorkspaceOwner/, `${route} does not check ownership`);
+    assert.match(text, /runtime-run-manager/, `${route} bypasses the Runtime correlation`);
+    assert.doesNotMatch(text, /requireWorkspaceOwner|liveArtifacts|bolt-slides\/workspace/);
+  }
+});
+
+test("Runtime receipts fence Bolt source and built files to one exact attempt", () => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-bolt-slides-receipt-"));
+  const job = {
+    jobId: "job_bolt_slides_artifact_1",
+    attempt: 2,
+    workerInstanceId: "worker_bolt_slides_artifact_1",
+  };
+  const workspace = path.join(
+    dataRoot,
+    "runtime",
+    "jobs",
+    job.jobId,
+    "attempts",
+    String(job.attempt),
+    job.workerInstanceId,
+    "workspace",
+  );
+  const sourcePath = path.join(workspace, "src", "App.tsx");
+  const indexPath = path.join(workspace, "dist", "index.html");
+  const scriptPath = path.join(workspace, "dist", "assets", "deck.js");
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+  fs.writeFileSync(sourcePath, "export default function App() { return null; }\n");
+  fs.writeFileSync(indexPath, "<script type=\"module\" src=\"./assets/deck.js\"></script>");
+  fs.writeFileSync(scriptPath, "console.log('deck');\n");
+  const sourceStats = fs.statSync(sourcePath);
+  const record = {
+    id: Buffer.from("src/App.tsx").toString("base64url"),
+    relativePath: "src/App.tsx",
+    name: "App.tsx",
+    kind: "deck",
+    contentType: "text/plain; charset=utf-8",
+    size: sourceStats.size,
+    modifiedAt: sourceStats.mtime.toISOString(),
+  };
+  const event = {
+    sequenceNumber: 9,
+    type: "run.completed",
+    payload: { artifacts: [record] },
+    at: new Date().toISOString(),
+  };
+  try {
+    const sourceFile = resolveBoltSlidesArtifactPath({
+      dataRoot,
+      job,
+      events: [event],
+      artifactId: record.id,
+    });
+    assert.equal(sourceFile?.canonicalPath, fs.realpathSync.native(sourcePath));
+    assert.equal(
+      resolveBoltSlidesDeckPath({ dataRoot, job, relativePath: "" })?.canonicalPath,
+      fs.realpathSync.native(indexPath),
+    );
+    assert.equal(
+      resolveBoltSlidesDeckPath({ dataRoot, job, relativePath: "assets/deck.js" })?.canonicalPath,
+      fs.realpathSync.native(scriptPath),
+    );
+    assert.equal(resolveBoltSlidesDeckPath({
+      dataRoot,
+      job,
+      relativePath: "../src/App.tsx",
+    }), null);
+    assert.equal(resolveBoltSlidesArtifactPath({
+      dataRoot,
+      job: { ...job, attempt: 1 },
+      events: [event],
+      artifactId: record.id,
+    }), null);
+
+    fs.appendFileSync(sourcePath, "// tamper\n");
+    assert.equal(resolveBoltSlidesArtifactPath({
+      dataRoot,
+      job,
+      events: [event],
+      artifactId: record.id,
+    }), null);
+
+    const traversal = {
+      ...event,
+      payload: { artifacts: [{
+        ...record,
+        id: Buffer.from("../outside.tsx").toString("base64url"),
+        relativePath: "../outside.tsx",
+        name: "outside.tsx",
+      }] },
+    };
+    assert.throws(() => resolveBoltSlidesArtifactPath({
+      dataRoot,
+      job,
+      events: [traversal],
+      artifactId: traversal.payload.artifacts[0].id,
+    }), /receipt is invalid/u);
+  } finally {
+    fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
 
@@ -302,9 +420,20 @@ test("nothing in a run writes into the clone", () => {
   assert.match(workspace, /cacheDir: '\.vite'/);
   assert.match(workspace, /base: '\.\/'/);
 
-  // An install is the one thing that touches the clone, and it runs from the
-  // setup route only — never from a run.
+  // Installation is a finite Runtime job that writes its own data-root
+  // toolchain. The route has no dashboard-owned npm fallback.
   const setup = source("../src/lib/bolt-slides/setup.ts");
-  assert.match(setup, /npm/);
+  const route = source("../src/app/api/bolt-slides/setup/route.ts");
+  const executor = source("../scripts/runtime-v2-managed-setup-executor.mjs");
+  const boltSetup = executor.slice(
+    executor.indexOf("async function boltSlidesSetup"),
+    executor.indexOf("async function wardrobeSetup"),
+  );
+  assert.doesNotMatch(setup, /node:child_process|\bspawn\s*\(|\bnpm\b/);
+  assert.match(route, /runManagedSetupJob\(\{/);
+  assert.match(route, /serviceId: "bolt-slides"/);
+  assert.match(route, /signal: request\.signal/);
+  assert.match(boltSetup, /\["ci", "--no-audit", "--no-fund"/);
+  assert.match(boltSetup, /runtime-v2[\s\S]*toolchains[\s\S]*bolt-slides/);
   assert.doesNotMatch(source("../src/lib/bolt-slides/run-manager.ts"), /install/i);
 });

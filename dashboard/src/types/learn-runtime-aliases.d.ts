@@ -7,6 +7,7 @@ declare module "breadboard-learn-operation-runtime" {
 
 declare module "breadboard-learn-status-runtime" {
   export function getLearnStatusSnapshotForRoute(input: {
+    userId: number;
     gardenId: string;
     contentPath: string;
   }): Promise<Record<string, unknown>>;

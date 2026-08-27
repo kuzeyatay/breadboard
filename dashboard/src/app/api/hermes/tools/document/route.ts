@@ -3,11 +3,9 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 
 import db from "@/lib/db";
-import { editDocument } from "@/lib/genoffice/agent-query.ts";
-import { convertPdfDocument } from "@/lib/genoffice/pdf-query.ts";
-import { GenOfficeError } from "@/lib/genoffice/types.ts";
 import {
   createImportedArtifact,
+  getArtifactById,
   presentArtifact,
   ArtifactStoreError,
 } from "@/lib/hermes/artifact-store.ts";
@@ -27,7 +25,12 @@ import {
 } from "@/lib/hermes/runtime-store.ts";
 import { capabilityForInternalToolRequest } from "@/lib/hermes/tool-service-auth.ts";
 import { DOCUMENT_TOOLS, DOCUMENT_WRITE_TOOLS } from "@/lib/hermes/tool-scopes.ts";
-import { officeWorkspaceFor, prepareOfficeExport } from "@/lib/office/agent-query.ts";
+import { OfficeCliError, officeWorkspaceFor } from "@/lib/office/contract.ts";
+import {
+  promoteRuntimeOfficeOutput,
+  runDocumentEditViaRuntime,
+  runPdfToDocxViaRuntime,
+} from "@/lib/office/runtime-v2.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -39,6 +42,45 @@ function assistantMessageId(conversationId: number, clientMessageId: string | un
     WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'
   `).get(conversationId, clientMessageId) as { id: number } | undefined;
   return row?.id ?? null;
+}
+
+function completedDocumentWrite(input: {
+  userId: number;
+  runtimeSessionId: number;
+  conversationId: number;
+  runId: string;
+  toolName: string;
+  toolCallId: string | null;
+}): unknown | null {
+  if (input.toolCallId === null) return null;
+  const row = db.prepare(`
+    SELECT id
+    FROM hermes_artifacts
+    WHERE user_id = ?
+      AND runtime_session_id = ?
+      AND conversation_id = ?
+      AND originating_run_id = ?
+      AND originating_tool_call_id = ?
+      AND source_skill = 'office'
+      AND source_hermes_tool = ?
+      AND status = 'ready'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(
+    input.userId,
+    input.runtimeSessionId,
+    input.conversationId,
+    input.runId,
+    input.toolCallId,
+    input.toolName,
+  ) as { id: string } | undefined;
+  if (!row) return null;
+  const artifact = getArtifactById(row.id);
+  if (!artifact) return null;
+  const presented = presentArtifact(artifact);
+  const saved = presented.metadata.documentToolResult;
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return null;
+  return { ...saved, artifact: presented };
 }
 
 export async function POST(request: Request) {
@@ -78,68 +120,108 @@ export async function POST(request: Request) {
       ? body.args as Record<string, unknown>
       : {};
     const workspace = officeWorkspaceFor(session);
+    const conversation = db.prepare(
+      "SELECT public_id FROM conversations WHERE id = ? AND user_id = ?",
+    ).get(session.conversation_id, session.user_id) as { public_id: string } | undefined;
+    if (!conversation?.public_id) {
+      throw new ApiError(403, "document_conversation_scope_mismatch", "Document conversation scope is invalid.");
+    }
     const willWrite = toolName === "pdf_to_docx" || (Array.isArray(args.patches) && args.patches.length > 0);
     const run = willWrite ? getActiveRuntimeRun(session.id) : null;
     if (willWrite && !run) {
       throw new ApiError(409, "document_run_required", `${toolName} requires a current Hermes run.`);
     }
-    const result = toolName === "document_edit"
-      ? await editDocument(workspace, args)
-      : await convertPdfDocument(workspace, args);
-    const patchResult = "operation" in result && result.operation === "patch" ? result : null;
-    const conversionResult = "operation" in result ? null : result;
-
-    let data: unknown = result;
-    const producesArtifact = patchResult !== null || conversionResult !== null;
-    if (producesArtifact) {
-      if (!run) {
-        throw new ApiError(409, "document_run_required", `${toolName} requires a current Hermes run.`);
-      }
-      const output = result as Extract<typeof result, { outputPath: string }>;
-      const relativeOutput = pathRelative(workspace, output.outputPath);
-      const staged = await prepareOfficeExport(workspace, {
-        file: relativeOutput,
-        title: output.title,
-      });
-      try {
-        const dispatch = parseRuntimeRunDispatch(run);
-        const artifact = createImportedArtifact({
+    const toolCallId = typeof body.toolCallId === "string" ? body.toolCallId.slice(0, 200) : null;
+    const scope = {
+      userId: session.user_id,
+      gardenId: session.garden_id,
+      conversationId: conversation.public_id,
+    };
+    const recovered = run && willWrite
+      ? completedDocumentWrite({
           userId: session.user_id,
           runtimeSessionId: session.id,
-          hermesSessionId: runtimeExternalSessionId(session)!,
           conversationId: session.conversation_id,
-          clusterId: session.cluster_id,
           runId: run.id,
-          assistantMessageId: assistantMessageId(
-            session.conversation_id,
-            dispatch.clientMessageId,
-          ),
-          toolCallId: typeof body.toolCallId === "string" ? body.toolCallId.slice(0, 200) : null,
-          surface: session.surface as "dashboard_terminal" | "garden_chat",
-          kind: staged.kind,
-          title: staged.title,
-          filename: staged.filename,
-          metadata: {
-            genoffice: true,
-            sourceFile: result.file,
-            ...(conversionResult
-              ? { pdfToDocx: true, pages: conversionResult.pages, warnings: conversionResult.warnings }
-              : { documentEdit: true, patched: patchResult!.patched }),
-          },
-          sourceSkill: "office",
-          sourceHermesTool: toolName,
-          authorizedRoot: workspace,
-          filePath: staged.filePath,
-          previewFilePath: staged.previewFilePath,
-        });
-        data = {
-          ...result,
-          outputPath: relativeOutput,
-          artifact: presentArtifact(artifact),
-          previewRendered: staged.previewFilePath !== null,
-        };
-      } finally {
-        staged.cleanup();
+          toolName,
+          toolCallId,
+        })
+      : null;
+
+    let data: unknown;
+    let operationForAudit = "inspect";
+    if (recovered) {
+      data = recovered;
+      operationForAudit = toolName === "pdf_to_docx" ? "convert" : "patch";
+    } else {
+      const operation = toolName === "document_edit"
+        ? await runDocumentEditViaRuntime(scope, workspace, args, {
+            idempotencySeed: `${run?.id ?? "inspect"}:${toolCallId ?? toolName}`,
+            signal: request.signal,
+          })
+        : await runPdfToDocxViaRuntime(scope, workspace, args, {
+            idempotencySeed: `${run!.id}:${toolCallId ?? toolName}`,
+            signal: request.signal,
+          });
+      if (!("cleanup" in operation)) {
+        operationForAudit = operation.operation;
+        data = operation;
+      } else {
+        const staged = operation;
+        const result = staged.result;
+        operationForAudit = "operation" in result ? result.operation : "convert";
+        data = result;
+        if (!run) {
+          staged.cleanup();
+          throw new ApiError(409, "document_run_required", `${toolName} requires a current Hermes run.`);
+        }
+        try {
+          const outputPath = promoteRuntimeOfficeOutput(workspace, staged);
+          const relativeOutput = pathRelative(workspace, outputPath);
+          const exposedResult = {
+            ...result,
+            outputPath: relativeOutput,
+            previewRendered: staged.previewFilePath !== null,
+          };
+          const dispatch = parseRuntimeRunDispatch(run);
+          const artifact = await createImportedArtifact({
+            userId: session.user_id,
+            runtimeSessionId: session.id,
+            hermesSessionId: runtimeExternalSessionId(session)!,
+            conversationId: session.conversation_id,
+            clusterId: session.cluster_id,
+            runId: run.id,
+            assistantMessageId: assistantMessageId(
+              session.conversation_id,
+              dispatch.clientMessageId,
+            ),
+            toolCallId,
+            surface: session.surface as "dashboard_terminal" | "garden_chat",
+            kind: result.kind,
+            title: result.title,
+            filename: result.filename,
+            metadata: {
+              genoffice: true,
+              sourceFile: result.file,
+              documentToolResult: exposedResult,
+              ...("pages" in result
+                ? { pdfToDocx: true, pages: result.pages, warnings: result.warnings }
+                : { documentEdit: true, patched: result.patched }),
+            },
+            sourceSkill: "office",
+            sourceHermesTool: toolName,
+            authorizedRoot: path.dirname(staged.filePath),
+            filePath: staged.filePath,
+            previewFilePath: staged.previewFilePath,
+            signal: request.signal,
+          });
+          data = {
+            ...exposedResult,
+            artifact: presentArtifact(artifact),
+          };
+        } finally {
+          staged.cleanup();
+        }
       }
     }
 
@@ -151,7 +233,7 @@ export async function POST(request: Request) {
       payload: {
         tool: toolName,
         write: DOCUMENT_WRITE_TOOLS.includes(toolName),
-        operation: "operation" in result ? result.operation : "convert",
+        operation: operationForAudit,
       },
     });
     return NextResponse.json({ ok: true, data });
@@ -166,7 +248,7 @@ export async function POST(request: Request) {
         },
       });
     }
-    if (error instanceof GenOfficeError || error instanceof ArtifactStoreError) {
+    if (error instanceof OfficeCliError || error instanceof ArtifactStoreError) {
       return apiErrorResponse(new ApiError(error.status, error.code, error.message));
     }
     return apiErrorResponse(error);

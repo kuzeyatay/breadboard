@@ -1,33 +1,26 @@
-// GBrain synchronization: canonical garden markdown -> durable adapter index.
+// GBrain synchronization compatibility facade.
 //
-// This is the ONLY path that writes to the GBrain index, and it is always driven
-// from canonical Breadboard markdown — never the other way around. A failed index
-// never rolls back canonical content; it marks the source stale and leaves an
-// audit trail. Concurrency is single-writer per source (enforced by the job
-// queue in mapping.ts).
+// Next.js performs only bounded authorization/bookkeeping and Runtime control
+// calls. Full garden scans and adapter indexing execute in a fresh Rust-owned
+// worker (`sync-executor.ts`) and never fall back into this process.
 
 import path from "node:path";
-import { resolveGBrainConfig } from "./config.ts";
-import { GBrainClient } from "./client.ts";
-import {
-  getOrCreateSourceMapping,
-  loadClusterById,
-  setSyncState,
-  enqueueSyncJob,
-  setJobStatus,
-  listSyncJobs,
-} from "./mapping.ts";
 
-export interface SyncResult {
-  clusterId: number;
-  sourceId: string;
-  status: "synced" | "stale" | "skipped";
-  pagesIndexed: number;
-  chunksIndexed: number;
-  mode: string;
-  revision?: string;
-  error?: string;
-}
+import {
+  runGBrainSyncViaRuntime,
+  startGBrainSyncRuntimeJob,
+} from "../runtime-v2/gbrain-sync-job.ts";
+import { resolveGBrainConfig } from "./config.ts";
+import {
+  enqueueSyncJob,
+  getOrCreateSourceMapping,
+  listSyncJobs,
+  loadClusterById,
+  setJobStatus,
+} from "./mapping.ts";
+import type { GBrainSyncResult } from "./types.ts";
+
+export type SyncResult = GBrainSyncResult;
 
 function contentPath(): string {
   const value = process.env.QUARTZ_CONTENT_PATH;
@@ -35,102 +28,131 @@ function contentPath(): string {
   return value;
 }
 
-/** Read canonical markdown for one garden and (re)index it in the adapter. */
-export async function syncGarden(clusterId: number): Promise<SyncResult> {
-  const config = resolveGBrainConfig();
+function positiveBoundedInteger(value: unknown, fallback: number, maximum: number): number {
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric > 0
+    ? Math.min(numeric, maximum)
+    : fallback;
+}
+
+function queuedIdentity(row: Record<string, unknown>): {
+  id: number;
+  clusterId: number;
+} | null {
+  const id = Number(row.id);
+  const clusterId = Number(row.cluster_id);
+  return Number.isSafeInteger(id) && id > 0 &&
+    Number.isSafeInteger(clusterId) && clusterId > 0
+    ? { id, clusterId }
+    : null;
+}
+
+async function submitQueuedSync(
+  queueJobId: number,
+  clusterId: number,
+  signal?: AbortSignal,
+  wait = false,
+): Promise<GBrainSyncResult | null> {
+  const cluster = loadClusterById(clusterId);
+  if (!cluster) {
+    setJobStatus(queueJobId, "failed", "garden_not_found");
+    return null;
+  }
+  const input = {
+    userId: cluster.user_id,
+    gardenId: cluster.slug,
+    clusterId: cluster.id,
+    queueJobId,
+    signal,
+  };
+  if (wait) return runGBrainSyncViaRuntime(input);
+  await startGBrainSyncRuntimeJob(input);
+  return null;
+}
+
+/** Run one user-requested refresh through a disposable Runtime V2 worker. */
+export async function syncGarden(
+  clusterId: number,
+  signal?: AbortSignal,
+): Promise<GBrainSyncResult> {
   const cluster = loadClusterById(clusterId);
   if (!cluster) throw new Error("Garden not found");
   const mapping = getOrCreateSourceMapping(cluster.id, cluster.slug);
-
-  if (config.mode === "disabled") {
-    return { clusterId, sourceId: mapping.sourceId, status: "skipped", pagesIndexed: 0, chunksIndexed: 0, mode: "disabled" };
-  }
-
-  setSyncState({ sourceId: mapping.sourceId, status: "syncing" });
-
-  // Lazy import so the scope/enforcement paths never pay for the knowledge/quartz
-  // dependency chain.
-  const { scanClusterKnowledge } = await import("../knowledge.ts");
-  const knowledge = scanClusterKnowledge(contentPath(), cluster.slug);
-
-  const pages = knowledge.nodes
-    .filter((node) => (node.content ?? "").trim().length > 0)
-    .map((node) => ({
-      pageId: node.slug,
-      title: node.title || node.slug,
-      path: node.relPath || node.slug,
-      content: node.content,
-      links: (node.related ?? []).filter((r) => typeof r === "string"),
-    }));
-
-  try {
-    const client = new GBrainClient(config);
-    const result = await client.registerSource(
-      mapping.sourceId,
-      `${cluster.slug}`,
-      pages,
-    );
-    setSyncState({
-      sourceId: mapping.sourceId,
-      status: "synced",
-      revision: result.revision,
-      pagesIndexed: result.pagesIndexed,
-      chunksIndexed: result.chunksIndexed,
-      mode: result.mode,
-      error: null,
-    });
+  if (resolveGBrainConfig().mode === "disabled") {
     return {
       clusterId,
       sourceId: mapping.sourceId,
-      status: "synced",
-      pagesIndexed: result.pagesIndexed,
-      chunksIndexed: result.chunksIndexed,
-      mode: result.mode,
-      revision: result.revision,
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "sync_failed";
-    // The canonical markdown is untouched; mark the source stale for retry.
-    setSyncState({ sourceId: mapping.sourceId, status: "stale", error: message });
-    return {
-      clusterId,
-      sourceId: mapping.sourceId,
-      status: "stale",
+      status: "skipped",
       pagesIndexed: 0,
       chunksIndexed: 0,
-      mode: "unknown",
-      error: message,
+      mode: "disabled",
     };
   }
+  return runGBrainSyncViaRuntime({
+    userId: cluster.user_id,
+    gardenId: cluster.slug,
+    clusterId: cluster.id,
+    queueJobId: null,
+    signal,
+  });
 }
 
-/** Enqueue an incremental sync after a canonical garden write (proposal applied,
- *  note created/edited, ingestion completed). Single-writer: a job is not
- *  duplicated while one is already queued/running for the source. */
+/**
+ * Enqueue an incremental refresh and immediately hand the durable row to the
+ * Runtime. Duplicate queue rows reuse the same Runtime idempotency key.
+ */
 export function enqueueGardenSync(clusterId: number, reason: string): number | null {
   const cluster = loadClusterById(clusterId);
   if (!cluster) return null;
   const mapping = getOrCreateSourceMapping(cluster.id, cluster.slug);
-  return enqueueSyncJob(mapping.sourceId, cluster.id, reason);
+  const queueJobId = enqueueSyncJob(mapping.sourceId, cluster.id, reason);
+  if (queueJobId !== null && resolveGBrainConfig().mode !== "disabled") {
+    void submitQueuedSync(queueJobId, cluster.id).catch(() => {
+      // The durable row remains queued. A later canonical write, startup kick,
+      // or explicit drain resubmits the same idempotency key.
+    });
+  }
+  return queueJobId;
 }
 
-/** Drain queued sync jobs. Safe to call from a route or a background tick. */
-export async function drainSyncJobs(max = 10): Promise<SyncResult[]> {
-  const jobs = listSyncJobs("queued").slice(0, max);
-  const results: SyncResult[] = [];
-  for (const job of jobs) {
-    const id = Number(job.id);
-    setJobStatus(id, "running");
+/**
+ * Bounded one-shot recovery kick. This replaces the old recurring Next.js timer:
+ * it submits durable rows and returns without retaining a timer or index state.
+ */
+export async function kickQueuedGBrainSyncJobs(max = 10): Promise<number> {
+  if (resolveGBrainConfig().mode === "disabled") return 0;
+  const rows = listSyncJobs("queued").slice(0, positiveBoundedInteger(max, 10, 50));
+  let submitted = 0;
+  for (const row of rows) {
+    const identity = queuedIdentity(row);
+    if (!identity) continue;
     try {
-      const result = await syncGarden(Number(job.cluster_id));
-      setJobStatus(id, result.status === "synced" ? "done" : "failed", result.error ?? null);
-      results.push(result);
-    } catch (err) {
-      setJobStatus(id, "failed", err instanceof Error ? err.message : "sync_failed");
+      await submitQueuedSync(identity.id, identity.clusterId);
+      submitted += 1;
+    } catch {
+      // Keep the row queued. Runtime recovery or the next bounded kick retries.
     }
+  }
+  return submitted;
+}
+
+/** Await a bounded set of queued Runtime jobs for the existing drain API. */
+export async function drainSyncJobs(
+  max = 10,
+  signal?: AbortSignal,
+): Promise<GBrainSyncResult[]> {
+  if (resolveGBrainConfig().mode === "disabled") return [];
+  const rows = listSyncJobs("queued").slice(0, positiveBoundedInteger(max, 10, 50));
+  const results: GBrainSyncResult[] = [];
+  for (const row of rows) {
+    if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+    const identity = queuedIdentity(row);
+    if (!identity) continue;
+    const result = await submitQueuedSync(identity.id, identity.clusterId, signal, true);
+    if (result) results.push(result);
   }
   return results;
 }
 
-// re-export path for tests/tools that need to build a content root
+// Re-export path for tests/tools that need to build a content root.
 export const gbrainContentRoot = (slug: string) => path.join(contentPath(), slug);

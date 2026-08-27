@@ -5,8 +5,9 @@
 // pipeline in behind it. `garden-filesystem.ts` re-exports both names, so the
 // existing callers are unaffected.
 
-import fs from "node:fs";
-import path from "node:path";
+import type { Dirent } from "node:fs";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { INTERNAL_CONCEPT_FOLDER } from "./learning-garden.ts";
 
 /**
@@ -61,7 +62,7 @@ export function countClusterMarkdown(clusterDir: string): number {
   const internalRoot = INTERNAL_CONCEPT_FOLDER.split("/")[0];
   let count = 0;
   const walk = (dir: string, depth: number) => {
-    let dirents: fs.Dirent[];
+    let dirents: Dirent[];
     try {
       dirents = fs.readdirSync(dir, { withFileTypes: true });
     } catch {

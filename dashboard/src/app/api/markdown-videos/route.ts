@@ -1,14 +1,17 @@
-import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
-import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
-import { walkClusterMarkdown } from '@/lib/knowledge';
+import { NextResponse } from "next/server";
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import {
+  requireOwnedClusterFromSlug,
+  routeErrorResponse,
+} from "@/lib/server-auth";
+import { walkClusterMarkdown } from "@/lib/knowledge";
 import {
   normalizeDocumentSlug,
   safeClusterDir,
   uniqueAssetPath,
   writeAssetStream,
-} from '@/lib/garden-markdown-assets';
+} from "@/lib/garden-markdown-assets";
 import {
   MAX_MARKDOWN_VIDEO_BYTES,
   formatMegabytes,
@@ -16,10 +19,11 @@ import {
   resolveVideoUpload,
   sanitizeEmbedTitle,
   videoEmbedMarkdown,
-} from '@/lib/garden-video-embed';
-import { parseYouTubeUrl } from '@/lib/scriberr/youtube';
+} from "@/lib/garden-video-embed";
+import { parseYouTubeUrl } from "@/lib/scriberr/youtube";
+import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 /**
  * Add a video to a garden note.
@@ -34,8 +38,10 @@ export const dynamic = 'force-dynamic';
  */
 export async function POST(request: Request) {
   try {
-    const contentType = (request.headers.get('content-type') ?? '').toLowerCase();
-    return contentType.includes('application/json')
+    const contentType = (
+      request.headers.get("content-type") ?? ""
+    ).toLowerCase();
+    return contentType.includes("application/json")
       ? await addYouTubeEmbed(request)
       : await addUploadedVideo(request);
   } catch (error) {
@@ -59,72 +65,111 @@ async function resolveEmbedTarget(
   rawClusterSlug: unknown,
   rawNoteSlug: unknown,
 ): Promise<EmbedTarget | { response: NextResponse }> {
-  const clusterSlug = typeof rawClusterSlug === 'string' ? rawClusterSlug.trim() : '';
-  const noteSlug = typeof rawNoteSlug === 'string' ? rawNoteSlug.trim() : '';
+  const clusterSlug =
+    typeof rawClusterSlug === "string" ? rawClusterSlug.trim() : "";
+  const noteSlug = typeof rawNoteSlug === "string" ? rawNoteSlug.trim() : "";
 
   if (!clusterSlug) {
-    return { response: NextResponse.json({ error: 'clusterSlug is required' }, { status: 400 }) };
+    return {
+      response: NextResponse.json(
+        { error: "clusterSlug is required" },
+        { status: 400 },
+      ),
+    };
   }
   if (!noteSlug) {
-    return { response: NextResponse.json({ error: 'noteSlug is required' }, { status: 400 }) };
+    return {
+      response: NextResponse.json(
+        { error: "noteSlug is required" },
+        { status: 400 },
+      ),
+    };
   }
 
   const { cluster } = await requireOwnedClusterFromSlug(clusterSlug);
   const normalizedNoteSlug = normalizeDocumentSlug(cluster.slug, noteSlug);
   if (!normalizedNoteSlug) {
     return {
-      response: NextResponse.json({ error: 'Document path is not editable' }, { status: 400 }),
+      response: NextResponse.json(
+        { error: "Document path is not editable" },
+        { status: 400 },
+      ),
     };
   }
 
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath) {
     return {
-      response: NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500 }),
+      response: NextResponse.json(
+        { error: "QUARTZ_CONTENT_PATH not configured" },
+        { status: 500 },
+      ),
     };
   }
 
   const clusterDir = safeClusterDir(contentPath, cluster.slug);
   if (!clusterDir) {
-    return { response: NextResponse.json({ error: 'Invalid garden path' }, { status: 400 }) };
+    return {
+      response: NextResponse.json(
+        { error: "Invalid garden path" },
+        { status: 400 },
+      ),
+    };
   }
 
   // The note may live in any sub-folder; match on its basename.
   const noteEntry = walkClusterMarkdown(clusterDir).find(
-    (item) => item.entry.replace(/\.md$/i, '') === normalizedNoteSlug,
+    (item) => item.entry.replace(/\.md$/i, "") === normalizedNoteSlug,
   );
   if (!noteEntry) {
-    return { response: NextResponse.json({ error: 'Markdown note not found' }, { status: 404 }) };
+    return {
+      response: NextResponse.json(
+        { error: "Markdown note not found" },
+        { status: 404 },
+      ),
+    };
   }
 
-  return { clusterSlug: cluster.slug, noteSlug: normalizedNoteSlug, clusterDir };
+  return {
+    clusterSlug: cluster.slug,
+    noteSlug: normalizedNoteSlug,
+    clusterDir,
+  };
 }
 
 function isResolved(
   value: EmbedTarget | { response: NextResponse },
 ): value is EmbedTarget {
-  return !('response' in value);
+  return !("response" in value);
 }
 
 async function addUploadedVideo(request: Request): Promise<NextResponse> {
   const url = new URL(request.url);
   const target = await resolveEmbedTarget(
-    url.searchParams.get('clusterSlug'),
-    url.searchParams.get('noteSlug'),
+    url.searchParams.get("clusterSlug"),
+    url.searchParams.get("noteSlug"),
   );
   if (!isResolved(target)) return target.response;
 
-  const declaredLength = Number.parseInt(request.headers.get('content-length') ?? '', 10);
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_MARKDOWN_VIDEO_BYTES) {
+  const declaredLength = Number.parseInt(
+    request.headers.get("content-length") ?? "",
+    10,
+  );
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > MAX_MARKDOWN_VIDEO_BYTES
+  ) {
     return NextResponse.json(
-      { error: `Videos must be ${formatMegabytes(MAX_MARKDOWN_VIDEO_BYTES)} or smaller` },
+      {
+        error: `Videos must be ${formatMegabytes(MAX_MARKDOWN_VIDEO_BYTES)} or smaller`,
+      },
       { status: 413 },
     );
   }
 
   const resolved = resolveVideoUpload(
-    url.searchParams.get('fileName'),
-    request.headers.get('content-type'),
+    url.searchParams.get("fileName"),
+    request.headers.get("content-type"),
     Number.isFinite(declaredLength) ? declaredLength : undefined,
   );
   if (!isResolvedVideoUpload(resolved)) {
@@ -132,29 +177,66 @@ async function addUploadedVideo(request: Request): Promise<NextResponse> {
   }
 
   if (!request.body) {
-    return NextResponse.json({ error: 'No video data received' }, { status: 400 });
+    return NextResponse.json(
+      { error: "No video data received" },
+      { status: 400 },
+    );
   }
 
-  const assetDir = path.join(/* turbopackIgnore: true */ target.clusterDir, 'assets');
-  fs.mkdirSync(assetDir, { recursive: true });
-  const assetPath = uniqueAssetPath(assetDir, resolved.baseName, resolved.ext);
+  const lease = acquireGardenMutationLease(
+    target.clusterDir,
+    "upload-markdown-video",
+  );
+  let write: Awaited<ReturnType<typeof writeAssetStream>>;
+  let assetFileName: string;
+  try {
+    const noteStillExists = walkClusterMarkdown(target.clusterDir).some(
+      (item) => item.entry.replace(/\.md$/i, "") === target.noteSlug,
+    );
+    if (!noteStillExists) {
+      return NextResponse.json(
+        { error: "Markdown note not found" },
+        { status: 404 },
+      );
+    }
+    const assetDir = path.join(
+      /* turbopackIgnore: true */ target.clusterDir,
+      "assets",
+    );
+    fs.mkdirSync(assetDir, { recursive: true });
+    const assetPath = uniqueAssetPath(
+      assetDir,
+      resolved.baseName,
+      resolved.ext,
+    );
 
-  const write = await writeAssetStream(request.body, assetPath, MAX_MARKDOWN_VIDEO_BYTES);
-  if (!write.ok) {
-    return write.reason === 'too_large'
-      ? NextResponse.json(
-          { error: `Videos must be ${formatMegabytes(MAX_MARKDOWN_VIDEO_BYTES)} or smaller` },
-          { status: 413 },
-        )
-      : NextResponse.json({ error: 'That video file is empty' }, { status: 400 });
+    write = await writeAssetStream(
+      request.body,
+      assetPath,
+      MAX_MARKDOWN_VIDEO_BYTES,
+    );
+    if (!write.ok) {
+      return write.reason === "too_large"
+        ? NextResponse.json(
+            {
+              error: `Videos must be ${formatMegabytes(MAX_MARKDOWN_VIDEO_BYTES)} or smaller`,
+            },
+            { status: 413 },
+          )
+        : NextResponse.json(
+            { error: "That video file is empty" },
+            { status: 400 },
+          );
+    }
+    assetFileName = path.basename(assetPath);
+  } finally {
+    lease.release();
   }
-
-  const assetFileName = path.basename(assetPath);
   const markdownPath = `/${target.clusterSlug}/assets/${assetFileName}`;
 
   return NextResponse.json({
     success: true,
-    kind: 'upload',
+    kind: "upload",
     markdown: videoEmbedMarkdown(markdownPath, resolved.title),
     title: resolved.title,
     path: markdownPath,
@@ -174,18 +256,20 @@ async function addYouTubeEmbed(request: Request): Promise<NextResponse> {
     parsed = parseYouTubeUrl(body.youtubeUrl ?? body.url);
   } catch (error) {
     const message =
-      error && typeof error === 'object' && 'userMessage' in error
+      error && typeof error === "object" && "userMessage" in error
         ? String((error as { userMessage: string }).userMessage)
-        : 'That is not a valid YouTube video URL.';
+        : "That is not a valid YouTube video URL.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
   const title =
-    sanitizeEmbedTitle(body.title) || (await fetchYouTubeTitle(parsed.canonicalUrl)) || 'YouTube video';
+    sanitizeEmbedTitle(body.title) ||
+    (await fetchYouTubeTitle(parsed.canonicalUrl)) ||
+    "YouTube video";
 
   return NextResponse.json({
     success: true,
-    kind: 'youtube',
+    kind: "youtube",
     markdown: videoEmbedMarkdown(parsed.canonicalUrl, title),
     title,
     videoId: parsed.videoId,
@@ -201,11 +285,13 @@ async function addYouTubeEmbed(request: Request): Promise<NextResponse> {
 async function fetchYouTubeTitle(canonicalUrl: string): Promise<string> {
   try {
     const endpoint = `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(canonicalUrl)}`;
-    const response = await fetch(endpoint, { signal: AbortSignal.timeout(4000) });
-    if (!response.ok) return '';
+    const response = await fetch(endpoint, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!response.ok) return "";
     const data = (await response.json()) as { title?: unknown };
     return sanitizeEmbedTitle(data.title);
   } catch {
-    return '';
+    return "";
   }
 }

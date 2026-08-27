@@ -13,9 +13,8 @@
  * orphan directories that no row points at.
  */
 
-import fs from "node:fs";
-
 import db from "../db.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { gardenDirectory } from "../garden-directory.ts";
 import { uniqueGardenSlug } from "../garden-slug.ts";
 import {
@@ -40,6 +39,7 @@ import {
 } from "./format.ts";
 import type { GardenManifest, TransferImportResult } from "./format.ts";
 import { openArchive, readJsonEntry, unpackPrefix } from "./archive.ts";
+import { acquireGardenMutationLease } from "../garden-mutation-lease.ts";
 
 interface PendingGarden {
   manifest: GardenManifest;
@@ -182,14 +182,25 @@ async function republish(
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (contentPath) {
       const { refreshClusterIndex } = await import("../knowledge.ts");
-      for (const slug of slugs) refreshClusterIndex(contentPath, slug);
+      for (const slug of slugs) {
+        const gardenDir = gardenDirectoryFor(slug);
+        const lease = acquireGardenMutationLease(
+          gardenDir,
+          "refresh-imported-garden",
+        );
+        try {
+          refreshClusterIndex(contentPath, slug);
+        } finally {
+          lease.release();
+        }
+      }
     }
     const { refreshPrivateQuartzIndex } = await import(
       "../quartz-garden-index.ts"
     );
     refreshPrivateQuartzIndex(userId);
     const { publishQuartzAfterMutation } = await import("../quartz-publish.ts");
-    await publishQuartzAfterMutation(reason);
+    await publishQuartzAfterMutation(reason, { userId });
   } catch (error) {
     console.error("[transfer] import succeeded but republishing failed", error);
   }
@@ -269,6 +280,7 @@ export async function importTransferArchive(
   }
 
   const created: string[] = [];
+  const mutationLeases: ReturnType<typeof acquireGardenMutationLease>[] = [];
   const removeCreated = () => {
     for (const directory of created) {
       try {
@@ -278,6 +290,19 @@ export async function importTransferArchive(
       }
     }
   };
+
+  try {
+    for (const garden of [...pending].sort((left, right) =>
+      left.directory.localeCompare(right.directory),
+    )) {
+      mutationLeases.push(
+        acquireGardenMutationLease(garden.directory, "import-garden"),
+      );
+    }
+  } catch (error) {
+    for (const lease of mutationLeases.reverse()) lease.release();
+    throw error;
+  }
 
   try {
     for (const garden of pending) {
@@ -296,6 +321,8 @@ export async function importTransferArchive(
   } catch (error) {
     removeCreated();
     throw error;
+  } finally {
+    for (const lease of mutationLeases.reverse()) lease.release();
   }
 
   await republish(

@@ -13,10 +13,10 @@
 // the chat is on, which roots the surface allows). Anything DeepTutor itself
 // writes into the home is left alone.
 
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import yaml from "js-yaml";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../embeddings.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 import { fileServerScriptPath, nodeExecutable } from "./runtime.ts";
 import type { TutorScope } from "./materials.ts";

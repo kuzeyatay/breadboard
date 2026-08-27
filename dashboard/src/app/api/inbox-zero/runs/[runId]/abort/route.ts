@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { abortRun } from "@/lib/inbox-zero/run-manager.ts";
+import { abortRun } from "@/lib/inbox-zero/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,7 +14,7 @@ export async function POST(
     const { runId } = await params;
     // Aborting cancels the request to Inbox Zero rather than only hiding the
     // card, so a long mailbox sweep really stops.
-    abortRun(userId, runId);
+    await abortRun(userId, runId);
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof RouteError) {

@@ -261,6 +261,21 @@ test("Spotify login lives in Connections and native tools power an inline player
     ),
     "utf8",
   );
+  const runtimeEngine = fs.readFileSync(
+    new URL(
+      "../scripts/runtime-v2-spotify-playback-service.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const runtimeClient = fs.readFileSync(
+    new URL("../src/lib/spotify/runtime-service.ts", import.meta.url),
+    "utf8",
+  );
+  const viewLease = fs.readFileSync(
+    new URL("../src/lib/spotify/view-lease.ts", import.meta.url),
+    "utf8",
+  );
   const playbackRoute = fs.readFileSync(
     new URL(
       "../src/app/api/hermes/connections/spotify/playback/route.ts",
@@ -298,10 +313,26 @@ test("Spotify login lives in Connections and native tools power an inline player
   assert.match(player, /MAX_INTENT_POLLS/);
   assert.match(player, /Electron/);
   assert.match(player, /\/api\/hermes\/connections\/spotify\/engine/);
-  assert.match(engine, /--headless=new/);
-  assert.match(engine, /--autoplay-policy=no-user-gesture-required/);
+  assert.doesNotMatch(engine, /node:child_process|\bspawn\(|detached:|\.unref\(\)/);
+  assert.match(engine, /readSpotifyPlaybackRuntimeStatus/);
+  assert.match(runtimeEngine, /import \{ spawn \} from "node:child_process"/);
+  assert.match(runtimeEngine, /--headless=new/);
+  assert.match(runtimeEngine, /--autoplay-policy=no-user-gesture-required/);
+  assert.match(runtimeEngine, /detached: false/);
+  assert.match(runtimeEngine, /shell: false/);
+  assert.match(runtimeEngine, /stdio: "ignore"/);
+  assert.match(runtimeEngine, /childEnvironment\(\)/);
+  assert.doesNotMatch(runtimeEngine, /child\.unref\(\)|taskkill|detached: true/);
+  assert.match(runtimeClient, /readSupervisedServiceSnapshot\("spotify-playback"/);
+  assert.match(viewLease, /acquireServiceLease\(\s*"spotify-playback"/);
+  assert.match(viewLease, /SPOTIFY_PLAYBACK_VIEW_HOLD_TTL_MS/);
+  assert.match(viewLease, /releaseSpotifyPlaybackRuntimeSession/);
   assert.match(engineRoute, /spotifyBrowserAccessToken/);
   assert.match(engineRoute, /registerSpotifyPlaybackEngine/);
+  assert.match(engineRoute, /renewSpotifyPlaybackViewLease/);
+  assert.match(engineRoute, /releaseSpotifyPlaybackViewLease/);
+  assert.match(engineRoute, /await spotifyPlaybackEngineStatus\(userId\)/);
+  assert.doesNotMatch(engineRoute, /ensureSpotifyPlaybackEngine|mode === "page"/);
   for (const action of ["pause", "resume", "previous", "next", "seek"]) {
     assert.match(playbackRoute, new RegExp(`action === "${action}"`));
   }
@@ -336,5 +367,10 @@ test("Spotify login lives in Connections and native tools power an inline player
   assert.match(player, /setManagedQueueLoaded\(true\)/);
   assert.match(player, /window\.setTimeout\(\(\) => void load\(\), POLL_INTERVAL_MS\)/);
   assert.doesNotMatch(player, /setInterval\(\(\) => void load\(\), POLL_INTERVAL_MS\)/);
+  assert.match(player, /crypto\.randomUUID\(\)/);
+  assert.match(player, /method: "POST"/);
+  assert.match(player, /ENGINE_VIEW_HEARTBEAT_MS/);
+  assert.match(player, /method: "DELETE"/);
+  assert.match(player, /keepalive: true/);
   assert.doesNotMatch(player, /spotify:\/\/|open\.spotify\.com|window\.open/);
 });

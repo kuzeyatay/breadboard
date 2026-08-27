@@ -14,8 +14,9 @@
 // Zero runtime dependencies; the type annotations are erasable so it runs under
 // `node --experimental-strip-types` exactly like the validator and finalizer.
 
-import fs from "node:fs";
-import path from "node:path";
+import type { Dirent } from "node:fs";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   dedupeSourceArtifactAssignments,
   conceptTagsForUnit,
@@ -1465,7 +1466,7 @@ const NON_ACTIVE_WALK_DIRS = new Set([
 ]);
 
 function walkMarkdown(dir: string, relDir: string, out: Array<{ abs: string; rel: string }>): void {
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
@@ -5400,7 +5401,7 @@ export function classifyAnchorUsage(state: FinalGardenState): Record<string, Anc
 export function snapshotGardenTextFiles(gardenDir: string): Map<string, string> {
   const snap = new Map<string, string>();
   const walk = (abs: string): void => {
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const p = path.join(abs, e.name);

@@ -12,12 +12,15 @@
 // stage (writing / linting / checking / rendering), the activity trail, and the
 // files the project produced.
 
-import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
 import { resolveCodexLauncher, type CodexLauncher } from "../codex/run-manager.ts";
+import {
+  externalRuntimeLstat,
+  externalRuntimeRealpath,
+} from "../external-runtime-filesystem.ts";
 import { runInstruction, writeProjectGuidance } from "./prompt.ts";
 import {
   hyperframesEnv,
@@ -27,11 +30,9 @@ import {
   type HyperframesToolchain,
 } from "./runtime.ts";
 import {
-  createWorkspace,
+  createRuntimeWorkspace,
   primaryVideo,
-  projectDirectory,
-  runDirectory,
-  scanArtifacts,
+  scanHyperframesArtifacts,
   WorkspaceError,
   type HyperframesArtifact,
 } from "./workspace.ts";
@@ -44,12 +45,6 @@ export interface HyperframesEvent {
   at: string;
 }
 
-export interface HyperframesTerminalResult {
-  outcome: "completed" | "failed" | "aborted";
-  content: string;
-  usage?: ChatTokenUsage;
-}
-
 type RunStatus = "queued" | "running" | "completed" | "failed" | "aborted";
 
 /** The visible phases of a video build, in the order the CLI loop runs them. */
@@ -59,6 +54,8 @@ interface RunState {
   runId: string;
   userId: number;
   brief: string;
+  workspaceRoot: string;
+  projectRoot: string;
   status: RunStatus;
   stage: RunStage;
   sequence: number;
@@ -73,8 +70,6 @@ interface RunState {
   lastScanAt: number;
   artifacts: HyperframesArtifact[];
   usage?: ChatTokenUsage;
-  terminalResult?: HyperframesTerminalResult;
-  terminalHandler?: (result: HyperframesTerminalResult) => void;
 }
 
 const runtimeGlobal = globalThis as typeof globalThis & {
@@ -86,8 +81,30 @@ runtimeGlobal.__breadboardHyperframesRuns = runs;
 const MAX_EVENTS = 5_000;
 const MAX_STDERR = 32_000;
 const MAX_OUTPUT_PARTS = 200;
+const MAX_STDOUT_RECORD_BYTES = 4 * 1024 * 1024;
 const SCAN_INTERVAL_MS = 1_500;
 const OUTPUT_RELATIVE_PATH = "out/video.mp4";
+const RUNTIME_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+const TERMINAL_STATUSES = new Set<RunStatus>(["completed", "failed", "aborted"]);
+
+function directWorkspace(candidate: string): string | null {
+  const resolved = path.resolve(candidate);
+  const normalize = (value: string) => {
+    const normalized = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  };
+  try {
+    const metadata = externalRuntimeLstat(resolved);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      normalize(externalRuntimeRealpath(resolved)) !== normalize(resolved)
+    ) return null;
+    return resolved;
+  } catch {
+    return null;
+  }
+}
 
 function emit(run: RunState, type: string, payload: Record<string, unknown> = {}): void {
   run.sequence += 1;
@@ -99,16 +116,6 @@ function emit(run: RunState, type: string, payload: Record<string, unknown> = {}
   });
   if (run.events.length > MAX_EVENTS) {
     run.events.splice(0, run.events.length - MAX_EVENTS);
-  }
-}
-
-function publishTerminal(run: RunState, result: HyperframesTerminalResult): void {
-  if (run.terminalResult) return;
-  run.terminalResult = result;
-  try {
-    run.terminalHandler?.(result);
-  } catch {
-    // The run stays replayable even when transcript persistence fails.
   }
 }
 
@@ -147,7 +154,7 @@ function refreshArtifacts(run: RunState, options: { force?: boolean } = {}): voi
   run.lastScanAt = now;
   let artifacts: HyperframesArtifact[];
   try {
-    artifacts = scanArtifacts(run.runId);
+    artifacts = scanHyperframesArtifacts(run.projectRoot);
   } catch {
     return;
   }
@@ -317,6 +324,7 @@ function launcherArgs(input: {
 }
 
 function finish(run: RunState, code: number | null): void {
+  if (TERMINAL_STATUSES.has(run.status)) return;
   refreshArtifacts(run, { force: true });
   const elapsedSec = Math.max(0, (Date.now() - run.startedAt) / 1_000);
   const video = primaryVideo(run.artifacts);
@@ -335,7 +343,6 @@ function finish(run: RunState, code: number | null): void {
       video,
       renders: run.renderCount,
     });
-    publishTerminal(run, { outcome: "completed", content: summary, usage: run.usage });
     return;
   }
   const error =
@@ -349,7 +356,69 @@ function finish(run: RunState, code: number | null): void {
     toolCount: run.toolCount,
     artifacts: run.artifacts,
   });
-  publishTerminal(run, { outcome: "failed", content: error, usage: run.usage });
+}
+
+const PASSTHROUGH_ENV = [
+  "SystemRoot",
+  "WINDIR",
+  "SystemDrive",
+  "PATH",
+  "PATHEXT",
+  "ComSpec",
+  "PROGRAMDATA",
+  "PROGRAMFILES",
+  "PROGRAMFILES(X86)",
+  "LANG",
+  "LC_ALL",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  "FONTCONFIG_FILE",
+  "FONTCONFIG_PATH",
+] as const;
+
+function childEnvironment(
+  run: RunState,
+  toolchain: HyperframesToolchain,
+  input: { shimDirectory?: string; baseUrl: string; apiKey: string; model: string },
+): NodeJS.ProcessEnv {
+  const home = path.join(run.workspaceRoot, ".runtime-home");
+  const temporary = path.join(run.workspaceRoot, ".runtime-temp");
+  const appData = path.join(home, "AppData", "Roaming");
+  const localAppData = path.join(home, "AppData", "Local");
+  const codexHome = path.join(home, ".codex");
+  for (const directory of [home, temporary, appData, localAppData, codexHome]) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+  const base: NodeJS.ProcessEnv = {
+    NODE_ENV: process.env.NODE_ENV ?? "production",
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: appData,
+    LOCALAPPDATA: localAppData,
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+    XDG_CACHE_HOME: path.join(home, ".cache"),
+    XDG_DATA_HOME: path.join(home, ".local", "share"),
+    TEMP: temporary,
+    TMP: temporary,
+  };
+  for (const key of PASSTHROUGH_ENV) {
+    const value = process.env[key];
+    if (value !== undefined) base[key] = value;
+  }
+  return {
+    ...hyperframesEnv(toolchain, base, input.shimDirectory ? [input.shimDirectory] : []),
+    CODEX_HOME: codexHome,
+    CHATMOCK_BASE_URL: input.baseUrl,
+    CHATMOCK_API_KEY: input.apiKey,
+    CHATMOCK_MODEL: input.model,
+  };
 }
 
 function spawnAgent(
@@ -366,10 +435,6 @@ function spawnAgent(
     instruction: string;
   },
 ): void {
-  const codexHome =
-    process.env.CODEX_HOME?.trim() || path.resolve(process.cwd(), ".runtime", "codex-agent");
-  // Codex refuses to start when CODEX_HOME names a directory that is not there.
-  mkdirSync(codexHome, { recursive: true });
   const child = spawn(
     codex.command,
     launcherArgs({
@@ -382,13 +447,7 @@ function spawnAgent(
       cwd: input.projectPath,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...hyperframesEnv(toolchain, process.env, [input.shimDirectory]),
-        CODEX_HOME: codexHome,
-        CHATMOCK_BASE_URL: input.baseUrl,
-        CHATMOCK_API_KEY: input.apiKey,
-        CHATMOCK_MODEL: input.model,
-      },
+      env: childEnvironment(run, toolchain, input),
     },
   ) as ChildProcessWithoutNullStreams;
   child.stdin.end(input.instruction);
@@ -401,6 +460,19 @@ function spawnAgent(
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
+    if (
+      Buffer.byteLength(stdout, "utf8") + Buffer.byteLength(chunk, "utf8") >
+      MAX_STDOUT_RECORD_BYTES
+    ) {
+      stdout = "";
+      run.runtimeError = "The video agent emitted an oversized event.";
+      try {
+        child.kill();
+      } catch {
+        // Runtime remains the final process-tree authority.
+      }
+      return;
+    }
     stdout += chunk;
     const lines = stdout.split(/\r?\n/);
     stdout = lines.pop() ?? "";
@@ -425,7 +497,6 @@ function spawnAgent(
     if (run.status === "aborted") return;
     run.status = "failed";
     emit(run, "run.failed", { error: error.message });
-    publishTerminal(run, { outcome: "failed", content: error.message, usage: run.usage });
   });
   child.on("exit", (code) => {
     if (run.child === child) run.child = null;
@@ -434,8 +505,10 @@ function spawnAgent(
   });
 }
 
-export function startRun(input: {
+export function startRuntimeWorkerRun(input: {
   userId: number;
+  runtimeJobId: string;
+  runtimeWorkspacePath: string;
   brief: string;
   model: string;
   reasoningEffort: string;
@@ -457,11 +530,18 @@ export function startRun(input: {
   const launcher = resolveLauncher();
   if (!launcher) throw new Error("The HyperFrames CLI was not found.");
 
-  const runId = `hfrun_${randomUUID().replaceAll("-", "")}`;
+  if (!RUNTIME_JOB_ID.test(input.runtimeJobId) || runs.has(input.runtimeJobId)) {
+    throw new Error("HyperFrames Runtime identity is invalid.");
+  }
+  const runId = input.runtimeJobId;
+  const workspaceRoot = directWorkspace(input.runtimeWorkspacePath);
+  if (!workspaceRoot) throw new Error("HyperFrames Runtime workspace is invalid.");
   const run: RunState = {
     runId,
     userId: input.userId,
     brief: input.brief,
+    workspaceRoot,
+    projectRoot: path.join(workspaceRoot, "project"),
     status: "queued",
     stage: "scaffolding",
     sequence: 0,
@@ -480,15 +560,30 @@ export function startRun(input: {
 
   void (async () => {
     try {
-      const workspace = await createWorkspace({
-        runId,
-        userId: input.userId,
-        brief: input.brief,
+      const workspace = await createRuntimeWorkspace({
+        runtimeWorkspacePath: workspaceRoot,
         launcher,
         toolchain: availability.toolchain,
+        environment: childEnvironment(run, availability.toolchain, {
+          baseUrl: input.baseUrl,
+          apiKey: input.apiKey,
+          model: input.model,
+        }),
+        onChild: (child) => {
+          if (run.status === "aborted") {
+            try {
+              child?.kill();
+            } catch {
+              // Runtime remains the final process-tree authority.
+            }
+            return;
+          }
+          run.child = child;
+        },
       });
       if (run.status === "aborted") return;
-      const shimDirectory = writeCliShim(path.join(runDirectory(runId), "bin"), launcher);
+      run.child = null;
+      const shimDirectory = writeCliShim(path.join(workspaceRoot, "bin"), launcher);
       const promptInput = {
         projectDirectory: workspace.projectDirectory,
         outputRelativePath: OUTPUT_RELATIVE_PATH,
@@ -526,47 +621,27 @@ export function startRun(input: {
           : "The video project could not be prepared.";
       run.status = "failed";
       emit(run, "run.failed", { error: message });
-      publishTerminal(run, { outcome: "failed", content: message, usage: run.usage });
     }
   })();
 
   return { runId, status: run.status };
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): HyperframesEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): HyperframesEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
-  return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
+  return TERMINAL_STATUSES.has(requireRun(userId, runId).status);
 }
 
-/** Live artifacts for a run still held in memory, or null when it is not. */
-export function liveArtifacts(userId: number, runId: string): HyperframesArtifact[] | null {
-  const run = runs.get(runId);
-  if (!run || run.userId !== userId) return null;
-  return run.artifacts;
-}
-
-/**
- * Attaches durable transcript persistence after the run descriptor has been
- * recorded. A run that failed during scaffolding can already be terminal by the
- * time the caller subscribes, so a stored result is delivered immediately
- * instead of being lost between launch and subscription.
- */
-export function setRunTerminalHandler(
-  userId: number,
-  runId: string,
-  handler: (result: HyperframesTerminalResult) => void,
-): void {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
-  run.terminalHandler = handler;
-  if (run.terminalResult) handler(run.terminalResult);
-}
-
-export function abortRun(userId: number, runId: string): boolean {
-  const run = requireRun(userId, runId);
-  if (["completed", "failed", "aborted"].includes(run.status)) return false;
+  if (TERMINAL_STATUSES.has(run.status)) return false;
   run.status = "aborted";
   try {
     run.child?.kill();
@@ -578,15 +653,5 @@ export function abortRun(userId: number, runId: string): boolean {
     summary: "Video build stopped.",
     artifacts: run.artifacts,
   });
-  publishTerminal(run, {
-    outcome: "aborted",
-    content: "Video build stopped.",
-    usage: run.usage,
-  });
   return true;
-}
-
-/** Where a run's project lives — used by the artifact routes. */
-export function runProjectDirectory(runId: string): string {
-  return projectDirectory(runId);
 }

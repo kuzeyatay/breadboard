@@ -1,7 +1,10 @@
-import fs from "node:fs";
-import path from "node:path";
 import { load } from "js-yaml";
 import { repositoryRoot } from "../runtime-paths.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+} from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 type ProviderDefinition = {
   display_name?: unknown;
@@ -162,7 +165,7 @@ function providersPath(): string | null {
       "providers.yaml",
     ),
   ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  return candidates.find((candidate) => externalRuntimePathExists(candidate)) ?? null;
 }
 
 export function nangoLogoPath(provider: string): string | null {
@@ -190,7 +193,7 @@ export function nangoLogoPath(provider: string): string | null {
       `${provider}.svg`,
     ),
   ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  return candidates.find((candidate) => externalRuntimePathExists(candidate)) ?? null;
 }
 
 function providerDefinitions(): Record<string, ProviderDefinition> {
@@ -198,7 +201,7 @@ function providerDefinitions(): Record<string, ProviderDefinition> {
   const sourcePath = providersPath();
   if (!sourcePath) return {};
   try {
-    const parsed = load(fs.readFileSync(sourcePath, "utf8"));
+    const parsed = load(externalRuntimeReadUtf8(sourcePath));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {};
     }

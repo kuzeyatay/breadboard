@@ -1,5 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { deriveUnitFormulaRequirement, validateFormulaAssignment, type FormulaAssignmentProvenance } from "../formula-assignment.ts";
 import type { CanonicalFormulaIdentity } from "../formula-identity.ts";
 import { buildFinalGardenState, classifyAnchorUsage, type CanonicalSourceAnchor } from "../final-garden-state.ts";

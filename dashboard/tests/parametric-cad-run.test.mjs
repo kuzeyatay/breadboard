@@ -7,9 +7,9 @@ const dashboardRoot = path.resolve(import.meta.dirname, "..");
 const source = (relative) => fs.readFileSync(path.join(dashboardRoot, relative), "utf8");
 
 const {
-  abortRun,
-  setRunTerminalHandler,
-  startRun,
+  abortRuntimeWorkerRun: abortRun,
+  setRuntimeWorkerTerminalHandler: setRunTerminalHandler,
+  startRuntimeWorkerRun: startRun,
 } = await import("../src/lib/cad/run-manager.ts");
 const { parseParametricCadRequest } = await import("../src/lib/cad/identity.ts");
 
@@ -54,7 +54,10 @@ test("the CAD route persists ownership before responding and the launcher sends 
   const terminal = source("src/app/components/hermes/dashboard-agent-terminal.tsx");
 
   assert.match(route, /const conversation = getConversationForUser\(conversationPublicId, userId\)/);
-  assert.ok(route.indexOf("const conversation = getConversationForUser") < route.indexOf("const run = startRun"));
+  assert.ok(
+    route.indexOf("const conversation = getConversationForUser") <
+      route.indexOf("const run = await startRun"),
+  );
   assert.match(route, /clientMessageId/);
   assert.match(route, /branchGroupId/);
   assert.match(route, /attachToExistingTurn/);

@@ -8,8 +8,38 @@ const eslintConfig = defineConfig([
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
-    ".next/**",
-    ".next-desktop/**",
+    // Every compiler/benchmark build uses a .next-prefixed directory. Keeping
+    // only the default two names here made whole-dashboard lint traverse stale
+    // webpack/turbopack output and retain several gigabytes of generated code.
+    ".next*/**",
+    // Mutable application state, QA output, managed checkouts, and browser
+    // profiles live beside the dashboard in development. None is dashboard
+    // source, and browser bundles in particular make an unscoped lint retain
+    // gigabytes of generated JavaScript.
+    ".runtime/**",
+    ".vercel/**",
+    ".claude/**",
+    "artifacts/**",
+    "cad-projects/**",
+    "chat-documents/**",
+    "chat-videos/**",
+    "database/**",
+    "db/**",
+    "goal-mode/**",
+    "hyperframes-cli/**",
+    "hyperframes-runs/**",
+    "loopx-goals/**",
+    "openscience-cli/**",
+    "openscience-state/**",
+    "openscience-workspace/**",
+    "openwork-runtime/**",
+    "openwork-state/**",
+    "openwork-workspace/**",
+    "postiz/**",
+    "public/genoffice-editor/**",
+    "test-results/**",
+    "undefined/**",
+    "video-use/**",
     "out/**",
     "build/**",
     "next-env.d.ts",

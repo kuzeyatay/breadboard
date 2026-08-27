@@ -116,7 +116,14 @@ test("OpenCode launches in the connected Garden repository without a shell", () 
   // behind the chat the task was typed into.
   assert.match(route, /instruction: withConversationContext\(\n\s+resolved\.text,/);
   assert.match(route, /resolveChatmockBaseUrl\(request\)/);
-  assert.match(manager, /opencode-ai@\$\{version\}/);
+  assert.match(route, /await prepareGraftIndex\(userId, repository\.path\)/);
+  assert.match(route, /const run = await startRun\(/);
+  assert.doesNotMatch(route, /chatmockApiKeyValue|apiKey:/);
+  assert.match(manager, /startOuterAgentRun/);
+  assert.match(manager, /export function startRuntimeWorkerRun/);
+  assert.match(manager, /env\.OPENCODE_BIN\?\.trim\(\)/);
+  assert.match(manager, /externalRuntimeRealpath\(path\.resolve\(configured\)\)/);
+  assert.doesNotMatch(manager, /bunx|opencode-ai@|spawnSync/);
   assert.match(manager, /OPENCODE_CONFIG: runConfig\.path/);
   assert.match(manager, /CHATMOCK_BASE_URL: input\.baseUrl/);
   assert.match(manager, /BREADBOARD_OPENCODE_REPO: input\.repositoryPath/);

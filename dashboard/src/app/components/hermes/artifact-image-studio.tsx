@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { releaseCanvasPixels } from "@/app/components/canvas-resource";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { artifactUrl } from "./artifact-viewer";
 import { openArtifactConversation } from "./artifact-conversation";
@@ -245,9 +246,10 @@ export default function ArtifactImageStudio({
     }
     setBusy(true);
     setError(null);
+    let canvas: HTMLCanvasElement | null = null;
     try {
       const quarterTurn = Math.abs(rotation % 180) === 90;
-      const canvas = document.createElement("canvas");
+      canvas = document.createElement("canvas");
       canvas.width = quarterTurn ? image.naturalHeight : image.naturalWidth;
       canvas.height = quarterTurn ? image.naturalWidth : image.naturalHeight;
       const context = canvas.getContext("2d");
@@ -258,11 +260,15 @@ export default function ArtifactImageStudio({
       context.scale(flipX ? -1 : 1, flipY ? -1 : 1);
       context.drawImage(image, -image.naturalWidth / 2, -image.naturalHeight / 2);
       const blob = await canvasBlob(canvas);
+      releaseCanvasPixels(canvas);
+      canvas = null;
       const edited = new File([blob], "edited-image.png", { type: "image/png" });
       await submitUpload(edited, sourceArtifact);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The edited image could not be saved.");
       setBusy(false);
+    } finally {
+      if (canvas) releaseCanvasPixels(canvas);
     }
   }
 

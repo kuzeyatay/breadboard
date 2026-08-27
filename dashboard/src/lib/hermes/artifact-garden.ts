@@ -23,13 +23,20 @@ import path from "node:path";
 import db from "../db.ts";
 import { refreshClusterIndex, slugify } from "../knowledge.ts";
 import { publishQuartzAfterMutation } from "../quartz-publish.ts";
-import { parseFrontmatter } from "../markdown-render/pdf.ts";
+import { parseMarkdownFrontmatter } from "../markdown-render/frontmatter.ts";
+import { acquireGardenMutationLease } from "../garden-mutation-lease.ts";
 
 export const ARTIFACTS_FOLDER = "artifacts";
 
 // Renderer ids that produce a text-representable garden note. Media/binary kinds
 // (image, audio, video, …) are intentionally excluded.
-const PUBLISHABLE_RENDERERS = new Set(["pdf", "docx", "markdown", "text", "code"]);
+const PUBLISHABLE_RENDERERS = new Set([
+  "pdf",
+  "docx",
+  "markdown",
+  "text",
+  "code",
+]);
 
 export interface GardenArtifactRef {
   clusterSlug: string;
@@ -56,30 +63,51 @@ function clusterDir(root: string, clusterSlug: string): string | null {
   return dir.startsWith(root + path.sep) || dir === root ? dir : null;
 }
 
-function withinClusterAsset(clusterDirPath: string, fileName: string): string | null {
-  if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName.includes("..")) {
+function withinClusterAsset(
+  clusterDirPath: string,
+  fileName: string,
+): string | null {
+  if (
+    !fileName ||
+    fileName.includes("/") ||
+    fileName.includes("\\") ||
+    fileName.includes("..")
+  ) {
     return null;
   }
   const target = path.resolve(clusterDirPath, "assets", fileName);
   return target.startsWith(clusterDirPath + path.sep) ? target : null;
 }
 
-function documentSlugFor(title: string, artifactId: string, existingSlug?: string): string {
+function documentSlugFor(
+  title: string,
+  artifactId: string,
+  existingSlug?: string,
+): string {
   if (existingSlug && /^[a-z0-9-]+$/.test(existingSlug)) return existingSlug;
   const base = slugify(title || "artifact") || "artifact";
-  const suffix = artifactId.replace(/[^a-z0-9]/gi, "").slice(-8).toLowerCase() || "doc";
+  const suffix =
+    artifactId
+      .replace(/[^a-z0-9]/gi, "")
+      .slice(-8)
+      .toLowerCase() || "doc";
   return `${base}-${suffix}`;
 }
 
-function frontmatter(fields: Record<string, string | undefined>, tags: string[]): string {
+function frontmatter(
+  fields: Record<string, string | undefined>,
+  tags: string[],
+): string {
   const lines = Object.entries(fields)
     .filter(([, value]) => value !== undefined)
     .map(([key, value]) => `${key}: ${JSON.stringify(value)}`);
-  if (tags.length) lines.push(`tags: [${tags.map((tag) => JSON.stringify(tag)).join(", ")}]`);
+  if (tags.length)
+    lines.push(`tags: [${tags.map((tag) => JSON.stringify(tag)).join(", ")}]`);
   return `---\n${lines.join("\n")}\n---\n\n`;
 }
 
 export interface PublishArtifactInput {
+  userId: number;
   clusterSlug: string;
   artifactId: string;
   title: string;
@@ -106,70 +134,95 @@ export async function publishArtifactToGarden(
   if (!root) return null;
   const dir = clusterDir(root, input.clusterSlug);
   if (!dir) return null;
+  const lease = acquireGardenMutationLease(dir, "publish-artifact");
+  try {
+    const slug = documentSlugFor(
+      input.title,
+      input.artifactId,
+      input.existingSlug,
+    );
+    const { body } = parseMarkdownFrontmatter(input.markdownSource);
+    const date = new Date().toISOString();
+    const title = input.title.trim() || "Artifact";
 
-  const slug = documentSlugFor(input.title, input.artifactId, input.existingSlug);
-  const { body } = parseFrontmatter(input.markdownSource);
-  const date = new Date().toISOString();
-  const title = input.title.trim() || "Artifact";
+    let sourcePdf: string | undefined;
+    let downloadAsset: string | undefined;
+    const noteLines: string[] = [];
 
-  let sourcePdf: string | undefined;
-  let downloadAsset: string | undefined;
-  const noteLines: string[] = [];
-
-  // Rendered file -> cluster assets (PDF for the viewer, docx as a download).
-  if (input.renderedFilePath && fs.existsSync(input.renderedFilePath)) {
-    const ext = input.rendererId === "pdf" ? "pdf" : input.rendererId === "docx" ? "docx" : "";
-    if (ext) {
-      const assetName = `${slug}.${ext}`;
-      const assetPath = withinClusterAsset(dir, assetName);
-      if (assetPath) {
-        fs.mkdirSync(path.dirname(assetPath), { recursive: true });
-        fs.copyFileSync(input.renderedFilePath, assetPath);
-        const rel = `/${input.clusterSlug.trim()}/assets/${assetName}`;
-        if (ext === "pdf") sourcePdf = rel;
-        else {
-          downloadAsset = rel;
-          noteLines.push(`> **Word document:** [${title}.docx](${rel})`, "");
+    // Rendered file -> cluster assets (PDF for the viewer, docx as a download).
+    if (input.renderedFilePath && fs.existsSync(input.renderedFilePath)) {
+      const ext =
+        input.rendererId === "pdf"
+          ? "pdf"
+          : input.rendererId === "docx"
+            ? "docx"
+            : "";
+      if (ext) {
+        const assetName = `${slug}.${ext}`;
+        const assetPath = withinClusterAsset(dir, assetName);
+        if (assetPath) {
+          fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+          fs.copyFileSync(input.renderedFilePath, assetPath);
+          const rel = `/${input.clusterSlug.trim()}/assets/${assetName}`;
+          if (ext === "pdf") sourcePdf = rel;
+          else {
+            downloadAsset = rel;
+            noteLines.push(`> **Word document:** [${title}.docx](${rel})`, "");
+          }
         }
       }
     }
+
+    const fields: Record<string, string | undefined> = {
+      title,
+      date,
+      knowledge_type: "artifact",
+      source: "artifact",
+      artifact_id: input.artifactId,
+      source_pdf: sourcePdf,
+      source_file: sourcePdf ? `${slug}.pdf` : undefined,
+    };
+
+    // Code artifacts read best inside a fence; others carry their Markdown as-is.
+    const noteBody =
+      input.rendererId === "code"
+        ? `\`\`\`\n${body}\n\`\`\``
+        : body || `# ${title}\n`;
+    const markdown =
+      frontmatter(fields, ["artifact"]) +
+      noteLines.join("\n") +
+      noteBody +
+      "\n";
+
+    const notePath = path.resolve(dir, ARTIFACTS_FOLDER, `${slug}.md`);
+    if (!notePath.startsWith(dir + path.sep)) return null;
+    fs.mkdirSync(path.dirname(notePath), { recursive: true });
+    const temporary = `${notePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(temporary, markdown, "utf8");
+    fs.renameSync(temporary, notePath);
+
+    refreshClusterIndex(root, input.clusterSlug.trim());
+    await publishQuartzAfterMutation(
+      `publish artifact ${input.clusterSlug}/${slug}`,
+      {
+        userId: input.userId,
+      },
+    );
+
+    return {
+      clusterSlug: input.clusterSlug.trim(),
+      documentSlug: slug,
+      markdownRelPath: `${ARTIFACTS_FOLDER}/${slug}.md`,
+      sourcePdf,
+      downloadAsset,
+    };
+  } finally {
+    lease.release();
   }
-
-  const fields: Record<string, string | undefined> = {
-    title,
-    date,
-    knowledge_type: "artifact",
-    source: "artifact",
-    artifact_id: input.artifactId,
-    source_pdf: sourcePdf,
-    source_file: sourcePdf ? `${slug}.pdf` : undefined,
-  };
-
-  // Code artifacts read best inside a fence; others carry their Markdown as-is.
-  const noteBody =
-    input.rendererId === "code" ? `\`\`\`\n${body}\n\`\`\`` : body || `# ${title}\n`;
-  const markdown = frontmatter(fields, ["artifact"]) + noteLines.join("\n") + noteBody + "\n";
-
-  const notePath = path.resolve(dir, ARTIFACTS_FOLDER, `${slug}.md`);
-  if (!notePath.startsWith(dir + path.sep)) return null;
-  fs.mkdirSync(path.dirname(notePath), { recursive: true });
-  const temporary = `${notePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temporary, markdown, "utf8");
-  fs.renameSync(temporary, notePath);
-
-  refreshClusterIndex(root, input.clusterSlug.trim());
-  await publishQuartzAfterMutation(`publish artifact ${input.clusterSlug}/${slug}`);
-
-  return {
-    clusterSlug: input.clusterSlug.trim(),
-    documentSlug: slug,
-    markdownRelPath: `${ARTIFACTS_FOLDER}/${slug}.md`,
-    sourcePdf,
-    downloadAsset,
-  };
 }
 
 export interface UnpublishArtifactInput {
+  userId: number;
   clusterId: number;
   clusterSlug: string;
   documentSlug: string;
@@ -185,30 +238,44 @@ export async function unpublishArtifactFromGarden(
   if (!root) return;
   const dir = clusterDir(root, input.clusterSlug);
   if (!dir) return;
-
-  const notePath = path.resolve(dir, ARTIFACTS_FOLDER, `${input.documentSlug}.md`);
-  if (notePath.startsWith(dir + path.sep) && fs.existsSync(notePath)) {
-    fs.rmSync(notePath, { force: true });
-  }
-
-  for (const rel of [input.sourcePdf, input.downloadAsset]) {
-    if (!rel) continue;
-    const fileName = rel.split("/").filter(Boolean).at(-1);
-    const assetPath = fileName ? withinClusterAsset(dir, fileName) : null;
-    if (assetPath && fs.existsSync(assetPath)) fs.rmSync(assetPath, { force: true });
-  }
-
-  // Drop any saved PDF edits / history for this document so a re-created doc of
-  // the same slug starts clean.
+  const lease = acquireGardenMutationLease(dir, "unpublish-artifact");
   try {
-    db.prepare(`DELETE FROM pdf_document_edits WHERE cluster_id = ? AND document_slug = ?`)
-      .run(input.clusterId, input.documentSlug);
-    db.prepare(`DELETE FROM pdf_document_edit_history WHERE cluster_id = ? AND document_slug = ?`)
-      .run(input.clusterId, input.documentSlug);
-  } catch {
-    // The edit tables are optional; cleanup is best-effort.
-  }
+    const notePath = path.resolve(
+      dir,
+      ARTIFACTS_FOLDER,
+      `${input.documentSlug}.md`,
+    );
+    if (notePath.startsWith(dir + path.sep) && fs.existsSync(notePath)) {
+      fs.rmSync(notePath, { force: true });
+    }
 
-  refreshClusterIndex(root, input.clusterSlug.trim());
-  await publishQuartzAfterMutation(`remove artifact ${input.clusterSlug}/${input.documentSlug}`);
+    for (const rel of [input.sourcePdf, input.downloadAsset]) {
+      if (!rel) continue;
+      const fileName = rel.split("/").filter(Boolean).at(-1);
+      const assetPath = fileName ? withinClusterAsset(dir, fileName) : null;
+      if (assetPath && fs.existsSync(assetPath))
+        fs.rmSync(assetPath, { force: true });
+    }
+
+    // Drop any saved PDF edits / history for this document so a re-created doc of
+    // the same slug starts clean.
+    try {
+      db.prepare(
+        `DELETE FROM pdf_document_edits WHERE cluster_id = ? AND document_slug = ?`,
+      ).run(input.clusterId, input.documentSlug);
+      db.prepare(
+        `DELETE FROM pdf_document_edit_history WHERE cluster_id = ? AND document_slug = ?`,
+      ).run(input.clusterId, input.documentSlug);
+    } catch {
+      // The edit tables are optional; cleanup is best-effort.
+    }
+
+    refreshClusterIndex(root, input.clusterSlug.trim());
+    await publishQuartzAfterMutation(
+      `remove artifact ${input.clusterSlug}/${input.documentSlug}`,
+      { userId: input.userId },
+    );
+  } finally {
+    lease.release();
+  }
 }

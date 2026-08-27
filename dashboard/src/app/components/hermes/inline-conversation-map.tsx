@@ -22,6 +22,7 @@ interface ContextResponse {
 const ROUTE_SOURCE_ID = "breadboard-inline-route";
 const ROUTE_LAYER_ID = "breadboard-inline-route-line";
 const POLL_INTERVAL_MS = 2_500;
+const MAX_CONTEXT_POLL_ATTEMPTS = 48;
 
 function retrievedForRequest(retrievedAt: string, requestedAt?: string): boolean {
   if (!requestedAt) return true;
@@ -49,6 +50,24 @@ function placesForDisplay(
     );
 }
 
+function requestedMapIsReady(
+  payload: ContextResponse,
+  kind: InlineConversationMapKind,
+  requestedAt?: string,
+): boolean {
+  if (!payload.enabled) return true;
+  if (kind === "route") {
+    return Boolean(
+      payload.context.activeRoute &&
+        retrievedForRequest(
+          payload.context.activeRoute.provenance.retrievedAt,
+          requestedAt,
+        ),
+    );
+  }
+  return placesForDisplay(payload.context, requestedAt).length > 0;
+}
+
 export default function InlineConversationMap({
   conversationPublicId,
   kind,
@@ -68,33 +87,52 @@ export default function InlineConversationMap({
   const [mapReady, setMapReady] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    let disposed = false;
+    let timer: number | undefined;
+    let request: AbortController | null = null;
+    let attempts = 0;
     const load = async () => {
+      const controller = new AbortController();
+      request?.abort();
+      request = controller;
+      attempts += 1;
       try {
         const url = new URL("/api/map/context", window.location.origin);
         url.searchParams.set("conversation", conversationPublicId);
-        const response = await fetch(url, { cache: "no-store" });
-        if (!response.ok || cancelled) return;
-        const payload = (await response.json()) as ContextResponse;
-        if (cancelled) return;
-        setEnabled(payload.enabled);
-        setStyleUrl(payload.styleUrl);
-        setContext((current) =>
-          current?.revision === payload.context.revision
-            ? current
-            : payload.context,
-        );
+        const response = await fetch(url, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (disposed) return;
+        if (response.ok) {
+          const payload = (await response.json()) as ContextResponse;
+          if (disposed) return;
+          setEnabled(payload.enabled);
+          setStyleUrl(payload.styleUrl);
+          setContext((current) =>
+            current?.revision === payload.context.revision
+              ? current
+              : payload.context,
+          );
+          if (requestedMapIsReady(payload, kind, requestedAt)) return;
+        }
       } catch {
         // The answer remains useful when the optional visual cannot load.
+      } finally {
+        if (request === controller) request = null;
+      }
+      if (!disposed && attempts < MAX_CONTEXT_POLL_ATTEMPTS) {
+        timer = window.setTimeout(() => void load(), POLL_INTERVAL_MS);
       }
     };
     void load();
-    const timer = window.setInterval(() => void load(), POLL_INTERVAL_MS);
     return () => {
-      cancelled = true;
-      window.clearInterval(timer);
+      disposed = true;
+      window.clearTimeout(timer);
+      request?.abort();
+      request = null;
     };
-  }, [conversationPublicId]);
+  }, [conversationPublicId, kind, requestedAt]);
 
   const places = useMemo(
     () => (context ? placesForDisplay(context, requestedAt) : []),
@@ -255,26 +293,26 @@ export default function InlineConversationMap({
           href={mapHref}
           target="_blank"
           rel="noreferrer"
-          className="absolute top-3 left-3 rounded-full border border-white/15 bg-black/75 px-3 py-1.5 text-xs text-white shadow-lg backdrop-blur hover:bg-black/85"
+          className="absolute top-3 left-3 rounded-full border border-white/15 bg-black/75 px-3 py-1.5 text-xs text-[#fff] shadow-lg backdrop-blur hover:bg-black/85"
         >
           Open map
         </a>
         {route ? (
-          <div className="absolute right-3 bottom-3 left-3 rounded-xl border border-white/10 bg-black/80 px-3 py-2.5 text-white shadow-xl backdrop-blur">
+          <div className="absolute right-3 bottom-3 left-3 rounded-xl border border-white/10 bg-black/80 px-3 py-2.5 text-[#fff] shadow-xl backdrop-blur">
             <p className="truncate text-xs font-medium">
               {route.origin.name} to {route.destination.name}
             </p>
-            <p className="mt-0.5 text-[11px] text-white/75">
+            <p className="mt-0.5 text-[11px] text-[#fff]/75">
               {formatDistance(route.distanceMeters)} · {formatDuration(route.durationSeconds)} · {route.mode}
               {route.steps?.length ? ` · ${route.steps.length} steps` : ""}
             </p>
           </div>
         ) : places.length ? (
-          <div className="absolute right-3 bottom-8 left-3 rounded-xl border border-white/10 bg-black/80 px-3 py-2.5 text-white shadow-xl backdrop-blur">
+          <div className="absolute right-3 bottom-8 left-3 rounded-xl border border-white/10 bg-black/80 px-3 py-2.5 text-[#fff] shadow-xl backdrop-blur">
             <p className="text-xs font-medium">
               {places.length} {places.length === 1 ? "place" : "places"} on the map
             </p>
-            <p className="mt-0.5 truncate text-[11px] text-white/75">
+            <p className="mt-0.5 truncate text-[11px] text-[#fff]/75">
               {places.slice(0, 3).map((place) => place.name).join(" · ")}
               {places.length > 3 ? ` · +${places.length - 3}` : ""}
             </p>

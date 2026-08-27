@@ -30,19 +30,6 @@ const TEMPLATE_ENTRIES = [
   "index.d.ts",
 ];
 
-const QA_DASHBOARD_LINK_ENTRIES = ["node_modules"];
-const QA_DASHBOARD_COPY_DIRECTORIES = ["src", "public"];
-const QA_DASHBOARD_COPY_ENTRIES = [
-  "package.json",
-  "package-lock.json",
-  "next.config.ts",
-  "postcss.config.mjs",
-  "tsconfig.json",
-  "tsconfig.desktop.json",
-  "next-env.d.ts",
-  "eslint.config.mjs",
-];
-
 interface NextSwcBinding {
   packageName: string;
   binaryName: string;
@@ -209,46 +196,22 @@ export function provisionQuartzWorkspace(
 }
 
 /**
- * Run Next development code from an isolated working directory.
+ * Fail closed before QA starts the real hot-development source tree.
  *
- * Next owns an exclusive `.next/dev/lock` and may rewrite tsconfig.json. A QA
- * instance therefore cannot safely use the checkout directory when a developer
- * instance is already open. Source and public assets are copied because Next
- * does not reliably discover an App Router through a Windows junction and may
- * rewrite project files. Only immutable dependencies are linked.
+ * Turbopack rejects a project-level node_modules junction that resolves beyond
+ * its filesystem root, while widening that root to the Windows user profile
+ * increases both authority and watcher scope. QA therefore runs the physical
+ * checkout just like `npm run dev`; mutable Breadboard data remains isolated by
+ * dataRoot. Next's `.next/dev/lock` rejects a second compiler rather than
+ * queueing it, and Electron's Hot checkout guard fails before Runtime V2 starts.
  */
-export function provisionQaDashboardWorkspace(paths: ResolvedPaths): void {
+export function preflightQaDashboardDevelopment(paths: ResolvedPaths): void {
   if (!paths.qaMode) return;
-  const sourceRoot = path.join(paths.appRoot, "dashboard");
+  const sourceRoot = paths.dashboardServerDir;
   if (!fs.existsSync(sourceRoot)) {
     throw new Error(`Dashboard source missing at ${sourceRoot}`);
   }
   preflightQaDashboardSwc(sourceRoot);
-  fs.mkdirSync(paths.dashboardServerDir, { recursive: true });
-
-  for (const entry of QA_DASHBOARD_LINK_ENTRIES) {
-    const source = path.join(sourceRoot, entry);
-    if (!fs.existsSync(source)) continue;
-    const destination = path.join(paths.dashboardServerDir, entry);
-    fs.rmSync(destination, { recursive: true, force: true });
-    fs.symlinkSync(
-      source,
-      destination,
-      process.platform === "win32" ? "junction" : "dir",
-    );
-  }
-  for (const entry of QA_DASHBOARD_COPY_DIRECTORIES) {
-    const source = path.join(sourceRoot, entry);
-    if (!fs.existsSync(source)) continue;
-    const destination = path.join(paths.dashboardServerDir, entry);
-    fs.rmSync(destination, { recursive: true, force: true });
-    fs.cpSync(source, destination, { recursive: true });
-  }
-  for (const entry of QA_DASHBOARD_COPY_ENTRIES) {
-    const source = path.join(sourceRoot, entry);
-    if (!fs.existsSync(source)) continue;
-    fs.copyFileSync(source, path.join(paths.dashboardServerDir, entry));
-  }
 }
 
 /** Generated compose override for the optional Scriberr Docker mode. */

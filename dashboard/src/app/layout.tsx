@@ -3,6 +3,8 @@ import { IBM_Plex_Mono, Schibsted_Grotesk, Source_Sans_3 } from "next/font/googl
 import { Suspense } from "react";
 import AppThemeRuntime from "@/app/components/app-theme-runtime";
 import DesktopTitleBar from "@/app/components/desktop-title-bar";
+import { interactionHydrationBootstrapScript } from "@/app/components/interaction-hydration-bridge";
+import InteractionHydrationGate from "@/app/components/interaction-hydration-gate";
 import NavigationProgress from "@/app/components/navigation-progress";
 import NavigationTrail from "@/app/components/navigation-trail";
 import RecallAutoStart from "@/app/components/recall-autostart";
@@ -70,6 +72,7 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitializationScript }} />
         <script dangerouslySetInnerHTML={{ __html: desktopChromeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: interactionHydrationBootstrapScript }} />
       </head>
       <body className="min-h-full flex flex-col">
         <AppThemeRuntime />
@@ -79,7 +82,7 @@ export default function RootLayout({
           <NavigationProgress />
           <NavigationTrail />
         </Suspense>
-        {children}
+        <InteractionHydrationGate>{children}</InteractionHydrationGate>
       </body>
     </html>
   );

@@ -35,6 +35,8 @@ const actions = source("../src/app/components/assistant-message-actions.tsx");
 const synthesize = source("../src/app/api/speech/synthesize/route.ts");
 const dictationDownload = source("../src/app/api/speech/synthesize/mp3/route.ts");
 const synthesis = source("../src/lib/speech/synthesis.ts");
+const speechMediaExecutor = source("../scripts/runtime-v2-speech-media-executor.mjs");
+const speechMediaJob = source("../src/lib/runtime-v2/speech-media-job.ts");
 const sampleUpload = source("../src/app/api/speech/profiles/[profileId]/samples/route.ts");
 const transcribe = source("../src/app/api/speech/transcribe/route.ts");
 const status = source("../src/app/api/speech/status/route.ts");
@@ -230,14 +232,14 @@ test("a blocked microphone hands back a way out, not a dead end", () => {
   assert.match(dictation, /onRetry=\{\(\) => void startRecording\(\)\}/);
 });
 
-test("opening system settings never depends on the browser honouring ms-settings:", () => {
+test("the desktop shell owns Settings and the browser fallback owns no process", () => {
   const settingsRoute = source("../src/app/api/speech/microphone-settings/route.ts");
   const opener = source("../src/lib/speech/system-microphone-settings.ts");
   const access = source("../src/lib/speech/microphone-access.ts");
 
   // Firefox refuses to hand an external protocol to Windows from a page and
-  // Chromium's confirmation can be silenced for good, so the link is a button
-  // that visibly does nothing. The server runs on this machine: it can open it.
+  // Chromium's confirmation can be silenced for good. Electron therefore uses
+  // its narrow desktop bridge; the browser route only supplies manual details.
   assert.doesNotMatch(permissionHelp, /href=\{fix\.action/);
   assert.match(access, /fetch\("\/api\/speech\/microphone-settings", \{ method: "POST" \}\)/);
   assert.match(access, /openDesktopMicrophoneSettings\(\)\) return true/);
@@ -252,9 +254,10 @@ test("opening system settings never depends on the browser honouring ms-settings
   assert.equal(isLoopbackHostname("breadboard.example.com"), false);
   assert.equal(isLoopbackHostname(null), false);
 
-  // Settings has to outlive the request that opened it.
-  assert.match(opener, /detached: true/);
-  assert.match(opener, /child\.unref\(\)/);
+  // Next cannot own Settings: it has to outlive any dashboard request. The
+  // Electron main process transfers the fixed URI through the OS shell.
+  assert.doesNotMatch(opener, /node:child_process|spawn\s*\(|execFile\s*\(|detached: true/);
+  assert.match(opener, /microphonePrivacyPageFallback/);
   assert.equal(MICROPHONE_SETTINGS_URI.win32, "ms-settings:privacy-microphone");
   assert.match(MICROPHONE_SETTINGS_URI.darwin, /^x-apple\.systempreferences:/);
 });
@@ -279,17 +282,20 @@ test("the response menu saves the spoken reading as a keepable .mp3", () => {
   assert.match(actions, /Preparing dictation…/);
   assert.match(actions, /dictationState === "preparing"[\s\S]*?dictationAbortRef\.current\?\.abort\(\)/);
 
-  // The download route holds the whole reading before encoding it, while the
-  // playback route next door still hands its body straight back.
+  // The download route holds the reading long enough to seal it as a Runtime
+  // input, while the playback route next door still streams its body directly.
   assert.match(dictationDownload, /speechAsMp3/);
   assert.match(dictationDownload, /await spoken\.arrayBuffer\(\)/);
   assert.match(dictationDownload, /attachment; filename=/);
   assert.match(synthesize, /new Response\(response\.body/);
   assert.match(synthesis, /SPEECH_DOWNLOAD_MIME = "audio\/mpeg"/);
-  assert.match(synthesis, /"-c:a", "libmp3lame"/);
-  assert.match(synthesis, /No ffmpeg was found/);
-  // One temporary directory per download, removed whether ffmpeg worked or not.
-  assert.match(synthesis, /finally \{\s*await fsp\.rm\(directory/);
+  assert.match(synthesis, /encodeSpeechMp3ViaRuntime/);
+  assert.doesNotMatch(synthesis, /node:child_process|spawn\s*\(|execFile\s*\(/);
+  assert.match(speechMediaExecutor, /"-c:a", "libmp3lame"/);
+  assert.match(speechMediaExecutor, /speech_encode_failed/);
+  // Runtime owns the private media stage. Its client removes the attempt stage
+  // after consuming the finished file; Next never owns an ffmpeg temp process.
+  assert.match(speechMediaJob, /finally \{\s*cleanupAttemptStage\(completed\.job\)/);
 });
 
 test("Voicebox stays behind authenticated bounded loopback routes", () => {

@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "stack": "inbox-zero",
+  "sourceCommit": "0006bea20b141d7386d76d32a6e4551c8333dd59",
+  "platform": "linux/amd64",
+  "sourceFiles": [
+    { "path": "docker-compose.yml", "size": 5755, "sha256": "D18BF873D5F40C86FCBD0123C5C7454B4BFDA450CEC28C20FD38CFF68BF45D68" },
+    { "path": "LICENSE", "size": 36236, "sha256": "F4A1D294633040A4FD956113EF73045AF61FFBC37909E857AED75457418656CB" }
+  ],
+  "images": [
+    {
+      "service": "db",
+      "sourceReference": "postgres:16",
+      "immutableReference": "postgres@sha256:c1b3783309b6499c795eed7c20135a1a4d25cae1b575c3d52c6f536129a1b109",
+      "indexDigest": "sha256:c1b3783309b6499c795eed7c20135a1a4d25cae1b575c3d52c6f536129a1b109",
+      "linuxAmd64Manifest": { "digest": "sha256:485935f94cc7165afa896978809c37b592dc07f0a37d2c8f645f12412d0212c8", "size": 3628 }
+    },
+    {
+      "service": "redis",
+      "sourceReference": "redis:7",
+      "immutableReference": "redis@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7",
+      "indexDigest": "sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7",
+      "linuxAmd64Manifest": { "digest": "sha256:e2debfb7956fa12c7ddc79d7e645c8cf26b30c99a6e9161ea9bf4171e1668a5f", "size": 2288 }
+    },
+    {
+      "service": "serverless-redis-http",
+      "sourceReference": "hiett/serverless-redis-http:latest",
+      "immutableReference": "hiett/serverless-redis-http@sha256:5b0bb9239fce53abf87b2018a7a0deb9ec7bd900c5360738fe5fbeeb426f9150",
+      "indexDigest": "sha256:5b0bb9239fce53abf87b2018a7a0deb9ec7bd900c5360738fe5fbeeb426f9150",
+      "linuxAmd64Manifest": { "digest": "sha256:01d66211581ebd552e07292e3b73f1f475e52c48aa725049809aa09a7ba23238", "size": 1245 }
+    },
+    {
+      "service": "web",
+      "sourceReference": "ghcr.io/elie222/inbox-zero:latest",
+      "immutableReference": "ghcr.io/elie222/inbox-zero@sha256:c94ac7be29aafbb23e3aaa37af242b2152c712d77afbd7c727a699e5fcceb365",
+      "indexDigest": "sha256:c94ac7be29aafbb23e3aaa37af242b2152c712d77afbd7c727a699e5fcceb365",
+      "linuxAmd64Manifest": { "digest": "sha256:8c7e11f19718a89e504abb0ec2a33c4712769147ded04211e0d539a08d39d755", "size": 3345 }
+    },
+    {
+      "service": "worker",
+      "sourceReference": "ghcr.io/elie222/inbox-zero:latest",
+      "immutableReference": "ghcr.io/elie222/inbox-zero@sha256:c94ac7be29aafbb23e3aaa37af242b2152c712d77afbd7c727a699e5fcceb365",
+      "indexDigest": "sha256:c94ac7be29aafbb23e3aaa37af242b2152c712d77afbd7c727a699e5fcceb365",
+      "linuxAmd64Manifest": { "digest": "sha256:8c7e11f19718a89e504abb0ec2a33c4712769147ded04211e0d539a08d39d755", "size": 3345 }
+    },
+    {
+      "service": "cron",
+      "sourceReference": "alpine:latest",
+      "immutableReference": "alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b",
+      "indexDigest": "sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b",
+      "linuxAmd64Manifest": { "digest": "sha256:79ff19e9084a00eece421b2523fb93e22d730e2c0e525905de047e848e56d95f", "size": 1022 }
+    }
+  ]
+}

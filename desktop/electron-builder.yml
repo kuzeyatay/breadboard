@@ -21,6 +21,14 @@ compression: normal
 extraResources:
   - from: build-resources/app-services
     to: app-services
+  # builder-util's directory walker unconditionally omits `.gitkeep` before
+  # FileSet filters run. These two zero-byte markers participate in reviewed
+  # immutable closure receipts, so copy them through the single-file path,
+  # which deliberately bypasses that directory-walk omission.
+  - from: build-resources/app-services/deer-flow/backend/packages/harness/deerflow/persistence/migrations/versions/.gitkeep
+    to: app-services/deer-flow/backend/packages/harness/deerflow/persistence/migrations/versions/.gitkeep
+  - from: build-resources/app-services/dashboard/node_modules/mem0ai/node_modules/openai/node_modules/node-fetch/node_modules/whatwg-url/node_modules/tr46/lib/.gitkeep
+    to: app-services/dashboard/node_modules/mem0ai/node_modules/openai/node_modules/node-fetch/node_modules/whatwg-url/node_modules/tr46/lib/.gitkeep
   - from: build-resources/runtimes
     to: runtimes
   - from: build-resources/runtime-v2

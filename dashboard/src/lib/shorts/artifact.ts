@@ -157,18 +157,18 @@ export interface PublishedClip extends ShortsClip {
  * when storing failed — a clip that exists on disk but could not be attached is
  * still worth reporting rather than silently dropping.
  */
-export function publishClip(input: {
+export async function publishClip(input: {
   context: ShortsArtifactContext;
   clip: ShortsClip;
   /** The directory the run wrote its clips into; nothing outside it is read. */
   workspace: string;
   sourceLabel: string;
-}): PublishedClip {
+}): Promise<PublishedClip> {
   const filename = `${String(input.clip.index).padStart(2, "0")}-${safeFilename(
     input.clip.title,
   )}.mp4`;
   try {
-    const artifact: ArtifactRow = createImportedArtifact({
+    const artifact: ArtifactRow = await createImportedArtifact({
       userId: input.context.userId,
       runtimeSessionId: input.context.runtimeSessionId,
       hermesSessionId: input.context.hermesSessionId,

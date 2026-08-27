@@ -1,7 +1,14 @@
-import { spawnSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
-import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import {
+  dashboardDataDir,
+  repositoryRoot,
+  runtimeV2ServiceRoot,
+  runtimeV2ServiceVenv,
+} from "../runtime-paths.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+} from "../external-runtime-filesystem.ts";
 
 export interface Resource2SkillAvailability {
   available: boolean;
@@ -21,23 +28,22 @@ function configured(value: string | undefined): string | null {
 export function resolveResource2SkillRoot(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = configured(env.RESOURCE2SKILL_ROOT);
   if (env.BREADBOARD_QA_MODE === "1") {
-    return explicit && fs.existsSync(path.join(explicit, "core", "agent_executor.py"))
+    return explicit && externalRuntimePathExists(path.join(explicit, "core", "agent_executor.py"))
       ? explicit
       : null;
   }
   const candidates = [
     explicit,
     path.join(repositoryRoot(), "Resource2Skill"),
-    path.resolve(process.cwd(), "Resource2Skill"),
-    path.resolve(process.cwd(), "..", "Resource2Skill"),
   ];
   return candidates.find((candidate) =>
-    Boolean(candidate) && fs.existsSync(path.join(candidate as string, "core", "agent_executor.py")),
+    Boolean(candidate) && externalRuntimePathExists(path.join(candidate as string, "core", "agent_executor.py")),
   ) ?? null;
 }
 
 export function resource2SkillVenv(env: NodeJS.ProcessEnv = process.env): string {
-  return configured(env.RESOURCE2SKILL_VENV) ?? path.join(repositoryRoot(), ".runtime", "resource2skill-venv");
+  void env;
+  return runtimeV2ServiceVenv("resource2skill");
 }
 
 export function resource2SkillPython(env: NodeJS.ProcessEnv = process.env): string {
@@ -48,6 +54,10 @@ export function resource2SkillPython(env: NodeJS.ProcessEnv = process.env): stri
 
 export function resource2SkillWorkspaceRoot(env: NodeJS.ProcessEnv = process.env): string {
   return configured(env.RESOURCE2SKILL_WORKSPACE_ROOT) ?? path.join(dashboardDataDir(), "resource2skill-runs");
+}
+
+export function resource2SkillBrowserRoot(): string {
+  return path.join(runtimeV2ServiceRoot("resource2skill"), "browsers");
 }
 
 export function resource2SkillBridge(): string {
@@ -63,22 +73,28 @@ export function resource2SkillAvailability(
   if (!root) {
     return { available: false, cloned: false, root: null, python: null, pythonVersion: "", bridge, reason: "The Resource2Skill clone was not found. Set RESOURCE2SKILL_ROOT if it is not at ./Resource2Skill." };
   }
-  if (!fs.existsSync(bridge)) {
+  if (!externalRuntimePathExists(bridge)) {
     return { available: false, cloned: true, root, python: null, pythonVersion: "", bridge, reason: "Breadboard's Resource2Skill bridge is missing." };
   }
-  if (!fs.existsSync(python)) {
-    return { available: false, cloned: true, root, python: null, pythonVersion: "", bridge, reason: "Resource2Skill is cloned but its Python environment is not installed. Open setup or run npm run setup:resource2skill." };
+  if (!externalRuntimePathExists(python)) {
+    return { available: false, cloned: true, root, python: null, pythonVersion: "", bridge, reason: "Resource2Skill is cloned but its Python environment is not installed. Open setup to install it." };
   }
-  const probe = spawnSync(python, ["-c", "import sys; print(sys.version.split()[0]); import mcp, openpyxl, playwright, pptx"], {
-    cwd: root,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 20_000,
-  });
-  if (probe.status !== 0) {
+  let receipt: { ready?: unknown; version?: unknown } | null = null;
+  try {
+    const parsed = JSON.parse(
+      externalRuntimeReadUtf8(path.join(resource2SkillVenv(env), "breadboard-runtime.json")),
+    ) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      receipt = parsed as { ready?: unknown; version?: unknown };
+    }
+  } catch {
+    // A Runtime setup receipt is written only after the fixed dependency and
+    // bridge probes complete successfully.
+  }
+  if (receipt?.ready !== true || typeof receipt.version !== "string") {
     return { available: false, cloned: true, root, python, pythonVersion: "", bridge, reason: "The Resource2Skill environment is incomplete. Run setup again." };
   }
-  const pythonVersion = (probe.stdout ?? "").trim().split(/\r?\n/)[0] ?? "";
+  const pythonVersion = receipt.version;
   if (!pythonVersion.startsWith("3.11.")) {
     return { available: false, cloned: true, root, python, pythonVersion, bridge, reason: `Resource2Skill requires Python 3.11; found ${pythonVersion || "an unknown version"}.` };
   }

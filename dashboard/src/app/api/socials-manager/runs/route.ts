@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { startRun } from "@/lib/socials-manager/run-manager.ts";
+import { startRun } from "@/lib/socials-manager/runtime-run-manager.ts";
 import { ensureConversationForLegacyChatSession } from "@/lib/conversations/store.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
@@ -61,8 +61,14 @@ export async function POST(request: Request) {
     }
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const clientMessageId = typeof body.clientMessageId === "string"
+      ? body.clientMessageId.trim()
+      : "";
+    const run = await startRun({
       userId,
+      ...(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(clientMessageId)
+        ? { requestId: clientMessageId }
+        : {}),
       brief,
       model,
       baseUrl: baseURL,

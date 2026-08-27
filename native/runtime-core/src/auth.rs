@@ -1,4 +1,6 @@
-use crate::{AuthenticatedJobContext, StoreError};
+use crate::{
+    AuthenticatedJobContext, CurrentGenerationMembership, RuntimeGenerationScope, StoreError,
+};
 use breadboard_runtime_protocol::{MAX_CONTROL_TOKEN_BYTES, MIN_CONTROL_TOKEN_BYTES};
 use std::fmt;
 use thiserror::Error;
@@ -89,6 +91,61 @@ impl fmt::Debug for ControlPlaneAuthority {
 impl Drop for ControlPlaneAuthority {
     fn drop(&mut self) {
         self.control_token.fill(0);
+    }
+}
+
+/// Opaque authority for Runtime-owned schedule and reconciliation submissions.
+/// It can only be minted from membership in the current native generation and
+/// is never serializable, cloneable into a request, or exposed by the control
+/// protocol.
+#[must_use = "runtime scheduler authority must remain generation-bound"]
+pub struct RuntimeSchedulerAuthority {
+    scope: RuntimeGenerationScope,
+}
+
+impl RuntimeSchedulerAuthority {
+    pub fn from_current_generation(generation: &CurrentGenerationMembership) -> Self {
+        Self {
+            scope: generation.authority_scope(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(scope: RuntimeGenerationScope) -> Self {
+        Self { scope }
+    }
+
+    pub fn trusted_internal_context(
+        &self,
+        internal_id: &str,
+    ) -> Result<AuthenticatedJobContext, AuthenticationError> {
+        Ok(AuthenticatedJobContext::for_trusted_internal(
+            internal_id,
+            None,
+            None,
+        )?)
+    }
+
+    /// Binds an already-authenticated dashboard user to a Runtime-owned
+    /// reconciliation submission. The native control adapter authenticates
+    /// first; an ordinary request value cannot construct this context.
+    pub fn trusted_user_context(
+        &self,
+        user_id: i64,
+    ) -> Result<AuthenticatedJobContext, AuthenticationError> {
+        Ok(AuthenticatedJobContext::for_verified_user(
+            user_id, None, None,
+        )?)
+    }
+
+    pub(crate) fn matches_scope(&self, scope: &RuntimeGenerationScope) -> bool {
+        self.scope == *scope
+    }
+}
+
+impl fmt::Debug for RuntimeSchedulerAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RuntimeSchedulerAuthority(<opaque generation authority>)")
     }
 }
 

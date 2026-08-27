@@ -4,8 +4,8 @@ use thiserror::Error;
 
 pub const WIRE_PROTOCOL_VERSION: u32 = 1;
 pub const RUNTIME_CONTROL_PROTOCOL_VERSION: u32 = 1;
-pub const WORKER_MANIFEST_VERSION: u32 = 1;
-pub const SERVICE_MANIFEST_VERSION: u32 = 1;
+pub const WORKER_MANIFEST_VERSION: u32 = 2;
+pub const SERVICE_MANIFEST_VERSION: u32 = 4;
 /// Compatibility alias for the first wire protocol. New code should use the
 /// explicit wire/manifest constants so those versions can evolve separately.
 pub const PROTOCOL_VERSION: u32 = WIRE_PROTOCOL_VERSION;
@@ -34,9 +34,43 @@ pub const MAX_MANIFEST_ENTRIES: usize = 256;
 pub const MAX_JOB_TYPES_PER_WORKER: usize = 128;
 pub const MAX_CAPABILITIES_PER_DEFINITION: usize = 256;
 pub const MAX_DEPENDENCIES_PER_SERVICE: usize = 64;
-pub const MAX_CONCURRENCY: u32 = 64;
+pub const MAX_SERVICE_DEPENDENCIES_PER_WORKER: usize = 8;
+pub const MAX_SERVICE_LAUNCH_PROFILES: usize = 3;
+pub const MAX_SERVICE_LAUNCH_ARGUMENTS: usize = 64;
+pub const MAX_SERVICE_INSTALL_PROBE_FILES: usize = 32;
+pub const MAX_SERVICE_ARGUMENT_BYTES: usize = 4096;
+pub const MAX_SERVICE_READINESS_MATCH_BYTES: usize = 1024;
+pub const MAX_SERVICE_LEASE_REQUEST_BODY_BYTES: usize = 8 * 1024;
+pub const MAX_SERVICE_LEASE_REASON_BYTES: usize = 256;
+pub const MAX_RECALL_RECONCILE_REQUEST_BODY_BYTES: usize = 96 * 1024;
+pub const MAX_RECALL_EXCLUDED_WINDOWS: usize = 100;
+pub const MAX_RECALL_EXCLUDED_WINDOW_UTF16_UNITS: usize = 200;
+pub const MAX_RECALL_CONFIGURATION_TEXT_BYTES: usize = 80 * 1024;
+pub const MAX_RECALL_LOG_LINES: usize = 40;
+pub const MAX_RECALL_LOG_TAIL_BYTES: usize = 16 * 1024;
+pub const MAX_JOB_INPUT_UPLOADS: usize = 16;
+pub const MAX_JOB_INPUT_UPLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_JOB_INPUT_DISPLAY_NAME_BYTES: usize = 512;
+pub const MAX_JOB_INPUT_MEDIA_TYPE_BYTES: usize = 256;
+pub const MAX_JOB_INPUT_RESERVATION_BODY_BYTES: usize = 16 * 1024;
+pub const MAX_JOB_LOOKUP_BODY_BYTES: usize = 1024;
+pub const MAX_JOB_IDEMPOTENCY_CANCELLATION_BODY_BYTES: usize = 1024;
+pub const MAX_LEARN_RECOVERY_REQUEST_BODY_BYTES: usize = 1024;
+pub const MAX_CONCURRENCY: u32 = 256;
+/// Service restart counters and manifest restart budgets are persisted in the
+/// runtime service ledger, whose public/control contract is intentionally
+/// narrower than worker or lease concurrency.
+pub const MAX_SERVICE_RESTARTS: u32 = 64;
 pub const MAX_COMMIT_LIMIT_MB: u64 = 1024 * 1024;
 pub const MAX_TIMEOUT_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+/// A service may consume its complete manifest readiness budget before the
+/// controller observes and settles the pending durable lease.
+pub const SERVICE_LEASE_SETTLEMENT_GRACE_MS: u64 = 5_000;
+/// Keeps the engine reply deadline strictly outside the pending-lease deadline
+/// so a bounded timeout is delivered instead of racing the receiver itself.
+pub const SERVICE_LEASE_RESPONSE_GRACE_MS: u64 = 5_000;
+pub const MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS: u64 =
+    MAX_TIMEOUT_MS + SERVICE_LEASE_SETTLEMENT_GRACE_MS + SERVICE_LEASE_RESPONSE_GRACE_MS;
 pub const MAX_SQLITE_UNSIGNED: u64 = 9_223_372_036_854_775_807;
 /// Largest integer that can cross the Rust/JavaScript control boundary without
 /// losing precision in a JavaScript `number`.
@@ -229,7 +263,173 @@ pub struct JobSubmissionPayload {
     pub garden_id: Option<String>,
     pub conversation_id: Option<String>,
     pub idempotency_key: String,
+    #[serde(default)]
+    pub input_uploads: Vec<RuntimeJobInputUploadReference>,
     pub request_payload: serde_json::Value,
+}
+
+/// Exact body for an ownership-scoped idempotency lookup. User and scope
+/// authority remain exclusively in authenticated transport headers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeJobLookupRequest {
+    pub idempotency_key: String,
+}
+
+impl RuntimeJobLookupRequest {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_bounded_text(
+            "idempotencyKey",
+            &self.idempotency_key,
+            MAX_IDEMPOTENCY_KEY_BYTES,
+        )?;
+        if self.idempotency_key.chars().any(char::is_control) {
+            return Err(ValidationError::InvalidIdentifier {
+                field: "idempotencyKey",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Exact body for recording cancellation before a submission response exists.
+/// User and scope authority remain exclusively in authenticated transport
+/// headers and therefore cannot be supplied or widened by this body.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeJobIdempotencyCancellationRequest {
+    pub idempotency_key: String,
+}
+
+impl RuntimeJobIdempotencyCancellationRequest {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_bounded_text(
+            "idempotencyKey",
+            &self.idempotency_key,
+            MAX_IDEMPOTENCY_KEY_BYTES,
+        )?;
+        if self.idempotency_key.chars().any(char::is_control) {
+            return Err(ValidationError::InvalidIdentifier {
+                field: "idempotencyKey",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The only caller-controlled value on the fixed internal Learn recovery
+/// route. Job type, authority, scope, request payload, and input count are
+/// runtime constants and have no wire representation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeLearnRecoveryRequest {
+    pub idempotency_key: String,
+}
+
+impl RuntimeLearnRecoveryRequest {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        const PREFIX: &str = "learn-recovery-v2:";
+        validate_bounded_text(
+            "idempotencyKey",
+            &self.idempotency_key,
+            MAX_IDEMPOTENCY_KEY_BYTES,
+        )?;
+        let Some(generation) = self.idempotency_key.strip_prefix(PREFIX) else {
+            return Err(ValidationError::InvalidIdentifier {
+                field: "learn recovery idempotencyKey",
+            });
+        };
+        if generation.is_empty()
+            || !generation.bytes().all(|byte| byte.is_ascii_digit())
+            || generation.len() > 16
+            || generation
+                .parse::<u64>()
+                .map_or(true, |value| value > MAX_JSON_SAFE_INTEGER)
+        {
+            return Err(ValidationError::InvalidIdentifier {
+                field: "learn recovery idempotencyKey",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// An opaque reference to a previously sealed, ownership-scoped input upload.
+/// No path, size, digest, display metadata, or lifecycle claim can be supplied
+/// by the submission body; the runtime resolves all of those durably.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeJobInputUploadReference {
+    pub upload_id: String,
+}
+
+impl RuntimeJobInputUploadReference {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_identifier("uploadId", &self.upload_id)
+    }
+}
+
+/// Bounded, untrusted metadata for reserving one private upload. Ownership is
+/// deliberately absent and is supplied by the authenticated control context.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeJobInputReservationRequest {
+    pub garden_id: Option<String>,
+    pub conversation_id: Option<String>,
+    pub display_name: String,
+    pub media_type: Option<String>,
+    pub declared_size_bytes: u64,
+}
+
+impl RuntimeJobInputReservationRequest {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(garden_id) = &self.garden_id {
+            validate_scope_id("gardenId", garden_id)?;
+        }
+        if let Some(conversation_id) = &self.conversation_id {
+            validate_scope_id("conversationId", conversation_id)?;
+        }
+        validate_job_input_display_name(&self.display_name)?;
+        if let Some(media_type) = &self.media_type {
+            validate_job_input_media_type(media_type)?;
+        }
+        if self.declared_size_bytes == 0
+            || self.declared_size_bytes > MAX_JOB_INPUT_UPLOAD_BYTES
+            || self.declared_size_bytes > MAX_JSON_SAFE_INTEGER
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "declaredSizeBytes",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Public reservation receipt. It exposes only the opaque upload id and
+/// bounded lifecycle limits, never a host or relative filesystem path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeJobInputReservationResponse {
+    pub upload_id: String,
+    pub expires_at: i64,
+    pub maximum_bytes: u64,
+}
+
+impl RuntimeJobInputReservationResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_identifier("uploadId", &self.upload_id)?;
+        if self.expires_at <= 0
+            || self.expires_at as u64 > MAX_JSON_SAFE_INTEGER
+            || self.maximum_bytes == 0
+            || self.maximum_bytes > MAX_JOB_INPUT_UPLOAD_BYTES
+            || self.maximum_bytes > MAX_JSON_SAFE_INTEGER
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "input reservation",
+            });
+        }
+        Ok(())
+    }
 }
 
 fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -238,6 +438,14 @@ where
     T: Deserialize<'de>,
 {
     Option::<T>::deserialize(deserializer)
+}
+
+fn deserialize_optional_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 impl JobSubmissionPayload {
@@ -259,11 +467,26 @@ impl JobSubmissionPayload {
                 field: "idempotencyKey",
             });
         }
+        if self.input_uploads.len() > MAX_JOB_INPUT_UPLOADS {
+            return Err(ValidationError::InvalidRange {
+                field: "inputUploads",
+            });
+        }
+        let mut upload_ids = HashSet::with_capacity(self.input_uploads.len());
+        for upload in &self.input_uploads {
+            upload.validate()?;
+            if !upload_ids.insert(upload.upload_id.as_str()) {
+                return Err(ValidationError::DuplicateId {
+                    kind: "input upload",
+                    id: upload.upload_id.clone(),
+                });
+            }
+        }
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeMode {
     Lean,
@@ -325,14 +548,16 @@ pub enum RuntimeServiceState {
 }
 
 /// Sanitized service state safe for Electron's existing startup presentation.
-/// It intentionally carries no port, token, executable, arguments, cwd, or
-/// environment material.
+/// Requirement and startup policy remain separate manifest-derived axes. The
+/// record intentionally carries no port, token, executable, arguments, cwd,
+/// or environment material.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeServiceStatus {
     pub id: String,
     pub display_name: String,
     pub required: bool,
+    pub startup_policy: ServiceStartupPolicy,
     pub state: RuntimeServiceState,
     #[serde(deserialize_with = "deserialize_required_nullable")]
     pub last_error: Option<String>,
@@ -352,7 +577,7 @@ impl RuntimeServiceStatus {
         if let Some(last_error) = &self.last_error {
             validate_bounded_text("lastError", last_error, MAX_FAILURE_MESSAGE_BYTES)?;
         }
-        if self.restarts > MAX_CONCURRENCY || self.adopted {
+        if self.restarts > MAX_SERVICE_RESTARTS || self.adopted {
             return Err(ValidationError::InvalidRange {
                 field: "service status",
             });
@@ -447,6 +672,392 @@ impl RuntimeStatusMessage {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeCommandAck {
     pub ok: bool,
+}
+
+/// The dashboard may request only a reason for one predefined service lease.
+/// Service identity remains in the authenticated route and duration is fixed by
+/// the trusted service registry rather than accepted from request JSON.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeServiceLeaseAcquireRequest {
+    pub reason: String,
+}
+
+impl RuntimeServiceLeaseAcquireRequest {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_bounded_text(
+            "service lease reason",
+            &self.reason,
+            MAX_SERVICE_LEASE_REASON_BYTES,
+        )?;
+        if self.reason.trim().is_empty() || self.reason.chars().any(char::is_control) {
+            return Err(ValidationError::InvalidIdentifier {
+                field: "service lease reason",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeServiceLeaseAcquireResponse {
+    pub ok: bool,
+    pub lease_id: String,
+    pub service_id: String,
+}
+
+/// Passive, authenticated deadline metadata for one route-bound service.
+/// The value is minted from the validated manifest; callers cannot submit or
+/// override it in an acquire request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeServiceLeaseContractResponse {
+    pub protocol_version: u32,
+    pub service_id: String,
+    pub acquire_timeout_ms: u64,
+}
+
+impl RuntimeServiceLeaseContractResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_runtime_control_version(self.protocol_version)?;
+        validate_identifier("serviceId", &self.service_id)?;
+        if self.acquire_timeout_ms
+            <= SERVICE_LEASE_SETTLEMENT_GRACE_MS + SERVICE_LEASE_RESPONSE_GRACE_MS
+            || self.acquire_timeout_ms > MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "service lease acquire timeout",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl RuntimeServiceLeaseAcquireResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if !self.ok {
+            return Err(ValidationError::InvalidRange { field: "ok" });
+        }
+        validate_identifier("leaseId", &self.lease_id)?;
+        validate_identifier("serviceId", &self.service_id)
+    }
+}
+
+/// Direct release has an intentionally empty body. Owner-PID deferral belongs
+/// to a separately fenced finite-worker contract and cannot be smuggled into a
+/// service lease release.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeServiceLeaseReleaseRequest {}
+
+impl RuntimeServiceLeaseReleaseRequest {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeServiceLeaseReleaseResponse {
+    pub ok: bool,
+    pub released: bool,
+}
+
+impl RuntimeServiceLeaseReleaseResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.ok {
+            Ok(())
+        } else {
+            Err(ValidationError::InvalidRange { field: "ok" })
+        }
+    }
+}
+
+/// Lifecycle-authority acknowledgement for one exact manifest service retry.
+/// It contains only the sanitized state already exposed by `/v1/status`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeServiceRetryResponse {
+    pub protocol_version: u32,
+    pub ok: bool,
+    pub service_id: String,
+    pub accepted: bool,
+    pub state: RuntimeServiceState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeDesiredState {
+    Running,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeGatewayId {
+    Telegram,
+    Whatsapp,
+}
+
+impl RuntimeGatewayId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Telegram => "telegram",
+            Self::Whatsapp => "whatsapp",
+        }
+    }
+
+    pub const fn service_id(self) -> &'static str {
+        match self {
+            Self::Telegram => "telegram-gateway",
+            Self::Whatsapp => "whatsapp-gateway",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeDesiredStateRequest {
+    pub desired_state: RuntimeDesiredState,
+}
+
+impl RuntimeDesiredStateRequest {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeGatewayServiceState {
+    Healthy,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeGatewayReconcileResponse {
+    pub protocol_version: u32,
+    pub ok: bool,
+    pub gateway: RuntimeGatewayId,
+    pub desired_state: RuntimeDesiredState,
+    pub service_state: RuntimeGatewayServiceState,
+}
+
+impl RuntimeGatewayReconcileResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.protocol_version == RUNTIME_CONTROL_PROTOCOL_VERSION && self.ok {
+            Ok(())
+        } else {
+            Err(ValidationError::UnsupportedProtocolVersion(
+                self.protocol_version,
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeScheduleControlState {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeScheduleReconcileResponse {
+    pub protocol_version: u32,
+    pub ok: bool,
+    pub schedule_id: String,
+    pub desired_state: RuntimeDesiredState,
+    pub schedule_state: RuntimeScheduleControlState,
+}
+
+impl RuntimeScheduleReconcileResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.protocol_version != RUNTIME_CONTROL_PROTOCOL_VERSION || !self.ok {
+            return Err(ValidationError::UnsupportedProtocolVersion(
+                self.protocol_version,
+            ));
+        }
+        validate_identifier("scheduleId", &self.schedule_id)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeScheduleStatusResponse {
+    pub protocol_version: u32,
+    pub ok: bool,
+    pub schedule_id: String,
+    pub enabled: bool,
+}
+
+/// Exact privacy-sensitive launch policy accepted by the one closed Recall
+/// desired-state route. The dashboard sends the already-normalized values used
+/// by its existing settings policy; Runtime validates that normalization again
+/// before anything is persisted or translated to argv.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRecallConfiguration {
+    pub capture_audio: bool,
+    pub excluded_windows: Vec<String>,
+}
+
+impl RuntimeRecallConfiguration {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.excluded_windows.len() > MAX_RECALL_EXCLUDED_WINDOWS {
+            return Err(ValidationError::InvalidRange {
+                field: "recall excludedWindows",
+            });
+        }
+        let mut folded = HashSet::with_capacity(self.excluded_windows.len());
+        let mut total_bytes = 0usize;
+        for value in &self.excluded_windows {
+            total_bytes = total_bytes.saturating_add(value.len());
+            if value.is_empty()
+                || value.trim() != value
+                || value.encode_utf16().count() > MAX_RECALL_EXCLUDED_WINDOW_UTF16_UNITS
+                || value.chars().any(|character| {
+                    matches!(character, '\u{0000}'..='\u{001f}' | '\u{007f}' | '\'' | '"')
+                })
+                || !folded.insert(value.to_lowercase())
+            {
+                return Err(ValidationError::InvalidIdentifier {
+                    field: "recall excludedWindows",
+                });
+            }
+        }
+        if total_bytes > MAX_RECALL_CONFIGURATION_TEXT_BYTES {
+            return Err(ValidationError::OversizedField {
+                field: "recall excludedWindows",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRecallReconcileRequest {
+    pub desired_state: RuntimeDesiredState,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    pub configuration: Option<RuntimeRecallConfiguration>,
+}
+
+impl RuntimeRecallReconcileRequest {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        match (self.desired_state, &self.configuration) {
+            (RuntimeDesiredState::Running, Some(configuration)) => configuration.validate(),
+            (RuntimeDesiredState::Stopped, None) => Ok(()),
+            _ => Err(ValidationError::InvalidRange {
+                field: "recall desiredState configuration",
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeRecallStatusRequest {}
+
+impl RuntimeRecallStatusRequest {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeRecallReconcileServiceState {
+    Healthy,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRecallReconcileResponse {
+    pub protocol_version: u32,
+    pub ok: bool,
+    pub service_id: String,
+    pub desired_state: RuntimeDesiredState,
+    pub service_state: RuntimeRecallReconcileServiceState,
+}
+
+impl RuntimeRecallReconcileResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.protocol_version != RUNTIME_CONTROL_PROTOCOL_VERSION
+            || !self.ok
+            || self.service_id != "recall"
+            || !matches!(
+                (self.desired_state, self.service_state),
+                (
+                    RuntimeDesiredState::Running,
+                    RuntimeRecallReconcileServiceState::Healthy
+                ) | (
+                    RuntimeDesiredState::Stopped,
+                    RuntimeRecallReconcileServiceState::Stopped
+                )
+            )
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "recall reconciliation response",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRecallStatusResponse {
+    pub protocol_version: u32,
+    pub ok: bool,
+    pub service_id: String,
+    pub desired_state: RuntimeDesiredState,
+    pub service_state: RuntimeServiceState,
+    pub owned_by_requester: bool,
+    pub log_tail: Vec<String>,
+}
+
+impl RuntimeRecallStatusResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.protocol_version != RUNTIME_CONTROL_PROTOCOL_VERSION
+            || !self.ok
+            || self.service_id != "recall"
+            || self.log_tail.len() > MAX_RECALL_LOG_LINES
+            || self.log_tail.iter().any(|line| line.contains('\0'))
+            || self.log_tail.iter().map(String::len).sum::<usize>() > MAX_RECALL_LOG_TAIL_BYTES
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "recall status response",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl RuntimeScheduleStatusResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.protocol_version != RUNTIME_CONTROL_PROTOCOL_VERSION || !self.ok {
+            return Err(ValidationError::UnsupportedProtocolVersion(
+                self.protocol_version,
+            ));
+        }
+        validate_identifier("scheduleId", &self.schedule_id)
+    }
+}
+
+impl RuntimeServiceRetryResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.protocol_version != RUNTIME_CONTROL_PROTOCOL_VERSION || !self.ok {
+            return Err(ValidationError::UnsupportedProtocolVersion(
+                self.protocol_version,
+            ));
+        }
+        validate_identifier("serviceId", &self.service_id)
+    }
 }
 
 /// Closed event discriminator for the authenticated Runtime V2 replay API.
@@ -586,7 +1197,36 @@ pub struct RuntimeJobStatus {
     pub failure_code: Option<RuntimePublicFailureCode>,
     #[serde(deserialize_with = "deserialize_required_nullable")]
     pub failure_message: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub resource_exhaustion: Option<RuntimeResourceExhaustion>,
     pub cancellation_requested: bool,
+}
+
+/// Closed, path-free evidence for a permanent Windows commit denial. Internal
+/// policy labels and denial reasons deliberately have no wire representation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeResourceExhaustion {
+    pub resource: String,
+    pub required_headroom_mb: u64,
+    pub available_headroom_mb: u64,
+    pub retryable: bool,
+}
+
+impl RuntimeResourceExhaustion {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.resource != "windows_commit"
+            || self.required_headroom_mb == 0
+            || self.required_headroom_mb > MAX_COMMIT_LIMIT_MB
+            || self.available_headroom_mb > MAX_COMMIT_LIMIT_MB
+            || self.retryable
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "resource exhaustion evidence",
+            });
+        }
+        Ok(())
+    }
 }
 
 impl RuntimeJobStatus {
@@ -661,6 +1301,22 @@ impl RuntimeJobStatus {
                 field: "job failure",
             });
         }
+        if let Some(resource_exhaustion) = &self.resource_exhaustion {
+            resource_exhaustion.validate()?;
+            if self.state != JobState::ResourceExhausted
+                || self.failure_code != Some(RuntimePublicFailureCode::ResourceExhausted)
+            {
+                return Err(ValidationError::InvalidRange {
+                    field: "job resource exhaustion evidence",
+                });
+            }
+        } else if self.state != JobState::ResourceExhausted
+            && self.failure_code == Some(RuntimePublicFailureCode::ResourceExhausted)
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "job resource exhaustion evidence",
+            });
+        }
         Ok(())
     }
 }
@@ -686,6 +1342,8 @@ pub struct RuntimeJobEventPayload {
     pub failure_code: Option<RuntimePublicFailureCode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_exhaustion: Option<RuntimeResourceExhaustion>,
 }
 
 impl RuntimeJobEventPayload {
@@ -709,7 +1367,10 @@ impl RuntimeJobEventPayload {
             Event::JobCheckpointing => self.is_exact_state(JobState::Checkpointing),
             Event::JobCancelled => self.is_exact_state(JobState::Cancelled),
             Event::JobFailed => self.is_exact_state(JobState::Failed),
-            Event::JobResourceExhausted => self.is_exact_state(JobState::ResourceExhausted),
+            Event::JobResourceExhausted => {
+                self.is_exact_state(JobState::ResourceExhausted)
+                    || self.is_exact_resource_exhaustion()
+            }
             Event::JobInterrupted => self.is_exact_state(JobState::Interrupted),
             Event::JobUncertain => self.is_exact_state(JobState::Uncertain),
             Event::ReservationSettled | Event::ReservationReleased | Event::WorkerComplete => {
@@ -723,6 +1384,7 @@ impl RuntimeJobEventPayload {
                     && self.artifact_kind.is_none()
                     && self.failure_code.is_none()
                     && self.failure_message.is_none()
+                    && self.resource_exhaustion.is_none()
             }
             Event::WorkerProgress => {
                 self.stage.is_some()
@@ -737,6 +1399,7 @@ impl RuntimeJobEventPayload {
                     && self.artifact_kind.is_none()
                     && self.failure_code.is_none()
                     && self.failure_message.is_none()
+                    && self.resource_exhaustion.is_none()
             }
             Event::WorkerCheckpoint | Event::WorkerArtifact => {
                 self.artifact_kind.is_some()
@@ -746,6 +1409,7 @@ impl RuntimeJobEventPayload {
                     && self.progress_total.is_none()
                     && self.failure_code.is_none()
                     && self.failure_message.is_none()
+                    && self.resource_exhaustion.is_none()
             }
             Event::WorkerFailed => {
                 (self.state == Some(JobState::Failed)
@@ -754,7 +1418,8 @@ impl RuntimeJobEventPayload {
                     && self.stage.is_none()
                     && self.progress_current.is_none()
                     && self.progress_total.is_none()
-                    && self.artifact_kind.is_none())
+                    && self.artifact_kind.is_none()
+                    && self.resource_exhaustion.is_none())
                     || self.is_exact_state(JobState::Cancelling)
             }
         };
@@ -775,6 +1440,21 @@ impl RuntimeJobEventPayload {
             && self.artifact_kind.is_none()
             && self.failure_code.is_none()
             && self.failure_message.is_none()
+            && self.resource_exhaustion.is_none()
+    }
+
+    fn is_exact_resource_exhaustion(&self) -> bool {
+        self.state == Some(JobState::ResourceExhausted)
+            && self.stage.is_none()
+            && self.progress_current.is_none()
+            && self.progress_total.is_none()
+            && self.artifact_kind.is_none()
+            && self.failure_code.is_none()
+            && self.failure_message.is_none()
+            && self
+                .resource_exhaustion
+                .as_ref()
+                .is_some_and(|evidence| evidence.validate().is_ok())
     }
 }
 
@@ -865,6 +1545,103 @@ impl RuntimeJobResponse {
         } = self;
         validate_runtime_control_version(*protocol_version)?;
         job.validate()
+    }
+}
+
+/// Closed state domain for cancellation by idempotency key. `pending` is not a
+/// job state: it means a durable, exact-scope cancellation tombstone exists and
+/// will win a later submission transaction.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeJobIdempotencyCancellationState {
+    Pending,
+    Queued,
+    Admitted,
+    Starting,
+    Running,
+    Checkpointing,
+    Cancelling,
+    Cancelled,
+    Succeeded,
+    Failed,
+    ResourceExhausted,
+    Interrupted,
+    Uncertain,
+}
+
+impl From<JobState> for RuntimeJobIdempotencyCancellationState {
+    fn from(state: JobState) -> Self {
+        match state {
+            JobState::Queued => Self::Queued,
+            JobState::Admitted => Self::Admitted,
+            JobState::Starting => Self::Starting,
+            JobState::Running => Self::Running,
+            JobState::Checkpointing => Self::Checkpointing,
+            JobState::Cancelling => Self::Cancelling,
+            JobState::Cancelled => Self::Cancelled,
+            JobState::Succeeded => Self::Succeeded,
+            JobState::Failed => Self::Failed,
+            JobState::ResourceExhausted => Self::ResourceExhausted,
+            JobState::Interrupted => Self::Interrupted,
+            JobState::Uncertain => Self::Uncertain,
+        }
+    }
+}
+
+/// Bounded cancellation disposition. No idempotency key, owner principal,
+/// payload digest, tombstone expiry, or filesystem detail crosses the control
+/// boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RuntimeJobIdempotencyCancellationResponse {
+    RuntimeJobIdempotencyCancellation {
+        protocol_version: u32,
+        #[serde(deserialize_with = "deserialize_required_nullable")]
+        job_id: Option<String>,
+        state: RuntimeJobIdempotencyCancellationState,
+        accepted: bool,
+    },
+}
+
+impl RuntimeJobIdempotencyCancellationResponse {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        let Self::RuntimeJobIdempotencyCancellation {
+            protocol_version,
+            job_id,
+            state,
+            accepted,
+        } = self;
+        validate_runtime_control_version(*protocol_version)?;
+        if let Some(job_id) = job_id {
+            validate_identifier("jobId", job_id)?;
+        }
+        let exact = match state {
+            RuntimeJobIdempotencyCancellationState::Pending => job_id.is_none() && *accepted,
+            RuntimeJobIdempotencyCancellationState::Cancelling
+            | RuntimeJobIdempotencyCancellationState::Cancelled => job_id.is_some() && *accepted,
+            RuntimeJobIdempotencyCancellationState::Succeeded
+            | RuntimeJobIdempotencyCancellationState::Failed
+            | RuntimeJobIdempotencyCancellationState::ResourceExhausted
+            | RuntimeJobIdempotencyCancellationState::Interrupted
+            | RuntimeJobIdempotencyCancellationState::Uncertain => job_id.is_some() && !*accepted,
+            RuntimeJobIdempotencyCancellationState::Queued
+            | RuntimeJobIdempotencyCancellationState::Admitted
+            | RuntimeJobIdempotencyCancellationState::Starting
+            | RuntimeJobIdempotencyCancellationState::Running
+            | RuntimeJobIdempotencyCancellationState::Checkpointing => false,
+        };
+        if exact {
+            Ok(())
+        } else {
+            Err(ValidationError::InvalidRange {
+                field: "idempotency cancellation disposition",
+            })
+        }
     }
 }
 
@@ -971,6 +1748,14 @@ impl RuntimeControlErrorResponse {
                 | "JOB_SCOPE_FORBIDDEN"
                 | "JOB_NOT_FOUND"
                 | "JOB_CONFLICT"
+                | "INVALID_SERVICE_REQUEST"
+                | "SERVICE_NOT_FOUND"
+                | "SERVICE_LEASE_CONFLICT"
+                | "JOB_OUTPUT_NOT_READY"
+                | "JOB_INPUT_TOO_LARGE"
+                | "JOB_INPUT_QUOTA_EXCEEDED"
+                | "JOB_CANCELLATION_QUOTA_EXCEEDED"
+                | "JOB_CANCELLED_BEFORE_SUBMISSION"
                 | "BREADBOARD_RESOURCE_EXHAUSTED"
                 | "RUNTIME_UNAVAILABLE"
                 | "RUNTIME_INTERNAL_ERROR"
@@ -1033,6 +1818,61 @@ impl WorkerIdentity {
     }
 }
 
+/// Closed, runtime-authenticated ownership scope supplied to one finite
+/// worker. These values are not request-payload claims: the authoritative
+/// runtime derives them from the exact durable job record when consuming its
+/// dispatch claim.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerExecutionScope {
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub user_id: Option<i64>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub garden_id: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub conversation_id: Option<String>,
+}
+
+impl WorkerExecutionScope {
+    pub const fn unscoped() -> Self {
+        Self {
+            user_id: None,
+            garden_id: None,
+            conversation_id: None,
+        }
+    }
+
+    pub fn new(
+        user_id: Option<i64>,
+        garden_id: Option<String>,
+        conversation_id: Option<String>,
+    ) -> Result<Self, ValidationError> {
+        let scope = Self {
+            user_id,
+            garden_id,
+            conversation_id,
+        };
+        scope.validate()?;
+        Ok(scope)
+    }
+
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self
+            .user_id
+            .is_some_and(|value| value <= 0 || value > MAX_JSON_SAFE_INTEGER as i64)
+        {
+            return Err(ValidationError::InvalidRange { field: "userId" });
+        }
+        if let Some(garden_id) = &self.garden_id {
+            validate_scope_id("gardenId", garden_id)?;
+        }
+        if let Some(conversation_id) = &self.conversation_id {
+            validate_scope_id("conversationId", conversation_id)?;
+        }
+        Ok(())
+    }
+}
+
 /// Closed runtime-to-worker launch contract. Every path is relative to the
 /// pinned Runtime V2 data root and is derived exactly from the fenced worker
 /// identity. The worker receives only the fixed `start.json` filename in argv;
@@ -1040,10 +1880,63 @@ impl WorkerIdentity {
 /// field can be represented here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerInputBlob {
+    pub blob_id: String,
+    pub relative_path: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub display_name: String,
+    pub media_type: Option<String>,
+}
+
+impl WorkerInputBlob {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_identifier("blobId", &self.blob_id)?;
+        validate_relative_path("input blob path", &self.relative_path)?;
+        if self.size_bytes == 0
+            || self.size_bytes > MAX_JOB_INPUT_UPLOAD_BYTES
+            || self.size_bytes > MAX_JSON_SAFE_INTEGER
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "input blob size",
+            });
+        }
+        if self.sha256.len() != 64
+            || !self
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(ValidationError::InvalidIdentifier {
+                field: "input blob SHA-256",
+            });
+        }
+        validate_job_input_display_name(&self.display_name)?;
+        if let Some(media_type) = &self.media_type {
+            validate_job_input_media_type(media_type)?;
+        }
+        Ok(())
+    }
+
+    fn validate_for_job(&self, job_id: &str) -> Result<(), ValidationError> {
+        self.validate()?;
+        if self.relative_path != format!("runtime/jobs/{job_id}/inputs/{}/payload", self.blob_id) {
+            return Err(ValidationError::InvalidRelativePath {
+                field: "input blob path",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkerStartManifest {
     pub protocol_version: u32,
     pub identity: WorkerIdentity,
+    pub execution_scope: WorkerExecutionScope,
     pub input_manifest_path: String,
+    pub input_blobs: Vec<WorkerInputBlob>,
     pub workspace_path: String,
     pub checkpoint_path: String,
     pub result_path: String,
@@ -1051,7 +1944,23 @@ pub struct WorkerStartManifest {
 
 impl WorkerStartManifest {
     pub fn for_identity(identity: WorkerIdentity) -> Result<Self, ValidationError> {
+        Self::for_identity_and_scope(identity, WorkerExecutionScope::unscoped())
+    }
+
+    pub fn for_identity_and_scope(
+        identity: WorkerIdentity,
+        execution_scope: WorkerExecutionScope,
+    ) -> Result<Self, ValidationError> {
+        Self::for_identity_scope_and_inputs(identity, execution_scope, Vec::new())
+    }
+
+    pub fn for_identity_scope_and_inputs(
+        identity: WorkerIdentity,
+        execution_scope: WorkerExecutionScope,
+        input_blobs: Vec<WorkerInputBlob>,
+    ) -> Result<Self, ValidationError> {
         identity.validate()?;
+        execution_scope.validate()?;
         let job_root = format!("runtime/jobs/{}", identity.job_id);
         let attempt_root = format!(
             "{job_root}/attempts/{}/{}",
@@ -1060,7 +1969,9 @@ impl WorkerStartManifest {
         let manifest = Self {
             protocol_version: WIRE_PROTOCOL_VERSION,
             identity,
+            execution_scope,
             input_manifest_path: format!("{job_root}/input.json"),
+            input_blobs,
             workspace_path: format!("{attempt_root}/workspace"),
             checkpoint_path: format!("{job_root}/checkpoint.json"),
             result_path: format!("{job_root}/result.json"),
@@ -1076,6 +1987,22 @@ impl WorkerStartManifest {
             ));
         }
         self.identity.validate()?;
+        self.execution_scope.validate()?;
+        if self.input_blobs.len() > MAX_JOB_INPUT_UPLOADS {
+            return Err(ValidationError::InvalidRange {
+                field: "inputBlobs",
+            });
+        }
+        let mut blob_ids = HashSet::with_capacity(self.input_blobs.len());
+        for blob in &self.input_blobs {
+            blob.validate_for_job(&self.identity.job_id)?;
+            if !blob_ids.insert(blob.blob_id.as_str()) {
+                return Err(ValidationError::DuplicateId {
+                    kind: "worker input blob",
+                    id: blob.blob_id.clone(),
+                });
+            }
+        }
 
         for (field, value) in [
             ("inputManifestPath", self.input_manifest_path.as_str()),
@@ -1086,7 +2013,11 @@ impl WorkerStartManifest {
             validate_relative_path(field, value)?;
         }
 
-        let expected = Self::for_identity_unchecked(&self.identity);
+        let expected = Self::for_identity_unchecked(
+            &self.identity,
+            &self.execution_scope,
+            self.input_blobs.clone(),
+        );
         if self.input_manifest_path != expected.input_manifest_path {
             return Err(ValidationError::InvalidRelativePath {
                 field: "inputManifestPath",
@@ -1110,7 +2041,11 @@ impl WorkerStartManifest {
         Ok(())
     }
 
-    fn for_identity_unchecked(identity: &WorkerIdentity) -> Self {
+    fn for_identity_unchecked(
+        identity: &WorkerIdentity,
+        execution_scope: &WorkerExecutionScope,
+        input_blobs: Vec<WorkerInputBlob>,
+    ) -> Self {
         let job_root = format!("runtime/jobs/{}", identity.job_id);
         let attempt_root = format!(
             "{job_root}/attempts/{}/{}",
@@ -1119,7 +2054,9 @@ impl WorkerStartManifest {
         Self {
             protocol_version: WIRE_PROTOCOL_VERSION,
             identity: identity.clone(),
+            execution_scope: execution_scope.clone(),
             input_manifest_path: format!("{job_root}/input.json"),
+            input_blobs,
             workspace_path: format!("{attempt_root}/workspace"),
             checkpoint_path: format!("{job_root}/checkpoint.json"),
             result_path: format!("{job_root}/result.json"),
@@ -1134,12 +2071,131 @@ pub enum WorkspacePolicy {
     ReadOnlyInputs,
 }
 
+/// Closed submission boundary for a finite worker. User workers can be
+/// reached through the authenticated Dashboard job API; runtime workers can
+/// only be submitted by the native scheduler/reconciliation authority.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkerSubmissionAuthority {
+    #[default]
+    User,
+    Runtime,
+}
+
+/// Closed environment builders available to finite workers. `Minimal` keeps
+/// the historical SystemRoot-only worker environment. `Background` is the
+/// native Runtime-owned scheduler profile and cannot be selected by a request.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrustedWorkerEnvironmentSource {
+    #[default]
+    Minimal,
+    Background,
+    DocumentIngestion,
+    AudioAnalyzer,
+    ImageSearchGoogle,
+    InteractiveVisualizer,
+    QuartzPublish,
+    ManagedSetup,
+    Terminal,
+    CodeIndex,
+    AgentEdits,
+    OuterCodex,
+    OuterRuflo,
+    OuterDeepTutor,
+    #[serde(rename = "outer-openplanter")]
+    OuterOpenPlanter,
+    Manim,
+    DeepTutorMaintenance,
+    Premortem,
+    AgentLoop,
+    Omh,
+    Factcheck,
+    WatchMedia,
+    Loopx,
+    #[serde(rename = "resource2skill")]
+    Resource2Skill,
+    OuterOpencode,
+    TradingAgent,
+    OuterCareerOps,
+    SystemLocation,
+    Chatmock,
+    Vimax,
+    VoxDirector,
+    OuterShorts,
+    OuterOpenGym,
+    AgentReachSetup,
+    GbrainSync,
+    OuterAgentReach,
+    AgentBrowserProfile,
+    AgentTars,
+    OuterLegal,
+    Sf3d,
+    OuterMatraix,
+    Formsmith,
+    Hyperframes,
+    #[serde(rename = "openmontage")]
+    OpenMontage,
+    OuterBoltSlides,
+    Subsai,
+    SpeechMedia,
+    GeneratedVisualBrowser,
+    ScriberrGarden,
+    Watermark,
+    OuterHardwareBlueprint,
+    GetDoc,
+    GetDocDownload,
+    MeetingNotes,
+    OuterInboxZero,
+    OuterSocialsManager,
+    OuterMaxResearch,
+    OuterWardrobe,
+    OuterParametricCad,
+    OuterStockAnalyst,
+    OuterVibeTrading,
+    OuterDeerFlow,
+    OuterMoneyPrinter,
+    OuterVideoUse,
+    OuterDeepResearch,
+    OuterOpenscience,
+    OuterOpenwork,
+}
+
+/// Closed predicates that may activate a predeclared worker service
+/// dependency. These predicates are evaluated only by the trusted Registry
+/// against the canonical request stored for the selected worker; callers can
+/// never submit a service identifier or a JSON path.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkerServiceDependencyCondition {
+    DocumentIngestionParseWithVlm,
+    GbrainSyncAlways,
+    Always,
+    ScriberrGardenTranscriptionAlways,
+    MeetingNotesEngineScriberr,
+    MeetingNotesEngineVoicebox,
+    MeetingNotesNeedsChatmock,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerServiceDependency {
+    pub service_id: String,
+    pub condition: WorkerServiceDependencyCondition,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkerDefinition {
     pub kind: String,
     pub job_types: Vec<String>,
     pub capability_ids: Vec<String>,
+    #[serde(default)]
+    pub submission_authority: WorkerSubmissionAuthority,
+    #[serde(default)]
+    pub environment_source: TrustedWorkerEnvironmentSource,
+    #[serde(default)]
+    pub service_dependencies: Vec<WorkerServiceDependency>,
     pub allowed_executable: String,
     pub allowed_entrypoint: String,
     pub protocol_version: u32,
@@ -1148,6 +2204,8 @@ pub struct WorkerDefinition {
     pub soft_commit_limit_mb: u64,
     pub hard_commit_limit_mb: u64,
     pub maximum_concurrency: u32,
+    pub minimum_input_blobs: u32,
+    pub maximum_input_blobs: u32,
     pub workspace_policy: WorkspacePolicy,
     pub ready_timeout_ms: u64,
     pub heartbeat_timeout_ms: u64,
@@ -1177,6 +2235,21 @@ impl WorkerDefinition {
             });
         }
         validate_unique_capability_ids("capabilityId", &self.capability_ids)?;
+        if self.service_dependencies.len() > MAX_SERVICE_DEPENDENCIES_PER_WORKER {
+            return Err(ValidationError::InvalidRange {
+                field: "worker service dependencies",
+            });
+        }
+        let mut service_dependencies = HashSet::new();
+        for dependency in &self.service_dependencies {
+            validate_identifier("worker service dependency", &dependency.service_id)?;
+            if !service_dependencies.insert(dependency.service_id.as_str()) {
+                return Err(ValidationError::DuplicateId {
+                    kind: "worker service dependency",
+                    id: dependency.service_id.clone(),
+                });
+            }
+        }
         validate_relative_path("allowedExecutable", &self.allowed_executable)?;
         validate_relative_path("allowedEntrypoint", &self.allowed_entrypoint)?;
         if self.protocol_version != WIRE_PROTOCOL_VERSION {
@@ -1189,6 +2262,8 @@ impl WorkerDefinition {
         }
         if self.maximum_concurrency == 0
             || self.maximum_concurrency > MAX_CONCURRENCY
+            || self.minimum_input_blobs > self.maximum_input_blobs
+            || self.maximum_input_blobs as usize > MAX_JOB_INPUT_UPLOADS
             || self.estimated_cold_start_commit_mb == 0
             || self.estimated_cold_start_commit_mb > MAX_COMMIT_LIMIT_MB
             || self.soft_commit_limit_mb > MAX_COMMIT_LIMIT_MB
@@ -1211,9 +2286,7 @@ impl WorkerDefinition {
                 field: "worker commit limits",
             });
         }
-        if self.hard_commit_limit_mb > 0
-            && self.estimated_cold_start_commit_mb > self.hard_commit_limit_mb
-        {
+        if self.estimated_cold_start_commit_mb >= self.hard_commit_limit_mb {
             return Err(ValidationError::InvalidRange {
                 field: "worker cold-start estimate",
             });
@@ -1278,30 +2351,580 @@ pub enum RestartPolicy {
     OnFailure,
 }
 
+/// Registration criticality for a manifest service. `Required` makes the
+/// service a mandatory product capability; `Optional` permits failure
+/// isolation without omitting, hiding, or silently substituting it. This is
+/// deliberately independent from `ServiceStartupPolicy`: a required on-demand
+/// service remains registered and available-but-stopped until its first lease.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServiceRequirement {
+    Required,
+    Optional,
+}
+
+impl ServiceRequirement {
+    pub const fn is_required(self) -> bool {
+        matches!(self, Self::Required)
+    }
+}
+
+/// Closed selectors for runtime-owned environment builders. A manifest can
+/// select one of these trusted builders, but cannot carry environment keys,
+/// values, inherited-variable names, or secrets itself.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrustedServiceEnvironmentSource {
+    Chatmock,
+    Comfyui,
+    Dashboard,
+    Gbrain,
+    Hermes,
+    TelegramGateway,
+    WhatsappGateway,
+    Openwork,
+    Openscience,
+    MoneyPrinter,
+    Wardrobe,
+    Penecho,
+    VlmOcr,
+    Recall,
+    Mem0SemanticEngine,
+    LocalMcpBroker,
+    PostizCoordinator,
+    InboxZeroStack,
+    SpotifyPlayback,
+    Cliproxy,
+    Quartz,
+    UiTars,
+    Cad,
+    Colpali,
+    Humanizer,
+    Voicebox,
+    Scriberr,
+    DeepResearch,
+    DeerFlow,
+    VibeTrading,
+    StockAnalyst,
+    SolidworksMcp,
+}
+
+impl TrustedServiceEnvironmentSource {
+    /// Closed iteration/index order used by endpoint allocation. Adding a
+    /// service environment is therefore one compile-visible change rather
+    /// than another hand-maintained field in every reservation table.
+    pub const ALL: [Self; 32] = [
+        Self::Chatmock,
+        Self::Comfyui,
+        Self::Dashboard,
+        Self::Gbrain,
+        Self::Hermes,
+        Self::TelegramGateway,
+        Self::WhatsappGateway,
+        Self::Openwork,
+        Self::Openscience,
+        Self::MoneyPrinter,
+        Self::Wardrobe,
+        Self::Penecho,
+        Self::VlmOcr,
+        Self::Recall,
+        Self::Mem0SemanticEngine,
+        Self::LocalMcpBroker,
+        Self::PostizCoordinator,
+        Self::InboxZeroStack,
+        Self::SpotifyPlayback,
+        Self::Cliproxy,
+        Self::Quartz,
+        Self::UiTars,
+        Self::Cad,
+        Self::Colpali,
+        Self::Humanizer,
+        Self::Voicebox,
+        Self::Scriberr,
+        Self::DeepResearch,
+        Self::DeerFlow,
+        Self::VibeTrading,
+        Self::StockAnalyst,
+        Self::SolidworksMcp,
+    ];
+    pub const COUNT: usize = Self::ALL.len();
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Chatmock => 0,
+            Self::Comfyui => 1,
+            Self::Dashboard => 2,
+            Self::Gbrain => 3,
+            Self::Hermes => 4,
+            Self::TelegramGateway => 5,
+            Self::WhatsappGateway => 6,
+            Self::Openwork => 7,
+            Self::Openscience => 8,
+            Self::MoneyPrinter => 9,
+            Self::Wardrobe => 10,
+            Self::Penecho => 11,
+            Self::VlmOcr => 12,
+            Self::Recall => 13,
+            Self::Mem0SemanticEngine => 14,
+            Self::LocalMcpBroker => 15,
+            Self::PostizCoordinator => 16,
+            Self::InboxZeroStack => 17,
+            Self::SpotifyPlayback => 18,
+            Self::Cliproxy => 19,
+            Self::Quartz => 20,
+            Self::UiTars => 21,
+            Self::Cad => 22,
+            Self::Colpali => 23,
+            Self::Humanizer => 24,
+            Self::Voicebox => 25,
+            Self::Scriberr => 26,
+            Self::DeepResearch => 27,
+            Self::DeerFlow => 28,
+            Self::VibeTrading => 29,
+            Self::StockAnalyst => 30,
+            Self::SolidworksMcp => 31,
+        }
+    }
+}
+
+/// The only launch values that may be minted after the checked-in manifest is
+/// validated. They are resolved by the runtime from its private bootstrap and
+/// service allocation state, never supplied by an HTTP/Electron caller.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServiceRuntimeValue {
+    ServicePort,
+}
+
+/// A manifest may request one closed, variable-length argument expansion. The
+/// values themselves are never present in the manifest or accepted by a
+/// generic service route; Runtime resolves them from its durable typed policy.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServiceRuntimeArgumentList {
+    RecallCapture,
+}
+
+/// One fixed argv item. App paths remain relative to the immutable app root;
+/// runtime substitutions use the closed vocabulary above. There is no raw
+/// placeholder or caller-provided argument variant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ServiceLaunchArgument {
+    Literal {
+        value: String,
+    },
+    AppPath {
+        path: String,
+    },
+    /// A fixed path beneath the runtime's pinned mutable data root. The
+    /// manifest carries only a validated relative suffix; callers cannot
+    /// supply or widen it.
+    DataPath {
+        path: String,
+    },
+    RuntimeValue {
+        value: ServiceRuntimeValue,
+    },
+    RuntimeArguments {
+        value: ServiceRuntimeArgumentList,
+    },
+}
+
+impl ServiceLaunchArgument {
+    fn validate(&self) -> Result<(), ValidationError> {
+        match self {
+            Self::Literal { value } => {
+                validate_bounded_text("service launch literal", value, MAX_SERVICE_ARGUMENT_BYTES)?;
+                // Substitution-looking text is reserved. Values that vary per
+                // launch must use the typed RuntimeValue variant instead.
+                if value.chars().any(char::is_control)
+                    || value.contains("${")
+                    || value.contains("{{")
+                    || value.contains("}}")
+                {
+                    return Err(ValidationError::InvalidIdentifier {
+                        field: "service launch literal",
+                    });
+                }
+                Ok(())
+            }
+            Self::AppPath { path } => validate_relative_path("service argv app path", path),
+            Self::DataPath { path } => validate_relative_path("service argv data path", path),
+            Self::RuntimeValue { .. } => Ok(()),
+            Self::RuntimeArguments { .. } => Ok(()),
+        }
+    }
+}
+
+/// A service launch may work from one manifest-selected directory beneath the
+/// immutable app root or the pinned mutable data root. Hot development may
+/// additionally select a manifest-declared isolated data workspace when the
+/// trusted bootstrap has separated its data and application roots (as Electron
+/// QA does). The path remains closed manifest policy; request payloads cannot
+/// select or override it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ServiceWorkingDirectoryPolicy {
+    AppRoot,
+    AppSubdirectory {
+        path: String,
+    },
+    DataSubdirectory {
+        path: String,
+    },
+    HotDevelopmentWorkspace {
+        app_path: String,
+        isolated_data_path: String,
+    },
+}
+
+impl ServiceWorkingDirectoryPolicy {
+    fn validate(&self) -> Result<(), ValidationError> {
+        match self {
+            Self::AppRoot => Ok(()),
+            Self::AppSubdirectory { path } | Self::DataSubdirectory { path } => {
+                validate_relative_path("service working directory", path)
+            }
+            Self::HotDevelopmentWorkspace {
+                app_path,
+                isolated_data_path,
+            } => {
+                validate_relative_path("service hot workspace app path", app_path)?;
+                validate_relative_path(
+                    "service hot workspace isolated data path",
+                    isolated_data_path,
+                )
+            }
+        }
+    }
+
+    fn is_hot_development_workspace(&self) -> bool {
+        matches!(self, Self::HotDevelopmentWorkspace { .. })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServiceInstallProbeAuthority {
+    RuntimeRoot,
+    AppRoot,
+    DataRoot,
+}
+
+/// The executable itself may come only from immutable runtime resources or a
+/// fixed, setup-produced path beneath the pinned mutable data root. Application
+/// source remains an argv entrypoint behind a trusted interpreter.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServiceExecutableAuthority {
+    RuntimeRoot,
+    DataRoot,
+}
+
+impl ServiceExecutableAuthority {
+    const fn install_probe_authority(self) -> ServiceInstallProbeAuthority {
+        match self {
+            Self::RuntimeRoot => ServiceInstallProbeAuthority::RuntimeRoot,
+            Self::DataRoot => ServiceInstallProbeAuthority::DataRoot,
+        }
+    }
+}
+
+/// A regular file whose presence must be proven beneath one fixed immutable
+/// authority root before a launch can be considered installed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceInstallProbeFile {
+    pub authority: ServiceInstallProbeAuthority,
+    pub path: String,
+}
+
+impl ServiceInstallProbeFile {
+    fn validate(&self) -> Result<(), ValidationError> {
+        validate_relative_path("service install probe path", &self.path)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ServiceInstallProbe {
+    FilesPresent { files: Vec<ServiceInstallProbeFile> },
+}
+
+impl ServiceInstallProbe {
+    pub fn files(&self) -> &[ServiceInstallProbeFile] {
+        match self {
+            Self::FilesPresent { files } => files,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ValidationError> {
+        let files = self.files();
+        if files.is_empty() || files.len() > MAX_SERVICE_INSTALL_PROBE_FILES {
+            return Err(ValidationError::InvalidRange {
+                field: "service install probe files",
+            });
+        }
+        let mut unique = HashSet::with_capacity(files.len());
+        for file in files {
+            file.validate()?;
+            if !unique.insert((file.authority, file.path.as_str())) {
+                return Err(ValidationError::DuplicateId {
+                    kind: "service install probe file",
+                    id: file.path.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn contains(&self, authority: ServiceInstallProbeAuthority, path: &str) -> bool {
+        self.files()
+            .iter()
+            .any(|file| file.authority == authority && file.path == path)
+    }
+}
+
+/// Commit admission and containment bounds for one concrete launch mode. Hot
+/// development can therefore carry its measured compiler-tree limits without
+/// weakening lean or packaged launches.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceResourceLimits {
+    pub estimated_cold_start_commit_mb: u64,
+    pub soft_commit_limit_mb: u64,
+    pub hard_commit_limit_mb: u64,
+}
+
+impl ServiceResourceLimits {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if self.estimated_cold_start_commit_mb == 0
+            || self.estimated_cold_start_commit_mb > MAX_COMMIT_LIMIT_MB
+            || self.soft_commit_limit_mb > MAX_COMMIT_LIMIT_MB
+            || self.hard_commit_limit_mb > MAX_COMMIT_LIMIT_MB
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "service profile resource limits",
+            });
+        }
+        if self.hard_commit_limit_mb > 0 && self.soft_commit_limit_mb >= self.hard_commit_limit_mb {
+            return Err(ValidationError::InvalidRange {
+                field: "service profile commit limits",
+            });
+        }
+        if self.estimated_cold_start_commit_mb >= self.hard_commit_limit_mb {
+            return Err(ValidationError::InvalidRange {
+                field: "service profile cold-start estimate",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// One fixed launch recipe may cover one or more runtime modes. Overlapping
+/// recipes are rejected by ServiceDefinition, so mode selection is exact.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceLaunchProfile {
+    pub modes: Vec<RuntimeMode>,
+    pub executable_authority: ServiceExecutableAuthority,
+    pub allowed_executable: String,
+    pub arguments: Vec<ServiceLaunchArgument>,
+    pub environment_source: TrustedServiceEnvironmentSource,
+    pub working_directory: ServiceWorkingDirectoryPolicy,
+    pub install_probe: ServiceInstallProbe,
+    pub resource_limits: ServiceResourceLimits,
+}
+
+impl ServiceLaunchProfile {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if self.modes.is_empty() || self.modes.len() > MAX_SERVICE_LAUNCH_PROFILES {
+            return Err(ValidationError::InvalidRange {
+                field: "service launch profile modes",
+            });
+        }
+        let mut modes = HashSet::with_capacity(self.modes.len());
+        for mode in &self.modes {
+            if !modes.insert(*mode) {
+                return Err(ValidationError::InvalidRange {
+                    field: "duplicate service launch mode",
+                });
+            }
+        }
+        validate_relative_path("service profile executable", &self.allowed_executable)?;
+        if self.arguments.len() > MAX_SERVICE_LAUNCH_ARGUMENTS {
+            return Err(ValidationError::InvalidRange {
+                field: "service launch arguments",
+            });
+        }
+        for argument in &self.arguments {
+            argument.validate()?;
+        }
+        self.working_directory.validate()?;
+        if self.working_directory.is_hot_development_workspace()
+            && (self.modes.len() != 1 || self.modes[0] != RuntimeMode::Hot)
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "service hot workspace mode",
+            });
+        }
+        self.install_probe.validate()?;
+        self.resource_limits.validate()?;
+        if !self.install_probe.contains(
+            self.executable_authority.install_probe_authority(),
+            &self.allowed_executable,
+        ) {
+            return Err(ValidationError::InvalidIdentifier {
+                field: "service executable install probe",
+            });
+        }
+        for argument in &self.arguments {
+            if let ServiceLaunchArgument::AppPath { path } = argument {
+                if !self
+                    .install_probe
+                    .contains(ServiceInstallProbeAuthority::AppRoot, path)
+                {
+                    return Err(ValidationError::InvalidIdentifier {
+                        field: "service argv app-path install probe",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn applies_to(&self, mode: RuntimeMode) -> bool {
+        self.modes.contains(&mode)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceHttpReadiness {
+    pub path: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub expected_body_contains: Option<String>,
+    pub request_timeout_ms: u64,
+    pub poll_interval_ms: u64,
+    pub startup_timeout_ms: u64,
+}
+
+impl ServiceHttpReadiness {
+    fn validate(&self) -> Result<(), ValidationError> {
+        validate_bounded_text("service readiness path", &self.path, MAX_LOOPBACK_URL_BYTES)?;
+        if !self.path.starts_with('/')
+            || self.path.starts_with("//")
+            || self.path.contains('?')
+            || self.path.contains('#')
+            || self.path.chars().any(char::is_control)
+        {
+            return Err(ValidationError::InvalidIdentifier {
+                field: "service readiness path",
+            });
+        }
+        if let Some(expected) = &self.expected_body_contains {
+            validate_bounded_text(
+                "service readiness body match",
+                expected,
+                MAX_SERVICE_READINESS_MATCH_BYTES,
+            )?;
+            if expected.chars().any(char::is_control) {
+                return Err(ValidationError::InvalidIdentifier {
+                    field: "service readiness body match",
+                });
+            }
+        }
+        if self.request_timeout_ms == 0
+            || self.request_timeout_ms > MAX_TIMEOUT_MS
+            || self.poll_interval_ms == 0
+            || self.poll_interval_ms > MAX_TIMEOUT_MS
+            || self.startup_timeout_ms == 0
+            || self.startup_timeout_ms > MAX_TIMEOUT_MS
+            || self.request_timeout_ms > self.startup_timeout_ms
+            || self.poll_interval_ms > self.startup_timeout_ms
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "service readiness timeouts",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceRestartBounds {
+    pub maximum_restarts: u32,
+    pub window_ms: u64,
+    pub initial_backoff_ms: u64,
+    pub maximum_backoff_ms: u64,
+}
+
+impl ServiceRestartBounds {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if self.maximum_restarts == 0
+            || self.maximum_restarts > MAX_SERVICE_RESTARTS
+            || self.window_ms == 0
+            || self.window_ms > MAX_TIMEOUT_MS
+            || self.initial_backoff_ms == 0
+            || self.initial_backoff_ms > MAX_TIMEOUT_MS
+            || self.maximum_backoff_ms == 0
+            || self.maximum_backoff_ms > MAX_TIMEOUT_MS
+            || self.initial_backoff_ms > self.maximum_backoff_ms
+            || self.maximum_backoff_ms > self.window_ms
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "service restart bounds",
+            });
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceDefinition {
     pub id: String,
     pub display_name: String,
     pub capability_ids: Vec<String>,
-    pub allowed_executable: String,
-    pub allowed_entrypoint: Option<String>,
+    pub requirement: ServiceRequirement,
+    pub launch_profiles: Vec<ServiceLaunchProfile>,
+    pub readiness: ServiceHttpReadiness,
     pub startup_policy: ServiceStartupPolicy,
     pub resource_class: ResourceClass,
     pub dependencies: Vec<String>,
-    pub estimated_cold_start_commit_mb: u64,
-    pub soft_commit_limit_mb: u64,
-    pub hard_commit_limit_mb: u64,
+    pub maximum_concurrent_leases: u32,
+    pub maximum_lease_ms: u64,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
     pub idle_ttl_ms: Option<u64>,
     pub graceful_shutdown_ms: u64,
     pub restart_policy: RestartPolicy,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub restart_bounds: Option<ServiceRestartBounds>,
 }
 
 impl ServiceDefinition {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_identifier("service id", &self.id)?;
-        if self.display_name.trim().is_empty() {
-            return Err(ValidationError::EmptyField {
+        validate_bounded_text("displayName", &self.display_name, MAX_STAGE_BYTES)?;
+        if self.display_name.trim().is_empty() || self.display_name.chars().any(char::is_control) {
+            return Err(ValidationError::InvalidIdentifier {
                 field: "displayName",
             });
         }
@@ -1316,37 +2939,59 @@ impl ServiceDefinition {
             });
         }
         validate_unique_capability_ids("capabilityId", &self.capability_ids)?;
-        validate_relative_path("allowedExecutable", &self.allowed_executable)?;
-        if let Some(entrypoint) = &self.allowed_entrypoint {
-            validate_relative_path("allowedEntrypoint", entrypoint)?;
+        if self.launch_profiles.is_empty()
+            || self.launch_profiles.len() > MAX_SERVICE_LAUNCH_PROFILES
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "service launch profiles",
+            });
         }
+        let mut launch_modes = HashSet::with_capacity(MAX_SERVICE_LAUNCH_PROFILES);
+        for profile in &self.launch_profiles {
+            profile.validate()?;
+            for argument in &profile.arguments {
+                if matches!(
+                    argument,
+                    ServiceLaunchArgument::RuntimeArguments {
+                        value: ServiceRuntimeArgumentList::RecallCapture
+                    }
+                ) && (self.id != "recall"
+                    || profile.environment_source != TrustedServiceEnvironmentSource::Recall)
+                {
+                    return Err(ValidationError::InvalidIdentifier {
+                        field: "service runtime arguments",
+                    });
+                }
+            }
+            for mode in &profile.modes {
+                if !launch_modes.insert(*mode) {
+                    return Err(ValidationError::InvalidRange {
+                        field: "overlapping service launch mode",
+                    });
+                }
+            }
+        }
+        if launch_modes.len() != MAX_SERVICE_LAUNCH_PROFILES {
+            return Err(ValidationError::InvalidRange {
+                field: "service launch mode coverage",
+            });
+        }
+        self.readiness.validate()?;
         if self.dependencies.len() > MAX_DEPENDENCIES_PER_SERVICE {
             return Err(ValidationError::InvalidRange {
                 field: "service dependencies",
             });
         }
         validate_unique_identifiers("dependency", &self.dependencies)?;
-        if self.estimated_cold_start_commit_mb == 0
-            || self.estimated_cold_start_commit_mb > MAX_COMMIT_LIMIT_MB
-            || self.soft_commit_limit_mb > MAX_COMMIT_LIMIT_MB
-            || self.hard_commit_limit_mb > MAX_COMMIT_LIMIT_MB
+        if self.maximum_concurrent_leases == 0
+            || self.maximum_concurrent_leases > MAX_CONCURRENCY
+            || self.maximum_lease_ms == 0
+            || self.maximum_lease_ms > MAX_TIMEOUT_MS
             || self.graceful_shutdown_ms == 0
             || self.graceful_shutdown_ms > MAX_TIMEOUT_MS
         {
             return Err(ValidationError::InvalidRange {
                 field: "service limits",
-            });
-        }
-        if self.hard_commit_limit_mb > 0 && self.soft_commit_limit_mb >= self.hard_commit_limit_mb {
-            return Err(ValidationError::InvalidRange {
-                field: "service commit limits",
-            });
-        }
-        if self.hard_commit_limit_mb > 0
-            && self.estimated_cold_start_commit_mb > self.hard_commit_limit_mb
-        {
-            return Err(ValidationError::InvalidRange {
-                field: "service cold-start estimate",
             });
         }
         if matches!(
@@ -1358,8 +3003,35 @@ impl ServiceDefinition {
                 Some(_) => return Err(ValidationError::InvalidRange { field: "idleTtlMs" }),
                 None => return Err(ValidationError::EmptyField { field: "idleTtlMs" }),
             }
+        } else if self.idle_ttl_ms.is_some() {
+            return Err(ValidationError::InvalidRange { field: "idleTtlMs" });
+        }
+        if self
+            .idle_ttl_ms
+            .is_some_and(|idle_ttl_ms| idle_ttl_ms > self.maximum_lease_ms)
+        {
+            return Err(ValidationError::InvalidRange {
+                field: "service lease/idle bounds",
+            });
+        }
+        match (self.restart_policy, &self.restart_bounds) {
+            (RestartPolicy::Never, None) => {}
+            (RestartPolicy::OnFailure, Some(bounds)) => bounds.validate()?,
+            (RestartPolicy::Never, Some(_)) | (RestartPolicy::OnFailure, None) => {
+                return Err(ValidationError::InvalidRange {
+                    field: "service restart policy",
+                });
+            }
         }
         Ok(())
+    }
+
+    /// Returns the one non-overlapping checked-in launch recipe for a runtime
+    /// mode. The caller can select only a mode established by private bootstrap.
+    pub fn launch_profile(&self, mode: RuntimeMode) -> Option<&ServiceLaunchProfile> {
+        self.launch_profiles
+            .iter()
+            .find(|profile| profile.applies_to(mode))
     }
 }
 
@@ -1588,8 +3260,82 @@ pub fn parse_runtime_command_ack(bytes: &[u8]) -> Result<RuntimeCommandAck, Prot
     parse_bounded_control_json(bytes, RuntimeCommandAck::validate)
 }
 
+pub fn parse_runtime_service_lease_acquire_request(
+    bytes: &[u8],
+) -> Result<RuntimeServiceLeaseAcquireRequest, ProtocolError> {
+    parse_bounded_json_with_limit(
+        bytes,
+        MAX_SERVICE_LEASE_REQUEST_BODY_BYTES,
+        RuntimeServiceLeaseAcquireRequest::validate,
+    )
+}
+
+pub fn parse_runtime_service_lease_acquire_response(
+    bytes: &[u8],
+) -> Result<RuntimeServiceLeaseAcquireResponse, ProtocolError> {
+    parse_bounded_control_json(bytes, RuntimeServiceLeaseAcquireResponse::validate)
+}
+
+pub fn parse_runtime_service_lease_contract_response(
+    bytes: &[u8],
+) -> Result<RuntimeServiceLeaseContractResponse, ProtocolError> {
+    parse_bounded_control_json(bytes, RuntimeServiceLeaseContractResponse::validate)
+}
+
+pub fn parse_runtime_service_lease_release_request(
+    bytes: &[u8],
+) -> Result<RuntimeServiceLeaseReleaseRequest, ProtocolError> {
+    parse_bounded_json_with_limit(
+        bytes,
+        MAX_SERVICE_LEASE_REQUEST_BODY_BYTES,
+        RuntimeServiceLeaseReleaseRequest::validate,
+    )
+}
+
+pub fn parse_runtime_service_lease_release_response(
+    bytes: &[u8],
+) -> Result<RuntimeServiceLeaseReleaseResponse, ProtocolError> {
+    parse_bounded_control_json(bytes, RuntimeServiceLeaseReleaseResponse::validate)
+}
+
+pub fn parse_runtime_desired_state_request(
+    bytes: &[u8],
+) -> Result<RuntimeDesiredStateRequest, ProtocolError> {
+    parse_bounded_json_with_limit(
+        bytes,
+        MAX_SERVICE_LEASE_REQUEST_BODY_BYTES,
+        RuntimeDesiredStateRequest::validate,
+    )
+}
+
+pub fn parse_runtime_recall_reconcile_request(
+    bytes: &[u8],
+) -> Result<RuntimeRecallReconcileRequest, ProtocolError> {
+    parse_bounded_json_with_limit(
+        bytes,
+        MAX_RECALL_RECONCILE_REQUEST_BODY_BYTES,
+        RuntimeRecallReconcileRequest::validate,
+    )
+}
+
+pub fn parse_runtime_recall_status_request(
+    bytes: &[u8],
+) -> Result<RuntimeRecallStatusRequest, ProtocolError> {
+    parse_bounded_json_with_limit(
+        bytes,
+        MAX_SERVICE_LEASE_REQUEST_BODY_BYTES,
+        RuntimeRecallStatusRequest::validate,
+    )
+}
+
 pub fn parse_runtime_job_response(bytes: &[u8]) -> Result<RuntimeJobResponse, ProtocolError> {
     parse_bounded_control_json(bytes, RuntimeJobResponse::validate)
+}
+
+pub fn parse_runtime_job_idempotency_cancellation_response(
+    bytes: &[u8],
+) -> Result<RuntimeJobIdempotencyCancellationResponse, ProtocolError> {
+    parse_bounded_control_json(bytes, RuntimeJobIdempotencyCancellationResponse::validate)
 }
 
 pub fn parse_runtime_job_events_response(
@@ -1611,6 +3357,52 @@ pub fn parse_job_submission_payload(bytes: &[u8]) -> Result<JobSubmissionPayload
     parse_bounded_json(bytes, JobSubmissionPayload::validate)
 }
 
+pub fn parse_runtime_job_lookup_request(
+    bytes: &[u8],
+) -> Result<RuntimeJobLookupRequest, ProtocolError> {
+    parse_bounded_json_with_limit(
+        bytes,
+        MAX_JOB_LOOKUP_BODY_BYTES,
+        RuntimeJobLookupRequest::validate,
+    )
+}
+
+pub fn parse_runtime_job_idempotency_cancellation_request(
+    bytes: &[u8],
+) -> Result<RuntimeJobIdempotencyCancellationRequest, ProtocolError> {
+    parse_bounded_json_with_limit(
+        bytes,
+        MAX_JOB_IDEMPOTENCY_CANCELLATION_BODY_BYTES,
+        RuntimeJobIdempotencyCancellationRequest::validate,
+    )
+}
+
+pub fn parse_runtime_learn_recovery_request(
+    bytes: &[u8],
+) -> Result<RuntimeLearnRecoveryRequest, ProtocolError> {
+    parse_bounded_json_with_limit(
+        bytes,
+        MAX_LEARN_RECOVERY_REQUEST_BODY_BYTES,
+        RuntimeLearnRecoveryRequest::validate,
+    )
+}
+
+pub fn parse_runtime_job_input_reservation_request(
+    bytes: &[u8],
+) -> Result<RuntimeJobInputReservationRequest, ProtocolError> {
+    parse_bounded_json_with_limit(
+        bytes,
+        MAX_JOB_INPUT_RESERVATION_BODY_BYTES,
+        RuntimeJobInputReservationRequest::validate,
+    )
+}
+
+pub fn parse_runtime_job_input_reservation_response(
+    bytes: &[u8],
+) -> Result<RuntimeJobInputReservationResponse, ProtocolError> {
+    parse_bounded_control_json(bytes, RuntimeJobInputReservationResponse::validate)
+}
+
 fn parse_bounded_json<T>(
     bytes: &[u8],
     validate: impl FnOnce(&T) -> Result<(), ValidationError>,
@@ -1618,7 +3410,18 @@ fn parse_bounded_json<T>(
 where
     T: for<'de> Deserialize<'de>,
 {
-    if bytes.len() > MAX_REQUEST_BODY_BYTES {
+    parse_bounded_json_with_limit(bytes, MAX_REQUEST_BODY_BYTES, validate)
+}
+
+fn parse_bounded_json_with_limit<T>(
+    bytes: &[u8],
+    maximum_body_bytes: usize,
+    validate: impl FnOnce(&T) -> Result<(), ValidationError>,
+) -> Result<T, ProtocolError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    if bytes.len() > maximum_body_bytes {
         return Err(ProtocolError::OversizedBody(bytes.len()));
     }
     let value: T = serde_json::from_slice(bytes).map_err(ProtocolError::MalformedJson)?;
@@ -1783,6 +3586,49 @@ pub fn validate_bounded_text(
     Ok(())
 }
 
+fn validate_job_input_display_name(value: &str) -> Result<(), ValidationError> {
+    validate_bounded_text(
+        "input display name",
+        value,
+        MAX_JOB_INPUT_DISPLAY_NAME_BYTES,
+    )?;
+    if value == "."
+        || value == ".."
+        || value.contains(['/', '\\', '\0'])
+        || value.chars().any(char::is_control)
+    {
+        return Err(ValidationError::InvalidIdentifier {
+            field: "input display name",
+        });
+    }
+    Ok(())
+}
+
+fn validate_job_input_media_type(value: &str) -> Result<(), ValidationError> {
+    validate_bounded_text("input media type", value, MAX_JOB_INPUT_MEDIA_TYPE_BYTES)?;
+    let Some((kind, subtype)) = value.split_once('/') else {
+        return Err(ValidationError::InvalidIdentifier {
+            field: "input media type",
+        });
+    };
+    let valid_token = |token: &str| {
+        !token.is_empty()
+            && token.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(
+                        byte,
+                        b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+                    )
+            })
+    };
+    if !valid_token(kind) || !valid_token(subtype) {
+        return Err(ValidationError::InvalidIdentifier {
+            field: "input media type",
+        });
+    }
+    Ok(())
+}
+
 pub fn validate_scope_id(field: &'static str, value: &str) -> Result<(), ValidationError> {
     if value.is_empty()
         || value.len() > MAX_SCOPE_ID_BYTES
@@ -1867,6 +3713,15 @@ mod tests {
         }
     }
 
+    fn execution_scope() -> WorkerExecutionScope {
+        WorkerExecutionScope::new(
+            Some(42),
+            Some("garden-1".into()),
+            Some("conversation-1".into()),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn oversized_protocol_is_rejected_before_json_parsing() {
         let line = vec![b' '; MAX_PROTOCOL_LINE_BYTES + 1];
@@ -1910,6 +3765,251 @@ mod tests {
     }
 
     #[test]
+    fn input_reservation_receipts_require_a_positive_bounded_expiry() {
+        let valid = br#"{"uploadId":"upload_1","expiresAt":1,"maximumBytes":7}"#;
+        assert!(parse_runtime_job_input_reservation_response(valid).is_ok());
+
+        let zero_expiry = br#"{"uploadId":"upload_1","expiresAt":0,"maximumBytes":7}"#;
+        assert!(matches!(
+            parse_runtime_job_input_reservation_response(zero_expiry),
+            Err(ProtocolError::InvalidPayload(_))
+        ));
+    }
+
+    #[test]
+    fn idempotency_lookup_body_is_exact_bounded_and_contains_no_authority() {
+        assert_eq!(
+            parse_runtime_job_lookup_request(br#"{"idempotencyKey":"request-1"}"#)
+                .unwrap()
+                .idempotency_key,
+            "request-1"
+        );
+        assert!(
+            parse_runtime_job_lookup_request(br#"{"idempotencyKey":"request-1","userId":7}"#)
+                .is_err()
+        );
+        assert!(parse_runtime_job_lookup_request(br#"{"idempotencyKey":"\n"}"#).is_err());
+        assert!(matches!(
+            parse_runtime_job_lookup_request(&vec![b' '; MAX_JOB_LOOKUP_BODY_BYTES + 1]),
+            Err(ProtocolError::OversizedBody(_))
+        ));
+    }
+
+    #[test]
+    fn idempotency_cancellation_is_exact_bounded_and_has_a_closed_disposition() {
+        assert_eq!(
+            parse_runtime_job_idempotency_cancellation_request(
+                br#"{"idempotencyKey":"request-1"}"#
+            )
+            .unwrap()
+            .idempotency_key,
+            "request-1"
+        );
+        assert!(parse_runtime_job_idempotency_cancellation_request(
+            br#"{"idempotencyKey":"request-1","gardenId":"forged"}"#
+        )
+        .is_err());
+        assert!(
+            parse_runtime_job_idempotency_cancellation_request(br#"{"idempotencyKey":"\n"}"#)
+                .is_err()
+        );
+        assert!(matches!(
+            parse_runtime_job_idempotency_cancellation_request(&vec![
+                b' ';
+                MAX_JOB_IDEMPOTENCY_CANCELLATION_BODY_BYTES
+                    + 1
+            ]),
+            Err(ProtocolError::OversizedBody(_))
+        ));
+
+        let pending =
+            RuntimeJobIdempotencyCancellationResponse::RuntimeJobIdempotencyCancellation {
+                protocol_version: RUNTIME_CONTROL_PROTOCOL_VERSION,
+                job_id: None,
+                state: RuntimeJobIdempotencyCancellationState::Pending,
+                accepted: true,
+            };
+        pending.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(&pending).unwrap(),
+            serde_json::json!({
+                "type": "runtime-job-idempotency-cancellation",
+                "protocolVersion": 1,
+                "jobId": null,
+                "state": "pending",
+                "accepted": true
+            })
+        );
+
+        let cancelled =
+            RuntimeJobIdempotencyCancellationResponse::RuntimeJobIdempotencyCancellation {
+                protocol_version: RUNTIME_CONTROL_PROTOCOL_VERSION,
+                job_id: Some("job_1".into()),
+                state: RuntimeJobIdempotencyCancellationState::Cancelled,
+                accepted: true,
+            };
+        cancelled.validate().unwrap();
+        let completed =
+            RuntimeJobIdempotencyCancellationResponse::RuntimeJobIdempotencyCancellation {
+                protocol_version: RUNTIME_CONTROL_PROTOCOL_VERSION,
+                job_id: Some("job_1".into()),
+                state: RuntimeJobIdempotencyCancellationState::Succeeded,
+                accepted: false,
+            };
+        completed.validate().unwrap();
+
+        for invalid in [
+            RuntimeJobIdempotencyCancellationResponse::RuntimeJobIdempotencyCancellation {
+                protocol_version: RUNTIME_CONTROL_PROTOCOL_VERSION,
+                job_id: Some("job_1".into()),
+                state: RuntimeJobIdempotencyCancellationState::Pending,
+                accepted: true,
+            },
+            RuntimeJobIdempotencyCancellationResponse::RuntimeJobIdempotencyCancellation {
+                protocol_version: RUNTIME_CONTROL_PROTOCOL_VERSION,
+                job_id: None,
+                state: RuntimeJobIdempotencyCancellationState::Cancelled,
+                accepted: true,
+            },
+            RuntimeJobIdempotencyCancellationResponse::RuntimeJobIdempotencyCancellation {
+                protocol_version: RUNTIME_CONTROL_PROTOCOL_VERSION,
+                job_id: Some("job_1".into()),
+                state: RuntimeJobIdempotencyCancellationState::Running,
+                accepted: true,
+            },
+        ] {
+            assert!(invalid.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn learn_recovery_request_controls_only_a_bounded_generation_key() {
+        let request = parse_runtime_learn_recovery_request(
+            br#"{"idempotencyKey":"learn-recovery-v2:123456"}"#,
+        )
+        .unwrap();
+        assert_eq!(request.idempotency_key, "learn-recovery-v2:123456");
+        for invalid in [
+            br#"{"idempotencyKey":"other:123"}"#.as_slice(),
+            br#"{"idempotencyKey":"learn-recovery-v2:"}"#.as_slice(),
+            br#"{"idempotencyKey":"learn-recovery-v2:abc"}"#.as_slice(),
+            br#"{"idempotencyKey":"learn-recovery-v2:1","jobType":"document-ingestion"}"#
+                .as_slice(),
+            br#"{"idempotencyKey":"learn-recovery-v2:1","requestPayload":{}}"#.as_slice(),
+            br#"{"idempotencyKey":"learn-recovery-v2:1","ownerPrincipal":"internal:other"}"#
+                .as_slice(),
+            br#"{"idempotencyKey":"learn-recovery-v2:1","gardenId":"garden-1"}"#.as_slice(),
+        ] {
+            assert!(parse_runtime_learn_recovery_request(invalid).is_err());
+        }
+        assert!(matches!(
+            parse_runtime_learn_recovery_request(&vec![
+                b' ';
+                MAX_LEARN_RECOVERY_REQUEST_BODY_BYTES + 1
+            ]),
+            Err(ProtocolError::OversizedBody(_))
+        ));
+    }
+
+    #[test]
+    fn service_lease_payloads_are_closed_bounded_and_route_bound() {
+        let acquire =
+            parse_runtime_service_lease_acquire_request(br#"{"reason":"conversation-turn"}"#)
+                .unwrap();
+        assert_eq!(acquire.reason, "conversation-turn");
+        assert!(parse_runtime_service_lease_acquire_request(
+            br#"{"reason":"conversation-turn","serviceId":"hermes"}"#
+        )
+        .is_err());
+        assert!(parse_runtime_service_lease_acquire_request(br#"{"reason":"\n"}"#).is_err());
+        assert!(parse_runtime_service_lease_acquire_request(br#"{"reason":"   "}"#).is_err());
+        let oversized_reason = serde_json::to_vec(&serde_json::json!({
+            "reason": "r".repeat(MAX_SERVICE_LEASE_REASON_BYTES + 1)
+        }))
+        .unwrap();
+        assert!(matches!(
+            parse_runtime_service_lease_acquire_request(&oversized_reason),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::OversizedField {
+                    field: "service lease reason"
+                }
+            ))
+        ));
+        assert!(matches!(
+            parse_runtime_service_lease_acquire_request(&vec![
+                b' ';
+                MAX_SERVICE_LEASE_REQUEST_BODY_BYTES
+                    + 1
+            ]),
+            Err(ProtocolError::OversizedBody(_))
+        ));
+
+        let release = parse_runtime_service_lease_release_request(br#"{}"#).unwrap();
+        release.validate().unwrap();
+        assert!(
+            parse_runtime_service_lease_release_request(br#"{"afterOwnerPidExit":42}"#).is_err()
+        );
+
+        let acquired = RuntimeServiceLeaseAcquireResponse {
+            ok: true,
+            lease_id: "01234567-89ab-cdef-0123-456789abcdef".into(),
+            service_id: "hermes".into(),
+        };
+        acquired.validate().unwrap();
+        let acquired_bytes = serde_json::to_vec(&acquired).unwrap();
+        assert_eq!(
+            parse_runtime_service_lease_acquire_response(&acquired_bytes).unwrap(),
+            acquired
+        );
+        assert!(parse_runtime_service_lease_acquire_response(
+            br#"{"ok":true,"leaseId":"lease_1","serviceId":"hermes","token":"secret"}"#
+        )
+        .is_err());
+        assert!(parse_runtime_service_lease_acquire_response(
+            br#"{"ok":false,"leaseId":"lease_1","serviceId":"hermes"}"#
+        )
+        .is_err());
+        let contract = RuntimeServiceLeaseContractResponse {
+            protocol_version: RUNTIME_CONTROL_PROTOCOL_VERSION,
+            service_id: "voicebox".into(),
+            acquire_timeout_ms: 1_800_000
+                + SERVICE_LEASE_SETTLEMENT_GRACE_MS
+                + SERVICE_LEASE_RESPONSE_GRACE_MS,
+        };
+        contract.validate().unwrap();
+        let contract_bytes = serde_json::to_vec(&contract).unwrap();
+        assert_eq!(
+            parse_runtime_service_lease_contract_response(&contract_bytes).unwrap(),
+            contract
+        );
+        assert!(parse_runtime_service_lease_contract_response(
+            br#"{"protocolVersion":1,"serviceId":"voicebox","acquireTimeoutMs":1810000,"startupTimeoutMs":1800000}"#
+        )
+        .is_err());
+        assert!(RuntimeServiceLeaseContractResponse {
+            protocol_version: RUNTIME_CONTROL_PROTOCOL_VERSION,
+            service_id: "voicebox".into(),
+            acquire_timeout_ms: MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS + 1,
+        }
+        .validate()
+        .is_err());
+        let released = RuntimeServiceLeaseReleaseResponse {
+            ok: true,
+            released: false,
+        };
+        released.validate().unwrap();
+        let released_bytes = serde_json::to_vec(&released).unwrap();
+        assert_eq!(
+            parse_runtime_service_lease_release_response(&released_bytes).unwrap(),
+            released
+        );
+        assert!(
+            parse_runtime_service_lease_release_response(br#"{"ok":false,"released":false}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn submission_scope_and_idempotency_fields_are_validated() {
         let invalid_job_type = br#"{
             "jobType":"../learn",
@@ -1938,12 +4038,15 @@ mod tests {
 
     #[test]
     fn worker_start_manifest_is_closed_fenced_and_exactly_job_scoped() {
-        let manifest = WorkerStartManifest::for_identity(identity()).unwrap();
+        let manifest =
+            WorkerStartManifest::for_identity_and_scope(identity(), execution_scope()).unwrap();
         assert_eq!(manifest.protocol_version, WIRE_PROTOCOL_VERSION);
+        assert_eq!(manifest.execution_scope, execution_scope());
         assert_eq!(
             manifest.input_manifest_path,
             "runtime/jobs/job_1/input.json"
         );
+        assert!(manifest.input_blobs.is_empty());
         assert_eq!(
             manifest.workspace_path,
             "runtime/jobs/job_1/attempts/1/worker_1/workspace"
@@ -1970,7 +4073,9 @@ mod tests {
             [
                 "protocolVersion",
                 "identity",
+                "executionScope",
                 "inputManifestPath",
+                "inputBlobs",
                 "workspacePath",
                 "checkpointPath",
                 "resultPath",
@@ -2000,11 +4105,68 @@ mod tests {
     }
 
     #[test]
+    fn worker_execution_scope_requires_closed_nullable_safe_fields() {
+        let manifest =
+            WorkerStartManifest::for_identity_and_scope(identity(), execution_scope()).unwrap();
+        let encoded = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(
+            encoded.get("executionScope"),
+            Some(&serde_json::json!({
+                "userId": 42,
+                "gardenId": "garden-1",
+                "conversationId": "conversation-1",
+            }))
+        );
+
+        let mut missing_nullable = encoded.clone();
+        missing_nullable["executionScope"]
+            .as_object_mut()
+            .unwrap()
+            .remove("conversationId");
+        assert!(matches!(
+            parse_worker_start_manifest(&serde_json::to_vec(&missing_nullable).unwrap()),
+            Err(ProtocolError::MalformedJson(_))
+        ));
+
+        let mut forged_principal = encoded.clone();
+        forged_principal["executionScope"]
+            .as_object_mut()
+            .unwrap()
+            .insert("ownerPrincipal".into(), serde_json::json!("user:999"));
+        assert!(matches!(
+            parse_worker_start_manifest(&serde_json::to_vec(&forged_principal).unwrap()),
+            Err(ProtocolError::MalformedJson(_))
+        ));
+
+        for invalid_user_id in [0, -1, MAX_JSON_SAFE_INTEGER as i64 + 1] {
+            let mut invalid = encoded.clone();
+            invalid["executionScope"]["userId"] = serde_json::json!(invalid_user_id);
+            assert!(matches!(
+                parse_worker_start_manifest(&serde_json::to_vec(&invalid).unwrap()),
+                Err(ProtocolError::InvalidPayload(
+                    ValidationError::InvalidRange { field: "userId" }
+                ))
+            ));
+        }
+
+        let unscoped = WorkerStartManifest::for_identity(identity()).unwrap();
+        assert_eq!(
+            serde_json::to_value(unscoped).unwrap()["executionScope"],
+            serde_json::json!({
+                "userId": null,
+                "gardenId": null,
+                "conversationId": null,
+            })
+        );
+    }
+
+    #[test]
     fn worker_start_manifest_cannot_carry_payload_secrets_or_argv() {
         let manifest = WorkerStartManifest::for_identity(identity()).unwrap();
         for (field, value) in [
             ("requestPayload", serde_json::json!({"prompt": "private"})),
             ("controlToken", serde_json::json!("private-token")),
+            ("ownerPrincipal", serde_json::json!("user:42")),
             (
                 "argv",
                 serde_json::json!(["--arbitrary", "large-or-untrusted-value"]),
@@ -2116,6 +4278,7 @@ mod tests {
                 "id":"dashboard",
                 "displayName":"Workspace",
                 "required":true,
+                "startupPolicy":"eager",
                 "state":"ready",
                 "lastError":null,
                 "restarts":0,
@@ -2150,6 +4313,7 @@ mod tests {
                 "id":"dashboard",
                 "displayName":"Workspace",
                 "required":true,
+                "startupPolicy":"eager",
                 "state":"ready",
                 "lastError":null,
                 "restarts":0,
@@ -2167,6 +4331,7 @@ mod tests {
                 "id":"dashboard",
                 "displayName":"Workspace",
                 "required":true,
+                "startupPolicy":"eager",
                 "state":"ready",
                 "restarts":0,
                 "adopted":false
@@ -2223,6 +4388,7 @@ mod tests {
                 "progressTotal":4,
                 "failureCode":null,
                 "failureMessage":null,
+                "resourceExhaustion":null,
                 "cancellationRequested":false
             }
         }"#;
@@ -2486,6 +4652,30 @@ mod tests {
         assert!(contradictory_failure
             .validate_for(RuntimeJobEventType::WorkerFailed)
             .is_err());
+
+        for (sequence, event_type) in [
+            (1, RuntimeJobEventType::WorkerReady),
+            (2, RuntimeJobEventType::WorkerFailed),
+        ] {
+            let fixture = RuntimeJobEventRecord {
+                sequence,
+                job_id: "job_1".into(),
+                attempt: 1,
+                worker_instance_id: Some("worker_1".into()),
+                worker_sequence: Some(sequence),
+                event_type,
+                payload: cancelling.clone(),
+                created_at: 100,
+            };
+            fixture.validate().unwrap();
+            let encoded = serde_json::to_value(&fixture).unwrap();
+            assert_eq!(
+                encoded["payload"],
+                serde_json::json!({"state": "cancelling"})
+            );
+            let decoded: RuntimeJobEventRecord = serde_json::from_value(encoded).unwrap();
+            decoded.validate().unwrap();
+        }
     }
 
     #[test]
@@ -2608,6 +4798,30 @@ mod tests {
             parse_runtime_control_error_response(retry_loop),
             Err(ProtocolError::InvalidPayload(_))
         ));
+
+        let service_conflict = br#"{
+            "type":"runtime-error",
+            "protocolVersion":1,
+            "code":"SERVICE_LEASE_CONFLICT",
+            "message":"The service lease conflicts with durable runtime state.",
+            "retryable":false,
+            "resource":null,
+            "requiredHeadroomMb":null,
+            "availableHeadroomMb":null
+        }"#;
+        assert!(parse_runtime_control_error_response(service_conflict).is_ok());
+
+        let input_quota = br#"{
+            "type":"runtime-error",
+            "protocolVersion":1,
+            "code":"JOB_INPUT_QUOTA_EXCEEDED",
+            "message":"The active job input quota is exhausted.",
+            "retryable":false,
+            "resource":null,
+            "requiredHeadroomMb":null,
+            "availableHeadroomMb":null
+        }"#;
+        assert!(parse_runtime_control_error_response(input_quota).is_ok());
     }
 
     #[test]
@@ -2618,8 +4832,8 @@ mod tests {
             "runtimePid":42,
             "acceptingWork":true,
             "services":[
-                {"id":"dashboard","displayName":"Workspace","required":true,"state":"ready","lastError":null,"restarts":0,"adopted":false},
-                {"id":"dashboard","displayName":"Workspace","required":true,"state":"ready","lastError":null,"restarts":0,"adopted":false}
+                {"id":"dashboard","displayName":"Workspace","required":true,"startupPolicy":"eager","state":"ready","lastError":null,"restarts":0,"adopted":false},
+                {"id":"dashboard","displayName":"Workspace","required":true,"startupPolicy":"eager","state":"ready","lastError":null,"restarts":0,"adopted":false}
             ]
         }"#;
         assert!(matches!(
@@ -2633,7 +4847,7 @@ mod tests {
             "runtimePid":42,
             "acceptingWork":true,
             "services":[
-                {"id":"dashboard","displayName":"Workspace","required":true,"state":"ready","lastError":null,"restarts":0,"adopted":true}
+                {"id":"dashboard","displayName":"Workspace","required":true,"startupPolicy":"eager","state":"ready","lastError":null,"restarts":0,"adopted":true}
             ]
         }"#;
         assert!(matches!(
@@ -2698,11 +4912,52 @@ mod tests {
     }
 
     #[test]
+    fn recall_policy_is_exact_normalized_and_utf16_bounded() {
+        let accepted = parse_runtime_recall_reconcile_request(
+            br#"{"desiredState":"running","configuration":{"captureAudio":true,"excludedWindows":["Private Window","Discord"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            accepted.configuration.unwrap().excluded_windows,
+            ["Private Window", "Discord"]
+        );
+        assert!(parse_runtime_recall_reconcile_request(br#"{"desiredState":"stopped"}"#).is_ok());
+        for invalid in [
+            br#"{"desiredState":"running"}"#.as_slice(),
+            br#"{"desiredState":"stopped","configuration":{"captureAudio":true,"excludedWindows":[]}}"#.as_slice(),
+            br#"{"desiredState":"running","configuration":null}"#.as_slice(),
+            br#"{"desiredState":"running","configuration":{"captureAudio":true,"excludedWindows":["Discord","discord"]}}"#.as_slice(),
+            br#"{"desiredState":"running","configuration":{"captureAudio":true,"excludedWindows":[" quoted\""]}}"#.as_slice(),
+            br#"{"desiredState":"running","configuration":{"captureAudio":true,"excludedWindows":[]},"extra":true}"#.as_slice(),
+        ] {
+            assert!(parse_runtime_recall_reconcile_request(invalid).is_err());
+        }
+        let exact_limit = "😀".repeat(MAX_RECALL_EXCLUDED_WINDOW_UTF16_UNITS / 2);
+        assert!(RuntimeRecallConfiguration {
+            capture_audio: false,
+            excluded_windows: vec![exact_limit.clone()],
+        }
+        .validate()
+        .is_ok());
+        assert!(RuntimeRecallConfiguration {
+            capture_audio: false,
+            excluded_windows: vec![format!("{exact_limit}😀")],
+        }
+        .validate()
+        .is_err());
+        assert!(parse_runtime_recall_status_request(br#"{}"#).is_ok());
+        assert!(parse_runtime_recall_status_request(br#"{"extra":true}"#).is_err());
+    }
+
+    #[test]
     fn reusable_finite_workers_are_rejected() {
         let worker = WorkerDefinition {
             kind: "learn".into(),
             job_types: vec!["learn".into()],
             capability_ids: vec!["learn".into()],
+            submission_authority: WorkerSubmissionAuthority::User,
+            environment_source: TrustedWorkerEnvironmentSource::Minimal,
+            service_dependencies: Vec::new(),
             allowed_executable: "runtimes/node/node.exe".into(),
             allowed_entrypoint: "workers/learn-worker.mjs".into(),
             protocol_version: PROTOCOL_VERSION,
@@ -2711,6 +4966,8 @@ mod tests {
             soft_commit_limit_mb: 4096,
             hard_commit_limit_mb: 6144,
             maximum_concurrency: 1,
+            minimum_input_blobs: 0,
+            maximum_input_blobs: 0,
             workspace_policy: WorkspacePolicy::PrivatePerJob,
             ready_timeout_ms: 30_000,
             heartbeat_timeout_ms: 60_000,
@@ -2725,6 +4982,38 @@ mod tests {
     }
 
     #[test]
+    fn launch_manifests_require_commit_headroom_above_the_cold_start_estimate() {
+        let workers = include_bytes!("../../../desktop/runtime-v2/manifests/workers.json");
+        let mut worker_manifest: serde_json::Value = serde_json::from_slice(workers).unwrap();
+        let worker_hard_limit = worker_manifest["workers"][0]["hardCommitLimitMb"].clone();
+        worker_manifest["workers"][0]["estimatedColdStartCommitMb"] = worker_hard_limit;
+        assert!(matches!(
+            parse_worker_manifest(&serde_json::to_vec(&worker_manifest).unwrap()),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidRange {
+                    field: "worker cold-start estimate"
+                }
+            ))
+        ));
+
+        let services = include_bytes!("../../../desktop/runtime-v2/manifests/services.json");
+        let mut service_manifest: serde_json::Value = serde_json::from_slice(services).unwrap();
+        let service_hard_limit = service_manifest["services"][0]["launchProfiles"][0]
+            ["resourceLimits"]["hardCommitLimitMb"]
+            .clone();
+        service_manifest["services"][0]["launchProfiles"][0]["resourceLimits"]
+            ["estimatedColdStartCommitMb"] = service_hard_limit;
+        assert!(matches!(
+            parse_service_manifest(&serde_json::to_vec(&service_manifest).unwrap()),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidRange {
+                    field: "service profile cold-start estimate"
+                }
+            ))
+        ));
+    }
+
+    #[test]
     fn checked_in_launch_manifests_match_the_typed_versioned_schema() {
         let workers = include_bytes!("../../../desktop/runtime-v2/manifests/workers.json");
         let services = include_bytes!("../../../desktop/runtime-v2/manifests/services.json");
@@ -2732,14 +5021,1285 @@ mod tests {
         let services = parse_service_manifest(services).unwrap();
         assert_eq!(workers.version, WORKER_MANIFEST_VERSION);
         assert_eq!(services.version, SERVICE_MANIFEST_VERSION);
-        // Source-only coverage validation deliberately remains red until the
-        // legacy IPC Learn worker and in-process ingestion route have finite
-        // Runtime V2 protocol adapters. An empty manifest is safer than a
-        // launch definition that would hang waiting for the wrong transport.
-        assert!(workers.workers.is_empty());
-        assert!(services
+        // Every migrated workload has a distinct finite one-job adapter in the
+        // same trusted registry. Keep these assertions explicit so a removed
+        // adapter or an unexpected reusable fallback cannot hide behind
+        // schema-only validation.
+        assert_eq!(
+            workers
+                .workers
+                .iter()
+                .map(|worker| worker.kind.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "learn-node",
+                "document-ingestion-node",
+                "quartz-publish-node",
+                "office-artifact-node",
+                "agent-browser-node",
+                "agent-browser-profile-node",
+                "background-task-node",
+                "recall-install",
+                "audio-analyzer-node",
+                "image-search-node",
+                "interactive-visualizer-node",
+                "managed-setup-node",
+                "terminal-command-node",
+                "graft-index-node",
+                "agent-edits-node",
+                "outer-opencode-node",
+                "outer-trading-agent-node",
+                "outer-career-ops-node",
+                "system-location-node",
+                "claude-account-node",
+                "chatmock-login-node",
+                "vimax-node",
+                "vox-director-node",
+                "outer-shorts-node",
+                "outer-open-gym-node",
+                "agent-reach-setup-node",
+                "gbrain-sync-node",
+                "outer-agent-reach-node",
+                "outer-agent-tars-node",
+                "outer-legal-node",
+                "sf3d-node",
+                "outer-codex-node",
+                "outer-ruflo-node",
+                "outer-deep-tutor-node",
+                "outer-openplanter-node",
+                "manim-node",
+                "deep-tutor-probe-node",
+                "deep-tutor-index-node",
+                "premortem-node",
+                "agent-loop-node",
+                "omh-node",
+                "factcheck-node",
+                "watch-media-node",
+                "loopx-node",
+                "outer-resource2skill-node",
+                "career-ops-probe-node",
+                "outer-matraix-node",
+                "matraix-probe-node",
+                "formsmith-node",
+                "formsmith-probe-node",
+                "outer-hyperframes-node",
+                "outer-openmontage-node",
+                "openmontage-probe-node",
+                "outer-bolt-slides-node",
+                "legal-probe-node",
+                "shorts-probe-node",
+                "tradingagents-probe-node",
+                "subsai-transcription-node",
+                "subsai-probe-node",
+                "speech-media-node",
+                "generated-visual-compiler-node",
+                "generated-visual-browser-node",
+                "scriberr-garden-transcription-node",
+                "scriberr-garden-probe-node",
+                "watermark-operation-node",
+                "outer-hardware-blueprint-node",
+                "outer-get-doc-node",
+                "get-doc-download-node",
+                "outer-meeting-notes-node",
+                "outer-inbox-zero-node",
+                "outer-socials-manager-node",
+                "outer-max-research-node",
+                "outer-wardrobe-node",
+                "outer-parametric-cad-node",
+                "outer-stock-analyst-node",
+                "outer-vibe-trading-node",
+                "outer-deer-flow-node",
+                "outer-money-printer-node",
+                "outer-video-use-node",
+                "outer-deep-research-node",
+                "outer-openscience-node",
+                "outer-openwork-node",
+            ]
+        );
+        let learn = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "learn-node")
+            .unwrap();
+        assert_eq!(learn.kind, "learn-node");
+        assert_eq!(learn.job_types, ["learn"]);
+        assert_eq!(
+            (learn.minimum_input_blobs, learn.maximum_input_blobs),
+            (0, 0)
+        );
+        assert!(learn.exit_after_job);
+        let ingestion = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "document-ingestion-node")
+            .unwrap();
+        assert_eq!(ingestion.kind, "document-ingestion-node");
+        assert_eq!(ingestion.job_types, ["document-ingestion"]);
+        assert_eq!(
+            (ingestion.minimum_input_blobs, ingestion.maximum_input_blobs),
+            (1, 1)
+        );
+        assert!(ingestion.exit_after_job);
+        assert_eq!(
+            ingestion.service_dependencies,
+            [WorkerServiceDependency {
+                service_id: "vlm-ocr".into(),
+                condition: WorkerServiceDependencyCondition::DocumentIngestionParseWithVlm,
+            }]
+        );
+        assert_eq!(
+            ingestion.environment_source,
+            TrustedWorkerEnvironmentSource::DocumentIngestion
+        );
+        let quartz = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "quartz-publish-node")
+            .unwrap();
+        assert_eq!(quartz.job_types, ["quartz-publish"]);
+        assert_eq!(
+            quartz.environment_source,
+            TrustedWorkerEnvironmentSource::QuartzPublish
+        );
+        assert_eq!(
+            (quartz.minimum_input_blobs, quartz.maximum_input_blobs),
+            (0, 0)
+        );
+        assert!(quartz.exit_after_job);
+        let office = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "office-artifact-node")
+            .unwrap();
+        assert_eq!(office.job_types, ["office-artifact"]);
+        assert_eq!(
+            (office.minimum_input_blobs, office.maximum_input_blobs),
+            (0, 2)
+        );
+        assert!(office.exit_after_job);
+        let browser = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "agent-browser-node")
+            .unwrap();
+        assert_eq!(browser.job_types, ["agent-browser-run"]);
+        assert_eq!(
+            (browser.minimum_input_blobs, browser.maximum_input_blobs),
+            (0, 0)
+        );
+        assert!(browser.exit_after_job);
+        let background = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "background-task-node")
+            .unwrap();
+        assert_eq!(background.job_types, ["background-task"]);
+        assert_eq!(
+            background.submission_authority,
+            WorkerSubmissionAuthority::Runtime
+        );
+        assert_eq!(
+            background.environment_source,
+            TrustedWorkerEnvironmentSource::Background
+        );
+        assert!(background.exit_after_job);
+        let recall_install = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "recall-install")
+            .unwrap();
+        assert_eq!(recall_install.job_types, ["recall-install"]);
+        assert_eq!(
+            recall_install.submission_authority,
+            WorkerSubmissionAuthority::User
+        );
+        assert_eq!(
+            recall_install.environment_source,
+            TrustedWorkerEnvironmentSource::Minimal
+        );
+        assert_eq!(
+            (
+                recall_install.minimum_input_blobs,
+                recall_install.maximum_input_blobs
+            ),
+            (0, 0)
+        );
+        assert_eq!(recall_install.maximum_concurrency, 1);
+        assert!(recall_install.exit_after_job);
+        for (kind, job_type, source, blobs) in [
+            (
+                "audio-analyzer-node",
+                "audio-analysis",
+                TrustedWorkerEnvironmentSource::AudioAnalyzer,
+                (1, 2),
+            ),
+            (
+                "image-search-node",
+                "image-search-google",
+                TrustedWorkerEnvironmentSource::ImageSearchGoogle,
+                (0, 0),
+            ),
+            (
+                "interactive-visualizer-node",
+                "interactive-visualizer",
+                TrustedWorkerEnvironmentSource::InteractiveVisualizer,
+                (1, 1),
+            ),
+            (
+                "managed-setup-node",
+                "managed-setup",
+                TrustedWorkerEnvironmentSource::ManagedSetup,
+                (0, 0),
+            ),
+            (
+                "terminal-command-node",
+                "terminal-command",
+                TrustedWorkerEnvironmentSource::Terminal,
+                (0, 0),
+            ),
+            (
+                "graft-index-node",
+                "graft-index-build",
+                TrustedWorkerEnvironmentSource::CodeIndex,
+                (0, 0),
+            ),
+            (
+                "agent-edits-node",
+                "agent-edits",
+                TrustedWorkerEnvironmentSource::AgentEdits,
+                (0, 0),
+            ),
+            (
+                "outer-opencode-node",
+                "opencode-run",
+                TrustedWorkerEnvironmentSource::OuterOpencode,
+                (0, 4),
+            ),
+            (
+                "outer-trading-agent-node",
+                "trading-agent-run",
+                TrustedWorkerEnvironmentSource::TradingAgent,
+                (0, 0),
+            ),
+            (
+                "outer-career-ops-node",
+                "career-ops-run",
+                TrustedWorkerEnvironmentSource::OuterCareerOps,
+                (0, 0),
+            ),
+            (
+                "system-location-node",
+                "system-location",
+                TrustedWorkerEnvironmentSource::SystemLocation,
+                (0, 0),
+            ),
+            (
+                "claude-account-node",
+                "claude-account",
+                TrustedWorkerEnvironmentSource::ManagedSetup,
+                (0, 0),
+            ),
+            (
+                "chatmock-login-node",
+                "chatmock-login",
+                TrustedWorkerEnvironmentSource::Chatmock,
+                (0, 0),
+            ),
+            (
+                "vimax-node",
+                "vimax-run",
+                TrustedWorkerEnvironmentSource::Vimax,
+                (0, 0),
+            ),
+            (
+                "vox-director-node",
+                "vox-director-run",
+                TrustedWorkerEnvironmentSource::VoxDirector,
+                (0, 0),
+            ),
+            (
+                "outer-shorts-node",
+                "shorts-run",
+                TrustedWorkerEnvironmentSource::OuterShorts,
+                (0, 0),
+            ),
+            (
+                "outer-open-gym-node",
+                "open-gym-run",
+                TrustedWorkerEnvironmentSource::OuterOpenGym,
+                (0, 0),
+            ),
+            (
+                "agent-reach-setup-node",
+                "agent-reach-setup",
+                TrustedWorkerEnvironmentSource::AgentReachSetup,
+                (0, 1),
+            ),
+            (
+                "gbrain-sync-node",
+                "gbrain-sync",
+                TrustedWorkerEnvironmentSource::GbrainSync,
+                (0, 0),
+            ),
+            (
+                "outer-agent-reach-node",
+                "agent-reach-run",
+                TrustedWorkerEnvironmentSource::OuterAgentReach,
+                (0, 0),
+            ),
+            (
+                "outer-agent-tars-node",
+                "agent-tars-run",
+                TrustedWorkerEnvironmentSource::AgentTars,
+                (0, 0),
+            ),
+            (
+                "outer-legal-node",
+                "legal-run",
+                TrustedWorkerEnvironmentSource::OuterLegal,
+                (1, 11),
+            ),
+            (
+                "sf3d-node",
+                "sf3d-reconstruct",
+                TrustedWorkerEnvironmentSource::Sf3d,
+                (1, 1),
+            ),
+            (
+                "outer-codex-node",
+                "codex-run",
+                TrustedWorkerEnvironmentSource::OuterCodex,
+                (0, 4),
+            ),
+            (
+                "outer-ruflo-node",
+                "ruflo-run",
+                TrustedWorkerEnvironmentSource::OuterRuflo,
+                (0, 4),
+            ),
+            (
+                "outer-deep-tutor-node",
+                "deep-tutor-run",
+                TrustedWorkerEnvironmentSource::OuterDeepTutor,
+                (0, 0),
+            ),
+            (
+                "outer-openplanter-node",
+                "openplanter-run",
+                TrustedWorkerEnvironmentSource::OuterOpenPlanter,
+                (0, 0),
+            ),
+            (
+                "manim-node",
+                "manim-render",
+                TrustedWorkerEnvironmentSource::Manim,
+                (0, 0),
+            ),
+            (
+                "deep-tutor-probe-node",
+                "deep-tutor-probe",
+                TrustedWorkerEnvironmentSource::DeepTutorMaintenance,
+                (0, 0),
+            ),
+            (
+                "deep-tutor-index-node",
+                "deep-tutor-index",
+                TrustedWorkerEnvironmentSource::DeepTutorMaintenance,
+                (0, 0),
+            ),
+            (
+                "premortem-node",
+                "premortem-command",
+                TrustedWorkerEnvironmentSource::Premortem,
+                (0, 0),
+            ),
+            (
+                "agent-loop-node",
+                "agent-loop-command",
+                TrustedWorkerEnvironmentSource::AgentLoop,
+                (0, 0),
+            ),
+            (
+                "omh-node",
+                "omh-command",
+                TrustedWorkerEnvironmentSource::Omh,
+                (0, 0),
+            ),
+            (
+                "factcheck-node",
+                "factcheck-command",
+                TrustedWorkerEnvironmentSource::Factcheck,
+                (0, 0),
+            ),
+            (
+                "watch-media-node",
+                "watch-run",
+                TrustedWorkerEnvironmentSource::WatchMedia,
+                (0, 1),
+            ),
+            (
+                "loopx-node",
+                "loopx-tick",
+                TrustedWorkerEnvironmentSource::Loopx,
+                (0, 0),
+            ),
+            (
+                "outer-resource2skill-node",
+                "resource2skill-run",
+                TrustedWorkerEnvironmentSource::Resource2Skill,
+                (0, 0),
+            ),
+            (
+                "career-ops-probe-node",
+                "career-ops-probe",
+                TrustedWorkerEnvironmentSource::OuterCareerOps,
+                (0, 0),
+            ),
+            (
+                "outer-matraix-node",
+                "matraix-run",
+                TrustedWorkerEnvironmentSource::OuterMatraix,
+                (0, 0),
+            ),
+            (
+                "matraix-probe-node",
+                "matraix-probe",
+                TrustedWorkerEnvironmentSource::OuterMatraix,
+                (0, 0),
+            ),
+            (
+                "formsmith-node",
+                "formsmith",
+                TrustedWorkerEnvironmentSource::Formsmith,
+                (1, 1),
+            ),
+            (
+                "formsmith-probe-node",
+                "formsmith-probe",
+                TrustedWorkerEnvironmentSource::Formsmith,
+                (0, 0),
+            ),
+            (
+                "outer-hyperframes-node",
+                "hyperframes-run",
+                TrustedWorkerEnvironmentSource::Hyperframes,
+                (0, 0),
+            ),
+            (
+                "outer-openmontage-node",
+                "openmontage-run",
+                TrustedWorkerEnvironmentSource::OpenMontage,
+                (0, 0),
+            ),
+            (
+                "openmontage-probe-node",
+                "openmontage-probe",
+                TrustedWorkerEnvironmentSource::OpenMontage,
+                (0, 0),
+            ),
+            (
+                "outer-bolt-slides-node",
+                "bolt-slides-run",
+                TrustedWorkerEnvironmentSource::OuterBoltSlides,
+                (0, 0),
+            ),
+            (
+                "legal-probe-node",
+                "legal-probe",
+                TrustedWorkerEnvironmentSource::OuterLegal,
+                (0, 0),
+            ),
+            (
+                "shorts-probe-node",
+                "shorts-probe",
+                TrustedWorkerEnvironmentSource::OuterShorts,
+                (0, 0),
+            ),
+            (
+                "tradingagents-probe-node",
+                "tradingagents-probe",
+                TrustedWorkerEnvironmentSource::TradingAgent,
+                (0, 0),
+            ),
+            (
+                "subsai-transcription-node",
+                "subsai-transcription",
+                TrustedWorkerEnvironmentSource::Subsai,
+                (1, 1),
+            ),
+            (
+                "subsai-probe-node",
+                "subsai-probe",
+                TrustedWorkerEnvironmentSource::Subsai,
+                (0, 0),
+            ),
+            (
+                "speech-media-node",
+                "speech-media",
+                TrustedWorkerEnvironmentSource::SpeechMedia,
+                (0, 1),
+            ),
+            (
+                "agent-browser-profile-node",
+                "agent-browser-profile",
+                TrustedWorkerEnvironmentSource::AgentBrowserProfile,
+                (0, 0),
+            ),
+            (
+                "generated-visual-browser-node",
+                "generated-visual-browser",
+                TrustedWorkerEnvironmentSource::GeneratedVisualBrowser,
+                (1, 1),
+            ),
+            (
+                "scriberr-garden-transcription-node",
+                "scriberr-garden-transcription",
+                TrustedWorkerEnvironmentSource::ScriberrGarden,
+                (0, 1),
+            ),
+            (
+                "watermark-operation-node",
+                "watermark-operation",
+                TrustedWorkerEnvironmentSource::Watermark,
+                (1, 1),
+            ),
+            (
+                "outer-hardware-blueprint-node",
+                "hardware-blueprint-run",
+                TrustedWorkerEnvironmentSource::OuterHardwareBlueprint,
+                (0, 0),
+            ),
+            (
+                "outer-get-doc-node",
+                "get-doc-run",
+                TrustedWorkerEnvironmentSource::GetDoc,
+                (0, 0),
+            ),
+            (
+                "get-doc-download-node",
+                "get-doc-download",
+                TrustedWorkerEnvironmentSource::GetDocDownload,
+                (0, 0),
+            ),
+            (
+                "outer-meeting-notes-node",
+                "meeting-notes-run",
+                TrustedWorkerEnvironmentSource::MeetingNotes,
+                (1, 1),
+            ),
+            (
+                "outer-inbox-zero-node",
+                "inbox-zero-run",
+                TrustedWorkerEnvironmentSource::OuterInboxZero,
+                (0, 0),
+            ),
+            (
+                "outer-socials-manager-node",
+                "socials-manager-run",
+                TrustedWorkerEnvironmentSource::OuterSocialsManager,
+                (0, 0),
+            ),
+            (
+                "outer-max-research-node",
+                "max-research-run",
+                TrustedWorkerEnvironmentSource::OuterMaxResearch,
+                (0, 0),
+            ),
+            (
+                "outer-video-use-node",
+                "video-use-run",
+                TrustedWorkerEnvironmentSource::OuterVideoUse,
+                (0, 0),
+            ),
+            (
+                "outer-openwork-node",
+                "openwork-run",
+                TrustedWorkerEnvironmentSource::OuterOpenwork,
+                (0, 0),
+            ),
+        ] {
+            let worker = workers
+                .workers
+                .iter()
+                .find(|worker| worker.kind == kind)
+                .unwrap();
+            assert_eq!(worker.job_types, [job_type]);
+            assert_eq!(worker.environment_source, source);
+            assert_eq!(
+                (worker.minimum_input_blobs, worker.maximum_input_blobs),
+                blobs
+            );
+            assert!(worker.exit_after_job);
+        }
+        let speech_media = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "speech-media-node")
+            .unwrap();
+        assert_eq!(speech_media.resource_class, ResourceClass::MediaProcessing);
+        assert_eq!(
+            (
+                speech_media.estimated_cold_start_commit_mb,
+                speech_media.soft_commit_limit_mb,
+                speech_media.hard_commit_limit_mb,
+            ),
+            (2_048, 4_096, 6_144)
+        );
+        assert_eq!(speech_media.maximum_runtime_ms, 7_320_000);
+        assert_eq!(speech_media.graceful_cancellation_ms, 60_000);
+        assert!(speech_media.service_dependencies.is_empty());
+        let gbrain_sync = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "gbrain-sync-node")
+            .unwrap();
+        assert_eq!(
+            gbrain_sync.service_dependencies,
+            [WorkerServiceDependency {
+                service_id: "gbrain".into(),
+                condition: WorkerServiceDependencyCondition::GbrainSyncAlways,
+            }]
+        );
+        let scriberr_garden = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "scriberr-garden-transcription-node")
+            .unwrap();
+        assert_eq!(
+            scriberr_garden.service_dependencies,
+            [WorkerServiceDependency {
+                service_id: "scriberr".into(),
+                condition: WorkerServiceDependencyCondition::ScriberrGardenTranscriptionAlways,
+            }]
+        );
+        let scriberr_probe = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "scriberr-garden-probe-node")
+            .unwrap();
+        assert_eq!(
+            scriberr_probe.job_types,
+            ["scriberr-garden-health", "scriberr-garden-inspect-youtube"]
+        );
+        assert_eq!(
+            scriberr_probe.environment_source,
+            TrustedWorkerEnvironmentSource::ScriberrGarden
+        );
+        assert_eq!(
+            (
+                scriberr_probe.minimum_input_blobs,
+                scriberr_probe.maximum_input_blobs
+            ),
+            (0, 0)
+        );
+        assert!(scriberr_probe.service_dependencies.is_empty());
+        assert!(scriberr_probe.exit_after_job);
+        for kind in [
+            "outer-hyperframes-node",
+            "outer-openmontage-node",
+            "outer-bolt-slides-node",
+            "outer-hardware-blueprint-node",
+            "outer-get-doc-node",
+        ] {
+            let worker = workers
+                .workers
+                .iter()
+                .find(|worker| worker.kind == kind)
+                .unwrap();
+            assert_eq!(
+                worker.service_dependencies,
+                [WorkerServiceDependency {
+                    service_id: "chatmock".into(),
+                    condition: WorkerServiceDependencyCondition::Always,
+                }]
+            );
+        }
+        let meeting_notes = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "outer-meeting-notes-node")
+            .unwrap();
+        assert_eq!(
+            meeting_notes.service_dependencies,
+            [
+                WorkerServiceDependency {
+                    service_id: "scriberr".into(),
+                    condition: WorkerServiceDependencyCondition::MeetingNotesEngineScriberr,
+                },
+                WorkerServiceDependency {
+                    service_id: "voicebox".into(),
+                    condition: WorkerServiceDependencyCondition::MeetingNotesEngineVoicebox,
+                },
+                WorkerServiceDependency {
+                    service_id: "chatmock".into(),
+                    condition: WorkerServiceDependencyCondition::MeetingNotesNeedsChatmock,
+                },
+            ]
+        );
+        let inbox_zero = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "outer-inbox-zero-node")
+            .unwrap();
+        assert_eq!(
+            inbox_zero.service_dependencies,
+            [WorkerServiceDependency {
+                service_id: "inbox-zero-stack".into(),
+                condition: WorkerServiceDependencyCondition::Always,
+            }]
+        );
+        let agent_tars = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "outer-agent-tars-node")
+            .unwrap();
+        assert_eq!(agent_tars.resource_class, ResourceClass::Core);
+        assert_eq!(agent_tars.maximum_runtime_ms, 1_920_000);
+        assert_eq!(agent_tars.graceful_cancellation_ms, 60_000);
+        assert_eq!(
+            agent_tars.service_dependencies,
+            [WorkerServiceDependency {
+                service_id: "ui-tars".into(),
+                condition: WorkerServiceDependencyCondition::Always,
+            }]
+        );
+        let openwork = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "outer-openwork-node")
+            .unwrap();
+        assert_eq!(openwork.resource_class, ResourceClass::Core);
+        assert_eq!(openwork.maximum_runtime_ms, 21_600_000);
+        assert_eq!(openwork.graceful_cancellation_ms, 60_000);
+        assert_eq!(
+            openwork.service_dependencies,
+            [WorkerServiceDependency {
+                service_id: "openwork".into(),
+                condition: WorkerServiceDependencyCondition::Always,
+            }]
+        );
+        let socials_manager = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "outer-socials-manager-node")
+            .unwrap();
+        assert_eq!(
+            socials_manager.service_dependencies,
+            [
+                WorkerServiceDependency {
+                    service_id: "postiz-coordinator".into(),
+                    condition: WorkerServiceDependencyCondition::Always,
+                },
+                WorkerServiceDependency {
+                    service_id: "chatmock".into(),
+                    condition: WorkerServiceDependencyCondition::Always,
+                },
+            ]
+        );
+        let max_research = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "outer-max-research-node")
+            .unwrap();
+        assert_eq!(
+            max_research.service_dependencies,
+            [
+                WorkerServiceDependency {
+                    service_id: "chatmock".into(),
+                    condition: WorkerServiceDependencyCondition::Always,
+                },
+                WorkerServiceDependency {
+                    service_id: "deep-research".into(),
+                    condition: WorkerServiceDependencyCondition::Always,
+                },
+                WorkerServiceDependency {
+                    service_id: "openscience".into(),
+                    condition: WorkerServiceDependencyCondition::Always,
+                },
+            ]
+        );
+        let video_use = workers
+            .workers
+            .iter()
+            .find(|worker| worker.kind == "outer-video-use-node")
+            .unwrap();
+        assert_eq!(video_use.resource_class, ResourceClass::Core);
+        assert_eq!(video_use.graceful_cancellation_ms, 120_000);
+        assert_eq!(video_use.maximum_runtime_ms, 43_200_000);
+        assert_eq!(
+            video_use.service_dependencies,
+            [
+                WorkerServiceDependency {
+                    service_id: "chatmock".into(),
+                    condition: WorkerServiceDependencyCondition::Always,
+                },
+                WorkerServiceDependency {
+                    service_id: "scriberr".into(),
+                    condition: WorkerServiceDependencyCondition::Always,
+                },
+            ]
+        );
+        assert_eq!(
+            services
+                .services
+                .iter()
+                .map(|service| service.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "chatmock",
+                "dashboard",
+                "hermes",
+                "gbrain",
+                "comfyui",
+                "telegram-gateway",
+                "whatsapp-gateway",
+                "openwork",
+                "openscience",
+                "money-printer",
+                "wardrobe",
+                "penecho",
+                "vlm-ocr",
+                "recall",
+                "mem0-semantic-engine",
+                "local-mcp-broker",
+                "postiz-coordinator",
+                "inbox-zero-stack",
+                "spotify-playback",
+                "cliproxy",
+                "quartz",
+                "ui-tars",
+                "cad",
+                "solidworks-mcp",
+                "colpali",
+                "humanizer",
+                "voicebox",
+                "scriberr",
+                "deep-research",
+                "deer-flow",
+                "vibe-trading",
+                "stock-analyst",
+            ]
+        );
+        for service in &services.services {
+            for mode in [RuntimeMode::Lean, RuntimeMode::Hot, RuntimeMode::Packaged] {
+                assert_eq!(
+                    service
+                        .launch_profiles
+                        .iter()
+                        .filter(|profile| profile.applies_to(mode))
+                        .count(),
+                    1,
+                    "{} must have exactly one {mode:?} launch profile",
+                    service.id
+                );
+                assert!(!service
+                    .launch_profile(mode)
+                    .unwrap()
+                    .allowed_executable
+                    .is_empty());
+            }
+        }
+
+        let dashboard = services
             .services
             .iter()
-            .any(|service| service.id == "dashboard"));
+            .find(|service| service.id == "dashboard")
+            .unwrap();
+        let hermes = services
+            .services
+            .iter()
+            .find(|service| service.id == "hermes")
+            .unwrap();
+        let gbrain = services
+            .services
+            .iter()
+            .find(|service| service.id == "gbrain")
+            .unwrap();
+        let comfyui = services
+            .services
+            .iter()
+            .find(|service| service.id == "comfyui")
+            .unwrap();
+        let ui_tars = services
+            .services
+            .iter()
+            .find(|service| service.id == "ui-tars")
+            .unwrap();
+        assert!(
+            services
+                .services
+                .iter()
+                .all(|service| service.requirement.is_required()),
+            "every checked-in service must remain a mandatory product capability"
+        );
+        assert_eq!(
+            services
+                .services
+                .iter()
+                .filter(|service| service.startup_policy == ServiceStartupPolicy::Eager)
+                .map(|service| service.id.as_str())
+                .collect::<Vec<_>>(),
+            ["chatmock", "dashboard"],
+            "mandatory on-demand and scheduled services must not become eager"
+        );
+        assert_eq!(ui_tars.maximum_lease_ms, 2_100_000);
+        assert_ne!(
+            dashboard
+                .launch_profile(RuntimeMode::Lean)
+                .unwrap()
+                .arguments,
+            dashboard
+                .launch_profile(RuntimeMode::Hot)
+                .unwrap()
+                .arguments
+        );
+        let lean_dashboard = dashboard.launch_profile(RuntimeMode::Lean).unwrap();
+        let hot_dashboard = dashboard.launch_profile(RuntimeMode::Hot).unwrap();
+        let packaged_dashboard = dashboard.launch_profile(RuntimeMode::Packaged).unwrap();
+        assert_eq!(
+            hot_dashboard.resource_limits,
+            ServiceResourceLimits {
+                estimated_cold_start_commit_mb: 3_072,
+                soft_commit_limit_mb: 6_144,
+                hard_commit_limit_mb: 8_192,
+            }
+        );
+        assert_eq!(
+            hot_dashboard.working_directory,
+            ServiceWorkingDirectoryPolicy::AppSubdirectory {
+                path: "dashboard".into(),
+            }
+        );
+        assert!(lean_dashboard.install_probe.contains(
+            ServiceInstallProbeAuthority::AppRoot,
+            "dashboard/.next-desktop/standalone/server.js",
+        ));
+        assert!(packaged_dashboard.install_probe.contains(
+            ServiceInstallProbeAuthority::AppRoot,
+            "dashboard-standalone/dashboard/server.js",
+        ));
+        for service_id in ["cad", "colpali", "humanizer"] {
+            let service = services
+                .services
+                .iter()
+                .find(|service| service.id == service_id)
+                .unwrap();
+            let receipt = format!("{service_id}-service/runtime-artifact.json");
+            assert_eq!(service.launch_profiles.len(), 2);
+            assert!(!service
+                .launch_profile(RuntimeMode::Hot)
+                .unwrap()
+                .install_probe
+                .contains(ServiceInstallProbeAuthority::AppRoot, &receipt));
+            assert!(service
+                .launch_profile(RuntimeMode::Packaged)
+                .unwrap()
+                .install_probe
+                .contains(ServiceInstallProbeAuthority::AppRoot, &receipt));
+        }
+        assert_eq!(hermes.startup_policy, ServiceStartupPolicy::OnDemand);
+        assert_eq!(hermes.idle_ttl_ms, Some(600_000));
+        assert_eq!(gbrain.startup_policy, ServiceStartupPolicy::OnDemand);
+        assert_eq!(gbrain.dependencies, ["chatmock"]);
+        assert_eq!(gbrain.idle_ttl_ms, Some(600_000));
+        assert_eq!(gbrain.maximum_concurrent_leases, 32);
+        assert_eq!(gbrain.maximum_lease_ms, 1_800_000);
+        assert_eq!(gbrain.readiness.path, "/ready");
+        assert_eq!(
+            gbrain.readiness.expected_body_contains.as_deref(),
+            Some("\"backend\":\"gbrain\"")
+        );
+        assert_eq!(gbrain.launch_profiles.len(), 1);
+        let gbrain_profile = gbrain.launch_profile(RuntimeMode::Packaged).unwrap();
+        assert_eq!(
+            gbrain_profile.executable_authority,
+            ServiceExecutableAuthority::RuntimeRoot
+        );
+        assert_eq!(gbrain_profile.allowed_executable, "runtimes/node/node.exe");
+        assert_eq!(
+            gbrain_profile.arguments,
+            vec![
+                ServiceLaunchArgument::Literal {
+                    value: "--no-warnings".into(),
+                },
+                ServiceLaunchArgument::Literal {
+                    value: "--experimental-transform-types".into(),
+                },
+                ServiceLaunchArgument::AppPath {
+                    path: "gbrain-adapter/src/node-entrypoint.mjs".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            gbrain_profile.environment_source,
+            TrustedServiceEnvironmentSource::Gbrain
+        );
+        assert_eq!(
+            gbrain_profile.working_directory,
+            ServiceWorkingDirectoryPolicy::AppSubdirectory {
+                path: "gbrain-adapter".into(),
+            }
+        );
+        assert!(gbrain_profile.install_probe.contains(
+            ServiceInstallProbeAuthority::RuntimeRoot,
+            "runtimes/node/node.exe",
+        ));
+        for app_path in [
+            "gbrain-adapter/src/node-entrypoint.mjs",
+            "gbrain-adapter/src/node-loader.mjs",
+            "gbrain-adapter/src/node-server.ts",
+            "gbrain-adapter/src/request-handler.ts",
+            "gbrain/src/core/engine-factory.ts",
+            "gbrain-adapter/node_modules/@electric-sql/pglite/package.json",
+            "gbrain/node_modules/@electric-sql/pglite/package.json",
+            "gbrain/node_modules/js-yaml/package.json",
+            "gbrain/node_modules/@dqbd/tiktoken/package.json",
+            "gbrain/node_modules/web-tree-sitter/package.json",
+            "gbrain/runtime-artifact.json",
+        ] {
+            assert!(gbrain_profile
+                .install_probe
+                .contains(ServiceInstallProbeAuthority::AppRoot, app_path));
+        }
+        assert_eq!(comfyui.startup_policy, ServiceStartupPolicy::OnDemand);
+        assert_eq!(comfyui.idle_ttl_ms, Some(600_000));
+        assert_eq!(comfyui.maximum_concurrent_leases, 4);
+        assert_eq!(comfyui.maximum_lease_ms, 900_000);
+        let comfyui_profile = comfyui.launch_profile(RuntimeMode::Packaged).unwrap();
+        assert_eq!(
+            comfyui_profile.environment_source,
+            TrustedServiceEnvironmentSource::Comfyui
+        );
+        assert_eq!(
+            comfyui_profile.executable_authority,
+            ServiceExecutableAuthority::RuntimeRoot
+        );
+        assert!(comfyui_profile.install_probe.contains(
+            ServiceInstallProbeAuthority::RuntimeRoot,
+            "runtimes/comfyui-python/python.exe",
+        ));
+        assert!(comfyui_profile.install_probe.contains(
+            ServiceInstallProbeAuthority::RuntimeRoot,
+            "runtimes/comfyui-python/runtime-artifact.json",
+        ));
+        for marker in [
+            "runtime-artifact.json",
+            "pylock.packaged.toml",
+            "main.py",
+            "folder_paths.py",
+            "server.py",
+        ] {
+            assert!(comfyui_profile.install_probe.contains(
+                ServiceInstallProbeAuthority::AppRoot,
+                &format!("comfyui/{marker}"),
+            ));
+        }
+        assert!(comfyui_profile
+            .arguments
+            .contains(&ServiceLaunchArgument::AppPath {
+                path: "comfyui/main.py".into(),
+            }));
+        assert!(comfyui_profile
+            .arguments
+            .contains(&ServiceLaunchArgument::DataPath {
+                path: "comfyui".into(),
+            }));
+        assert_eq!(
+            comfyui_profile.working_directory,
+            ServiceWorkingDirectoryPolicy::AppSubdirectory {
+                path: "comfyui".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn service_manifest_denies_untyped_launch_authority() {
+        let source = include_bytes!("../../../desktop/runtime-v2/manifests/services.json");
+        for (path, field, value) in [
+            (
+                vec!["services", "0"],
+                "command",
+                serde_json::json!("cmd.exe"),
+            ),
+            (
+                vec!["services", "0", "launchProfiles", "0"],
+                "environment",
+                serde_json::json!({"SECRET": "caller-value"}),
+            ),
+            (
+                vec!["services", "0", "launchProfiles", "0"],
+                "shell",
+                serde_json::json!(true),
+            ),
+        ] {
+            let mut manifest: serde_json::Value = serde_json::from_slice(source).unwrap();
+            let mut target = &mut manifest;
+            for component in path {
+                target = if let Ok(index) = component.parse::<usize>() {
+                    target.get_mut(index).unwrap()
+                } else {
+                    target.get_mut(component).unwrap()
+                };
+            }
+            target.as_object_mut().unwrap().insert(field.into(), value);
+            assert!(matches!(
+                parse_service_manifest(&serde_json::to_vec(&manifest).unwrap()),
+                Err(ProtocolError::MalformedJson(_))
+            ));
+        }
+
+        let mut manifest: serde_json::Value = serde_json::from_slice(source).unwrap();
+        manifest["services"][0]["launchProfiles"][0]["arguments"][3]["value"] =
+            serde_json::json!("caller-port");
+        assert!(matches!(
+            parse_service_manifest(&serde_json::to_vec(&manifest).unwrap()),
+            Err(ProtocolError::MalformedJson(_))
+        ));
+    }
+
+    #[test]
+    fn service_manifest_rejects_launch_gaps_placeholders_and_unbounded_policy() {
+        let source = include_bytes!("../../../desktop/runtime-v2/manifests/services.json");
+        let invalid_manifest = |mutate: fn(&mut serde_json::Value)| {
+            let mut manifest: serde_json::Value = serde_json::from_slice(source).unwrap();
+            mutate(&mut manifest);
+            parse_service_manifest(&serde_json::to_vec(&manifest).unwrap())
+        };
+
+        assert!(matches!(
+            invalid_manifest(|manifest| manifest["version"] = serde_json::json!(1)),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::UnsupportedProtocolVersion(1)
+            ))
+        ));
+        assert!(matches!(
+            invalid_manifest(|manifest| {
+                manifest["services"][2]["launchProfiles"][0]["modes"] =
+                    serde_json::json!(["lean", "hot"]);
+            }),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidRange {
+                    field: "service launch mode coverage"
+                }
+            ))
+        ));
+        assert!(matches!(
+            invalid_manifest(|manifest| {
+                manifest["services"][0]["launchProfiles"][0]["modes"] =
+                    serde_json::json!(["lean", "lean", "packaged"]);
+            }),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidRange {
+                    field: "duplicate service launch mode"
+                }
+            ))
+        ));
+        assert!(matches!(
+            invalid_manifest(|manifest| {
+                manifest["services"][0]["launchProfiles"][0]["arguments"][1]["value"] =
+                    serde_json::json!("${caller-argument}");
+            }),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidIdentifier {
+                    field: "service launch literal"
+                }
+            ))
+        ));
+        assert!(matches!(
+            invalid_manifest(|manifest| {
+                manifest["services"][2]["maximumLeaseMs"] = serde_json::json!(0);
+            }),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidRange {
+                    field: "service limits"
+                }
+            ))
+        ));
+        assert!(matches!(
+            invalid_manifest(|manifest| {
+                manifest["services"][2]["restartBounds"]["maximumRestarts"] = serde_json::json!(0);
+            }),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidRange {
+                    field: "service restart bounds"
+                }
+            ))
+        ));
+        assert!(matches!(
+            invalid_manifest(|manifest| {
+                manifest["services"][1]["launchProfiles"][2]["resourceLimits"]
+                    ["hardCommitLimitMb"] = serde_json::json!(6_000);
+            }),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidRange {
+                    field: "service profile commit limits"
+                }
+            ))
+        ));
+        assert!(matches!(
+            invalid_manifest(|manifest| {
+                manifest["services"][1]["launchProfiles"][2]["workingDirectory"]["path"] =
+                    serde_json::json!("../dashboard");
+            }),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidRelativePath {
+                    field: "service working directory"
+                }
+            ))
+        ));
+        assert!(matches!(
+            invalid_manifest(|manifest| {
+                manifest["services"][1]["launchProfiles"][0]["workingDirectory"] = serde_json::json!({
+                    "kind": "hot-development-workspace",
+                    "appPath": "dashboard",
+                    "isolatedDataPath": "dashboard-workspace"
+                });
+            }),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidRange {
+                    field: "service hot workspace mode"
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn service_manifest_requires_nullable_policy_fields_and_install_proofs() {
+        let source = include_bytes!("../../../desktop/runtime-v2/manifests/services.json");
+        for field in ["idleTtlMs", "restartBounds"] {
+            let mut manifest: serde_json::Value = serde_json::from_slice(source).unwrap();
+            manifest["services"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(matches!(
+                parse_service_manifest(&serde_json::to_vec(&manifest).unwrap()),
+                Err(ProtocolError::MalformedJson(_))
+            ));
+        }
+
+        let mut manifest: serde_json::Value = serde_json::from_slice(source).unwrap();
+        manifest["services"][0]["readiness"]
+            .as_object_mut()
+            .unwrap()
+            .remove("expectedBodyContains");
+        assert!(matches!(
+            parse_service_manifest(&serde_json::to_vec(&manifest).unwrap()),
+            Err(ProtocolError::MalformedJson(_))
+        ));
+
+        let mut manifest: serde_json::Value = serde_json::from_slice(source).unwrap();
+        manifest["services"][0]["launchProfiles"][0]["installProbe"]["files"] = serde_json::json!([{
+            "authority": "app-root",
+            "path": "chatmock/chatmock.py"
+        }]);
+        assert!(matches!(
+            parse_service_manifest(&serde_json::to_vec(&manifest).unwrap()),
+            Err(ProtocolError::InvalidPayload(
+                ValidationError::InvalidIdentifier {
+                    field: "service executable install probe"
+                }
+            ))
+        ));
     }
 }

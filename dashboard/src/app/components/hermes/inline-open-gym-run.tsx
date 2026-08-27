@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import ChatMarkdown from "@/app/components/chat-markdown";
-import { resolveAgentRunStreamError } from "@/lib/agent-run-stream";
+import { closeAgentRunStream, resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 import type { ExternalAgentOutcome, ExternalAgentTerminalOutcome } from "@/lib/conversations/external-agent-runs";
 import { isFitnessProgramRequest } from "@/lib/open-gym/identity.ts";
 import { parseOpenGymResult, type OpenGymAnimationReference } from "@/lib/open-gym/result.ts";
@@ -159,7 +159,7 @@ export default function InlineOpenGymRun({
         },
       });
     };
-    return () => source.close();
+    return () => closeAgentRunStream(source);
   }, [applyEvent, base, persistedContent, persistedOutcome]);
 
   useEffect(() => {

@@ -1,4 +1,4 @@
-// In-memory run manager for the Shorts agent.
+// Worker-local run manager for the Shorts agent.
 //
 // Breadboard does not drive a tool loop here: the cloned project owns the whole
 // pipeline — download, transcribe, rank, cut, reframe — and there is no point
@@ -7,15 +7,14 @@
 // at ChatMock through the OpenAI SDK's own base-URL variable, and turns the
 // bridge's NDJSON into the event stream every other agent publishes.
 //
-// Runs are ephemeral: events live here and the SSE route replays them. The cut
-// clips are what is durable — each one is imported as a video artifact of the
-// conversation before the run reports completion.
+// One fresh Runtime V2 process owns each run and its complete Python/Whisper/
+// ffmpeg tree. The public functions at the bottom are the thin Next facade over
+// Rust's durable job ledger. Cut clips remain durable conversation artifacts.
 
 import { randomUUID } from "node:crypto";
 import { type ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import {
   closeShortsArtifactContext,
   discardWorkspace,
@@ -106,6 +105,7 @@ function count(value: unknown): number {
 
 export interface StartShortsRunInput {
   userId: number;
+  requestId?: string;
   conversationPublicId: string;
   request: ShortsRequest;
   /** The chat's model — what ranks the transcript, through ChatMock. */
@@ -116,7 +116,16 @@ export interface StartShortsRunInput {
   baseUrl: string;
 }
 
-export function startRun(input: StartShortsRunInput): { runId: string; status: RunStatus } {
+export interface ShortsRuntimeWorkerRunInput extends StartShortsRunInput {
+  runtimeJobId?: string;
+  runtimeWorkspacePath?: string;
+  apiKey: string;
+}
+
+/** Fixed worker-local entrypoint. Next routes must call durable `startRun`. */
+export function startRuntimeWorkerRun(
+  input: ShortsRuntimeWorkerRunInput,
+): { runId: string; status: RunStatus } {
   const runtime = resolveShortsRoot();
   if (!runtime) {
     throw new Error("The AI-Youtube-Shorts-Generator clone was not found next to the dashboard.");
@@ -144,8 +153,10 @@ export function startRun(input: StartShortsRunInput): { runId: string; status: R
     source = input.request.source.url;
   }
 
-  const runId = `shrun_${randomUUID().replaceAll("-", "")}`;
-  const workspace = path.join(workspaceDirectory(), `run_${runId}`);
+  const runId = input.runtimeJobId ?? `shrun_${randomUUID().replaceAll("-", "")}`;
+  const workspace = input.runtimeWorkspacePath
+    ? path.join(input.runtimeWorkspacePath, "clips")
+    : path.join(workspaceDirectory(), `run_${runId}`);
   fs.mkdirSync(workspace, { recursive: true });
 
   const run: RunState = {
@@ -186,7 +197,7 @@ export function startRun(input: StartShortsRunInput): { runId: string; status: R
 
 function drive(
   run: RunState,
-  input: StartShortsRunInput,
+  input: ShortsRuntimeWorkerRunInput,
   paths: { python: string; bridge: string; root: string; source: string },
 ): void {
   const job = {
@@ -213,7 +224,7 @@ function drive(
       // Breadboard's own models with no key and no change to the checkout.
       LLM_PROVIDER: "openai",
       OPENAI_BASE_URL: normalizeBaseUrl(input.baseUrl),
-      OPENAI_API_KEY: chatmockApiKeyValue(),
+      OPENAI_API_KEY: input.apiKey,
       OPENAI_MODEL: input.model,
       LOCAL_WHISPER_MODEL: input.whisperModel || "base",
       LOCAL_WHISPER_DEVICE: process.env.SHORTS_WHISPER_DEVICE?.trim() || "auto",
@@ -418,7 +429,7 @@ async function completeRun(
       published.push({ ...clip, artifactId: null, filename: "" });
       continue;
     }
-    const stored = publishClip({
+    const stored = await publishClip({
       context: run.context,
       clip,
       workspace: run.workspace,
@@ -518,15 +529,19 @@ function scheduleCleanup(run: RunState): void {
   timer.unref?.();
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): ShortsRunEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): ShortsRunEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;
@@ -546,4 +561,43 @@ export function abortRun(userId: number, runId: string): boolean {
   });
   scheduleCleanup(run);
   return true;
+}
+
+/** Public durable facade. Runtime V2 owns the complete media process tree. */
+export async function startRun(
+  input: StartShortsRunInput,
+): Promise<{ runId: string; status: RunStatus }> {
+  const { startOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return startOuterAgentRun({
+    kind: "shorts",
+    userId: input.userId,
+    requestId: input.requestId,
+    requestPayload: {
+      request: input.request,
+      conversationPublicId: input.conversationPublicId,
+      model: input.model,
+      whisperModel: input.whisperModel,
+      baseUrl: input.baseUrl,
+    },
+  }) as Promise<{ runId: string; status: RunStatus }>;
+}
+
+export async function getEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): Promise<ShortsRunEvent[]> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  const view = await readOuterAgentRunView("shorts", userId, runId, since);
+  return view.events as ShortsRunEvent[];
+}
+
+export async function isTerminal(userId: number, runId: string): Promise<boolean> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  return (await readOuterAgentRunView("shorts", userId, runId, 0)).terminal;
+}
+
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
+  const { abortOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return abortOuterAgentRun("shorts", userId, runId);
 }

@@ -131,7 +131,10 @@ function createFakeScriberr({ failTranscription = false, malformedTranscript = f
 // ── Harness wiring: real store + real client + runner, minimal ingest that
 //    writes into a temp garden's sources/ folder like the real pipeline. ─────
 
-function makeHarness(fake, { ingestFails = false, resumeIndexingFails = false } = {}) {
+function makeHarness(
+  fake,
+  { ingestFails = false, resumeIndexingFails = false, signal } = {},
+) {
   const db = new Database(":memory:");
   db.exec(`
     CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT);
@@ -152,12 +155,19 @@ function makeHarness(fake, { ingestFails = false, resumeIndexingFails = false } 
     ytdlpDownloadTimeoutMs: 10_000,
   };
 
-  const counters = { ingestCalls: 0, resumeIndexingCalls: 0 };
+  const counters = {
+    ingestCalls: 0,
+    resumeIndexingCalls: 0,
+    ingestUserId: null,
+    resumeIndexingUserId: null,
+  };
   const runner = new VideoTranscriptionRunner({
     config,
     store,
     createScriberrClient: () =>
       new ScriberrClient({ baseUrl: fake.baseUrl, apiToken: "test-key", requestTimeoutMs: 5_000 }),
+    withScriberrLease: (_reason, operation) => operation(),
+    signal,
     probeMedia: async () => ({
       container: "mov,mp4",
       codecs: ["h264", "aac"],
@@ -171,6 +181,7 @@ function makeHarness(fake, { ingestFails = false, resumeIndexingFails = false } 
     // app; here the boundary under test is the transcription flow).
     ingest: async (input) => {
       counters.ingestCalls += 1;
+      counters.ingestUserId = input.userId;
       if (ingestFails) throw new Error("boom");
       const slug = slugify(input.sourceTitle) || "video-source";
       const relPath = `sources/${slug}.md`;
@@ -186,8 +197,9 @@ function makeHarness(fake, { ingestFails = false, resumeIndexingFails = false } 
       input.onProgress?.("Refreshing the Learning Map...");
       return { sourceSlug: slug, sourceRelPath: relPath, sourceTitle: input.sourceTitle, wordCount: 10 };
     },
-    resumeIndexing: async () => {
+    resumeIndexing: async (input) => {
       counters.resumeIndexingCalls += 1;
+      counters.resumeIndexingUserId = input.userId;
       if (resumeIndexingFails) throw new Error("index boom");
     },
     findExistingVideoSource,
@@ -266,6 +278,42 @@ test("YouTube job runs end-to-end: submit, poll, transcript, markdown in sources
     assert.equal(fake.state.startCalls, 1);
     // The runner passed through the visible stages.
     assert.equal(done.progressPercent, 100);
+    assert.equal(harness.counters.ingestUserId, 1);
+  } finally {
+    await fake.close();
+    harness.cleanup();
+  }
+});
+
+test("one admitted Runtime worker executes exactly one durable job", async () => {
+  const fake = await createFakeScriberr();
+  const harness = makeHarness(fake);
+  try {
+    const job = queueYouTubeJob(harness.store);
+    const done = await harness.runner.runExact(job.id, "start");
+    assert.equal(done.status, "completed");
+    assert.equal(done.outputRelativePath, "sources/fake-lecture.md");
+    assert.equal(harness.store.hasQueuedJobs(), false);
+  } finally {
+    await fake.close();
+    harness.cleanup();
+  }
+});
+
+test("native Runtime cancellation kills the upstream Scriberr job and settles durable state", async () => {
+  const fake = await createFakeScriberr();
+  fake.state.statusPollsUntilComplete = 1000;
+  const controller = new AbortController();
+  const harness = makeHarness(fake, { signal: controller.signal });
+  try {
+    const job = queueYouTubeJob(harness.store);
+    const execution = harness.runner.runExact(job.id, "start");
+    await waitForStatus(harness.store, job.id, "transcribing");
+    controller.abort(new DOMException("Runtime cancellation requested", "AbortError"));
+    const done = await execution;
+    assert.equal(done.status, "cancelled");
+    assert.equal(done.cancelRequested, true);
+    assert.equal(fake.state.killCalls, 1);
   } finally {
     await fake.close();
     harness.cleanup();
@@ -331,6 +379,7 @@ test("indexing failure after markdown write is recoverable without re-transcribi
     assert.equal(done.sourceSlug, "fake-lecture");
     assert.equal(fake.state.startCalls, startCallsAfterFirstRun, "no re-transcription on retry");
     assert.equal(harness.counters.resumeIndexingCalls, 1, "indexing resumed exactly once");
+    assert.equal(harness.counters.resumeIndexingUserId, 1);
     assert.equal(harness.counters.ingestCalls, 1, "ingest not repeated after markdown exists");
   } finally {
     await fake.close();
@@ -397,6 +446,7 @@ test("upload jobs are validated with ffprobe results before submission", async (
     store,
     createScriberrClient: () =>
       new ScriberrClient({ baseUrl: fake2.baseUrl, apiToken: "test-key", requestTimeoutMs: 5_000 }),
+    withScriberrLease: (_reason, operation) => operation(),
     probeMedia: async () => ({
       container: "mov,mp4",
       codecs: ["h264"],

@@ -17,7 +17,7 @@ public static class BreadboardMemoryQaPerformanceInfo {
 Add-Type -TypeDefinition $source
 
 while (($request = [Console]::In.ReadLine()) -ne $null) {
-  if ($request -ne 'sample') {
+  if ($request -ne 'sample' -and $request -ne 'sample-with-listeners') {
     [Console]::Out.WriteLine('{"error":"malformed_request"}')
     continue
   }
@@ -42,6 +42,22 @@ while (($request = [Console]::In.ReadLine()) -ne $null) {
         workingSetBytes = [uint64]$_.WorkingSet64
       }
     })
+    $listeners = @()
+    if ($request -eq 'sample-with-listeners') {
+      try {
+        $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object {
+          [pscustomobject]@{
+            localAddress = [string]$_.LocalAddress
+            port = [uint16]$_.LocalPort
+            ownerPid = [int]$_.OwningProcess
+          }
+        })
+      } catch {
+        # Process and commit evidence remains useful on Windows editions where
+        # the NetTCPIP provider is unavailable. Callers that need listener
+        # ownership fail that gate explicitly instead of treating it as a skip.
+      }
+    }
     [pscustomobject]@{
       sampledAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
       commitTotalMb = ([uint64]$performance.CommitTotal * $page) / 1MB
@@ -50,6 +66,7 @@ while (($request = [Console]::In.ReadLine()) -ne $null) {
       physicalAvailableMb = ([uint64]$performance.PhysicalAvailable * $page) / 1MB
       processCount = [uint32]$performance.ProcessCount
       processes = $processes
+      listeningPorts = $listeners
     } | ConvertTo-Json -Compress -Depth 4
   } catch {
     [pscustomobject]@{ error = [string]$_.Exception.Message } | ConvertTo-Json -Compress

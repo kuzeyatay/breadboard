@@ -117,7 +117,15 @@ if (!npmCli) {
 // Node 24 on Windows rejects direct `.cmd` execution with `shell:false` as
 // EINVAL. Invoke npm's JavaScript entry through the current Node executable so
 // the child remains shell-free, hidden, and owned by this exact process tree.
-const child = spawn(process.execPath, [npmCli, "--prefix", "desktop", "run", "dev"], {
+const child = spawn(process.execPath, [
+  npmCli,
+  "--prefix",
+  "desktop",
+  "run",
+  "dev",
+  "--",
+  "--breadboard-internal-lean-dashboard",
+], {
   cwd: repoRoot,
   stdio: "inherit",
   shell: false,

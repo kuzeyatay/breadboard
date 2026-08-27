@@ -6,9 +6,9 @@
 // Breadboard can know — the live doctor snapshot, the execution rules of this
 // sandbox, and the reporting contract for the chat transcript.
 
-import fs from "node:fs";
 import path from "node:path";
 import { breadSystemPrompt } from "../assistant-identity.ts";
+import { externalRuntimeReadUtf8 } from "../external-runtime-filesystem.ts";
 import { ALLOWED_EXECUTABLES } from "./commands.ts";
 import type { ChannelHealth } from "./runtime.ts";
 
@@ -32,7 +32,7 @@ const REFERENCES: Record<string, string> = {
 
 function readIfPresent(file: string): string {
   try {
-    return fs.readFileSync(file, "utf8");
+    return externalRuntimeReadUtf8(file);
   } catch {
     return "";
   }

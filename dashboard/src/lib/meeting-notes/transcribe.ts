@@ -88,6 +88,7 @@ async function runScriberrJob(input: {
     filePath: input.audioPath,
     filename: path.basename(input.audioPath),
     title: input.title.slice(0, 200),
+    signal: input.signal,
   });
 
   const jobId = uploaded.id;
@@ -142,6 +143,7 @@ async function runScriberrJob(input: {
     };
   } finally {
     if (succeeded) await client.deleteJob(jobId).catch(() => undefined);
+    else if (input.signal?.aborted) await client.killJob(jobId).catch(() => undefined);
   }
 }
 
@@ -156,7 +158,7 @@ async function runScriberrJob(input: {
  * failure is caught and the job re-run without it: a transcript with no labels
  * beats no transcript, as long as the run says which one it got.
  */
-async function transcribeWithScriberr(input: {
+export async function transcribeWithScriberr(input: {
   audioPath: string;
   title: string;
   language: string | null;
@@ -215,6 +217,7 @@ async function transcribeWithVoicebox(input: {
   const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "breadboard-meeting-"));
   try {
     const text = await transcribeStoredRecording({
+      runtimeScope: { userId: input.userId, gardenId: null, conversationId: null },
       workspace: { directory: workspace, filePath: input.audioPath },
       filename: input.filename,
       model: settings.transcriptionModel,

@@ -17,16 +17,10 @@
 // were built in. Changing the embedding model invalidates every index, which is
 // exactly what should happen — vectors from two models are not comparable.
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { deepTutorHome, embeddingFingerprint } from "./home.ts";
-import {
-  bridgeScriptPath,
-  deepTutorEnv,
-  resolveDeepTutorRoot,
-  venvPython,
-} from "./runtime.ts";
+import { deepTutorHome, deepTutorHomeRoot, embeddingFingerprint } from "./home.ts";
 import type { TutorScope } from "./materials.ts";
 
 /** Files worth putting in a vector index. Mirrors what DeepTutor can parse. */
@@ -57,7 +51,9 @@ const SKIPPED_DIRECTORIES = new Set([
 /** Indexing a whole workspace would be an hour of CPU for a corpus of code. */
 const MAX_INDEXED_FILES = 600;
 const MAX_INDEXED_FILE_BYTES = 8 * 1024 * 1024;
-const INDEX_TIMEOUT_MS = 45 * 60 * 1000;
+const INDEX_JOB_STALE_MS = 50 * 60 * 1000;
+const MAX_RECEIPT_BYTES = 32 * 1024;
+const IDENTIFIER = /^[A-Za-z0-9_-]{1,128}$/u;
 
 export interface IndexedDocument {
   path: string;
@@ -133,16 +129,6 @@ export function readManifest(userId: number, scope: TutorScope): IndexManifest |
   }
 }
 
-function writeManifest(userId: number, scope: TutorScope, manifest: IndexManifest): void {
-  const file = manifestPath(userId, scope);
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  } catch {
-    // A lost manifest costs a rebuild, not correctness.
-  }
-}
-
 export function clearManifest(userId: number, scope: TutorScope): void {
   try {
     fs.rmSync(manifestPath(userId, scope), { force: true });
@@ -203,29 +189,180 @@ function sameDocuments(left: IndexedDocument[], right: IndexedDocument[]): boole
   return true;
 }
 
-// --- build state -----------------------------------------------------------
+// --- durable Runtime job state --------------------------------------------
 
-interface BuildState {
-  child: ChildProcess | null;
+export interface IndexJobReceipt {
+  protocolVersion: 1;
+  jobId: string;
   startedAt: number;
+  updatedAt: number;
+  candidateCount: number;
+  phase: "building" | "failed";
   stage: string;
   percent: number;
   error: string | null;
 }
 
-const globalBuilds = globalThis as typeof globalThis & {
-  __breadboardDeepTutorIndexBuilds?: Map<string, BuildState>;
-};
-const builds =
-  globalBuilds.__breadboardDeepTutorIndexBuilds ?? new Map<string, BuildState>();
-globalBuilds.__breadboardDeepTutorIndexBuilds = builds;
+function receiptPath(userId: number, scope: TutorScope): string {
+  return path.join(deepTutorHome(userId, scope.id), "breadboard-index-job.json");
+}
 
-function buildKey(userId: number, scope: TutorScope): string {
-  return `${userId}:${scope.id}`;
+function samePath(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function pathWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function ensureReceiptDirectory(userId: number, scope: TutorScope): string {
+  const root = path.resolve(deepTutorHomeRoot());
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  const rootMetadata = fs.lstatSync(root);
+  if (
+    !rootMetadata.isDirectory() ||
+    rootMetadata.isSymbolicLink() ||
+    !samePath(fs.realpathSync.native(root), root)
+  ) throw new Error("The Deep Tutor Runtime state root is unavailable or indirect.");
+  const target = path.dirname(receiptPath(userId, scope));
+  if (!pathWithin(root, target)) {
+    throw new Error("The Deep Tutor Runtime state escaped its configured root.");
+  }
+  let current = root;
+  for (const segment of path.relative(root, target).split(path.sep).filter(Boolean)) {
+    if (segment === "." || segment === ".." || /[\\/\u0000]/u.test(segment)) {
+      throw new Error("The Deep Tutor Runtime state path is invalid.");
+    }
+    current = path.join(current, segment);
+    const existing = fs.lstatSync(current, { throwIfNoEntry: false });
+    if (!existing) fs.mkdirSync(current, { recursive: false, mode: 0o700 });
+    const metadata = fs.lstatSync(current);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !samePath(fs.realpathSync.native(current), current)
+    ) throw new Error("The Deep Tutor Runtime state path is unavailable or indirect.");
+  }
+  return target;
+}
+
+function validReceipt(value: unknown): value is IndexJobReceipt {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).sort().join(",") !==
+      "candidateCount,error,jobId,percent,phase,protocolVersion,stage,startedAt,updatedAt" ||
+    record.protocolVersion !== 1 ||
+    typeof record.jobId !== "string" ||
+    !IDENTIFIER.test(record.jobId) ||
+    !Number.isSafeInteger(record.startedAt) ||
+    (record.startedAt as number) < 1 ||
+    !Number.isSafeInteger(record.updatedAt) ||
+    (record.updatedAt as number) < (record.startedAt as number) ||
+    !Number.isSafeInteger(record.candidateCount) ||
+    (record.candidateCount as number) < 0 ||
+    (record.candidateCount as number) > MAX_INDEXED_FILES ||
+    (record.phase !== "building" && record.phase !== "failed") ||
+    typeof record.stage !== "string" ||
+    Buffer.byteLength(record.stage, "utf8") > 128 ||
+    /\p{Cc}/u.test(record.stage) ||
+    !Number.isSafeInteger(record.percent) ||
+    (record.percent as number) < 0 ||
+    (record.percent as number) > 100 ||
+    (record.error !== null &&
+      (typeof record.error !== "string" ||
+        !record.error.trim() ||
+        Buffer.byteLength(record.error, "utf8") > 8 * 1024)) ||
+    (record.phase === "building" && record.error !== null) ||
+    (record.phase === "failed" && record.error === null)
+  ) return false;
+  return true;
+}
+
+export function readIndexJobReceipt(
+  userId: number,
+  scope: TutorScope,
+): IndexJobReceipt | null {
+  const file = receiptPath(userId, scope);
+  try {
+    const metadata = fs.lstatSync(file);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size < 1 ||
+      metadata.size > MAX_RECEIPT_BYTES ||
+      !samePath(fs.realpathSync.native(file), file)
+    ) return null;
+    const bytes = fs.readFileSync(file);
+    if (bytes.byteLength !== metadata.size || bytes.byteLength > MAX_RECEIPT_BYTES) return null;
+    const value = JSON.parse(bytes.toString("utf8")) as unknown;
+    return validReceipt(value) ? { ...value } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeIndexJobReceipt(
+  userId: number,
+  scope: TutorScope,
+  receipt: IndexJobReceipt,
+): void {
+  if (!validReceipt(receipt)) throw new TypeError("The Deep Tutor Runtime receipt is invalid.");
+  ensureReceiptDirectory(userId, scope);
+  const target = receiptPath(userId, scope);
+  const existing = fs.lstatSync(target, { throwIfNoEntry: false });
+  if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+    throw new Error("The Deep Tutor Runtime receipt is indirect.");
+  }
+  const bytes = Buffer.from(`${JSON.stringify(receipt)}\n`, "utf8");
+  if (bytes.byteLength < 1 || bytes.byteLength > MAX_RECEIPT_BYTES) {
+    throw new Error("The Deep Tutor Runtime receipt exceeded its bound.");
+  }
+  const pending = `${target}.pending-${process.pid}-${randomUUID()}`;
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(pending, "wx", 0o600);
+    fs.writeFileSync(descriptor, bytes);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(pending, target);
+  } catch (error) {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    fs.rmSync(pending, { force: true });
+    throw error;
+  }
+}
+
+export function clearIndexJobReceipt(userId: number, scope: TutorScope): void {
+  try {
+    const target = receiptPath(userId, scope);
+    const existing = fs.lstatSync(target, { throwIfNoEntry: false });
+    if (!existing) return;
+    if (!existing.isFile() || existing.isSymbolicLink()) {
+      throw new Error("The Deep Tutor Runtime receipt is indirect.");
+    }
+    fs.rmSync(target, { force: false });
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error
+      ? (error as { code?: unknown }).code
+      : null;
+    if (code !== "ENOENT") throw error;
+  }
+}
+
+function activeReceipt(receipt: IndexJobReceipt | null, now = Date.now()): boolean {
+  return Boolean(
+    receipt?.phase === "building" && now - receipt.updatedAt <= INDEX_JOB_STALE_MS,
+  );
 }
 
 export function buildInFlight(userId: number, scope: TutorScope): boolean {
-  return Boolean(builds.get(buildKey(userId, scope))?.child);
+  return activeReceipt(readIndexJobReceipt(userId, scope));
 }
 
 /** What the composer, the card and the settings panel all read. */
@@ -242,23 +379,40 @@ export function indexState(userId: number, scope: TutorScope): IndexState {
       error: null,
     };
   }
-  const key = buildKey(userId, scope);
-  const build = builds.get(key);
+  const receipt = readIndexJobReceipt(userId, scope);
   const candidates = indexableDocuments(scope);
   const manifest = readManifest(userId, scope);
+  const manifestReady = Boolean(
+    manifest &&
+    manifest.fingerprint === embeddingFingerprint() &&
+    sameDocuments(manifest.documents, candidates),
+  );
   const base = {
     kb,
     documentCount: manifest?.documentCount ?? 0,
     chunkCount: manifest?.chunkCount ?? 0,
     builtAt: manifest?.builtAt || null,
     candidateCount: candidates.length,
-    error: build?.error ?? null,
+    error: receipt?.phase === "failed" ? receipt.error : null,
   };
-  if (build?.child) return { ...base, phase: "building" };
-  if (!manifest) return { ...base, phase: build?.error ? "failed" : "missing" };
+  // A completed worker publishes the manifest before its Runtime result. That
+  // fresh manifest wins over a not-yet-reconciled `building` receipt, so a
+  // dashboard restart never strands a usable index behind stale process state.
+  if (manifestReady) return { ...base, error: null, phase: "ready" };
+  if (activeReceipt(receipt)) {
+    return { ...base, candidateCount: receipt?.candidateCount ?? candidates.length, phase: "building" };
+  }
+  if (receipt?.phase === "building") {
+    return {
+      ...base,
+      error: "Indexing ran past its time limit and was stopped.",
+      phase: "failed",
+    };
+  }
+  if (!manifest) return { ...base, phase: receipt?.phase === "failed" ? "failed" : "missing" };
   if (manifest.fingerprint !== embeddingFingerprint()) return { ...base, phase: "stale" };
   if (!sameDocuments(manifest.documents, candidates)) return { ...base, phase: "stale" };
-  return { ...base, phase: "ready" };
+  return { ...base, error: null, phase: "ready" };
 }
 
 /**
@@ -274,178 +428,13 @@ export function knowledgeBaseForTurn(userId: number, scope: TutorScope): string 
   return state.phase === "ready" ? state.kb : null;
 }
 
-export interface EnsureResult {
-  state: IndexState;
-  /** True when this call started a build. */
-  started: boolean;
-}
-
-/**
- * Start a build if the index is missing or stale, and never wait for it.
- *
- * Called at the top of a tutoring turn: the turn goes ahead with the file tools
- * while this runs, and the *next* question gets retrieval. Called again while a
- * build is in flight, it does nothing.
- */
-export function ensureIndex(userId: number, scope: TutorScope): EnsureResult {
-  const state = indexState(userId, scope);
-  if (state.phase !== "missing" && state.phase !== "stale" && state.phase !== "failed") {
-    return { state, started: false };
-  }
-  if (!state.candidateCount) return { state, started: false };
-  const started = startBuild(userId, scope);
-  return { state: indexState(userId, scope), started };
-}
-
-/** Force a rebuild even when the manifest says the index is fresh. */
-export function rebuildIndex(userId: number, scope: TutorScope): EnsureResult {
-  if (buildInFlight(userId, scope)) return { state: indexState(userId, scope), started: false };
-  clearManifest(userId, scope);
-  const started = startBuild(userId, scope);
-  return { state: indexState(userId, scope), started };
-}
-
-function indexScriptPath(): string | null {
-  const bridge = bridgeScriptPath();
-  if (!bridge) return null;
-  const candidate = path.join(path.dirname(bridge), "deeptutor-index.py");
-  return fs.existsSync(candidate) ? candidate : null;
-}
-
-function startBuild(userId: number, scope: TutorScope): boolean {
-  const key = buildKey(userId, scope);
-  if (builds.get(key)?.child) return false;
-  const kb = knowledgeBaseName(scope);
-  const runtime = resolveDeepTutorRoot();
-  const script = indexScriptPath();
-  const python = runtime ? venvPython(runtime.root) : null;
-  if (!kb || !runtime || !python || !script) return false;
-
-  const documents = indexableDocuments(scope);
-  if (!documents.length) return false;
-
-  const home = deepTutorHome(userId, scope.id);
-  const state: BuildState = {
-    child: null,
-    startedAt: Date.now(),
-    stage: "starting",
-    percent: 0,
-    error: null,
-  };
-  builds.set(key, state);
-
-  let child: ChildProcess;
-  try {
-    child = spawn(python, [script], {
-      cwd: runtime.root,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: deepTutorEnv({ DEEPTUTOR_CLONE_ROOT: runtime.root, DEEPTUTOR_HOME: home }),
-    });
-  } catch (error) {
-    state.error = error instanceof Error ? error.message : "The index could not start.";
-    builds.set(key, { ...state, child: null });
-    return false;
-  }
-  state.child = child;
-
-  const timer = setTimeout(() => {
-    state.error = "Indexing ran past its time limit and was stopped.";
-    try {
-      child.kill();
-    } catch {
-      // Already gone.
-    }
-  }, INDEX_TIMEOUT_MS);
-  timer.unref?.();
-
-  let buffer = "";
-  let stderrTail = "";
-  let completed: { documents: number; chunks: number } | null = null;
-  child.stdout?.setEncoding("utf8");
-  child.stderr?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk: string) => {
-    buffer += chunk;
-    let newline = buffer.indexOf("\n");
-    while (newline >= 0) {
-      const line = buffer.slice(0, newline).trim();
-      buffer = buffer.slice(newline + 1);
-      if (line) {
-        const event = parseEvent(line);
-        if (event?.type === "progress") {
-          state.stage = String(event.stage ?? "");
-          state.percent = Number(event.percent) || 0;
-        }
-        if (event?.type === "completed") {
-          completed = {
-            documents: Number(event.documents) || documents.length,
-            chunks: Number(event.chunks) || 0,
-          };
-        }
-        if (event?.type === "failed") {
-          state.error = String(event.error ?? "Indexing failed.");
-        }
-      }
-      newline = buffer.indexOf("\n");
-    }
-    if (buffer.length > 1_000_000) buffer = "";
-  });
-  child.stderr?.on("data", (chunk: string) => {
-    stderrTail = `${stderrTail}${chunk}`.slice(-4_000);
-  });
-
-  child.on("error", (error) => {
-    clearTimeout(timer);
-    state.child = null;
-    state.error = error.message;
-  });
-  child.on("exit", (code) => {
-    clearTimeout(timer);
-    state.child = null;
-    if (completed) {
-      writeManifest(userId, scope, {
-        kb,
-        fingerprint: embeddingFingerprint(),
-        builtAt: new Date().toISOString(),
-        documents,
-        documentCount: completed.documents,
-        chunkCount: completed.chunks,
-      });
-      state.error = null;
-      return;
-    }
-    if (!state.error) {
-      const detail = stderrTail.split(/\r?\n/).filter(Boolean).at(-1) ?? "";
-      state.error = `Indexing stopped unexpectedly (exit ${code ?? "unknown"}). ${detail}`.trim();
-    }
-  });
-
-  try {
-    child.stdin?.write(`${JSON.stringify({ home, kb, documents: documents.map((d) => d.path) })}\n`);
-    child.stdin?.end();
-  } catch (error) {
-    state.error = error instanceof Error ? error.message : "The index request could not be sent.";
-    return false;
-  }
-  return true;
-}
-
-function parseEvent(line: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(line) as unknown;
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Live progress for a build in flight, for the settings panel. */
 export function buildProgress(
   userId: number,
   scope: TutorScope,
 ): { stage: string; percent: number; elapsedSec: number } | null {
-  const build = builds.get(buildKey(userId, scope));
-  if (!build?.child) return null;
+  const build = readIndexJobReceipt(userId, scope);
+  if (!build || !activeReceipt(build)) return null;
   return {
     stage: build.stage,
     percent: build.percent,

@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false
+  },
+  "include": [
+    "next-env.d.ts",
+    "src/lib/supervisor-control.ts",
+    "src/lib/recall/errors.ts",
+    "src/lib/recall/policy.ts",
+    "src/lib/recall/runtime-service.ts",
+    "src/lib/runtime-v2/packaged-service-evidence-auth.ts",
+    "src/lib/runtime-v2/packaged-service-evidence.ts",
+    "src/app/api/internal/runtime-service-evidence/route.ts"
+  ]
+}

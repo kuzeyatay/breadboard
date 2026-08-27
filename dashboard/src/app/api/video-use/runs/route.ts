@@ -9,7 +9,7 @@ import {
   parseVideoUseRequestBody,
   VIDEO_USE_AGENT_ID,
 } from "@/lib/video-use/identity.ts";
-import { startRun } from "@/lib/video-use/run-manager.ts";
+import { startRun } from "@/lib/video-use/runtime-run-manager.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +27,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "payload_too_large" }, { status: 413 });
     }
     const body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    const clientMessageId =
+      typeof body.clientMessageId === "string" ? body.clientMessageId.trim() : "";
+    if (
+      clientMessageId &&
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(clientMessageId)
+    ) {
+      return NextResponse.json(
+        { ok: false, error: "invalid_client_message_id" },
+        { status: 400 },
+      );
+    }
 
     // The chat passes the model it is running on. The studio can be opened from
     // the Artifacts tab, where there is no chat and so no model to pass, so the
@@ -66,9 +77,10 @@ export async function POST(request: Request) {
     const parsed = parseVideoUseRequestBody(body.request, defaults);
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
       conversationPublicId,
+      ...(clientMessageId ? { clientMessageId } : {}),
       request: parsed,
       model,
       reasoningEffort: defaults.reasoningEffort,

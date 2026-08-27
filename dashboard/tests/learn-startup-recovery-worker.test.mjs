@@ -1,27 +1,43 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import esbuild from "esbuild";
 
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const instrumentationPath = path.join(dashboardRoot, "src", "instrumentation-node.ts");
+const nativeServiceEnginePath = path.join(
+  path.dirname(dashboardRoot),
+  "native",
+  "runtime-cli",
+  "src",
+  "service_engine.rs",
+);
 const launcherPath = path.join(
   dashboardRoot,
   "src",
   "lib",
   "learn-recovery-background.ts",
 );
-const workerPath = path.join(dashboardRoot, "scripts", "learn-recovery-worker.mjs");
-const instrumentationSource = fs.readFileSync(instrumentationPath, "utf8");
+const runtimeWorkerPath = path.join(
+  dashboardRoot,
+  "scripts",
+  "runtime-v2-learn-worker.mjs",
+);
+const nativeControlPath = path.join(
+  path.dirname(dashboardRoot),
+  "native",
+  "runtime-cli",
+  "src",
+  "control.rs",
+);
+const nativeServiceEngineSource = fs.readFileSync(nativeServiceEnginePath, "utf8");
 const launcherSource = fs.readFileSync(launcherPath, "utf8");
-const workerSource = fs.readFileSync(workerPath, "utf8");
-const STATE_KEY = "__breadboardLearnRecoveryLauncherTestState";
+const runtimeWorkerSource = fs.readFileSync(runtimeWorkerPath, "utf8");
+const nativeControlSource = fs.readFileSync(nativeControlPath, "utf8");
+const STATE_KEY = "__breadboardLearnRecoveryRuntimeTestState";
 
 async function loadLauncher() {
   const result = await esbuild.build({
@@ -33,14 +49,14 @@ async function loadLauncher() {
     write: false,
     plugins: [
       {
-        name: "learn-recovery-launcher-test-stubs",
+        name: "learn-recovery-runtime-test-stubs",
         setup(build) {
           build.onResolve({ filter: /^server-only$/ }, () => ({
             path: "server-only",
             namespace: "learn-recovery-stub",
           }));
-          build.onResolve({ filter: /^node:child_process$/ }, () => ({
-            path: "node:child_process",
+          build.onResolve({ filter: /^@\/lib\/supervisor-control$/ }, () => ({
+            path: "supervisor-control",
             namespace: "learn-recovery-stub",
           }));
           build.onLoad(
@@ -51,20 +67,12 @@ async function loadLauncher() {
                 args.path === "server-only"
                   ? "export {};"
                   : `
-                      import { EventEmitter } from "node:events";
-                      export function spawn(command, args, options) {
-                        const child = new EventEmitter();
-                        child.pid = 4242;
-                        child.unref = () => {
-                          globalThis[${JSON.stringify(STATE_KEY)}].unrefCount += 1;
-                        };
-                        globalThis[${JSON.stringify(STATE_KEY)}].calls.push({
-                          command,
-                          args,
-                          options,
-                          child,
+                      export function submitRuntimeLearnRecoveryJob(idempotencyKey) {
+                        const state = globalThis[${JSON.stringify(STATE_KEY)}];
+                        state.calls.push(idempotencyKey);
+                        return new Promise((resolve, reject) => {
+                          state.pending.push({ resolve, reject });
                         });
-                        return child;
                       }
                     `,
             }),
@@ -77,154 +85,84 @@ async function loadLauncher() {
   return import(`data:text/javascript;base64,${encoded}#learn-startup-recovery`);
 }
 
-test("Next instrumentation delegates Learn recovery without referencing the Learn monolith", () => {
+test("the native Runtime scheduler owns the bounded Learn recovery cadence", () => {
   assert.match(
-    instrumentationSource,
-    /import \{ launchAbandonedLearnRecoveryWorker \} from "\.\/lib\/learn-recovery-background\.ts"/,
+    nativeServiceEngineSource,
+    /RuntimeScheduleRegistration::fixed\("learn-recovery", 0, 60_000\)/u,
   );
-  assert.match(instrumentationSource, /await launchAbandonedLearnRecoveryWorker\(\)/);
-  assert.doesNotMatch(instrumentationSource, /learn\.ts|recoverAbandonedLearnJobs/);
-  assert.match(instrumentationSource, /setTimeout\(\(\) => void sweep\(\), 0\)/);
   assert.match(
-    instrumentationSource,
-    /setInterval\(\(\) => void sweep\(\), 60 \* 1000\)/,
+    nativeServiceEngineSource,
+    /occurrence\.schedule_id == "learn-recovery"[\s\S]*?registry\.submit_job/u,
+  );
+  assert.match(
+    nativeServiceEngineSource,
+    /occurrence\.schedule_id == "learn-recovery"[\s\S]*?\("learn", serde_json::json!\(\{ "operation": "recovery" \}\)\)/u,
+  );
+  assert.equal(
+    fs.existsSync(path.join(dashboardRoot, "src", "instrumentation-node.ts")),
+    false,
+    "Next.js must not own recovery timers or a duplicate scheduler",
   );
 });
 
-test("the fixed detached worker imports and invokes the real recovery operation", () => {
-  assert.match(launcherSource, /path\.join\(dashboardRoot, "scripts", "learn-recovery-worker\.mjs"\)/);
-  assert.match(launcherSource, /detached:\s*true/);
-  assert.match(launcherSource, /windowsHide:\s*true/);
-  assert.match(launcherSource, /stdio:\s*\["ignore", logFd, logFd\]/);
-  assert.match(launcherSource, /__breadboardLearnRecoveryWorker/);
-  assert.match(workerSource, /process\.env\.QUARTZ_CONTENT_PATH\?\.trim\(\)/);
-  assert.doesNotMatch(workerSource, /process\.argv/);
-  assert.match(workerSource, /await import\("\.\.\/src\/lib\/learn\.ts"\)/);
-  assert.match(workerSource, /await learn\.recoverAbandonedLearnJobs\(\{/);
-  assert.match(workerSource, /acquireRecoveryLock/);
+test("Learn recovery is one native-owned finite job, not a detached child", () => {
+  assert.match(launcherSource, /submitRuntimeLearnRecoveryJob/u);
+  assert.match(launcherSource, /learn-recovery-v2:/u);
+  assert.doesNotMatch(launcherSource, /submitRuntimeJob|jobType|requestPayload/u);
+  assert.doesNotMatch(
+    launcherSource,
+    /node:child_process|\b(?:fork|spawn)\s*\(|detached\s*:|\.unref\(\)/u,
+  );
+  assert.match(runtimeWorkerSource, /value\.operation === "recovery"/u);
+  assert.match(runtimeWorkerSource, /scope\.userId !== null/u);
+  assert.match(runtimeWorkerSource, /learnModule\.recoverAbandonedLearnJobs/u);
+  assert.match(runtimeWorkerSource, /events\.complete/u);
+  assert.match(nativeControlSource, /\/v1\/internal\/jobs\/learn-recovery/u);
+  assert.match(
+    nativeControlSource,
+    /trusted_internal_context\("learn-recovery", None, None\)/u,
+  );
+  assert.match(nativeControlSource, /job_type: "learn"\.into\(\)/u);
+  assert.match(
+    nativeControlSource,
+    /request_payload: serde_json::json!\(\{ "operation": "recovery" \}\)/u,
+  );
 });
 
-test("the recovery script executes the real Learn recovery module in a child process", async () => {
-  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-recovery-worker-"));
-  const dataRoot = path.join(temporaryRoot, "data");
-  const contentRoot = path.join(temporaryRoot, "content");
-  const runtimeRoot = path.join(temporaryRoot, "runtime");
-  fs.mkdirSync(dataRoot, { recursive: true });
-  fs.mkdirSync(contentRoot, { recursive: true });
-  fs.mkdirSync(runtimeRoot, { recursive: true });
-
+test("recovery submissions use one fixed internal generation and are single-flight", async () => {
+  const priorContentPath = process.env.QUARTZ_CONTENT_PATH;
+  process.env.QUARTZ_CONTENT_PATH = path.join(dashboardRoot, "test-content");
+  globalThis[STATE_KEY] = { calls: [], pending: [] };
   try {
-    const child = spawn(
-      process.execPath,
-      [
-        "--experimental-strip-types",
-        "--import",
-        pathToFileURL(
-          path.join(dashboardRoot, "scripts", "learn-worker-import-hook.mjs"),
-        ).href,
-        workerPath,
-      ],
-      {
-        cwd: dashboardRoot,
-        windowsHide: true,
-        env: {
-          ...process.env,
-          BREADBOARD_DATA_DIR: dataRoot,
-          BREADBOARD_LEARN_RECOVERY_RUNTIME_DIR: runtimeRoot,
-          QUARTZ_CONTENT_PATH: contentRoot,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
+    const {
+      launchAbandonedLearnRecoveryWorker,
+      learnRecoveryGenerationForTests,
+    } = await loadLauncher();
+    assert.equal(
+      learnRecoveryGenerationForTests(300_001),
+      learnRecoveryGenerationForTests(599_999),
     );
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    const result = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        child.kill();
-        reject(new Error("The real Learn recovery worker did not finish within 60 seconds."));
-      }, 60_000);
-      child.once("error", (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-      child.once("exit", (code, signal) => {
-        clearTimeout(timeout);
-        resolve({ code, signal });
-      });
-    });
 
-    assert.deepEqual(result, { code: 0, signal: null }, stderr);
-    assert.match(stdout, /\[learn-recovery-worker\] Recovery sweep completed\./);
-    assert.equal(fs.existsSync(path.join(runtimeRoot, "active.lock")), false);
-  } finally {
-    fs.rmSync(temporaryRoot, { recursive: true, force: true });
-  }
-});
-
-test("the launcher normalizes the authoritative content path and remains single-flight", async () => {
-  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-recovery-launcher-"));
-  const contentPath = path.join(temporaryRoot, "quartz", "content", "..");
-  const previousDashboardRoot = process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR;
-  const previousDataRoot = process.env.BREADBOARD_DATA_DIR;
-  const previousContentPath = process.env.QUARTZ_CONTENT_PATH;
-  globalThis[STATE_KEY] = { calls: [], unrefCount: 0 };
-
-  process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR = dashboardRoot;
-  process.env.BREADBOARD_DATA_DIR = temporaryRoot;
-  process.env.QUARTZ_CONTENT_PATH = contentPath;
-
-  try {
-    const { launchAbandonedLearnRecoveryWorker } = await loadLauncher();
     const first = launchAbandonedLearnRecoveryWorker();
     const concurrent = launchAbandonedLearnRecoveryWorker();
     assert.strictEqual(concurrent, first);
     assert.equal(globalThis[STATE_KEY].calls.length, 1);
-
-    const call = globalThis[STATE_KEY].calls[0];
-    assert.equal(call.command, process.execPath);
-    assert.equal(
-      call.args.at(-1),
-      path.join(dashboardRoot, "scripts", "learn-recovery-worker.mjs"),
+    assert.match(
+      globalThis[STATE_KEY].calls[0],
+      /^learn-recovery-v2:\d+$/u,
     );
-    assert.equal(call.args.includes(path.resolve(contentPath)), false);
-    assert.equal(call.options.cwd, dashboardRoot);
-    assert.equal(call.options.detached, true);
-    assert.equal(call.options.windowsHide, true);
-    assert.equal(call.options.env.QUARTZ_CONTENT_PATH, path.resolve(contentPath));
-    assert.equal(call.options.stdio[0], "ignore");
-    assert.equal(call.options.stdio[1], call.options.stdio[2]);
-    assert.equal(globalThis[STATE_KEY].unrefCount, 1);
 
-    call.child.emit("exit", 0, null);
+    globalThis[STATE_KEY].pending[0].resolve({ jobId: "job_recovery" });
     await first;
     await Promise.resolve();
 
     const next = launchAbandonedLearnRecoveryWorker();
     assert.equal(globalThis[STATE_KEY].calls.length, 2);
-    globalThis[STATE_KEY].calls[1].child.emit("exit", 0, null);
+    globalThis[STATE_KEY].pending[1].resolve({ jobId: "job_recovery" });
     await next;
   } finally {
-    for (const call of globalThis[STATE_KEY].calls) {
-      call.child.emit("exit", 0, null);
-    }
-    if (previousDashboardRoot === undefined) {
-      delete process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR;
-    } else {
-      process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR = previousDashboardRoot;
-    }
-    if (previousDataRoot === undefined) delete process.env.BREADBOARD_DATA_DIR;
-    else process.env.BREADBOARD_DATA_DIR = previousDataRoot;
-    if (previousContentPath === undefined) delete process.env.QUARTZ_CONTENT_PATH;
-    else process.env.QUARTZ_CONTENT_PATH = previousContentPath;
+    if (priorContentPath === undefined) delete process.env.QUARTZ_CONTENT_PATH;
+    else process.env.QUARTZ_CONTENT_PATH = priorContentPath;
     delete globalThis[STATE_KEY];
-    fs.rmSync(temporaryRoot, { recursive: true, force: true });
   }
 });

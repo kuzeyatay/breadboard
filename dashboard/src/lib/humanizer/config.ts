@@ -17,9 +17,9 @@
 // must stay free of Next-only imports.
 
 import crypto from "node:crypto";
-import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 export const HUMANIZER_DEFAULT_PORT = 7735;
 

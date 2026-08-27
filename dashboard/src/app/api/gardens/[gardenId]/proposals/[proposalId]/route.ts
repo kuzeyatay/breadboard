@@ -59,6 +59,7 @@ export async function POST(
         );
       }
       document = await createGardenDocument({
+        userId,
         clusterSlug: access.slug,
         title,
         content,
@@ -81,8 +82,8 @@ export async function POST(
       try {
         const { enqueueGardenSync } = await import("@/lib/gbrain/sync.ts");
         enqueueGardenSync(access.clusterId, `proposal_${proposal.kind}_applied`);
-        // Ensure the always-on worker is draining; it processes the job with no
-        // manual drain call. No-op when GBrain is disabled.
+        // Submit a bounded Runtime queue kick. No timer or indexer remains in
+        // Next.js, and this is a no-op when GBrain is disabled.
         const { ensureSyncWorkerStarted } = await import("@/lib/gbrain/sync-worker.ts");
         ensureSyncWorkerStarted();
       } catch {

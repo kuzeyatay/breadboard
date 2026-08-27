@@ -3,6 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 
 import {
+  COMMAND_RESPONSE_CACHE_MAX_ENTRIES,
   COMMAND_RESPONSE_CACHE_TTL_MS,
   commandResponseUrl,
   invalidateCommandResponseCache,
@@ -15,6 +16,7 @@ import {
   loadAgencyAgentsClientCatalog,
 } from "../src/lib/hermes/agency-agents-client.ts";
 import {
+  SKILLS_CATALOG_CACHE_MAX_ENTRIES,
   SKILLS_CATALOG_CACHE_TTL_MS,
   invalidateSkillsCatalogCache,
   loadCachedSkillsCatalog,
@@ -142,6 +144,42 @@ test("the default Skills page is prefetchable and cached independently", async (
     assert.equal(calls, 1);
     assert.equal(peekCachedSkillsCatalog(url).version, 1);
   } finally {
+    invalidateSkillsCatalogCache();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("capability response caches evict old query variants instead of growing forever", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => Response.json({ url });
+
+  try {
+    invalidateCommandResponseCache();
+    invalidateSkillsCatalogCache();
+    assert.equal(COMMAND_RESPONSE_CACHE_MAX_ENTRIES, 32);
+    assert.equal(SKILLS_CATALOG_CACHE_MAX_ENTRIES, 32);
+
+    const commandUrls = Array.from(
+      { length: COMMAND_RESPONSE_CACHE_MAX_ENTRIES + 1 },
+      (_, index) => `/api/hermes/commands?surface=dashboard_terminal&outcome=${index}`,
+    );
+    for (const url of commandUrls) await loadCachedCommandResponse(url);
+    assert.equal(peekCachedCommandResponse(commandUrls[0]), null);
+    assert.deepEqual(peekCachedCommandResponse(commandUrls.at(-1)), {
+      url: commandUrls.at(-1),
+    });
+
+    const skillUrls = Array.from(
+      { length: SKILLS_CATALOG_CACHE_MAX_ENTRIES + 1 },
+      (_, index) => `/api/hermes/skills?q=query-${index}`,
+    );
+    for (const url of skillUrls) await loadCachedSkillsCatalog(url);
+    assert.equal(peekCachedSkillsCatalog(skillUrls[0]), null);
+    assert.deepEqual(peekCachedSkillsCatalog(skillUrls.at(-1)), {
+      url: skillUrls.at(-1),
+    });
+  } finally {
+    invalidateCommandResponseCache();
     invalidateSkillsCatalogCache();
     globalThis.fetch = originalFetch;
   }

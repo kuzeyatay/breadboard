@@ -13,6 +13,7 @@ export const QA_RUN_MARKER = ".breadboard-qa-run.json";
 export type QaPreservePolicy = "never" | "on-failure" | "always";
 export type QaRunOutcome = "passed" | "failed" | "interrupted";
 export type QaServiceProfile = "critical";
+export type QaDesktopConfigProfile = "isolated-disabled" | "production-required";
 
 export interface QaRunPaths {
   readonly repoRoot: string;
@@ -74,8 +75,12 @@ export interface CreateQaEnvironmentOptions {
    * values. Real user credentials must never be added here.
    */
   allowCredentialEnv?: readonly string[];
-  /** Seed a QA-only desktop config with optional integrations disabled. */
+  /** Seed a QA-only desktop config; integrations stay disabled unless explicitly required. */
   seedDesktopConfig?: boolean;
+  /** Defaults to disabled; completion burn-in may require the real GBrain service. */
+  gbrainMode?: "disabled" | "required";
+  /** Full desktop integration policy. Defaults to isolated-disabled. */
+  desktopConfigProfile?: QaDesktopConfigProfile;
   /**
    * Optional read-only reference to the normal ChatMock provider session.
    * This is a path, never credential contents, and is not copied into QA.
@@ -111,6 +116,18 @@ interface QaRunMarkerContents {
   readonly runtimeRoot: string;
   readonly runRoot: string;
   readonly createdAt: string;
+}
+
+interface QaDesktopIntegrationConfig {
+  readonly gbrainMode: "disabled" | "required";
+  readonly comfyUiMode: "disabled" | "managed";
+  readonly uiTarsMode: "disabled" | "required";
+  readonly cadMode: "disabled" | "optional";
+  readonly colpaliMode: "disabled" | "optional";
+  readonly humanizerMode: "disabled" | "local";
+  readonly humanizerDevice: "auto";
+  readonly cliproxyMode: "disabled" | "required";
+  readonly scriberrEnabled: boolean;
 }
 
 const BASE_ENV_ALLOWLIST = [
@@ -219,6 +236,7 @@ export function createQaEnvironment(
 ): QaRunEnvironment {
   const repoRoot = path.resolve(options.repoRoot ?? findRepositoryRoot(process.cwd()));
   assertDirectory(repoRoot, "Breadboard repository root");
+  const desktopIntegrations = resolveDesktopIntegrationConfig(options);
 
   const runtimeRoot = path.resolve(
     options.runtimeRoot ?? path.join(os.tmpdir(), QA_RUNTIME_DIRECTORY),
@@ -341,8 +359,9 @@ export function createQaEnvironment(
     const bootstrap = seedDesktopConfig(
       paths,
       options.seedDesktopConfig !== false,
+      desktopIntegrations,
     );
-    const env = controlledEnvironment(paths, normalizedOptions);
+    const env = controlledEnvironment(paths, normalizedOptions, desktopIntegrations);
     const launchArgs = [
       "--breadboard-dev",
       `--breadboard-user-data-dir=${userDataDir}`,
@@ -423,6 +442,7 @@ export async function cleanupQaEnvironment(
 function controlledEnvironment(
   paths: QaRunPaths,
   options: CreateQaEnvironmentOptions,
+  desktopIntegrations: QaDesktopIntegrationConfig,
 ): NodeJS.ProcessEnv {
   const source = options.baseEnv ?? process.env;
   const result: NodeJS.ProcessEnv = {};
@@ -492,13 +512,17 @@ function controlledEnvironment(
     BREADBOARD_QA_SERVICE_PROFILE: options.serviceProfile ?? "critical",
     BREADBOARD_DATA_DIR: paths.dataDir,
     BREADBOARD_REPO_ROOT: paths.repoRoot,
-    // The desktop owns local ports and local credentials. External capability
-    // modes remain off unless a scenario enables a controlled stub explicitly.
-    GBRAIN_MODE: "disabled",
-    UI_TARS_MODE: "disabled",
-    CAD_MODE: "disabled",
-    CLIPROXY_MODE: "disabled",
-    VIDEO_TRANSCRIPTION_ENABLED: "false",
+    // These mirror the seeded config for development-mode QA. Packaged QA
+    // removes the overrides and proves that the persisted production profile
+    // itself is the lifecycle source of truth.
+    GBRAIN_MODE: desktopIntegrations.gbrainMode,
+    UI_TARS_MODE: desktopIntegrations.uiTarsMode,
+    CAD_MODE: desktopIntegrations.cadMode,
+    COLPALI_MODE:
+      desktopIntegrations.colpaliMode === "disabled" ? "disabled" : "auto",
+    HUMANIZER_MODE: desktopIntegrations.humanizerMode,
+    CLIPROXY_MODE: desktopIntegrations.cliproxyMode,
+    VIDEO_TRANSCRIPTION_ENABLED: desktopIntegrations.scriberrEnabled ? "true" : "false",
   });
 
   if (options.providerAuthFile) {
@@ -552,7 +576,11 @@ function validateProviderAuthFile(
   return realPath;
 }
 
-function seedDesktopConfig(paths: QaRunPaths, enabled: boolean): QaBootstrapValues {
+function seedDesktopConfig(
+  paths: QaRunPaths,
+  enabled: boolean,
+  desktopIntegrations: QaDesktopIntegrationConfig,
+): QaBootstrapValues {
   const initialInviteCode = `BREAD${crypto.randomBytes(5).toString("hex").toUpperCase()}`;
   const auth = {
     inviteCode: initialInviteCode,
@@ -574,14 +602,21 @@ function seedDesktopConfig(paths: QaRunPaths, enabled: boolean): QaBootstrapValu
     hermesToolSecret: secret(),
     hermesCapabilitySecret: secret(),
     initialInviteCode,
-    gbrainMode: "disabled",
+    gbrainMode: desktopIntegrations.gbrainMode,
     gbrainAdapterSecret: secret(24),
-    uiTarsMode: "disabled",
+    comfyUiMode: desktopIntegrations.comfyUiMode,
+    comfyUiExternalUrl: null,
+    uiTarsMode: desktopIntegrations.uiTarsMode,
     uiTarsAdapterSecret: secret(24),
-    cadMode: "disabled",
+    cadMode: desktopIntegrations.cadMode,
     cadServiceSecret: secret(24),
-    cliproxyMode: "disabled",
-    scriberrEnabled: false,
+    colpaliMode: desktopIntegrations.colpaliMode,
+    colpaliServiceSecret: secret(24),
+    humanizerMode: desktopIntegrations.humanizerMode,
+    humanizerDevice: desktopIntegrations.humanizerDevice,
+    humanizerServiceSecret: secret(24),
+    cliproxyMode: desktopIntegrations.cliproxyMode,
+    scriberrEnabled: desktopIntegrations.scriberrEnabled,
     scriberrBaseUrl: null,
     scriberrUsername: "breadboard-qa",
     scriberrPassword: secret(24),
@@ -596,6 +631,71 @@ function seedDesktopConfig(paths: QaRunPaths, enabled: boolean): QaBootstrapValu
     mode: 0o600,
   });
   return { initialInviteCode, auth };
+}
+
+function resolveDesktopIntegrationConfig(
+  options: CreateQaEnvironmentOptions,
+): QaDesktopIntegrationConfig {
+  const profile = options.desktopConfigProfile ?? "isolated-disabled";
+  if (profile !== "isolated-disabled" && profile !== "production-required") {
+    throw new Error(`Unsupported QA desktop config profile: ${String(profile)}`);
+  }
+  if (
+    options.gbrainMode !== undefined &&
+    options.gbrainMode !== "disabled" &&
+    options.gbrainMode !== "required"
+  ) {
+    throw new Error(`Unsupported QA GBrain mode: ${String(options.gbrainMode)}`);
+  }
+
+  const resolved: QaDesktopIntegrationConfig =
+    profile === "production-required"
+      ? {
+          gbrainMode: "required",
+          comfyUiMode: "managed",
+          uiTarsMode: "required",
+          cadMode: "optional",
+          colpaliMode: "optional",
+          humanizerMode: "local",
+          humanizerDevice: "auto",
+          cliproxyMode: "required",
+          scriberrEnabled: true,
+        }
+      : {
+          gbrainMode: options.gbrainMode ?? "disabled",
+          comfyUiMode: "disabled",
+          uiTarsMode: "disabled",
+          cadMode: "disabled",
+          colpaliMode: "disabled",
+          humanizerMode: "disabled",
+          humanizerDevice: "auto",
+          cliproxyMode: "disabled",
+          scriberrEnabled: false,
+        };
+
+  if (profile === "production-required") {
+    if (options.gbrainMode === "disabled") {
+      throw new Error("production-required QA config cannot disable GBrain");
+    }
+    const requiredEnvironment = {
+      GBRAIN_MODE: "required",
+      UI_TARS_MODE: "required",
+      CAD_MODE: "optional",
+      COLPALI_MODE: "auto",
+      HUMANIZER_MODE: "local",
+      CLIPROXY_MODE: "required",
+      VIDEO_TRANSCRIPTION_ENABLED: "true",
+    } as const;
+    for (const [key, expected] of Object.entries(requiredEnvironment)) {
+      const override = environmentValue(options.env ?? {}, key);
+      if (override !== undefined && override !== expected) {
+        throw new Error(
+          `production-required QA config cannot override ${key}=${expected} with ${override}`,
+        );
+      }
+    }
+  }
+  return Object.freeze(resolved);
 }
 
 function repositoryDotenvKeys(repoRoot: string): Set<string> {

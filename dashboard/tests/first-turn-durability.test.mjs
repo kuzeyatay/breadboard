@@ -18,11 +18,12 @@ const terminal = fs.readFileSync(
 test("session creation durably reserves an optional first turn before runtime setup", () => {
   assert.match(sessionRoute, /parseInitialTurn\(body\.initialTurn/);
   assert.match(sessionRoute, /createConversationWithInitialTurn\(/);
-  assert.ok(
-    sessionRoute.indexOf("createConversationWithInitialTurn({") <
-      sessionRoute.indexOf("resolveConversationRuntime({"),
-    "the first prompt must commit before runtime resolution can restart the process",
+  assert.doesNotMatch(
+    sessionRoute,
+    /resolveConversationRuntime/,
+    "creating a durable conversation must not cold-start the agent runtime",
   );
+  assert.match(sessionRoute, /activeDirectory: null/);
   assert.match(sessionRoute, /initialTurnReserved: initialTurn !== null/);
 });
 

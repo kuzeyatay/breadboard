@@ -1052,8 +1052,9 @@ test("a model that goes away is reported in words, not as \"fetch failed\"", asy
 
 test("a failed enclosure is a sentence about the circuit, not a stray error", async () => {
   const manager = source("src/lib/hardware/run-manager.ts");
-  // Both the reported failure and the thrown one go through the same wording.
-  assert.equal((manager.match(/enclosureFailureNotice\(/g) ?? []).length, 3);
+  // Readiness denial, a typed result, and a thrown build all use the same
+  // wording; the fourth occurrence is the formatter definition itself.
+  assert.equal((manager.match(/enclosureFailureNotice\(/g) ?? []).length, 4);
   assert.match(manager, /so only the circuit was produced/);
   // The raw pass-through this replaces: the enclosure notice is printed in the
   // run card and again in the chat reply, so "fetch failed" appeared twice.
@@ -1471,7 +1472,7 @@ test("the service resolves without any launcher handing over an address", async 
   }
 });
 
-test("a service that is not running is detected before any model time is spent", async () => {
+test("a managed service is cold-started before any model time is spent", async () => {
   const service = await import("../src/lib/cad/service.ts");
   const os = await import("node:os");
   const fsp = await import("node:fs/promises");
@@ -1488,12 +1489,13 @@ test("a service that is not running is detected before any model time is spent",
     await fsp.rm(home, { recursive: true, force: true });
   }
 
-  // The run reports "not running" — naming how to start it — rather than the
-  // old "not configured", which pointed at the wrong problem.
+  // The run acquires through Runtime before model work. A passive TCP probe
+  // cannot start the managed service and the dashboard must not tell users to
+  // run the removed direct-spawn command.
   const manager = source("src/lib/cad/run-manager.ts");
-  assert.match(manager, /cadServiceListening/);
-  assert.match(manager, /npm run dev:cad/);
-  assert.match(manager, /code: "cad_service_unavailable"/);
+  assert.match(manager, /await ensureCadServiceReady\(\)/);
+  assert.doesNotMatch(manager, /cadServiceListening/);
+  assert.doesNotMatch(manager, /npm run dev:cad/);
 });
 
 test("generated Python never runs in the Breadboard application process", () => {

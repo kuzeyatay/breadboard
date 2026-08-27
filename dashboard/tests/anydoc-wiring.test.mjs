@@ -6,6 +6,7 @@ const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), 'utf8');
 
 const ingestRoute = source('../src/app/api/ingest/route.ts');
+const ingestWorker = source('../src/lib/runtime-v2/ingest-executor.ts');
 const statusRoute = source('../src/app/api/anydoc/status/route.ts');
 const option = source('../src/app/components/anydoc-parse-option.tsx');
 const workspace = source('../src/app/gardens/[clusterSlug]/workspace-client.tsx');
@@ -49,31 +50,32 @@ test('one reader claims each file, most specific first', () => {
 });
 
 test('the ingest route reads the flag and converts the formats anydoc knows', () => {
-  assert.match(ingestRoute, /formData\.get\("parseWithAnydoc"\) === "true"/);
-  assert.match(ingestRoute, /formData\.get\("parseMode"\) === "anydoc"/);
+  assert.match(ingestRoute, /upload\.fields\.get\("parseWithAnydoc"\) === "true"/);
+  assert.match(ingestRoute, /upload\.fields\.get\("parseMode"\) === "anydoc"/);
+  assert.match(ingestRoute, /jobType: "document-ingestion"/);
   assert.match(
-    ingestRoute,
+    ingestWorker,
     /const useAnydoc = Boolean\(anydocFormat\) && !useVlm/,
   );
-  assert.match(ingestRoute, /convertWithAnydoc\(\{/);
+  assert.match(ingestWorker, /convertWithAnydoc\(\{/);
   // Anything else is read the normal way, with a note saying so.
-  assert.match(ingestRoute, /is not a format anydoc converts/);
+  assert.match(ingestWorker, /is not a format anydoc converts/);
 });
 
 test('an anydoc-parsed PDF keeps its original beside the note', () => {
-  assert.match(ingestRoute, /if \(ext === "pdf"\) \{\s*sourcePdfPath = saveUploadedPdfAsset/);
+  assert.match(ingestWorker, /if \(ext === "pdf"\) \{\s*sourcePdfPath = saveUploadedPdfAsset/);
 });
 
 test('an anydoc-parsed source records how it was read', () => {
-  assert.match(ingestRoute, /extraction_method: `anydoc-\$\{ANYDOC_VERSION\}`/);
-  assert.match(ingestRoute, /parse_mode: "anydoc"/);
+  assert.match(ingestWorker, /extraction_method: `anydoc-\$\{ANYDOC_VERSION\}`/);
+  assert.match(ingestWorker, /parse_mode: "anydoc"/);
 });
 
 test('embedded images are written into the garden the document belongs to', () => {
-  assert.match(ingestRoute, /function anydocImageSaver\(/);
-  assert.match(ingestRoute, /createdFilePaths\.push\(filePath\)/);
+  assert.match(ingestWorker, /function anydocImageSaver\(/);
+  assert.match(ingestWorker, /createdFilePaths\.push\(filePath\)/);
   // A failed write is skipped, not fatal: the text conversion already worked.
-  assert.match(ingestRoute, /\/\/ An image that cannot be written is reported as skipped, not fatal\./);
+  assert.match(ingestWorker, /\/\/ An image that cannot be written is reported as skipped, not fatal\./);
 });
 
 test('the status route probes without touching an upload', () => {

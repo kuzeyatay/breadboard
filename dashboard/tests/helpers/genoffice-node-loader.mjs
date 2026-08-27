@@ -4,7 +4,17 @@ import { registerHooks } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
-const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const sourceRelativeDashboardRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+);
+// esbuild integration fixtures may inline this loader into a generated file
+// under dashboard/tests. Keep the hook anchored to the dashboard source tree
+// in both its ordinary module location and that bundled test location.
+const dashboardRoot = fs.existsSync(path.join(sourceRelativeDashboardRoot, "src", "vendor", "genoffice"))
+  ? sourceRelativeDashboardRoot
+  : path.resolve(process.cwd());
 const vendorRoot = path.join(dashboardRoot, "src", "vendor", "genoffice");
 
 function firstTypeScriptFile(candidates) {

@@ -553,5 +553,8 @@ test("a tutoring turn puts the learner's question before any preamble", () => {
   assert.match(manager, /return `\$\{run\.request\.message\}\\n\\n---/);
   // Only a genuinely current index is ever named on a turn.
   assert.match(manager, /knowledgeBaseForTurn/);
-  assert.match(manager, /ensureIndex/);
+  // The disposable run worker consumes current state; index building is a
+  // separate Runtime job and must not escape the worker process tree.
+  assert.match(manager, /indexState/);
+  assert.doesNotMatch(manager, /ensureIndex\(run\.userId, run\.scope\)/);
 });

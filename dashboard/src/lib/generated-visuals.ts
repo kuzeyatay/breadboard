@@ -1,11 +1,19 @@
 import crypto from "crypto";
-import fs from "fs";
 import os from "os";
-import path from "path";
 import { pathToFileURL } from "url";
-import ts from "typescript";
 import type OpenAI from "openai";
 import { withCouncil } from "./council.ts";
+import {
+  externalRuntimeCopyFile,
+  externalRuntimeFilesystem as fs,
+  externalRuntimeLstat,
+  externalRuntimePathExists,
+  externalRuntimeReadFile,
+  externalRuntimeReadUtf8,
+  externalRuntimeRealpath,
+  externalRuntimeStat,
+} from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   GENERATED_VISUAL_COUNCIL_REASONING,
   runGeneratedVisualCouncilRequestWithReceipt,
@@ -13,11 +21,6 @@ import {
   type GeneratedVisualCouncilRecoveryMetadata,
   type RunGeneratedVisualCouncilRequestInput,
 } from "./generated-visual-council-receipts.ts";
-import {
-  runObservedGeneratedVisualBrowserProcess,
-  type GeneratedVisualBrowserCompletion,
-  type GeneratedVisualObservedBrowserResult,
-} from "./generated-visual-browser-process.ts";
 import {
   GENERATED_VISUAL_CAPABILITY_MANIFEST,
   GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
@@ -38,6 +41,27 @@ import type {
   SourceVisualRelationship,
   VisualizationOpportunity,
 } from "./visualization-opportunities.ts";
+
+export type GeneratedVisualBrowserCompletion =
+  | "process_exit"
+  | "observed_dom"
+  | "observed_capture"
+  | "spawn_error"
+  | "deadline"
+  | "cancelled"
+  | "output_overflow";
+
+export type GeneratedVisualBrowserCleanupMethod =
+  | "none"
+  | "natural-exit"
+  | "natural-exit-lineage"
+  | "natural-exit-unconfirmed"
+  | "taskkill-tree"
+  | "lineage-quiescence"
+  | "natural-exit-race"
+  | "process-group"
+  | "process-group-sigkill"
+  | "process-kill";
 
 export const GENERATED_VISUAL_BLOCK_LANG = "breadboard-generated-visual";
 export const GENERATED_VISUAL_SCHEMA_VERSION =
@@ -94,50 +118,13 @@ export const GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS = 11 * 60_000;
 export const GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS = 31 * 60_000;
 
 const SDK_IMPORT = GENERATED_VISUAL_CAPABILITY_MANIFEST.sourceForm.importModule;
-const IMPORT_ALLOWLIST = new Set([SDK_IMPORT, "react"]);
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{1,79}$/;
 const CONTROL_ID_PATTERN = GENERATED_VISUAL_CONTROL_ID_PATTERN;
 const RESERVED_CONTROL_IDS = new Set<string>(
   GENERATED_VISUAL_RESERVED_CONTROL_IDS,
 );
-const FORBIDDEN_IDENTIFIERS = new Set([
-  "fetch",
-  "XMLHttpRequest",
-  "WebSocket",
-  "eval",
-  "Function",
-  "document",
-  "window",
-  "localStorage",
-  "sessionStorage",
-  "navigator",
-  "process",
-  "require",
-  "global",
-  "globalThis",
-  "setTimeout",
-  "setInterval",
-  "Worker",
-  "SharedWorker",
-  "EventSource",
-]);
-const FORBIDDEN_PROPERTIES = new Set([
-  "cookie",
-  "serviceWorker",
-  "prototype",
-  "__proto__",
-  "constructor",
-  "dangerouslySetInnerHTML",
-  "innerHTML",
-  "outerHTML",
-  "location",
-  "open",
-  "sendBeacon",
-]);
 const EXTERNAL_URL_RE = /(?:https?:|wss?:|file:|javascript:|data:text\/html)/i;
 const MAX_AST_NODES = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.astNodes;
-const MAX_LITERAL_DEPTH =
-  GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.literalDepth;
 const MAX_EXPRESSION_NODES =
   GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.expressionNodes;
 const MAX_EXPRESSION_DEPTH = 16;
@@ -201,11 +188,6 @@ const GENERATED_COMPARISONS = new Set<string>(
 const GENERATED_SCENE_KINDS = new Set<string>(
   GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.kinds,
 );
-const GENERATED_COMPILATION_CACHE = new Map<
-  string,
-  GeneratedVisualCompilation
->();
-
 export interface GeneratedVisualizationTestCase {
   name: string;
   inputs: Record<string, unknown>;
@@ -296,7 +278,7 @@ export interface GeneratedVisualBrowserAttemptDiagnostics {
   completion?: GeneratedVisualBrowserCompletion;
   /** False when completed artifacts were followed by explicit tree cleanup. */
   browserExitedNaturally?: boolean;
-  cleanupMethod?: GeneratedVisualObservedBrowserResult["cleanupMethod"];
+  cleanupMethod?: GeneratedVisualBrowserCleanupMethod;
   cleanupConfirmed?: boolean;
 }
 
@@ -338,6 +320,8 @@ export interface GeneratedVisualPreviewCaptureAttempt
   previewPrimarySpatialFrameValidated?: boolean;
   /** Bounded process diagnostic, retained only when the capture failed. */
   detail?: string;
+  /** Present only for an explicitly classified transient process failure. */
+  transientFailureCode?: string;
   /** The bounded delay inserted before the next fresh-profile attempt. */
   retryDelayMs?: number;
 }
@@ -380,6 +364,58 @@ export interface GeneratedVisualBrowserMountReceipt {
   theme: "light" | "dark";
   mounted: boolean;
   attempts: GeneratedVisualBrowserMountAttempt[];
+}
+
+export interface GeneratedVisualBrowserProfileCleanupReceipt {
+  attempted: number;
+  removed: number;
+  retries: number;
+  rootRemoved: boolean;
+  confirmed: boolean;
+  failureCode?: string;
+}
+
+function canonicalGeneratedVisualBrowserProfileCleanupReceipt(
+  value: unknown,
+): GeneratedVisualBrowserProfileCleanupReceipt | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const receipt = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "attempted",
+    "removed",
+    "retries",
+    "rootRemoved",
+    "confirmed",
+    "failureCode",
+  ]);
+  if (Object.keys(receipt).some((key) => !allowedKeys.has(key))) return undefined;
+  if (
+    !Number.isSafeInteger(receipt.attempted) || Number(receipt.attempted) < 0 ||
+    Number(receipt.attempted) > 256 ||
+    !Number.isSafeInteger(receipt.removed) || Number(receipt.removed) < 0 ||
+    Number(receipt.removed) > Number(receipt.attempted) ||
+    !Number.isSafeInteger(receipt.retries) || Number(receipt.retries) < 0 ||
+    Number(receipt.retries) > 10_000 ||
+    typeof receipt.rootRemoved !== "boolean" ||
+    typeof receipt.confirmed !== "boolean" ||
+    (receipt.confirmed === true && (
+      receipt.rootRemoved !== true || receipt.removed !== receipt.attempted
+    )) ||
+    !(receipt.failureCode === undefined || (
+      typeof receipt.failureCode === "string" &&
+      /^[A-Z][A-Z0-9_]{0,95}$/u.test(receipt.failureCode)
+    ))
+  ) return undefined;
+  return {
+    attempted: Number(receipt.attempted),
+    removed: Number(receipt.removed),
+    retries: Number(receipt.retries),
+    rootRemoved: receipt.rootRemoved,
+    confirmed: receipt.confirmed,
+    ...(typeof receipt.failureCode === "string"
+      ? { failureCode: receipt.failureCode }
+      : {}),
+  };
 }
 
 export type GeneratedVisualizationStatus =
@@ -445,6 +481,7 @@ export interface GeneratedVisualTestsRecord {
     previewMatrixComplete?: boolean;
     previewMatrixReceipt?: GeneratedVisualPreviewMatrixReceipt;
     mountReceipts?: GeneratedVisualBrowserMountReceipt[];
+    profileCleanup?: GeneratedVisualBrowserProfileCleanupReceipt;
   };
 }
 
@@ -917,223 +954,6 @@ function boundedGeneratedVisualEvidence(
   }
   if (serialized.length <= maxChars) return value;
   return { truncated: true, jsonExcerpt: serialized.slice(0, maxChars) };
-}
-
-function unwrapExpression(expression: ts.Expression): ts.Expression {
-  let current = expression;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isSatisfiesExpression(current) ||
-    ts.isTypeAssertionExpression(current)
-  ) {
-    current = current.expression;
-  }
-  return current;
-}
-
-function literalFromAst(expression: ts.Expression, depth = 0): unknown {
-  if (depth > MAX_LITERAL_DEPTH)
-    throw new Error("module literal nesting is too deep");
-  const node = unwrapExpression(expression);
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
-    return node.text;
-  if (ts.isNumericLiteral(node)) return Number(node.text);
-  if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
-  if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
-  if (node.kind === ts.SyntaxKind.NullKeyword) return null;
-  if (
-    ts.isPrefixUnaryExpression(node) &&
-    (node.operator === ts.SyntaxKind.MinusToken ||
-      node.operator === ts.SyntaxKind.PlusToken) &&
-    ts.isNumericLiteral(node.operand)
-  ) {
-    const value = Number(node.operand.text);
-    return node.operator === ts.SyntaxKind.MinusToken ? -value : value;
-  }
-  if (ts.isArrayLiteralExpression(node)) {
-    return node.elements.map((element) => {
-      if (ts.isSpreadElement(element))
-        throw new Error("spread elements are not allowed");
-      return literalFromAst(element, depth + 1);
-    });
-  }
-  if (ts.isObjectLiteralExpression(node)) {
-    const result: Record<string, unknown> = {};
-    for (const property of node.properties) {
-      if (!ts.isPropertyAssignment(property)) {
-        throw new Error("only plain object property assignments are allowed");
-      }
-      if (property.name && ts.isComputedPropertyName(property.name)) {
-        throw new Error("computed property names are not allowed");
-      }
-      const key =
-        property.name &&
-        (ts.isIdentifier(property.name) ||
-          ts.isStringLiteral(property.name) ||
-          ts.isNumericLiteral(property.name))
-          ? property.name.text
-          : "";
-      if (!key || FORBIDDEN_PROPERTIES.has(key)) {
-        throw new Error(`property ${key || "(unknown)"} is not allowed`);
-      }
-      result[key] = literalFromAst(property.initializer, depth + 1);
-    }
-    return result;
-  }
-  throw new Error(
-    `executable syntax is not allowed (${ts.SyntaxKind[node.kind]})`,
-  );
-}
-
-function staticAstValidation(sourceCode: string): {
-  definition: unknown;
-  imports: string[];
-  errors: string[];
-  warnings: string[];
-  astNodeCount: number;
-} {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-  const imports: string[] = [];
-  if (sourceCode.length > GENERATED_VISUAL_MAX_SOURCE_CHARS) {
-    return {
-      definition: null,
-      imports,
-      errors: [
-        `source exceeds ${GENERATED_VISUAL_MAX_SOURCE_CHARS} characters`,
-      ],
-      warnings,
-      astNodeCount: 0,
-    };
-  }
-  const sourceFile = ts.createSourceFile(
-    "generated-visual.tsx",
-    sourceCode,
-    ts.ScriptTarget.ES2022,
-    true,
-    ts.ScriptKind.TSX,
-  );
-  const parseDiagnostics =
-    (
-      sourceFile as ts.SourceFile & {
-        parseDiagnostics?: readonly ts.Diagnostic[];
-      }
-    ).parseDiagnostics ?? [];
-  for (const diagnostic of parseDiagnostics) {
-    errors.push(ts.flattenDiagnosticMessageText(diagnostic.messageText, " "));
-  }
-
-  let astNodeCount = 0;
-  const visit = (node: ts.Node) => {
-    astNodeCount += 1;
-    if (astNodeCount > MAX_AST_NODES) return;
-    if (ts.isIdentifier(node) && FORBIDDEN_IDENTIFIERS.has(node.text)) {
-      errors.push(`forbidden global or capability: ${node.text}`);
-    }
-    if (
-      ts.isPropertyAccessExpression(node) &&
-      FORBIDDEN_PROPERTIES.has(node.name.text)
-    ) {
-      errors.push(`forbidden property access: ${node.name.text}`);
-    }
-    if (
-      (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
-      EXTERNAL_URL_RE.test(node.text)
-    ) {
-      errors.push("external URLs and executable URL schemes are not allowed");
-    }
-    if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword
-    ) {
-      errors.push("dynamic import() is not allowed");
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  if (astNodeCount > MAX_AST_NODES)
-    errors.push(`AST exceeds ${MAX_AST_NODES} nodes`);
-
-  let exportExpression: ts.Expression | null = null;
-  let importCount = 0;
-  for (const statement of sourceFile.statements) {
-    if (ts.isImportDeclaration(statement)) {
-      importCount += 1;
-      const moduleName = ts.isStringLiteral(statement.moduleSpecifier)
-        ? statement.moduleSpecifier.text
-        : "";
-      imports.push(moduleName);
-      if (!IMPORT_ALLOWLIST.has(moduleName))
-        errors.push(`import ${moduleName || "(unknown)"} is not allowed`);
-      if (moduleName === SDK_IMPORT) {
-        const bindings = statement.importClause?.namedBindings;
-        if (!bindings || !ts.isNamedImports(bindings)) {
-          errors.push("the SDK must use named imports");
-        } else {
-          for (const element of bindings.elements) {
-            if (element.name.text !== "defineVisualization") {
-              errors.push(
-                `SDK import ${element.name.text} is not allowed in generated modules v1`,
-              );
-            }
-          }
-        }
-      } else if (moduleName === "react") {
-        errors.push(
-          "React is allowlisted for future SDK versions but generated modules v1 must remain declarative",
-        );
-      }
-      continue;
-    }
-    if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
-      if (exportExpression) errors.push("only one default export is allowed");
-      exportExpression = statement.expression;
-      continue;
-    }
-    if (statement.kind !== ts.SyntaxKind.EmptyStatement) {
-      errors.push(`top-level ${ts.SyntaxKind[statement.kind]} is not allowed`);
-    }
-  }
-  if (importCount !== 1 || imports[0] !== SDK_IMPORT) {
-    errors.push(
-      `generated modules must import only defineVisualization from ${SDK_IMPORT}`,
-    );
-  }
-  if (!exportExpression)
-    errors.push("a default defineVisualization export is required");
-
-  let definition: unknown = null;
-  if (exportExpression) {
-    const expression = unwrapExpression(exportExpression);
-    if (
-      !ts.isCallExpression(expression) ||
-      !ts.isIdentifier(expression.expression) ||
-      expression.expression.text !== "defineVisualization" ||
-      expression.arguments.length !== 1
-    ) {
-      errors.push(
-        "default export must be defineVisualization({ ...literal definition... })",
-      );
-    } else {
-      try {
-        definition = literalFromAst(expression.arguments[0]);
-      } catch (error) {
-        errors.push(
-          error instanceof Error
-            ? error.message
-            : "module literal could not be parsed",
-        );
-      }
-    }
-  }
-  return {
-    definition,
-    imports,
-    errors: [...new Set(errors)],
-    warnings,
-    astNodeCount,
-  };
 }
 
 function validateExpression(
@@ -2203,6 +2023,26 @@ function reviewedSpatialRepresentationRequirement(
   };
 }
 
+/**
+ * Process-free cache identity used by the disposable compiler. Keeping this
+ * semantic contract here lets the worker preserve the existing cache behavior
+ * without making the Next-facing orchestration module import TypeScript.
+ */
+export function generatedVisualCompilerOpportunityCacheContract(
+  opportunity: VisualizationOpportunity,
+): {
+  requiredInputs: VisualizationOpportunity["requiredInputs"];
+  requiredOutputs: VisualizationOpportunity["requiredOutputs"];
+  spatialRepresentationRequirement: GeneratedVisualSpatialRepresentationRequirement;
+} {
+  return {
+    requiredInputs: opportunity.requiredInputs,
+    requiredOutputs: opportunity.requiredOutputs,
+    spatialRepresentationRequirement:
+      reviewedSpatialRepresentationRequirement(opportunity),
+  };
+}
+
 export function validateGeneratedVisualizationDefinition(
   value: unknown,
   opportunity?: VisualizationOpportunity,
@@ -2633,67 +2473,6 @@ export function validateGeneratedVisualizationDefinition(
     errors: [...new Set(errors)],
     warnings: [...new Set(warnings)],
   };
-}
-
-export function compileGeneratedVisualization(
-  sourceCode: string,
-  opportunity?: VisualizationOpportunity,
-): GeneratedVisualCompilation {
-  const sourceHash = sha256(sourceCode);
-  const opportunityContractHash = opportunity
-    ? sha256(
-        JSON.stringify({
-          requiredInputs: opportunity.requiredInputs,
-          requiredOutputs: opportunity.requiredOutputs,
-          spatialRepresentationRequirement:
-            reviewedSpatialRepresentationRequirement(opportunity),
-        }),
-      )
-    : "unscoped";
-  const cacheKey = [
-    GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
-    VISUAL_SDK_VERSION,
-    sourceHash,
-    opportunity?.similarityFingerprint ?? opportunity?.id ?? "unscoped",
-    opportunityContractHash,
-  ].join(":");
-  const cached = GENERATED_COMPILATION_CACHE.get(cacheKey);
-  if (cached) return { ...structuredClone(cached), cacheHit: true };
-  const ast = staticAstValidation(sourceCode);
-  const definitionValidation = validateGeneratedVisualizationDefinition(
-    ast.definition,
-    opportunity,
-  );
-  const errors = [...ast.errors, ...definitionValidation.errors];
-  const definition =
-    errors.length === 0 ? definitionValidation.definition : null;
-  const compiledJavaScript = definition
-    ? `globalThis.__BREADBOARD_GENERATED_VISUAL__ = Object.freeze(${JSON.stringify(definition)});\n`
-    : "";
-  const result: GeneratedVisualCompilation = {
-    definition,
-    validation: {
-      valid: Boolean(definition),
-      checkedAt: nowIso(),
-      astNodeCount: ast.astNodeCount,
-      sourceBytes: Buffer.byteLength(sourceCode),
-      imports: ast.imports,
-      errors: [...new Set(errors)],
-      warnings: [...ast.warnings, ...definitionValidation.warnings],
-    },
-    sourceHash,
-    compiledHash: compiledJavaScript ? sha256(compiledJavaScript) : "",
-    compiledJavaScript,
-    cacheHit: false,
-  };
-  if (result.definition) {
-    GENERATED_COMPILATION_CACHE.set(cacheKey, structuredClone(result));
-    if (GENERATED_COMPILATION_CACHE.size > 128) {
-      const oldest = GENERATED_COMPILATION_CACHE.keys().next().value;
-      if (oldest) GENERATED_COMPILATION_CACHE.delete(oldest);
-    }
-  }
-  return result;
 }
 
 export function evaluateVisualExpression(
@@ -4081,21 +3860,6 @@ export function runGeneratedVisualDeterministicTests(input: {
   };
 }
 
-function browserExecutable(
-  env: NodeJS.ProcessEnv = process.env,
-): string | null {
-  const configured = String(env.BREADBOARD_VISUAL_BROWSER_PATH ?? "").trim();
-  const candidates = [
-    configured,
-    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
-  ].filter(Boolean);
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
-}
-
 function sandboxRuntimePath(): string {
   const cwd = process.cwd();
   const candidates = [
@@ -4120,7 +3884,9 @@ function sandboxRuntimePath(): string {
     );
   }
   return (
-    candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]
+    candidates.find((candidate) =>
+      fs.existsSync(/* turbopackIgnore: true */ candidate),
+    ) ?? candidates[0]
   );
 }
 
@@ -4297,13 +4063,13 @@ export interface GeneratedVisualBrowserRunResult {
   timedOut?: boolean;
   completion?: GeneratedVisualBrowserCompletion;
   browserExitedNaturally?: boolean;
-  cleanupMethod?: GeneratedVisualObservedBrowserResult["cleanupMethod"];
+  cleanupMethod?: GeneratedVisualBrowserCleanupMethod;
   cleanupConfirmed?: boolean;
 }
 
 export type GeneratedVisualBrowserRunner = (
   invocation: GeneratedVisualBrowserInvocation,
-) => GeneratedVisualBrowserRunResult;
+) => GeneratedVisualBrowserRunResult | Promise<GeneratedVisualBrowserRunResult>;
 
 /**
  * Chromium extends its user-data directory with several nested cache paths.
@@ -4313,20 +4079,180 @@ export type GeneratedVisualBrowserRunner = (
  * short, separately-created OS-temp root. Each invocation still receives its
  * own child directory and the whole root is removed after this test run.
  */
-function createGeneratedVisualBrowserProfileRoot(): string {
-  const tempRoot = path.resolve(os.tmpdir());
+interface GeneratedVisualBrowserProfileRootDependencies {
+  tempRoot?: string;
+  mkdtemp?: typeof fs.mkdtempSync;
+}
+
+export function createGeneratedVisualBrowserProfileRoot(
+  dependencies: GeneratedVisualBrowserProfileRootDependencies = {},
+): string {
+  const tempRoot = path.resolve(dependencies.tempRoot ?? os.tmpdir());
+  const prefix = path.join(tempRoot, "bb-vp-");
   const profileRoot = path.resolve(
-    fs.mkdtempSync(path.join(tempRoot, "bb-vp-")),
+    (dependencies.mkdtemp ?? fs.mkdtempSync)(prefix),
   );
-  if (!profileRoot.startsWith(`${tempRoot}${path.sep}`)) {
-    try {
-      fs.rmSync(profileRoot, { recursive: true, force: true });
-    } catch {
-      // The path has not been trusted, so cleanup is best effort only.
-    }
+  if (
+    !sameGeneratedVisualBrowserPath(path.dirname(profileRoot), tempRoot) ||
+    !profileRoot.startsWith(prefix)
+  ) {
+    // The returned path has not been authenticated. Never recursively remove
+    // it: an injected/broken mkdtemp boundary could point at unrelated data.
     throw new Error("Generated visual browser profile escaped the OS temporary directory");
   }
   return profileRoot;
+}
+
+const GENERATED_VISUAL_BROWSER_PROFILE_REMOVE_TIMEOUT_MS = 3_000;
+const GENERATED_VISUAL_BROWSER_PROFILE_REMOVE_RETRY_MS = 50;
+const GENERATED_VISUAL_BROWSER_TRANSIENT_REMOVE_CODES = new Set([
+  "EACCES",
+  "EBUSY",
+  "ENOTEMPTY",
+  "EPERM",
+]);
+
+export interface GeneratedVisualBrowserProfileRemoveReceipt {
+  confirmed: boolean;
+  retries: number;
+  failureCode?: string;
+}
+
+interface GeneratedVisualBrowserProfileRemoveDependencies {
+  platform?: NodeJS.Platform;
+  lstat?: typeof externalRuntimeLstat;
+  realpath?: typeof externalRuntimeRealpath;
+  remove?: typeof fs.rmSync;
+  unlink?: typeof fs.unlinkSync;
+  now?: () => number;
+  wait?: (milliseconds: number) => Promise<void>;
+}
+
+function sameGeneratedVisualBrowserPath(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32"
+    ? a.toLowerCase() === b.toLowerCase()
+    : a === b;
+}
+
+function generatedVisualBrowserCleanupErrorCode(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && code.length > 0) return code.slice(0, 96);
+  }
+  return "EPROFILECLEANUP";
+}
+
+/** Remove one exact disposable profile or its exact root. The target must be
+ * either the root itself or one direct child; reparse points are unlinked and
+ * never recursively traversed. Windows sharing violations receive one bounded
+ * retry window, and absence is verified before cleanup is receipted. */
+export async function removeGeneratedVisualBrowserProfile(
+  profileRoot: string,
+  profilePath: string,
+  dependencies: GeneratedVisualBrowserProfileRemoveDependencies = {},
+): Promise<GeneratedVisualBrowserProfileRemoveReceipt> {
+  const resolvedRoot = path.resolve(profileRoot);
+  const resolvedProfile = path.resolve(profilePath);
+  const resolvedTempRoot = path.resolve(os.tmpdir());
+  const removingRoot = sameGeneratedVisualBrowserPath(resolvedRoot, resolvedProfile);
+  if (
+    !sameGeneratedVisualBrowserPath(path.dirname(resolvedRoot), resolvedTempRoot) ||
+    !removingRoot &&
+    !sameGeneratedVisualBrowserPath(path.dirname(resolvedProfile), resolvedRoot)
+  ) {
+    return { confirmed: false, retries: 0, failureCode: "EPROFILEAUTH" };
+  }
+  const readMetadata = dependencies.lstat ?? externalRuntimeLstat;
+  const canonicalize = dependencies.realpath ?? externalRuntimeRealpath;
+  const remove = dependencies.remove ?? fs.rmSync;
+  const unlink = dependencies.unlink ?? fs.unlinkSync;
+  const now = dependencies.now ?? Date.now;
+  const wait = dependencies.wait ?? ((milliseconds) =>
+    new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const platform = dependencies.platform ?? process.platform;
+  const deadline = now() + GENERATED_VISUAL_BROWSER_PROFILE_REMOVE_TIMEOUT_MS;
+  let retries = 0;
+  for (;;) {
+    try {
+      let metadata: ReturnType<typeof externalRuntimeLstat>;
+      try {
+        metadata = readMetadata(resolvedProfile);
+      } catch (error) {
+        if (generatedVisualBrowserCleanupErrorCode(error) === "ENOENT") {
+          return { confirmed: true, retries };
+        }
+        throw error;
+      }
+      let canonicalRoot: string | undefined;
+      if (!removingRoot) {
+        let rootMetadata: ReturnType<typeof externalRuntimeLstat>;
+        try {
+          rootMetadata = readMetadata(resolvedRoot);
+        } catch (error) {
+          if (generatedVisualBrowserCleanupErrorCode(error) === "ENOENT") {
+            return { confirmed: false, retries, failureCode: "EPROFILEAUTH" };
+          }
+          throw error;
+        }
+        if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
+          return { confirmed: false, retries, failureCode: "EPROFILEREPARSE" };
+        }
+        canonicalRoot = canonicalize(resolvedRoot);
+        const canonicalTempRoot = canonicalize(resolvedTempRoot);
+        if (
+          !sameGeneratedVisualBrowserPath(canonicalRoot, resolvedRoot) ||
+          !sameGeneratedVisualBrowserPath(path.dirname(canonicalRoot), canonicalTempRoot)
+        ) {
+          return { confirmed: false, retries, failureCode: "EPROFILEREPARSE" };
+        }
+      }
+      if (metadata.isSymbolicLink()) {
+        unlink(resolvedProfile);
+      } else {
+        if (!metadata.isDirectory()) {
+          return { confirmed: false, retries, failureCode: "EPROFILETYPE" };
+        }
+        const canonicalRootParent = canonicalize(path.dirname(resolvedRoot));
+        const canonicalTempRoot = canonicalize(resolvedTempRoot);
+        if (!sameGeneratedVisualBrowserPath(canonicalRootParent, canonicalTempRoot)) {
+          return { confirmed: false, retries, failureCode: "EPROFILEAUTH" };
+        }
+        const canonicalProfile = canonicalize(resolvedProfile);
+        const canonicalExpectedParent = removingRoot
+          ? canonicalRootParent
+          : canonicalRoot as string;
+        if (!sameGeneratedVisualBrowserPath(
+          path.dirname(canonicalProfile),
+          canonicalExpectedParent,
+        )) {
+          return { confirmed: false, retries, failureCode: "EPROFILEREPARSE" };
+        }
+        remove(resolvedProfile, { recursive: true, force: true, maxRetries: 0 });
+      }
+      try {
+        readMetadata(resolvedProfile);
+        return { confirmed: false, retries, failureCode: "EPROFILEEXISTS" };
+      } catch (error) {
+        if (generatedVisualBrowserCleanupErrorCode(error) === "ENOENT") {
+          return { confirmed: true, retries };
+        }
+        throw error;
+      }
+    } catch (error) {
+      const failureCode = generatedVisualBrowserCleanupErrorCode(error);
+      const retryable = platform === "win32" &&
+        GENERATED_VISUAL_BROWSER_TRANSIENT_REMOVE_CODES.has(failureCode) &&
+        now() < deadline;
+      if (!retryable) return { confirmed: false, retries, failureCode };
+      retries += 1;
+      await wait(Math.min(
+        GENERATED_VISUAL_BROWSER_PROFILE_REMOVE_RETRY_MS,
+        Math.max(1, deadline - now()),
+      ));
+    }
+  }
 }
 
 function generatedVisualPreviewCaptureRetryDelay(attempt: number): number {
@@ -4414,6 +4340,58 @@ function generatedVisualBrowserProcessFailureDetail(
   )} [truncated]...`;
 }
 
+const GENERATED_VISUAL_CONFIRMED_BROWSER_CLEANUP_METHODS = new Set<
+  GeneratedVisualBrowserCleanupMethod
+>([
+  "natural-exit",
+  "natural-exit-lineage",
+  "taskkill-tree",
+  "lineage-quiescence",
+  "process-group",
+  "process-group-sigkill",
+]);
+const GENERATED_VISUAL_PROACTIVE_BROWSER_CLEANUP_METHODS = new Set<
+  GeneratedVisualBrowserCleanupMethod
+>([
+  "taskkill-tree",
+  "lineage-quiescence",
+  "process-group",
+  "process-group-sigkill",
+]);
+
+function generatedVisualBrowserProcessSucceeded(
+  result: GeneratedVisualBrowserRunResult,
+  allowedCompletions: ReadonlySet<GeneratedVisualBrowserCompletion>,
+): boolean {
+  if (
+    result.status !== 0 || result.signal !== null || result.error != null ||
+    result.timedOut !== false || result.cleanupConfirmed !== true ||
+    !result.cleanupMethod ||
+    !GENERATED_VISUAL_CONFIRMED_BROWSER_CLEANUP_METHODS.has(result.cleanupMethod) ||
+    !result.completion || !allowedCompletions.has(result.completion)
+  ) return false;
+  if (result.completion === "process_exit") {
+    return result.browserExitedNaturally === true && [
+      "natural-exit",
+      "natural-exit-lineage",
+      "process-group",
+    ].includes(result.cleanupMethod);
+  }
+  return result.browserExitedNaturally === false && [
+    "taskkill-tree",
+    "lineage-quiescence",
+    "process-group",
+    "process-group-sigkill",
+  ].includes(result.cleanupMethod);
+}
+
+const GENERATED_VISUAL_BROWSER_MOUNT_SUCCESS_COMPLETIONS = new Set<
+  GeneratedVisualBrowserCompletion
+>(["observed_dom", "process_exit"]);
+const GENERATED_VISUAL_BROWSER_CAPTURE_SUCCESS_COMPLETIONS = new Set<
+  GeneratedVisualBrowserCompletion
+>(["observed_capture", "process_exit"]);
+
 function generatedVisualBrowserAttemptDiagnostics(
   result: GeneratedVisualBrowserRunResult,
 ): GeneratedVisualBrowserAttemptDiagnostics {
@@ -4421,7 +4399,8 @@ function generatedVisualBrowserAttemptDiagnostics(
     ? undefined
     : String(result.error.code);
   const failed = result.status !== 0 || Boolean(result.signal) ||
-    Boolean(result.error) || result.timedOut === true;
+    Boolean(result.error) || result.timedOut === true ||
+    result.cleanupConfirmed !== true;
   const stderr = failed && result.stderr
     ? boundedGeneratedVisualBrowserCaptureText(result.stderr)
     : undefined;
@@ -4450,13 +4429,32 @@ function generatedVisualBrowserAttemptDiagnostics(
 }
 
 /** Restrict retries to process-level, explicitly transient failures. A browser
- * that reached the sandbox body is evidence of a real candidate/runtime result
- * and must remain a single semantic gate result, even if its logs mention a
- * transient-looking word. */
+ * that reached a failed sandbox result is semantic evidence and must remain a
+ * single gate result. A passed DOM that arrived only after the process deadline
+ * is different: retain that deadline attempt truthfully, then permit the one
+ * existing fresh-profile retry because no candidate semantics failed. */
 function generatedVisualTransientBrowserMountFailureCode(
   result: GeneratedVisualBrowserRunResult,
   output: string,
 ): string | undefined {
+  const runtimePassed =
+    /\bdata-breadboard-runtime-tests=["']passed["']/i.test(output) &&
+    !/\bdata-breadboard-overflow=["']true["']/i.test(output);
+  const runtimeEvidencePresent =
+    /\bdata-breadboard-runtime-(?:tests|diagnostics)\b/i.test(output);
+  if (
+    (!runtimeEvidencePresent || runtimePassed) &&
+    result.status === null &&
+    result.timedOut === true &&
+    result.completion === "deadline" &&
+    result.cleanupConfirmed === true &&
+    result.browserExitedNaturally === false &&
+    result.cleanupMethod !== undefined &&
+    GENERATED_VISUAL_PROACTIVE_BROWSER_CLEANUP_METHODS.has(result.cleanupMethod) &&
+    String(result.error?.code ?? "").toUpperCase() === "ETIMEDOUT"
+  ) {
+    return "ETIMEDOUT";
+  }
   if (
     /\bdata-breadboard-runtime-(?:tests|diagnostics)\b/i.test(output) ||
     (result.status === 0 && !result.signal && !result.error)
@@ -4474,6 +4472,65 @@ function generatedVisualTransientBrowserMountFailureCode(
   const code = failureText.match(
     /\b(?:ETIMEDOUT|EAGAIN|EBUSY|EMFILE|ENFILE|ERROR_SHARING_VIOLATION)\b/i,
   )?.[0]?.toUpperCase();
+  const exactTransientSpawn = result.status === null && result.signal === null &&
+    result.timedOut === false && result.completion === "spawn_error" &&
+    result.browserExitedNaturally === false && result.error != null &&
+    result.cleanupConfirmed === true && (
+      result.cleanupMethod === "none" ||
+      result.cleanupMethod !== undefined &&
+        GENERATED_VISUAL_PROACTIVE_BROWSER_CLEANUP_METHODS.has(result.cleanupMethod)
+    );
+  return exactTransientSpawn && code &&
+      GENERATED_VISUAL_TRANSIENT_BROWSER_MOUNT_ERROR_CODES.has(code)
+    ? code
+    : undefined;
+}
+
+function generatedVisualTransientBrowserCaptureFailureCode(
+  result: GeneratedVisualBrowserRunResult,
+  output: string,
+  requiresPreviewPrimarySpatialFrame: boolean,
+): string | undefined {
+  const runtimeEvidencePresent =
+    /\bdata-breadboard-runtime-(?:tests|diagnostics)\b/i.test(output);
+  const runtimePassed =
+    /\bdata-breadboard-runtime-tests=["']passed["']/i.test(output) &&
+    !/\bdata-breadboard-runtime-diagnostics\b/i.test(output) &&
+    !/\bdata-breadboard-overflow=["']true["']/i.test(output);
+  const semanticFailure = runtimeEvidencePresent && !runtimePassed ||
+    requiresPreviewPrimarySpatialFrame &&
+      !/\bdata-breadboard-preview-primary-spatial-frame=["']passed["']/i.test(output);
+  const proactiveCleanupConfirmed = result.cleanupConfirmed === true &&
+    result.cleanupMethod !== undefined &&
+    GENERATED_VISUAL_PROACTIVE_BROWSER_CLEANUP_METHODS.has(result.cleanupMethod);
+  if (
+    !semanticFailure && proactiveCleanupConfirmed && result.status === null &&
+    result.timedOut === true && result.completion === "deadline" &&
+    result.browserExitedNaturally === false &&
+    String(result.error?.code ?? "").toUpperCase() === "ETIMEDOUT"
+  ) return "ETIMEDOUT";
+  if (result.status === 0) {
+    return !semanticFailure && generatedVisualBrowserProcessSucceeded(
+      result,
+      GENERATED_VISUAL_BROWSER_CAPTURE_SUCCESS_COMPLETIONS,
+    )
+      ? "ENOENT"
+      : undefined;
+  }
+  const exactTransientSpawn = result.status === null && result.signal === null &&
+    result.timedOut === false && result.completion === "spawn_error" &&
+    result.browserExitedNaturally === false && result.error != null &&
+    result.cleanupConfirmed === true && (
+      result.cleanupMethod === "none" || proactiveCleanupConfirmed
+    );
+  if (!exactTransientSpawn) return undefined;
+  const failureText = [result.error?.code, result.error?.message, result.stderr]
+    .filter((value) => value !== undefined && value !== null)
+    .map((value) => Buffer.isBuffer(value) ? value.toString("utf-8") : String(value))
+    .join("\n");
+  const code = failureText.match(
+    /\b(?:EAGAIN|EBUSY|EMFILE|ENFILE|ERROR_SHARING_VIOLATION)\b/i,
+  )?.[0]?.toUpperCase();
   return code && GENERATED_VISUAL_TRANSIENT_BROWSER_MOUNT_ERROR_CODES.has(code)
     ? code
     : undefined;
@@ -4484,6 +4541,17 @@ function generatedVisualBrowserMountFailureDetail(
   output: string,
 ): string {
   if (/\bdata-breadboard-runtime-(?:tests|diagnostics)\b/i.test(output)) {
+    const runtimePassed =
+      /\bdata-breadboard-runtime-tests=["']passed["']/i.test(output) &&
+      !/\bdata-breadboard-overflow=["']true["']/i.test(output);
+    const processDetail = generatedVisualBrowserProcessFailureDetail(result);
+    if (runtimePassed && processDetail) {
+      const prefix = "runtime self-check passed but the browser process failed: ";
+      return `${prefix}${processDetail.slice(
+        0,
+        GENERATED_VISUAL_PREVIEW_CAPTURE_DIAGNOSTIC_MAX_LENGTH - prefix.length,
+      )}`;
+    }
     // Keep the runtime's own bounded, primary-cause-first diagnostic intact.
     // It is model-facing semantic evidence, unlike an OS process error.
     return browserRuntimeFailureDetail(output);
@@ -4494,31 +4562,50 @@ function generatedVisualBrowserMountFailureDetail(
 
 function generatedVisualPreviewScreenshotBytes(filePath: string): number | undefined {
   try {
-    const stats = fs.statSync(filePath);
+    const stats = externalRuntimeStat(filePath);
     return stats.isFile() && stats.size > 0 ? stats.size : undefined;
   } catch {
     return undefined;
   }
 }
 
-export function runGeneratedVisualBrowserTests(input: {
+export interface GeneratedVisualBrowserTestRunnerInput {
   definition: GeneratedVisualizationDefinition;
   outputDir: string;
   timeoutMs?: number;
-  /** Test-only override for deterministic capture-failure simulation. */
-  browserExecutable?: string;
-  /** Test-only override for the isolated browser process. */
-  browserRunner?: GeneratedVisualBrowserRunner;
+  signal?: AbortSignal;
+}
+
+export interface GeneratedVisualBrowserTestsInput
+  extends GeneratedVisualBrowserTestRunnerInput {
+  /** The caller owns browser discovery; orchestration may never discover or
+   * spawn a local process implicitly. */
+  browserExecutable: string;
+  /** The caller owns the isolated execution boundary. Next injects Runtime V2;
+   * disposable workers may inject the local observed-process adapter. */
+  browserRunner: GeneratedVisualBrowserRunner;
   /** Test-only override for bounded transient browser-mount retry sleeps. */
   browserMountRetryBackoff?: (delayMs: number) => void;
   /** Test-only override for bounded retry sleeps. */
   previewCaptureRetryBackoff?: (delayMs: number) => void;
-}): {
+  /** Test-only override for fail-closed disposable-profile cleanup. */
+  browserProfileRemover?: typeof removeGeneratedVisualBrowserProfile;
+}
+
+export type GeneratedVisualBrowserTestResult = Promise<{
   tests: GeneratedVisualTestsRecord["runtimeTests"];
   browser?: GeneratedVisualTestsRecord["browser"];
   previews?: GeneratedVisualPreviewArtifact[];
-} {
-  const executable = input.browserExecutable?.trim() || browserExecutable();
+}>;
+
+export type GeneratedVisualBrowserTestRunner = (
+  input: GeneratedVisualBrowserTestRunnerInput,
+) => GeneratedVisualBrowserTestResult;
+
+export async function runGeneratedVisualBrowserTests(
+  input: GeneratedVisualBrowserTestsInput,
+): GeneratedVisualBrowserTestResult {
+  const executable = input.browserExecutable.trim();
   if (!executable) {
     return {
       tests: [
@@ -4532,7 +4619,10 @@ export function runGeneratedVisualBrowserTests(input: {
   }
   let runtime = "";
   try {
-    runtime = fs.readFileSync(sandboxRuntimePath(), "utf-8");
+    runtime = fs.readFileSync(
+      /* turbopackIgnore: true */ sandboxRuntimePath(),
+      "utf-8",
+    );
   } catch {
     return {
       tests: [
@@ -4587,28 +4677,55 @@ export function runGeneratedVisualBrowserTests(input: {
       browser: { executable, viewports: [], screenshotCreated: false },
     };
   }
+  const profileCleanup: GeneratedVisualBrowserProfileCleanupReceipt = {
+    attempted: 0,
+    removed: 0,
+    retries: 0,
+    rootRemoved: false,
+    confirmed: true,
+  };
+  const browserProfileRemover = input.browserProfileRemover ??
+    removeGeneratedVisualBrowserProfile;
+  const recordProfileCleanup = (
+    receipt: GeneratedVisualBrowserProfileRemoveReceipt,
+    root: boolean,
+  ) => {
+    profileCleanup.attempted += 1;
+    profileCleanup.retries += receipt.retries;
+    if (receipt.confirmed) profileCleanup.removed += 1;
+    else {
+      profileCleanup.confirmed = false;
+      profileCleanup.failureCode ??= receipt.failureCode ?? "EPROFILECLEANUP";
+    }
+    if (root) profileCleanup.rootRemoved = receipt.confirmed;
+  };
+  let primaryError: unknown;
+  let completedResult: Awaited<GeneratedVisualBrowserTestResult> | undefined;
   try {
-    const browserRunner: GeneratedVisualBrowserRunner = input.browserRunner ??
-      ((invocation) => runObservedGeneratedVisualBrowserProcess(invocation));
+    const browserRunner = input.browserRunner;
     const retryBrowserMount =
       input.browserMountRetryBackoff ??
       waitForGeneratedVisualBrowserRetry;
     let browserProfileCounter = 0;
-    const spawnIsolatedBrowser = (slug: string, args: string[]) => {
-    browserProfileCounter += 1;
-    const profilePath = path.resolve(
-      browserProfileRoot,
-      `p-${browserProfileCounter}`,
-    );
-    if (!profilePath.startsWith(`${browserProfileRoot}${path.sep}`)) {
-      throw new Error(
-        "Generated visual browser profile escaped its disposable output directory",
+    const spawnIsolatedBrowser = async (slug: string, args: string[]) => {
+      browserProfileCounter += 1;
+      const profilePath = path.resolve(
+        browserProfileRoot,
+        `p-${browserProfileCounter}`,
       );
-    }
-    fs.mkdirSync(profilePath, { recursive: true });
-    try {
+      if (!sameGeneratedVisualBrowserPath(path.dirname(profilePath), browserProfileRoot)) {
+        throw new Error(
+          "Generated visual browser profile escaped its disposable output directory",
+        );
+      }
+      fs.mkdirSync(profilePath, { recursive: false });
+      let runnerResult: GeneratedVisualBrowserRunResult | undefined;
+      let runnerError: unknown;
       try {
-        return browserRunner({
+        if (input.signal?.aborted) {
+          throw input.signal.reason ?? new DOMException("Aborted", "AbortError");
+        }
+        runnerResult = await browserRunner({
           executable,
           args: [`--user-data-dir=${profilePath}`, ...args],
           slug,
@@ -4616,24 +4733,70 @@ export function runGeneratedVisualBrowserTests(input: {
           timeoutMs: timeout,
         });
       } catch (error) {
-        return {
-          status: null,
-          signal: null,
-          error: {
-            message: error instanceof Error
-              ? error.message
-              : "Generated visual browser runner threw an unknown error",
-          },
+        if (input.signal?.aborted) {
+          runnerError = input.signal.reason ?? new DOMException("Aborted", "AbortError");
+        } else {
+          runnerResult = {
+            status: null,
+            signal: null,
+            error: {
+              message: error instanceof Error
+                ? error.message
+                : "Generated visual browser runner threw an unknown error",
+            },
+          };
+        }
+      }
+      let cleanup: GeneratedVisualBrowserProfileRemoveReceipt;
+      try {
+        cleanup = await browserProfileRemover(browserProfileRoot, profilePath);
+      } catch (error) {
+        cleanup = {
+          confirmed: false,
+          retries: 0,
+          failureCode: generatedVisualBrowserCleanupErrorCode(error),
         };
       }
-    } finally {
-      try {
-        fs.rmSync(profilePath, { recursive: true, force: true });
-      } catch {
-        // A timed-out browser may still hold its disposable profile briefly.
+      recordProfileCleanup(cleanup, false);
+      if (runnerError !== undefined) {
+        if (!cleanup.confirmed) {
+          throw new AggregateError(
+            [
+              runnerError,
+              new Error(
+                `Disposable browser profile cleanup was not confirmed (${cleanup.failureCode ?? "EPROFILECLEANUP"}).`,
+              ),
+            ],
+            "Browser cancellation and profile cleanup both failed.",
+          );
+        }
+        throw runnerError;
       }
-    }
-  };
+      if (!cleanup.confirmed) {
+        const runnerFailure = runnerResult?.error?.message
+          ? ` Runner failure: ${boundedGeneratedVisualBrowserCaptureText(
+              runnerResult.error.message,
+            )}`
+          : "";
+        return {
+          ...runnerResult,
+          status: null,
+          error: {
+            code: cleanup.failureCode ?? "EPROFILECLEANUP",
+            message: `Disposable browser profile cleanup was not confirmed.${runnerFailure}`,
+          },
+          cleanupConfirmed: false,
+        };
+      }
+      return runnerResult ?? {
+        status: null,
+        error: {
+          code: "EBROWSERRESULT",
+          message: "Generated visual browser runner returned no result.",
+        },
+        cleanupConfirmed: false,
+      };
+    };
   const browserMountReceipts: GeneratedVisualBrowserMountReceipt[] = [];
   for (const scenario of scenarios) {
     const [width, height] = scenario.viewport.split("x");
@@ -4663,7 +4826,7 @@ export function runGeneratedVisualBrowserTests(input: {
       // This creates a new profile path for every retry. Do not reuse the
       // profile from an interrupted Edge process, even when its cleanup was
       // delayed by the OS.
-      const result = spawnIsolatedBrowser(scenarioSlug, [
+      const result = await spawnIsolatedBrowser(scenarioSlug, [
         "--headless=new",
         "--disable-gpu",
         "--disable-gpu-shader-disk-cache",
@@ -4680,7 +4843,10 @@ export function runGeneratedVisualBrowserTests(input: {
       ]);
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
       const mounted =
-        result.status === 0 &&
+        generatedVisualBrowserProcessSucceeded(
+          result,
+          GENERATED_VISUAL_BROWSER_MOUNT_SUCCESS_COMPLETIONS,
+        ) &&
         output.includes('data-breadboard-runtime-tests="passed"') &&
         !output.includes('data-breadboard-overflow="true"');
       const transientFailureCode = mounted
@@ -4814,7 +4980,13 @@ export function runGeneratedVisualBrowserTests(input: {
         try {
           fs.rmSync(screenshotPath, { force: true });
         } catch (error) {
+          const failureCode = generatedVisualBrowserCleanupErrorCode(error);
+          const transientFailureCode =
+            GENERATED_VISUAL_TRANSIENT_BROWSER_MOUNT_ERROR_CODES.has(failureCode)
+              ? failureCode
+              : undefined;
           const retryDelayMs =
+            transientFailureCode &&
             captureAttempt < GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS
               ? generatedVisualPreviewCaptureRetryDelay(captureAttempt)
               : undefined;
@@ -4828,14 +5000,18 @@ export function runGeneratedVisualBrowserTests(input: {
                 error instanceof Error ? error.message : "unknown error"
               }`,
             ),
+            ...(transientFailureCode === undefined
+              ? {}
+              : { transientFailureCode }),
             ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
           });
-          if (retryDelayMs !== undefined) retryPreviewCapture(retryDelayMs);
+          if (retryDelayMs === undefined) break;
+          retryPreviewCapture(retryDelayMs);
           continue;
         }
         let screenshot: GeneratedVisualBrowserRunResult;
         try {
-          screenshot = captureScreenshot();
+          screenshot = await captureScreenshot();
         } catch (error) {
           screenshot = {
             status: null,
@@ -4848,7 +5024,10 @@ export function runGeneratedVisualBrowserTests(input: {
           };
         }
         const created =
-          screenshot.status === 0 &&
+          generatedVisualBrowserProcessSucceeded(
+            screenshot,
+            GENERATED_VISUAL_BROWSER_CAPTURE_SUCCESS_COMPLETIONS,
+          ) &&
           isReadableGeneratedVisualPreviewFile(screenshotPath);
         const output = `${screenshot.stdout ?? ""}\n${screenshot.stderr ?? ""}`;
         const requiresPreviewPrimarySpatialFrame =
@@ -4857,8 +5036,15 @@ export function runGeneratedVisualBrowserTests(input: {
           !requiresPreviewPrimarySpatialFrame ||
           browserPreviewPrimarySpatialFramePassed(output);
         const captured = created && previewPrimarySpatialFrameValidated;
+        const transientFailureCode = created
+          ? undefined
+          : generatedVisualTransientBrowserCaptureFailureCode(
+              screenshot,
+              output,
+              requiresPreviewPrimarySpatialFrame,
+            );
         const retryDelayMs =
-          !created &&
+          transientFailureCode &&
           captureAttempt < GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS
             ? generatedVisualPreviewCaptureRetryDelay(captureAttempt)
             : undefined;
@@ -4875,6 +5061,9 @@ export function runGeneratedVisualBrowserTests(input: {
             ? { previewPrimarySpatialFrameValidated }
             : {}),
           ...(screenshotBytes === undefined ? {} : { screenshotBytes }),
+          ...(transientFailureCode === undefined
+            ? {}
+            : { transientFailureCode }),
           ...(!captured
             ? {
                 detail: created
@@ -4895,7 +5084,8 @@ export function runGeneratedVisualBrowserTests(input: {
           );
           break;
         }
-        if (retryDelayMs !== undefined) retryPreviewCapture(retryDelayMs);
+        if (retryDelayMs === undefined) break;
+        retryPreviewCapture(retryDelayMs);
       }
       previewCaptureReceipts.push(receipt);
       if (receipt.captured) {
@@ -4949,7 +5139,7 @@ export function runGeneratedVisualBrowserTests(input: {
   } catch {
     // A debug preview HTML is harmless if the browser still has the file open.
   }
-  return {
+  completedResult = {
     tests,
     browser: {
       executable,
@@ -4963,21 +5153,55 @@ export function runGeneratedVisualBrowserTests(input: {
       previewMatrixComplete,
       previewMatrixReceipt,
       mountReceipts: browserMountReceipts,
+      profileCleanup,
     },
     previews,
   };
+  return completedResult;
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
+    let rootCleanup: GeneratedVisualBrowserProfileRemoveReceipt;
     try {
-      fs.rmSync(browserProfileRoot, { recursive: true, force: true });
-    } catch {
-      // A timed-out browser may still hold its disposable profile root briefly.
+      rootCleanup = await browserProfileRemover(
+        browserProfileRoot,
+        browserProfileRoot,
+      );
+    } catch (error) {
+      rootCleanup = {
+        confirmed: false,
+        retries: 0,
+        failureCode: generatedVisualBrowserCleanupErrorCode(error),
+      };
+    }
+    recordProfileCleanup(rootCleanup, true);
+    if (completedResult) {
+      completedResult.tests.push({
+        name: "browser profile cleanup",
+        passed: profileCleanup.confirmed && profileCleanup.rootRemoved,
+        detail: profileCleanup.confirmed && profileCleanup.rootRemoved
+          ? `${profileCleanup.removed}/${profileCleanup.attempted} disposable paths removed with ${profileCleanup.retries} bounded retries`
+          : `cleanup unconfirmed (${profileCleanup.failureCode ?? "EPROFILECLEANUP"})`,
+      });
+    } else if (!rootCleanup.confirmed) {
+      const cleanupError = new Error(
+        `Generated visual browser profile-root cleanup was not confirmed (${rootCleanup.failureCode ?? "EPROFILECLEANUP"}).`,
+      );
+      if (primaryError !== undefined) {
+        throw new AggregateError(
+          [primaryError, cleanupError],
+          "Browser execution and profile-root cleanup both failed.",
+        );
+      }
+      throw cleanupError;
     }
   }
 }
 
 function isReadableGeneratedVisualPreviewFile(filePath: string): boolean {
   try {
-    const stats = fs.statSync(filePath);
+    const stats = externalRuntimeStat(filePath);
     return stats.isFile() && stats.size > 0;
   } catch {
     return false;
@@ -5011,7 +5235,7 @@ function generatedVisualPreviewImageParts(
   return previews.map((preview) => ({
     type: "image_url" as const,
     image_url: {
-      url: `data:image/png;base64,${fs.readFileSync(preview.path).toString("base64")}`,
+      url: `data:image/png;base64,${externalRuntimeReadFile(preview.path).toString("base64")}`,
       detail: "low" as const,
     },
   }));
@@ -5104,8 +5328,8 @@ function copyArtifactFiles(sourceDir: string, targetDir: string): void {
     "lifecycle.json",
   ]) {
     const source = path.join(sourceDir, file);
-    if (fs.existsSync(source))
-      fs.copyFileSync(source, path.join(targetDir, file));
+    if (externalRuntimePathExists(source))
+      externalRuntimeCopyFile(source, path.join(targetDir, file));
   }
 }
 
@@ -5253,8 +5477,8 @@ export function saveGeneratedVisualArtifact(input: {
     );
   }
   writeJson(path.join(versionDir, "lifecycle.json"), input.lifecycle);
-  if (input.previewPath && fs.existsSync(input.previewPath)) {
-    fs.copyFileSync(input.previewPath, path.join(versionDir, "preview.png"));
+  if (input.previewPath && externalRuntimePathExists(input.previewPath)) {
+    externalRuntimeCopyFile(input.previewPath, path.join(versionDir, "preview.png"));
   }
   copyArtifactFiles(versionDir, dir);
   writeJson(path.join(dir, "current.json"), {
@@ -5272,7 +5496,7 @@ function updateGeneratedVisualIndex(
   const indexPath = path.join(gardenDir, ".breadboard", "visual-index.json");
   let index: Record<string, unknown> = {};
   try {
-    const parsed = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    const parsed = JSON.parse(externalRuntimeReadUtf8(indexPath));
     if (isRecord(parsed)) index = parsed;
   } catch {
     index = {};
@@ -5304,7 +5528,7 @@ export function loadGeneratedVisualManifest(
     const filePath = version
       ? path.join(dir, "versions", String(version), "manifest.json")
       : path.join(dir, "manifest.json");
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    const parsed = JSON.parse(externalRuntimeReadUtf8(filePath));
     return validateGeneratedVisualizationManifest(parsed, id).manifest;
   } catch {
     return null;
@@ -5326,9 +5550,9 @@ export function loadGeneratedVisualDefinition(
       : path.join(dir, "source.tsx");
     const manifest = loadGeneratedVisualManifest(gardenDir, id, version);
     if (!manifest) return null;
-    const source = fs.readFileSync(sourcePath, "utf-8");
+    const source = externalRuntimeReadUtf8(sourcePath);
     if (sha256(source) !== manifest.sourceHash) return null;
-    const compiled = fs.readFileSync(compiledPath, "utf-8");
+    const compiled = externalRuntimeReadUtf8(compiledPath);
     if (sha256(compiled) !== manifest.compiledHash) return null;
     const prefix =
       "globalThis.__BREADBOARD_GENERATED_VISUAL__ = Object.freeze(";
@@ -6257,7 +6481,7 @@ async function requestGeneratedVisualizationCriticRaw(input: {
   tokenUsage?: GeneratedVisualTokenUsage;
 }> {
   const legacyPreview: GeneratedVisualPreviewArtifact[] =
-    input.previewPath && fs.existsSync(input.previewPath)
+    input.previewPath && externalRuntimePathExists(input.previewPath)
       ? [
           {
             id: "legacy-desktop-default",
@@ -6701,35 +6925,88 @@ async function withGeneratedVisualTimeout<T>(input: {
   if (input.externalSignal?.aborted)
     throw generatedVisualAbortReason(input.externalSignal);
   const controller = new AbortController();
-  let rejectBoundary: (reason?: unknown) => void = () => undefined;
-  const boundary = new Promise<never>((_resolve, reject) => {
-    rejectBoundary = reject;
+  const lateResultGraceMs = Math.max(0, input.lateResultGraceMs);
+  const hardDeadlineAt =
+    performance.now() + input.timeoutMs + lateResultGraceMs;
+  let terminalSettled = false;
+  let resolveTerminal: (value: T | PromiseLike<T>) => void = () => undefined;
+  let rejectTerminal: (reason?: unknown) => void = () => undefined;
+  const terminal = new Promise<T>((resolve, reject) => {
+    resolveTerminal = resolve;
+    rejectTerminal = reject;
   });
+  const resolveTerminalOnce = (value: T): boolean => {
+    if (terminalSettled) return false;
+    terminalSettled = true;
+    resolveTerminal(value);
+    return true;
+  };
+  const rejectTerminalOnce = (failure: unknown): boolean => {
+    if (terminalSettled) return false;
+    terminalSettled = true;
+    rejectTerminal(failure);
+    return true;
+  };
+  const hardDeadlineElapsed = (): boolean =>
+    performance.now() >= hardDeadlineAt;
+  const settleHardTimeout = (): boolean => {
+    if (terminalSettled) return false;
+    const timeoutFailure = new GeneratedVisualRequestTimeoutError(
+      input.timeoutMs,
+      lateResultGraceMs,
+    );
+    if (!rejectTerminalOnce(timeoutFailure)) return false;
+    controller.abort(timeoutFailure);
+    return true;
+  };
   const abortFromExternal = () => {
+    if (hardDeadlineElapsed()) {
+      settleHardTimeout();
+      return;
+    }
     const externalFailure = generatedVisualAbortReason(input.externalSignal!);
-    controller.abort(externalFailure);
-    rejectBoundary(externalFailure);
+    if (rejectTerminalOnce(externalFailure)) {
+      controller.abort(externalFailure);
+    }
   };
   input.externalSignal?.addEventListener("abort", abortFromExternal, {
     once: true,
   });
-  const lateResultGraceMs = Math.max(0, input.lateResultGraceMs);
   const softDeadline = Symbol("generated-visual-soft-deadline");
   let softTimer: ReturnType<typeof setTimeout> | undefined;
-  let hardTimer: ReturnType<typeof setTimeout> | undefined;
   const softBoundary = new Promise<typeof softDeadline>((resolve) => {
     softTimer = setTimeout(() => resolve(softDeadline), input.timeoutMs);
   });
-  // Observe the original promise through both deadlines. If the hard boundary
-  // wins, its later settlement remains handled instead of becoming an orphaned
-  // rejection, while no second model-authored request is launched.
+  // Both deadlines are anchored at request start. Creating a new grace timer
+  // only after the soft continuation runs lets event-loop contention extend the
+  // advertised hard deadline and allows an already-due provider rejection to
+  // steal authority. The one terminal latch records whichever provider,
+  // cancellation, or absolute hard-deadline callback actually settles first.
+  const hardTimer = setTimeout(
+    settleHardTimeout,
+    input.timeoutMs + lateResultGraceMs,
+  );
+  // Observe the original promise through both deadlines. A late settlement
+  // remains handled after a hard timeout, and no duplicate request is launched.
   const work = Promise.resolve().then(() => input.work(controller.signal));
+  void work.then(
+    (value) => {
+      if (hardDeadlineElapsed()) {
+        settleHardTimeout();
+        return;
+      }
+      resolveTerminalOnce(value);
+    },
+    (failure) => {
+      if (hardDeadlineElapsed()) {
+        settleHardTimeout();
+        return;
+      }
+      rejectTerminalOnce(failure);
+    },
+  );
   try {
-    const initial = await Promise.race([
-      work,
-      boundary,
-      softBoundary,
-    ]);
+    const initial = await Promise.race([terminal, softBoundary]);
     if (initial !== softDeadline) return initial as T;
 
     const lateResultWaitStartedAt = Date.now();
@@ -6738,17 +7015,7 @@ async function withGeneratedVisualTimeout<T>(input: {
       lateResultGraceMs,
       hardTimeoutMs: input.timeoutMs + lateResultGraceMs,
     });
-    const hardBoundary = new Promise<never>((_resolve, reject) => {
-      hardTimer = setTimeout(() => {
-        const timeoutFailure = new GeneratedVisualRequestTimeoutError(
-          input.timeoutMs,
-          lateResultGraceMs,
-        );
-        controller.abort(timeoutFailure);
-        reject(timeoutFailure);
-      }, lateResultGraceMs);
-    });
-    const recovered = await Promise.race([work, boundary, hardBoundary]);
+    const recovered = await terminal;
     notifyGeneratedVisualTimeoutObserver(input.onLateResultRecovered, {
       timeoutMs: input.timeoutMs,
       lateResultGraceMs,
@@ -6912,12 +7179,22 @@ export type CreateGeneratedVisualizationInput = {
   availableSourceAnchorIds?: Set<string>;
   onEvent?: EventSink;
   candidateProvider?: typeof generateVisualizationCandidate;
+  /** Mandatory compiler boundary. Compatibility routes submit one fresh
+   * Runtime V2 compiler worker; Learn injects the compiler owned by its own
+   * already-disposable worker. There is deliberately no in-process fallback. */
+  compilerRunner: (
+    sourceCode: string,
+    opportunity: VisualizationOpportunity,
+    signal?: AbortSignal,
+  ) => Promise<GeneratedVisualCompilation>;
   criticProvider?: GeneratedVisualCriticProvider;
   maxAttempts?: number;
   criticMaxAttempts?: number;
   runBrowserTests?: boolean;
-  /** Test-only override for deterministic runtime-gate simulations. */
-  browserTestRunner?: typeof runGeneratedVisualBrowserTests;
+  /** Mandatory browser boundary. Compatibility routes inject Runtime V2;
+   * Learn injects its disposable worker's local adapter. There is deliberately
+   * no process-owned fallback in this orchestration module. */
+  browserTestRunner: GeneratedVisualBrowserTestRunner;
   timeoutMs?: number;
   /** How long to keep awaiting one already-started provider request after its
    * soft observability threshold, before failing closed without a replay. */
@@ -7332,9 +7609,10 @@ async function createGeneratedVisualizationWithSlot(
       ...(candidate.tokenUsage ? { tokenUsage: candidate.tokenUsage } : {}),
     });
     const compilationStartedAt = Date.now();
-    const compilation = compileGeneratedVisualization(
+    const compilation = await input.compilerRunner(
       candidate.sourceCode,
       input.opportunity,
+      input.abortSignal,
     );
     if (!compilation.definition) {
       lastFailure = "validation";
@@ -7409,11 +7687,13 @@ async function createGeneratedVisualizationWithSlot(
       input.runBrowserTests ??
       String(process.env.LEARN_GENERATED_VISUAL_BROWSER_TESTS ?? "true") !==
         "false";
-    const browserTestRunner =
-      input.browserTestRunner ?? runGeneratedVisualBrowserTests;
     const browserStartedAt = Date.now();
     const browser = shouldRunBrowser
-      ? browserTestRunner({ definition, outputDir: stagingDir })
+      ? await input.browserTestRunner({
+          definition,
+          outputDir: stagingDir,
+          signal: input.abortSignal,
+        })
       : {
           tests: [
             {
@@ -7431,6 +7711,10 @@ async function createGeneratedVisualizationWithSlot(
     previousPreviews = browser.browser?.previewMatrixComplete
       ? [...(browser.previews ?? [])]
       : [];
+    const eventProfileCleanup =
+      canonicalGeneratedVisualBrowserProfileCleanupReceipt(
+        browser.browser?.profileCleanup,
+      );
     emit(input.onEvent, "visual_browser_tests_completed", {
       visualizationId: id,
       attempt,
@@ -7438,6 +7722,9 @@ async function createGeneratedVisualizationWithSlot(
       passed: browser.tests.every((test) => test.passed),
       ...(browser.browser?.previewMatrixReceipt
         ? { previewMatrixReceipt: browser.browser.previewMatrixReceipt }
+        : {}),
+      ...(eventProfileCleanup
+        ? { profileCleanup: eventProfileCleanup }
         : {}),
       durationMs: Date.now() - browserStartedAt,
     });
@@ -7494,17 +7781,14 @@ async function createGeneratedVisualizationWithSlot(
 
     let critic: GeneratedVisualCriticRecord | null = null;
     let criticFailure = "critic failed";
-    const criticAttempts = criticProvider
-      ? 1
-      : Math.max(
-          1,
-          Math.min(
-            3,
-            input.criticMaxAttempts ??
-              (Number(process.env.LEARN_GENERATED_VISUAL_CRITIC_ATTEMPTS ?? 2) ||
-                2),
-          ),
-        );
+    const criticAttempts = Math.max(
+      1,
+      Math.min(
+        3,
+        input.criticMaxAttempts ??
+          (Number(process.env.LEARN_GENERATED_VISUAL_CRITIC_ATTEMPTS ?? 2) || 2),
+      ),
+    );
     const criticStartedAt = Date.now();
     // Author and critic belong to one generated-visual operation and one
     // immutable Learn model policy. A hidden process-wide critic override can
@@ -7585,6 +7869,22 @@ async function createGeneratedVisualizationWithSlot(
           },
         });
       } catch (error) {
+        const criticProtocolFailure = error instanceof Error &&
+          /critic returned (?:an )?invalid (?:json|record|verdict)/iu.test(error.message);
+        if (criticProtocolFailure && !input.abortSignal?.aborted) {
+          criticFailure = error.message;
+          priorCriticFailure = criticFailure;
+          if (criticAttempt < criticAttempts) {
+            emit(input.onEvent, "visual_critic_retry", {
+              visualizationId: id,
+              attempt,
+              criticAttempt,
+              reason: criticFailure,
+              returnedCandidateValidated: true,
+            });
+          }
+          continue;
+        }
         // A thrown critic request is not a rejected critic candidate. Keep
         // diagnostics best-effort, then preserve the exact provider object.
         try {
@@ -7834,24 +8134,24 @@ export function rollbackGeneratedVisualization(input: {
     String(input.version),
   );
   const manifestPath = path.join(targetDir, "manifest.json");
-  if (!fs.existsSync(manifestPath))
+  if (!externalRuntimePathExists(manifestPath))
     throw new Error(`Version ${input.version} does not exist`);
   const manifest = JSON.parse(
-    fs.readFileSync(manifestPath, "utf-8"),
+    externalRuntimeReadUtf8(manifestPath),
   ) as GeneratedVisualizationManifest;
   if (manifest.id !== input.id || manifest.version !== input.version) {
     throw new Error("Generated visualization version manifest is inconsistent");
   }
   const validation = JSON.parse(
-    fs.readFileSync(path.join(targetDir, "validation.json"), "utf-8"),
+    externalRuntimeReadUtf8(path.join(targetDir, "validation.json")),
   ) as GeneratedVisualValidationRecord;
   const tests = JSON.parse(
-    fs.readFileSync(path.join(targetDir, "tests.json"), "utf-8"),
+    externalRuntimeReadUtf8(path.join(targetDir, "tests.json")),
   ) as GeneratedVisualTestsRecord;
   const critic = JSON.parse(
-    fs.readFileSync(path.join(targetDir, "critic.json"), "utf-8"),
+    externalRuntimeReadUtf8(path.join(targetDir, "critic.json")),
   ) as GeneratedVisualCriticRecord;
-  const source = fs.readFileSync(path.join(targetDir, "source.tsx"), "utf-8");
+  const source = externalRuntimeReadUtf8(path.join(targetDir, "source.tsx"));
   if (
     manifest.status !== "published" ||
     sha256(source) !== manifest.sourceHash ||

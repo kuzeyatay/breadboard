@@ -42,7 +42,7 @@ export interface ExternalAgentCancelResult {
  */
 const EXTERNAL_AGENT_ABORT_BY_KIND = {
   agent_tars: async (userId, runId) =>
-    (await import("../ui-tars/service.ts")).abort(userId, runId),
+    (await import("../ui-tars/runtime-run-manager.ts")).abortRun(userId, runId),
   agent_browser: async (userId, runId) =>
     (await import("../agent-browser/run-manager.ts")).abortRun(userId, runId),
   agent_reach: async (userId, runId) =>
@@ -54,29 +54,29 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
   trading_agents: async (userId, runId) =>
     (await import("../tradingagents/run-manager.ts")).abortRun(userId, runId),
   vibe_trading: async (userId, runId) =>
-    (await import("../vibe-trading/run-manager.ts")).abortRun(userId, runId),
+    (await import("../vibe-trading/runtime-run-manager.ts")).abortRun(userId, runId),
   stock_analyst: async (userId, runId) =>
-    (await import("../stock-analyst/run-manager.ts")).abortRun(userId, runId),
+    (await import("../stock-analyst/runtime-run-manager.ts")).abortRun(userId, runId),
   deer_flow: async (userId, runId) =>
-    (await import("../deer-flow/run-manager.ts")).abortRun(userId, runId),
+    (await import("../deer-flow/runtime-run-manager.ts")).abortRun(userId, runId),
   deep_research: async (userId, runId) =>
-    (await import("../deep-research/service.ts")).abortRun(userId, runId),
+    (await import("../deep-research/runtime-run-manager.ts")).abortRun(userId, runId),
   max_research: async (userId, runId) =>
-    (await import("../max-research/run-manager.ts")).abortRun(userId, runId),
+    (await import("../max-research/runtime-run-manager.ts")).abortRun(userId, runId),
   get_doc: async (userId, runId) =>
-    (await import("../get-doc/run-manager.ts")).abortRun(userId, runId),
+    (await import("../get-doc/runtime-run-manager.ts")).abortRun(userId, runId),
   meeting_notes: async (userId, runId) =>
-    (await import("../meeting-notes/run-manager.ts")).abortRun(userId, runId),
+    (await import("../meeting-notes/runtime-run-manager.ts")).abortRun(userId, runId),
   deep_tutor: async (userId, runId) =>
     (await import("../deep-tutor/run-manager.ts")).abortRun(userId, runId),
   openplanter: async (userId, runId) =>
-    (await import("../openplanter/run-manager.ts")).abortRun(userId, runId),
+    (await import("../openplanter/runtime-run-manager.ts")).abortRun(userId, runId),
   openwork: async (userId, runId) =>
-    (await import("../openwork/run-manager.ts")).abortRun(userId, runId),
+    (await import("../openwork/runtime-run-manager.ts")).abortRun(userId, runId),
   openscience: async (userId, runId) =>
-    (await import("../openscience/run-manager.ts")).abortRun(userId, runId),
+    (await import("../openscience/runtime-run-manager.ts")).abortRun(userId, runId),
   inbox_zero: async (userId, runId) =>
-    (await import("../inbox-zero/run-manager.ts")).abortRun(userId, runId),
+    (await import("../inbox-zero/runtime-run-manager.ts")).abortRun(userId, runId),
   codex: async (userId, runId) =>
     (await import("../codex/run-manager.ts")).abortRun(userId, runId),
   opencode: async (userId, runId) =>
@@ -84,38 +84,38 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
   ruflo: async (userId, runId) =>
     (await import("../ruflo/run-manager.ts")).abortRun(userId, runId),
   socials_manager: async (userId, runId) =>
-    (await import("../socials-manager/run-manager.ts")).abortRun(userId, runId),
+    (await import("../socials-manager/runtime-run-manager.ts")).abortRun(userId, runId),
   hardware_blueprint: async (userId, runId) =>
-    (await import("../hardware/run-manager.ts")).abortRun(userId, runId),
+    (await import("../hardware/runtime-run-manager.ts")).abortRun(userId, runId),
   parametric_cad: async (userId, runId) =>
-    (await import("../cad/run-manager.ts")).abortRun(userId, runId),
+    (await import("../cad/runtime-run-manager.ts")).abortRun(userId, runId),
   hyperframes: async (userId, runId) =>
-    (await import("../hyperframes/run-manager.ts")).abortRun(userId, runId),
+    (await import("../hyperframes/runtime-run-manager.ts")).abortRun(userId, runId),
   resource2skill: async (userId, runId) =>
-    (await import("../resource2skill/run-manager.ts")).abortRun(userId, runId),
+    (await import("../resource2skill/runtime-run-manager.ts")).abortRun(userId, runId),
   openmontage: async (userId, runId) =>
-    (await import("../openmontage/run-manager.ts")).abortRun(userId, runId),
+    (await import("../openmontage/runtime-run-manager.ts")).abortRun(userId, runId),
   vimax: async (userId, runId) =>
-    (await import("../vimax/run-manager.ts")).abortRun(userId, runId),
+    (await import("../vimax/runtime-run-manager.ts")).abortRun(userId, runId),
   vox_director: async (userId, runId) =>
-    (await import("../vox-director/run-manager.ts")).abortRun(userId, runId),
+    (await import("../vox-director/runtime-run-manager.ts")).abortRun(userId, runId),
   shorts: async (userId, runId) =>
     (await import("../shorts/run-manager.ts")).abortRun(userId, runId),
   // Formsmith runs on shaper, and its stop is the one that is not named abortRun.
   formsmith: async (userId, runId) =>
     (await import("../shaper/run-manager.ts")).abortFormsmithRun(userId, runId),
   money_printer: async (userId, runId) =>
-    (await import("../money-printer/run-manager.ts")).abortRun(userId, runId),
+    (await import("../money-printer/runtime-run-manager.ts")).abortRun(userId, runId),
   video_use: async (userId, runId) =>
-    (await import("../video-use/run-manager.ts")).abortRun(userId, runId),
+    (await import("../video-use/runtime-run-manager.ts")).abortRun(userId, runId),
   legal_agent: async (userId, runId) =>
-    (await import("../legal/run-manager.ts")).abortRun(userId, runId),
+    (await import("../legal/runtime-run-manager.ts")).abortRun(userId, runId),
   wardrobe: async (userId, runId) =>
-    (await import("../wardrobe/run-manager.ts")).abortRun(userId, runId),
+    (await import("../wardrobe/runtime-run-manager.ts")).abortRun(userId, runId),
   matraix: async (userId, runId) =>
-    (await import("../matraix/run-manager.ts")).abortRun(userId, runId),
+    (await import("../matraix/runtime-run-manager.ts")).abortRun(userId, runId),
   bolt_slides: async (userId, runId) =>
-    (await import("../bolt-slides/run-manager.ts")).abortRun(userId, runId),
+    (await import("../bolt-slides/runtime-run-manager.ts")).abortRun(userId, runId),
 } as const satisfies Record<
   ExternalAgentRunKind,
   (userId: number, runId: string) => Promise<unknown>

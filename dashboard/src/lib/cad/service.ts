@@ -12,7 +12,7 @@ import net from "node:net";
 import {
   SupervisorResourceExhaustedError,
   withServiceLease,
-} from "@/lib/supervisor-control";
+} from "../supervisor-control.ts";
 import { cadBaseUrl, cadServiceSecret } from "./config.ts";
 import { CadServiceError } from "./errors.ts";
 
@@ -194,49 +194,52 @@ async function call(
   endpoint: Endpoint,
   path: string,
   init: { method: "GET" | "POST"; body?: unknown; timeoutMs: number; signal?: AbortSignal },
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), init.timeoutMs);
   const onAbort = () => controller.abort();
   init.signal?.addEventListener("abort", onAbort);
   try {
-    const perform = async () => fetch(`${endpoint.baseUrl}${path}`, {
-      method: init.method,
-      headers: {
-        authorization: `Bearer ${endpoint.secret}`,
-        ...(init.body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-      signal: controller.signal,
-    });
-    const response = path === "/health"
-      ? await perform()
-      : await withServiceLease("cad", "cad-task", perform);
-    const text = await response.text();
-    let payload: unknown = {};
-    try {
-      payload = text ? JSON.parse(text) : {};
-    } catch {
-      throw new CadServiceError(
-        "cad_service_error",
-        "The CAD service returned a response Breadboard could not read.",
-        { retryable: true },
-      );
-    }
-    if (!response.ok) {
-      const body = payload as { error?: string; detail?: string };
-      const code =
-        response.status === 503
-          ? "cad_service_busy"
-          : typeof body.error === "string" && body.error
-            ? body.error
-            : "cad_service_error";
-      throw new CadServiceError(code, body.detail ?? `The CAD service returned ${response.status}.`, {
-        retryable: response.status >= 500,
-        detail: body.detail ?? "",
+    const perform = async () => {
+      const response = await fetch(`${endpoint.baseUrl}${path}`, {
+        method: init.method,
+        headers: {
+          authorization: `Bearer ${endpoint.secret}`,
+          ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+        signal: controller.signal,
       });
-    }
-    return payload;
+      const text = await response.text();
+      let payload: unknown = {};
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch {
+        throw new CadServiceError(
+          "cad_service_error",
+          "The CAD service returned a response Breadboard could not read.",
+          { retryable: true },
+        );
+      }
+      if (!response.ok) {
+        const body = payload as { error?: string; detail?: string };
+        const code =
+          response.status === 503
+            ? "cad_service_busy"
+            : typeof body.error === "string" && body.error
+              ? body.error
+              : "cad_service_error";
+        throw new CadServiceError(code, body.detail ?? `The CAD service returned ${response.status}.`, {
+          retryable: response.status >= 500,
+          detail: body.detail ?? "",
+        });
+      }
+      return payload;
+    };
+    return path === "/health"
+      ? await perform()
+      : await withServiceLease("cad", "cad-task", perform, env);
   } catch (error) {
     if (error instanceof SupervisorResourceExhaustedError) throw error;
     if (error instanceof CadServiceError) throw error;
@@ -273,7 +276,7 @@ export async function cadServiceHealth(
   const payload = (await call(endpoint, "/health", {
     method: "GET",
     timeoutMs: 150_000,
-  })) as Partial<CadHealth>;
+  }, env)) as Partial<CadHealth>;
   return {
     status: payload.status === "ok" ? "ok" : "degraded",
     serviceVersion: payload.serviceVersion ?? "",
@@ -284,6 +287,13 @@ export async function cadServiceHealth(
     engines: Array.isArray(payload.engines) ? payload.engines : [],
     detail: payload.detail ?? "",
   };
+}
+
+/** Cold-start the managed service and verify the kernel before model work begins. */
+export async function ensureCadServiceReady(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CadHealth> {
+  return withServiceLease("cad", "cad-preflight", () => cadServiceHealth(env), env);
 }
 
 /**
@@ -311,7 +321,7 @@ export async function cadServiceConvert(
     // The kernel import dominates a first conversion on a cold cache.
     timeoutMs: request.timeoutMs + 180_000,
     ...(options.signal ? { signal: options.signal } : {}),
-  })) as Record<string, unknown>;
+  }, env)) as Record<string, unknown>;
 
   const files: Record<string, Buffer> = {};
   const rawFiles = payload.files;
@@ -342,7 +352,7 @@ export async function cadServiceExecute(
     body: request,
     timeoutMs: request.timeoutMs + 180_000,
     ...(options.signal ? { signal: options.signal } : {}),
-  })) as Record<string, unknown>;
+  }, env)) as Record<string, unknown>;
 
   const files: Record<string, Buffer> = {};
   const rawFiles = payload.files;

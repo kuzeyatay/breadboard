@@ -7,6 +7,12 @@ must preserve. It is not a migration-complete claim. The machine-readable
 authority is `qa/runtime-v2/feature-parity.json`; the readable row index is
 `qa/runtime-v2/FEATURE_PARITY_MATRIX.md`.
 
+The `workflow:image-generation` row now records a narrower source fact:
+managed ComfyUI has a verified Runtime V2 service adapter, but the central
+RuntimeProcess switch and post-migration Electron workflow are still `NOT RUN`.
+This does not claim the provider/edit/upload branches migrated, and it does not
+count the separately detached ComfyUI setup installer as a Runtime V2 job.
+
 ## Inventory boundary
 
 The current deterministic inventory contains 475 capability rows:
@@ -136,9 +142,13 @@ recovered or retry them blindly.
 
 ## Known pre-migration gaps retained honestly
 
-- Quartz publication still spawns `quartz/bootstrap-cli.mjs build` from the
-  mutation path. It has no durable user-facing job/cancel/restart contract yet.
-- Agent Browser runs/events/screenshots/approvals are process-memory state.
+Quartz publication has crossed this boundary: Next now submits an authenticated
+user-global `quartz-publish` job, and only a sealed disposable Runtime worker may
+start the contained Quartz/esbuild tree. Its staged promotion and durable job
+record cover cancellation and fresh-attempt recovery without changing the
+existing mutation responses.
+
+- The remaining Agent Browser runs/events/screenshots/approvals are process-memory state.
 - CAD projects and revisions persist, but live CAD run events do not.
 - Research coverage state is explicitly non-SQLite.
 - Legacy and V2 implicit routing are duplicated and have drifted.

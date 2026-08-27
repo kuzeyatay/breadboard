@@ -26,7 +26,7 @@ import type {
 } from "@/lib/conversations/external-agent-runs";
 import type { ChatTokenUsage } from "@/lib/chat-token-usage";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
-import { resolveAgentRunStreamError } from "@/lib/agent-run-stream";
+import { closeAgentRunStream, resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 
 interface RunEvent {
   sequenceNumber: number;
@@ -257,7 +257,7 @@ export default function InlineMeetingNotesRun({
         },
       });
     };
-    return () => source.close();
+    return () => closeAgentRunStream(source);
   }, [applyEvent, base, replaying]);
 
   const terminal = TERMINAL.has(status);

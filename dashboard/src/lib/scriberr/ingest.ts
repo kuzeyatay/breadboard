@@ -5,6 +5,8 @@
 // only used for the surrounding knowledge extraction (topics/summary) with a
 // deterministic fallback — it never rewrites the transcript itself.
 
+import path from "node:path";
+
 import {
   DEFAULT_MODEL,
   createChatmockClient,
@@ -15,11 +17,14 @@ import {
   type DocumentPage,
   type KnowledgeExtraction,
 } from "../knowledge.ts";
+import { acquireGardenMutationLease } from "../garden-mutation-lease.ts";
 import { publishQuartzAfterMutation } from "../quartz-publish.ts";
 import { sourceSlugExists } from "./video-source-store.ts";
 import { deterministicTitleSuffix } from "./transcript-markdown.ts";
 
 export interface TranscriptIngestInput {
+  /** Authenticated owner persisted with the transcription job. */
+  userId: number;
   contentPath: string;
   clusterSlug: string;
   sourceTitle: string;
@@ -131,6 +136,7 @@ export async function ingestTranscriptSource(
     pages,
     extraction,
     sourceMetadata: input.metadata,
+    publicationUserId: input.userId,
     onProgress: input.onProgress,
   });
 
@@ -148,12 +154,24 @@ export async function ingestTranscriptSource(
  * source file.
  */
 export async function resumeTranscriptIndexing({
+  userId,
   contentPath,
   clusterSlug,
 }: {
+  userId: number;
   contentPath: string;
   clusterSlug: string;
 }): Promise<void> {
-  refreshClusterIndex(contentPath, clusterSlug);
-  await publishQuartzAfterMutation(`re-index video transcript in ${clusterSlug}`);
+  const lease = acquireGardenMutationLease(
+    path.join(contentPath, clusterSlug),
+    "reindex-video-transcript",
+  );
+  try {
+    refreshClusterIndex(contentPath, clusterSlug);
+  } finally {
+    lease.release();
+  }
+  await publishQuartzAfterMutation(`re-index video transcript in ${clusterSlug}`, {
+    userId,
+  });
 }

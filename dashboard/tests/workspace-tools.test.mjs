@@ -143,9 +143,9 @@ test("paths cannot escape the workspace, by traversal or absolutely", () => {
   );
 });
 
-test("the capability token's directory is unreachable, not merely hidden", () => {
-  // session-service.ts writes .breadboard/capability.json into this exact
-  // directory. A tool that could read it would hand the model its own token.
+test("Breadboard's reserved metadata directory is unreachable, not merely hidden", () => {
+  // A legacy-looking capability file planted here remains unreachable even
+  // though live capability tokens are now minted only from server state.
   const workspace = makeWorkspace();
   fs.mkdirSync(path.join(workspace, ".breadboard"));
   fs.writeFileSync(path.join(workspace, ".breadboard", "capability.json"), '{"token":"secret"}');

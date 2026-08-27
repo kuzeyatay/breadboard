@@ -15,10 +15,11 @@ export interface GardenSourceMapping {
   contentRoot: string;
 }
 
-interface ClusterRow {
+export interface ClusterRow {
   id: number;
   slug: string;
   name: string;
+  user_id: number;
 }
 
 /** Deterministic, server-owned source id. Derived from the cluster id so it is
@@ -70,11 +71,11 @@ export function getMappingBySourceId(sourceId: string): GardenSourceMapping | nu
 }
 
 export function loadClusterById(clusterId: number): ClusterRow | null {
-  return (db.prepare("SELECT id, slug, name FROM clusters WHERE id = ?").get(clusterId) as ClusterRow | undefined) ?? null;
+  return (db.prepare("SELECT id, slug, name, user_id FROM clusters WHERE id = ?").get(clusterId) as ClusterRow | undefined) ?? null;
 }
 
 export function loadClusterBySlug(slug: string): ClusterRow | null {
-  return (db.prepare("SELECT id, slug, name FROM clusters WHERE slug = ?").get(slug) as ClusterRow | undefined) ?? null;
+  return (db.prepare("SELECT id, slug, name, user_id FROM clusters WHERE slug = ?").get(slug) as ClusterRow | undefined) ?? null;
 }
 
 // ---------------------------------------------------------------------------

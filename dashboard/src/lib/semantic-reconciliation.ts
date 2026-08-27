@@ -22,8 +22,8 @@
 // (post structural freeze), so every path it records is a final path.
 
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
+import { externalRuntimeFilesystem as fs } from './external-runtime-filesystem.ts';
+import { externalRuntimePath as path } from './external-runtime-path.ts';
 import {
   SEMANTIC_SCHEMA_VERSION,
   mergeConcept,

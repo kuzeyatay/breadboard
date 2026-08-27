@@ -20,7 +20,7 @@ export const dynamic = 'force-dynamic';
 async function resolveGardenDocument(
   clusterSlug: string,
   documentSlug: string,
-): Promise<{ text: string; title: string; fileName: string } | null> {
+): Promise<{ text: string; title: string; fileName: string; clusterSlug: string } | null> {
   const { cluster } = await requireReadableClusterFromSlug(clusterSlug);
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath) return null;
@@ -31,6 +31,7 @@ async function resolveGardenDocument(
     text: node.content,
     title: node.title || documentSlug,
     fileName: node.sourceFile || node.fileName || documentSlug,
+    clusterSlug: cluster.slug,
   };
 }
 
@@ -79,10 +80,9 @@ export async function POST(request: Request) {
         ? body.title.trim().slice(0, 240)
         : fileName.replace(/\.[a-z0-9]+$/i, ''));
 
-    const origin: DocumentSkillOrigin =
-      clusterSlug && documentSlug
-        ? { kind: 'garden', clusterSlug, documentSlug, fileName }
-        : { kind: 'upload', fileName };
+    const origin: DocumentSkillOrigin = garden
+      ? { kind: 'garden', clusterSlug: garden.clusterSlug, documentSlug, fileName }
+      : { kind: 'upload', fileName };
 
     if (!shouldDistill(text)) {
       // Small enough to send verbatim; distilling it would lose fidelity for no
@@ -104,6 +104,11 @@ export async function POST(request: Request) {
         try {
           const result = await ensureDocumentSkill({
             userId,
+            runtimeScope: {
+              userId,
+              gardenId: garden?.clusterSlug ?? null,
+              conversationId: null,
+            },
             text,
             title,
             origin,

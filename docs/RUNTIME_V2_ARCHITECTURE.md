@@ -1,58 +1,47 @@
 # Breadboard Runtime V2 architecture
 
-Status: implementation in progress. The Rust protocol, registry, admission, and
-durable job-store foundations exist in source, but Runtime V2 is not yet the
-active process owner. This document describes the required end state and the
-cutover rules; it does not claim that the migration is complete.
+Status: source process-ownership cutover implemented; native/package/live
+verification remains incomplete. Electron AppLifecycle selects Runtime V2 as
+the sole application-managed process owner, and the checked-in service and
+worker manifests are the launch authority. This document does not claim an
+installed migration or memory pass where the corresponding receipt is NOT RUN.
 
-## Current active path (source audit, 2026-08-25)
+## Current active path (source audit, 2026-08-26)
 
-The executable path still contradicts the target architecture and must not be
-mistaken for a partial cutover:
+The current checked-in source path is:
 
-- Electron runs `desktop/dist/main/main.js`, whose compiled lifecycle still
-  constructs the TypeScript `ServiceManager` and calls `startAll()`.
-- No `breadboard-runtime.exe` exists in the native target, desktop resources,
-  build resources, or installed-resource staging locations.
-- `desktop/src/main/runtime-process.ts` now contains a narrow, fail-closed
-  source adapter for the future binary, but application lifecycle has not been
-  wired to it. Its presence is not an active cutover.
-- The current `runtime-supervisor` source is a one-shot wrapper around one
-  arbitrary Electron-supplied command. It is optional; when its executable is
-  absent, `ServiceManager` directly spawns the service.
-- That helper source now drains output with bounded cleanup, reports incomplete
-  accounting, and preserves hard-limit classification, but those changes are
-  uncompiled and do not make it the generalized runtime owner.
-- Electron still owns service definitions, ports, adoption, readiness,
-  restarts, leases, memory sampling, pressure handling, and shutdown. Next also
-  retains direct worker/coordinator spawn paths.
-- The unbuilt TypeScript source now marks Hermes and GBrain on-demand with
-  ten-minute idle TTLs. Passive Terminal/Garden status reads distinguish
-  `available-but-stopped` without starting either tree; the first real
-  server-side operation acquires the existing transitional lease. This reduces
-  startup retention only after a future authorized rebuild and does not transfer
-  ownership to Rust.
-- The five current capability leases are admission wrappers only. They do not
-  transfer Learn, ingestion, artifact, browser, or Postiz process ownership to
-  Rust.
-- The current Rust manifest structs and checked-in version-1 foundation validate
-  identity, relative executable and entrypoint paths, dependencies, lifecycle
-  policy, and resource limits, but
-  they do not yet describe the fixed launch argument/configuration binding,
-  readiness proof, installation probe, or trusted secret references needed to
-  launch the real service inventory. They are therefore registry foundations,
-  not deployable product manifests.
+- Electron `AppLifecycle` constructs `RuntimeProcess`; the source-owner gate
+  rejects an active `ServiceManager` owner or a direct Electron service launch.
+- Runtime V2 loads versioned service and worker manifests, resolves closed
+  launch profiles, assigns supported trees before execution, and owns status,
+  leases, cancellation, schedules, recovery fencing, and shutdown.
+- GBrain and every other Breadboard service remain mandatory capabilities.
+  Persistent work is registered as core, leased, scheduled, or explicitly
+  external; finite work uses one registered disposable worker per attempt.
+- Learn, ingestion, code indexing, Office/artifact leaves, audio, speech/media,
+  terminal commands, generated-visual browsers, managed setup, and exact health
+  probes have source-registered Runtime V2 worker paths. Aggregate legacy rows
+  are not treated as extra runtime owners.
+- Managed ComfyUI is a leased Runtime V2 service with a registered disposable
+  setup job. Explicit external ComfyUI remains a no-ownership external branch.
+- Ordinary Agent Browser runs and the explicit profile sign-in window are
+  separate registered Runtime V2 jobs. Each owns an attached Chromium tree;
+  the profile job is finite when its window closes, is cancelled, or reaches
+  its maximum bound.
+- Local stdio MCP launch requests name immutable digest-addressed approved
+  profiles rather than executable, argv, cwd, or environment values. Remote or
+  independently managed MCP endpoints remain explicit external boundaries.
 
-Consequently, a helper binary beside the legacy manager would not satisfy this
-design. Activation must select one authority before any service spawn, fail
-closed if that authority cannot start, and never fall back to direct Electron
-or Next execution in Runtime V2 mode.
+The migration is not declared complete: native compilation, packaged Ruflo,
+the complete lean installed baseline, per-entry memory/process-tree receipts,
+and restart evidence are still pending. A source
+validator or focused unit test is never substituted for an installed receipt.
 
 ## Outcome
 
 Breadboard keeps its Electron shell, Next.js dashboard, React UI, and existing
-domain implementations. A single packaged Rust process becomes the only owner
-of Breadboard-managed processes:
+domain implementations. The checked-in source selects a single packaged Rust
+process as the only owner of Breadboard-managed processes:
 
 ```text
 Electron main
@@ -68,9 +57,9 @@ worker, browser, compiler, and descendant through a Windows Job Object. Next.js
 remains an authenticated compatibility layer, but it submits work and relays
 events instead of spawning or retaining heavyweight work.
 
-There must never be two active lifecycle authorities. Legacy Electron-owned
-services and Runtime V2 are mutually exclusive modes until the all-service
-cutover is ready.
+There must never be two active lifecycle authorities. The active source path
+fails closed on Runtime startup and does not fall back to Electron-owned service
+launches; installed/package proof of that path remains NOT RUN.
 
 ## Ownership invariants
 
@@ -140,15 +129,15 @@ crate-private. The source path authority now canonicalizes and identity-pins
 existing roots, rejects symlink/junction/reparse components, verifies the final
 path from each opened handle, bounds reads before materialization, and pins
 manifest, launch, and database paths across their trusted consumer's open.
-The checked-in/staged service manifest currently covers the real dashboard,
-ChatMock, and Hermes paths. The worker manifest remains empty, and the source
-coverage validator deliberately fails for both mandatory worker types. Learn's
-existing worker depends on legacy Node IPC/start-file orchestration rather than
-the Runtime V2 ready/event protocol; document ingestion remains an in-process
-API pipeline with no finite worker entrypoint. No mock or hanging launch path
-is registered for either gap.
-These guarantees remain uncompiled and inactive until the runtime host is wired
-and verified.
+The checked-in source service manifest covers the real dashboard, ChatMock,
+Hermes, GBrain, and ComfyUI paths. The checked-in worker manifest registers finite Learn,
+document-ingestion, Quartz-publish, and office-artifact adapters. The protocol
+test validates those exact source entries. The existing build-resources mirror
+was intentionally not refreshed during this no-build audit, so staged/package
+parity remains a separate red gate until the normal resource-preparation and
+installed-package verification run.
+These source guarantees remain inactive until the runtime host is wired and the
+packaged path is verified.
 
 ## Runtime data layout
 
@@ -315,11 +304,12 @@ admission hold. `JobStore` now accepts only an opaque, non-serializable
 `WorkerCompletionProof`. Only the unconstructable core process-owner capability
 can mint it after tree exit, an exact handle-backed reopen, a 1 MiB ceiling,
 fenced envelope/sequence validation, structural validation, and SHA-256 hashing.
-The source-only process-owner foundation now drives the existing native Windows
-supervisor through pinned runtime/application/data authorities and mints that
-capability only after a matching root receipt, zero Job Object residents,
-complete final accounting, no cleanup errors, and matching supervisor exit.
-It remains uncompiled and is not yet wired into the product dispatcher.
+The checked-in process owner drives the native Windows supervisor through
+pinned runtime/application/data authorities and mints that capability only
+after a matching root receipt, zero Job Object residents, complete final
+accounting, no cleanup errors, and matching supervisor exit. AppLifecycle and
+the registered dispatcher select this path in source; native/package execution
+evidence remains NOT RUN.
 
 `qa/runtime-v2/validate-runtime-control-contract.mjs` performs a source-only
 drift check across the machine-readable control contract, Rust protocol source,
@@ -327,8 +317,8 @@ Electron adapter source, and the bounded Next compatibility client. It is not a
 substitute for the unrun compiled, integration, Electron, parity, or memory
 suites. The source validator currently passes, and the focused plain-Node
 supervisor-control suite passes 26/26 for the matching parser and request
-boundary. The Rust/native implementation remains uncompiled and is not wired
-into the product runtime.
+boundary. Rust/native compilation, installed integration, Electron parity, and
+memory execution remain NOT RUN.
 
 ## Windows process containment
 
@@ -346,31 +336,43 @@ runtime shutdown, assignment failure, readiness timeout, heartbeat timeout,
 maximum runtime, and hard-limit termination all have explicit terminal
 classification and reaping behavior.
 
-The source-only admission governor reads the system-wide Windows
+The Runtime V2 admission governor reads the system-wide Windows
 `CommitTotal`, `CommitLimit`, and page size through `GetPerformanceInfo`. It
 retains exact byte counters, rounds committed bytes up and the limit down for
-conservative MiB admission, samples once inside the serialized durable
-admission transaction, and cannot be configured below the 8 GiB reserve floor
-through its public API. This sampler and governor are not yet compiled or wired
-into a dispatcher.
+conservative MiB admission, and samples once inside the serialized durable
+admission transaction. Packaged mode preserves the fixed 8 GiB reserve.
+Development modes preserve the larger of 4 GiB or a bounded 10% of the current
+commit limit, plus a 256 MiB guard band. Their supervised process trees receive
+the matching live system-commit guard and retain their manifest hard ceilings;
+all trees may tighten their ceiling as pressure rises, but only the sealed
+dashboard profile may expand after launch or terminate solely because the
+global reserve is crossed. Other trees retain their manifest hard caps and
+never independently race to sacrifice themselves against the same shared
+system sample. The adaptive reserve therefore changes usable headroom, not
+process ownership or leak containment, without letting independent worker
+trees each claim the same newly released slack or trigger a multi-service
+termination storm.
 
 Workers that deliberately use `CREATE_BREAKAWAY_FROM_JOB`, detached/unref
 browser processes, shell backgrounding, or equivalent ownership escape hatches
-are incompatible with Runtime V2 and must be migrated before activation.
+are incompatible with Runtime V2. Source validation must reject any active
+Breadboard launch that reintroduces one.
 
 ## Admission and memory policy
 
 Admission uses Windows commit, not only process RSS. For a request, the runtime
-requires at least:
+requires strictly more than:
 
 ```text
-configured reserve + estimated cold-start commit
+mode-selected reserve + estimated cold-start commit
 ```
 
-The decision also accounts for active job and service resource classes,
-per-definition concurrency, and the product-wide heavyweight concurrency rule.
-The first policy is one heavyweight class at a time until measurements justify
-a narrower matrix.
+The decision also accounts for pending reservation estimates, active job and
+service resource classes, per-definition concurrency, and the product-wide
+heavyweight concurrency rule. Admission is serialized with durable reservation
+creation, so two cold starts cannot both spend the same sampled headroom. The
+first policy is one heavyweight class at a time until measurements justify a
+narrower matrix.
 
 A denial is structured and non-retryable by default. It reports the resource,
 required headroom, available headroom, and reason. An HTTP retry loop must not
@@ -394,8 +396,9 @@ runtime shuts down and reaps the full tree at expiry.
 
 Service restarts are bounded and observable. Restart-on-failure never applies
 to deliberate shutdown, admission denial, or a hard memory-limit event. Eager
-startup is reserved for measured core requirements; optional compilers, model
-servers, browser runtimes, Docker stacks, and media services are not eager.
+startup is reserved for measured core requirements; failure-isolated compilers,
+model servers, browser runtimes, Docker stacks, and media services are not eager.
+Failure isolation never means capability omission or hiding.
 
 Postiz is governed as one scheduled/on-demand capability: the coordinator,
 Docker/WSL command, containers, health checks, leases, idle deadline, and stack
@@ -420,8 +423,9 @@ Electron validates the protocol version, PID, loopback origins, status schema,
 and service IDs before leaving the existing startup presentation. Runtime V2
 control uses authenticated `GET /v1/status`, `POST /v1/shutdown`, and bounded
 job submission/inspection/event-replay/cancellation endpoints under `/v1/jobs`;
-the token is never forwarded to the renderer. Those job endpoints currently
-stop at durable queued state because the dispatcher is not yet wired.
+the token is never forwarded to the renderer. Registered job submissions enter
+the source dispatcher and its durable fenced execution path; installed
+dispatcher evidence remains NOT RUN.
 
 Next.js routes preserve their current authentication, status codes, SSE event
 shape, and terminal payloads. During migration they become thin adapters:
@@ -491,8 +495,10 @@ Cutover is allowed only when:
 - the real Electron workflow and memory burn-in complete with inspected
   receipts.
 
-Until then, Runtime V2 source may be developed and tested in isolation, but it
-must not silently compete with legacy Electron ownership.
+The checked-in source already selects Runtime V2 and fails closed instead of
+competing with a legacy Electron owner. The criteria above govern when the
+installed migration may be declared complete, not whether source may retain a
+second lifecycle authority.
 
 ## Evidence and current limitations
 
@@ -511,19 +517,16 @@ reclamation, restart recovery, and repeated burn-in. Each receipt must record
 process-tree memory and Windows commit before, peak, after completion, and after
 idle TTL.
 
-Rust compilation and production dashboard compilation are currently withheld
-to honor the operator's explicit stop-compilation instruction. Source changes
-made under that condition are unverified until those compilers are explicitly
-allowed again.
+Rust and production-dashboard compilation were not performed by this
+source-reconciliation pass. Permission does not substitute for execution, so
+the native, packaging, installed, and memory receipts remain explicitly NOT RUN.
 
 The machine-readable command ledger is
-`qa/runtime-v2/verification-status.json`. It records source-only passes, the
-aborted installed baseline, every required command still `NOT RUN`, and the
-current six-failure terminal source-assertion suite without converting targeted
-passing assertions into an overall pass. It also records the focused 26-test
-supervisor-control adapter pass and the passing source-only control-contract
-validator, neither of which started a compiler, bundler, service, worker, or
-application.
+`qa/runtime-v2/verification-status.json`. It preserves historical source-only
+passes, failures, the aborted installed baseline, and every required command
+still `NOT RUN` without rewriting history into a pass. Current source validators
+are reported separately and never stand in for a compiler, bundler, service,
+worker, application, or live memory receipt.
 Renderer lifecycle work has focused plain-Node evidence for stream reader
 release, duplicate terminal-probe suppression, terminal-rail and garden-card
 drag teardown, reference-counted history-request cancellation, Garden proposal
@@ -534,7 +537,6 @@ renderer GPU/canvas reclamation, Electron behavior, and memory return remain
 unverified. A broader Hermes source-contract sample remains an honest FAIL at
 41/44 because three current dirty Terminal/Skills assertions disagree with the
 source.
-The inventory-only feature-parity command currently fails two frozen-source
-drift checks: the intentionally changed Terminal source hash and the Next API
-route-catalog hash. The baseline has not been silently regenerated around those
-changes.
+The canonical parity generator hashes its source inputs and the inventory-only
+validator rejects drift. Regeneration is allowed only as an explicit source
+reconciliation and does not change any historical live-evidence receipt.

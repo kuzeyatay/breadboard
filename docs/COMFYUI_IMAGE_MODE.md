@@ -26,53 +26,69 @@ one it infers from parts. Each state has one sentence and one button:
 
 ## How Breadboard reaches ComfyUI
 
-In this order, and the order is the point:
+Desktop Runtime V2 has two deliberately separate modes:
 
-1. **Anything already answering at `COMFYUI_URL`** is used as-is. If you run
-   your own ComfyUI — your models, your custom nodes, your launch flags — it is
-   never restarted, replaced, or duplicated behind your back.
-2. Otherwise the **vendored `./comfyui`** is started, but only when
-   `COMFYUI_MANAGED` is on *and* its Python environment has already been built.
-3. Otherwise the panel says what is missing. Setup is always an explicit click.
+1. **Managed local**: ComfyUI is a registered, mandatory, failure-isolated
+   on-demand service. It is absent at startup. The first render or explicit
+   Start action acquires its native lease; Rust single-flights a cold start and
+   owns the complete Python/GPU descendant tree. There is no Next or Electron
+   spawn fallback while Runtime V2 is active.
+2. **Explicit external**: an independently managed `http`/`https` endpoint is
+   health-checked and used as-is. Breadboard never claims or changes that
+   process. This is configured as `comfyUiMode: "external"` with a validated,
+   credential-free `comfyUiExternalUrl`, not inferred from an answering port.
+
+Bare-dashboard development can use an explicitly external ComfyUI through
+`COMFYUI_MANAGED=false`. It has no managed local process-launch fallback: a
+managed render without the native Runtime owner returns a truthful unavailable
+result.
 
 Nothing installs or starts as a side effect of opening the tab. Asking for the
 status is a read; `tests/comfyui-image.test.mjs` enforces that.
 
-## Starting with the app
+## Starting on first use
 
-`lib/comfyui/autostart.ts` runs from `instrumentation-node.ts`, alongside the
-chat scheduler and the messaging gateways, so it happens whether or not a page
-is open — in `npm run dev` and in the packaged desktop build alike. Without it
-the first Advanced render pays for the whole cold start: a Python process, then
-several gigabytes of checkpoint off disk.
+Breadboard does not start ComfyUI with the app. A local diffusion process can
+retain several gigabytes of model state, so merely opening Breadboard leaves it
+stopped. The first real Advanced render automatically starts an installed,
+managed server behind the existing loading flow; the existing explicit Start
+action does the same. Status reads never start it, setup remains explicit, and
+an explicitly configured independently managed ComfyUI is still used as-is.
 
-It acts on exactly one state, `stopped`, which already means *installed,
-managed, enabled, and nothing else answering*. So it will not install anything
-(setup stays an explicit click), will not start a second server next to a
-ComfyUI you run yourself, and does nothing at all on a fresh checkout. It is
-delayed 12 seconds and never blocks boot; if it fails, the first render starts
-the server itself. `COMFYUI_AUTOSTART=false` turns it off.
+The render lease stays active through capability discovery, prompt submission,
+completion polling, and the final image read. Cancellation and every error path
+release it. The final release starts a bounded ten-minute idle TTL; later work
+restarts the same service. Admission denial remains the structured
+`BREADBOARD_RESOURCE_EXHAUSTED` response used elsewhere in the UI.
 
-Note for packaged desktop builds: the `comfyui/` checkout is not staged into
-the app resources, so there is nothing there to autostart. Advanced works
-against a ComfyUI you point `COMFYUI_URL` at.
+Packaged desktop builds stage reviewed ComfyUI source and its license only.
+Models, environments, caches, inputs, outputs, and user data are forbidden from
+the package. The setup-produced Python interpreter and readiness marker live
+under the pinned desktop data root and must both exist before Runtime V2 will
+launch the service.
 
 ## Setup
 
-`scripts/setup-comfyui.mjs` builds `.runtime/comfyui-venv` — PyTorch (CUDA
-wheels when `nvidia-smi` reports a GPU, CPU wheels otherwise) plus ComfyUI's
-own `requirements.txt`. It needs [`uv`](https://docs.astral.sh/uv/) on PATH.
+The existing setup action submits one authenticated `managed-setup-node`
+Runtime V2 job. That fresh worker copies only reviewed ComfyUI program files to
+`<Data>/runtime-v2/toolchains/comfyui`, creates the Python environment at
+`<Data>/runtime-v2/services/comfyui/.venv`, streams bounded durable setup
+progress, verifies the interpreter, writes the readiness marker, and exits.
+Every installer child remains attached to the Runtime-owned worker tree, so
+cancellation or shutdown reclaims it instead of leaving a detached download.
+It needs [`uv`](https://docs.astral.sh/uv/) on PATH.
 
-It runs **detached**, and reports through a heartbeated status file
-(`.runtime/comfyui/startup-status.json`) that records the writer's pid — the
-same protocol the local speech service uses, and for the same reason: over a
-multi-gigabyte download, a single phase string cannot distinguish "still
-downloading torch" from "was killed an hour ago". The panel polls it and shows
-the step, the package and the byte count.
+Models, custom nodes, inputs, outputs and user state remain separately under
+`<Data>/comfyui`; setup never stages them into the program tree or deletes them.
+The service manifest accepts only the fixed verified interpreter and fixed
+staged entrypoint, while status reads remain observational and never launch
+either setup or the model service.
 
 **Models are never downloaded for you.** A checkpoint is several gigabytes and
-often a licence decision. Put `.safetensors` files in
-`comfyui/models/checkpoints`; the panel lists whatever `/object_info` reports.
+often a licence decision. In development, put `.safetensors` files in
+`comfyui/models/checkpoints`; packaged desktop uses
+`<userData>/Data/comfyui/models/checkpoints`. The panel lists whatever
+`/object_info` reports.
 
 ## The workflow
 
@@ -107,18 +123,19 @@ would drift.
 
 ## Configuration
 
-All optional; see `dashboard/.env.example`.
+Desktop mode is persisted in `desktop-config.json`. Managed URL, port, checkout,
+environment, runtime-data paths, and start timeout are sealed native Runtime V2
+launch values; dashboard environment overrides cannot redirect them. Bare-dashboard
+development supports only the explicit external variables below. In the service manifest,
+`requirement: "optional"` means startup-failure isolation only. It does not
+permit omitting or hiding Advanced image generation: first use must attempt the
+service and return a truthful setup/unavailable/resource result.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `COMFYUI_ENABLED` | `true` | `false` removes the tab and the routes |
-| `COMFYUI_URL` | `http://127.0.0.1:8188` | Point at any ComfyUI |
-| `COMFYUI_MANAGED` | `true` | `false` = connect only, never install or start |
-| `COMFYUI_AUTOSTART` | `true` | Start it with the app when it is installed and idle |
-| `COMFYUI_PORT` | `8188` | Used when Breadboard starts the clone |
-| `COMFYUI_ROOT` | `<repo>/comfyui` | The checkout |
-| `COMFYUI_ENV_DIR` | `<repo>/.runtime/comfyui-venv` | The Python environment |
-| `COMFYUI_START_TIMEOUT_MS` | `180000` | A cold start loads the model too |
+| `COMFYUI_URL` | required in external mode | Credential-free HTTP(S) endpoint |
+| `COMFYUI_MANAGED` | `true` | Set `false` for bare-dashboard external mode; `true` never enables a dashboard launcher |
 | `COMFYUI_GENERATE_TIMEOUT_MS` | `600000` | One render |
 
 ## Files
@@ -128,6 +145,8 @@ All optional; see `dashboard/.env.example`.
 - `dashboard/src/app/api/comfyui/route.ts` — status, and the two explicit
   actions (`setup`, `start`)
 - `dashboard/src/app/components/hermes/comfyui-image-panel.tsx` — the tab
-- `dashboard/src/lib/comfyui/autostart.ts` — booted from `instrumentation-node.ts`
 - `scripts/setup-comfyui.mjs` — the detached installer
 - `dashboard/tests/comfyui-image.test.mjs` — graph shape, clamping, wiring
+- `dashboard/tests/comfyui-runtime-v2-cutover.test.mjs` — cold lease, full-render
+  lease lifetime, explicit Start/idle release, cancellation, external mode,
+  resource errors, and no-direct-spawn guard

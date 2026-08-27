@@ -7,6 +7,7 @@ transcribe.py can parse them without needing Whisper.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -28,7 +29,9 @@ def resolve_local(path: str) -> dict:
     p = Path(path).expanduser().resolve()
     if not p.exists():
         raise SystemExit(f"File not found: {p}")
-    if p.suffix.lower() not in VIDEO_EXTS:
+    display_name = os.environ.get("WATCH_LOCAL_DISPLAY_NAME") or p.name
+    display_suffix = Path(display_name).suffix.lower()
+    if p.suffix.lower() not in VIDEO_EXTS and display_suffix not in VIDEO_EXTS:
         print(
             f"[watch] warning: {p.suffix} is not a known video extension, proceeding anyway",
             file=sys.stderr,
@@ -36,7 +39,7 @@ def resolve_local(path: str) -> dict:
     return {
         "video_path": str(p),
         "subtitle_path": None,
-        "info": {"title": p.name, "url": str(p)},
+        "info": {"title": Path(display_name).name or p.name, "url": str(p)},
         "downloaded": False,
     }
 
@@ -80,6 +83,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--convert-subs", "vtt",
         "--no-playlist",
         "--ignore-errors",
+        "--max-filesize", "2G",
         "-o", output_template,
         "--",
         url,
@@ -137,6 +141,7 @@ def download_url(
         "--convert-subs", "vtt",
         "--no-playlist",
         "--ignore-errors",
+        "--max-filesize", "2G",
         "-o", output_template,
         "--",
         url,

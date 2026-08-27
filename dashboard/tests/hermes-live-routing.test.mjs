@@ -167,7 +167,10 @@ test("terminal session hook restores a Breadboard session after refresh and abor
   const terminal = read(
     "dashboard/src/app/components/hermes/dashboard-agent-terminal.tsx",
   );
-  assert.match(terminal, /session\.send\(text, \{ model, reasoningEffort \}\)/);
+  assert.match(
+    terminal,
+    /session\.send\(displayText, \{[\s\S]*model,[\s\S]*reasoningEffort,[\s\S]*attachments: pendingAttachments,[\s\S]*onTurnPersisted:/,
+  );
   const eventStream = read("dashboard/src/lib/hermes/event-stream.ts");
   assert.match(eventStream, /streamRun \?\?= getActiveRuntimeRun\(session\.row\.id\)/);
   assert.match(eventStream, /resolveActiveTurn: activeRunReference/);
@@ -285,8 +288,9 @@ test("terminal planning receives the current conversation's recent user requests
   const turnService = read("dashboard/src/lib/conversations/turn-service.ts");
   assert.match(
     turnService,
-    /priorRequests: currentConversationMessages[\s\S]*filter\(\(message\) => message\.role === "user"\)[\s\S]*slice\(-8\)[\s\S]*map\(\(message\) => message\.content\)/,
+    /const priorRequests = currentConversationMessages[\s\S]*filter\(\(message\) => message\.role === "user"\)[\s\S]*slice\(-8\)[\s\S]*map\(\(message\) => message\.content\)/,
   );
+  assert.match(turnService, /prepareTurn\(\{[\s\S]*request: input\.text,[\s\S]*priorRequests,/);
 });
 
 test("Hermes model provider is environment-driven ChatMock", () => {
@@ -439,7 +443,7 @@ test("the unified slash hub embeds Skills.sh discovery and the reviewed promotio
   assert.match(hub, /SkillsCatalogPanel/);
   assert.match(
     catalog,
-    /skills\/search[\s\S]*skills\/detail[\s\S]*skills\/install[\s\S]*skills\/promote/,
+    /\/api\/hermes\/skills["?][\s\S]*skills\/detail[\s\S]*skills\/install[\s\S]*skills\/promote/,
   );
   assert.match(catalog, /inactive quarantine/);
   assert.match(catalog, /aria-label=\{`Filter skills:/);

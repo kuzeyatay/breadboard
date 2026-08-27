@@ -125,16 +125,18 @@ test("a registered exercise how-to completes without a model and carries its ani
   process.env.OPEN_GYM_AGENT_DATA_DIR = root;
   try {
     const manager = await import("../src/lib/open-gym/run-manager.ts");
-    const run = manager.startRun({
+    const run = manager.startRuntimeWorkerRun({
       userId: 77,
+      runtimeJobId: "job_open_gym_catalogue_test",
       task: "how do i do biceps curls",
       model: "not-needed-for-catalogue-technique",
       reasoningEffort: "medium",
       baseUrl: "http://127.0.0.1:1/v1",
+      apiKey: "local",
     });
     let completed;
     for (let attempt = 0; attempt < 100 && !completed; attempt += 1) {
-      completed = manager.getEventsSince(77, run.runId, 0)
+      completed = manager.getRuntimeWorkerEventsSince(77, run.runId, 0)
         .find((event) => event.type === "run.completed");
       if (!completed) await new Promise((resolve) => setTimeout(resolve, 10));
     }

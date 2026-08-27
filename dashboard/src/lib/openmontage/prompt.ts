@@ -16,8 +16,8 @@
 // card reads, and still lists its assumptions in the answer. Nothing is
 // silently chosen; it is just not blocked on.
 
-import fs from "node:fs";
 import path from "node:path";
+import { externalRuntimeReadUtf8 } from "../external-runtime-filesystem.ts";
 import { resolveOpenMontageRoot } from "./runtime.ts";
 
 /** Provider keys that unlock paid generation, read from the clone's `.env`. */
@@ -57,7 +57,7 @@ export function configuredProviders(env: NodeJS.ProcessEnv = process.env): strin
   }
   if (root) {
     try {
-      const raw = fs.readFileSync(path.join(root, ".env"), "utf8");
+      const raw = externalRuntimeReadUtf8(path.join(root, ".env"));
       for (const line of raw.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("#")) continue;

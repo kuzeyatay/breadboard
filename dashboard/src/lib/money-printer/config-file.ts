@@ -25,8 +25,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { credentialSettings, type FootageCredentialKey } from "./credentials.ts";
+import { credentialSettings } from "./credentials.ts";
 import { resolveFfmpeg } from "./runtime.ts";
+export { configuredFootageSources } from "./config-inspect.ts";
 
 /** Where the clone reads everything from. Not overridable — see the note above. */
 export function configFile(root: string): string {
@@ -166,27 +167,6 @@ export function patchAppTable(source: string, updates: Record<string, string>): 
  * never asked for it a second time, and so a run does not fall back to local
  * footage while a perfectly good key sits in the file.
  */
-export function configuredFootageSources(root: string): FootageCredentialKey[] {
-  let source: string;
-  try {
-    source = fs.readFileSync(configFile(root), "utf8");
-  } catch {
-    return [];
-  }
-  const found: FootageCredentialKey[] = [];
-  for (const [key, setting] of [
-    ["pexels", "pexels_api_keys"],
-    ["pixabay", "pixabay_api_keys"],
-    ["coverr", "coverr_api_keys"],
-  ] as const) {
-    // A configured library is one whose list holds at least one non-empty
-    // string; the file ships with every list present and empty.
-    const match = new RegExp(String.raw`^[ \t]*${setting}\s*=([^\]]*)\]`, "m").exec(source);
-    if (match && /"[^"]+"|'[^']+'/.test(match[1])) found.push(key);
-  }
-  return found;
-}
-
 export interface ConfigureInput {
   root: string;
   /** ChatMock's OpenAI-compatible base URL, e.g. `http://127.0.0.1:8765/v1`. */

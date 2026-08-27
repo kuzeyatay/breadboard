@@ -19,7 +19,7 @@ const inbound = source("../src/lib/telegram/inbound.ts");
 const service = source("../src/lib/telegram/service.ts");
 const status = source("../src/lib/telegram/status.ts");
 const credentials = source("../src/lib/telegram/credentials.ts");
-const instrumentation = source("../src/instrumentation-node.ts");
+const gatewayService = source("../scripts/runtime-v2-telegram-gateway-service.mjs");
 const panel = source("../src/app/components/settings-telegram.tsx");
 const messaging = source("../src/app/components/settings-messaging.tsx");
 const connectionRoute = source("../src/app/api/telegram/connection/route.ts");
@@ -115,8 +115,10 @@ test("a replayed update never produces a second turn or a second reply", () => {
   assert.match(gateway, /this\.onOffset\?\.\(this\.offset\)/);
 });
 
-test("the gateway loop lives in the server process and never blocks shutdown", () => {
-  assert.match(instrumentation, /autostartTelegramGateway\(\)/);
+test("the gateway loop lives in the native-owned Runtime service", () => {
+  assert.match(gatewayService, /startRuntimeV2GatewayHttpService/);
+  assert.match(gatewayService, /BREADBOARD_TELEGRAM_GATEWAY_TOKEN/);
+  assert.match(connectionRoute, /reconcileRuntimeGateway\("telegram", "running", userId\)/);
   assert.match(service, /__breadboardTelegramPolling/);
   assert.match(service, /timer\.unref\(\)/);
   // Autostart must not be able to break server startup: the conversation stack is
@@ -125,6 +127,7 @@ test("the gateway loop lives in the server process and never blocks shutdown", (
   assert.match(service, /await import\("\.\/instance\.ts"\)/);
   assert.doesNotMatch(service, /^import .*from "\.\/inbound\.ts"/m);
   assert.doesNotMatch(service, /^import .*from "\.\/instance\.ts"/m);
+  assert.doesNotMatch(statusRoute, /telegram\/service|telegram\/gateway/);
 });
 
 test("a hopeless failure stops the poll instead of hammering Telegram", () => {
@@ -206,7 +209,10 @@ test("a sender the allowlist turned away can be admitted in one click", () => {
   assert.match(service, /gateway\.noteBlockedSender\(message\)/);
   assert.match(gateway, /noteBlockedSender\(message: TelegramInboundMessage\)/);
   assert.match(connectionRoute, /store\.allowSender\(senderId\)/);
-  assert.match(connectionRoute, /clearBlockedSender\(senderId\)/);
+  // The long-lived Runtime service owns the blocked-sender snapshot, so it is
+  // the process that must clear the entry after the route forwards `allow`.
+  assert.match(gatewayService, /gateway\.clearBlockedSender\(body\.value\)/);
+  assert.match(connectionRoute, /action: "allow",\s*\n\s*value: senderId/);
   assert.match(panel, /action: "allow", senderId:/);
 });
 

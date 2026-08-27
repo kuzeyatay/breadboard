@@ -6,7 +6,11 @@
 
 import { telegramFeatureEnabled } from "./config.ts";
 import { hasBotToken, tokenIsFromEnvironment } from "./credentials.ts";
-import { getTelegramGateway, type TelegramBlockedSender, type TelegramGatewayState } from "./gateway.ts";
+import type {
+  TelegramBlockedSender,
+  TelegramGatewaySnapshot,
+  TelegramGatewayState,
+} from "./gateway.ts";
 import { getTelegramStore } from "./instance.ts";
 import type { TelegramChatRow } from "./store.ts";
 
@@ -51,10 +55,23 @@ function presentChat(row: TelegramChatRow): TelegramChatSummary {
   };
 }
 
-export function telegramStatus(userId: number): TelegramStatus {
+export function disconnectedTelegramGatewaySnapshot(): TelegramGatewaySnapshot {
+  return {
+    state: "disconnected",
+    error: null,
+    running: false,
+    offset: 0,
+    blocked: [],
+    log: [],
+  };
+}
+
+export function telegramStatus(
+  userId: number,
+  snapshot: TelegramGatewaySnapshot = disconnectedTelegramGatewaySnapshot(),
+): TelegramStatus {
   const store = getTelegramStore();
   const settings = store.settings();
-  const snapshot = getTelegramGateway().snapshot();
   const owned = settings.ownerUserId === null || settings.ownerUserId === userId;
 
   return {

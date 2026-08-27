@@ -15,7 +15,7 @@ import type {
   ExternalAgentTerminalOutcome,
 } from "@/lib/conversations/external-agent-runs.ts";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification.ts";
-import { resolveAgentRunStreamError } from "@/lib/agent-run-stream";
+import { closeAgentRunStream, resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 
 interface RunEvent {
   sequenceNumber: number;
@@ -165,7 +165,12 @@ export default function InlineRufloRun({
           const response = await fetch("/api/agent-edits", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ action: "finalize", gardenSlug, runId }),
+            body: JSON.stringify({
+              action: "finalize",
+              agentKind: "ruflo",
+              gardenSlug,
+              runId,
+            }),
           });
           const data = (await response.json().catch(() => ({}))) as {
             edits?: { before?: unknown; after?: unknown };
@@ -324,7 +329,7 @@ export default function InlineRufloRun({
         },
       });
     };
-    return () => source.close();
+    return () => closeAgentRunStream(source);
   }, [applyEvent, base, persistedContent, persistedOutcome]);
 
   useEffect(() => {

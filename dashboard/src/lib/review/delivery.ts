@@ -52,18 +52,17 @@ export async function resolveChannelTarget(
   }
 
   if (channel === "whatsapp") {
-    const [{ getWhatsAppStore }, { getWhatsAppBridge }] = await Promise.all([
+    const [{ getWhatsAppStore }, { sendRuntimeWhatsAppMessage }] = await Promise.all([
       import("../whatsapp/instance.ts"),
-      import("../whatsapp/bridge.ts"),
+      import("../runtime-v2/gateway-control.ts"),
     ]);
     const chat = getWhatsAppStore()
       .listChats(userId, 25)
       .find((row) => row.is_group === 0);
     if (!chat) return null;
-    const bridge = getWhatsAppBridge();
     return {
       chatId: chat.chat_id,
-      send: (text: string) => bridge.sendMessage(chat.chat_id, text),
+      send: (text: string) => sendRuntimeWhatsAppMessage(userId, chat.chat_id, text),
     };
   }
 

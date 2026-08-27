@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import {
   ResourceMonitor,
   describeBreach,
@@ -251,4 +253,60 @@ test("the breach diagnostic is bounded and carries no command line or environmen
   assert.ok(line.length < 400, `diagnostic should stay short, got ${line.length} chars`);
   // Only the trailing six trend points are printed, not the whole ring.
   assert.equal((line.match(/->/g) ?? []).length, 5);
+});
+
+test("Electron has no shell-backed periodic memory sampler", () => {
+  const desktopRoot = path.resolve(__dirname, "..", "..");
+  const monitorSource = fs.readFileSync(
+    path.join(desktopRoot, "src", "main", "resource-monitor.ts"),
+    "utf8",
+  );
+  const managerSource = fs.readFileSync(
+    path.join(desktopRoot, "src", "main", "service-manager.ts"),
+    "utf8",
+  );
+
+  assert.doesNotMatch(monitorSource, /from\s+["']node:child_process["']/u);
+  assert.doesNotMatch(monitorSource, /\b(?:execFile|exec|spawn|spawnSync)\s*\(/u);
+  assert.doesNotMatch(monitorSource, /Get-CimInstance\s+Win32_Process/u);
+  assert.doesNotMatch(monitorSource, /["'](?:powershell(?:\.exe)?|pwsh|ps)["']/iu);
+  assert.doesNotMatch(managerSource, /defaultMetricsProvider/u);
+  assert.match(
+    managerSource,
+    /this\.resources\s*=\s*options\.metricsProvider\s*\?\s*new ResourceMonitor/u,
+    "the legacy evaluator must remain inert without an explicitly injected provider",
+  );
+});
+
+test("production memory accounting remains owned and bounded by Runtime V2", () => {
+  const repositoryRoot = path.resolve(__dirname, "..", "..", "..");
+  const appLifecycleSource = fs.readFileSync(
+    path.join(repositoryRoot, "desktop", "src", "main", "app-lifecycle.ts"),
+    "utf8",
+  );
+  const rustSupervisorSource = fs.readFileSync(
+    path.join(repositoryRoot, "native", "runtime-supervisor", "src", "main.rs"),
+    "utf8",
+  );
+
+  assert.match(appLifecycleSource, /this\.runtime\s*=\s*new RuntimeProcess\s*\(/u);
+  assert.doesNotMatch(appLifecycleSource, /\bServiceManager\b/u);
+
+  assert.match(rustSupervisorSource, /GetProcessMemoryInfo\s*\(/u);
+  assert.match(rustSupervisorSource, /GetPerformanceInfo\s*\(/u);
+  assert.match(rustSupervisorSource, /let usage = job_memory\(job\.0\);/u);
+  assert.match(
+    rustSupervisorSource,
+    /let wait_timeout_ms = supervision_poll_interval_ms\(system_commit_guard\.is_some\(\)\);/u,
+  );
+  assert.match(rustSupervisorSource, /const SYSTEM_COMMIT_GUARD_POLL_INTERVAL_MS: u32 = 25;/u);
+  assert.match(rustSupervisorSource, /match live_job_limit_action\(/u);
+  assert.match(rustSupervisorSource, /configure_job_memory_limit\(job\.0, updated_limit\)/u);
+  assert.match(rustSupervisorSource, /"type": "memory"/u);
+  assert.match(rustSupervisorSource, /"systemCommitLimitBytes"/u);
+  assert.match(rustSupervisorSource, /const RESOURCE_EXHAUSTED_EXIT_CODE: u32 = 73;/u);
+  assert.match(
+    rustSupervisorSource,
+    /terminate_owned_job\(job\.0, RESOURCE_EXHAUSTED_EXIT_CODE\)/u,
+  );
 });

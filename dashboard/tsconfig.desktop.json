@@ -14,6 +14,9 @@
     "node_modules",
     "scripts",
     "tests",
+    "src/vendor/genoffice/pptx-render/src/bidi-js.d.ts",
+    "src/vendor/genoffice/docs/src/renderer/ai",
+    "src/vendor-overrides",
     ".next/**",
     ".next-dev/**",
     ".next-production/**"

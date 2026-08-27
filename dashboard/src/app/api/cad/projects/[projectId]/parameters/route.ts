@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { CadServiceError } from "@/lib/cad/errors.ts";
-import { applyParameterUpdate } from "@/lib/cad/parameter-action.ts";
+import {
+  applyParameterUpdateViaRuntime,
+  CadParameterRuntimeError,
+} from "@/lib/cad/runtime-parameter-action.ts";
 import type { CadParameterValue } from "@/lib/cad/project-store.ts";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +33,7 @@ export async function POST(
     const body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     const conversationPublicId =
       typeof body.conversationId === "string" ? body.conversationId.trim() : "";
+    const requestId = typeof body.requestId === "string" ? body.requestId.trim() : "";
     const rawValues = body.parameters;
     if (!conversationPublicId) {
       return NextResponse.json({ ok: false, error: "conversation_required" }, { status: 400 });
@@ -51,11 +54,13 @@ export async function POST(
       }
     }
 
-    const result = await applyParameterUpdate({
+    const result = await applyParameterUpdateViaRuntime({
       userId,
       projectId,
       conversationPublicId,
       values,
+      ...(requestId ? { requestId } : {}),
+      signal: request.signal,
     });
     return NextResponse.json({
       ok: true,
@@ -63,10 +68,10 @@ export async function POST(
       artifactId: result.artifactId,
       artifactVersion: result.artifactVersion,
       changed: result.changed,
-      status: result.manifest.status,
-      validationPassed: result.manifest.validation.passed,
-      measurements: result.manifest.measurements,
-      issues: result.manifest.validation.issues.filter((issue) => issue.severity !== "info"),
+      status: result.status,
+      validationPassed: result.validationPassed,
+      measurements: result.measurements,
+      issues: result.issues,
     });
   } catch (error) {
     if (error instanceof SyntaxError) {
@@ -75,12 +80,10 @@ export async function POST(
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
-    if (error instanceof CadServiceError) {
-      const status =
-        error.code === "cad_project_not_found" || error.code === "revision_not_found" ? 404 : 400;
+    if (error instanceof CadParameterRuntimeError) {
       return NextResponse.json(
         { ok: false, error: error.code, message: error.message },
-        { status },
+        { status: error.status },
       );
     }
     return NextResponse.json({ ok: false, error: "internal_error" }, { status: 500 });

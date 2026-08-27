@@ -1,0 +1,184 @@
+{
+  "schemaVersion": 1,
+  "name": "voicebox-server",
+  "version": "0.5.0",
+  "backendVersion": "0.2.3",
+  "platform": "win32",
+  "architecture": "x64",
+  "sourceCommit": "51f49dea198384b4eb6087b72c17057c6eb1c1cd",
+  "executable": "voicebox-server.exe",
+  "size": 674908785,
+  "sha256": "B5316B4EB910CE087867EFBACD1D1E2739B3BAC6DB3C8FFB16123D30EAA94578",
+  "sourceTree": {
+    "format": "git-ls-files-canonical-lf-v1",
+    "fileCount": 681,
+    "sha256": "4B9909E01FDDEF17D913142C4D3CE77480558960E98B91DA2F3C9D60F7F1DD43"
+  },
+  "buildPython": {
+    "implementation": "CPython",
+    "version": "3.12.13",
+    "architecture": "64bit"
+  },
+  "pyinstallerVersion": "6.22.2",
+  "builderArtifacts": [
+    {
+      "distribution": "altgraph",
+      "version": "0.17.5",
+      "filename": "altgraph-0.17.5-py2.py3-none-any.whl",
+      "size": 21228,
+      "sha256": "F3A22400BCE1B0C701683820AC4F3B159CD301ACAB067C51C653E06961600597",
+      "url": "https://files.pythonhosted.org/packages/a9/ba/000a1996d4308bc65120167c21241a3b205464a2e0b58deda26ae8ac21d1/altgraph-0.17.5-py2.py3-none-any.whl",
+      "purpose": "PyInstaller module-dependency graph"
+    },
+    {
+      "distribution": "packaging",
+      "version": "26.2",
+      "filename": "packaging-26.2-py3-none-any.whl",
+      "size": 100195,
+      "sha256": "5FC45236B9446107FF2415CE77C807CEE2862CB6FAC22B8A73826D0693B0980E",
+      "url": "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl",
+      "purpose": "PyInstaller version and requirement parsing"
+    },
+    {
+      "distribution": "pefile",
+      "version": "2024.8.26",
+      "filename": "pefile-2024.8.26-py3-none-any.whl",
+      "size": 74766,
+      "sha256": "76F8B485DCD3B1BB8166F1128D395FA3D87AF26360C2358FB75B80019B957C6F",
+      "url": "https://files.pythonhosted.org/packages/54/16/12b82f791c7f50ddec566873d5bdd245baa1491bac11d15ffb98aecc8f8b/pefile-2024.8.26-py3-none-any.whl",
+      "purpose": "PyInstaller Windows PE inspection"
+    },
+    {
+      "distribution": "pyinstaller",
+      "version": "6.22.2",
+      "filename": "pyinstaller-6.22.2-py3-none-win_amd64.whl",
+      "size": 1405725,
+      "sha256": "9B990FA6BBE143572F06644A984AD0D7AA2E2CCC6929D4916031343A5888E9A7",
+      "url": "https://files.pythonhosted.org/packages/3f/53/8ba1d0f6159b490f700eac6161a4be5f0d4672608a6dae9fd73679f183ee/pyinstaller-6.22.2-py3-none-win_amd64.whl",
+      "purpose": "reviewed Windows onefile executable builder"
+    },
+    {
+      "distribution": "pyinstaller-hooks-contrib",
+      "version": "2026.7",
+      "filename": "pyinstaller_hooks_contrib-2026.7-py3-none-any.whl",
+      "size": 459445,
+      "sha256": "24257A04C7A5A7A034CF28E39DCEE20FBEEB9F043076729480F2E1B69904408A",
+      "url": "https://files.pythonhosted.org/packages/0a/67/350377af7b50416344ab8792756d414eef7629c618a73e9a0b13bb1552d9/pyinstaller_hooks_contrib-2026.7-py3-none-any.whl",
+      "purpose": "PyInstaller third-party package hook collection"
+    },
+    {
+      "distribution": "pywin32-ctypes",
+      "version": "0.2.3",
+      "filename": "pywin32_ctypes-0.2.3-py3-none-any.whl",
+      "size": 30756,
+      "sha256": "8A1513379D709975552D202D942D9837758905C8D01EB82B8BCC30918929E7B8",
+      "url": "https://files.pythonhosted.org/packages/de/3d/8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf/pywin32_ctypes-0.2.3-py3-none-any.whl",
+      "purpose": "PyInstaller Windows API compatibility layer"
+    },
+    {
+      "distribution": "setuptools",
+      "version": "78.1.0",
+      "filename": "setuptools-78.1.0-py3-none-any.whl",
+      "size": 1256108,
+      "sha256": "3E386E96793C8702AE83D17B853FB93D3E09EF82EC62722E61DA5CD22376DCD8",
+      "url": "https://files.pythonhosted.org/packages/54/21/f43f0a1fa8b06b32812e0975981f4677d28e0f3271601dc88ac5a5b83220/setuptools-78.1.0-py3-none-any.whl",
+      "purpose": "PyInstaller packaging metadata support"
+    }
+  ],
+  "cpuRuntimeArtifacts": [
+    {
+      "distribution": "torch",
+      "version": "2.11.0+cpu",
+      "filename": "torch-2.11.0+cpu-cp312-cp312-win_amd64.whl",
+      "size": 114469197,
+      "sha256": "1ABEAA46FA7532ED35ED79146F4DE5D7A9D4B30462C98052EA4DDFE781EA3ECA",
+      "url": "https://download-r2.pytorch.org/whl/cpu/torch-2.11.0%2Bcpu-cp312-cp312-win_amd64.whl",
+      "purpose": "CPU-only tensor and inference runtime embedded in the sidecar"
+    },
+    {
+      "distribution": "torchaudio",
+      "version": "2.11.0+cpu",
+      "filename": "torchaudio-2.11.0+cpu-cp312-cp312-win_amd64.whl",
+      "size": 326400,
+      "sha256": "95D517BD1A0A28DACD1C37550CED95CAB64F3A7A4EF9B8219B41049388A71163",
+      "url": "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp312-cp312-win_amd64.whl",
+      "purpose": "CPU-only Torch audio operators embedded in the sidecar"
+    },
+    {
+      "distribution": "torchvision",
+      "version": "0.26.0+cpu",
+      "filename": "torchvision-0.26.0+cpu-cp312-cp312-win_amd64.whl",
+      "size": 4255267,
+      "sha256": "52AA8401850A9792E71A8A1E65AC004E2B23622A6B6FD278CD11179EFBEFC65B",
+      "url": "https://download-r2.pytorch.org/whl/cpu/torchvision-0.26.0%2Bcpu-cp312-cp312-win_amd64.whl",
+      "purpose": "CPU-only Torch vision operators required by the speech-model closure"
+    }
+  ],
+  "dependencyInventorySha256": "72B4CA906DE2B60E510E9688730D815274BF62848F278D06045D99A8FCDEF1C8",
+  "dependencyInventory": {
+    "format": "pip-freeze-runtime-sorted-lf-v1",
+    "entryCount": 237,
+    "sha256": "72B4CA906DE2B60E510E9688730D815274BF62848F278D06045D99A8FCDEF1C8"
+  },
+  "directVcs": [
+    {
+      "distribution": "linacodec",
+      "version": "0.0.11",
+      "vcs": "git",
+      "url": "https://github.com/ysharma3501/LinaCodec.git",
+      "commitId": "c0ae7c7285e121475c27592cfbb600624b714290"
+    },
+    {
+      "distribution": "Zipvoice",
+      "version": "0.0.11",
+      "vcs": "git",
+      "url": "https://github.com/ysharma3501/LuxTTS.git",
+      "commitId": "28ae6a61151684fffc9d1a7aa15eafa02286fe0b"
+    }
+  ],
+  "build": {
+    "variant": "cpu",
+    "bundleMode": "onefile",
+    "entrypoint": "backend/server.py",
+    "arguments": [],
+    "requirements": [
+      {
+        "path": "backend/requirements.txt",
+        "size": 2371,
+        "sha256": "F8B69CC512D067B9E8BABAFA50C2C8354E9B32E8AEDF91A9F34B7399F2ED1D04"
+      }
+    ],
+    "buildScript": {
+      "path": "backend/build_binary.py",
+      "size": 29823,
+      "sha256": "F9C15958D1C1B3F4A040409BFBB7F163F2AE2CF50250E6ED731AFE5DF9F2DFFD"
+    },
+    "sourceSpec": {
+      "path": "backend/voicebox-server.spec",
+      "size": 5702,
+      "sha256": "1FA0776AA2307C1B1B6860D81DF0B32E864773450436D59891DA0B51C542BAAA"
+    },
+    "generatedSpec": {
+      "path": "backend/voicebox-server.spec",
+      "size": 5086,
+      "sha256": "F550B9B6AEDB7C78F9C5367A1CC2187DB6BA206F7AC448E1357397590CD4B85B"
+    },
+    "normalizedPyinstallerArguments": {
+      "format": "nul-delimited-utf8-v1",
+      "argumentCount": 235,
+      "sha256": "61812CA5DD55CF3AD1D52D1FDE204668BDB6E82A2BCA0D59454016AAF2405FAE"
+    }
+  },
+  "smoke": {
+    "dynamicPort": true,
+    "host": "127.0.0.1",
+    "healthPath": "/health",
+    "httpStatus": 200,
+    "reportedStatus": "healthy",
+    "backendVariant": "cpu",
+    "modelLoaded": false,
+    "reportedVersion": "0.5.0",
+    "isolatedDataDirectory": true,
+    "zeroDescendantsAfterStop": true
+  }
+}

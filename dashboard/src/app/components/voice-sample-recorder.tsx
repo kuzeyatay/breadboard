@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ReclaimingAudio } from "@/app/components/reclaiming-media";
 import MicrophonePermissionHelp from "./microphone-permission-help";
 import {
   MAX_SAMPLE_SECONDS,
@@ -292,7 +293,7 @@ export default function VoiceSampleRecorder({ passage, onRecorded, disabled = fa
         ) : null}
 
         {take && !recording ? (
-          <audio src={take.url} controls className="h-9 min-w-0 flex-1" aria-label="Your recorded sample" />
+          <ReclaimingAudio src={take.url} controls className="h-9 min-w-0 flex-1" aria-label="Your recorded sample" />
         ) : null}
       </div>
 

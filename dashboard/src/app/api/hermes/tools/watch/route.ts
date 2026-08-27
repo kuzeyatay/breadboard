@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import db from "@/lib/db";
 import {
   ApiError,
   apiErrorResponse,
@@ -45,6 +46,14 @@ export async function POST(request: Request) {
     ) {
       throw new ApiError(403, "watch_session_scope_mismatch", "Watch is available only in an authenticated Terminal session.");
     }
+    const conversation = db.prepare(
+      "SELECT public_id FROM conversations WHERE id = ? AND user_id = ?",
+    ).get(session.conversation_id, session.user_id) as
+      | { public_id: string }
+      | undefined;
+    if (!conversation?.public_id) {
+      throw new ApiError(403, "watch_conversation_scope_mismatch", "Watch conversation scope is invalid.");
+    }
     const run = getActiveRuntimeRun(session.id);
     if (!run) {
       throw new ApiError(409, "watch_run_required", "Watch requires a current Terminal run.");
@@ -74,6 +83,8 @@ export async function POST(request: Request) {
       },
     });
     const result = await runWatch({
+      userId: session.user_id,
+      conversationId: conversation.public_id,
       args,
       workspaceRoot:
         session.active_directory ??

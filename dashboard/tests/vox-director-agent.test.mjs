@@ -565,7 +565,8 @@ test("an abort stops the render, not just the promise", () => {
   assert.match(manager, /run\.controller\.abort\(\)/);
   assert.match(manager, /for \(const pid of run\.children\) killTree\(pid\)/);
   const runtime = source("src/lib/vox-director/runtime.ts");
-  assert.match(runtime, /taskkill", \["\/pid", String\(pid\), "\/T", "\/F"\]/);
+  assert.match(runtime, /const taskkill = path\.join\(windowsRoot, "System32", "taskkill\.exe"\)/);
+  assert.match(runtime, /spawnSync\(taskkill, \["\/pid", String\(pid\), "\/T", "\/F"\]/);
   // And an abort route exists that reaches it.
   assert.match(
     source("src/app/api/vox-director/runs/[runId]/abort/route.ts"),
@@ -613,12 +614,16 @@ test("health distinguishes ready, degraded and unavailable", async () => {
   assert.equal(voxHealthLevel({ blocking: ["no ffmpeg"], degraded: ["no ComfyUI"] }), "unavailable");
 
   const route = source("src/app/api/vox-director/health/route.ts");
+  const workerHealth = source("src/lib/vox-director/worker-health.ts");
+  assert.match(route, /inspectVoxDirectorRuntimeHealth\(/);
+  const routeCode = route.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, "");
+  assert.doesNotMatch(routeCode, /node:child_process|resolveVoxDirectorRoot|probePillow/);
   // The things that stop a film entirely.
   for (const blocker of ["ffmpeg", "ffprobe", "Pillow", "ChatMock", "Python"]) {
-    assert.match(route, new RegExp(`blocking\\.push\\([^)]*${blocker}`, "i"), `${blocker} is not blocking`);
+    assert.match(workerHealth, new RegExp(`blocking\\.push\\([^)]*${blocker}`, "i"), `${blocker} is not blocking`);
   }
   // And the one that only costs the look.
-  assert.match(route, /degraded\.push\([\s\S]{0,200}title cards/);
+  assert.match(workerHealth, /degraded\.push\([\s\S]{0,200}title cards/);
   // A cloned directory existing is never on its own a reason to report healthy.
   const runtime = source("src/lib/vox-director/runtime.ts");
   assert.match(runtime, /scripts", "motion\.py"/);

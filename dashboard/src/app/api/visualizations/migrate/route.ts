@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import fs from 'fs';
-import path from 'path';
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
+import { externalRuntimeFilesystem as fs } from '@/lib/external-runtime-filesystem';
 import { DEFAULT_MODEL, createChatmockClient, resolveClusterNoteFile } from '@/lib/knowledge';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'clusterSlug is required' }, { status: 400 });
     }
 
-    const { cluster } = await requireOwnedClusterFromSlug(clusterSlug);
+    const { cluster, userId } = await requireOwnedClusterFromSlug(clusterSlug);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
       return NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500 });
@@ -160,7 +160,10 @@ export async function POST(request: Request) {
       }
 
       if (totalConverted > 0) {
-        await publishQuartzAfterMutation(`migrate visual placeholders in ${cluster.slug}`);
+        await publishQuartzAfterMutation(
+          `migrate visual placeholders in ${cluster.slug}`,
+          { userId },
+        );
       }
 
       return NextResponse.json({

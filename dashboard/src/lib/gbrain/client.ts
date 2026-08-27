@@ -8,7 +8,7 @@ import { resolveGBrainConfig, type GBrainConfig } from "./config.ts";
 import {
   SupervisorResourceExhaustedError,
   withServiceLease,
-} from "@/lib/supervisor-control";
+} from "../supervisor-control.ts";
 
 export interface AdapterCitation {
   sourceId: string;
@@ -58,42 +58,56 @@ export class GBrainClient {
   }
 
   private async call<T>(pathName: string, body: unknown, signal?: AbortSignal): Promise<T> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.config.queryTimeoutMs);
-    if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
+    if (signal?.aborted) throw new GBrainAdapterError("cancelled");
     try {
       return await withServiceLease("gbrain", "retrieval", async () => {
-        const res = await fetch(new URL(pathName, this.config.adapterUrl), {
-          method: "POST",
-          headers: { "content-type": "application/json", authorization: `Bearer ${this.config.secret}` },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-        const data = (await res.json().catch(() => ({ ok: false, error: "invalid_response" }))) as {
-          ok?: boolean;
-          error?: string;
-          data?: T;
-        };
-        if (!res.ok || data.ok === false) {
-          throw new GBrainAdapterError(typeof data.error === "string" ? data.error : "adapter_error");
+        // Cold-start time belongs to the Runtime V2 lease acquisition, not the
+        // adapter's query budget. Start this timer only after readiness so the
+        // originally submitted request resumes instead of timing out while the
+        // service is still loading.
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) controller.abort();
+        const timer = setTimeout(() => controller.abort(), this.config.queryTimeoutMs);
+        try {
+          const res = await fetch(new URL(pathName, this.config.adapterUrl), {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${this.config.secret}` },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          const data = (await res.json().catch(() => ({ ok: false, error: "invalid_response" }))) as {
+            ok?: boolean;
+            error?: string;
+            data?: T;
+          };
+          if (!res.ok || data.ok === false) {
+            throw new GBrainAdapterError(typeof data.error === "string" ? data.error : "adapter_error");
+          }
+          return data.data as T;
+        } finally {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", abort);
         }
-        return data.data as T;
       });
     } catch (err) {
       if (err instanceof SupervisorResourceExhaustedError) throw err;
       if (err instanceof GBrainAdapterError) throw err;
-      if (err instanceof Error && err.name === "AbortError") throw new GBrainAdapterError("timeout");
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new GBrainAdapterError(signal?.aborted ? "cancelled" : "timeout");
+      }
       // Network failure (adapter down) — collapse to a stable, path-free code.
       throw new GBrainAdapterError("unavailable");
-    } finally {
-      clearTimeout(timer);
     }
   }
 
   async health(signal?: AbortSignal): Promise<AdapterHealth> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(this.config.queryTimeoutMs, 5000));
-    if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) controller.abort();
     try {
       const res = await fetch(new URL("/health", this.config.adapterUrl), { signal: controller.signal });
       const data = (await res.json()) as Partial<AdapterHealth> & { mode?: string; backend?: string };
@@ -120,6 +134,7 @@ export class GBrainClient {
       };
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
     }
   }
 

@@ -1,12 +1,16 @@
 use crate::bootstrap::{receive_bootstrap, start_parent_stdin_reader, BootstrapError};
-use crate::control::{BoundControlListener, ControlError, RuntimeJobControl};
+use crate::control::{
+    BoundControlListener, ControlAuthorities, ControlError, ControlServerConfig, RuntimeJobControl,
+    RuntimeServiceControl,
+};
 use crate::durable_job_control::DurableRuntimeJobControl;
+use crate::service_engine::ServiceEngine;
 use crate::shutdown::ShutdownCoordinator;
-use crate::worker_dispatcher::{WorkerDispatcher, WorkerDispatcherError};
+use crate::worker_dispatcher::{WorkerDispatcher, WorkerDispatcherConfig, WorkerDispatcherError};
 use breadboard_runtime_core::{
-    ControlPlaneAuthority, CurrentGenerationMembership, GenerationGuardError, JobStore, PathError,
-    PriorGenerationDrained, Registry, RegistryError, RuntimeGenerationGuard, RuntimePaths,
-    TrustedDirectoryPin, TrustedFilePin,
+    ControlPlaneAuthority, CurrentGenerationMembership, DashboardControlEnvironment,
+    GenerationGuardError, JobStore, PathError, PriorGenerationDrained, Registry, RegistryError,
+    RuntimeGenerationGuard, RuntimePaths, TrustedDirectoryPin, MAX_JOB_INPUT_CLEANUP_BATCH,
 };
 use breadboard_runtime_protocol::{
     parse_service_manifest, parse_worker_manifest, RuntimeBootstrapMessage, RuntimeMode,
@@ -37,6 +41,69 @@ impl EphemeralControlToken {
     }
 }
 
+/// The only control-plane material exposed to a prepared service engine. It
+/// is intended solely for the dashboard's server-side environment and carries
+/// no lifecycle/shutdown authority.
+pub(crate) struct DashboardControlEndpoint<'a> {
+    base_url: &'a str,
+    control_token: &'a str,
+}
+
+impl DashboardControlEndpoint<'_> {
+    pub(crate) fn base_url(&self) -> &str {
+        self.base_url
+    }
+
+    pub(crate) fn control_token(&self) -> &str {
+        self.control_token
+    }
+}
+
+impl std::fmt::Debug for DashboardControlEndpoint<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DashboardControlEndpoint")
+            .field("base_url", &self.base_url)
+            .field("control_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+struct PreparedControlPlane {
+    listener: BoundControlListener,
+    lifecycle_token: EphemeralControlToken,
+    dashboard_token: EphemeralControlToken,
+    authorities: ControlAuthorities,
+}
+
+impl PreparedControlPlane {
+    fn bind() -> Result<Self, HostError> {
+        let listener = BoundControlListener::bind_ephemeral_loopback()?;
+        let lifecycle_token = generate_control_token()?;
+        let dashboard_token = generate_control_token()?;
+        if lifecycle_token.as_str() == dashboard_token.as_str() {
+            return Err(HostError::TokenGeneration);
+        }
+        let lifecycle_authority = ControlPlaneAuthority::new(lifecycle_token.as_str())
+            .map_err(|_| HostError::InvalidControlAuthority)?;
+        let dashboard_authority = ControlPlaneAuthority::new(dashboard_token.as_str())
+            .map_err(|_| HostError::InvalidControlAuthority)?;
+        Ok(Self {
+            listener,
+            lifecycle_token,
+            dashboard_token,
+            authorities: ControlAuthorities::new(lifecycle_authority, dashboard_authority),
+        })
+    }
+
+    fn dashboard_endpoint(&self) -> DashboardControlEndpoint<'_> {
+        DashboardControlEndpoint {
+            base_url: self.listener.base_url(),
+            control_token: self.dashboard_token.as_str(),
+        }
+    }
+}
+
 impl Drop for EphemeralControlToken {
     fn drop(&mut self) {
         self.0.fill(0);
@@ -61,10 +128,10 @@ pub(crate) enum HostError {
     GenerationGuard(#[from] GenerationGuardError),
     #[error("parent disconnected before Runtime V2 became ready")]
     ParentDisconnected,
-    #[error("Runtime V2 cannot become ready: {0}")]
-    EngineUnavailable(&'static str),
     #[error("Runtime V2 engine failed: {0}")]
     Engine(&'static str),
+    #[error("Runtime V2 engine shutdown failed: {0}")]
+    EngineShutdown(String),
     #[error("generating private control authority failed")]
     TokenGeneration,
     #[error("configuring private control authority failed")]
@@ -86,7 +153,6 @@ impl HostError {
         match self {
             Self::Bootstrap(_) => 64,
             Self::ParentDisconnected => 74,
-            Self::EngineUnavailable(_) => 78,
             _ => 70,
         }
     }
@@ -97,7 +163,6 @@ struct TrustedRuntimeContext {
     paths: RuntimePaths,
     config_root: TrustedDirectoryPin,
     _runtime_data_directory: TrustedDirectoryPin,
-    _database_pin: TrustedFilePin,
     // These capabilities are deliberately retained with the host context.
     // The guard owns the process-lifetime generation boundary; membership is
     // the weaker cloneable authority future engine launchers must use.
@@ -106,13 +171,21 @@ struct TrustedRuntimeContext {
 }
 
 /// A production engine may return only after the real dashboard has proved
-/// readiness and every required service state is known. The scaffold has no
-/// such implementation, so its production engine always fails before ready.
-trait PreparedRuntimeEngine {
+/// readiness and every required service state is known.
+trait PreparedRuntimeEngine: Sync {
     fn dashboard_url(&self) -> &str;
     /// Returns an already-sanitized in-memory snapshot. Implementations must
     /// not perform health polling, cold-start services, or block on I/O here.
     fn service_statuses(&self) -> Result<Vec<RuntimeServiceStatus>, String>;
+    fn service_control(&self) -> &dyn RuntimeServiceControl;
+    fn take_worker_environments(
+        &self,
+    ) -> Result<breadboard_runtime_core::TrustedWorkerEnvironmentSet, String>;
+    fn worker_service_dependencies(&self) -> crate::service_engine::WorkerServiceDependencyControl;
+    /// Records that the lifecycle bridge has received the ready envelope. The
+    /// service engine opens job admission only when every required core
+    /// service is ready; a later lifecycle retry can satisfy the same gate.
+    fn mark_ready_published(&self) -> Result<(), String>;
     /// Must implement the architecture's bounded graceful/forced drain and
     /// full-tree exit confirmation before returning.
     fn shutdown(&mut self) -> Result<(), String>;
@@ -125,29 +198,70 @@ trait RuntimeEngine {
         registry: &Registry,
         store: &Arc<JobStore>,
         shutdown: &Arc<ShutdownCoordinator>,
+        dashboard_control: DashboardControlEndpoint<'_>,
     ) -> Result<Box<dyn PreparedRuntimeEngine>, HostError>;
 }
 
-struct UnavailableRuntimeEngine;
+struct AuthoritativeRuntimeEngine;
 
-impl RuntimeEngine for UnavailableRuntimeEngine {
+impl RuntimeEngine for AuthoritativeRuntimeEngine {
     fn prepare(
         &self,
         context: &TrustedRuntimeContext,
-        _registry: &Registry,
-        _store: &Arc<JobStore>,
-        _shutdown: &Arc<ShutdownCoordinator>,
+        registry: &Registry,
+        store: &Arc<JobStore>,
+        shutdown: &Arc<ShutdownCoordinator>,
+        dashboard_control: DashboardControlEndpoint<'_>,
     ) -> Result<Box<dyn PreparedRuntimeEngine>, HostError> {
-        let _ = (
-            &context.mode,
-            context.paths.app_root(),
-            context.paths.runtime_root(),
-            context.config_root.absolute(),
-            &context.generation_membership,
-        );
-        Err(HostError::EngineUnavailable(
-            "the real dashboard and service engine are not wired",
-        ))
+        let dashboard_control = DashboardControlEnvironment::new(
+            dashboard_control.base_url(),
+            dashboard_control.control_token(),
+        )
+        .map_err(|_| HostError::Engine("dashboard control environment was rejected"))?;
+        let engine = ServiceEngine::prepare(
+            context.mode,
+            registry,
+            store,
+            &context.paths,
+            &context.config_root,
+            context.generation_membership.clone(),
+            dashboard_control,
+            Arc::clone(shutdown),
+        )
+        .map_err(|_| HostError::Engine("service engine preparation failed"))?;
+        Ok(Box::new(engine))
+    }
+}
+
+impl PreparedRuntimeEngine for ServiceEngine {
+    fn dashboard_url(&self) -> &str {
+        ServiceEngine::dashboard_url(self)
+    }
+
+    fn service_statuses(&self) -> Result<Vec<RuntimeServiceStatus>, String> {
+        Ok(ServiceEngine::service_statuses(self))
+    }
+
+    fn service_control(&self) -> &dyn RuntimeServiceControl {
+        self
+    }
+
+    fn take_worker_environments(
+        &self,
+    ) -> Result<breadboard_runtime_core::TrustedWorkerEnvironmentSet, String> {
+        ServiceEngine::take_worker_environments(self).map_err(|error| error.to_string())
+    }
+
+    fn worker_service_dependencies(&self) -> crate::service_engine::WorkerServiceDependencyControl {
+        ServiceEngine::worker_service_dependencies(self)
+    }
+
+    fn mark_ready_published(&self) -> Result<(), String> {
+        ServiceEngine::mark_ready_published(self).map_err(|error| error.to_string())
+    }
+
+    fn shutdown(&mut self) -> Result<(), String> {
+        ServiceEngine::shutdown(self)
     }
 }
 
@@ -155,7 +269,7 @@ pub(crate) fn run_authoritative_host() -> Result<(), HostError> {
     let shutdown = Arc::new(ShutdownCoordinator::default());
     let (bootstrap_receiver, _parent_watch) = start_parent_stdin_reader(Arc::clone(&shutdown))?;
     let bootstrap = receive_bootstrap(bootstrap_receiver)?;
-    run_after_bootstrap(bootstrap, shutdown, &UnavailableRuntimeEngine)
+    run_after_bootstrap(bootstrap, shutdown, &AuthoritativeRuntimeEngine)
 }
 
 fn run_after_bootstrap(
@@ -200,7 +314,7 @@ fn run_after_bootstrap(
         .map_err(|error| HostError::WorkerManifest(error.to_string()))?;
     let services = parse_service_manifest(&services_bytes)
         .map_err(|error| HostError::ServiceManifest(error.to_string()))?;
-    let registry = Registry::new(workers, services)?;
+    let registry = Registry::new(workers, services, mode)?;
 
     if shutdown.is_requested() {
         return Err(HostError::ParentDisconnected);
@@ -209,58 +323,78 @@ fn run_after_bootstrap(
     let database_path =
         paths.resolve_data(&format!("{RUNTIME_DATA_DIRECTORY}/{RUNTIME_DATABASE_NAME}"))?;
     let database_pin = paths.pin_data_file_for_update(&database_path)?;
+    let store = Arc::new(
+        JobStore::open_authoritative(database_pin, generation_scope)
+            .map_err(|error| HostError::Store(error.to_string()))?,
+    );
     let context = TrustedRuntimeContext {
         mode,
         paths,
         config_root,
         _runtime_data_directory: runtime_data,
-        _database_pin: database_pin,
         _generation_guard: generation_guard,
         generation_membership,
     };
-    let store = Arc::new(
-        JobStore::open_authoritative(context._database_pin.absolute(), generation_scope)
-            .map_err(|error| HostError::Store(error.to_string()))?,
-    );
     shutdown.attach_store(&store);
-    inspect_completion_intents_then_reconcile(&store, prior_generation_drained)?;
+    inspect_completion_intents_then_reconcile(&store, &context.paths, prior_generation_drained)?;
     if shutdown.is_requested() {
         return Err(HostError::ParentDisconnected);
     }
 
     context.config_root.revalidate()?;
-    // The dispatcher starts while durable admission is still closed. It can
-    // therefore establish its sole ownership thread before readiness without
-    // starting user work. `run_prepared_runtime` opens the shared gate only
-    // after the real dashboard and required service state have been emitted.
-    let mut dispatcher = WorkerDispatcher::start(
-        registry.clone(),
-        Arc::clone(&store),
-        context.paths.clone(),
-        context.generation_membership.clone(),
-        Arc::clone(&shutdown),
-    )
-    .map_err(HostError::WorkerDispatcher)?;
-    let mut prepared = match engine.prepare(&context, &registry, &store, &shutdown) {
+    // The endpoint and both scoped authorities must exist before the service
+    // engine launches the dashboard. Only its restricted server-side bearer
+    // is handed to the engine; the Electron lifecycle bearer remains here.
+    let control = PreparedControlPlane::bind()?;
+    let mut prepared = match engine.prepare(
+        &context,
+        &registry,
+        &store,
+        &shutdown,
+        control.dashboard_endpoint(),
+    ) {
         Ok(prepared) => prepared,
         Err(error) => {
             shutdown.request_shutdown();
-            // Admission has never opened on this path. Joining is still
-            // mandatory; even if an authority-bearing dispatcher error were
-            // returned, the engine error below commits main to process exit
-            // and cannot resume this generation.
-            let _ = dispatcher.shutdown();
             return Err(error);
+        }
+    };
+    let worker_environments = prepared
+        .take_worker_environments()
+        .map_err(|_| HostError::Engine("worker environment authority was unavailable"))?;
+    let worker_service_dependencies = prepared.worker_service_dependencies();
+    // The dispatcher starts while durable admission is still closed. The
+    // service engine has already minted its sealed environment profiles, but
+    // no finite job can launch until the ready/admission boundary below.
+    let mut dispatcher = match WorkerDispatcher::start(WorkerDispatcherConfig {
+        mode: context.mode,
+        registry: registry.clone(),
+        store: Arc::clone(&store),
+        paths: context.paths.clone(),
+        generation: context.generation_membership.clone(),
+        environments: worker_environments,
+        service_dependencies: worker_service_dependencies,
+        shutdown: Arc::clone(&shutdown),
+    }) {
+        Ok(dispatcher) => dispatcher,
+        Err(error) => {
+            shutdown.request_shutdown();
+            let _ = prepared.shutdown();
+            return Err(HostError::WorkerDispatcher(error));
         }
     };
     let job_control =
         DurableRuntimeJobControl::new(registry, Arc::clone(&store), context.paths.clone());
-    let serve_result = run_prepared_runtime(&mut *prepared, &shutdown, &job_control);
+    let serve_result = run_prepared_runtime(
+        &mut *prepared,
+        &shutdown,
+        &job_control,
+        control,
+        context.mode,
+    );
     shutdown.request_shutdown();
     let dispatcher_result = dispatcher.shutdown().map_err(HostError::WorkerDispatcher);
-    let engine_result = prepared
-        .shutdown()
-        .map_err(|_| HostError::Engine("bounded shutdown did not complete"));
+    let engine_result = prepared.shutdown().map_err(HostError::EngineShutdown);
     dispatcher_result?;
     serve_result?;
     engine_result
@@ -274,6 +408,7 @@ fn run_after_bootstrap(
 /// confirmed or retried here.
 fn inspect_completion_intents_then_reconcile(
     store: &JobStore,
+    paths: &RuntimePaths,
     prior_generation_drained: PriorGenerationDrained,
 ) -> Result<(), HostError> {
     let unvalidated_intents = store
@@ -282,9 +417,21 @@ fn inspect_completion_intents_then_reconcile(
     for intent in unvalidated_intents {
         let _inspected_fence = (intent.identity(), intent.sequence(), intent.result_path());
     }
-    store
+    let (_reconciled_jobs, input_cleanup_authority) = store
         .reconcile_after_runtime_restart(prior_generation_drained)
         .map_err(|error| HostError::Store(error.to_string()))?;
+    loop {
+        let processed = store
+            .reconcile_job_input_uploads_after_restart(
+                paths,
+                &input_cleanup_authority,
+                MAX_JOB_INPUT_CLEANUP_BATCH,
+            )
+            .map_err(|error| HostError::Store(error.to_string()))?;
+        if processed < MAX_JOB_INPUT_CLEANUP_BATCH {
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -295,24 +442,33 @@ fn run_prepared_runtime(
     prepared: &mut dyn PreparedRuntimeEngine,
     shutdown: &Arc<ShutdownCoordinator>,
     job_control: &dyn RuntimeJobControl,
+    control: PreparedControlPlane,
+    mode: RuntimeMode,
 ) -> Result<(), HostError> {
     if shutdown.is_requested() {
         return Err(HostError::ParentDisconnected);
     }
-    let listener = BoundControlListener::bind_ephemeral_loopback()?;
-    let token = generate_control_token()?;
-    let authority = ControlPlaneAuthority::new(token.as_str())
-        .map_err(|_| HostError::InvalidControlAuthority)?;
+    let PreparedControlPlane {
+        listener,
+        lifecycle_token,
+        dashboard_token,
+        authorities,
+    } = control;
     let services = prepared
         .service_statuses()
         .map_err(|_| HostError::Engine("service status could not be read"))?;
     let dashboard_url = prepared.dashboard_url().to_owned();
-    reject_token_exposure(token.as_str(), &dashboard_url, &services)?;
+    reject_token_exposure(
+        lifecycle_token.as_str(),
+        dashboard_token.as_str(),
+        &dashboard_url,
+        &services,
+    )?;
     let ready = RuntimeReadyMessage::RuntimeReady {
         protocol_version: RUNTIME_CONTROL_PROTOCOL_VERSION,
         runtime_pid: std::process::id(),
         control_base_url: listener.base_url().to_string(),
-        control_token: token.as_str().to_owned(),
+        control_token: lifecycle_token.as_str().to_owned(),
         dashboard_url,
         services,
     };
@@ -321,17 +477,37 @@ fn run_prepared_runtime(
         shutdown.request_shutdown();
         return Err(error);
     }
-    shutdown
-        .open_admission()
-        .map_err(|_| HostError::ParentDisconnected)?;
+    // Retain the bootstrap copies for the serving lifetime so every fresh
+    // status snapshot can be checked against both secrets. All copies are
+    // erased by their zero-on-drop owners during the common shutdown path.
+    prepared
+        .mark_ready_published()
+        .map_err(|_| HostError::Engine("runtime ready publication could not update admission"))?;
 
+    let prepared_ref: &dyn PreparedRuntimeEngine = prepared;
     listener
         .serve_with_jobs(
-            &authority,
-            std::process::id(),
-            shutdown,
-            || prepared.service_statuses(),
-            job_control,
+            ControlServerConfig {
+                authorities: &authorities,
+                mode,
+                runtime_pid: std::process::id(),
+                shutdown,
+                job_control,
+                service_control: prepared_ref.service_control(),
+            },
+            || {
+                let services = prepared_ref
+                    .service_statuses()
+                    .map_err(|_| "runtime service status unavailable".to_owned())?;
+                reject_token_exposure(
+                    lifecycle_token.as_str(),
+                    dashboard_token.as_str(),
+                    "",
+                    &services,
+                )
+                .map_err(|_| "runtime service status rejected".to_owned())?;
+                Ok(services)
+            },
         )
         .map_err(HostError::from)
 }
@@ -344,7 +520,7 @@ fn generate_control_token() -> Result<EphemeralControlToken, HostError> {
     }
     let mut token = Vec::with_capacity(TOKEN_BYTES * 2);
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in random {
+    for &byte in &random {
         token.push(HEX[usize::from(byte >> 4)]);
         token.push(HEX[usize::from(byte & 0x0f)]);
     }
@@ -353,18 +529,18 @@ fn generate_control_token() -> Result<EphemeralControlToken, HostError> {
 }
 
 fn reject_token_exposure(
-    token: &str,
+    lifecycle_token: &str,
+    dashboard_token: &str,
     dashboard_url: &str,
     services: &[RuntimeServiceStatus],
 ) -> Result<(), HostError> {
-    if dashboard_url.contains(token)
+    let exposes_token =
+        |value: &str| value.contains(lifecycle_token) || value.contains(dashboard_token);
+    if exposes_token(dashboard_url)
         || services.iter().any(|service| {
-            service.id.contains(token)
-                || service.display_name.contains(token)
-                || service
-                    .last_error
-                    .as_deref()
-                    .is_some_and(|error| error.contains(token))
+            exposes_token(&service.id)
+                || exposes_token(&service.display_name)
+                || service.last_error.as_deref().is_some_and(&exposes_token)
         })
     {
         return Err(HostError::InvalidReady(
@@ -418,11 +594,50 @@ mod tests {
     }
 
     #[test]
-    fn production_engine_fails_closed_instead_of_inventing_dashboard_readiness() {
-        assert_eq!(
-            HostError::EngineUnavailable("the real dashboard and service engine are not wired")
-                .exit_code(),
-            78
+    fn dashboard_endpoint_diagnostics_redact_its_restricted_bearer() {
+        let endpoint = DashboardControlEndpoint {
+            base_url: "http://127.0.0.1:43121",
+            control_token: "fedcba9876543210fedcba9876543210",
+        };
+        let diagnostic = format!("{endpoint:?}");
+        assert!(diagnostic.contains("http://127.0.0.1:43121"));
+        assert!(diagnostic.contains("[REDACTED]"));
+        assert!(!diagnostic.contains(endpoint.control_token()));
+    }
+
+    #[test]
+    fn public_ready_fields_may_contain_neither_private_bearer() {
+        let lifecycle = "0123456789abcdef0123456789abcdef";
+        let dashboard = "fedcba9876543210fedcba9876543210";
+        assert!(
+            reject_token_exposure(lifecycle, dashboard, "http://127.0.0.1:43121", &[],).is_ok()
         );
+        assert!(reject_token_exposure(
+            lifecycle,
+            dashboard,
+            &format!("http://127.0.0.1:43121/{lifecycle}"),
+            &[],
+        )
+        .is_err());
+        assert!(reject_token_exposure(
+            lifecycle,
+            dashboard,
+            &format!("http://127.0.0.1:43121/{dashboard}"),
+            &[],
+        )
+        .is_err());
+        for bearer in [lifecycle, dashboard] {
+            let services = vec![RuntimeServiceStatus {
+                id: "dashboard".into(),
+                display_name: "Dashboard".into(),
+                required: true,
+                startup_policy: breadboard_runtime_protocol::ServiceStartupPolicy::Eager,
+                state: breadboard_runtime_protocol::RuntimeServiceState::Failed,
+                last_error: Some(format!("child failure included {bearer}")),
+                restarts: 0,
+                adopted: false,
+            }];
+            assert!(reject_token_exposure(lifecycle, dashboard, "", &services).is_err());
+        }
     }
 }

@@ -13,14 +13,15 @@
 // the same reason: no table, so nothing to drift out of step with the files.
 
 import crypto from "node:crypto";
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
 import { isMeetingUploadId, MEETING_FILENAME_HEADER } from "./identity.ts";
+
+const fsp = fs.promises;
 
 export { MEETING_FILENAME_HEADER };
 

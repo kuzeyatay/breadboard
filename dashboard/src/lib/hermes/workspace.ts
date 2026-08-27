@@ -7,9 +7,12 @@
 // pointing a session at the Breadboard repo root, another user's garden, or an
 // arbitrary filesystem location via traversal or symlink tricks.
 
-import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import {
+  externalRuntimeFilesystem as fs,
+  externalRuntimePortableRealpath,
+} from "../external-runtime-filesystem.ts";
 import type { HermesConfig, HermesSurface } from "./config.ts";
 import type { FilesystemAccessMode } from "./runtime-store.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
@@ -32,6 +35,99 @@ export interface ResolvedWorkspace {
   runtimeDirectory: string;
   /** Stable key persisted with the runtime session for reuse on resume. */
   workspaceKey: string;
+}
+
+function pathEscapesAuthority(relative: string): boolean {
+  return (
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  );
+}
+
+function assertCanonicalContainment(
+  canonicalRoot: string,
+  canonicalCandidate: string,
+  message: string,
+): void {
+  if (pathEscapesAuthority(path.relative(canonicalRoot, canonicalCandidate))) {
+    throw new Error(message);
+  }
+}
+
+function isFilesystemError(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === code
+  );
+}
+
+function assertOrdinaryDirectory(
+  candidate: string,
+  options: { create: boolean; label: string },
+): void {
+  let stats: ReturnType<typeof fs.lstatSync>;
+  try {
+    stats = fs.lstatSync(candidate);
+  } catch (error) {
+    if (!options.create || !isFilesystemError(error, "ENOENT")) throw error;
+    try {
+      fs.mkdirSync(candidate);
+    } catch (mkdirError) {
+      // A concurrent creator is acceptable only if the resulting entry passes
+      // the same no-link authority check below.
+      if (!isFilesystemError(mkdirError, "EEXIST")) throw mkdirError;
+    }
+    stats = fs.lstatSync(candidate);
+  }
+  if (stats.isSymbolicLink()) {
+    throw new Error(`Refusing ${options.label} through a symbolic link or junction`);
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`Refusing ${options.label} through a non-directory path`);
+  }
+}
+
+function workspaceRelativePath(root: string, directory: string, message: string): string {
+  const relative = path.relative(root, directory);
+  if (pathEscapesAuthority(relative)) throw new Error(message);
+  return relative;
+}
+
+/**
+ * Validate every existing entry below the configured root before descending
+ * into it. When creating a workspace, this prevents a planted link from
+ * receiving a child directory before the canonical containment check runs.
+ */
+function canonicalWorkspaceAuthority(
+  root: string,
+  directory: string,
+  options: { create: boolean },
+): void {
+  const relative = workspaceRelativePath(
+    root,
+    directory,
+    "Refusing workspace outside the configured Hermes root",
+  );
+  if (options.create) fs.mkdirSync(root, { recursive: true });
+  const canonicalRoot = externalRuntimePortableRealpath(root);
+  let current = root;
+  let canonicalDirectory = canonicalRoot;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    assertOrdinaryDirectory(current, {
+      create: options.create,
+      label: "Hermes workspace",
+    });
+    canonicalDirectory = externalRuntimePortableRealpath(current);
+    assertCanonicalContainment(
+      canonicalRoot,
+      canonicalDirectory,
+      "Resolved workspace escapes root via symlink",
+    );
+  }
 }
 
 /**
@@ -82,21 +178,14 @@ export function resolveWorkspace(
   const workspaceKey = workspaceKeyFor(request);
   const runtimeDirectory = path.resolve(root, workspaceKey);
 
-  const relative = path.relative(root, runtimeDirectory);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("Refusing workspace outside the configured Hermes root");
-  }
+  workspaceRelativePath(
+    root,
+    runtimeDirectory,
+    "Refusing workspace outside the configured Hermes root",
+  );
 
   if (options?.create) {
-    fs.mkdirSync(runtimeDirectory, { recursive: true });
-    // Reject symlink escapes: after creation, the real path must still be inside
-    // the real root. This catches a pre-existing symlink planted at any segment.
-    const realRoot = fs.realpathSync(root);
-    const realDir = fs.realpathSync(runtimeDirectory);
-    const realRelative = path.relative(realRoot, realDir);
-    if (realRelative.startsWith("..") || path.isAbsolute(realRelative)) {
-      throw new Error("Resolved workspace escapes root via symlink");
-    }
+    canonicalWorkspaceAuthority(root, runtimeDirectory, { create: true });
   }
 
   // Actual-Electron QA runs shared development code but never authorizes that
@@ -125,7 +214,7 @@ function breadboardRepoRoot(): string | null {
 export function canonicalAccessibleDirectory(value: string | null | undefined): string | null {
   if (!value?.trim()) return null;
   try {
-    const resolved = fs.realpathSync(path.resolve(value.trim()));
+    const resolved = externalRuntimePortableRealpath(path.resolve(value.trim()));
     if (!fs.statSync(resolved).isDirectory()) return null;
     fs.accessSync(resolved, fs.constants.R_OK);
     return resolved;
@@ -163,33 +252,6 @@ export function discoverFilesystemRoots(): string[] {
 export function directoryForWorkspaceKey(config: HermesConfig, workspaceKey: string): string {
   const root = path.resolve(config.root);
   const directory = path.resolve(root, workspaceKey);
-  const relative = path.relative(root, directory);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("Persisted workspace key resolves outside root");
-  }
+  workspaceRelativePath(root, directory, "Persisted workspace key resolves outside root");
   return directory;
-}
-
-/**
- * Write the short-lived capability descriptor into a session's workspace so the
- * Hermes garden/quartz tool adapter can read it and call back into
- * Breadboard. This lives in a dot-dir the tool reads directly; it is never in
- * model-visible prompt context. Written with restrictive intent (own dir).
- */
-export function writeWorkspaceCapability(
-  directory: string,
-  descriptor: {
-    token: string;
-    dashboardUrl: string;
-    surface: string;
-    gardenId?: string;
-    pageSlug?: string;
-  },
-): void {
-  const dir = path.join(directory, ".breadboard");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "capability.json"), JSON.stringify(descriptor, null, 2), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
 }

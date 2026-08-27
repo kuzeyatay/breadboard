@@ -11,16 +11,13 @@
 // Runs are ephemeral: events live here and the SSE route replays them.
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, open, lstat, realpath } from "node:fs/promises";
 import path from "node:path";
-import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import { confinePath, parseCommand } from "./commands.ts";
 import {
   closeBridgeWindow,
   ensureBridgeWindow,
-} from "../agent-browser/browser-profile.ts";
+} from "../agent-browser/browser-profile-process.ts";
 import { openCliProfileEnv } from "../agent-browser/opencli-profile.ts";
 import { planSpawn, type SpawnPlanResult } from "./spawn-plan.ts";
 import { buildSystemPrompt } from "./skill-prompt.ts";
@@ -52,6 +49,7 @@ interface RunState {
   sequence: number;
   events: AgentReachEvent[];
   child: ChildProcess | null;
+  abortController: AbortController;
   aborted: boolean;
   finalText: string;
   createdAt: number;
@@ -80,7 +78,6 @@ const COMMAND_TIMEOUT_MS = 180_000;
 const MODEL_TIMEOUT_MS = 180_000;
 /** Attempts per step, so one slow upstream call does not end a sixteen-step run. */
 const MODEL_ATTEMPTS = 3;
-const RUN_ROOT = path.join(os.tmpdir(), "breadboard-agent-reach");
 const RETENTION_MS = 10 * 60 * 1000;
 
 const TOOLS = [
@@ -203,7 +200,13 @@ async function execute(
   // names Breadboard's own, and resolves to nothing when there is no choice
   // to make.
   run.openCliEnv ??= await openCliProfileEnv();
-  const env = { ...agentReachEnv(runtime), ...run.openCliEnv };
+  const env = {
+    ...agentReachEnv(runtime),
+    ...run.openCliEnv,
+    TEMP: path.join(run.workspace, "tmp"),
+    TMP: path.join(run.workspace, "tmp"),
+    TMPDIR: path.join(run.workspace, "tmp"),
+  };
   const target = spawnTarget(runtime, executable, args, env);
   if ("error" in target) return Promise.resolve(target.error);
   return new Promise((resolve) => {
@@ -272,8 +275,30 @@ async function execute(
 async function readOutputFile(run: RunState, requested: string): Promise<string> {
   const resolved = confinePath(requested, run.workspace);
   if (!resolved) return "That path is outside this run's workspace.";
+  const withinWorkspace = (candidate: string) => {
+    const relative = path.relative(path.resolve(run.workspace), path.resolve(candidate));
+    return relative === "" || (
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative)
+    );
+  };
   try {
-    const content = await readFile(resolved, "utf8");
+    const metadata = await lstat(/* turbopackIgnore: true */ resolved);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      return `No direct file at ${requested}. Only files written by an earlier command in this run can be read.`;
+    }
+    const canonical = await realpath(/* turbopackIgnore: true */ resolved);
+    if (!withinWorkspace(canonical)) return "That path is outside this run's workspace.";
+    const handle = await open(/* turbopackIgnore: true */ canonical, "r");
+    let content = "";
+    try {
+      const bytes = Buffer.alloc(MAX_FILE_CHARS * 4 + 1);
+      const { bytesRead } = await handle.read(bytes, 0, bytes.byteLength, 0);
+      content = bytes.subarray(0, bytesRead).toString("utf8");
+    } finally {
+      await handle.close();
+    }
     return content.slice(0, MAX_FILE_CHARS) || "(the file is empty)";
   } catch {
     return `No file at ${requested}. Only files written by an earlier command in this run can be read.`;
@@ -303,6 +328,8 @@ async function complete(
   model: string,
   reasoningEffort: string,
   messages: ChatMessage[],
+  apiKey: string,
+  signal: AbortSignal,
 ): Promise<{ message: ChatMessage; usage: ChatUsage }> {
   // Retried rather than fatal.
   //
@@ -314,15 +341,18 @@ async function complete(
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= MODEL_ATTEMPTS; attempt += 1) {
     try {
-      return await completeOnce(baseUrl, model, reasoningEffort, messages);
+      return await completeOnce(baseUrl, model, reasoningEffort, messages, apiKey, signal);
     } catch (error) {
+      if (signal.aborted) {
+        throw signal.reason ?? new DOMException("Aborted", "AbortError");
+      }
       const failure =
         error instanceof Error ? error : new Error("The model call failed.");
       if (!isRetryableModelFailure(failure) || attempt === MODEL_ATTEMPTS) {
         throw failure;
       }
       lastError = failure;
-      await new Promise((resolve) => setTimeout(resolve, attempt * 5_000));
+      await abortableDelay(attempt * 5_000, signal);
     }
   }
   throw lastError ?? new Error("The model call failed.");
@@ -339,15 +369,24 @@ async function completeOnce(
   model: string,
   reasoningEffort: string,
   messages: ChatMessage[],
+  apiKey: string,
+  signal: AbortSignal,
 ): Promise<{ message: ChatMessage; usage: ChatUsage }> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => controller.abort(new DOMException("The model call timed out", "TimeoutError")),
+    MODEL_TIMEOUT_MS,
+  );
+  timer.unref?.();
+  const forwardAbort = () => controller.abort(signal.reason);
+  if (signal.aborted) forwardAbort();
+  else signal.addEventListener("abort", forwardAbort, { once: true });
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${chatmockApiKeyValue()}`,
+        authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model,
@@ -376,13 +415,33 @@ async function completeOnce(
     };
   } finally {
     clearTimeout(timer);
+    signal.removeEventListener("abort", forwardAbort);
   }
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, ms);
+    const abort = () => done(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    function done(error?: unknown) {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve();
+    }
+    signal.addEventListener("abort", abort, { once: true });
+    timer.unref?.();
+  });
 }
 
 // ---- lifecycle --------------------------------------------------------------
 
 export interface StartRunInput {
   userId: number;
+  requestId?: string;
   task: string;
   model: string;
   reasoningEffort: string;
@@ -392,20 +451,36 @@ export interface StartRunInput {
   conversationContext?: string;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
+interface RuntimeWorkerStartRunInput extends StartRunInput {
+  runtimeJobId: string;
+  runtimeWorkspacePath: string;
+  apiKey: string;
+}
+
+export function startRuntimeWorkerRun(
+  input: RuntimeWorkerStartRunInput,
+): { runId: string; status: RunStatus } {
   const availability = runtimeAvailability();
   if (!availability.available) throw new Error(availability.reason ?? "runtime_unavailable");
+  if (
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId) ||
+    !path.isAbsolute(input.runtimeWorkspacePath) ||
+    !input.apiKey ||
+    Buffer.byteLength(input.apiKey, "utf8") > 4_096 ||
+    /[\u0000\r\n]/u.test(input.apiKey)
+  ) throw new Error("The Agent Reach Runtime worker input is invalid.");
 
-  const runId = `arrun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId;
   const run: RunState = {
     runId,
     userId: input.userId,
     task: input.task,
-    workspace: path.join(RUN_ROOT, runId),
+    workspace: path.resolve(input.runtimeWorkspacePath),
     status: "queued",
     sequence: 0,
     events: [],
     child: null,
+    abortController: new AbortController(),
     aborted: false,
     finalText: "",
     createdAt: Date.now(),
@@ -414,8 +489,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   void drive(run, input)
     .catch((error: unknown) => {
       if (run.aborted) return;
-      run.status = "failed";
-      emit(run, "run.failed", {
+      finish(run, "failed", {
         error: error instanceof Error ? error.message : "The Agent Reach run failed.",
       });
     })
@@ -428,8 +502,9 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   return { runId, status: "queued" };
 }
 
-async function drive(run: RunState, input: StartRunInput): Promise<void> {
+async function drive(run: RunState, input: RuntimeWorkerStartRunInput): Promise<void> {
   await mkdir(run.workspace, { recursive: true });
+  await mkdir(path.join(run.workspace, "tmp"), { recursive: true });
   if (run.aborted) return;
 
   const runtime = resolveAgentReachRuntime();
@@ -447,7 +522,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   let channels: ChannelHealth[] = [];
   emit(run, "doctor.started", {});
   try {
-    channels = await doctor();
+    channels = await doctor({ signal: run.abortController.signal });
   } catch {
     // A failed probe is not fatal: the prompt says so and the run continues on
     // the zero-config channels.
@@ -490,6 +565,8 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
       input.model,
       input.reasoningEffort,
       messages,
+      input.apiKey,
+      run.abortController.signal,
     );
     if (run.aborted) return;
 
@@ -588,27 +665,36 @@ function finish(run: RunState, status: RunStatus, payload: Record<string, unknow
     ...payload,
     elapsedSec: (Date.now() - run.createdAt) / 1_000,
   });
-  setTimeout(() => {
+  scheduleCleanup(run);
+}
+
+function scheduleCleanup(run: RunState): void {
+  const retention = setTimeout(() => {
     runs.delete(run.runId);
-    void rm(run.workspace, { recursive: true, force: true }).catch(() => undefined);
   }, RETENTION_MS);
+  retention.unref?.();
 }
 
 // ---- read/control API -------------------------------------------------------
 
-export function getEventsSince(userId: number, runId: string, since = 0): AgentReachEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): AgentReachEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;
   run.status = "aborted";
+  run.abortController.abort(new DOMException("Agent Reach stopped", "AbortError"));
   try {
     run.child?.kill();
   } catch {
@@ -616,9 +702,46 @@ export function abortRun(userId: number, runId: string): boolean {
   }
   run.child = null;
   emit(run, "run.aborted", { summary: "Agent Reach stopped." });
-  setTimeout(() => {
-    runs.delete(run.runId);
-    void rm(run.workspace, { recursive: true, force: true }).catch(() => undefined);
-  }, RETENTION_MS);
+  scheduleCleanup(run);
   return true;
+}
+
+/** Public durable facade. Runtime V2 owns the model loop and every tool child. */
+export async function startRun(
+  input: StartRunInput,
+): Promise<{ runId: string; status: RunStatus }> {
+  const { startOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return startOuterAgentRun({
+    kind: "agent-reach",
+    userId: input.userId,
+    requestId: input.requestId,
+    requestPayload: {
+      task: input.task,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      baseUrl: input.baseUrl,
+      maxSteps: input.maxSteps ?? 16,
+      conversationContext: input.conversationContext ?? "",
+    },
+  }) as Promise<{ runId: string; status: RunStatus }>;
+}
+
+export async function getEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): Promise<AgentReachEvent[]> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  const view = await readOuterAgentRunView("agent-reach", userId, runId, since);
+  return view.events as AgentReachEvent[];
+}
+
+export async function isTerminal(userId: number, runId: string): Promise<boolean> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  return (await readOuterAgentRunView("agent-reach", userId, runId, 0)).terminal;
+}
+
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
+  const { abortOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return abortOuterAgentRun("agent-reach", userId, runId);
 }

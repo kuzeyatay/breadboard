@@ -78,12 +78,16 @@ test("critical QA profile excludes expensive and credentialed integrations", () 
   assert.equal(dashboard.env["INBOX_ZERO_MODE"], "disabled");
   assert.equal(dashboard.env["INBOX_ZERO_AUTOSTART_DOCKER"], "false");
   assert.equal(
+    dashboard.env["COMFYUI_ROOT"],
+    path.join(paths.dataRoot, "runtime-v2", "toolchains", "comfyui"),
+  );
+  assert.equal(
     dashboard.env["COMFYUI_ENV_DIR"],
-    path.join(paths.dataRoot, "runtime", "comfyui-venv"),
+    path.join(paths.dataRoot, "runtime-v2", "services", "comfyui", ".venv"),
   );
   assert.equal(
     dashboard.env["COMFYUI_RUNTIME_DIR"],
-    path.join(paths.dataRoot, "runtime", "comfyui"),
+    path.join(paths.dataRoot, "runtime-v2", "services", "comfyui"),
   );
   assert.equal(dashboard.env["BREADBOARD_IFIXAI_MODE"], "off");
   for (const key of [

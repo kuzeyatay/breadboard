@@ -7,15 +7,14 @@
 // no copy of Office installed. This module is the dispatch between them, plus
 // the honest admission that OpenDocument has neither.
 //
-// Server-only: spawns a process and reads the filesystem.
+// Server-only: PDF pages stay in-process; Office pages are sealed into a fresh
+// Runtime V2 worker and returned as bounded staged file references.
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { PDFParse } from "pdf-parse";
 import { MAX_INDEXED_PAGES } from "./index-status.ts";
-import { officeCliEnv, resolveOfficeCli, runOfficeCli } from "../office/officecli.ts";
+import { renderOfficePagesViaRuntime } from "../office/runtime-v2.ts";
 import type { DocumentAttachmentFormat } from "../document-attachments.ts";
 
 export interface RenderedPage {
@@ -32,9 +31,6 @@ export interface RenderOutcome {
 
 /** The width the repository already renders pages at for vision work. */
 const PAGE_WIDTH_PX = 1200;
-
-/** Office rendering is a headless browser per document; long decks take a while. */
-const OFFICE_TIMEOUT_MS = 10 * 60 * 1000;
 
 function stripDataUrl(value: string): string {
   const comma = value.indexOf(",");
@@ -77,67 +73,36 @@ async function renderPdfPages(blobPath: string): Promise<RenderOutcome> {
   }
 }
 
-/**
- * Page number from whatever OfficeCLI decided to call the file.
- *
- * The naming is deliberately not assumed. `-o` names one path and the tool
- * derives the rest from it for a multi-page capture; rather than encode a guess
- * about the separator, the directory is emptied first and then read back, and
- * the trailing digits of each filename order the result. A single-page capture
- * with no number in its name is page one.
- */
-function pageNumberFromName(name: string): number {
-  const match = /(\d+)(?=\.[a-z]+$)/i.exec(name);
-  return match ? Number.parseInt(match[1], 10) : 1;
-}
-
 async function renderOfficePages(
   blobPath: string,
-  format: DocumentAttachmentFormat,
+  format: "docx" | "xlsx" | "pptx",
+  options: { userId: number; blobId: string; signal?: AbortSignal },
 ): Promise<RenderOutcome> {
-  if (resolveOfficeCli() === null) {
-    return { pages: [], unsupported: "OfficeCLI is not installed (npm run setup:officecli)" };
-  }
-
-  const directory = await fsp.mkdtemp(path.join(os.tmpdir(), "breadboard-colpali-"));
+  const rendered = await renderOfficePagesViaRuntime(
+    { userId: options.userId, gardenId: null, conversationId: null },
+    blobPath,
+    format,
+    {
+      maximumPages: MAX_INDEXED_PAGES,
+      width: PAGE_WIDTH_PX,
+      idempotencySeed: `${options.blobId}:${format}:pages`,
+      signal: options.signal,
+    },
+  );
   try {
-    const target = path.join(directory, "page.png");
-    const result = await runOfficeCli(
-      [
-        "view",
-        blobPath,
-        "screenshot",
-        "--page",
-        `1-${MAX_INDEXED_PAGES}`,
-        "--screenshot-width",
-        String(PAGE_WIDTH_PX),
-        "-o",
-        target,
-      ],
-      { cwd: directory, timeoutMs: OFFICE_TIMEOUT_MS, env: officeCliEnv() },
-    );
-
-    const written = (await fsp.readdir(directory)).filter((name) =>
-      /\.(png|jpe?g)$/i.test(name),
-    );
-    if (written.length === 0) {
-      const detail = (result.stderr || result.stdout || "").trim().slice(0, 300);
-      return {
-        pages: [],
-        unsupported: `OfficeCLI rendered no pages for this ${format}${detail ? `: ${detail}` : ""}`,
-      };
-    }
-
     const pages = await Promise.all(
-      written.map(async (name) => ({
-        pageNumber: pageNumberFromName(name),
-        imageBase64: (await fsp.readFile(path.join(directory, name))).toString("base64"),
+      rendered.pages.map(async (page) => ({
+        pageNumber: page.pageNumber,
+        imageBase64: (await fsp.readFile(page.filePath)).toString("base64"),
       })),
     );
     pages.sort((left, right) => left.pageNumber - right.pageNumber);
-    return { pages: pages.slice(0, MAX_INDEXED_PAGES), unsupported: "" };
+    return {
+      pages: pages.slice(0, MAX_INDEXED_PAGES),
+      unsupported: pages.length > 0 ? "" : rendered.unsupported,
+    };
   } finally {
-    await fsp.rm(directory, { recursive: true, force: true });
+    rendered.cleanup();
   }
 }
 
@@ -151,6 +116,7 @@ async function renderOfficePages(
 export async function renderDocumentPages(
   blobPath: string,
   format: DocumentAttachmentFormat,
+  options: { userId: number; blobId: string; signal?: AbortSignal },
 ): Promise<RenderOutcome> {
   if (!fs.existsSync(blobPath)) {
     return { pages: [], unsupported: "the stored document is missing" };
@@ -158,7 +124,7 @@ export async function renderDocumentPages(
   try {
     if (format === "pdf") return await renderPdfPages(blobPath);
     if (format === "docx" || format === "xlsx" || format === "pptx") {
-      return await renderOfficePages(blobPath, format);
+      return await renderOfficePages(blobPath, format, options);
     }
     // OpenDocument is read as flat text by `document-structure/opendocument.ts`
     // and has no renderer here either. Saying so is better than rendering it

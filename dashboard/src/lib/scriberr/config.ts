@@ -115,7 +115,8 @@ export function loadVideoTranscriptionConfig(
     maxUploadBytes:
       intFromEnv(env.VIDEO_TRANSCRIPTION_MAX_UPLOAD_MB, 2048, {
         min: 1,
-        max: 1024 * 64,
+        // Runtime V2's sealed input protocol deliberately tops out at 2 GiB.
+        max: 2048,
       }) *
       1024 *
       1024,

@@ -10,15 +10,15 @@
 //
 // Runs are ephemeral; what they produce is not. Events live here and the SSE
 // route replays them, but the sessions, run directories and artifacts stay in
-// the clone's own state directory, which is the entire point of the tool.
+// the clone's own state directory. Runtime V2 owns and starts the service as a
+// job dependency; this worker only uses its injected authenticated endpoint.
 
 import { randomUUID } from "node:crypto";
-import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import { vibeTradingRunLabel } from "./identity.ts";
-import { ensureService, serviceLog, type VibeTradingService } from "./service.ts";
-import { invalidateHealth } from "./runtime.ts";
+import type { VibeTradingService } from "./service.ts";
 import type { VibeTradingSettings } from "./settings.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
+import { resolveManagedServiceEndpoint } from "../runtime-v2/managed-service-endpoint.ts";
 
 export interface VibeTradingEvent {
   sequenceNumber: number;
@@ -58,6 +58,7 @@ globalRuns.__breadboardVibeTradingRuns = runs;
 
 const MAX_EVENTS = 5_000;
 const MAX_ANSWER_CHARS = 400_000;
+const MAX_SERVICE_RESPONSE_BYTES = 2 * 1024 * 1024;
 const RETENTION_MS = 30 * 60 * 1000;
 // A backtest over a decade of bars, or a multi-symbol factor sweep, is genuinely
 // long: the clone's own loop runs up to 50 iterations with real network fetches
@@ -115,8 +116,11 @@ function record(value: unknown): Record<string, unknown> {
  */
 function pushAnswer(run: RunState, delta: string): void {
   if (!delta) return;
-  if (run.answer.length < MAX_ANSWER_CHARS) run.answer += delta;
-  run.pending += delta;
+  const remaining = Math.max(0, MAX_ANSWER_CHARS - run.answer.length);
+  const accepted = remaining ? delta.slice(0, remaining) : "";
+  if (!accepted) return;
+  run.answer += accepted;
+  run.pending += accepted;
   if (run.flushTimer) return;
   const timer = setTimeout(() => {
     run.flushTimer = null;
@@ -154,6 +158,38 @@ async function call(
   });
 }
 
+async function readBoundedJson(response: Response, maximumBytes: number): Promise<unknown> {
+  const declared = response.headers.get("content-length");
+  if (
+    declared !== null &&
+    (!/^\d+$/u.test(declared) || Number(declared) > maximumBytes)
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error("Vibe Trading returned more data than this run accepts.");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Vibe Trading returned no response body.");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maximumBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("Vibe Trading returned more data than this run accepts.");
+    }
+    chunks.push(value);
+  }
+  try {
+    return JSON.parse(
+      Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8"),
+    );
+  } catch {
+    throw new Error("Vibe Trading returned invalid JSON.");
+  }
+}
+
 async function createSession(service: VibeTradingService, task: string): Promise<string> {
   const response = await call(service, "/sessions", {
     method: "POST",
@@ -162,9 +198,11 @@ async function createSession(service: VibeTradingService, task: string): Promise
   if (!response.ok) {
     throw new Error(`Vibe Trading refused to open a session (${response.status}).`);
   }
-  const body = (await response.json()) as { session_id?: unknown };
+  const body = (await readBoundedJson(response, 64 * 1024)) as { session_id?: unknown };
   const sessionId = text(body.session_id);
-  if (!sessionId) throw new Error("Vibe Trading opened a session without an id.");
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) {
+    throw new Error("Vibe Trading opened a session without a valid id.");
+  }
   return sessionId;
 }
 
@@ -180,12 +218,12 @@ async function lastAssistantMessage(
   try {
     const response = await call(service, `/sessions/${sessionId}/messages?limit=50`);
     if (!response.ok) return "";
-    const body = (await response.json()) as unknown;
+    const body = await readBoundedJson(response, MAX_SERVICE_RESPONSE_BYTES);
     if (!Array.isArray(body)) return "";
     for (let index = body.length - 1; index >= 0; index -= 1) {
       const message = record(body[index]);
       if (message.role === "assistant" && text(message.content).trim()) {
-        return text(message.content);
+        return text(message.content).slice(0, MAX_ANSWER_CHARS);
       }
     }
   } catch {
@@ -209,8 +247,65 @@ export interface StartRunInput {
   conversationContext?: string;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
-  const runId = `vtrun_${randomUUID().replaceAll("-", "")}`;
+export interface RuntimeWorkerStartRunInput extends StartRunInput {
+  /** Fenced Runtime identity. It is never selected by a renderer. */
+  runtimeJobId: string;
+  /** Captured by the trusted server before submission and shown by the card. */
+  coldStart: boolean;
+}
+
+function preparedWorkerService(input: StartRunInput): VibeTradingService {
+  const endpoint = resolveManagedServiceEndpoint("vibe-trading");
+  if (!endpoint) {
+    throw new Error("The Runtime-injected Vibe Trading service is unavailable.");
+  }
+  const model = input.settings.model.trim() || input.model.trim();
+  if (!model) throw new Error("Vibe Trading has no model to run on.");
+  return {
+    url: endpoint.url,
+    apiKey: endpoint.apiKey,
+    model,
+    startedAt: Date.now(),
+  };
+}
+
+/** Legacy test seam. Product routes submit through runtime-run-manager.ts. */
+export async function startRun(
+  input: StartRunInput,
+): Promise<{ runId: string; status: RunStatus }> {
+  return startLocalRun(
+    `vtrun_${randomUUID().replaceAll("-", "")}`,
+    input,
+    preparedWorkerService(input),
+    false,
+  );
+}
+
+/** Fixed disposable-worker entrypoint. Next.js must never call this export. */
+export function startRuntimeWorkerRun(
+  input: RuntimeWorkerStartRunInput,
+): { runId: string; status: RunStatus } {
+  if (
+    !Number.isSafeInteger(input.userId) ||
+    input.userId < 1 ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId)
+  ) {
+    throw new Error("The Vibe Trading Runtime worker input is invalid.");
+  }
+  return startLocalRun(
+    input.runtimeJobId,
+    input,
+    preparedWorkerService(input),
+    input.coldStart,
+  );
+}
+
+function startLocalRun(
+  runId: string,
+  input: StartRunInput,
+  service: VibeTradingService,
+  coldStart: boolean,
+): { runId: string; status: RunStatus } {
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -232,25 +327,33 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   const timer = setTimeout(() => {
     if (["completed", "failed", "aborted"].includes(run.status)) return;
     run.aborted = true;
-    void cancelUpstream(run);
-    finish(run, "failed", { error: "The research ran past its time limit and was stopped." });
+    void cancelUpstream(run).finally(() => {
+      finish(run, "failed", { error: "The research ran past its time limit and was stopped." });
+    });
   }, RUN_TIMEOUT_MS);
   timer.unref?.();
 
-  void drive(run, input)
+  void drive(run, input, service, coldStart)
     .catch((error: unknown) => {
       if (run.aborted) return;
       finish(run, "failed", {
         error: error instanceof Error ? error.message : "The Vibe Trading run failed.",
-        detail: serviceLog(),
+        detail: "",
       });
     })
-    .finally(() => clearTimeout(timer));
+    .finally(() => {
+      clearTimeout(timer);
+    });
 
   return { runId, status: "queued" };
 }
 
-async function drive(run: RunState, input: StartRunInput): Promise<void> {
+async function drive(
+  run: RunState,
+  input: StartRunInput,
+  service: VibeTradingService,
+  coldStart: boolean,
+): Promise<void> {
   run.status = "running";
   emit(run, "run.started", {
     task: run.task,
@@ -259,20 +362,11 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   });
 
   emit(run, "service.starting", {});
-  const service = await ensureService({
-    baseUrl: input.baseUrl,
-    apiKey: chatmockApiKeyValue(),
-    model: input.model,
-    reasoningEffort: input.reasoningEffort,
-    settings: input.settings,
-  });
   if (run.aborted) return;
   emit(run, "service.ready", {
     model: service.model,
-    // A service that was already up is the normal case after the first run, and
-    // it is the single most useful thing to know when a run feels slow.
     startedAt: service.startedAt,
-    coldStart: Date.now() - service.startedAt < 10_000,
+    coldStart,
   });
 
   const sessionId = await createSession(service, run.task);
@@ -293,13 +387,13 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
   });
   if (!response.ok) {
-    const detail = await response.text().catch(() => "");
+    await response.body?.cancel().catch(() => undefined);
     // `finish` closes the stream this run opened above, so the failure path does
     // not leave a connection reading an idle session.
     throw new Error(
       response.status === 409
         ? "That Vibe Trading session is already running a turn."
-        : `Vibe Trading refused the request (${response.status}). ${detail.slice(0, 300)}`.trim(),
+        : `Vibe Trading refused the request (${response.status}).`,
     );
   }
 
@@ -316,7 +410,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     } else {
       finish(run, "failed", {
         error: "The Vibe Trading event stream ended before an answer arrived.",
-        detail: serviceLog(),
+        detail: "",
       });
     }
   }
@@ -507,12 +601,15 @@ function handleEvent(run: RunState, type: string, data: Record<string, unknown>)
 
   if (type === "attempt.completed") {
     flushAnswer(run);
-    const summary = text(data.summary).trim() || run.answer.trim();
+    const summary = (text(data.summary).trim() || run.answer.trim()).slice(
+      0,
+      MAX_ANSWER_CHARS,
+    );
     finish(run, "completed", {
       summary: summary || "Vibe Trading finished without an answer.",
-      model: text(data.model),
-      provider: text(data.provider),
-      runDir: text(data.run_dir),
+      model: text(data.model).slice(0, 256),
+      provider: text(data.provider).slice(0, 128),
+      runDir: text(data.run_dir).slice(0, 1_024),
       toolCalls: run.toolCalls,
       upstreamElapsedMs: count(data.elapsed_ms),
     });
@@ -563,9 +660,6 @@ function finish(run: RunState, status: RunStatus, payload: Record<string, unknow
     ...payload,
     elapsedSec: (Date.now() - run.createdAt) / 1_000,
   });
-  // A finished run may have started or lost the service; the Agents tab reads
-  // that from health.
-  invalidateHealth();
   scheduleCleanup(run);
 }
 
@@ -595,15 +689,29 @@ export function isTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;
-  void cancelUpstream(run);
+  await cancelUpstream(run);
   finish(run, "aborted", {
     // Whatever landed before the stop is still worth keeping.
     summary: run.answer.trim() || "Vibe Trading stopped before it answered.",
     toolCalls: run.toolCalls,
   });
   return true;
+}
+
+/** Protocol controls consumed only by the fixed Runtime V2 adapter. */
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
+export const abortRuntimeWorkerRun = abortRun;
+
+/** Test seam: a disposable production worker has one run and exits. */
+export function resetVibeTradingRuns(): void {
+  for (const run of runs.values()) {
+    if (run.flushTimer) clearTimeout(run.flushTimer);
+    run.streaming.abort();
+  }
+  runs.clear();
 }

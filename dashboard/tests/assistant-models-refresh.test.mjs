@@ -69,10 +69,8 @@ test("every model picker reads the catalog from the shared hook", () => {
 test("provider changes in settings announce the new catalog", () => {
   const settings = read("app/components/settings-providers.tsx");
   assert.match(settings, /notifyAssistantModelsChanged/);
-  // Both funnels: every provider mutation, and a subscription catalog sync.
+  // Every provider mutation is funneled through the same state-application path.
   const announcements = settings.match(/notifyAssistantModelsChanged\(\)/g) ?? [];
-  assert.ok(
-    announcements.length >= 2,
-    `provider mutations and subscription syncs must both announce (found ${announcements.length})`,
-  );
+  assert.equal(announcements.length, 1);
+  assert.match(settings, /applyState\(payload as ChatmockProviderState\)[\s\S]*?notifyAssistantModelsChanged\(\)/);
 });

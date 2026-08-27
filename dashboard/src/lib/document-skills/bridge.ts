@@ -66,6 +66,7 @@ function runBridge(
   args: string[],
   stdin: string | null,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<BridgeRun> {
   return new Promise((resolve) => {
     let child;
@@ -88,15 +89,18 @@ function runBridge(
     let stdout = "";
     let stderr = "";
     let settled = false;
+    const cancel = () => child.kill("SIGKILL");
     const finish = (run: BridgeRun) => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener("abort", cancel);
       resolve(run);
     };
     const timer = setTimeout(() => {
       child.kill();
       finish({ ok: false, stdout, stderr, error: "book-to-skill bridge timed out" });
     }, timeoutMs);
+    signal?.addEventListener("abort", cancel, { once: true });
 
     child.stdout.on("data", (chunk) => {
       stdout += String(chunk);
@@ -130,9 +134,11 @@ async function callBridge(
   args: string[],
   stdin: string | null,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown> | null> {
   for (const python of pythonCandidates()) {
-    const run = await runBridge(python, args, stdin, timeoutMs);
+    if (signal?.aborted) return null;
+    const run = await runBridge(python, args, stdin, timeoutMs, signal);
     const line = run.stdout.trim().split("\n").filter(Boolean).pop();
     if (!line) continue;
     try {
@@ -201,14 +207,85 @@ async function windowChapters(text: string): Promise<DocumentChapter[]> {
   const chunker = new RecursiveChunker({ chunkSize: WINDOW_CHUNK_SIZE_TOKENS, chunkOverlap: 0 });
   const chunks = (await chunker.chunk(text)).slice(0, MAX_WINDOW_CHAPTERS);
 
+  type MappedCharacter = { value: string; start: number; end: number };
+  const lineNormalized: MappedCharacter[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "\r") {
+      const end = text[index + 1] === "\n" ? index + 2 : index + 1;
+      lineNormalized.push({ value: "\n", start: index, end });
+      index = end - 1;
+    } else {
+      lineNormalized.push({ value: text[index], start: index, end: index + 1 });
+    }
+  }
+
+  const newlineNormalized: MappedCharacter[] = [];
+  for (let index = 0; index < lineNormalized.length;) {
+    const unit = lineNormalized[index];
+    if (unit.value !== "\n") {
+      newlineNormalized.push(unit);
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (end < lineNormalized.length && lineNormalized[end].value === "\n") end += 1;
+    newlineNormalized.push(unit);
+    if (end - index > 1) {
+      newlineNormalized.push({
+        value: "\n",
+        start: lineNormalized[index + 1].start,
+        end: lineNormalized[end - 1].end,
+      });
+    }
+    index = end;
+  }
+
+  const spaceNormalized: MappedCharacter[] = [];
+  for (let index = 0; index < newlineNormalized.length;) {
+    const unit = newlineNormalized[index];
+    const value = unit.value === "\t" ? " " : unit.value;
+    if (value !== " ") {
+      spaceNormalized.push({ ...unit, value });
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (
+      end < newlineNormalized.length &&
+      (newlineNormalized[end].value === " " || newlineNormalized[end].value === "\t")
+    ) {
+      end += 1;
+    }
+    spaceNormalized.push({
+      value: " ",
+      start: unit.start,
+      end: newlineNormalized[end - 1].end,
+    });
+    index = end;
+  }
+
+  let first = 0;
+  let last = spaceNormalized.length;
+  while (first < last && !spaceNormalized[first].value.trim()) first += 1;
+  while (last > first && !spaceNormalized[last - 1].value.trim()) last -= 1;
+  const normalized = spaceNormalized.slice(first, last);
+  const normalizedText = normalized.map((unit) => unit.value).join("");
+
   const starts: number[] = [];
-  let cursor = 0;
+  let normalizedCursor = 0;
+  let originalCursor = 0;
   for (const chunk of chunks) {
-    const anchor = chunk.text.slice(0, 80).trim();
-    const found = anchor ? text.indexOf(anchor, cursor) : -1;
-    const start = found >= 0 ? found : cursor;
+    const normalizedStart = normalizedText.indexOf(chunk.text, normalizedCursor);
+    const start = normalizedStart >= 0
+      ? (normalized[normalizedStart]?.start ?? text.length)
+      : originalCursor;
     starts.push(start);
-    cursor = start;
+    if (normalizedStart >= 0) {
+      normalizedCursor = normalizedStart + chunk.text.length;
+      originalCursor = normalized[normalizedCursor - 1]?.end ?? start;
+    } else {
+      originalCursor = Math.min(text.length, start + chunk.text.length);
+    }
   }
 
   return chunks.map((_chunk, index) => ({
@@ -330,9 +407,17 @@ function parseChapters(value: unknown): DocumentChapter[] {
 }
 
 /** Chapter boundaries for already-extracted text, from the clone when possible. */
-export async function segmentDocument(text: string): Promise<DocumentStructure> {
+export async function segmentDocumentInWorker(
+  text: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<DocumentStructure> {
   if (!cloneAvailable()) return fallbackStructure(text);
-  const result = await callBridge(["--mode", "segment"], JSON.stringify({ text }), BRIDGE_TIMEOUT_MS);
+  const result = await callBridge(
+    ["--mode", "segment"],
+    JSON.stringify({ text }),
+    BRIDGE_TIMEOUT_MS,
+    options.signal,
+  );
   const chapters = result?.ok === true ? parseChapters(result.chapters) : [];
   if (chapters.length === 0) return fallbackStructure(text);
   return {
@@ -358,15 +443,17 @@ export interface CloneExtraction {
  * which is a signal to fall back to Breadboard's own extraction rather than an
  * error worth showing.
  */
-export async function extractWithClone(
+export async function extractWithCloneInWorker(
   filePath: string,
   extractionMode: "text" | "technical" = "text",
+  options: { signal?: AbortSignal } = {},
 ): Promise<CloneExtraction | null> {
   if (!cloneAvailable()) return null;
   const result = await callBridge(
     ["--mode", "extract", "--file", filePath, "--extraction-mode", extractionMode],
     null,
     EXTRACT_TIMEOUT_MS,
+    options.signal,
   );
   if (result?.ok !== true || typeof result.text !== "string" || !result.text.trim()) return null;
   return {

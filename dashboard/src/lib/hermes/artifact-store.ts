@@ -1,8 +1,9 @@
 import crypto, { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import type { Stats } from "node:fs";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import type Database from "better-sqlite3";
 import db from "../db.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
 import { artifactRenderer } from "./artifact-renderers.ts";
 import {
@@ -11,8 +12,13 @@ import {
 } from "./artifact-import.ts";
 import { isChatHighlight } from "../conversations/highlights.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
-import { scrubFileInPlace } from "../watermarks/scrub-file.ts";
+import { scrubFileInPlaceViaRuntime } from "../watermarks/scrub-file.ts";
+import type { WatermarkRuntimeControl } from "../runtime-v2/watermark-job.ts";
 import { withCapabilityLease } from "../supervisor-control.ts";
+import {
+  renderMarkdownArtifactViaRuntime,
+  type RuntimeV2OfficeControl,
+} from "../office/runtime-v2.ts";
 import {
   ARTIFACT_KINDS,
   type ArtifactEventType,
@@ -150,6 +156,9 @@ export interface CreateImportedArtifactInput extends Omit<
    * that is not hygiene, it is destroying somebody else's bibliographic record.
    */
   scrubProvenance?: boolean;
+  /** Cancellation/test seam for the Rust-owned automatic scrub job. */
+  signal?: AbortSignal;
+  watermarkRuntimeControl?: WatermarkRuntimeControl;
 }
 
 function storageRoot(configured?: string): string {
@@ -258,9 +267,56 @@ function atomicWrite(target: string, content: string | Buffer): void {
   fs.renameSync(temporary, target);
 }
 
+function atomicPromoteFile(source: string, target: string): void {
+  const sourceMetadata = fs.lstatSync(source);
+  if (!sourceMetadata.isFile() || sourceMetadata.isSymbolicLink() || sourceMetadata.size < 1) {
+    throw new ArtifactStoreError(500, "artifact_stage_invalid", "The rendered artifact stage is unavailable.");
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.copyFileSync(source, temporary, fs.constants.COPYFILE_EXCL);
+    const descriptor = fs.openSync(temporary, "r+");
+    try {
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.renameSync(temporary, target);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
 function hashFile(file: string): { byteSize: number; contentHash: string } {
   const content = fs.readFileSync(file);
   return { byteSize: content.byteLength, contentHash: crypto.createHash("sha256").update(content).digest("hex") };
+}
+
+function isDirectDurableFile(file: string): boolean {
+  try {
+    const metadata = fs.lstatSync(file);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size < 1) return false;
+    const canonical = fs.realpathSync.native(file);
+    const resolved = path.resolve(file);
+    return process.platform === "win32"
+      ? canonical.toLowerCase() === resolved.toLowerCase()
+      : canonical === resolved;
+  } catch {
+    return false;
+  }
+}
+
+function durableReadyArtifactAvailable(artifact: ArtifactRow, root: string): boolean {
+  if (!artifact.output_location || !artifact.preview_location || !artifact.content_hash) return false;
+  try {
+    const output = resolveStoredPath(root, artifact.output_location);
+    const preview = resolveStoredPath(root, artifact.preview_location);
+    if (!isDirectDurableFile(output) || !isDirectDurableFile(preview)) return false;
+    return hashFile(output).contentHash === artifact.content_hash;
+  } catch {
+    return false;
+  }
 }
 
 export interface PublishValidatedArtifactVersionInput {
@@ -610,9 +666,9 @@ export function createArtifact(input: CreateArtifactInput): ArtifactRow {
  * this function resolves real paths, rejects symlinks and traversal, verifies
  * file signatures, then publishes the copy atomically.
  */
-export function createImportedArtifact(
+export async function createImportedArtifact(
   input: CreateImportedArtifactInput,
-): ArtifactRow {
+): Promise<ArtifactRow> {
   const database = input.database ?? db;
   const conversation = database.prepare(`
     SELECT user_id, surface, default_garden_id FROM conversations WHERE id = ?
@@ -804,7 +860,17 @@ export function createImportedArtifact(
   // before the rename also means the verification below runs on the bytes that
   // will actually be stored, so a scrub that somehow changed the format is
   // caught here rather than shipped.
-  if (input.scrubProvenance !== false) scrubFileInPlace(temporary);
+  if (input.scrubProvenance !== false) {
+    await scrubFileInPlaceViaRuntime(temporary, {
+      scope: {
+        userId: input.userId,
+        gardenId: input.clusterId === null ? null : String(input.clusterId),
+        conversationId: String(input.conversationId),
+      },
+      signal: input.signal,
+      control: input.watermarkRuntimeControl,
+    });
+  }
   fs.renameSync(temporary, storedOutputPath);
   try {
     const copied = inspectArtifactImport(storedOutputPath, input.kind);
@@ -985,6 +1051,8 @@ export interface ImportArtifactVersionInput {
   title?: string;
   /** As on an import: off only for a file Breadboard fetched rather than made. */
   scrubProvenance?: boolean;
+  signal?: AbortSignal;
+  watermarkRuntimeControl?: WatermarkRuntimeControl;
   database?: Database.Database;
   storageRoot?: string;
 }
@@ -1003,7 +1071,7 @@ export interface ImportArtifactVersionInput {
  * versions are hundreds of megabytes, and the buffered path would hold all of
  * it in memory for the length of the copy.
  */
-export function importArtifactVersion(input: ImportArtifactVersionInput): ArtifactRow {
+export async function importArtifactVersion(input: ImportArtifactVersionInput): Promise<ArtifactRow> {
   const database = input.database ?? db;
   const artifact = input.artifact;
   if (artifact.status === "archived") {
@@ -1140,7 +1208,17 @@ export function importArtifactVersion(input: ImportArtifactVersionInput): Artifa
   fs.copyFileSync(sourcePath, temporary, fs.constants.COPYFILE_EXCL);
   // Same rule as the first import: scrub the staged copy, before the hash is
   // taken, so the recorded hash describes the bytes that were actually stored.
-  if (input.scrubProvenance !== false) scrubFileInPlace(temporary);
+  if (input.scrubProvenance !== false) {
+    await scrubFileInPlaceViaRuntime(temporary, {
+      scope: {
+        userId: artifact.user_id,
+        gardenId: artifact.cluster_id === null ? null : String(artifact.cluster_id),
+        conversationId: String(artifact.conversation_id),
+      },
+      signal: input.signal,
+      control: input.watermarkRuntimeControl,
+    });
+  }
   fs.renameSync(temporary, storedOutputPath);
 
   if (previewSourcePath && previewLocation && previewLocation !== outputLocation) {
@@ -1434,7 +1512,7 @@ export function artifactDeliveryFile(
   const root = storageRoot(configuredRoot);
   const rendered = Boolean(row.output_location);
   const absolutePath = resolveStoredPath(root, row.output_location ?? row.source_location);
-  let stats: fs.Stats;
+  let stats: Stats;
   try {
     stats = fs.statSync(absolutePath);
   } catch {
@@ -1526,6 +1604,8 @@ async function renderArtifactInner(input: {
   assistantMessageId: number | null;
   database?: Database.Database;
   storageRoot?: string;
+  signal?: AbortSignal;
+  officeRuntimeControl?: RuntimeV2OfficeControl;
 }): Promise<ArtifactRow> {
   const database = input.database ?? db;
   const renderer = artifactRenderer(input.artifact.renderer_id);
@@ -1544,13 +1624,54 @@ async function renderArtifactInner(input: {
   insertEvent(database, input.artifact.id, input.runId, input.artifact.conversation_id,
     input.artifact.cluster_id, input.assistantMessageId, "artifact.rendering", "generating",
     version.version, { renderer: renderer.id });
+  const runtimeStage = { cleanup: null as (() => void) | null };
   try {
-    const rendered = await renderer.render(content, {
-      directory,
-      filename: input.artifact.filename,
-      title: input.artifact.title,
-      metadata: parseObject(input.artifact.metadata_json),
-    });
+    const metadata = parseObject(input.artifact.metadata_json);
+    let rendered: { outputPath: string; previewPath: string; mimeType: string };
+    if (renderer.id === "docx" || renderer.id === "pdf") {
+      const rendererId = renderer.id;
+      if (!input.artifact.conversation_public_id) {
+        throw new ArtifactStoreError(
+          403,
+          "artifact_conversation_scope_mismatch",
+          "The artifact conversation scope is unavailable.",
+        );
+      }
+      const staged = await renderMarkdownArtifactViaRuntime(
+        {
+          userId: input.artifact.user_id,
+          gardenId: input.artifact.garden_slug ?? null,
+          conversationId: input.artifact.conversation_public_id,
+        },
+        {
+          rendererId,
+          content,
+          filename: input.artifact.filename,
+          title: input.artifact.title,
+          metadata,
+        },
+        {
+          idempotencySeed: `${input.artifact.id}:${version.version}:${crypto.createHash("sha256").update(content, "utf8").digest("hex")}`,
+          signal: input.signal,
+          control: input.officeRuntimeControl,
+        },
+      );
+      runtimeStage.cleanup = staged.cleanup;
+      const outputPath = path.join(directory, input.artifact.filename);
+      const previewPath = rendererId === "docx"
+        ? path.join(directory, "preview.html")
+        : outputPath;
+      atomicPromoteFile(staged.outputPath, outputPath);
+      if (rendererId === "docx") atomicPromoteFile(staged.previewPath, previewPath);
+      rendered = { outputPath, previewPath, mimeType: staged.mimeType };
+    } else {
+      rendered = await renderer.render(content, {
+          directory,
+          filename: input.artifact.filename,
+          title: input.artifact.title,
+          metadata,
+        });
+    }
     const outputRelative = path.relative(root, rendered.outputPath).split(path.sep).join("/");
     const previewRelative = path.relative(root, rendered.previewPath).split(path.sep).join("/");
     resolveStoredPath(root, outputRelative);
@@ -1583,6 +1704,8 @@ async function renderArtifactInner(input: {
   } catch (error) {
     return failArtifact(input.artifact, input.runId, input.assistantMessageId,
       "artifact_render_failed", error instanceof Error ? error.message : "Rendering failed.", database);
+  } finally {
+    runtimeStage.cleanup?.();
   }
 }
 
@@ -1592,7 +1715,18 @@ export function renderArtifact(input: {
   assistantMessageId: number | null;
   database?: Database.Database;
   storageRoot?: string;
+  signal?: AbortSignal;
+  officeRuntimeControl?: RuntimeV2OfficeControl;
 }): Promise<ArtifactRow> {
+  const database = input.database ?? db;
+  const current = getArtifactById(input.artifact.id, database);
+  if (current?.status === "ready") {
+    const root = storageRoot(input.storageRoot);
+    if (durableReadyArtifactAvailable(current, root)) return Promise.resolve(current);
+  }
+  if (input.artifact.renderer_id === "docx" || input.artifact.renderer_id === "pdf") {
+    return renderArtifactInner(input);
+  }
   return withCapabilityLease(
     "artifact-render",
     `artifact-${input.artifact.renderer_id}`,
@@ -1634,6 +1768,7 @@ async function publishReadyArtifactToGarden(
     if (!isPublishableRenderer(row.renderer_id)) return;
     const existing = parseObject(row.metadata_json);
     const ref = await publishArtifactToGarden({
+      userId: row.user_id,
       clusterSlug: row.garden_slug,
       artifactId: row.id,
       title: row.title,
@@ -1711,6 +1846,7 @@ export async function deleteArtifact(input: {
     try {
       const { unpublishArtifactFromGarden } = await import("./artifact-garden.ts");
       await unpublishArtifactFromGarden({
+        userId: input.userId,
         clusterId: artifact.cluster_id,
         clusterSlug: artifact.garden_slug,
         documentSlug: metadata.gardenDocumentSlug,

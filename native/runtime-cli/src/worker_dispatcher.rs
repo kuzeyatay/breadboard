@@ -1,12 +1,19 @@
+use crate::control::RuntimeServiceControlError;
+use crate::service_engine::{
+    WorkerServiceDependencyAcquireError, WorkerServiceDependencyControl,
+    WorkerServiceDependencyLease,
+};
 use crate::shutdown::ShutdownCoordinator;
 use breadboard_runtime_core::{
-    AdmissionGovernor, ClaimedWorkerProcess, CurrentGenerationMembership, JobStore,
-    OwnedWorkerEvent, ProcessOwnerError, ProcessOwnerEvent, ProcessTreeExit, Registry,
-    RegistryError, ResidentWorkerProcess, RuntimePaths, StoreError, WorkerClaimOutcome,
-    WorkerLaunchNotCreated, WorkerLaunchOutcome, WorkerLaunchUncertain, WorkerResidencyAuthority,
-    WorkerTreeExitAuthority,
+    AdmissionGovernor, AuthoritativeProcessOwner, ClaimedWorkerProcess,
+    CurrentGenerationMembership, JobAdmissionResult, JobStore, OwnedWorkerEvent, ProcessOwnerError,
+    ProcessOwnerEvent, ProcessTreeExit, Registry, RegistryError, ResidentWorkerProcess,
+    RuntimePaths, StoreError, TrustedWorkerEnvironmentSet, WorkerClaimOutcome,
+    WorkerCompletionProof, WorkerLaunchNotCreated, WorkerLaunchNotCreatedCleanup,
+    WorkerLaunchOutcome, WorkerLaunchUncertain, WorkerResidencyAuthority,
+    WorkerServiceDependencyFailureDisposition, WorkerTreeExitAuthority,
 };
-use breadboard_runtime_protocol::{WorkerDefinition, WorkerEvent, WorkerIdentity};
+use breadboard_runtime_protocol::{RuntimeMode, WorkerDefinition, WorkerEvent, WorkerIdentity};
 use std::io;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -16,6 +23,9 @@ use thiserror::Error;
 const DISPATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const POST_TERMINAL_EXIT_GRACE: Duration = Duration::from_secs(2);
 const WORKER_INSTANCE_RANDOM_BYTES: usize = 16;
+const ONLINE_EXPIRED_UPLOAD_CLEANUP_BATCH: usize = 8;
+const ONLINE_EXPIRED_IDEMPOTENCY_CANCELLATION_CLEANUP_BATCH: usize = 8;
+const ONLINE_EXPIRED_UPLOAD_CLEANUP_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Sanitized dispatcher failures. The source chain remains available to the
 /// native host, but path, job, process, and manifest details never become a
@@ -42,6 +52,8 @@ pub(crate) enum WorkerDispatcherError {
     AuthorityRetained,
     #[error("the authoritative worker did not finish bounded forced cleanup")]
     ForcedCleanupTimeout,
+    #[error("a required Runtime service dependency lease could not be reconciled")]
+    ServiceDependencyControl,
 }
 
 /// One native scheduler thread owns FIFO admission, one live disposable worker
@@ -49,6 +61,17 @@ pub(crate) enum WorkerDispatcherError {
 /// single-live-worker first slice is stricter than manifest concurrency and is
 /// consistent with the global one-heavyweight policy; it can be generalized
 /// later without creating a second dispatcher or durable ledger.
+pub(crate) struct WorkerDispatcherConfig {
+    pub(crate) mode: RuntimeMode,
+    pub(crate) registry: Registry,
+    pub(crate) store: Arc<JobStore>,
+    pub(crate) paths: RuntimePaths,
+    pub(crate) generation: CurrentGenerationMembership,
+    pub(crate) environments: TrustedWorkerEnvironmentSet,
+    pub(crate) service_dependencies: WorkerServiceDependencyControl,
+    pub(crate) shutdown: Arc<ShutdownCoordinator>,
+}
+
 pub(crate) struct WorkerDispatcher {
     shutdown: Arc<ShutdownCoordinator>,
     // A completed JoinHandle retains its return value until join. In the
@@ -76,8 +99,14 @@ enum FatalDispatchAuthority {
     Claimed(Box<ClaimedWorkerProcess>),
     Resident(Box<ResidentWorkerProcess>),
     NotCreated(Box<WorkerLaunchNotCreated>),
+    NotCreatedCleanup(Box<WorkerLaunchNotCreatedCleanup>),
     Residency(Box<WorkerResidencyAuthority>),
     BeforeStarted(Box<WorkerTreeExitAuthority>),
+    TreeExit(Box<ProcessTreeExit>),
+    Completion {
+        owner: Box<AuthoritativeProcessOwner>,
+        proof: Box<WorkerCompletionProof>,
+    },
     Uncertain(Box<WorkerLaunchUncertain>),
     PendingWorkerEvent {
         process: Box<ResidentWorkerProcess>,
@@ -102,11 +131,20 @@ impl FatalDispatchAuthority {
             Self::NotCreated(authority) => {
                 let _ = authority.identity();
             }
+            Self::NotCreatedCleanup(authority) => {
+                let _ = authority.identity();
+            }
             Self::Residency(authority) => {
                 let _ = authority.request_runtime_shutdown();
             }
             Self::BeforeStarted(authority) => {
                 let _ = authority.identity();
+            }
+            Self::TreeExit(authority) => {
+                let _ = authority.classification();
+            }
+            Self::Completion { owner, proof } => {
+                let _ = (&**owner, &**proof);
             }
         }
     }
@@ -119,24 +157,17 @@ impl From<WorkerDispatcherError> for DispatchLoopError {
 }
 
 impl WorkerDispatcher {
-    pub(crate) fn start(
-        registry: Registry,
-        store: Arc<JobStore>,
-        paths: RuntimePaths,
-        generation: CurrentGenerationMembership,
-        shutdown: Arc<ShutdownCoordinator>,
-    ) -> Result<Self, WorkerDispatcherError> {
-        let dispatcher_shutdown = Arc::clone(&shutdown);
+    pub(crate) fn start(config: WorkerDispatcherConfig) -> Result<Self, WorkerDispatcherError> {
+        let shutdown = Arc::clone(&config.shutdown);
         let thread = thread::Builder::new()
             .name("runtime-worker-dispatcher".into())
             .spawn(move || {
-                let result =
-                    run_dispatch_loop(&registry, &store, &paths, &generation, &dispatcher_shutdown);
+                let result = run_dispatch_loop(&config);
                 if result.is_err() {
                     // Any authority or persistence ambiguity takes the whole
                     // generation out of service. Restart reconciliation, not a
                     // blind in-generation retry, classifies retained state.
-                    dispatcher_shutdown.request_shutdown();
+                    config.shutdown.request_shutdown();
                 }
                 result
             })
@@ -194,32 +225,61 @@ impl Drop for WorkerDispatcher {
     }
 }
 
-fn run_dispatch_loop(
-    registry: &Registry,
-    store: &JobStore,
-    paths: &RuntimePaths,
-    generation: &CurrentGenerationMembership,
-    shutdown: &ShutdownCoordinator,
-) -> Result<(), DispatchLoopError> {
-    while !shutdown.is_requested() {
-        if !shutdown.is_accepting_work() {
-            shutdown.wait_for_dispatch_tick(DISPATCH_POLL_INTERVAL);
+fn run_dispatch_loop(config: &WorkerDispatcherConfig) -> Result<(), DispatchLoopError> {
+    let mut next_expired_upload_cleanup = Instant::now();
+    while !config.shutdown.is_requested() {
+        if !config.shutdown.is_accepting_work() {
+            config
+                .shutdown
+                .wait_for_dispatch_tick(DISPATCH_POLL_INTERVAL);
             continue;
+        }
+
+        let now = Instant::now();
+        if now >= next_expired_upload_cleanup {
+            config
+                .store
+                .reconcile_expired_job_input_uploads_online(
+                    &config.paths,
+                    ONLINE_EXPIRED_UPLOAD_CLEANUP_BATCH,
+                )
+                .map_err(WorkerDispatcherError::Store)?;
+            config
+                .store
+                .reconcile_expired_idempotency_cancellations_online(
+                    ONLINE_EXPIRED_IDEMPOTENCY_CANCELLATION_CLEANUP_BATCH,
+                )
+                .map_err(WorkerDispatcherError::Store)?;
+            next_expired_upload_cleanup = now + ONLINE_EXPIRED_UPLOAD_CLEANUP_INTERVAL;
         }
 
         // Existing admitted work always precedes new reservation creation.
         // Querying a single row keeps this first single-owner slice bounded and
         // avoids building an in-memory queue that can drift from SQLite.
-        if !dispatch_one(registry, store, paths, generation, shutdown)?
-            && !admit_one(registry, store)?
+        if !dispatch_one(
+            &config.registry,
+            &config.store,
+            &config.paths,
+            &config.generation,
+            &config.environments,
+            &config.service_dependencies,
+            &config.shutdown,
+        )? && !admit_one(config.mode, &config.registry, &config.store, &config.paths)?
         {
-            shutdown.wait_for_dispatch_tick(DISPATCH_POLL_INTERVAL);
+            config
+                .shutdown
+                .wait_for_dispatch_tick(DISPATCH_POLL_INTERVAL);
         }
     }
     Ok(())
 }
 
-fn admit_one(registry: &Registry, store: &JobStore) -> Result<bool, WorkerDispatcherError> {
+fn admit_one(
+    mode: RuntimeMode,
+    registry: &Registry,
+    store: &JobStore,
+    paths: &RuntimePaths,
+) -> Result<bool, WorkerDispatcherError> {
     let mut candidates = store
         .queued_admission_candidates(1)
         .map_err(WorkerDispatcherError::Store)?;
@@ -229,9 +289,14 @@ fn admit_one(registry: &Registry, store: &JobStore) -> Result<bool, WorkerDispat
     let admission = registry
         .admission_for_job_type(candidate.job_type())
         .map_err(WorkerDispatcherError::Registry)?;
-    AdmissionGovernor::new(store)
+    let result = AdmissionGovernor::for_runtime_mode(store, mode)
         .try_admit_job(candidate.job_id(), &admission)
         .map_err(WorkerDispatcherError::Store)?;
+    if matches!(result, JobAdmissionResult::Denied(ref denial) if !denial.retryable) {
+        store
+            .cleanup_unstarted_terminal_job_inputs(paths, candidate.job_id())
+            .map_err(WorkerDispatcherError::Store)?;
+    }
     Ok(true)
 }
 
@@ -240,6 +305,8 @@ fn dispatch_one(
     store: &JobStore,
     paths: &RuntimePaths,
     generation: &CurrentGenerationMembership,
+    environments: &TrustedWorkerEnvironmentSet,
+    service_dependencies: &WorkerServiceDependencyControl,
     shutdown: &ShutdownCoordinator,
 ) -> Result<bool, DispatchLoopError> {
     let mut candidates = store
@@ -253,7 +320,46 @@ fn dispatch_one(
         .worker(candidate.worker_kind())
         .map_err(WorkerDispatcherError::Registry)?
         .clone();
-    let request = match registry.prepare_worker_launch(paths, &definition.kind) {
+    let worker_instance_id = fresh_worker_instance_id()?;
+    let required_services = registry
+        .required_service_dependency_admissions_for_job(
+            store,
+            candidate.job_id(),
+            candidate.worker_kind(),
+        )
+        .map_err(WorkerDispatcherError::Registry)?;
+    let mut dependency_leases = Vec::with_capacity(required_services.len());
+    for dependency in required_services.into_iter().filter(|dependency| {
+        environments.should_acquire_service_dependency(dependency.service_id())
+    }) {
+        match service_dependencies.acquire(dependency, &worker_instance_id) {
+            Ok(lease) => dependency_leases.push(lease),
+            Err(WorkerServiceDependencyAcquireError::OwnerLost) => {
+                release_worker_dependencies(service_dependencies, dependency_leases)?;
+                return Ok(true);
+            }
+            Err(WorkerServiceDependencyAcquireError::Control(error)) => {
+                release_worker_dependencies(service_dependencies, dependency_leases)?;
+                let disposition = store
+                    .worker_service_dependency_unavailable_before_assignment(
+                        candidate.job_id(),
+                        matches!(error, RuntimeServiceControlError::ResourceExhausted { .. }),
+                    )
+                    .map_err(WorkerDispatcherError::Store)?;
+                if matches!(
+                    disposition,
+                    WorkerServiceDependencyFailureDisposition::Finalized(_)
+                ) {
+                    store
+                        .cleanup_unstarted_terminal_job_inputs(paths, candidate.job_id())
+                        .map_err(WorkerDispatcherError::Store)?;
+                }
+                return Ok(true);
+            }
+        }
+    }
+    let environment = environments.prepare_for_source(definition.environment_source);
+    let request = match registry.prepare_worker_launch(paths, &definition.kind, environment) {
         Ok(request) => request,
         Err(error) => {
             // No claim or process identity exists yet, so the attempt-zero
@@ -261,10 +367,13 @@ fn dispatch_one(
             store
                 .worker_start_failed_before_assignment(candidate.job_id(), false)
                 .map_err(WorkerDispatcherError::Store)?;
+            store
+                .cleanup_unstarted_terminal_job_inputs(paths, candidate.job_id())
+                .map_err(WorkerDispatcherError::Store)?;
+            release_worker_dependencies(service_dependencies, dependency_leases)?;
             return Err(WorkerDispatcherError::Registry(error).into());
         }
     };
-    let worker_instance_id = fresh_worker_instance_id()?;
     // Claim and CreateProcess are one shutdown-linearized boundary. Trusted
     // pins are prepared above without process authority; once shutdown closes
     // this gate, no new attempt can be claimed and no new OS process can begin.
@@ -277,19 +386,42 @@ fn dispatch_one(
                 WorkerClaimOutcome::Claimed(claim) => claim,
                 WorkerClaimOutcome::NotClaimable => return Ok(None),
             };
-            Ok(Some(claim.launch(generation, request)))
+            Ok(Some(
+                store.launch_claimed_worker(claim, generation, request),
+            ))
         });
     let Some(launch) = launch else {
+        release_worker_dependencies(service_dependencies, dependency_leases)?;
         return Ok(false);
     };
-    let Some(launch) = launch? else {
+    let launch = match launch {
+        Ok(launch) => launch,
+        Err(error) => {
+            release_worker_dependencies(service_dependencies, dependency_leases)?;
+            return Err(error.into());
+        }
+    };
+    let Some(launch) = launch else {
+        release_worker_dependencies(service_dependencies, dependency_leases)?;
         return Ok(true);
     };
 
     match launch {
         WorkerLaunchOutcome::NotCreated(authority) => {
             match store.finish_worker_not_created(authority) {
-                Ok(_) => Ok(true),
+                Ok((_job, cleanup)) => {
+                    if store
+                        .cleanup_job_inputs_after_worker_not_created(paths, &cleanup)
+                        .is_err()
+                    {
+                        Err(DispatchLoopError::Authority(
+                            FatalDispatchAuthority::NotCreatedCleanup(Box::new(cleanup)),
+                        ))
+                    } else {
+                        release_worker_dependencies(service_dependencies, dependency_leases)?;
+                        Ok(true)
+                    }
+                }
                 Err(error) => {
                     let (authority, _source) = error.into_parts();
                     Err(DispatchLoopError::Authority(
@@ -309,8 +441,27 @@ fn dispatch_one(
         }
         WorkerLaunchOutcome::Running(process) => {
             drive_claimed_process(process, store, paths, &definition, shutdown)?;
+            release_worker_dependencies(service_dependencies, dependency_leases)?;
             Ok(true)
         }
+    }
+}
+
+fn release_worker_dependencies(
+    control: &WorkerServiceDependencyControl,
+    leases: Vec<WorkerServiceDependencyLease>,
+) -> Result<(), WorkerDispatcherError> {
+    let mut failed = false;
+    for lease in leases.into_iter().rev() {
+        let _service_id = lease.service_id();
+        if control.release(lease).is_err() {
+            failed = true;
+        }
+    }
+    if failed {
+        Err(WorkerDispatcherError::ServiceDependencyControl)
+    } else {
+        Ok(())
     }
 }
 
@@ -552,7 +703,7 @@ fn drive_claimed_process(
                     }
                 };
                 return match store.finish_worker_before_started(exit) {
-                    Ok(_) => Ok(()),
+                    Ok((_job, tree_exit)) => cleanup_terminal_job_inputs(store, paths, tree_exit),
                     Err(error) => {
                         let (authority, _source) = error.into_parts();
                         Err(DispatchLoopError::Authority(
@@ -665,8 +816,7 @@ fn drive_resident_process(
                     identity,
                     tree_exit,
                     runtime.failed_event_persisted,
-                )
-                .map_err(DispatchLoopError::Fatal);
+                );
             }
             Err(ProcessOwnerError::EventWaitTimeout) => {}
             Err(_) => {
@@ -709,59 +859,110 @@ fn finish_resident_attempt(
     identity: &WorkerIdentity,
     tree_exit: ProcessTreeExit,
     failed_event_persisted: bool,
-) -> Result<(), WorkerDispatcherError> {
-    let snapshot = store
-        .worker_dispatch_snapshot(identity)
-        .map_err(WorkerDispatcherError::Store)?;
+) -> Result<(), DispatchLoopError> {
+    let snapshot = match store.worker_dispatch_snapshot(identity) {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            return Err(DispatchLoopError::Authority(
+                FatalDispatchAuthority::TreeExit(Box::new(tree_exit)),
+            ))
+        }
+    };
     if snapshot.cancellation_requested() {
-        store
-            .confirm_cancelled(&tree_exit)
-            .map_err(WorkerDispatcherError::Store)?;
-        return Ok(());
+        if store.confirm_cancelled(&tree_exit).is_err() {
+            return Err(DispatchLoopError::Authority(
+                FatalDispatchAuthority::TreeExit(Box::new(tree_exit)),
+            ));
+        }
+        return cleanup_terminal_job_inputs(store, paths, tree_exit);
     }
     if failed_event_persisted {
-        store
+        if store
             .finalize_reported_worker_failure_after_tree_exit(&tree_exit)
-            .map_err(WorkerDispatcherError::Store)?;
-        return Ok(());
+            .is_err()
+        {
+            return Err(DispatchLoopError::Authority(
+                FatalDispatchAuthority::TreeExit(Box::new(tree_exit)),
+            ));
+        }
+        return cleanup_terminal_job_inputs(store, paths, tree_exit);
     }
 
-    let completion_intent = store
-        .worker_completion_intent(identity)
-        .map_err(WorkerDispatcherError::Store)?;
+    let completion_intent = match store.worker_completion_intent(identity) {
+        Ok(intent) => intent,
+        Err(_) => {
+            return Err(DispatchLoopError::Authority(
+                FatalDispatchAuthority::TreeExit(Box::new(tree_exit)),
+            ))
+        }
+    };
     let Some(intent) = completion_intent else {
-        store
-            .worker_exited_without_terminal(&tree_exit)
-            .map_err(WorkerDispatcherError::Store)?;
-        return Ok(());
+        if store.worker_exited_without_terminal(&tree_exit).is_err() {
+            return Err(DispatchLoopError::Authority(
+                FatalDispatchAuthority::TreeExit(Box::new(tree_exit)),
+            ));
+        }
+        return cleanup_terminal_job_inputs(store, paths, tree_exit);
     };
 
     match tree_exit.into_completion_authority() {
         Ok(owner) => match owner.prove_completion_after_tree_exit(paths, &intent) {
             Ok(proof) => {
-                // The process-owner authority remains alive across this
-                // borrowed proof. If commit becomes uncertain, returning the
-                // store error shuts down the generation instead of issuing a
-                // second authoritative transition.
-                store
-                    .confirm_worker_completion(&proof)
-                    .map_err(WorkerDispatcherError::Store)?;
-                Ok(())
+                if store.confirm_worker_completion(&proof).is_err() {
+                    Err(DispatchLoopError::Authority(
+                        FatalDispatchAuthority::Completion {
+                            owner: Box::new(owner),
+                            proof: Box::new(proof),
+                        },
+                    ))
+                } else {
+                    let release = owner.into_zero_resident_release();
+                    cleanup_terminal_job_inputs(store, paths, release)
+                }
             }
             Err(_) => {
                 let release = owner.into_zero_resident_release();
-                store
+                if store
                     .reject_worker_completion_after_tree_exit(&release)
-                    .map_err(WorkerDispatcherError::Store)?;
-                Ok(())
+                    .is_err()
+                {
+                    Err(DispatchLoopError::Authority(
+                        FatalDispatchAuthority::TreeExit(Box::new(release)),
+                    ))
+                } else {
+                    cleanup_terminal_job_inputs(store, paths, release)
+                }
             }
         },
         Err(release) => {
-            store
+            if store
                 .reject_worker_completion_after_tree_exit(&release)
-                .map_err(WorkerDispatcherError::Store)?;
-            Ok(())
+                .is_err()
+            {
+                Err(DispatchLoopError::Authority(
+                    FatalDispatchAuthority::TreeExit(release),
+                ))
+            } else {
+                cleanup_terminal_job_inputs(store, paths, *release)
+            }
         }
+    }
+}
+
+fn cleanup_terminal_job_inputs(
+    store: &JobStore,
+    paths: &RuntimePaths,
+    tree_exit: ProcessTreeExit,
+) -> Result<(), DispatchLoopError> {
+    if store
+        .cleanup_job_inputs_after_worker_exit(paths, &tree_exit)
+        .is_err()
+    {
+        Err(DispatchLoopError::Authority(
+            FatalDispatchAuthority::TreeExit(Box::new(tree_exit)),
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -790,6 +991,10 @@ mod tests {
             kind: "deadline-worker".into(),
             job_types: vec!["deadline-job".into()],
             capability_ids: vec!["test:deadline".into()],
+            submission_authority: breadboard_runtime_protocol::WorkerSubmissionAuthority::User,
+            environment_source:
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Minimal,
+            service_dependencies: Vec::new(),
             allowed_executable: "bin/worker.exe".into(),
             allowed_entrypoint: "workers/deadline.mjs".into(),
             protocol_version: breadboard_runtime_protocol::WIRE_PROTOCOL_VERSION,
@@ -798,6 +1003,8 @@ mod tests {
             soft_commit_limit_mb: 2,
             hard_commit_limit_mb: 3,
             maximum_concurrency: 1,
+            minimum_input_blobs: 0,
+            maximum_input_blobs: 0,
             workspace_policy: breadboard_runtime_protocol::WorkspacePolicy::PrivatePerJob,
             ready_timeout_ms: 100,
             heartbeat_timeout_ms: 200,

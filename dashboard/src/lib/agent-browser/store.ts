@@ -1,6 +1,6 @@
 // Persistence + ownership for agent-browser agents. Every query is scoped by
-// owner_user_id. Runs are ephemeral (owned by the in-memory run manager), so
-// only the agent CONFIG lives here.
+// owner_user_id. Runtime V2 owns run state; this store retains only durable
+// user/agent/job correlation so old transcript artifacts remain authorized.
 
 import crypto from "node:crypto";
 import db from "../db.ts";
@@ -39,6 +39,16 @@ export interface PresentedAgent {
   configuration: AgentBrowserConfiguration;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AgentBrowserRuntimeRunRow {
+  job_id: string;
+  owner_user_id: number;
+  agent_id: string;
+  request_id: string;
+  idempotency_key: string;
+  created_at: string;
+  terminal_at: string | null;
 }
 
 const DEFAULT_AGENT_NAME = "Agent Browser";
@@ -167,4 +177,101 @@ export function presentAgent(agent: AgentRow): PresentedAgent {
     createdAt: agent.created_at,
     updatedAt: agent.updated_at,
   };
+}
+
+/**
+ * Persist only the authenticated correlation needed to address Runtime V2.
+ * State, events, cancellation, and results remain native-runtime authority.
+ */
+export function recordRuntimeRun(input: {
+  jobId: string;
+  ownerUserId: number;
+  agentId: string;
+  requestId: string;
+  idempotencyKey: string;
+  createdAt?: string;
+}): AgentBrowserRuntimeRunRow {
+  const createdAt = input.createdAt ?? new Date().toISOString();
+  db.prepare(
+    `INSERT INTO agent_browser_runtime_runs
+       (job_id, owner_user_id, agent_id, request_id, idempotency_key, created_at, terminal_at)
+     VALUES (?, ?, ?, ?, ?, ?, NULL)
+     ON CONFLICT(owner_user_id, agent_id, request_id) DO UPDATE SET
+       job_id = excluded.job_id,
+       idempotency_key = excluded.idempotency_key`,
+  ).run(
+    input.jobId,
+    input.ownerUserId,
+    input.agentId,
+    input.requestId,
+    input.idempotencyKey,
+    createdAt,
+  );
+  const row = db.prepare(
+    `SELECT * FROM agent_browser_runtime_runs
+     WHERE owner_user_id = ? AND agent_id = ? AND request_id = ?`,
+  ).get(input.ownerUserId, input.agentId, input.requestId) as
+    | AgentBrowserRuntimeRunRow
+    | undefined;
+  if (!row || row.job_id !== input.jobId || row.idempotency_key !== input.idempotencyKey) {
+    throw new Error("Agent Browser Runtime correlation conflicted with an existing request.");
+  }
+  return row;
+}
+
+export function getRuntimeRun(
+  ownerUserId: number,
+  agentId: string,
+  jobId: string,
+): AgentBrowserRuntimeRunRow | null {
+  return (
+    (db.prepare(
+      `SELECT * FROM agent_browser_runtime_runs
+       WHERE job_id = ? AND owner_user_id = ? AND agent_id = ?`,
+    ).get(jobId, ownerUserId, agentId) as AgentBrowserRuntimeRunRow | undefined) ?? null
+  );
+}
+
+export function getRuntimeRunByRequest(
+  ownerUserId: number,
+  agentId: string,
+  requestId: string,
+): AgentBrowserRuntimeRunRow | null {
+  return (
+    (db.prepare(
+      `SELECT * FROM agent_browser_runtime_runs
+       WHERE owner_user_id = ? AND agent_id = ? AND request_id = ?`,
+    ).get(ownerUserId, agentId, requestId) as AgentBrowserRuntimeRunRow | undefined) ?? null
+  );
+}
+
+export function getRuntimeRunByOwner(
+  ownerUserId: number,
+  jobId: string,
+): AgentBrowserRuntimeRunRow | null {
+  return (
+    (db.prepare(
+      `SELECT * FROM agent_browser_runtime_runs
+       WHERE job_id = ? AND owner_user_id = ?`,
+    ).get(jobId, ownerUserId) as AgentBrowserRuntimeRunRow | undefined) ?? null
+  );
+}
+
+export function firstPotentiallyActiveRuntimeRun(): AgentBrowserRuntimeRunRow | null {
+  return (
+    (db.prepare(
+      `SELECT * FROM agent_browser_runtime_runs
+       WHERE terminal_at IS NULL
+       ORDER BY created_at ASC
+       LIMIT 1`,
+    ).get() as AgentBrowserRuntimeRunRow | undefined) ?? null
+  );
+}
+
+export function markRuntimeRunTerminal(jobId: string, terminalAt = new Date().toISOString()): void {
+  db.prepare(
+    `UPDATE agent_browser_runtime_runs
+     SET terminal_at = COALESCE(terminal_at, ?)
+     WHERE job_id = ?`,
+  ).run(terminalAt, jobId);
 }

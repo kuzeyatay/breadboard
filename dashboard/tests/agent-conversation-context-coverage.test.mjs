@@ -31,7 +31,7 @@ const WIRED = [
   { agent: "openplanter", file: "src/lib/openplanter/run-manager.ts", seam: /promptWithContext\(input\.task/ },
   { agent: "openscience", file: "src/lib/openscience/run-manager.ts", seam: /promptWithContext\(/ },
   { agent: "openwork", file: "src/lib/openwork/run-manager.ts", seam: /promptWithContext\(runInstruction\(run\.task\)/ },
-  { agent: "legal", file: "src/lib/legal/run-manager.ts", seam: /contextSection\(input\.conversationContext\)/ },
+  { agent: "legal", file: "src/lib/legal/run-manager.ts", seam: /contextSection\(input\.prepared\.conversationContext\)/ },
   { agent: "deer-flow", file: "src/lib/deer-flow/run-manager.ts", seam: /promptWithContext\(run\.task/ },
   { agent: "inbox-zero", file: "src/lib/inbox-zero/run-manager.ts", seam: /promptWithContext\(/ },
   { agent: "hyperframes", file: "src/lib/hyperframes/run-manager.ts", seam: /promptWithContext\(/ },
@@ -40,14 +40,14 @@ const WIRED = [
   { agent: "stock-analyst", file: "src/lib/stock-analyst/run-manager.ts", seam: /promptWithContext\(/ },
   { agent: "socials-manager", file: "src/lib/socials-manager/client.ts", seam: /promptWithContext\(request\.brief/ },
   { agent: "resource2skill", file: "src/lib/resource2skill/run-manager.ts", seam: /promptWithContext\(input\.task/ },
-  { agent: "deep-research", file: "src/lib/deep-research/service.ts", seam: /contextSection\(/ },
+  { agent: "deep-research", file: "src/lib/deep-research/runtime-run-manager.ts", seam: /conversationContext: contextSection\(conversationContextFromBody/ },
   { agent: "video-use", file: "src/lib/video-use/run-manager.ts", seam: /promptWithContext\(run\.request\.prompt/ },
   { agent: "meeting-notes", file: "src/lib/meeting-notes/run-manager.ts", seam: /promptWithContext\(request\.prompt/ },
   { agent: "cad", file: "src/lib/cad/design-service.ts", seam: /promptWithContext\(brief, input\.conversationContext\)/ },
   { agent: "hardware-blueprint", file: "src/lib/hardware/model-client.ts", seam: /promptWithContext\(input\.brief/ },
   { agent: "vimax", file: "src/lib/vimax/prompts.ts", seam: /tagged\("CONVERSATION_SO_FAR", input\.conversation\)/ },
   { agent: "vox-director", file: "src/lib/vox-director/prompts.ts", seam: /tagged\("CONVERSATION_SO_FAR", input\.conversation\)/ },
-  { agent: "wardrobe", file: "src/lib/wardrobe/run-manager.ts", seam: /promptWithContext\(run\.request\.direction/ },
+  { agent: "wardrobe", file: "src/lib/wardrobe/run-manager.ts", seam: /promptWithContext\(\s*run\.request\.direction/ },
 ];
 
 /**

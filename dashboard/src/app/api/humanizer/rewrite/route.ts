@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireUserId, RouteError } from "@/lib/server-auth";
+import { requireUserId, routeErrorResponse, RouteError } from "@/lib/server-auth";
 import { HUMANIZER_MAX_TEXT_CHARS } from "@/lib/humanizer/config.ts";
 import { humanizeRequestSchema, parseRequest } from "@/lib/humanizer/schemas.ts";
 import { describeWarnings } from "@/lib/humanizer/review.ts";
@@ -51,7 +51,7 @@ function noStore(body: unknown, status = 200): NextResponse {
   return NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   try {
     await requireUserId();
   } catch (error) {
@@ -155,4 +155,12 @@ export async function POST(request: Request) {
       chunkTokens: recoveryAttempted ? RECOVERY_CHUNK_TOKENS : null,
     },
   });
+}
+
+export async function POST(request: Request) {
+  try {
+    return await handlePost(request);
+  } catch (error) {
+    return routeErrorResponse(error);
+  }
 }

@@ -35,8 +35,14 @@ test("Processes is the final main item and opens in place like Scheduled", () =>
 test("the Processes route opens the shared dashboard panel", () => {
   assert.match(page, /<DashboardPageShell initialTerminalPanel="processes" \/>/);
   assert.match(terminal, /import ProcessesPanel from "\.\/processes-panel"/);
-  assert.match(terminal, /sidePanel === "hooks" \? \([\s\S]{0,300}<ProcessesPanel/);
-  assert.match(terminal, /onOpenChat=\{\(conversationId\) => openHistorySession\(conversationId\)\}/);
+  assert.match(
+    terminal,
+    /sidePanel === "hooks" \? \([\s\S]{0,420}: \(\s*<ProcessesPanel/,
+  );
+  assert.match(
+    terminal,
+    /onOpenChat=\{\(conversationId\) =>\s*openHistorySession\(conversationId\)\s*\}/,
+  );
   assert.match(terminal, /onOpenPanel=\{\(panel\) => setSidePanel\(panel\)\}/);
 });
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useImperativeHandle, useRef, type RefObject } from "react";
+import { releaseCanvasPixels } from "@/app/components/canvas-resource";
 
 export type SignaturePadHandle = {
   /** The pad's canvas, or null before it mounts. */
@@ -35,6 +36,12 @@ export default function SignaturePad({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawingRef = useRef(false);
   const dirtyRef = useRef(false);
+
+  const attachCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
+    const previous = canvasRef.current;
+    if (previous && previous !== canvas) releaseCanvasPixels(previous);
+    canvasRef.current = canvas;
+  }, []);
 
   const context = useCallback(() => {
     const canvas = canvasRef.current;
@@ -110,7 +117,7 @@ export default function SignaturePad({
 
   return (
     <canvas
-      ref={canvasRef}
+      ref={attachCanvas}
       width={CANVAS_WIDTH}
       height={CANVAS_HEIGHT}
       onPointerDown={startStroke}

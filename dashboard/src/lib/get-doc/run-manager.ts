@@ -160,6 +160,8 @@ export function summarizeDocuments(input: {
 
 export interface StartRunInput {
   userId: number;
+  /** Runtime supplies this for a sealed disposable worker attempt. */
+  runtimeJobId?: string;
   request: DocumentSearchRequest;
   model: string;
   reasoningEffort: string;
@@ -170,7 +172,7 @@ export interface StartRunInput {
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
   evict();
-  const runId = `gdrun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId ?? `gdrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -197,7 +199,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
 
 async function drive(run: RunState, input: StartRunInput): Promise<void> {
   const request = run.request;
-  emit(run, "run.started", { query: request.query, model: input.model });
+  emit(run, "run.started", { query: request.query, request, model: input.model });
   run.status = "running";
 
   const usage = { inputTokens: 0, outputTokens: 0, calls: 0 };
@@ -389,3 +391,14 @@ export function sourceAvailability(): {
   const { ready, unavailable } = availableSources();
   return { ready, unavailable, contactConfigured: Boolean(contactEmail()) };
 }
+
+/** Fixed Runtime V2 adapter seam. The worker identity, not the browser, owns the run id. */
+export function startRuntimeWorkerRun(
+  input: StartRunInput & { runtimeJobId: string },
+): { runId: string; status: RunStatus } {
+  return startRun(input);
+}
+
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
+export const abortRuntimeWorkerRun = abortRun;

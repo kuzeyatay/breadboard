@@ -15,12 +15,12 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
-    // Keep the background worker running so incremental jobs drain automatically.
+    // One bounded Runtime submission kick replaces the legacy in-process timer.
     ensureSyncWorkerStarted();
     const body = await readJsonBody(request);
 
     if (body.action === "drain") {
-      const results = await drainSyncJobs(Number(body.max) || 10);
+      const results = await drainSyncJobs(Number(body.max) || 10, request.signal);
       return NextResponse.json({ ok: true, drained: results.length, results });
     }
 
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
     const cluster = loadClusterBySlug(gardenSlug);
     if (!cluster) throw new ApiError(404, "garden_not_found", "Garden not found.");
 
-    const result = await syncGarden(cluster.id);
+    const result = await syncGarden(cluster.id, request.signal);
     return NextResponse.json({ ok: true, result });
   } catch (error) {
     return apiErrorResponse(error);

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
 import {
   isLoopbackHostname,
-  openMicrophonePrivacyPage,
+  microphonePrivacyPageFallback,
   requestHostname,
 } from "@/lib/speech/system-microphone-settings";
 
@@ -10,12 +10,11 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * Open this machine's microphone privacy page.
+ * Describe this machine's microphone privacy page for a plain browser.
  *
- * Signed in and loopback only: the window opens on the computer running the
- * server, which is the user's own machine exactly when they are the one
- * browsing it. There is nothing to pass in — the address is a per-platform
- * constant, never a caller-supplied URL.
+ * Electron uses its sender-checked desktop IPC and never reaches this route.
+ * Signed-in loopback browsers receive only the fixed URI used by the manual
+ * instructions; Next does not launch or detach an operating-system process.
  */
 export async function POST(request: Request) {
   try {
@@ -30,7 +29,7 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    return NextResponse.json(await openMicrophonePrivacyPage());
+    return NextResponse.json(microphonePrivacyPageFallback());
   } catch (error) {
     return routeErrorResponse(error);
   }

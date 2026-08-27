@@ -34,6 +34,7 @@ import {
   responseStylePrompt,
 } from '@/lib/hermes/system-prompts.ts';
 import { createEmDashFilter } from '@/lib/prose-punctuation.ts';
+import { SupervisorResourceExhaustedError } from '@/lib/supervisor-control.ts';
 import {
   assistantTextFromOutputItem,
   createResponseTextRecovery,
@@ -271,6 +272,9 @@ export async function POST(request: Request) {
       try {
         return await openGardenAgentChat(payload, request.signal);
       } catch (error) {
+        if (error instanceof SupervisorResourceExhaustedError) {
+          return routeErrorResponse(error);
+        }
         if (runtime.mode === 'required') return apiErrorResponse(error);
         legacyFallback = true;
         recordAuditEvent({

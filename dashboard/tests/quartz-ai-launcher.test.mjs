@@ -22,6 +22,11 @@ const gardenAdapter = read("src/lib/hermes/garden-chat-adapter.ts");
 const quartzHighlighter = read(
   "../quartz/quartz/components/scripts/highlighter.inline.ts",
 );
+const quartzAssistant = read("../quartz/quartz/components/BreadboardAI.tsx");
+const quartzAssistantInline = read(
+  "../quartz/quartz/components/scripts/breadboardAI.inline.ts",
+);
+const quartzLayout = read("../quartz/quartz.layout.ts");
 
 test("Quartz selection requests preserve their page context and answer mode", () => {
   const request = quartzAssistantSelectionRequest({
@@ -92,5 +97,24 @@ test("Quartz selection actions bridge grounded chat and inline answers through t
   assert.match(
     gardenAdapter,
     /quartzAssistantSelectionPromptContext\(payload\.selectedText\)/,
+  );
+});
+
+test("published Quartz mounts its page Assistant without duplicating the embedded Garden launcher", () => {
+  assert.match(
+    quartzLayout,
+    /afterBody: \[Component\.Highlighter\(\), Component\.BreadboardAI\(\)\]/,
+  );
+  assert.match(quartzAssistant, /class="breadboard-ai"\s+hidden/);
+
+  const embeddedGuard = quartzAssistantInline.indexOf(
+    "if (window.parent !== window) return",
+  );
+  const topLevelReveal = quartzAssistantInline.indexOf("root.hidden = false");
+  assert.ok(embeddedGuard >= 0 && topLevelReveal > embeddedGuard);
+  assert.match(quartzHighlighter, /const hasPageAssistant =/);
+  assert.match(
+    quartzHighlighter,
+    /button\.hidden = window\.parent === window && !hasPageAssistant/,
   );
 });

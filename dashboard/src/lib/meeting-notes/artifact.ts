@@ -129,6 +129,7 @@ export function saveNotesArtifact(input: {
   transcriptEngine: string;
   speakers: string[];
   sourceLabel: string;
+  runtimeJobId?: string;
 }): ArtifactRow {
   const title = input.summary.meetingName || "Meeting notes";
   return createArtifact({
@@ -156,6 +157,9 @@ export function saveNotesArtifact(input: {
       transcriptEngine: input.transcriptEngine,
       speakers: input.speakers,
       recordingSource: input.sourceLabel,
+      ...(input.runtimeJobId
+        ? { meetingNotesRuntimeJobId: input.runtimeJobId, meetingNotesArtifactRole: "notes" }
+        : {}),
     },
     sourceHermesTool: MEETING_NOTES_TOOL,
   });
@@ -166,6 +170,7 @@ export function saveTranscriptArtifact(input: {
   context: MeetingArtifactContext;
   transcript: MeetingTranscript;
   title: string;
+  runtimeJobId?: string;
 }): ArtifactRow {
   const title = `${input.title} — transcript`;
   const header = [
@@ -198,6 +203,9 @@ export function saveTranscriptArtifact(input: {
       speakers: input.transcript.speakers,
       language: input.transcript.language,
       durationSeconds: input.transcript.durationSeconds,
+      ...(input.runtimeJobId
+        ? { meetingNotesRuntimeJobId: input.runtimeJobId, meetingNotesArtifactRole: "transcript" }
+        : {}),
     },
     sourceHermesTool: MEETING_NOTES_TOOL,
   });

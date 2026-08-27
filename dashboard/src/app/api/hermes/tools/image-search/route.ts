@@ -14,6 +14,7 @@ import {
   recordAuditEvent,
   runtimeExternalSessionId,
 } from "@/lib/hermes/runtime-store.ts";
+import { getConversationById } from "@/lib/conversations/store.ts";
 import {
   ImageSearchServiceError,
   searchImages,
@@ -72,7 +73,22 @@ export async function POST(request: Request) {
         ? (body.args as Record<string, unknown>)
         : {};
 
-    const data = await searchImages(args as unknown as ImageSearchInput);
+    const conversation = getConversationById(session.conversation_id);
+    if (!conversation) {
+      throw new ApiError(
+        403,
+        "image_search_conversation_missing",
+        "The image-search conversation is unavailable.",
+      );
+    }
+    const data = await searchImages(args as unknown as ImageSearchInput, {
+      scope: {
+        userId: session.user_id,
+        gardenId: session.garden_id,
+        conversationId: conversation.public_id,
+      },
+      signal: request.signal,
+    });
 
     recordAuditEvent({
       eventType: "imageSearch.tool_completed",
@@ -97,6 +113,7 @@ export async function POST(request: Request) {
     }
     if (error instanceof ImageSearchServiceError) {
       const status =
+        error.code === "BREADBOARD_RESOURCE_EXHAUSTED" ||
         error.code === "image_search_runtime_unavailable" ||
         error.code === "image_search_unconfigured"
           ? 503
@@ -104,6 +121,8 @@ export async function POST(request: Request) {
             ? 502
             : error.code === "image_search_invalid_arguments"
               ? 400
+              : error.code === "image_search_aborted"
+                ? 499
               : 502;
       return apiErrorResponse(new ApiError(status, error.code, error.message));
     }

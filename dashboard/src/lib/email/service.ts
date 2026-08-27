@@ -20,13 +20,6 @@ export interface EmailPollResult {
   errors: string[];
 }
 
-interface ServiceGlobals {
-  __breadboardEmailPoller?: ReturnType<typeof setInterval>;
-  __breadboardEmailPolling?: boolean;
-}
-
-const globals = globalThis as typeof globalThis & ServiceGlobals;
-
 /**
  * One pass: read what is unread, answer what should be answered.
  *
@@ -105,35 +98,6 @@ export async function pollEmailOnce(): Promise<EmailPollResult> {
   return result;
 }
 
-/** Start the process-wide poll. Safe to call repeatedly (dev hot reloads). */
-export function startEmailPoller(): void {
-  if (globals.__breadboardEmailPoller) return;
-  if (!emailFeatureEnabled()) return;
-
-  const tick = async () => {
-    if (globals.__breadboardEmailPolling) return;
-    globals.__breadboardEmailPolling = true;
-    try {
-      await pollEmailOnce();
-    } catch {
-      // pollEmailOnce records its own failures; the next tick retries.
-    } finally {
-      globals.__breadboardEmailPolling = false;
-    }
-  };
-
-  const timer = setInterval(tick, emailTimings().pollIntervalMs);
-  timer.unref?.();
-  globals.__breadboardEmailPoller = timer;
-}
-
-export function stopEmailPoller(): void {
-  if (globals.__breadboardEmailPoller) {
-    clearInterval(globals.__breadboardEmailPoller);
-    globals.__breadboardEmailPoller = undefined;
-  }
-}
-
 export interface EmailStatus {
   enabled: boolean;
   configured: boolean;
@@ -147,12 +111,12 @@ export interface EmailStatus {
   pollIntervalMs: number;
 }
 
-export function emailStatus(): EmailStatus {
+export function emailStatus(running = false): EmailStatus {
   const settings = readSettings();
   return {
     enabled: emailFeatureEnabled(),
     configured: hasAccount(),
-    running: Boolean(globals.__breadboardEmailPoller),
+    running,
     address: settings.address,
     ownerUserId: settings.ownerUserId,
     allowedSenders: settings.allowedSenders,
@@ -161,16 +125,4 @@ export function emailStatus(): EmailStatus {
     lastError: settings.lastError,
     pollIntervalMs: emailTimings().pollIntervalMs,
   };
-}
-
-/**
- * Start the poller on boot when the user asked for it.
- *
- * Off unless explicitly enabled: an app that starts reading a mailbox and
- * answering strangers because it was installed is not one anybody asked for.
- */
-export function autostartEmailPoller(): void {
-  const settings = readSettings();
-  if (!settings.autostart || settings.ownerUserId === null || !hasAccount()) return;
-  startEmailPoller();
 }

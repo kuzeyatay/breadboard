@@ -8,14 +8,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
 
-test('the learning map owns the single View garden action', () => {
+test('the learning map owns the single Explore action', () => {
   const graph = read('src/app/components/knowledge-graph.tsx');
   const workspace = read('src/app/gardens/[clusterSlug]/workspace-client.tsx');
 
-  assert.match(graph, />\s*View garden\s*</);
-  assert.match(graph, /aria-label="View garden"/);
+  assert.match(graph, />\s*Explore\s*</);
+  assert.match(graph, /aria-label="Explore"/);
   assert.doesNotMatch(graph, /Open Quartz|Open Quartz Learning Map/);
-  assert.doesNotMatch(workspace, />\s*View garden\s*</);
+  assert.doesNotMatch(workspace, />\s*Explore\s*</);
 });
 
 test('the Quartz preview preserves the browser host and reports real canvas readiness', () => {

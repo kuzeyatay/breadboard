@@ -13,6 +13,7 @@
 // backend produced each part.
 
 import { useMemo, useState } from "react";
+import { ReclaimingVideo } from "@/app/components/reclaiming-media";
 import { productionDuration } from "@/lib/vox-director/types.ts";
 import type { VoxBeat, VoxProduction, VoxShot } from "@/lib/vox-director/types";
 
@@ -167,7 +168,7 @@ export default function VoxProductionArtifact({
         {section === "Film" ? (
           film?.artifactId ? (
             <div className="flex flex-col gap-3">
-              <video
+              <ReclaimingVideo
                 className="w-full rounded-2xl border border-[var(--line)] bg-black"
                 src={artifactUrl(film.artifactId, conversationId)}
                 controls

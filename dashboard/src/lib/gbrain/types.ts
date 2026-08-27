@@ -61,3 +61,15 @@ export interface GBrainStatusOutput {
   configuredGardens: number;
   message: string;
 }
+
+/** Durable result returned by the disposable Runtime V2 indexing worker. */
+export interface GBrainSyncResult {
+  clusterId: number;
+  sourceId: string;
+  status: "synced" | "stale" | "skipped";
+  pagesIndexed: number;
+  chunksIndexed: number;
+  mode: string;
+  revision?: string;
+  error?: string;
+}

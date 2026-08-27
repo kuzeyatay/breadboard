@@ -7,13 +7,12 @@ import {
 } from "@/lib/hermes/route-helpers.ts";
 import { getWhatsAppStore } from "@/lib/whatsapp/instance.ts";
 import {
-  cancelWhatsAppPairing,
-  startWhatsAppGateway,
-  startWhatsAppPairing,
-  stopWhatsAppGateway,
-  unlinkWhatsApp,
-} from "@/lib/whatsapp/service.ts";
+  reconcileRuntimeGateway,
+  runtimeGatewayAction,
+  runtimeGatewayStatus,
+} from "@/lib/runtime-v2/gateway-control.ts";
 import { whatsAppStatus } from "@/lib/whatsapp/status.ts";
+import type { WhatsAppStatus } from "@/lib/whatsapp/status.ts";
 import { whatsAppFeatureEnabled } from "@/lib/whatsapp/config.ts";
 
 export const dynamic = "force-dynamic";
@@ -50,24 +49,45 @@ export async function POST(request: Request) {
 
     switch (action) {
       case "pair":
-        await startWhatsAppPairing(userId);
+        await reconcileRuntimeGateway("whatsapp", "running", userId);
+        await runtimeGatewayAction<WhatsAppStatus>("whatsapp", { userId, action: "pair" });
         break;
-      case "cancel-pair":
-        await cancelWhatsAppPairing();
+      case "cancel-pair": {
+        const status = await runtimeGatewayAction<WhatsAppStatus>("whatsapp", {
+          userId,
+          action: "cancel-pair",
+        });
+        if (status.state !== "connected") {
+          await reconcileRuntimeGateway("whatsapp", "stopped", userId);
+        }
         break;
+      }
       case "connect":
         store.claimOwner(userId);
-        await startWhatsAppGateway();
+        await reconcileRuntimeGateway("whatsapp", "running", userId);
+        await runtimeGatewayAction<WhatsAppStatus>("whatsapp", { userId, action: "connect" });
         break;
       case "disconnect":
-        await stopWhatsAppGateway();
+        await reconcileRuntimeGateway("whatsapp", "running", userId);
+        try {
+          await runtimeGatewayAction<WhatsAppStatus>("whatsapp", { userId, action: "disconnect" });
+        } finally {
+          await reconcileRuntimeGateway("whatsapp", "stopped", userId);
+        }
         break;
       case "unlink":
-        await unlinkWhatsApp();
+        await reconcileRuntimeGateway("whatsapp", "running", userId);
+        try {
+          await runtimeGatewayAction<WhatsAppStatus>("whatsapp", { userId, action: "unlink" });
+        } finally {
+          await reconcileRuntimeGateway("whatsapp", "stopped", userId);
+        }
         break;
     }
 
-    return NextResponse.json({ status: await whatsAppStatus(userId) });
+    const status = (await runtimeGatewayStatus<WhatsAppStatus>("whatsapp", userId)) ??
+      await whatsAppStatus(userId);
+    return NextResponse.json({ status });
   } catch (error) {
     return apiErrorResponse(error);
   }

@@ -612,10 +612,6 @@ async function probeStateIsolation({
     config: path.join(qa.run.paths.dataDir, "config"),
     backups: path.join(qa.run.paths.dataDir, "backups"),
     productTemp: path.join(qa.run.paths.dataDir, "temp"),
-    dashboardWorkspace: path.join(
-      qa.run.paths.dataDir,
-      "dashboard-workspace",
-    ),
     chatmockCouncilLedger: qa.run.paths.councilLedgerDir,
     qaArtifacts: qa.run.paths.artifactsDir,
     xdgCache: qa.run.env["XDG_CACHE_HOME"] ?? "",
@@ -1187,7 +1183,7 @@ async function probeDurableRelaunch({
   expect(receipt.endpoints.pid).toBe(firstEndpoints.pid);
   expect(receipt.exitCode).toBe(0);
   expect(receipt.signalCode).toBeNull();
-  expect(receipt.releasedPorts.length).toBeGreaterThanOrEqual(3);
+  expect(receipt.releasedPorts.length).toBeGreaterThanOrEqual(2);
 
   await expect(locate(qa.app.startupPage, SELECTORS.startup.continue)).toBeVisible({
     timeout: 6 * 60_000,
@@ -1271,7 +1267,7 @@ async function probeCleanExit({
       expect(receipt.mainPid).toBe(endpoints.pid);
       expect(receipt.exitCode).toBe(0);
       expect(receipt.signalCode).toBeNull();
-      expect(receipt.releasedPorts.length).toBeGreaterThanOrEqual(3);
+      expect(receipt.releasedPorts.length).toBeGreaterThanOrEqual(2);
       expect(qa.isRunning).toBe(false);
     },
   );

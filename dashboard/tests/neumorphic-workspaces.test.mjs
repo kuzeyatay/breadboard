@@ -36,7 +36,7 @@ test("workspace neumorphism is built from shared visual-only materials", () => {
   const materialStart = css.indexOf("Breadboard workspace materials");
   const visualMaterials = css.slice(
     materialStart,
-    css.indexOf("\n.neu-progress-track", materialStart),
+    css.indexOf("\n.bb-chat-marquee", materialStart),
   );
   assert.ok(visualMaterials.length > 0);
   assert.doesNotMatch(

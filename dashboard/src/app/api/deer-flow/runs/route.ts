@@ -1,14 +1,19 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { ensureConversationForLegacyChatSession } from "@/lib/conversations/store.ts";
+import {
+  ConversationStoreError,
+  ensureConversationForLegacyChatSession,
+  getConversationForUser,
+} from "@/lib/conversations/store.ts";
 import { findConfigurableAgent } from "@/lib/agent-settings/catalog.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { DEER_FLOW_AGENT_ID } from "@/lib/deer-flow/identity.ts";
-import { startRun } from "@/lib/deer-flow/run-manager.ts";
+import { startRun } from "@/lib/deer-flow/runtime-run-manager.ts";
 import { DEFAULT_DEER_FLOW_SETTINGS, deerFlowSettingsFrom } from "@/lib/deer-flow/settings.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -27,6 +32,8 @@ export async function POST(request: Request) {
     const model = typeof body.model === "string" ? body.model.trim() : "";
     const requestedEffort =
       typeof body.reasoningEffort === "string" ? body.reasoningEffort.trim().toLowerCase() : "";
+    const clientMessageId =
+      typeof body.clientMessageId === "string" ? body.clientMessageId.trim() : "";
 
     // The terminal knows its conversation by public id; garden chat still runs
     // on legacy numeric chat sessions, so it sends that instead and the
@@ -53,6 +60,27 @@ export async function POST(request: Request) {
     }
     if (!model) {
       return NextResponse.json({ ok: false, error: "model_not_configured" }, { status: 400 });
+    }
+    if (!conversationPublicId) {
+      return NextResponse.json({ ok: false, error: "conversation_required" }, { status: 400 });
+    }
+    if (!/^conv_[A-Za-z0-9_-]{24}$/u.test(conversationPublicId)) {
+      return NextResponse.json(
+        { ok: false, error: "invalid_conversation_id" },
+        { status: 400 },
+      );
+    }
+    // Bind artifact ownership before Runtime admission. The worker can then
+    // trust that its sealed conversation id belongs to this authenticated user.
+    getConversationForUser(conversationPublicId, userId);
+    if (
+      clientMessageId &&
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(clientMessageId)
+    ) {
+      return NextResponse.json(
+        { ok: false, error: "invalid_client_message_id" },
+        { status: 400 },
+      );
     }
 
     // The task is forwarded to DeerFlow's own agent verbatim, so a stacked
@@ -83,8 +111,9 @@ export async function POST(request: Request) {
       : DEFAULT_DEER_FLOW_SETTINGS;
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
+      ...(clientMessageId ? { requestId: clientMessageId } : {}),
       task,
       model,
       reasoningEffort,
@@ -97,15 +126,21 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
     }
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
-    return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "runtime_error" },
-      { status: 502 },
-    );
+    if (error instanceof ConversationStoreError) {
+      return NextResponse.json(
+        { ok: false, error: error.code, message: error.message },
+        { status: error.status },
+      );
+    }
+    // Filesystem/upstream errors may contain private paths or response detail.
+    return NextResponse.json({ ok: false, error: "runtime_error" }, { status: 502 });
   }
 }

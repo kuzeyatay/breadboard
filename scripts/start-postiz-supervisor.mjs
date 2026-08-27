@@ -1,6 +1,6 @@
 // The Postiz lifecycle coordinator.
 //
-// This process starts with Breadboard and does nothing. It is the single owner
+// Runtime V2 starts this process on demand. It is the single command owner
 // of the Postiz Compose project — Docker startup, `compose up`, readiness,
 // account bootstrap, health recovery, idle shutdown and `compose down` — but it
 // owns all of that lazily. Until an authenticated `POST /ensure-ready` arrives
@@ -16,12 +16,14 @@
 // anything.
 //
 //   GET  /health        this process is alive. Never starts Docker.
-//   GET  /status        the state machine. Side-effect-free.
+//   POST /status        scoped state snapshot. Side-effect-free.
 //   POST /ensure-ready  the only door to starting the stack. Authenticated.
 //   POST /release       drop a hold. Authenticated.
 //   POST /stop          `compose down` (never `-v`). Authenticated.
 
 import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { resolveSocialsManagerConfig } from "../dashboard/src/lib/socials-manager/config.ts";
 import { PostizCoordinator } from "../dashboard/src/lib/socials-manager/coordinator-core.ts";
@@ -34,9 +36,23 @@ import {
   resolveIdleTimeoutMs,
 } from "../dashboard/src/lib/socials-manager/coordinator-runtime.ts";
 
+const ENTRYPOINT = fileURLToPath(import.meta.url);
+const appRoot = path.dirname(path.dirname(ENTRYPOINT));
 const host = process.env.POSTIZ_SUPERVISOR_HOST?.trim() || "127.0.0.1";
-const healthPort = Number(process.env.POSTIZ_SUPERVISOR_PORT);
-const token = process.env.POSTIZ_COORDINATOR_TOKEN?.trim() ?? "";
+const portArgument = (() => {
+  const args = process.argv.slice(2).filter((argument) => argument !== "--check");
+  if (args.length === 0) return null;
+  if (args.length !== 2 || args[0] !== "--port" || !/^\d{1,5}$/u.test(args[1])) {
+    fail("Postiz coordinator accepts only a bounded --port argument");
+  }
+  return Number(args[1]);
+})();
+const healthPort = portArgument ?? Number(process.env.POSTIZ_SUPERVISOR_PORT);
+const token = (
+  process.env.BREADBOARD_POSTIZ_COORDINATOR_SERVICE_TOKEN ??
+  process.env.POSTIZ_COORDINATOR_TOKEN ??
+  ""
+).trim();
 const startupTimeoutMs = Number(process.env.POSTIZ_SUPERVISOR_STARTUP_TIMEOUT_MS || 18 * 60_000);
 const idleTimeoutMs = resolveIdleTimeoutMs(process.env);
 const idleCheckMs = Number(process.env.POSTIZ_IDLE_CHECK_MS || 60_000);
@@ -48,6 +64,48 @@ function log(message) {
 
 function fail(message) {
   throw new Error(message);
+}
+
+function inside(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export function validateSealedPostizConfig(
+  config,
+  sealedAppRoot = appRoot,
+  env = process.env,
+) {
+  const trustedAppRoot = path.resolve(env.BREADBOARD_REPO_ROOT?.trim() || sealedAppRoot);
+  const trustedDataRoot = path.resolve(
+    env.BREADBOARD_DATA_DIR?.trim() || path.join(sealedAppRoot, "dashboard"),
+  );
+  if (!inside(trustedAppRoot, config.cloneRoot) && !inside(trustedDataRoot, config.cloneRoot)) {
+    fail("Postiz clone root escaped its sealed app/data roots");
+  }
+  if (
+    !inside(trustedDataRoot, config.stateDir) ||
+    !inside(config.stateDir, config.overrideFile) ||
+    !inside(config.stateDir, config.credentialsFile)
+  ) fail("Postiz mutable state escaped its sealed data root");
+  if (config.projectName !== "breadboard-postiz") {
+    fail("Postiz Compose project identity is not sealed");
+  }
+  let url;
+  try {
+    url = new URL(config.baseUrl);
+  } catch {
+    fail("Postiz web origin is invalid");
+  }
+  if (
+    url.protocol !== "http:" ||
+    !new Set(["127.0.0.1", "[::1]", "localhost"]).has(url.hostname) ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) fail("Postiz web origin escaped loopback");
 }
 
 /**
@@ -82,9 +140,11 @@ async function main() {
   if (!Number.isFinite(startupTimeoutMs) || startupTimeoutMs < 1_000) {
     fail("POSTIZ_SUPERVISOR_STARTUP_TIMEOUT_MS must be at least 1000ms");
   }
+  if (host !== "127.0.0.1") fail("Postiz coordinator must bind exact loopback");
 
   const config = resolveSocialsManagerConfig();
   if (config.mode !== "stack") fail("Postiz must run in stack mode on desktop");
+  validateSealedPostizConfig(config);
 
   const coordinator = new PostizCoordinator(
     realCoordinatorDeps({
@@ -109,11 +169,12 @@ async function main() {
     return;
   }
 
-  if (!token) {
-    // Fail loudly but keep serving /health: the desktop supervisor should see a
-    // live-but-unusable coordinator rather than a crash loop.
-    log("WARNING: no capability token was provided; control endpoints are closed");
-  }
+  const tokenBytes = Buffer.from(token, "utf8");
+  if (
+    tokenBytes.byteLength < 32 ||
+    tokenBytes.byteLength > 1024 ||
+    !tokenBytes.every((byte) => byte >= 0x21 && byte <= 0x7e)
+  ) fail("The Postiz coordinator capability is invalid");
 
   const server = http.createServer((request, response) => {
     void (async () => {
@@ -179,10 +240,43 @@ async function main() {
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+
+  // Runtime V2 uses one exact newline-delimited graceful-stop record on
+  // Windows, where POSIX signals cannot be relied on. Malformed input also
+  // closes the service fail-closed; it never broadens process authority.
+  let stopBuffer = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    stopBuffer += chunk;
+    if (Buffer.byteLength(stopBuffer, "utf8") > 1024) {
+      void shutdown("runtime-control-invalid");
+      return;
+    }
+    const newline = stopBuffer.indexOf("\n");
+    if (newline < 0) return;
+    try {
+      const value = JSON.parse(stopBuffer.slice(0, newline));
+      if (
+        !value ||
+        typeof value !== "object" ||
+        Array.isArray(value) ||
+        Object.keys(value).sort().join(",") !== "force,type" ||
+        value.type !== "stop" ||
+        value.force !== false
+      ) throw new Error("invalid stop record");
+    } catch {
+      // The shutdown decision below remains conditional and preserves pending
+      // schedules even when the native control record is malformed.
+    }
+    void shutdown("runtime-control");
+  });
+  process.stdin.resume();
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.stack || error.message : String(error);
-  process.stderr.write(`[postiz-coordinator] fatal: ${message}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === ENTRYPOINT) {
+  void main().catch((error) => {
+    const message = error instanceof Error ? error.stack || error.message : String(error);
+    process.stderr.write(`[postiz-coordinator] fatal: ${message}\n`);
+    process.exitCode = 1;
+  });
+}

@@ -120,9 +120,12 @@ export interface StartVoxRunInput {
   musicTrack?: string | null;
 }
 
-export function startRun(input: StartVoxRunInput): { runId: string; status: RunStatus } {
+function startRunWithId(
+  input: StartVoxRunInput,
+  runId: string,
+): { runId: string; status: RunStatus } {
   if (!input.parsed.brief.trim()) throw new Error("empty_brief");
-  const runId = `voxrun_${randomUUID().replaceAll("-", "")}`;
+  if (!/^voxrun_[0-9a-f]{32}$/u.test(runId)) throw new Error("invalid_run_id");
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -143,6 +146,19 @@ export function startRun(input: StartVoxRunInput): { runId: string; status: RunS
     schedule(run);
   });
   return { runId, status: "queued" };
+}
+
+/** Dashboard compatibility for focused pipeline tests; production routes use
+ * `runtime-run-manager.ts` and never execute this worker-local manager. */
+export function startRun(input: StartVoxRunInput): { runId: string; status: RunStatus } {
+  return startRunWithId(input, `voxrun_${randomUUID().replaceAll("-", "")}`);
+}
+
+/** Fixed worker seam preserving the public id used by workspaces and turns. */
+export function startRuntimeWorkerRun(
+  input: StartVoxRunInput & { runId: string },
+): { runId: string; status: RunStatus } {
+  return startRunWithId(input, input.runId);
 }
 
 function failureMessage(error: unknown): string {
@@ -255,7 +271,7 @@ async function drive(run: RunState, input: StartVoxRunInput): Promise<void> {
   const filmAbsolute = filmRelative ? resolveInWorkspace(run.runId, filmRelative) : "";
 
   if (context && filmAbsolute && fs.existsSync(filmAbsolute)) {
-    const stored = publishFilm({
+    const stored = await publishFilm({
       context,
       production,
       absolutePath: filmAbsolute,

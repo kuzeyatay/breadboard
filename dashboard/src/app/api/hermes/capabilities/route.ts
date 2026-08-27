@@ -21,7 +21,6 @@ import {
 } from "@/lib/hermes/route-helpers.ts";
 import {
   listMcpConnections,
-  runtimeMcpConfig,
 } from "@/lib/hermes/mcp-connections.ts";
 
 export const dynamic = "force-dynamic";
@@ -76,20 +75,8 @@ export async function GET(request: Request) {
         : getAgentRuntime();
       const directory =
         session?.activeDirectory ?? runtime.managementDirectory(userId);
-      if (!session) {
-        for (const connection of ownedConnections.filter(
-          (connection) => connection.enabled,
-        )) {
-          await runtime
-            .addMcpConnection(
-              directory,
-              connection.slug,
-              runtimeMcpConfig(connection),
-              userId,
-            )
-            .catch(() => null);
-        }
-      }
+      // An unbound capability/status poll must not start local MCP services.
+      // Session creation and per-turn registry loading perform the real sync.
       const discovered = await runtime.listCapabilities(directory, userId);
       toolIds = discovered.tools;
       const ownedSlugs = new Set(

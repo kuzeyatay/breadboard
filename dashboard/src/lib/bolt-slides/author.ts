@@ -21,8 +21,8 @@
 // deck with the starter.
 
 import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
+import { externalRuntimeReadUtf8 } from "../external-runtime-filesystem.ts";
 import { humanizeProviderError } from "../provider-error.ts";
-import fs from "node:fs";
 import path from "node:path";
 import { resolveBoltSlidesRoot } from "./runtime.ts";
 import { kitDigest, renderKitDigest, type KitDigest } from "./kit-digest.ts";
@@ -53,6 +53,8 @@ export interface BoltSlidesTarget {
   baseUrl: string;
   model: string;
   reasoningEffort?: string;
+  /** Trusted worker-only credential; never accepted from a renderer request. */
+  apiKey?: string;
   signal?: AbortSignal;
 }
 
@@ -80,9 +82,8 @@ function authoringSkill(): string {
   if (!root) return "";
   let text: string;
   try {
-    text = fs.readFileSync(
+    text = externalRuntimeReadUtf8(
       path.join(root, ".bolt", "skills", "slides", "SKILL.md"),
-      "utf8",
     );
   } catch {
     return "";
@@ -288,7 +289,7 @@ async function callTool(
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${chatmockApiKeyValue()}`,
+        authorization: `Bearer ${target.apiKey || chatmockApiKeyValue()}`,
       },
       body: JSON.stringify({
         model: target.model,

@@ -3,8 +3,8 @@
 // by Hermes, and promotion verifies the exact reviewed hashes.
 
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 import type { HermesSurface } from "./config.ts";
 import {

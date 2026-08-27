@@ -27,12 +27,6 @@ import { ensureFreshTree } from "./maintain.ts";
 /** How often the heartbeat runs, matching OpenHuman's twenty-minute cadence. */
 export const AUTOFETCH_INTERVAL_MS = 20 * 60_000;
 
-/**
- * Long enough that a slow pass is never run twice, short enough that a crash
- * costs one cycle. Same reasoning as the scheduled-chat lease.
- */
-const LEASE_MS = 10 * 60_000;
-
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 export interface AutofetchResult {
@@ -213,26 +207,8 @@ export function autofetchForUser(
   return { userId, written, facts: facts.map((fact) => fact.content) };
 }
 
-interface HeartbeatGlobals {
-  __breadboardMemoryAutofetch?: ReturnType<typeof setInterval>;
-  __breadboardMemoryAutofetchRunning?: boolean;
-  __breadboardMemoryAutofetchLeaseUntil?: number;
-}
-
-const globals = globalThis as typeof globalThis & HeartbeatGlobals;
-
 /** Run one pass for every account that has memory to keep current. */
 export function runMemoryAutofetch(database: Database.Database = db): AutofetchResult[] {
-  const now = Date.now();
-  // The same two guards the scheduled-chat tick uses: never overlap, and never
-  // let a pass that died mid-flight block the next one forever.
-  if (globals.__breadboardMemoryAutofetchRunning) {
-    const until = globals.__breadboardMemoryAutofetchLeaseUntil ?? 0;
-    if (until > now) return [];
-  }
-  globals.__breadboardMemoryAutofetchRunning = true;
-  globals.__breadboardMemoryAutofetchLeaseUntil = now + LEASE_MS;
-
   try {
     const users = database
       .prepare(`SELECT id FROM users ORDER BY id`)
@@ -240,23 +216,5 @@ export function runMemoryAutofetch(database: Database.Database = db): AutofetchR
     return users.map((user) => autofetchForUser(user.id, database));
   } catch {
     return [];
-  } finally {
-    globals.__breadboardMemoryAutofetchRunning = false;
-    globals.__breadboardMemoryAutofetchLeaseUntil = 0;
   }
-}
-
-/** Start the process-wide heartbeat. Safe to call repeatedly (dev hot reloads). */
-export function startMemoryAutofetch(): void {
-  if (globals.__breadboardMemoryAutofetch) return;
-  const timer = setInterval(() => {
-    try {
-      runMemoryAutofetch();
-    } catch {
-      // The next beat retries; a failed one is not worth a log line every
-      // twenty minutes.
-    }
-  }, AUTOFETCH_INTERVAL_MS);
-  timer.unref?.();
-  globals.__breadboardMemoryAutofetch = timer;
 }

@@ -54,6 +54,67 @@ export function contractDigest(row, fields = FROZEN_CONTRACT_FIELDS) {
   return crypto.createHash("sha256").update(JSON.stringify(contract)).digest("hex");
 }
 
+const HISTORICAL_STATUS_FIELDS = Object.freeze([
+  "preMigrationStatus",
+  "preMigrationEvidence",
+  "postMigrationStatus",
+  "postMigrationEvidence",
+  "result",
+]);
+
+const HISTORICAL_EVIDENCE_FIELDS = Object.freeze([
+  "selectionEvidence",
+  "serviceWorkerEvidence",
+  "outputArtifactEvidence",
+  "cancellationEvidence",
+  "recoveryEvidence",
+]);
+
+/**
+ * Refresh source-backed contracts without erasing the evidence ledger.
+ *
+ * Registry generation intentionally follows the current source so reviewed
+ * Runtime V2 cutovers can update their route, worker and source-digest fields.
+ * Pre/post execution evidence is a different authority: it records what was
+ * actually observed before and after migration and must survive regeneration.
+ */
+export function preserveHistoricalParityEvidence(current, previous) {
+  if (!current || !Array.isArray(current.capabilities)) return current;
+  if (!previous || !Array.isArray(previous.capabilities)) return current;
+
+  const previousRows = new Map(
+    previous.capabilities
+      .filter((row) => row && typeof row.capabilityId === "string")
+      .map((row) => [row.capabilityId, row]),
+  );
+
+  return {
+    ...current,
+    capabilities: current.capabilities.map((currentRow) => {
+      const previousRow = previousRows.get(currentRow?.capabilityId);
+      if (!previousRow) return currentRow;
+
+      const reconciled = { ...currentRow };
+      for (const field of HISTORICAL_STATUS_FIELDS) {
+        if (Object.hasOwn(previousRow, field)) reconciled[field] = previousRow[field];
+      }
+      for (const field of HISTORICAL_EVIDENCE_FIELDS) {
+        const prior = previousRow[field];
+        const next = currentRow[field];
+        reconciled[field] = {
+          preMigration: Array.isArray(prior?.preMigration)
+            ? prior.preMigration
+            : (next?.preMigration ?? []),
+          postMigration: Array.isArray(prior?.postMigration)
+            ? prior.postMigration
+            : (next?.postMigration ?? []),
+        };
+      }
+      return reconciled;
+    }),
+  };
+}
+
 function sha256Text(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }

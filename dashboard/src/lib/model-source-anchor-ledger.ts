@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 import { isPlausibleSourceAnchorId } from "./final-garden-state.ts";
 import type { LearnSourceSummary } from "./learn-utils.ts";

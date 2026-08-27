@@ -308,6 +308,7 @@ export class PaintReveal {
   private incoming: Incoming[] = [];
   private raf = 0;
   private token = 0;
+  private destroyed = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -359,11 +360,14 @@ export class PaintReveal {
   }
 
   private startAnimation() {
-    if (!this.raf) this.raf = requestAnimationFrame(this.frame);
+    if (!this.destroyed && !this.raf) {
+      this.raf = requestAnimationFrame(this.frame);
+    }
   }
 
   private frame = () => {
     this.raf = 0;
+    if (this.destroyed) return;
 
     // 1. Queue new marks to fade in (adaptive rate; a small backlog trickles).
     if (this.painted < this.target && this.marks.length && this.layout) {
@@ -392,6 +396,7 @@ export class PaintReveal {
 
   /** Size both buffers to the viewport and re-lay-out the painting. */
   resizeCanvas(width: number, height: number) {
+    if (this.destroyed) return;
     const w = Math.max(1, Math.floor(width));
     const h = Math.max(1, Math.floor(height));
     this.canvas.width = w;
@@ -411,9 +416,10 @@ export class PaintReveal {
 
   /** Load + sample an image and reset the wash (canvas keeps its current size). */
   async load(url: string): Promise<void> {
+    if (this.destroyed) return;
     const myToken = (this.token += 1);
     const img = await loadImage(url);
-    if (myToken !== this.token) return; // superseded by a newer load
+    if (this.destroyed || myToken !== this.token) return; // superseded or disposed
     const { data, w, h } = sampleImageData(img);
     this.marks = generateMarks(data, w, h);
     this.sampleW = w;
@@ -433,7 +439,7 @@ export class PaintReveal {
    * clears the wash.
    */
   setTarget(fraction: number): void {
-    if (!this.marks.length) return;
+    if (this.destroyed || !this.marks.length) return;
     const clamped = clamp(fraction, 0, 1);
     this.targetFraction = Math.max(this.targetFraction, clamped);
     this.target = Math.max(this.target, Math.floor(clamped * this.marks.length));
@@ -441,8 +447,27 @@ export class PaintReveal {
   }
 
   destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.token += 1;
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
+    this.incoming = [];
+    this.marks = [];
+    this.layout = null;
+    this.sampleW = 0;
+    this.sampleH = 0;
+    this.painted = 0;
+    this.target = 0;
+    this.targetFraction = 0;
+    // Resizing a canvas to zero releases its native drawing buffer. Clearing
+    // only the RAF leaves both the visible and off-screen RGBA allocations
+    // resident until a later garbage collection, which is especially costly
+    // on repeated route navigation at high-DPI fullscreen sizes.
+    this.wash.width = 0;
+    this.wash.height = 0;
+    this.canvas.width = 0;
+    this.canvas.height = 0;
   }
 
   get ready(): boolean {

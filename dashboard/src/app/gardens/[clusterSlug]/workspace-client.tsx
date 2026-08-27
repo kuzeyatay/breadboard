@@ -272,6 +272,15 @@ import {
   type IngestTokenUsage,
 } from "@/lib/ingest-token-usage";
 import {
+  beginRuntimeIngestRecovery,
+  bindRuntimeIngestResponse,
+  cancelPendingRuntimeIngest,
+  forgetRuntimeIngestRecovery,
+  recoverRuntimeIngest,
+  runtimeIngestRecoveries,
+  runtimeIngestRecoveryRecord,
+} from "@/lib/runtime-v2/ingest-recovery-client";
+import {
   agentBrowserStartFailure,
   agentBrowserUserMessage,
   taskFromAgentBrowserCommand,
@@ -3068,6 +3077,8 @@ export default function WorkspaceClient({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const uploadCanceledRef = useRef(false);
+  const uploadRuntimeJobIdsRef = useRef<Set<string>>(new Set());
+  const uploadRecoveryRequestIdsRef = useRef<Set<string>>(new Set());
 
   // Chat attachments (per-message, sent directly to the AI)
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
@@ -3085,6 +3096,13 @@ export default function WorkspaceClient({
   const [learnState, setLearnState] = useState<LearnStatusResponse | null>(
     null,
   );
+  const learnStatusClusterRef = useRef(clusterSlug);
+  learnStatusClusterRef.current = clusterSlug;
+  const learnStatusRequestRef = useRef<{
+    clusterSlug: string;
+    controller: AbortController;
+    promise: Promise<LearnStatusResponse | null>;
+  } | null>(null);
   const [learnBusy, setLearnBusy] = useState(false);
   const [learnCancelBusy, setLearnCancelBusy] = useState(false);
   const [learnPauseBusy, setLearnPauseBusy] = useState(false);
@@ -3238,21 +3256,110 @@ export default function WorkspaceClient({
     void fetchSavedLinks();
   }, [fetchSavedLinks]);
 
-  const fetchLearnStatus = useCallback(async () => {
-    try {
-      const res = await fetch(
-        `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/status`,
-      );
-      const data = (await res.json().catch(() => ({}))) as LearnStatusResponse;
-      if (res.ok) {
-        setLearnState(data);
-        return data;
-      }
-    } catch {
-      // Status polling should never interrupt the workspace.
+  const fetchLearnStatus = useCallback((): Promise<LearnStatusResponse | null> => {
+    const existing = learnStatusRequestRef.current;
+    if (
+      existing?.clusterSlug === clusterSlug &&
+      !existing.controller.signal.aborted
+    ) {
+      return existing.promise;
     }
-    return null;
+    existing?.controller.abort();
+
+    const controller = new AbortController();
+    const promise = (async () => {
+      try {
+        const res = await fetch(
+          `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/status`,
+          { signal: controller.signal },
+        );
+        const data = (await res.json().catch(() => ({}))) as LearnStatusResponse;
+        if (
+          res.ok &&
+          !controller.signal.aborted &&
+          learnStatusClusterRef.current === clusterSlug
+        ) {
+          setLearnState(data);
+          return data;
+        }
+      } catch {
+        // Status polling should never interrupt the workspace.
+      } finally {
+        if (learnStatusRequestRef.current?.controller === controller) {
+          learnStatusRequestRef.current = null;
+        }
+      }
+      return null;
+    })();
+    learnStatusRequestRef.current = { clusterSlug, controller, promise };
+    return promise;
   }, [clusterSlug]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    for (const stored of runtimeIngestRecoveries(clusterSlug)) {
+      void (async () => {
+        let record = stored;
+        if (record.cancelRequested) {
+          await cancelPendingRuntimeIngest(record.requestId, {
+            signal: controller.signal,
+          });
+          const current = runtimeIngestRecoveryRecord(record.requestId);
+          if (current && !current.jobId) {
+            return;
+          }
+          if (!current) {
+            await fetchDocuments();
+            return;
+          }
+          record = current;
+        }
+        const outcome = await recoverRuntimeIngest(
+          record,
+          (event) => {
+            if (event.type === "progress" && typeof event.step === "string") {
+              setUploadSteps((prev) => ({
+                ...prev,
+                [record.fileKey]: event.step as string,
+              }));
+            } else if (event.type === "result") {
+              setUploadStatuses((prev) => ({
+                ...prev,
+                [record.fileKey]: "done",
+              }));
+              if (record.purpose === "syllabus" && typeof event.slug === "string") {
+                setLearnSyllabusSlug(event.slug);
+                setLearnIncludedSourceSlugs((current) =>
+                  current?.filter((slug) => slug !== event.slug) ?? null,
+                );
+              }
+            } else if (
+              event.type === "error" &&
+              event.canceled !== true &&
+              typeof event.error === "string"
+            ) {
+              setUploadStatuses((prev) => ({
+                ...prev,
+                [record.fileKey]: "error",
+              }));
+              setUploadErrors((prev) => ({
+                ...prev,
+                [record.fileKey]: event.error as string,
+              }));
+              addToast(`${record.filename}: ${event.error}`);
+            }
+          },
+          { signal: controller.signal },
+        );
+        if (outcome?.terminalEvent) {
+          await fetchDocuments();
+          void fetchLearnStatus();
+          setGraphRefreshVersion((value) => value + 1);
+        }
+      })().catch(() => undefined);
+    }
+    return () => controller.abort();
+  }, [addToast, clusterSlug, fetchDocuments, fetchLearnStatus]);
 
   const switchFinishedLearnHumanizer = useCallback(
     async (enabled: boolean) => {
@@ -3344,7 +3451,14 @@ export default function WorkspaceClient({
 
   useEffect(() => {
     void fetchLearnStatus();
-  }, [fetchLearnStatus]);
+    return () => {
+      const request = learnStatusRequestRef.current;
+      if (request?.clusterSlug === clusterSlug) {
+        learnStatusRequestRef.current = null;
+        request.controller.abort();
+      }
+    };
+  }, [clusterSlug, fetchLearnStatus]);
 
   useEffect(() => {
     if (!Array.isArray(learnState?.selectedSourceIds)) return;
@@ -4358,8 +4472,25 @@ export default function WorkspaceClient({
     setShowUpload(true);
   }
 
-  function closeUploadModal() {
+  async function closeUploadModal() {
     if (isUploading) {
+      const requestIds = [...uploadRecoveryRequestIdsRef.current];
+      for (const requestId of requestIds) {
+        void (async () => {
+          try {
+            await cancelPendingRuntimeIngest(requestId);
+            const record = runtimeIngestRecoveryRecord(requestId);
+            if (!record) return;
+            if (!record.jobId) {
+              return;
+            }
+            await recoverRuntimeIngest(record, () => undefined);
+          } finally {
+            uploadRecoveryRequestIdsRef.current.delete(requestId);
+          }
+        })().catch(() => undefined);
+      }
+      uploadRuntimeJobIdsRef.current.clear();
       uploadCanceledRef.current = true;
       uploadAbortControllerRef.current?.abort();
     }
@@ -4479,8 +4610,8 @@ export default function WorkspaceClient({
         isHandwriting &&
         HANDWRITING_FILE_RE.test(file.name);
       const formData = new FormData();
-      formData.append("file", file);
       formData.append("clusterSlug", clusterSlug);
+      formData.append("file", file);
       if (uploadLabel.trim())
         formData.append("sourceLabel", uploadLabel.trim());
       formData.append("isHandwriting", String(usesHandwriting));
@@ -4488,18 +4619,72 @@ export default function WorkspaceClient({
       formData.append("parseWithAnydoc", String(usesAnydoc));
       formData.append("generateMap", String(usesHandwriting || generateMap));
 
+      const requestId = crypto.randomUUID();
+      beginRuntimeIngestRecovery({
+        requestId,
+        clusterSlug,
+        filename: file.name,
+        fileKey: key,
+        startedAt: Date.now(),
+      });
+      uploadRecoveryRequestIdsRef.current.add(requestId);
+      let runtimeJobId: string | null = null;
+      let terminalOutcome = false;
+      const continueRuntimeRecovery = () => {
+        const record = runtimeIngestRecoveryRecord(requestId);
+        if (!record) return;
+        void recoverRuntimeIngest(record, (event) => {
+          if (event.type === "progress" && typeof event.step === "string") {
+            setUploadSteps((prev) => ({ ...prev, [key]: event.step as string }));
+          } else if (event.type === "result") {
+            setUploadStatuses((prev) => ({ ...prev, [key]: "done" }));
+            setUploadErrors((prev) => {
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            });
+          } else if (
+            event.type === "error" &&
+            event.canceled !== true
+          ) {
+            const message =
+              typeof event.error === "string" ? event.error : "Upload failed";
+            setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
+            setUploadErrors((prev) => ({ ...prev, [key]: message }));
+            addToast(`${file.name}: ${message}`);
+          }
+        })
+          .then((outcome) => {
+            if (!outcome?.terminalEvent) return;
+            uploadRecoveryRequestIdsRef.current.delete(requestId);
+            if (runtimeJobId) uploadRuntimeJobIdsRef.current.delete(runtimeJobId);
+            void fetchDocuments();
+            setGraphRefreshVersion((value) => value + 1);
+          })
+          .catch(() => undefined);
+      };
       try {
         const res = await fetch("/api/ingest", {
           method: "POST",
+          headers: {
+            "X-Breadboard-Ingest-Cluster-Slug": clusterSlug,
+            "X-Breadboard-Ingest-File-Size": String(file.size),
+            "X-Breadboard-Ingest-Request-Id": requestId,
+          },
           body: formData,
           signal: abortController.signal,
         });
+        const bound = bindRuntimeIngestResponse(requestId, res);
+        runtimeJobId = bound?.jobId ?? null;
+        if (runtimeJobId) uploadRuntimeJobIdsRef.current.add(runtimeJobId);
 
         // The route streams Server-Sent Events ("data: {…}\n\n"): { type:
         // "progress", step } updates while the pipeline runs, then a final
         // { type: "result" } or { type: "error" }. A non-streaming body (e.g.
         // a 400/401/500 JSON error) is handled in the !res.body branch below.
         if (!res.ok || !res.body) {
+          terminalOutcome = true;
+          forgetRuntimeIngestRecovery(requestId);
           let message = "Upload failed";
           try {
             const data = await res.json();
@@ -4581,11 +4766,15 @@ export default function WorkspaceClient({
         }
 
         if (canceledEvent) {
+          terminalOutcome = true;
+          forgetRuntimeIngestRecovery(requestId);
           uploadCanceledRef.current = true;
           break;
         }
 
         if (result?.success) {
+          terminalOutcome = true;
+          forgetRuntimeIngestRecovery(requestId);
           setUploadStatuses((prev) => ({ ...prev, [key]: "done" }));
           setUploadErrors((prev) => {
             const next = { ...prev };
@@ -4619,10 +4808,16 @@ export default function WorkspaceClient({
             }
           }
         } else {
-          const message = streamError || "Upload failed";
-          setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-          setUploadErrors((prev) => ({ ...prev, [key]: message }));
-          addToast(`${file.name}: ${message}`);
+          if (streamError) {
+            terminalOutcome = true;
+            forgetRuntimeIngestRecovery(requestId);
+            const message = streamError;
+            setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
+            setUploadErrors((prev) => ({ ...prev, [key]: message }));
+            addToast(`${file.name}: ${message}`);
+          } else {
+            continueRuntimeRecovery();
+          }
         }
       } catch (error) {
         const aborted =
@@ -4630,11 +4825,12 @@ export default function WorkspaceClient({
           (error instanceof DOMException && error.name === "AbortError");
         if (aborted) break;
 
-        setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-        const message =
-          error instanceof Error ? error.message : "Network error";
-        setUploadErrors((prev) => ({ ...prev, [key]: message }));
-        addToast(`${file.name}: ${message}`);
+        continueRuntimeRecovery();
+      } finally {
+        if (runtimeJobId) uploadRuntimeJobIdsRef.current.delete(runtimeJobId);
+        if (terminalOutcome) {
+          uploadRecoveryRequestIdsRef.current.delete(requestId);
+        }
       }
     }
 
@@ -6895,6 +7091,7 @@ export default function WorkspaceClient({
     setLaunchingExternalAgent("agent-browser");
     setExternalAgentStatus("");
     const userContent = agentBrowserUserMessage(task);
+    const runtimeRequestId = crypto.randomUUID();
     const prepared = await prepareExternalAgentSession(userContent);
     if (!prepared) {
       externalAgentLaunchRef.current = null;
@@ -6907,7 +7104,7 @@ export default function WorkspaceClient({
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task }),
+          body: JSON.stringify({ task, requestId: runtimeRequestId }),
         },
       );
       const data = await response.json().catch(() => ({}));
@@ -7447,43 +7644,43 @@ export default function WorkspaceClient({
     }
   }
 
-  async function selectDeerFlow(): Promise<ExternalAgentSelection | null> {
+  async function selectDeerFlow(): Promise<ExternalAgentSelection> {
     setExternalAgentStatus("");
+    const selected = {
+      id: DEER_FLOW_AGENT_ID,
+      name: DEER_FLOW_AGENT_NAME,
+    };
+    setAgentBrowserAgent(null);
+    setDeepResearchAgent(null);
+    setCodexAgent(null);
+    setOpenCodeAgent(null);
+    setOpenPlanterAgent(null);
+    setRufloAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    setDeerFlowAgent(selected);
     try {
       const response = await fetch("/api/deer-flow/health");
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.cloned !== true) {
-        throw new Error(
+        setExternalAgentStatus(
           typeof data?.reason === "string"
             ? data.reason
             : typeof data?.error === "string"
               ? data.error
               : "DeerFlow is unavailable.",
         );
-      }
-      const selected = {
-        id: DEER_FLOW_AGENT_ID,
-        name: DEER_FLOW_AGENT_NAME,
-      };
-      setAgentBrowserAgent(null);
-      setDeepResearchAgent(null);
-      setCodexAgent(null);
-      setOpenCodeAgent(null);
-      setOpenPlanterAgent(null);
-      setRufloAgent(null);
-      setAgentReachAgent(null);
-      setGetDocAgent(null);
-      setMeetingNotesAgent(null);
-      setDeepTutorAgent(null);
-      setCareerOpsAgent(null);
-      setTradingAgentsAgent(null);
-      setVibeTradingAgent(null);
-      setDeerFlowAgent(null);
-      setShortsAgent(null);
-      setDeerFlowAgent(selected);
-      // An unbuilt environment is worth saying before the task is typed, and so
-      // is the cold start the first run has to pay.
-      if (data.available !== true && typeof data.reason === "string") {
+      } else if (data.available !== true && typeof data.reason === "string") {
+        // Health is advisory only. Keep the mandatory agent selected so its
+        // first real run can ask Runtime V2 to start it or return a truthful
+        // setup/resource error.
         setExternalAgentStatus(data.reason);
       } else if (data.serviceRunning !== true) {
         setExternalAgentStatus(
@@ -7495,47 +7692,46 @@ export default function WorkspaceClient({
       setExternalAgentStatus(
         error instanceof Error ? error.message : "DeerFlow is unavailable.",
       );
-      return null;
+      return selected;
     }
   }
 
-  async function selectVibeTrading(): Promise<ExternalAgentSelection | null> {
+  async function selectVibeTrading(): Promise<ExternalAgentSelection> {
     setExternalAgentStatus("");
+    const selected = {
+      id: VIBE_TRADING_AGENT_ID,
+      name: VIBE_TRADING_AGENT_NAME,
+    };
+    setAgentBrowserAgent(null);
+    setDeepResearchAgent(null);
+    setCodexAgent(null);
+    setOpenCodeAgent(null);
+    setOpenPlanterAgent(null);
+    setRufloAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    setVibeTradingAgent(selected);
     try {
       const response = await fetch("/api/vibe-trading/health");
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.cloned !== true) {
-        throw new Error(
+        setExternalAgentStatus(
           typeof data?.reason === "string"
             ? data.reason
             : typeof data?.error === "string"
               ? data.error
               : "Vibe Trading is unavailable.",
         );
-      }
-      const selected = {
-        id: VIBE_TRADING_AGENT_ID,
-        name: VIBE_TRADING_AGENT_NAME,
-      };
-      setAgentBrowserAgent(null);
-      setDeepResearchAgent(null);
-      setCodexAgent(null);
-      setOpenCodeAgent(null);
-      setOpenPlanterAgent(null);
-      setRufloAgent(null);
-      setAgentReachAgent(null);
-      setGetDocAgent(null);
-      setMeetingNotesAgent(null);
-      setDeepTutorAgent(null);
-      setCareerOpsAgent(null);
-      setTradingAgentsAgent(null);
-      setVibeTradingAgent(null);
-      setDeerFlowAgent(null);
-      setShortsAgent(null);
-      setVibeTradingAgent(selected);
-      // An unbuilt environment is worth saying before the question is typed,
-      // and so is the cold start the first run has to pay.
-      if (data.available !== true && typeof data.reason === "string") {
+      } else if (data.available !== true && typeof data.reason === "string") {
+        // Observing a missing/stopped service must not hide the agent. The run
+        // owns startup admission and reports any setup/resource failure.
         setExternalAgentStatus(data.reason);
       } else if (data.serviceRunning !== true) {
         setExternalAgentStatus(
@@ -7547,48 +7743,47 @@ export default function WorkspaceClient({
       setExternalAgentStatus(
         error instanceof Error ? error.message : "Vibe Trading is unavailable.",
       );
-      return null;
+      return selected;
     }
   }
 
-  async function selectStockAnalyst(): Promise<ExternalAgentSelection | null> {
+  async function selectStockAnalyst(): Promise<ExternalAgentSelection> {
     setExternalAgentStatus("");
+    const selected = {
+      id: STOCK_ANALYST_AGENT_ID,
+      name: STOCK_ANALYST_AGENT_NAME,
+    };
+    setAgentBrowserAgent(null);
+    setDeepResearchAgent(null);
+    setCodexAgent(null);
+    setOpenCodeAgent(null);
+    setOpenPlanterAgent(null);
+    setRufloAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    setFormsmithAgent(null);
+    setStockAnalystAgent(selected);
     try {
       const response = await fetch("/api/stock-analyst/health");
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.cloned !== true) {
-        throw new Error(
+        setExternalAgentStatus(
           typeof data?.reason === "string"
             ? data.reason
             : typeof data?.error === "string"
               ? data.error
               : "Stock Analyst is unavailable.",
         );
-      }
-      const selected = {
-        id: STOCK_ANALYST_AGENT_ID,
-        name: STOCK_ANALYST_AGENT_NAME,
-      };
-      setAgentBrowserAgent(null);
-      setDeepResearchAgent(null);
-      setCodexAgent(null);
-      setOpenCodeAgent(null);
-      setOpenPlanterAgent(null);
-      setRufloAgent(null);
-      setAgentReachAgent(null);
-      setGetDocAgent(null);
-      setMeetingNotesAgent(null);
-      setDeepTutorAgent(null);
-      setCareerOpsAgent(null);
-      setTradingAgentsAgent(null);
-      setVibeTradingAgent(null);
-      setDeerFlowAgent(null);
-      setShortsAgent(null);
-      setFormsmithAgent(null);
-      setStockAnalystAgent(selected);
-      // An unbuilt environment is worth saying before the question is typed,
-      // and so is the cold start the first run has to pay.
-      if (data.available !== true && typeof data.reason === "string") {
+      } else if (data.available !== true && typeof data.reason === "string") {
+        // Selection remains available even when setup is incomplete. Runtime
+        // V2 makes the start attempt only when the user sends a real request.
         setExternalAgentStatus(data.reason);
       } else if (data.serviceRunning !== true) {
         setExternalAgentStatus(
@@ -7602,7 +7797,7 @@ export default function WorkspaceClient({
           ? error.message
           : "Stock Analyst is unavailable.",
       );
-      return null;
+      return selected;
     }
   }
 
@@ -8061,6 +8256,7 @@ export default function WorkspaceClient({
       return;
     }
     try {
+      const requestId = crypto.randomUUID();
       const response = await fetch("/api/deer-flow/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -8068,6 +8264,7 @@ export default function WorkspaceClient({
           task,
           model,
           reasoningEffort,
+          clientMessageId: requestId,
           // The files a run presents belong to this chat, which the route
           // resolves from the legacy session id this surface still runs on.
           chatSessionId: prepared.session.id,
@@ -11005,19 +11202,49 @@ export default function WorkspaceClient({
    */
   async function handleSyllabusUpload(file: File) {
     setLearnSyllabusUploading(true);
+    const requestId = crypto.randomUUID();
+    beginRuntimeIngestRecovery({
+      requestId,
+      clusterSlug,
+      filename: file.name,
+      fileKey: fileKey(file),
+      startedAt: Date.now(),
+      purpose: "syllabus",
+    });
+    const continueSyllabusRecovery = () => {
+      const record = runtimeIngestRecoveryRecord(requestId);
+      if (!record) return;
+      void recoverRuntimeIngest(record, (event) => {
+        if (event.type !== "result" || typeof event.slug !== "string") return;
+        chooseLearnSyllabusDocument(event.slug);
+        setLearnSyllabusMenuOpen(false);
+      })
+        .then(async (outcome) => {
+          if (!outcome?.terminalEvent) return;
+          await fetchDocuments();
+        })
+        .catch(() => undefined);
+    };
     try {
       const formData = new FormData();
-      formData.append("file", file);
       formData.append("clusterSlug", clusterSlug);
+      formData.append("file", file);
       formData.append("sourceLabel", "Syllabus");
       formData.append("isHandwriting", "false");
       formData.append("generateMap", "false");
 
       const res = await fetch("/api/ingest", {
         method: "POST",
+        headers: {
+          "X-Breadboard-Ingest-Cluster-Slug": clusterSlug,
+          "X-Breadboard-Ingest-File-Size": String(file.size),
+          "X-Breadboard-Ingest-Request-Id": requestId,
+        },
         body: formData,
       });
+      bindRuntimeIngestResponse(requestId, res);
       if (!res.ok || !res.body) {
+        forgetRuntimeIngestRecovery(requestId);
         let message = "Syllabus upload failed";
         try {
           const data = await res.json();
@@ -11067,8 +11294,10 @@ export default function WorkspaceClient({
       }
 
       if (!result?.success) {
+        if (streamError) forgetRuntimeIngestRecovery(requestId);
         throw new Error(streamError || "Syllabus upload failed");
       }
+      forgetRuntimeIngestRecovery(requestId);
       const slug = typeof result.slug === "string" ? result.slug : "";
       if (!slug) {
         throw new Error("Syllabus uploaded but no document slug was returned");
@@ -11084,6 +11313,10 @@ export default function WorkspaceClient({
         "success",
       );
     } catch (error) {
+      if (runtimeIngestRecoveryRecord(requestId)) {
+        continueSyllabusRecovery();
+        return;
+      }
       addToast(
         error instanceof Error ? error.message : "Syllabus upload failed",
       );
@@ -14288,6 +14521,12 @@ export default function WorkspaceClient({
                 setMeetingNotesAgent(null);
                 setExternalAgentStatus("");
               }}
+              meetingNotesAgent={meetingNotesAgent}
+              onSelectMeetingNotes={() => void selectMeetingNotes()}
+              onClearMeetingNotes={() => {
+                setMeetingNotesAgent(null);
+                setExternalAgentStatus("");
+              }}
               deepTutorAgent={deepTutorAgent}
               onSelectDeepTutor={() => void selectDeepTutor()}
               onClearDeepTutor={() => {
@@ -15193,15 +15432,6 @@ export default function WorkspaceClient({
                     </button>
                   )}
                 </div>
-                {isUploading && (
-                  <button
-                    type="button"
-                    onClick={continueUploadInBackground}
-                    className="neu-button w-full py-2.5 text-sm"
-                  >
-                    Close &amp; continue in background
-                  </button>
-                )}
               </div>
             </form>
           </div>

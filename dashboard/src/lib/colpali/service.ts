@@ -19,7 +19,7 @@ import {
 import {
   SupervisorResourceExhaustedError,
   withServiceLease,
-} from "@/lib/supervisor-control";
+} from "../supervisor-control.ts";
 
 export interface ColpaliHealth {
   status: "ok" | "degraded" | "unreachable";
@@ -86,7 +86,7 @@ function unreachable(detail: string): ColpaliHealth {
 
 async function call(
   path: string,
-  init: { method: string; body?: unknown; timeoutMs: number },
+  init: { method: string; body?: unknown; timeoutMs: number; signal?: AbortSignal },
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ status: number; body: Record<string, unknown> } | null> {
   const secret = colpaliServiceSecret(env);
@@ -94,34 +94,45 @@ async function call(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), init.timeoutMs);
+  const onAbort = () => controller.abort(init.signal?.reason);
+  if (init.signal?.aborted) onAbort();
+  else init.signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    const perform = async () => fetch(`${colpaliBaseUrl(env)}${path}`, {
-      method: init.method,
-      headers: {
-        Authorization: `Bearer ${secret}`,
-        ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-      signal: controller.signal,
-    });
-    const response = path === "/health"
+    const perform = async () => {
+      const response = await fetch(`${colpaliBaseUrl(env)}${path}`, {
+        method: init.method,
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+      } catch {
+        parsed = {};
+      }
+      return { status: response.status, body: parsed };
+    };
+    return path === "/health"
       ? await perform()
       : await withServiceLease("colpali", "visual-document", perform, env);
-    const text = await response.text();
-    let parsed: Record<string, unknown> = {};
-    try {
-      parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-    } catch {
-      parsed = {};
-    }
-    return { status: response.status, body: parsed };
   } catch (error) {
     if (error instanceof SupervisorResourceExhaustedError) throw error;
+    if (init.signal?.aborted) {
+      throw init.signal.reason instanceof Error
+        ? init.signal.reason
+        : new DOMException("The request was aborted.", "AbortError");
+    }
     // A service that is not running is the ordinary case on a machine that
     // never ran setup, not an exception worth propagating.
     return null;
   } finally {
     clearTimeout(timer);
+    init.signal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -154,6 +165,7 @@ export async function colpaliIndex(
   documentId: string,
   pages: readonly ColpaliPageImage[],
   env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
 ): Promise<ColpaliIndexResult> {
   const failed = (detail: string): ColpaliIndexResult => ({
     ok: false,
@@ -168,7 +180,7 @@ export async function colpaliIndex(
 
   const result = await call(
     "/index",
-    { method: "POST", body: { documentId, pages }, timeoutMs: INDEX_TIMEOUT_MS },
+    { method: "POST", body: { documentId, pages }, timeoutMs: INDEX_TIMEOUT_MS, signal },
     env,
   );
   if (!result) return failed("The ColPali service is not running.");
@@ -192,13 +204,14 @@ export async function colpaliSearch(
   query: string,
   env: NodeJS.ProcessEnv = process.env,
   topK: number = colpaliTopK(env),
+  signal?: AbortSignal,
 ): Promise<ColpaliSearchResult> {
   if (colpaliMode(env) === "disabled") return { ok: false, pages: [], reason: "disabled" };
   if (!query.trim()) return { ok: false, pages: [], reason: "empty_query" };
 
   const result = await call(
     "/search",
-    { method: "POST", body: { documentId, query, topK }, timeoutMs: SEARCH_TIMEOUT_MS },
+    { method: "POST", body: { documentId, query, topK }, timeoutMs: SEARCH_TIMEOUT_MS, signal },
     env,
   );
   if (!result) return { ok: false, pages: [], reason: "unreachable" };
@@ -221,10 +234,11 @@ export async function colpaliSearch(
 export async function colpaliForget(
   documentId: string,
   env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const result = await call(
     `/index/${encodeURIComponent(documentId)}`,
-    { method: "DELETE", timeoutMs: HEALTH_TIMEOUT_MS },
+    { method: "DELETE", timeoutMs: HEALTH_TIMEOUT_MS, signal },
     env,
   );
   return result?.status === 200 && result.body.deleted === true;

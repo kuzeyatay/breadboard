@@ -24,9 +24,14 @@ const routeSource = read(
   "route.ts",
 );
 const learnSource = read("src", "lib", "learn.ts");
+const learnStatusProjectionSource = read(
+  "src",
+  "lib",
+  "learn-status-projection.ts",
+);
 const executorSource = read("src", "lib", "learn-operation-executor.ts");
 const backgroundSource = read("src", "lib", "learn-background.ts");
-const workerSource = read("scripts", "learn-worker.mjs");
+const workerSource = read("scripts", "runtime-v2-learn-worker.mjs");
 const workspaceSource = read(
   "src",
   "app",
@@ -35,7 +40,6 @@ const workspaceSource = read(
   "workspace-client.tsx",
 );
 const assistantSource = read("src", "app", "garden", "garden-assistant.tsx");
-const directRunnerSource = read("tmp-learn-generate-runner.mjs");
 
 const ROUTE_STATE_KEY = "__breadboardLearnGenerateModelRouteTestState";
 
@@ -260,8 +264,8 @@ describe("confirmed Learning Map model binding", () => {
   test("status and both UI callers use the confirmed map owner's model", () => {
     assert.match(learnSource, /confirmedLearningMapModel\?: string/);
     assert.match(
-      learnSource,
-      /const confirmedMapPlanningJob = confirmedMap[\s\S]*?getLearnMapPlanningJob\(confirmedMap, gardenId\)[\s\S]*?confirmedLearningMapModel: confirmedMapPlanningJob\?\.model/,
+      learnStatusProjectionSource,
+      /const confirmedMapPlanningJob = confirmedMap[\s\S]*?learnMapPlanningJob\(confirmedMap, gardenId\)[\s\S]*?confirmedLearningMapModel: confirmedMapPlanningJob\?\.model/,
     );
     assert.match(
       learnSource,
@@ -347,10 +351,16 @@ describe("confirmed Learning Map model binding", () => {
       /const workflowJob = workflowMap[\s\S]*?requireLearnMapPlanningModel\(workflowMap, gardenId, model\)/,
       "the binding must be rechecked after lease acquisition",
     );
-    assert.match(
-      directRunnerSource,
-      /expectedModel = status\.confirmedLearningMapModel\?\.trim\(\)[\s\S]*?const model = selectedModelForUser\(userId\)[\s\S]*?model !== expectedModel[\s\S]*?resolveChatmockBaseUrl/,
-      "the direct retry path must fail before constructing its model client",
+    const routeModelGuard = routeSource.indexOf(
+      "const expectedModel = requireExpectedLearnModel(body, model, {",
+    );
+    const routeClientResolution = routeSource.indexOf(
+      "resolveChatmockBaseUrl(request)",
+      routeModelGuard,
+    );
+    assert.ok(
+      routeModelGuard >= 0 && routeClientResolution > routeModelGuard,
+      "the admitted generation path must reject model drift before constructing its model client",
     );
   });
 

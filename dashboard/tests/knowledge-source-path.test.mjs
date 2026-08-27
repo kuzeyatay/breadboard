@@ -5,16 +5,17 @@ import path from "node:path";
 
 describe("source document ingest path", () => {
   const repoRoot = path.resolve(process.cwd());
+  const ingestWorker = () => fs.readFileSync(
+    path.join(repoRoot, "src", "lib", "runtime-v2", "ingest-executor.ts"),
+    "utf8",
+  );
 
   test("upload source markdown is written under sources", () => {
     const knowledgeSource = fs.readFileSync(
       path.join(repoRoot, "src", "lib", "knowledge.ts"),
       "utf8",
     );
-    const ingestRoute = fs.readFileSync(
-      path.join(repoRoot, "src", "app", "api", "ingest", "route.ts"),
-      "utf8",
-    );
+    const ingestRoute = ingestWorker();
 
     assert.match(knowledgeSource, /export const SOURCE_NOTE_FOLDER = "sources"/);
     assert.match(
@@ -59,10 +60,7 @@ describe("source document ingest path", () => {
   });
 
   test("re-uploading the same source filename is idempotent", () => {
-    const ingestRoute = fs.readFileSync(
-      path.join(repoRoot, "src", "app", "api", "ingest", "route.ts"),
-      "utf8",
-    );
+    const ingestRoute = ingestWorker();
     const dashboard = fs.readFileSync(
       path.join(repoRoot, "src", "app", "dashboard", "dashboard-client.tsx"),
       "utf8",
@@ -112,7 +110,10 @@ describe("source document ingest path", () => {
 
     assert.match(knowledgeSource, /function migrateRootSourceDocumentsToSources/);
     assert.match(knowledgeSource, /inferKnowledgeType\(data\) === "source-document"/);
-    assert.match(knowledgeSource, /fs\.renameSync\(entry\.filePath, targetPath\)/);
+    assert.match(
+      knowledgeSource,
+      /renameKnowledgeFile\(\s*entry\.filePath,[\s\S]*?uniqueMigrationPath\(migrationDir, entry\.entry\),[\s\S]*?transaction/,
+    );
     // The published _index exposes the strict export contract: Learning,
     // Sources, and a numbered Reading Path built from learner pages.
     assert.match(knowledgeSource, /## Learning\\n\\n/);
@@ -130,7 +131,7 @@ describe("source document ingest path", () => {
 
     assert.match(
       knowledgeSource,
-      /export function refreshClusterIndex\([\s\S]*?options: \{ migrateSources\?: boolean \} = \{\}/,
+      /export function refreshClusterIndex\([\s\S]*?options: \{[\s\S]*?migrateSources\?: boolean;[\s\S]*?transaction\?: KnowledgeWriteTransaction;[\s\S]*?\} = \{\}/,
     );
     assert.match(
       knowledgeSource,
@@ -151,12 +152,9 @@ describe("source document ingest path", () => {
   });
 
   test("markdown uploads go through the source ingest path", () => {
-    const ingestRoute = fs.readFileSync(
-      path.join(repoRoot, "src", "app", "api", "ingest", "route.ts"),
-      "utf8",
-    );
+    const ingestRoute = ingestWorker();
 
-    assert.match(ingestRoute, /plainText = await file\.text\(\);/);
+    assert.match(ingestRoute, /plainText = await fileText\(\);/);
     assert.match(ingestRoute, /markdownText = plainText;/);
     assert.match(
       ingestRoute,

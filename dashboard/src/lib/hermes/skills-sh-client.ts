@@ -1,4 +1,6 @@
 export const SKILLS_CATALOG_PROXY_ENV = "BREADBOARD_SKILLS_CATALOG_URL";
+export const DEFAULT_BREADBOARD_SKILLS_CATALOG_URL =
+  "https://breadboard-skills-catalog-kuzeyatay.vercel.app/api/v1";
 export const SKILLS_SH_MAX_PAGE_SIZE = 500;
 
 export type SkillsShView = "all-time" | "trending" | "hot";
@@ -90,7 +92,11 @@ export class SkillsShClient {
 
   constructor(options: SkillsShClientOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.baseUrl = normalizeCatalogProxyUrl(options.baseUrl ?? process.env[SKILLS_CATALOG_PROXY_ENV]);
+    this.baseUrl = normalizeCatalogProxyUrl(
+      options.baseUrl ??
+      process.env[SKILLS_CATALOG_PROXY_ENV] ??
+      DEFAULT_BREADBOARD_SKILLS_CATALOG_URL,
+    );
     this.timeoutMs = options.timeoutMs ?? 15_000;
     this.retries = options.retries ?? 3;
     this.random = options.random ?? Math.random;

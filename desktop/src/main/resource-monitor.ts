@@ -1,18 +1,13 @@
-import { execFile } from "node:child_process";
-
 /**
- * Per-service memory telemetry and containment for the desktop supervisor.
+ * Bounded per-service memory evaluation retained for the legacy supervisor's
+ * injected test seam.
  *
- * The supervisor spawns wrappers, not workloads. `next dev` is the clearest
- * case: the direct child the supervisor knows sits at ~65 MB forever while the
- * server child it forks is the process that grows into the tens of gigabytes.
- * Every sample here is therefore taken over the **whole process tree** rooted
- * at the supervised pid.
- *
- * On Windows the number that matters is private/committed bytes, because
- * exhausting the system commit limit — not physical RAM — is what takes down
- * the Desktop Window Manager and Chromium's GPU process. `PrivatePageCount` is
- * that number. Other platforms fall back to RSS.
+ * Production Electron starts Runtime V2 directly. Runtime V2 owns each child
+ * tree in a Windows Job Object and samples private commit plus system commit
+ * through Win32 APIs in the Rust supervisor. Keeping collection out of this
+ * module is deliberate: an Electron timer must never launch PowerShell, `ps`,
+ * or another process merely to observe memory. Tests can still inject exact
+ * samples here to verify streaks, hysteresis, diagnostics, and containment.
  */
 
 export interface ProcessMemorySample {
@@ -260,131 +255,4 @@ export function describeBreach(breach: ResourceBreach, restarts: number): string
     `tree=${mb(treeBytesOf(breach.sample))} threshold=${mb(threshold)} ` +
     `samples=${breach.consecutiveSamples} restarts=${restarts} trend=${trend || "n/a"}`
   );
-}
-
-// --- platform providers -----------------------------------------------------
-
-interface RawProcess {
-  pid: number;
-  ppid: number;
-  rss: number;
-  priv?: number;
-}
-
-function buildTrees(
-  rows: RawProcess[],
-  rootPids: number[],
-  sampledAt: number,
-  includePrivate: boolean,
-): Map<number, ProcessMemorySample> {
-  const byPid = new Map<number, RawProcess>();
-  const children = new Map<number, number[]>();
-  for (const row of rows) {
-    byPid.set(row.pid, row);
-    const siblings = children.get(row.ppid);
-    if (siblings) siblings.push(row.pid);
-    else children.set(row.ppid, [row.pid]);
-  }
-
-  const result = new Map<number, ProcessMemorySample>();
-  for (const rootPid of rootPids) {
-    const root = byPid.get(rootPid);
-    if (!root) continue;
-    const seen = new Set<number>();
-    const stack = [rootPid];
-    let rss = 0;
-    let priv = 0;
-    let count = 0;
-    while (stack.length > 0) {
-      const pid = stack.pop() as number;
-      if (seen.has(pid)) continue;
-      seen.add(pid);
-      const row = byPid.get(pid);
-      if (!row) continue;
-      rss += row.rss;
-      priv += row.priv ?? 0;
-      count += 1;
-      for (const child of children.get(pid) ?? []) stack.push(child);
-    }
-    result.set(rootPid, {
-      pid: rootPid,
-      rssBytes: root.rss,
-      ...(includePrivate ? { privateBytes: root.priv ?? 0 } : {}),
-      descendantCount: Math.max(0, count - 1),
-      treeRssBytes: rss,
-      ...(includePrivate ? { treePrivateBytes: priv } : {}),
-      sampledAt,
-    });
-  }
-  return result;
-}
-
-function run(command: string, args: string[], timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      command,
-      args,
-      { windowsHide: true, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, encoding: "utf8" },
-      (error, stdout) => (error ? reject(error) : resolve(stdout)),
-    );
-  });
-}
-
-/**
- * Windows provider. One PowerShell CIM query per tick covers every watched
- * service, so the cost does not scale with the number of services. Only pid,
- * parent pid and two byte counts are selected — no command lines, no
- * environment, nothing that could carry a secret.
- */
-export const windowsMetricsProvider: ProcessMetricsProvider = {
-  async sample(rootPids: number[]): Promise<Map<number, ProcessMemorySample>> {
-    if (rootPids.length === 0) return new Map();
-    const script =
-      "Get-CimInstance Win32_Process | " +
-      "Select-Object ProcessId,ParentProcessId,WorkingSetSize,PrivatePageCount | " +
-      "ConvertTo-Csv -NoTypeInformation";
-    const stdout = await run(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      15_000,
-    );
-    const rows: RawProcess[] = [];
-    for (const line of stdout.split(/\r?\n/).slice(1)) {
-      const match = line.match(/^"(\d+)","(\d+)","(\d*)","(\d*)"$/);
-      if (!match) continue;
-      rows.push({
-        pid: Number(match[1]),
-        ppid: Number(match[2]),
-        rss: Number(match[3] ?? 0) || 0,
-        priv: Number(match[4] ?? 0) || 0,
-      });
-    }
-    return buildTrees(rows, rootPids, Date.now(), true);
-  },
-};
-
-/**
- * POSIX fallback. `ps` reports RSS in KiB and has no commit equivalent, so
- * budgets are compared against RSS there.
- */
-export const posixMetricsProvider: ProcessMetricsProvider = {
-  async sample(rootPids: number[]): Promise<Map<number, ProcessMemorySample>> {
-    if (rootPids.length === 0) return new Map();
-    const stdout = await run("ps", ["-eo", "pid=,ppid=,rss="], 15_000);
-    const rows: RawProcess[] = [];
-    for (const line of stdout.split(/\r?\n/)) {
-      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)$/);
-      if (!match) continue;
-      rows.push({
-        pid: Number(match[1]),
-        ppid: Number(match[2]),
-        rss: Number(match[3]) * 1024,
-      });
-    }
-    return buildTrees(rows, rootPids, Date.now(), false);
-  },
-};
-
-export function defaultMetricsProvider(): ProcessMetricsProvider {
-  return process.platform === "win32" ? windowsMetricsProvider : posixMetricsProvider;
 }

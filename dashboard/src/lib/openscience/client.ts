@@ -7,6 +7,8 @@
 // not worth that dependency.
 
 const REQUEST_TIMEOUT_MS = 60_000;
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_ERROR_BYTES = 16 * 1024;
 
 export interface Connection {
   baseUrl: string;
@@ -48,6 +50,29 @@ export interface TokenCounts {
   cache?: { read?: number; write?: number };
 }
 
+async function boundedText(response: Response, maximumBytes: number): Promise<string> {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maximumBytes)) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error("OpenScience returned more data than this run accepts.");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maximumBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("OpenScience returned more data than this run accepts.");
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8");
+}
+
 async function call<T>(
   connection: Connection,
   path: string,
@@ -68,13 +93,20 @@ async function call<T>(
         ...(init.headers ?? {}),
       },
     });
-    const text = await response.text();
+    const text = await boundedText(
+      response,
+      response.ok ? MAX_RESPONSE_BYTES : MAX_ERROR_BYTES,
+    );
     if (!response.ok) {
       throw new Error(
         `OpenScience refused ${path} (${response.status}): ${text.slice(0, 300)}`,
       );
     }
-    return (text ? JSON.parse(text) : {}) as T;
+    try {
+      return (text ? JSON.parse(text) : {}) as T;
+    } catch {
+      throw new Error(`OpenScience returned invalid JSON from ${path}.`);
+    }
   } finally {
     clearTimeout(timer);
     forwarded?.removeEventListener("abort", onAbort);
@@ -181,6 +213,7 @@ export async function abortSession(
 ): Promise<void> {
   await call<unknown>(connection, `/session/${encodeURIComponent(sessionId)}/abort`, {
     method: "POST",
+    signal: AbortSignal.timeout(10_000),
   }).catch(() => undefined);
 }
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readChatmockAccount, signOutChatmockAccount } from "@/lib/chatmock-account";
-import { readChatmockLoginState } from "@/lib/chatmock-login";
+import { refreshChatmockLoginState } from "@/lib/chatmock-login";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 import { requireUserId, RouteError, routeErrorResponse } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -13,12 +14,14 @@ const NO_STORE_HEADERS = {
 
 export async function GET() {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     return NextResponse.json(
-      { account: readChatmockAccount(), login: readChatmockLoginState() },
+      { account: readChatmockAccount(), login: await refreshChatmockLoginState(userId) },
       { headers: NO_STORE_HEADERS },
     );
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof RouteError) return routeErrorResponse(error);
     return routeErrorResponse(error);
   }

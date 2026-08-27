@@ -18,9 +18,10 @@
 // safe to run repeatedly (idempotent) and standalone on an already-generated
 // garden.
 
-import fs from "node:fs";
+import type { Dirent } from "node:fs";
 import crypto from "node:crypto";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   anchorTextCompatibleWithVisualType,
   atomicZettelHandle,
@@ -993,7 +994,7 @@ function isSourceFormulaId(id: string): boolean {
 }
 
 function listMarkdown(dir: string, relDir: string, out: Array<{ abs: string; rel: string }>, opts: { includeDotBreadboard?: boolean } = {}): void {
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
@@ -2344,7 +2345,7 @@ function cleanExportTree(gardenDir: string, report: FinalizeReport): void {
     }
   }
 
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(gardenDir, { withFileTypes: true });
   } catch {
@@ -3772,7 +3773,7 @@ export async function repairLearningUnitsFromContract({
 function collectAllFiles(root: string): string[] {
   const out: string[] = [];
   const walk = (dir: string, relDir: string): void => {
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
@@ -6598,7 +6599,7 @@ function rewriteReferencesAfterSectionRename(gardenDir: string, oldRel: string, 
   listMarkdown(gardenDir, "", files, { includeDotBreadboard: true });
   const jsonFiles: Array<{ abs: string; rel: string }> = [];
   const collectJson = (dir: string, relDir: string): void => {
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
@@ -6634,7 +6635,7 @@ function currentSectionTitles(gardenDir: string): {
   const byNumber = new Map<string, string>();
   const relByNumber = new Map<string, string>();
   const learningDir = path.join(gardenDir, "learning");
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(learningDir, { withFileTypes: true });
   } catch {
@@ -6704,7 +6705,7 @@ function repairSectionNavigationLabels(gardenDir: string, report: FinalizeReport
 
 function alignSectionFoldersWithTitles(gardenDir: string, report: FinalizeReport): void {
   const learningDir = path.join(gardenDir, "learning");
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(learningDir, { withFileTypes: true });
   } catch {
@@ -7497,7 +7498,7 @@ function sourceCoverageFinalArtifactConsistencyProblems(gardenDir: string, learn
 
 function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
   const learningDir = path.join(gardenDir, "learning");
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(learningDir, { withFileTypes: true });
   } catch {

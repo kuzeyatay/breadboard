@@ -16,7 +16,7 @@ import type {
   ExternalAgentTerminalOutcome,
 } from "@/lib/conversations/external-agent-runs.ts";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification.ts";
-import { resolveAgentRunStreamError } from "@/lib/agent-run-stream";
+import { closeAgentRunStream, resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 
 interface RunEvent {
   sequenceNumber: number;
@@ -209,7 +209,12 @@ export default function InlineOpenCodeRun({
           const response = await fetch("/api/agent-edits", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ action: "finalize", gardenSlug, runId }),
+            body: JSON.stringify({
+              action: "finalize",
+              agentKind: apiSlug,
+              gardenSlug,
+              runId,
+            }),
           });
           const data = (await response.json().catch(() => ({}))) as {
             edits?: { before?: unknown; after?: unknown };
@@ -233,7 +238,7 @@ export default function InlineOpenCodeRun({
         ...(finalized ? { edits: finalized } : {}),
       });
     },
-    [gardenSlug, runId],
+    [apiSlug, gardenSlug, runId],
   );
 
   const pushActivity = useCallback((event: ActivityEvent) => {
@@ -324,6 +329,7 @@ export default function InlineOpenCodeRun({
         // happened to observe.
         const elapsedSec = numberValue(payload.elapsedSec);
         setStatus("completed");
+        setActivityOpen(false);
         setResult(summary);
         if (elapsedSec > 0) setElapsed(elapsedSec);
         if (!reportedRef.current) {
@@ -348,6 +354,7 @@ export default function InlineOpenCodeRun({
                 : `${agentName} could not complete the task.`;
         const failedAfterSec = numberValue(payload.elapsedSec);
         setStatus(outcome);
+        setActivityOpen(false);
         setFailure(message);
         if (failedAfterSec > 0) setElapsed(failedAfterSec);
         if (!reportedRef.current) {
@@ -385,6 +392,7 @@ export default function InlineOpenCodeRun({
         replayEnding: applyEvent,
         onUnavailable: (reason) => {
           setStatus("failed");
+          setActivityOpen(false);
           setFailure(
             reason === "run_not_found"
               ? `This ${agentName} process is no longer live, but its saved result remains.`
@@ -393,7 +401,7 @@ export default function InlineOpenCodeRun({
         },
       });
     };
-    return () => source.close();
+    return () => closeAgentRunStream(source);
   }, [agentName, applyEvent, base, persistedContent, persistedOutcome]);
 
   // The start is read on every tick rather than captured once: the first
@@ -410,10 +418,6 @@ export default function InlineOpenCodeRun({
     tick();
     const timer = window.setInterval(tick, 1_000);
     return () => window.clearInterval(timer);
-  }, [status]);
-
-  useEffect(() => {
-    if (TERMINAL.has(status)) setActivityOpen(false);
   }, [status]);
 
   const terminal = TERMINAL.has(status);

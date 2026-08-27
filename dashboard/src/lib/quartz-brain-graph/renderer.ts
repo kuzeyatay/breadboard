@@ -87,11 +87,22 @@ function stableUnit(value: string): number {
 }
 
 function canUseWebGl(): boolean {
+  let canvas: HTMLCanvasElement | null = null;
   try {
-    const canvas = document.createElement("canvas");
-    return Boolean(canvas.getContext("webgl2") || canvas.getContext("webgl"));
+    canvas = document.createElement("canvas");
+    const context = canvas.getContext("webgl2") || canvas.getContext("webgl");
+    if (!context) return false;
+    // Capability probing must not itself consume one of the browser's small
+    // pool of native WebGL contexts on every graph mount.
+    context.getExtension("WEBGL_lose_context")?.loseContext();
+    return true;
   } catch {
     return false;
+  } finally {
+    if (canvas) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
   }
 }
 

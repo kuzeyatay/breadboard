@@ -1,5 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { contentFingerprint } from "../garden-build/fingerprint.ts";
 import { buildGardenPathPlan } from "../garden-build/path-plan.ts";
 import type { AcceptedGardenSnapshot } from "../garden-build/snapshot.ts";

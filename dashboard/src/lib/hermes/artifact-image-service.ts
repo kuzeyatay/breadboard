@@ -1,6 +1,5 @@
-import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import OpenAI from "openai";
 import type { EasyInputMessage } from "openai/resources/responses/responses";
 import { DEFAULT_MODEL } from "../ai-models.ts";
@@ -9,6 +8,7 @@ import {
   type ArtifactRow,
 } from "./artifact-store.ts";
 import type { ArtifactContext } from "../socials-manager/artifacts.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 
 const MAX_GENERATED_IMAGE_BYTES = 32 * 1024 * 1024;
 
@@ -280,7 +280,7 @@ export async function generateArtifactImage(input: {
 }
 
 /** Import an in-memory raster as a normal, verified, durable image artifact. */
-export function importArtifactImage(input: {
+export async function importArtifactImage(input: {
   context: ArtifactContext;
   buffer: Buffer;
   title: string;
@@ -290,7 +290,7 @@ export function importArtifactImage(input: {
   toolCallId?: string | null;
   metadata?: Record<string, unknown>;
   sourceTool: "artifact_image_generate" | "artifact_image_edit" | "artifact_image_upload";
-}): ArtifactRow {
+}): Promise<ArtifactRow> {
   const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-artifact-image-"));
   const stagedName = (input.filename ?? "image.png")
     .replace(/[^a-z0-9._-]+/gi, "-")
@@ -299,7 +299,7 @@ export function importArtifactImage(input: {
   const stagedFile = path.join(stagingRoot, stagedName);
   try {
     fs.writeFileSync(stagedFile, input.buffer, { flag: "wx" });
-    return createImportedArtifact({
+    return await createImportedArtifact({
       userId: input.context.userId,
       runtimeSessionId: input.context.runtimeSessionId,
       hermesSessionId: input.context.hermesSessionId,

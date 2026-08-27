@@ -1,7 +1,7 @@
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
+import { externalRuntimeFilesystem } from "@/lib/external-runtime-filesystem";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import {
   cachedExerciseGif,
@@ -14,6 +14,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const MAX_GIF_BYTES = 15 * 1024 * 1024;
+const runtimeFs = externalRuntimeFilesystem.promises;
 
 function validGif(bytes: Uint8Array): boolean {
   if (bytes.byteLength < 10 || bytes.byteLength > MAX_GIF_BYTES) return false;
@@ -23,7 +24,7 @@ function validGif(bytes: Uint8Array): boolean {
 
 async function readValidGif(filename: string): Promise<Uint8Array | null> {
   try {
-    const bytes = await readFile(filename);
+    const bytes = await runtimeFs.readFile(filename);
     return validGif(bytes) ? bytes : null;
   } catch {
     return null;
@@ -57,11 +58,11 @@ export async function GET(
       if (declared > MAX_GIF_BYTES) throw new Error("animation is too large");
       bytes = new Uint8Array(await response.arrayBuffer());
       if (!validGif(bytes)) throw new Error("animation source did not return a valid GIF");
-      await mkdir(path.dirname(cacheFile), { recursive: true });
+      await runtimeFs.mkdir(path.dirname(cacheFile), { recursive: true });
       const temporary = `${cacheFile}.${randomUUID()}.tmp`;
       try {
-        await writeFile(temporary, bytes);
-        await rename(temporary, cacheFile);
+        await runtimeFs.writeFile(temporary, bytes);
+        await runtimeFs.rename(temporary, cacheFile);
       } catch (error) {
         // Two cards can request the same exercise together. If the other one
         // won the atomic rename, use its validated file instead of failing.
@@ -69,7 +70,7 @@ export async function GET(
         if (!raced) throw error;
         bytes = raced;
       } finally {
-        await unlink(temporary).catch(() => undefined);
+        await runtimeFs.unlink(temporary).catch(() => undefined);
       }
     }
     const body = new ArrayBuffer(bytes.byteLength);

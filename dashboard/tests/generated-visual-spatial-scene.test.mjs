@@ -10,15 +10,51 @@ import {
   GENERATED_VISUAL_BROWSER_MOUNT_MAX_ATTEMPTS,
   GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS,
   GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
-  compileGeneratedVisualization,
+  createGeneratedVisualBrowserProfileRoot,
   generateVisualizationCandidate,
   planGeneratedVisualSelectPreviewStates,
-  runGeneratedVisualBrowserTests,
+  removeGeneratedVisualBrowserProfile,
   runGeneratedVisualDeterministicTests,
   validateGeneratedVisualizationCandidateEnvelope,
   validateGeneratedVisualizationDefinition,
 } from "../src/lib/generated-visuals.ts";
-import { runObservedGeneratedVisualBrowserProcess } from "../src/lib/generated-visual-browser-process.ts";
+import { compileGeneratedVisualization } from "../src/lib/generated-visual-compiler.ts";
+import {
+  runGeneratedVisualBrowserTestsLocally as runGeneratedVisualBrowserTests,
+} from "../src/lib/generated-visual-browser-tests.ts";
+import {
+  generatedVisualBrowserAttemptDurationBoundMs,
+  runObservedGeneratedVisualBrowserProcess,
+} from "../src/lib/generated-visual-browser-process.ts";
+
+function observedBrowserSuccess(completion, stdout) {
+  return {
+    status: 0,
+    signal: null,
+    stdout,
+    error: null,
+    durationMs: 1,
+    timedOut: false,
+    completion,
+    browserExitedNaturally: false,
+    cleanupMethod: "taskkill-tree",
+    cleanupConfirmed: true,
+  };
+}
+
+function observedBrowserTransient(code, message = `simulated Edge ${code}`) {
+  return {
+    status: null,
+    signal: null,
+    error: { code, message },
+    durationMs: 1,
+    timedOut: false,
+    completion: "spawn_error",
+    browserExitedNaturally: false,
+    cleanupMethod: "taskkill-tree",
+    cleanupConfirmed: true,
+  };
+}
 
 const visibleCase = (index) => ({
   kind: "conditional",
@@ -587,7 +623,7 @@ test("the final reviewed learner action outranks stale high-spatial necessity pr
   );
 });
 
-test("browser runtime keeps a long plot axis label inside the mobile SVG frame", (t) => {
+test("browser runtime keeps a long plot axis label inside the mobile SVG frame", async (t) => {
   if (!browserPath()) {
     t.skip("no supported browser binary is available");
     return;
@@ -624,7 +660,7 @@ test("browser runtime keeps a long plot axis label inside the mobile SVG frame",
         }],
       }],
     };
-    const browser = runGeneratedVisualBrowserTests({ definition, outputDir });
+    const browser = await runGeneratedVisualBrowserTests({ definition, outputDir });
     assert.ok(
       browser.tests.every((entry) => entry.passed),
       JSON.stringify(browser.tests, null, 2),
@@ -1161,24 +1197,30 @@ test("select preview planning covers mixed reviewed select kinds, remains bounde
   );
 });
 
-test("spatial runtime mounts accessibly at browser viewports and captures every bounded select-case preview", (t) => {
+test("spatial runtime mounts accessibly at browser viewports and captures every bounded select-case preview", async (t) => {
   if (!browserPath()) return t.skip("Chromium or Edge is not installed");
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-spatial-browser-"));
   const domBySlug = new Map();
   try {
     const definition = spatialDefinition();
-    const result = runGeneratedVisualBrowserTests({
+    const result = await runGeneratedVisualBrowserTests({
       definition,
       outputDir,
       timeoutMs: 25_000,
-      browserRunner: (invocation) => {
-        const observed = runObservedGeneratedVisualBrowserProcess(invocation);
+      browserRunner: async (invocation) => {
+        const observed = await runObservedGeneratedVisualBrowserProcess(invocation);
         if (invocation.slug === "375x667-light")
           domBySlug.set(invocation.slug, observed.stdout ?? "");
         return observed;
       },
     });
-    assert.ok(result.tests.every((entry) => entry.passed), JSON.stringify(result.tests));
+    assert.ok(
+      result.tests.every((entry) => entry.passed),
+      JSON.stringify({
+        tests: result.tests,
+        mountReceipts: result.browser?.mountReceipts,
+      }),
+    );
     assert.ok(
       result.tests
         .filter((entry) => entry.name.startsWith("browser mount"))
@@ -1197,9 +1239,15 @@ test("spatial runtime mounts accessibly at browser viewports and captures every 
       assert.ok(
         attempt.timedOut
           ? attempt.completion === "deadline"
-          : ["observed_dom", "process_exit"].includes(attempt.completion),
+          : attempt.completion === "spawn_error"
+            ? Boolean(attempt.errorCode)
+            : ["observed_dom", "process_exit"].includes(attempt.completion),
+        JSON.stringify(attempt),
       );
-      assert.ok(attempt.durationMs >= 0 && attempt.durationMs < 30_000);
+      assert.ok(
+        attempt.durationMs >= 0 &&
+          attempt.durationMs < generatedVisualBrowserAttemptDurationBoundMs(25_000),
+      );
     }
     for (const receipt of result.browser?.previewMatrixReceipt?.cells ?? []) {
       assert.equal(receipt.captured, true, JSON.stringify(receipt));
@@ -1214,9 +1262,15 @@ test("spatial runtime mounts accessibly at browser viewports and captures every 
         assert.ok(
           attempt.timedOut
             ? attempt.completion === "deadline"
-            : ["observed_capture", "process_exit"].includes(attempt.completion),
+            : attempt.completion === "spawn_error"
+              ? Boolean(attempt.errorCode)
+              : ["observed_capture", "process_exit"].includes(attempt.completion),
+          JSON.stringify({ receiptId: receipt.id, attempt }),
         );
-        assert.ok(attempt.durationMs >= 0 && attempt.durationMs < 30_000);
+        assert.ok(
+          attempt.durationMs >= 0 &&
+            attempt.durationMs < generatedVisualBrowserAttemptDurationBoundMs(25_000),
+        );
       }
     }
     const previewIds = result.previews.map((preview) => preview.id).sort();
@@ -1270,11 +1324,11 @@ test("spatial runtime mounts accessibly at browser viewports and captures every 
   }
 });
 
-test("browser self-test rejects unsafe authored spatial camera framing with a scale repair hint", (t) => {
+test("browser self-test rejects unsafe authored spatial camera framing with a scale repair hint", async (t) => {
   if (!browserPath()) return t.skip("Chromium or Edge is not installed");
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-spatial-camera-frame-"));
   try {
-    const unsafe = runGeneratedVisualBrowserTests({
+    const unsafe = await runGeneratedVisualBrowserTests({
       definition: spatialCameraFrameDefinition(2),
       outputDir: path.join(outputDir, "unsafe"),
       timeoutMs: 25_000,
@@ -1288,7 +1342,7 @@ test("browser self-test rejects unsafe authored spatial camera framing with a sc
       /runtime self-check failures: spatial\.after_control_change\.host\[0\]\.geometry_out_of_frame: primitive=e_field_bot; overflow=.*(?:top|bottom)=.*; authoredScale=2; scaleAtMost=/,
     );
 
-    const repaired = runGeneratedVisualBrowserTests({
+    const repaired = await runGeneratedVisualBrowserTests({
       definition: spatialCameraFrameDefinition(0.55),
       outputDir: path.join(outputDir, "repaired"),
       timeoutMs: 25_000,
@@ -1299,11 +1353,11 @@ test("browser self-test rejects unsafe authored spatial camera framing with a sc
   }
 });
 
-test("mobile preview rejects a primary spatial scene below the document viewport and accepts source ordering repair", (t) => {
+test("mobile preview rejects a primary spatial scene below the document viewport and accepts source ordering repair", async (t) => {
   if (!browserPath()) return t.skip("Chromium or Edge is not installed");
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-spatial-preview-viewport-"));
   try {
-    const belowFold = runGeneratedVisualBrowserTests({
+    const belowFold = await runGeneratedVisualBrowserTests({
       definition: mobilePrimarySpatialViewportDefinition(),
       outputDir: path.join(outputDir, "below-fold"),
       timeoutMs: 25_000,
@@ -1330,7 +1384,7 @@ test("mobile preview rejects a primary spatial scene below the document viewport
     );
     assert.equal(axialDesktop?.captured, true, JSON.stringify(axialDesktop));
 
-    const repaired = runGeneratedVisualBrowserTests({
+    const repaired = await runGeneratedVisualBrowserTests({
       definition: mobilePrimarySpatialViewportDefinition({ spatialFirst: true }),
       outputDir: path.join(outputDir, "reordered"),
       timeoutMs: 25_000,
@@ -1344,12 +1398,12 @@ test("mobile preview rejects a primary spatial scene below the document viewport
   }
 });
 
-test("browser self-test rejects crowded diagram labels before critic review and accepts a compact mobile stencil", (t) => {
+test("browser self-test rejects crowded diagram labels before critic review and accepts a compact mobile stencil", async (t) => {
   if (!browserPath()) return t.skip("Chromium or Edge is not installed");
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-diagram-layout-"));
   try {
     const crowdedDom = [];
-    const crowded = runGeneratedVisualBrowserTests({
+    const crowded = await runGeneratedVisualBrowserTests({
       definition: diagramLayoutDefinition({ crowded: true, capped: true }),
       outputDir: path.join(outputDir, "crowded"),
       timeoutMs: 25_000,
@@ -1378,7 +1432,7 @@ test("browser self-test rejects crowded diagram labels before critic review and 
       /runtime self-check failures: diagram\.after_control_change\.scene\[0\]\.(?:node_label_footprint|node_label_line_overlap|label_out_of_bounds|label_overlap|edge_label_node_overlap|node_overlap)/,
     );
 
-    const compact = runGeneratedVisualBrowserTests({
+    const compact = await runGeneratedVisualBrowserTests({
       // Regression: source labels and meaningful live values must remain
       // visible in their measured, expanded authored footprints.
       definition: diagramLayoutDefinition({
@@ -1388,29 +1442,33 @@ test("browser self-test rejects crowded diagram labels before critic review and 
       outputDir: path.join(outputDir, "compact"),
       timeoutMs: 25_000,
     });
-    assert.ok(compact.tests.every((entry) => entry.passed), JSON.stringify(compact.tests));
+    assert.ok(
+      compact.tests.every((entry) => entry.passed),
+      JSON.stringify({
+        tests: compact.tests,
+        mountReceipts: compact.browser?.mountReceipts,
+      }),
+    );
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }
 });
 
-test("browser self-test fits an offscreen V surface node after focused control and Reset", (t) => {
+test("browser self-test fits an offscreen V surface node after focused control and Reset", async (t) => {
   if (!browserPath()) return t.skip("Chromium or Edge is not installed");
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-diagram-offscreen-layout-"));
   try {
     const domByScenario = new Map();
-    const result = runGeneratedVisualBrowserTests({
+    const result = await runGeneratedVisualBrowserTests({
       definition: offscreenDiagramFootprintDefinition(),
       outputDir,
       timeoutMs: 25_000,
-      browserRunner: ({ executable, args, slug }) => {
-        const browser = spawnSync(executable, args, {
-          encoding: "utf8",
-          timeout: 25_000,
-          windowsHide: true,
-        });
-        if (args.includes("--dump-dom")) domByScenario.set(slug, browser.stdout ?? "");
-        return browser;
+      browserRunner: async (invocation) => {
+        const observed = await runObservedGeneratedVisualBrowserProcess(invocation);
+        if (invocation.args.includes("--dump-dom")) {
+          domByScenario.set(invocation.slug, observed.stdout ?? "");
+        }
+        return observed;
       },
     });
     const reducedMotion = result.tests.find(
@@ -1435,13 +1493,13 @@ test("browser self-test fits an offscreen V surface node after focused control a
   }
 });
 
-test("browser mount retries a transient Edge launch timeout with a fresh profile and bounded receipt", () => {
+test("browser mount retries a transient Edge launch timeout with a fresh profile and bounded receipt", async () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-mount-retry-"));
   const mountProfilesByScenario = new Map();
   const mountAttemptsByScenario = new Map();
   const retryDelays = [];
   try {
-    const result = runGeneratedVisualBrowserTests({
+    const result = await runGeneratedVisualBrowserTests({
       definition: spatialDefinition(),
       outputDir,
       browserExecutable: "fake-edge",
@@ -1450,10 +1508,10 @@ test("browser mount retries a transient Edge launch timeout with a fresh profile
         const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
         if (screenshotArg) {
           fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "fake png");
-          return {
-            status: 0,
-            stdout: '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
-          };
+          return observedBrowserSuccess(
+            "observed_capture",
+            '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          );
         }
         if (args.includes("--dump-dom")) {
           assert.ok(args.includes("--disable-gpu-shader-disk-cache"), JSON.stringify(args));
@@ -1476,19 +1534,40 @@ test("browser mount retries a transient Edge launch timeout with a fresh profile
                 code: "ETIMEDOUT",
                 message: "spawnSync C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe ETIMEDOUT",
               },
+              completion: "deadline",
+              browserExitedNaturally: false,
+              cleanupMethod: "taskkill-tree",
+              cleanupConfirmed: true,
             };
           }
-          return {
-            status: 0,
-            stdout: '<body data-breadboard-runtime-tests="passed"></body>',
-          };
+          if (slug === "1280x800-dark" && attempts === 1) {
+            return {
+              status: null,
+              signal: "SIGTERM",
+              durationMs: 20_000,
+              timedOut: true,
+              stdout: '<html><body data-breadboard-overflow="false" data-breadboard-runtime-tests="passed"></body></html>',
+              error: {
+                code: "ETIMEDOUT",
+                message: "Browser crossed its process deadline.",
+              },
+              completion: "deadline",
+              browserExitedNaturally: false,
+              cleanupMethod: "taskkill-tree",
+              cleanupConfirmed: true,
+            };
+          }
+          return observedBrowserSuccess(
+            "observed_dom",
+            '<body data-breadboard-runtime-tests="passed"></body>',
+          );
         }
         assert.fail(JSON.stringify(args));
       },
     });
 
     assert.ok(result.tests.every((entry) => entry.passed), JSON.stringify(result.tests));
-    assert.deepEqual(retryDelays, [125]);
+    assert.deepEqual(retryDelays, [125, 125]);
     const receipt = result.browser?.mountReceipts?.find(
       (entry) => entry.scenario === "375x667 light",
     );
@@ -1514,6 +1593,17 @@ test("browser mount retries a transient Edge launch timeout with a fresh profile
       result.tests.find((entry) => entry.name === "browser mount 375x667 light")?.detail ?? "",
       /mounted and self-tested after transient browser retry 2\/2 \(ETIMEDOUT\)/,
     );
+    const latePassedReceipt = result.browser?.mountReceipts?.find(
+      (entry) => entry.scenario === "1280x800 dark",
+    );
+    assert.equal(latePassedReceipt?.mounted, true, JSON.stringify(latePassedReceipt));
+    assert.equal(latePassedReceipt?.attempts.length, 2);
+    assert.equal(latePassedReceipt?.attempts[0].timedOut, true);
+    assert.equal(latePassedReceipt?.attempts[0].completion, "deadline");
+    assert.equal(latePassedReceipt?.attempts[0].cleanupConfirmed, true);
+    assert.equal(latePassedReceipt?.attempts[0].transientFailureCode, "ETIMEDOUT");
+    assert.match(latePassedReceipt?.attempts[0].detail ?? "", /runtime self-check passed.*ETIMEDOUT/i);
+    assert.equal(latePassedReceipt?.attempts[1].mounted, true);
     const retryProfiles = mountProfilesByScenario.get("375x667-light");
     assert.equal(retryProfiles.length, GENERATED_VISUAL_BROWSER_MOUNT_MAX_ATTEMPTS);
     assert.notEqual(retryProfiles[0], retryProfiles[1]);
@@ -1529,7 +1619,336 @@ test("browser mount retries a transient Edge launch timeout with a fresh profile
   }
 });
 
-test("browser completion is artifact-observed and cleans a stalled disposable process tree", () => {
+test("browser profile cleanup failure is durable and fails the browser gate closed", async () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-profile-receipt-"));
+  let injectedFailure = false;
+  let runnerFailureInjected = false;
+  try {
+    const result = await runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir,
+      browserExecutable: "fake-edge",
+      browserMountRetryBackoff: () => {},
+      previewCaptureRetryBackoff: () => {},
+      browserProfileRemover: async (profileRoot, profilePath) => {
+        const receipt = await removeGeneratedVisualBrowserProfile(
+          profileRoot,
+          profilePath,
+        );
+        if (!injectedFailure && path.resolve(profileRoot) !== path.resolve(profilePath)) {
+          injectedFailure = true;
+          return { ...receipt, confirmed: false, failureCode: "EBUSY" };
+        }
+        return receipt;
+      },
+      browserRunner: ({ args }) => {
+        if (!runnerFailureInjected) {
+          runnerFailureInjected = true;
+          throw new Error("injected browser runner failure");
+        }
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "fake png");
+          return observedBrowserSuccess(
+            "observed_capture",
+            '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          );
+        }
+        return observedBrowserSuccess(
+          "observed_dom",
+          '<body data-breadboard-runtime-tests="passed"></body>',
+        );
+      },
+    });
+
+    assert.equal(injectedFailure, true);
+    assert.equal(runnerFailureInjected, true);
+    assert.equal(result.browser?.profileCleanup?.confirmed, false);
+    assert.equal(result.browser?.profileCleanup?.rootRemoved, true);
+    assert.equal(result.browser?.profileCleanup?.failureCode, "EBUSY");
+    assert.equal(
+      result.tests.find((entry) => entry.name === "browser profile cleanup")?.passed,
+      false,
+    );
+    const failedAttempt = result.browser?.mountReceipts
+      ?.flatMap((receipt) => receipt.attempts)
+      .find((attempt) => attempt.errorCode === "EBUSY");
+    assert.equal(failedAttempt?.cleanupConfirmed, false);
+    assert.match(failedAttempt?.detail ?? "", /injected browser runner failure/u);
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("an aborted runner and failed profile-root cleanup preserve both causes", async (t) => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-profile-aggregate-"));
+  const controller = new AbortController();
+  controller.abort(new Error("primary abort cause"));
+  let capturedRoot;
+  t.after(() => {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+    if (capturedRoot) fs.rmSync(capturedRoot, { recursive: true, force: true });
+  });
+  await assert.rejects(
+    () => runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir,
+      browserExecutable: "fake-edge",
+      signal: controller.signal,
+      browserRunner: () => assert.fail("pre-aborted work must not reach the runner"),
+      browserProfileRemover: async (profileRoot, profilePath) => {
+        capturedRoot = profileRoot;
+        if (path.resolve(profileRoot) === path.resolve(profilePath)) {
+          return { confirmed: false, retries: 0, failureCode: "EBUSY" };
+        }
+        return await removeGeneratedVisualBrowserProfile(profileRoot, profilePath);
+      },
+    }),
+    (error) => {
+      assert.ok(error instanceof AggregateError, String(error));
+      assert.equal(error.errors.length, 2);
+      assert.match(String(error.errors[0]), /primary abort cause/u);
+      assert.match(String(error.errors[1]), /profile-root cleanup.*EBUSY/u);
+      return true;
+    },
+  );
+});
+
+test("browser profile removal retries sharing violations and never traverses a reparse target", async (t) => {
+  const profileRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-vp-cleanup-test-"));
+  const profilePath = path.join(profileRoot, "p-1");
+  fs.mkdirSync(profilePath);
+  t.after(() => fs.rmSync(profileRoot, { recursive: true, force: true }));
+  let removeCalls = 0;
+  const receipt = await removeGeneratedVisualBrowserProfile(
+    profileRoot,
+    profilePath,
+    {
+      platform: "win32",
+      now: () => 0,
+      wait: async () => {},
+      remove(target, options) {
+        removeCalls += 1;
+        if (removeCalls < 3) {
+          const error = new Error("profile is busy");
+          error.code = "EBUSY";
+          throw error;
+        }
+        fs.rmSync(target, options);
+      },
+    },
+  );
+  assert.deepEqual(receipt, { confirmed: true, retries: 2 });
+  assert.equal(fs.existsSync(profilePath), false);
+
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-profile-outside-"));
+  const marker = path.join(outside, "must-remain.txt");
+  fs.writeFileSync(marker, "outside");
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.symlinkSync(outside, profilePath, process.platform === "win32" ? "junction" : "dir");
+  const reparseReceipt = await removeGeneratedVisualBrowserProfile(
+    profileRoot,
+    profilePath,
+  );
+  assert.deepEqual(reparseReceipt, { confirmed: true, retries: 0 });
+  assert.equal(fs.existsSync(profilePath), false);
+  assert.equal(fs.readFileSync(marker, "utf8"), "outside");
+
+  const escapedRoot = path.join(profileRoot, "nested-root");
+  fs.mkdirSync(escapedRoot);
+  assert.deepEqual(
+    await removeGeneratedVisualBrowserProfile(escapedRoot, escapedRoot),
+    { confirmed: false, retries: 0, failureCode: "EPROFILEAUTH" },
+  );
+  assert.equal(fs.existsSync(escapedRoot), true);
+
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-profile-root-outside-"));
+  const outsideChild = path.join(outsideRoot, "p-1");
+  const outsideMarker = path.join(outsideChild, "must-remain.txt");
+  fs.mkdirSync(outsideChild);
+  fs.writeFileSync(outsideMarker, "outside root marker");
+  const swappedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-vp-swapped-"));
+  fs.rmSync(swappedRoot, { recursive: true, force: true });
+  fs.symlinkSync(outsideRoot, swappedRoot, process.platform === "win32" ? "junction" : "dir");
+  t.after(() => {
+    try {
+      fs.unlinkSync(swappedRoot);
+    } catch {
+      try {
+        fs.rmdirSync(swappedRoot);
+      } catch {}
+    }
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  });
+  assert.deepEqual(
+    await removeGeneratedVisualBrowserProfile(swappedRoot, path.join(swappedRoot, "p-1")),
+    { confirmed: false, retries: 0, failureCode: "EPROFILEREPARSE" },
+  );
+  assert.equal(fs.readFileSync(outsideMarker, "utf8"), "outside root marker");
+
+  const creationTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-vp-create-test-"));
+  const untrustedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-untrusted-profile-"));
+  const untrustedMarker = path.join(untrustedRoot, "must-remain.txt");
+  fs.writeFileSync(untrustedMarker, "untrusted marker");
+  t.after(() => {
+    fs.rmSync(creationTempRoot, { recursive: true, force: true });
+    fs.rmSync(untrustedRoot, { recursive: true, force: true });
+  });
+  assert.throws(
+    () => createGeneratedVisualBrowserProfileRoot({
+      tempRoot: creationTempRoot,
+      mkdtemp: () => untrustedRoot,
+    }),
+    /escaped the OS temporary directory/u,
+  );
+  assert.equal(fs.readFileSync(untrustedMarker, "utf8"), "untrusted marker");
+});
+
+test("status zero cannot pass mount or capture without coherent process-tree cleanup", async () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-browser-coherence-"));
+  try {
+    const result = await runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir,
+      browserExecutable: "fake-edge",
+      browserMountRetryBackoff: () => {},
+      previewCaptureRetryBackoff: () => {},
+      browserRunner: ({ args }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "partial png");
+        }
+        return {
+          ...observedBrowserSuccess(
+            screenshotArg ? "observed_capture" : "observed_dom",
+            screenshotArg
+              ? '<body data-breadboard-preview-primary-spatial-frame="passed"></body>'
+              : '<body data-breadboard-runtime-tests="passed"></body>',
+          ),
+          cleanupMethod: "process-kill",
+          cleanupConfirmed: false,
+        };
+      },
+    });
+    assert.equal(
+      result.browser?.mountReceipts?.every((receipt) => !receipt.mounted),
+      true,
+    );
+    assert.equal(result.browser?.previewMatrixComplete, false);
+    assert.equal(result.browser?.previewCount, 0);
+    assert.equal(
+      result.browser?.previewMatrixReceipt?.cells.every((cell) =>
+        cell.attempts.every((attempt) => attempt.screenshotCreated === false)),
+      true,
+    );
+
+    const missingTimedOut = await runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir: path.join(outputDir, "missing-timed-out"),
+      browserExecutable: "fake-edge",
+      browserMountRetryBackoff: () => {},
+      previewCaptureRetryBackoff: () => {},
+      browserRunner: ({ args }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "forged png");
+        }
+        const forged = observedBrowserSuccess(
+          screenshotArg ? "observed_capture" : "observed_dom",
+          screenshotArg
+            ? '<body data-breadboard-preview-primary-spatial-frame="passed"></body>'
+            : '<body data-breadboard-runtime-tests="passed"></body>',
+        );
+        delete forged.timedOut;
+        return forged;
+      },
+    });
+    assert.equal(
+      missingTimedOut.browser?.mountReceipts?.every((receipt) => !receipt.mounted),
+      true,
+    );
+    assert.equal(missingTimedOut.browser?.previewCount, 0);
+    assert.equal(
+      missingTimedOut.browser?.previewMatrixReceipt?.cells.every((cell) =>
+        cell.attempts.length === 1 && cell.attempts[0].retryDelayMs === undefined),
+      true,
+    );
+
+    const mismatchedMethods = await runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir: path.join(outputDir, "mismatched-methods"),
+      browserExecutable: "fake-edge",
+      browserMountRetryBackoff: () => {},
+      previewCaptureRetryBackoff: () => {},
+      browserRunner: ({ args }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "forged png");
+          return {
+            ...observedBrowserSuccess(
+              "process_exit",
+              '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+            ),
+            browserExitedNaturally: true,
+            cleanupMethod: "taskkill-tree",
+          };
+        }
+        return {
+          ...observedBrowserSuccess(
+            "observed_dom",
+            '<body data-breadboard-runtime-tests="passed"></body>',
+          ),
+          cleanupMethod: "natural-exit-lineage",
+        };
+      },
+    });
+    assert.equal(
+      mismatchedMethods.browser?.mountReceipts?.every((receipt) => !receipt.mounted),
+      true,
+    );
+    assert.equal(mismatchedMethods.browser?.previewCount, 0);
+    assert.equal(
+      mismatchedMethods.browser?.previewMatrixReceipt?.cells.every((cell) =>
+        cell.attempts.length === 1 && cell.attempts[0].retryDelayMs === undefined),
+      true,
+    );
+
+    const natural = await runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir: path.join(outputDir, "natural"),
+      browserExecutable: "fake-edge",
+      browserRunner: ({ args }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "natural png");
+        }
+        return {
+          status: 0,
+          signal: null,
+          stdout: screenshotArg
+            ? '<body data-breadboard-preview-primary-spatial-frame="passed"></body>'
+            : '<body data-breadboard-runtime-tests="passed"></body>',
+          error: null,
+          durationMs: 1,
+          timedOut: false,
+          completion: "process_exit",
+          browserExitedNaturally: true,
+          cleanupMethod: "process-group",
+          cleanupConfirmed: true,
+        };
+      },
+    });
+    assert.equal(
+      natural.tests.every((entry) => entry.passed),
+      true,
+      JSON.stringify(natural.tests),
+    );
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser completion is artifact-observed and cleans a stalled disposable process tree", async () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-observed-browser-"));
   const fakeBrowserPath = path.join(outputDir, "generic-stalled-browser.mjs");
   const descendantPidLedger = path.join(outputDir, "descendant-pids.txt");
@@ -1560,7 +1979,7 @@ setInterval(() => {}, 1000);
     "utf8",
   );
   try {
-    const result = runGeneratedVisualBrowserTests({
+    const result = await runGeneratedVisualBrowserTests({
       definition: spatialDefinition(),
       outputDir,
       browserExecutable: "generic-fake-browser",
@@ -1618,7 +2037,7 @@ setInterval(() => {}, 1000);
   }
 });
 
-test("browser deadline rejects an unconfirmed screenshot and preserves diagnostics separately", () => {
+test("browser deadline rejects an unconfirmed screenshot and preserves diagnostics separately", async () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-browser-deadline-"));
   const fakeBrowserPath = path.join(outputDir, "generic-incomplete-browser.mjs");
   const screenshotPath = path.join(outputDir, "unconfirmed.png");
@@ -1635,7 +2054,7 @@ setInterval(() => {}, 1000);
     "utf8",
   );
   try {
-    const result = runObservedGeneratedVisualBrowserProcess({
+    const result = await runObservedGeneratedVisualBrowserProcess({
       executable: process.execPath,
       args: [fakeBrowserPath, `--screenshot=${screenshotPath}`],
       timeoutMs: 250,
@@ -1645,7 +2064,7 @@ setInterval(() => {}, 1000);
     assert.equal(result.error?.code, "ETIMEDOUT");
     assert.match(result.stderr, /999 bytes written to file/);
     assert.match(result.stdout, /data-generic="rendered"/);
-    assert.equal(result.completion, undefined);
+    assert.equal(result.completion, "deadline");
     assert.equal(result.cleanupConfirmed, true);
     assert.ok(result.durationMs >= 200 && result.durationMs < 5_000, JSON.stringify(result));
   } finally {
@@ -1653,7 +2072,27 @@ setInterval(() => {}, 1000);
   }
 });
 
-test("browser output overflow cannot inherit a successful process status", () => {
+test("browser spawn failure has an explicit bounded completion receipt", async () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-browser-spawn-"));
+  const screenshotPath = path.join(outputDir, "missing.png");
+  try {
+    const result = await runObservedGeneratedVisualBrowserProcess({
+      executable: path.join(outputDir, "missing-browser.exe"),
+      args: [`--screenshot=${screenshotPath}`],
+      timeoutMs: 1_000,
+    });
+    assert.equal(result.status, null);
+    assert.equal(result.timedOut, false);
+    assert.ok(result.error?.code);
+    assert.equal(result.completion, "spawn_error");
+    assert.equal(result.cleanupConfirmed, true);
+    assert.ok(result.durationMs >= 0 && result.durationMs < 5_000, JSON.stringify(result));
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser output overflow cannot inherit a successful process status", async () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-browser-overflow-"));
   const fakeBrowserPath = path.join(outputDir, "generic-overflow-browser.mjs");
   fs.writeFileSync(
@@ -1664,7 +2103,7 @@ process.exitCode = 0;
     "utf8",
   );
   try {
-    const result = runObservedGeneratedVisualBrowserProcess({
+    const result = await runObservedGeneratedVisualBrowserProcess({
       executable: process.execPath,
       args: [fakeBrowserPath],
       timeoutMs: 5_000,
@@ -1676,19 +2115,19 @@ process.exitCode = 0;
     }));
     assert.equal(result.timedOut, false);
     assert.equal(result.error?.code, "ENOBUFS");
-    assert.equal(result.completion, undefined);
+    assert.equal(result.completion, "output_overflow");
     assert.equal(result.cleanupConfirmed, true);
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }
 });
 
-test("browser mount does not retry a sandbox runtime self-check failure", () => {
+test("browser mount does not retry a sandbox runtime self-check failure", async () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-mount-semantic-"));
   let failedScenarioInvocations = 0;
   const retryDelays = [];
   try {
-    const result = runGeneratedVisualBrowserTests({
+    const result = await runGeneratedVisualBrowserTests({
       definition: spatialDefinition(),
       outputDir,
       browserExecutable: "fake-edge",
@@ -1697,23 +2136,23 @@ test("browser mount does not retry a sandbox runtime self-check failure", () => 
         const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
         if (screenshotArg) {
           fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "fake png");
-          return {
-            status: 0,
-            stdout: '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
-          };
+          return observedBrowserSuccess(
+            "observed_capture",
+            '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          );
         }
         if (args.includes("--dump-dom")) {
           if (slug === "375x667-light") {
             failedScenarioInvocations += 1;
-            return {
-              status: 0,
-              stdout: '<body data-breadboard-runtime-tests="failed" data-breadboard-runtime-diagnostics="%5B%22semantic%20ETIMEDOUT%20must%20not%20retry%22%5D"></body>',
-            };
+            return observedBrowserSuccess(
+              "observed_dom",
+              '<body data-breadboard-runtime-tests="failed" data-breadboard-runtime-diagnostics="%5B%22semantic%20ETIMEDOUT%20must%20not%20retry%22%5D"></body>',
+            );
           }
-          return {
-            status: 0,
-            stdout: '<body data-breadboard-runtime-tests="passed"></body>',
-          };
+          return observedBrowserSuccess(
+            "observed_dom",
+            '<body data-breadboard-runtime-tests="passed"></body>',
+          );
         }
         assert.fail(JSON.stringify(args));
       },
@@ -1738,13 +2177,13 @@ test("browser mount does not retry a sandbox runtime self-check failure", () => 
   }
 });
 
-test("preview capture retries transient Edge-style failures with fresh profiles and a bounded backoff", () => {
+test("preview capture retries transient Edge-style failures with fresh profiles and a bounded backoff", async () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-preview-retry-"));
   const captureProfiles = new Map();
   const captureAttempts = new Map();
   const retryDelays = [];
   try {
-    const result = runGeneratedVisualBrowserTests({
+    const result = await runGeneratedVisualBrowserTests({
       definition: spatialDefinition(),
       outputDir,
       browserExecutable: "fake-edge",
@@ -1769,19 +2208,19 @@ test("preview capture retries transient Edge-style failures with fresh profiles 
           );
           if (attempts === 1) {
             fs.writeFileSync(screenshotPath, "");
-            return { status: 1, stderr: "simulated Edge EBUSY" };
+            return observedBrowserTransient("EBUSY");
           }
           fs.writeFileSync(screenshotPath, "fake png");
-          return {
-            status: 0,
-            stdout: '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
-          };
+          return observedBrowserSuccess(
+            "observed_capture",
+            '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          );
         }
         if (args.includes("--dump-dom")) {
-          return {
-            status: 0,
-            stdout: '<body data-breadboard-runtime-tests="passed"></body>',
-          };
+          return observedBrowserSuccess(
+            "observed_dom",
+            '<body data-breadboard-runtime-tests="passed"></body>',
+          );
         }
         assert.fail(JSON.stringify(args));
       },
@@ -1798,8 +2237,9 @@ test("preview capture retries transient Edge-style failures with fresh profiles 
     for (const receipt of result.browser?.previewMatrixReceipt?.cells ?? []) {
       assert.equal(receipt.captured, true, receipt.id);
       assert.equal(receipt.attempts.length, 2, receipt.id);
-      assert.equal(receipt.attempts[0].status, 1);
+      assert.equal(receipt.attempts[0].status, null);
       assert.match(receipt.attempts[0].detail ?? "", /simulated Edge EBUSY/);
+      assert.equal(receipt.attempts[0].transientFailureCode, "EBUSY");
       assert.equal(receipt.attempts[0].retryDelayMs, 125);
       assert.equal(receipt.attempts[1].status, 0);
       assert.equal(receipt.attempts[1].screenshotCreated, true);
@@ -1821,12 +2261,12 @@ test("preview capture retries transient Edge-style failures with fresh profiles 
   }
 });
 
-test("a permanently failed labelled preview remains a complete-or-fail matrix rejection with a bounded receipt", () => {
+test("a permanently failed labelled preview remains a complete-or-fail matrix rejection with a bounded receipt", async () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-preview-receipt-"));
   const failedCellProfiles = [];
   const retryDelays = [];
   try {
-    const result = runGeneratedVisualBrowserTests({
+    const result = await runGeneratedVisualBrowserTests({
       definition: spatialDefinition(),
       outputDir,
       browserExecutable: "fake-edge",
@@ -1837,23 +2277,22 @@ test("a permanently failed labelled preview remains a complete-or-fail matrix re
           const screenshotPath = screenshotArg.slice("--screenshot=".length);
           if (screenshotPath.endsWith("preview-mobile-375x667-light-case_mode-1.png")) {
             failedCellProfiles.push(profilePath);
-            return {
-              status: 1,
-              stderr:
-                "simulated persistent Edge EBUSY at C:\\Users\\agent\\AppData\\Local\\Temp\\profile; file:///C:/Users/agent/preview.html",
-            };
+            return observedBrowserTransient(
+              "EBUSY",
+              "simulated persistent Edge EBUSY at C:\\Users\\agent\\AppData\\Local\\Temp\\profile; file:///C:/Users/agent/preview.html",
+            );
           }
           fs.writeFileSync(screenshotPath, "fake png");
-          return {
-            status: 0,
-            stdout: '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
-          };
+          return observedBrowserSuccess(
+            "observed_capture",
+            '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          );
         }
         if (args.includes("--dump-dom")) {
-          return {
-            status: 0,
-            stdout: '<body data-breadboard-runtime-tests="passed"></body>',
-          };
+          return observedBrowserSuccess(
+            "observed_dom",
+            '<body data-breadboard-runtime-tests="passed"></body>',
+          );
         }
         assert.fail(JSON.stringify(args));
       },
@@ -1875,7 +2314,8 @@ test("a permanently failed labelled preview remains a complete-or-fail matrix re
     assert.ok(receipt, JSON.stringify(result.browser?.previewMatrixReceipt));
     assert.equal(receipt.captured, false);
     assert.equal(receipt.attempts.length, GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS);
-    assert.ok(receipt.attempts.every((attempt) => attempt.status === 1));
+    assert.ok(receipt.attempts.every((attempt) => attempt.status === null));
+    assert.ok(receipt.attempts.every((attempt) => attempt.transientFailureCode === "EBUSY"));
     assert.ok(
       receipt.attempts.every((attempt) =>
         /simulated persistent Edge EBUSY/.test(attempt.detail ?? ""),
@@ -1899,7 +2339,7 @@ test("a permanently failed labelled preview remains a complete-or-fail matrix re
   }
 });
 
-test("browser self-test diagnostics are bounded, preserve the primary cause, and decode authored identifiers safely", (t) => {
+test("browser self-test diagnostics are bounded, preserve the primary cause, and decode authored identifiers safely", async (t) => {
   if (!browserPath()) return t.skip("Chromium or Edge is not installed");
   const definition = spatialDefinition();
   const primaryOutputId = `case_view<&\"${"x".repeat(305)}😀${"y".repeat(133)}`;
@@ -1926,7 +2366,7 @@ test("browser self-test diagnostics are bounded, preserve the primary cause, and
   }];
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-browser-diagnostics-"));
   try {
-    const result = runGeneratedVisualBrowserTests({ definition, outputDir, timeoutMs: 25_000 });
+    const result = await runGeneratedVisualBrowserTests({ definition, outputDir, timeoutMs: 25_000 });
     const mountTests = result.tests.filter((entry) => entry.name.startsWith("browser mount"));
     assert.equal(mountTests.length, 3);
     for (const entry of mountTests) {
@@ -2076,6 +2516,355 @@ setTimeout(() => {
       const leaderCount = Number(output.match(/data-spatial-leader-count="(\d+)"/)?.[1] ?? 0);
       assert.ok(leaderCount >= 4, `expected at least four leaders at ${width}x${height}, saw ${leaderCount}`);
     }
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("preview capture never blindly retries unavailable, terminal, semantic, or unconfirmed failures", async () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-preview-no-blind-retry-"));
+  const cases = [
+    ["wrapper unavailable", {
+      status: null,
+      signal: null,
+      error: { code: "EWRAPPER", message: "wrapper unavailable" },
+      timedOut: false,
+      completion: "spawn_error",
+      browserExitedNaturally: false,
+      cleanupMethod: "none",
+      cleanupConfirmed: true,
+    }],
+    ["process authority", {
+      status: null,
+      signal: null,
+      error: { code: "EPROCESSAUTH", message: "process authority failed" },
+      timedOut: false,
+      completion: "spawn_error",
+      browserExitedNaturally: false,
+      cleanupMethod: "none",
+      cleanupConfirmed: true,
+    }],
+    ["missing executable", {
+      status: null,
+      signal: null,
+      error: { code: "ENOENT", message: "browser executable missing" },
+      timedOut: false,
+      completion: "spawn_error",
+      browserExitedNaturally: false,
+      cleanupMethod: "none",
+      cleanupConfirmed: true,
+    }],
+    ["output overflow", {
+      status: null,
+      signal: null,
+      error: { code: "ENOBUFS", message: "output overflow" },
+      timedOut: false,
+      completion: "output_overflow",
+      browserExitedNaturally: false,
+      cleanupMethod: "taskkill-tree",
+      cleanupConfirmed: true,
+    }],
+    ["cancelled", {
+      status: null,
+      signal: null,
+      error: { code: "ECANCELLED", message: "cancelled" },
+      timedOut: false,
+      completion: "cancelled",
+      browserExitedNaturally: false,
+      cleanupMethod: "taskkill-tree",
+      cleanupConfirmed: true,
+    }],
+    ["nonzero exit containing EBUSY", {
+      status: 9,
+      signal: null,
+      stderr: "simulated Edge EBUSY",
+      error: null,
+      timedOut: false,
+      completion: "process_exit",
+      browserExitedNaturally: true,
+      cleanupMethod: "natural-exit",
+      cleanupConfirmed: true,
+    }],
+    ["cleanup unconfirmed", {
+      status: null,
+      signal: null,
+      error: { code: "EBUSY", message: "cleanup unconfirmed EBUSY" },
+      timedOut: false,
+      completion: "spawn_error",
+      browserExitedNaturally: false,
+      cleanupMethod: "process-kill",
+      cleanupConfirmed: false,
+    }],
+    ["observed failure containing EAGAIN", {
+      status: null,
+      signal: null,
+      error: { code: "EAGAIN", message: "forged observed failure EAGAIN" },
+      timedOut: false,
+      completion: "observed_capture",
+      browserExitedNaturally: false,
+      cleanupMethod: "taskkill-tree",
+      cleanupConfirmed: true,
+    }],
+    ["deadline with a natural cleanup method", {
+      status: null,
+      signal: "SIGTERM",
+      error: { code: "ETIMEDOUT", message: "deadline with natural cleanup" },
+      timedOut: true,
+      completion: "deadline",
+      browserExitedNaturally: false,
+      cleanupMethod: "natural-exit-lineage",
+      cleanupConfirmed: true,
+    }],
+    ["natural missing screenshot after failed runtime evidence", {
+      status: 0,
+      signal: null,
+      stdout:
+        '<body data-breadboard-runtime-tests="failed" data-breadboard-preview-primary-spatial-frame="passed"></body>',
+      error: null,
+      timedOut: false,
+      completion: "process_exit",
+      browserExitedNaturally: true,
+      cleanupMethod: "natural-exit-lineage",
+      cleanupConfirmed: true,
+    }],
+    ["deadline after failed runtime evidence", {
+      status: null,
+      signal: "SIGTERM",
+      stdout:
+        '<body data-breadboard-runtime-tests="failed" data-breadboard-preview-primary-spatial-frame="passed"></body>',
+      error: { code: "ETIMEDOUT", message: "semantic runtime failure won" },
+      timedOut: true,
+      completion: "deadline",
+      browserExitedNaturally: false,
+      cleanupMethod: "taskkill-tree",
+      cleanupConfirmed: true,
+    }],
+  ];
+  try {
+    for (const [index, [name, failure]] of cases.entries()) {
+      const definition = spatialDefinition();
+      definition.controls[0].options = ["Only"];
+      definition.controls[0].defaultValue = "Only";
+      const retryDelays = [];
+      let captureCalls = 0;
+      const result = await runGeneratedVisualBrowserTests({
+        definition,
+        outputDir: path.join(outputDir, `case-${index}`),
+        browserExecutable: "fake-edge",
+        browserMountRetryBackoff: () => {},
+        previewCaptureRetryBackoff: (delayMs) => retryDelays.push(delayMs),
+        browserRunner: ({ args }) => {
+          if (args.some((arg) => arg.startsWith("--screenshot="))) {
+            captureCalls += 1;
+            return failure;
+          }
+          return observedBrowserSuccess(
+            "observed_dom",
+            '<body data-breadboard-runtime-tests="passed"></body>',
+          );
+        },
+      });
+      const cells = result.browser?.previewMatrixReceipt?.cells ?? [];
+      assert.ok(cells.length > 0, name);
+      assert.equal(captureCalls, cells.length, name);
+      assert.deepEqual(retryDelays, [], name);
+      assert.equal(
+        cells.every((cell) =>
+          cell.attempts.length === 1 &&
+          cell.attempts[0].transientFailureCode === undefined &&
+          cell.attempts[0].retryDelayMs === undefined),
+        true,
+        `${name}: ${JSON.stringify(cells)}`,
+      );
+    }
+
+    const semanticDefinition = spatialDefinition();
+    semanticDefinition.controls[0].options = ["Only"];
+    semanticDefinition.controls[0].defaultValue = "Only";
+    const semanticRetryDelays = [];
+    const semantic = await runGeneratedVisualBrowserTests({
+      definition: semanticDefinition,
+      outputDir: path.join(outputDir, "semantic"),
+      browserExecutable: "fake-edge",
+      browserMountRetryBackoff: () => {},
+      previewCaptureRetryBackoff: (delayMs) => semanticRetryDelays.push(delayMs),
+      browserRunner: ({ args }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (!screenshotArg) {
+          return observedBrowserSuccess(
+            "observed_dom",
+            '<body data-breadboard-runtime-tests="passed"></body>',
+          );
+        }
+        fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "semantic png");
+        return observedBrowserSuccess(
+          "observed_capture",
+          '<body data-breadboard-preview-primary-spatial-frame="failed"></body>',
+        );
+      },
+    });
+    assert.deepEqual(semanticRetryDelays, []);
+    const semanticCells = semantic.browser?.previewMatrixReceipt?.cells ?? [];
+    assert.equal(
+      semanticCells.every((cell) => cell.attempts.length === 1),
+      true,
+    );
+    assert.equal(
+      semanticCells.some((cell) =>
+        cell.attempts[0].previewPrimarySpatialFrameValidated === false),
+      true,
+    );
+
+    const missingFrameDefinition = spatialDefinition();
+    missingFrameDefinition.controls[0].options = ["Only"];
+    missingFrameDefinition.controls[0].defaultValue = "Only";
+    const missingFrameRetryDelays = [];
+    const missingFrame = await runGeneratedVisualBrowserTests({
+      definition: missingFrameDefinition,
+      outputDir: path.join(outputDir, "missing-required-frame"),
+      browserExecutable: "fake-edge",
+      browserMountRetryBackoff: () => {},
+      previewCaptureRetryBackoff: (delayMs) => missingFrameRetryDelays.push(delayMs),
+      browserRunner: ({ args }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (!screenshotArg) {
+          return observedBrowserSuccess(
+            "observed_dom",
+            '<body data-breadboard-runtime-tests="passed"></body>',
+          );
+        }
+        if (screenshotArg.includes("mobile-375x667-light")) {
+          return observedBrowserSuccess("observed_capture", "<body></body>");
+        }
+        fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "desktop png");
+        return observedBrowserSuccess(
+          "observed_capture",
+          '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+        );
+      },
+    });
+    const missingFrameCell = missingFrame.browser?.previewMatrixReceipt?.cells.find(
+      (cell) => cell.id.startsWith("mobile-375x667-light--"),
+    );
+    assert.deepEqual(missingFrameRetryDelays, []);
+    assert.equal(missingFrameCell?.attempts.length, 1);
+    assert.equal(missingFrameCell?.attempts[0].retryDelayMs, undefined);
+    assert.equal(
+      missingFrameCell?.attempts[0].previewPrimarySpatialFrameValidated,
+      false,
+    );
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser mount never retries a transient-looking failure without cleanup proof", async () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-mount-no-cleanup-retry-"));
+  const failedMountCalls = new Map();
+  const retryDelays = [];
+  try {
+    const result = await runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir,
+      browserExecutable: "fake-edge",
+      browserMountRetryBackoff: (delayMs) => retryDelays.push(delayMs),
+      previewCaptureRetryBackoff: () => {},
+      browserRunner: ({ args, slug }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "fake png");
+          return observedBrowserSuccess(
+            "observed_capture",
+            '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          );
+        }
+        failedMountCalls.set(slug, (failedMountCalls.get(slug) ?? 0) + 1);
+        if (slug === "375x667-light") {
+          return {
+            ...observedBrowserTransient("EBUSY"),
+            cleanupMethod: "process-kill",
+            cleanupConfirmed: false,
+          };
+        }
+        if (slug === "1280x800-dark") {
+          return {
+            status: 9,
+            signal: null,
+            stderr: "natural process exit EAGAIN",
+            error: null,
+            timedOut: false,
+            completion: "process_exit",
+            browserExitedNaturally: true,
+            cleanupMethod: "natural-exit",
+            cleanupConfirmed: true,
+          };
+        }
+        return {
+          status: null,
+          signal: null,
+          error: { code: "EAGAIN", message: "forged observed mount EAGAIN" },
+          timedOut: false,
+          completion: "observed_dom",
+          browserExitedNaturally: false,
+          cleanupMethod: "taskkill-tree",
+          cleanupConfirmed: true,
+        };
+      },
+    });
+    const receipts = result.browser?.mountReceipts ?? [];
+    assert.deepEqual([...failedMountCalls.values()], [1, 1, 1]);
+    assert.deepEqual(retryDelays, []);
+    assert.equal(receipts.every((receipt) => receipt.attempts.length === 1), true);
+    assert.equal(
+      receipts.every((receipt) =>
+        receipt.attempts[0].transientFailureCode === undefined &&
+        receipt.attempts[0].retryDelayMs === undefined),
+      true,
+    );
+
+    let naturalDeadlineCalls = 0;
+    const naturalDeadlineDelays = [];
+    const naturalDeadline = await runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir: path.join(outputDir, "natural-deadline"),
+      browserExecutable: "fake-edge",
+      browserMountRetryBackoff: (delayMs) => naturalDeadlineDelays.push(delayMs),
+      previewCaptureRetryBackoff: () => {},
+      browserRunner: ({ args, slug }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "fake png");
+          return observedBrowserSuccess(
+            "observed_capture",
+            '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          );
+        }
+        if (slug === "375x667-light") {
+          naturalDeadlineCalls += 1;
+          return {
+            status: null,
+            signal: "SIGTERM",
+            error: { code: "ETIMEDOUT", message: "natural cleanup is not proactive" },
+            timedOut: true,
+            completion: "deadline",
+            browserExitedNaturally: false,
+            cleanupMethod: "natural-exit-lineage",
+            cleanupConfirmed: true,
+          };
+        }
+        return observedBrowserSuccess(
+          "observed_dom",
+          '<body data-breadboard-runtime-tests="passed"></body>',
+        );
+      },
+    });
+    const naturalDeadlineReceipt = naturalDeadline.browser?.mountReceipts?.find(
+      (entry) => entry.scenario === "375x667 light",
+    );
+    assert.equal(naturalDeadlineCalls, 1);
+    assert.deepEqual(naturalDeadlineDelays, []);
+    assert.equal(naturalDeadlineReceipt?.attempts.length, 1);
+    assert.equal(naturalDeadlineReceipt?.attempts[0].transientFailureCode, undefined);
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }

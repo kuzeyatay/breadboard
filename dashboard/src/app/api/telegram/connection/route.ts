@@ -2,15 +2,14 @@ import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import { ApiError, apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { telegramFeatureEnabled } from "@/lib/telegram/config.ts";
-import { getTelegramGateway } from "@/lib/telegram/gateway.ts";
 import { getTelegramStore } from "@/lib/telegram/instance.ts";
 import {
-  linkTelegramBot,
-  startTelegramGateway,
-  stopTelegramGateway,
-  unlinkTelegramBot,
-} from "@/lib/telegram/service.ts";
+  reconcileRuntimeGateway,
+  runtimeGatewayAction,
+  runtimeGatewayStatus,
+} from "@/lib/runtime-v2/gateway-control.ts";
 import { telegramStatus } from "@/lib/telegram/status.ts";
+import type { TelegramStatus } from "@/lib/telegram/status.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -50,28 +49,64 @@ export async function POST(request: Request) {
       case "link":
         // The token is read straight out of the body and handed to the service;
         // it is never echoed back, logged, or written to the database.
-        await linkTelegramBot(userId, typeof body.token === "string" ? body.token : "");
+        await reconcileRuntimeGateway("telegram", "running", userId);
+        await runtimeGatewayAction<TelegramStatus>("telegram", {
+          userId,
+          action: "link",
+          value: typeof body.token === "string" ? body.token : "",
+        });
         break;
       case "connect":
         store.claimOwner(userId);
-        await startTelegramGateway();
+        await reconcileRuntimeGateway("telegram", "running", userId);
+        await runtimeGatewayAction<TelegramStatus>("telegram", {
+          userId,
+          action: "connect",
+          value: null,
+        });
         break;
       case "disconnect":
-        await stopTelegramGateway();
+        await reconcileRuntimeGateway("telegram", "running", userId);
+        try {
+          await runtimeGatewayAction<TelegramStatus>("telegram", {
+            userId,
+            action: "disconnect",
+            value: null,
+          });
+        } finally {
+          await reconcileRuntimeGateway("telegram", "stopped", userId);
+        }
         break;
       case "unlink":
-        await unlinkTelegramBot();
+        await reconcileRuntimeGateway("telegram", "running", userId);
+        try {
+          await runtimeGatewayAction<TelegramStatus>("telegram", {
+            userId,
+            action: "unlink",
+            value: null,
+          });
+        } finally {
+          await reconcileRuntimeGateway("telegram", "stopped", userId);
+        }
         break;
       case "allow": {
         const senderId = typeof body.senderId === "string" ? body.senderId : "";
         store.claimOwner(userId);
         store.allowSender(senderId);
-        getTelegramGateway().clearBlockedSender(senderId);
+        if (await runtimeGatewayStatus<TelegramStatus>("telegram", userId)) {
+          await runtimeGatewayAction<TelegramStatus>("telegram", {
+            userId,
+            action: "allow",
+            value: senderId,
+          });
+        }
         break;
       }
     }
 
-    return NextResponse.json({ status: telegramStatus(userId) });
+    const status = (await runtimeGatewayStatus<TelegramStatus>("telegram", userId)) ??
+      telegramStatus(userId);
+    return NextResponse.json({ status });
   } catch (error) {
     return apiErrorResponse(error);
   }

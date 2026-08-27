@@ -131,13 +131,13 @@ function itemMetadata(item: LibraryItem, kind: "cutout" | "modeled"): Record<str
 }
 
 /** Store one of a garment's pictures as a durable, verified image artifact. */
-export function saveGarmentArtifact(input: {
+export async function saveGarmentArtifact(input: {
   context: WardrobeArtifactContext;
   item: LibraryItem;
   buffer: Buffer;
   kind: "cutout" | "modeled";
-}): ArtifactRow {
-  return importArtifactImage({
+}): Promise<ArtifactRow> {
+  return await importArtifactImage({
     context: {
       userId: input.context.userId,
       conversationPublicId: input.context.conversationPublicId,

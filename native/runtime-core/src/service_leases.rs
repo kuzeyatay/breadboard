@@ -8,8 +8,8 @@
 use breadboard_runtime_protocol::{
     validate_bounded_text, validate_identifier, RestartPolicy, RuntimeServiceState,
     RuntimeServiceStatus, ServiceDefinition, ServiceStartupPolicy, ValidationError,
-    MAX_CONCURRENCY, MAX_FAILURE_MESSAGE_BYTES, MAX_SQLITE_UNSIGNED, MAX_STAGE_BYTES,
-    MAX_TIMEOUT_MS,
+    MAX_CONCURRENCY, MAX_FAILURE_MESSAGE_BYTES, MAX_SERVICE_RESTARTS, MAX_SQLITE_UNSIGNED,
+    MAX_STAGE_BYTES, MAX_TIMEOUT_MS,
 };
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -84,7 +84,7 @@ impl ServiceLeaseLimits {
                 field: "maxLeaseMs",
             });
         }
-        if max_restarts > MAX_CONCURRENCY {
+        if max_restarts > MAX_SERVICE_RESTARTS {
             return Err(ServiceLeaseError::InvalidLimit {
                 field: "maxRestarts",
             });
@@ -242,6 +242,11 @@ pub struct ServiceLeaseActivation {
 pub enum ServiceStopCause {
     Idle,
     Shutdown,
+    /// The runtime is deliberately terminating a generation that failed an
+    /// internal lifecycle boundary (for example, its trusted readiness
+    /// deadline). Unlike idle and shutdown stops, an accepted tree exit for
+    /// this cause remains a retryable service failure.
+    Failure,
 }
 
 /// The only process-tree authority emitted by this module. It names a
@@ -382,6 +387,7 @@ impl ServiceLeaseMachine {
             id: self.registration.service_id.clone(),
             display_name: self.registration.display_name.clone(),
             required: self.registration.required,
+            startup_policy: self.registration.startup_policy,
             state: self.runtime_state(),
             last_error: self.last_error.clone(),
             restarts: self.restarts,
@@ -1063,7 +1069,34 @@ impl ServiceLeaseMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use breadboard_runtime_protocol::ResourceClass;
+    use breadboard_runtime_protocol::{
+        ResourceClass, RuntimeMode, ServiceExecutableAuthority, ServiceHttpReadiness,
+        ServiceInstallProbe, ServiceInstallProbeAuthority, ServiceInstallProbeFile,
+        ServiceLaunchProfile, ServiceRequirement, ServiceResourceLimits, ServiceRestartBounds,
+        ServiceWorkingDirectoryPolicy, TrustedServiceEnvironmentSource,
+    };
+
+    fn launch_profiles() -> Vec<ServiceLaunchProfile> {
+        vec![ServiceLaunchProfile {
+            modes: vec![RuntimeMode::Lean, RuntimeMode::Hot, RuntimeMode::Packaged],
+            executable_authority: ServiceExecutableAuthority::RuntimeRoot,
+            allowed_executable: "runtime/search.exe".into(),
+            arguments: Vec::new(),
+            environment_source: TrustedServiceEnvironmentSource::Dashboard,
+            working_directory: ServiceWorkingDirectoryPolicy::AppRoot,
+            install_probe: ServiceInstallProbe::FilesPresent {
+                files: vec![ServiceInstallProbeFile {
+                    authority: ServiceInstallProbeAuthority::RuntimeRoot,
+                    path: "runtime/search.exe".into(),
+                }],
+            },
+            resource_limits: ServiceResourceLimits {
+                estimated_cold_start_commit_mb: 64,
+                soft_commit_limit_mb: 0,
+                hard_commit_limit_mb: 128,
+            },
+        }]
+    }
 
     fn definition(
         startup_policy: ServiceStartupPolicy,
@@ -1073,14 +1106,20 @@ mod tests {
             id: "search".into(),
             display_name: "Search".into(),
             capability_ids: vec!["search-query".into()],
-            allowed_executable: "runtime/search.exe".into(),
-            allowed_entrypoint: None,
+            requirement: ServiceRequirement::Required,
+            launch_profiles: launch_profiles(),
+            readiness: ServiceHttpReadiness {
+                path: "/health".into(),
+                expected_body_contains: None,
+                request_timeout_ms: 100,
+                poll_interval_ms: 100,
+                startup_timeout_ms: 1_000,
+            },
             startup_policy,
             resource_class: ResourceClass::Core,
             dependencies: Vec::new(),
-            estimated_cold_start_commit_mb: 64,
-            soft_commit_limit_mb: 0,
-            hard_commit_limit_mb: 0,
+            maximum_concurrent_leases: 4,
+            maximum_lease_ms: 1_000,
             idle_ttl_ms: matches!(
                 startup_policy,
                 ServiceStartupPolicy::OnDemand | ServiceStartupPolicy::Scheduled
@@ -1088,6 +1127,14 @@ mod tests {
             .then_some(100),
             graceful_shutdown_ms: 1_000,
             restart_policy,
+            restart_bounds: matches!(restart_policy, RestartPolicy::OnFailure).then_some(
+                ServiceRestartBounds {
+                    maximum_restarts: 2,
+                    window_ms: 1_000,
+                    initial_backoff_ms: 10,
+                    maximum_backoff_ms: 100,
+                },
+            ),
         }
     }
 
@@ -1475,7 +1522,7 @@ mod tests {
         assert!(ServiceLeaseLimits::new(0, 100, 0).is_err());
         assert!(ServiceLeaseLimits::new(MAX_CONCURRENCY + 1, 100, 0).is_err());
         assert!(ServiceLeaseLimits::new(1, MAX_TIMEOUT_MS + 1, 0).is_err());
-        assert!(ServiceLeaseLimits::new(1, 100, MAX_CONCURRENCY + 1).is_err());
+        assert!(ServiceLeaseLimits::new(1, 100, MAX_SERVICE_RESTARTS + 1).is_err());
 
         let mut machine = machine_with(
             ServiceStartupPolicy::OnDemand,

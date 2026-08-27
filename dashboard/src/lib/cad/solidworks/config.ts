@@ -96,6 +96,12 @@ export function solidworksMcpPath(
     const resolved = path.resolve(configured);
     return { path: isClone(resolved) ? resolved : null, source: "env" };
   }
+  // Runtime-managed mode never consults the development checkout. The native
+  // environment owns one immutable staged clone path and omission is a closed
+  // installation failure, not permission to rediscover a user directory.
+  if (env.BREADBOARD_SOLIDWORKS_RUNTIME_MANAGED?.trim() === "1") {
+    return { path: null, source: "env" };
+  }
   // The dashboard runs from `<repo>/dashboard`, so both the repository root and
   // its parent are plausible homes for a sibling checkout.
   const dashboardRoot = process.cwd();
@@ -111,7 +117,13 @@ export function solidworksMcpPath(
 }
 
 /** The clone's own interpreter, if its virtual environment was created. */
-function clonePython(clone: string): string | null {
+function clonePython(clone: string, env: NodeJS.ProcessEnv): string | null {
+  const configured = env.BREADBOARD_SOLIDWORKS_PYTHON?.trim();
+  if (configured) {
+    const resolved = path.resolve(configured);
+    return pathExists(resolved) ? resolved : null;
+  }
+  if (env.BREADBOARD_SOLIDWORKS_RUNTIME_MANAGED?.trim() === "1") return null;
   const candidates =
     process.platform === "win32"
       ? [path.join(clone, ".venv", "Scripts", "python.exe")]
@@ -123,6 +135,7 @@ function clonePython(clone: string): string | null {
 function findUv(env: NodeJS.ProcessEnv): string | null {
   const explicit = env.BREADBOARD_UV_PATH?.trim();
   if (explicit && pathExists(explicit)) return explicit;
+  if (env.BREADBOARD_SOLIDWORKS_RUNTIME_MANAGED?.trim() === "1") return null;
 
   const executable = process.platform === "win32" ? "uv.exe" : "uv";
   const home = env.USERPROFILE?.trim() || os.homedir();
@@ -150,7 +163,7 @@ export function solidworksPaths(env: NodeJS.ProcessEnv = process.env): SolidWork
   return {
     clone: located.path,
     cloneSource: located.source,
-    python: clonePython(located.path),
+    python: clonePython(located.path, env),
     uv: findUv(env),
   };
 }

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "ruflo": {
+    "package": "@claude-flow/cli",
+    "version": "3.34.0",
+    "reviewedCheckoutCommit": "4ac1ab9ff3ee8f0406cfa97fe463944d9b110e9a",
+    "npmIntegrity": "sha512-jlMyHEGMxvngwcE4HHpkILLf8lMJaFGoMVo2aevEoyAMyF5V4Nly1cdqz31RCTKLNgA4nvLvH3eRZ1OaM9JCnA==",
+    "dependencyLockSha256": "DE89BCAE18FF05726012A2BF6F8E14EC054411CB3B98A54A01C6EDD8FE5CD53A",
+    "wrapperSha256": "52134740D49ECC69F2EB4BE72DA8218DA05E81AF9C1FD1813160041D13D88D9E",
+    "entrypointSha256": "4EC921923FB00AD86F89B171B0DBC293A1EC613C8CE0A20CBDC8169D4C836E51",
+    "distEntrypointSha256": "E219547441EE029B8447715FFCBC2B80C4DF4DA1ED8CB0FD1B936034973CB019",
+    "licenseSha256": "D5F6D91BA2E65A09F157CD1336034804E850FCAC3296684221368B3F26FA6CCF",
+    "omittedDependencyClasses": [
+      "dev",
+      "optional"
+    ]
+  },
+  "claudeCode": {
+    "name": "Claude Code",
+    "version": "2.1.239",
+    "platform": "win32",
+    "architecture": "x64",
+    "sha256": "0BC1304C7847C317CC550007E7561F9BF270EAA68A0E85A3F381AFB18EE20A2B",
+    "size": 337672352
+  }
+}

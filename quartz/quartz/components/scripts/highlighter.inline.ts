@@ -499,10 +499,13 @@ document.addEventListener("nav", () => {
   // keyup would put the menu straight back.
   let dismissed = false
 
-  // The Garden dashboard owns the one visible Assistant. A directly opened
-  // standalone Quartz page has no receiving composer, so do not offer an action
-  // that cannot complete there.
-  for (const button of askButtons) button.hidden = window.parent === window
+  // Embedded Quartz delegates these actions to the Garden dashboard's sole
+  // Assistant. A directly opened page can use its mounted page Assistant; pages
+  // without garden context still hide actions that have no receiving composer.
+  const hasPageAssistant = document.querySelector<HTMLElement>(".breadboard-ai") !== null
+  for (const button of askButtons) {
+    button.hidden = window.parent === window && !hasPageAssistant
+  }
 
   const syncColorUi = () => {
     triggerSwatch.dataset.hlColor = activeColor

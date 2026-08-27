@@ -1,0 +1,39 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false
+  },
+  "include": [
+    "next-env.d.ts",
+    "src/vendor/genoffice/docs/src/renderer/bidi-js.d.ts",
+    "src/lib/supervisor-control.ts",
+    "src/lib/runtime-agent-service.ts",
+    "src/lib/runtime-paths.ts",
+    "src/lib/socials-manager/activation.ts",
+    "src/lib/socials-manager/api-client.ts",
+    "src/lib/socials-manager/bootstrap.ts",
+    "src/lib/socials-manager/config.ts",
+    "src/lib/socials-manager/coordinator-core.ts",
+    "src/lib/socials-manager/coordinator-runtime.ts",
+    "src/lib/socials-manager/coordinator-server.ts",
+    "src/lib/socials-manager/docker.ts",
+    "src/lib/socials-manager/local-state.ts",
+    "src/lib/socials-manager/run-manager.ts",
+    "src/lib/socials-manager/service.ts",
+    "src/lib/socials-manager/stack.ts",
+    "src/lib/inbox-zero/client.ts",
+    "src/lib/inbox-zero/config.ts",
+    "src/lib/inbox-zero/contract.ts",
+    "src/lib/inbox-zero/run-manager.ts",
+    "src/lib/inbox-zero/runtime-service.ts",
+    "src/lib/inbox-zero/service.ts",
+    "src/lib/inbox-zero/session.ts",
+    "src/lib/inbox-zero/stack.ts",
+    "src/app/api/socials-manager/posts/[postId]/route.ts",
+    "src/app/api/socials-manager/settings/route.ts",
+    "src/app/api/socials-manager/stack/route.ts",
+    "src/app/api/inbox-zero/health/route.ts",
+    "src/app/api/inbox-zero/runs/route.ts",
+    "src/app/api/inbox-zero/setup/route.ts"
+  ]
+}

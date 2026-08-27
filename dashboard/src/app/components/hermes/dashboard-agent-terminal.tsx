@@ -1576,6 +1576,7 @@ function RuntimeTerminal({
       const selectedAgent = agentOverride ?? browserAgent;
       if (!selectedAgent || launchingBrowserRun) return;
       setLaunchingBrowserRun(true);
+      const runtimeRequestId = crypto.randomUUID();
       let clientMessageId = crypto.randomUUID();
       const userMessage: AgentMessage = {
         id: clientMessageId,
@@ -1594,7 +1595,7 @@ function RuntimeTerminal({
           {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ task }),
+            body: JSON.stringify({ task, requestId: runtimeRequestId }),
           },
         );
         const data = await response.json().catch(() => ({}));
@@ -2258,48 +2259,44 @@ function RuntimeTerminal({
     vibeTradingAgent,
   ]);
 
-  /**
-   * Selecting checks the clone and its environment. Like Trading Agent this one
-   * cannot partially work — without the Python environment there is no service
-   * to start — so an unbuilt environment is worth saying before a prompt is
-   * typed rather than after.
-   */
+  /** Select Vibe Trading immediately; health only supplies advisory status. */
   const selectVibeTrading = useCallback(async () => {
     setAttachmentStatus("");
+    const selected = {
+      id: VIBE_TRADING_AGENT_ID,
+      name: VIBE_TRADING_AGENT_NAME,
+    };
+    setBrowserAgent(null);
+    setAgentBrowserAgent(null);
+    setOpenPlanterAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    clearDeepResearch();
+    clearCodex();
+    clearOpenCode();
+    clearRuflo();
+    setVibeTradingAgent(selected);
     try {
       const response = await fetch("/api/vibe-trading/health");
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.cloned !== true) {
-        throw new Error(
+        setAttachmentStatus(
           typeof data?.reason === "string"
             ? data.reason
             : typeof data?.error === "string"
               ? data.error
               : "Vibe Trading is unavailable.",
         );
-      }
-      const selected = {
-        id: VIBE_TRADING_AGENT_ID,
-        name: VIBE_TRADING_AGENT_NAME,
-      };
-      setBrowserAgent(null);
-      setAgentBrowserAgent(null);
-      setOpenPlanterAgent(null);
-      setAgentReachAgent(null);
-      setGetDocAgent(null);
-      setMeetingNotesAgent(null);
-      setDeepTutorAgent(null);
-      setCareerOpsAgent(null);
-      setTradingAgentsAgent(null);
-      setVibeTradingAgent(null);
-      setDeerFlowAgent(null);
-      setShortsAgent(null);
-      clearDeepResearch();
-      clearCodex();
-      clearOpenCode();
-      clearRuflo();
-      setVibeTradingAgent(selected);
-      if (data.available !== true && typeof data.reason === "string") {
+      } else if (data.available !== true && typeof data.reason === "string") {
+        // Do not turn an observational health failure into a hidden agent. A
+        // real run is what asks Runtime V2 to start the service.
         setAttachmentStatus(data.reason);
       } else if (data.serviceRunning !== true) {
         setAttachmentStatus(
@@ -2311,51 +2308,49 @@ function RuntimeTerminal({
       setAttachmentStatus(
         cause instanceof Error ? cause.message : "Vibe Trading is unavailable.",
       );
-      return null;
+      return selected;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
 
-  /**
-   * Selecting checks the clone and its environment, for the same reason Vibe
-   * Trading does: without the Python environment there is no backend to start.
-   */
+  /** Select Stock Analyst immediately; health only supplies advisory status. */
   const selectStockAnalyst = useCallback(async () => {
     setAttachmentStatus("");
+    const selected = {
+      id: STOCK_ANALYST_AGENT_ID,
+      name: STOCK_ANALYST_AGENT_NAME,
+    };
+    setBrowserAgent(null);
+    setAgentBrowserAgent(null);
+    setOpenPlanterAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    setFormsmithAgent(null);
+    clearDeepResearch();
+    clearCodex();
+    clearOpenCode();
+    clearRuflo();
+    setStockAnalystAgent(selected);
     try {
       const response = await fetch("/api/stock-analyst/health");
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.cloned !== true) {
-        throw new Error(
+        setAttachmentStatus(
           typeof data?.reason === "string"
             ? data.reason
             : typeof data?.error === "string"
               ? data.error
               : "Stock Analyst is unavailable.",
         );
-      }
-      const selected = {
-        id: STOCK_ANALYST_AGENT_ID,
-        name: STOCK_ANALYST_AGENT_NAME,
-      };
-      setBrowserAgent(null);
-      setAgentBrowserAgent(null);
-      setOpenPlanterAgent(null);
-      setAgentReachAgent(null);
-      setGetDocAgent(null);
-      setMeetingNotesAgent(null);
-      setDeepTutorAgent(null);
-      setCareerOpsAgent(null);
-      setTradingAgentsAgent(null);
-      setVibeTradingAgent(null);
-      setDeerFlowAgent(null);
-      setShortsAgent(null);
-      setFormsmithAgent(null);
-      clearDeepResearch();
-      clearCodex();
-      clearOpenCode();
-      clearRuflo();
-      setStockAnalystAgent(selected);
-      if (data.available !== true && typeof data.reason === "string") {
+      } else if (data.available !== true && typeof data.reason === "string") {
+        // Selection is independent of setup state; the run returns the exact
+        // Runtime setup/resource failure if admission cannot proceed.
         setAttachmentStatus(data.reason);
       } else if (data.serviceRunning !== true) {
         setAttachmentStatus(
@@ -2369,7 +2364,7 @@ function RuntimeTerminal({
           ? cause.message
           : "Stock Analyst is unavailable.",
       );
-      return null;
+      return selected;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
 
@@ -2420,44 +2415,40 @@ function RuntimeTerminal({
     vibeTradingAgent,
   ]);
 
-  /**
-   * Selecting checks the clone and its environment. Like Vibe Trading this one
-   * cannot partially work — without the Python environment there is no Gateway
-   * to start — so an unbuilt environment is worth saying before a task is typed
-   * rather than after.
-   */
+  /** Select DeerFlow immediately; health only supplies advisory status. */
   const selectDeerFlow = useCallback(async () => {
     setAttachmentStatus("");
+    const selected = { id: DEER_FLOW_AGENT_ID, name: DEER_FLOW_AGENT_NAME };
+    setBrowserAgent(null);
+    setAgentBrowserAgent(null);
+    setOpenPlanterAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setDeerFlowAgent(null);
+    clearDeepResearch();
+    clearCodex();
+    clearOpenCode();
+    clearRuflo();
+    setDeerFlowAgent(selected);
     try {
       const response = await fetch("/api/deer-flow/health");
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.cloned !== true) {
-        throw new Error(
+        setAttachmentStatus(
           typeof data?.reason === "string"
             ? data.reason
             : typeof data?.error === "string"
               ? data.error
               : "DeerFlow is unavailable.",
         );
-      }
-      const selected = { id: DEER_FLOW_AGENT_ID, name: DEER_FLOW_AGENT_NAME };
-      setBrowserAgent(null);
-      setAgentBrowserAgent(null);
-      setOpenPlanterAgent(null);
-      setAgentReachAgent(null);
-      setGetDocAgent(null);
-      setMeetingNotesAgent(null);
-      setDeepTutorAgent(null);
-      setCareerOpsAgent(null);
-      setTradingAgentsAgent(null);
-      setVibeTradingAgent(null);
-      setDeerFlowAgent(null);
-      clearDeepResearch();
-      clearCodex();
-      clearOpenCode();
-      clearRuflo();
-      setDeerFlowAgent(selected);
-      if (data.available !== true && typeof data.reason === "string") {
+      } else if (data.available !== true && typeof data.reason === "string") {
+        // Polling is status-only and never decides whether this mandatory
+        // capability can remain selected.
         setAttachmentStatus(data.reason);
       } else if (data.serviceRunning !== true) {
         setAttachmentStatus(
@@ -2469,7 +2460,7 @@ function RuntimeTerminal({
       setAttachmentStatus(
         cause instanceof Error ? cause.message : "DeerFlow is unavailable.",
       );
-      return null;
+      return selected;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
 
@@ -3222,6 +3213,7 @@ function RuntimeTerminal({
             model,
             reasoningEffort,
             conversationPublicId,
+            clientMessageId,
           }),
         });
         const data = await response.json().catch(() => ({}));
@@ -3408,6 +3400,7 @@ function RuntimeTerminal({
             },
             model,
             conversationPublicId,
+            clientMessageId,
           }),
         });
         const data = await response.json().catch(() => ({}));
@@ -4763,11 +4756,11 @@ function RuntimeTerminal({
       });
       let runStarted = false;
       try {
-        await session.ensureConversation(clientMessageId);
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/inbox-zero/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model }),
+          body: JSON.stringify({ task, model, conversationPublicId }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -5449,6 +5442,7 @@ function RuntimeTerminal({
     (openPlanterAgent && "openplanter") ||
     (agentReachAgent && "agent-reach") ||
     (getDocAgent && "get-doc") ||
+    (meetingNotesAgent && "meeting-notes") ||
     (deepTutorAgent && "deep-tutor") ||
     (careerOpsAgent && "career-ops") ||
     (tradingAgentsAgent && "trading-agent") ||

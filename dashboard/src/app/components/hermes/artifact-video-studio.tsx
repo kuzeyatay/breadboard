@@ -18,7 +18,8 @@
 // with different agents behind it (ViMax, MoneyPrinter, HyperFrames); here the
 // video already exists and the only question is what changes about it.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ReclaimingVideo } from "@/app/components/reclaiming-media";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { artifactUrl } from "./artifact-viewer";
 
@@ -154,7 +155,6 @@ export default function ArtifactVideoStudio({
   // A finished edit bumps the artifact version, and the player has to be told
   // to fetch the new file rather than reuse the one it already decoded.
   const [playbackVersion, setPlaybackVersion] = useState(artifact.version);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const conversationId = artifact.conversationId;
   const previewUrl = useMemo(
@@ -189,7 +189,6 @@ export default function ArtifactVideoStudio({
   }, [artifact.id, conversationId]);
 
   useEffect(() => {
-    /* eslint-disable-next-line react-hooks/set-state-in-effect -- the studio's state is fetched, and every setState inside it happens after an await */
     void loadState();
   }, [loadState]);
 
@@ -279,6 +278,7 @@ export default function ArtifactVideoStudio({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          clientMessageId: crypto.randomUUID(),
           conversationPublicId: conversationId,
           request: { artifactId: artifact.id, prompt: instruction, quality },
         }),
@@ -376,8 +376,7 @@ export default function ArtifactVideoStudio({
 
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
           <div className="flex min-h-[18rem] flex-1 items-center justify-center overflow-auto bg-[var(--neu-surface-pressed)] p-5 sm:p-7">
-            <video
-              ref={videoRef}
+            <ReclaimingVideo
               // Keying on the version forces a fresh element after an edit, so
               // the browser fetches the new file instead of replaying the old
               // one it has already buffered.
@@ -388,7 +387,7 @@ export default function ArtifactVideoStudio({
               className="max-h-[74vh] w-full rounded-xl border border-[var(--line)] bg-black shadow-lg"
             >
               Your browser cannot play this video.
-            </video>
+            </ReclaimingVideo>
           </div>
 
           <aside className="flex w-full shrink-0 flex-col overflow-y-auto border-t border-[var(--line)] bg-[var(--paper-surface)] p-4 md:w-[26rem] md:border-l md:border-t-0">

@@ -3,9 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { PDFParse } from "pdf-parse";
 import type Database from "better-sqlite3";
-import { editDocument } from "../genoffice/agent-query.ts";
-import { prepareOfficeExport } from "../office/agent-query.ts";
-import { OfficeCliError, runOfficeCli } from "../office/officecli.ts";
+import {
+  editSpreadsheetViaRuntime,
+  inspectSpreadsheetViaRuntime,
+  prepareOfficeExportViaRuntime,
+  runDocumentEditViaRuntime,
+  type RuntimeOfficeWriteStaging,
+  type RuntimeV2OfficeControl,
+  type RuntimeV2OfficeScope,
+} from "../office/runtime-v2.ts";
 import {
   artifactDeliveryFile,
   ArtifactStoreError,
@@ -25,11 +31,6 @@ import {
 const MAX_TEXT_EDITOR_BYTES = 5 * 1024 * 1024;
 const MAX_OFFICE_EDITOR_BYTES = 128 * 1024 * 1024;
 const MAX_EDITOR_PATCHES = 2_000;
-const MAX_SPREADSHEET_CELLS = 2_000;
-const OFFICE_EDITOR_ENV: NodeJS.ProcessEnv = {
-  ...process.env,
-  OFFICECLI_NO_AUTO_RESIDENT: "1",
-};
 
 export interface ArtifactEditorPayload {
   mode: ArtifactEditorMode;
@@ -47,6 +48,8 @@ export interface ArtifactEditorPatch {
 export interface ArtifactEditorStoreOptions {
   database?: Database.Database;
   storageRoot?: string;
+  signal?: AbortSignal;
+  officeRuntimeControl?: RuntimeV2OfficeControl;
 }
 
 function modeForRow(artifact: ArtifactRow): ArtifactEditorMode {
@@ -74,21 +77,31 @@ function removeTemporaryWorkspace(workspace: string): void {
   });
 }
 
-function stagedArtifactFile(
+function deliveredArtifactFile(
   artifact: ArtifactRow,
-  workspace: string,
   options: ArtifactEditorStoreOptions,
 ): string {
-  const delivery = artifactDeliveryFile(
+  return artifactDeliveryFile(
     artifact,
     artifact.current_version,
     options.storageRoot,
     options.database,
-  );
-  const filename = path.basename(artifact.filename || delivery.filename);
-  const staged = path.join(workspace, filename);
-  fs.copyFileSync(delivery.absolutePath, staged);
-  return staged;
+  ).absolutePath;
+}
+
+function officeRuntimeScope(artifact: ArtifactRow): RuntimeV2OfficeScope {
+  if (!artifact.conversation_public_id) {
+    throw new ArtifactStoreError(
+      403,
+      "artifact_conversation_scope_mismatch",
+      "The artifact conversation scope is unavailable.",
+    );
+  }
+  return {
+    userId: artifact.user_id,
+    gardenId: artifact.garden_slug ?? null,
+    conversationId: artifact.conversation_public_id,
+  };
 }
 
 function readEditableText(filePath: string): string {
@@ -107,73 +120,19 @@ function readEditableText(filePath: string): string {
   return bytes.toString("utf8");
 }
 
-function parseOfficeJson<T>(output: string, operation: string): T {
-  let parsed: { success?: boolean; data?: T; error?: { error?: string } };
-  try {
-    parsed = JSON.parse(output) as typeof parsed;
-  } catch {
-    throw new OfficeCliError(500, "officecli_invalid_output", `${operation} returned invalid JSON.`);
-  }
-  if (!parsed.success || parsed.data === undefined) {
-    throw new OfficeCliError(
-      422,
-      "officecli_edit_failed",
-      parsed.error?.error || `${operation} failed.`,
-    );
-  }
-  return parsed.data;
-}
-
 async function inspectSpreadsheet(
   artifact: ArtifactRow,
-  workspace: string,
   options: ArtifactEditorStoreOptions,
 ): Promise<{ blocks: ArtifactEditorBlock[]; truncated: boolean }> {
-  const staged = stagedArtifactFile(artifact, workspace, options);
-  return inspectSpreadsheetFile(staged, workspace);
-}
-
-async function inspectSpreadsheetFile(
-  staged: string,
-  workspace: string,
-): Promise<{ blocks: ArtifactEditorBlock[]; truncated: boolean }> {
-  const result = await runOfficeCli(
-    ["view", staged, "text", "--max-lines", "1000", "--json"],
-    { cwd: workspace, timeoutMs: 60_000, env: OFFICE_EDITOR_ENV },
+  return inspectSpreadsheetViaRuntime(
+    officeRuntimeScope(artifact),
+    deliveredArtifactFile(artifact, options),
+    {
+      idempotencySeed: `${artifact.id}:${artifact.current_version}:inspect-spreadsheet`,
+      signal: options.signal,
+      control: options.officeRuntimeControl,
+    },
   );
-  if (result.code !== 0 || result.timedOut || result.truncated) {
-    throw new OfficeCliError(
-      result.timedOut ? 504 : 422,
-      "spreadsheet_inspect_failed",
-      result.stderr.trim() || "The spreadsheet could not be opened for editing.",
-    );
-  }
-  const data = parseOfficeJson<{
-    sheets?: Array<{
-      name?: string;
-      rows?: Array<{ cells?: Record<string, unknown> }>;
-    }>;
-  }>(result.stdout, "Spreadsheet inspection");
-  const blocks: ArtifactEditorBlock[] = [];
-  let total = 0;
-  for (const sheet of data.sheets ?? []) {
-    const sheetName = typeof sheet.name === "string" ? sheet.name : "Sheet";
-    for (const row of sheet.rows ?? []) {
-      for (const [cell, value] of Object.entries(row.cells ?? {})) {
-        total += 1;
-        if (blocks.length >= MAX_SPREADSHEET_CELLS) continue;
-        blocks.push({
-          anchor: `/${sheetName}/${cell}`,
-          kind: "cell",
-          text: value === null || value === undefined ? "" : String(value),
-          editable: true,
-          sheet: sheetName,
-          cell,
-        });
-      }
-    }
-  }
-  return { blocks, truncated: total > blocks.length };
 }
 
 export async function loadArtifactEditor(
@@ -222,26 +181,30 @@ export async function loadArtifactEditor(
     }
   }
 
-  const workspace = temporaryWorkspace();
-  try {
-    if (mode === "spreadsheet-cells") {
-      const inspected = await inspectSpreadsheet(artifact, workspace, options);
-      return { mode, artifact: presented, ...inspected };
-    }
-    const staged = stagedArtifactFile(artifact, workspace, options);
-    const inspected = await editDocument(workspace, { file: path.basename(staged) });
-    if (inspected.operation !== "inspect") {
-      throw new ArtifactStoreError(500, "artifact_editor_inspect_failed", "The Office editor returned no blocks.");
-    }
-    return {
-      mode,
-      artifact: presented,
-      blocks: inspected.blocks,
-      truncated: inspected.truncated,
-    };
-  } finally {
-    removeTemporaryWorkspace(workspace);
+  if (mode === "spreadsheet-cells") {
+    const inspected = await inspectSpreadsheet(artifact, options);
+    return { mode, artifact: presented, ...inspected };
   }
+  const delivery = deliveredArtifactFile(artifact, options);
+  const inspected = await runDocumentEditViaRuntime(
+    officeRuntimeScope(artifact),
+    path.dirname(delivery),
+    { file: path.basename(delivery) },
+    {
+      idempotencySeed: `${artifact.id}:${artifact.current_version}:inspect-document`,
+      signal: options.signal,
+      control: options.officeRuntimeControl,
+    },
+  );
+  if ("cleanup" in inspected || inspected.operation !== "inspect") {
+    throw new ArtifactStoreError(500, "artifact_editor_inspect_failed", "The Office editor returned no blocks.");
+  }
+  return {
+    mode,
+    artifact: presented,
+    blocks: inspected.blocks,
+    truncated: inspected.truncated,
+  };
 }
 
 function validateExpectedVersion(artifact: ArtifactRow, expectedVersion: number): void {
@@ -274,39 +237,35 @@ function validatePatches(value: ArtifactEditorPatch[]): ArtifactEditorPatch[] {
 
 async function importEditedOffice(
   artifact: ArtifactRow,
-  workspace: string,
-  filePath: string,
+  staged: Pick<RuntimeOfficeWriteStaging<unknown>, "filePath" | "previewFilePath" | "cleanup">,
   options: ArtifactEditorStoreOptions,
   reviewWorkflow = "human-review",
 ): Promise<ArtifactRow> {
-  if (!fs.existsSync(filePath)) {
+  if (!fs.existsSync(staged.filePath)) {
     throw new ArtifactStoreError(
       500,
       "artifact_editor_output_missing",
       "The native document editor did not write its output file.",
     );
   }
-  // Reuse the same Office renderer that produced the original artifact
-  // preview. Reconstructing a preview from extracted paragraphs discards the
-  // document's styles, tables, page geometry, images, headers, and footers.
-  const stagedPreview = await prepareOfficeExport(workspace, {
-    file: path.relative(workspace, filePath),
-    title: artifact.title,
-  });
-  return importArtifactVersion({
-    artifact,
-    authorizedRoot: workspace,
-    filePath,
-    previewFilePath: stagedPreview.previewFilePath,
-    runId: artifact.originating_run_id,
-    assistantMessageId: null,
-    metadata: {
-      lastEditedBy: "human",
-      reviewWorkflow,
-    },
-    database: options.database,
-    storageRoot: options.storageRoot,
-  });
+  try {
+    return await importArtifactVersion({
+      artifact,
+      authorizedRoot: path.dirname(staged.filePath),
+      filePath: staged.filePath,
+      previewFilePath: staged.previewFilePath,
+      runId: artifact.originating_run_id,
+      assistantMessageId: null,
+      metadata: {
+        lastEditedBy: "human",
+        reviewWorkflow,
+      },
+      database: options.database,
+      storageRoot: options.storageRoot,
+    });
+  } finally {
+    staged.cleanup();
+  }
 }
 
 /**
@@ -351,7 +310,17 @@ export async function saveArtifactOfficeBytes(
   try {
     const staged = path.join(workspace, path.basename(artifact.filename));
     fs.writeFileSync(staged, bytes);
-    return await importEditedOffice(artifact, workspace, staged, options, "genoffice-docs");
+    const preview = await prepareOfficeExportViaRuntime(
+      officeRuntimeScope(artifact),
+      workspace,
+      { file: path.basename(staged), title: artifact.title },
+      {
+        idempotencySeed: `${artifact.id}:${artifact.current_version}:genoffice-docs`,
+        signal: options.signal,
+        control: options.officeRuntimeControl,
+      },
+    );
+    return await importEditedOffice(artifact, preview, options, "genoffice-docs");
   } finally {
     removeTemporaryWorkspace(workspace);
   }
@@ -362,26 +331,26 @@ async function saveOfficeBlocks(
   patches: ArtifactEditorPatch[],
   options: ArtifactEditorStoreOptions,
 ): Promise<ArtifactRow> {
-  const workspace = temporaryWorkspace();
-  try {
-    const source = stagedArtifactFile(artifact, workspace, options);
-    const extension = path.extname(source);
-    const output = `edited${extension}`;
-    const result = await editDocument(workspace, {
+  const source = deliveredArtifactFile(artifact, options);
+  const staged = await runDocumentEditViaRuntime(
+    officeRuntimeScope(artifact),
+    path.dirname(source),
+    {
       file: path.basename(source),
-      output,
+      output: `edited${path.extname(source)}`,
       title: artifact.title,
       patches,
-    });
-    if (result.operation !== "patch") {
-      throw new ArtifactStoreError(422, "artifact_editor_no_changes", "No Office document changes were supplied.");
-    }
-    // Keep the workspace alive until preview generation and import have both
-    // finished; returning the bare promise would run `finally` immediately.
-    return await importEditedOffice(artifact, workspace, result.outputPath, options);
-  } finally {
-    removeTemporaryWorkspace(workspace);
+    },
+    {
+      idempotencySeed: `${artifact.id}:${artifact.current_version}:edit-document`,
+      signal: options.signal,
+      control: options.officeRuntimeControl,
+    },
+  );
+  if (!("cleanup" in staged)) {
+    throw new ArtifactStoreError(422, "artifact_editor_no_changes", "No Office document changes were supplied.");
   }
+  return importEditedOffice(artifact, staged, options);
 }
 
 async function saveSpreadsheetCells(
@@ -389,37 +358,19 @@ async function saveSpreadsheetCells(
   patches: ArtifactEditorPatch[],
   options: ArtifactEditorStoreOptions,
 ): Promise<ArtifactRow> {
-  const workspace = temporaryWorkspace();
-  try {
-    const { blocks } = await inspectSpreadsheet(artifact, workspace, options);
-    const allowed = new Set(blocks.map((block) => block.anchor));
-    for (const patch of patches) {
-      if (!allowed.has(patch.anchor)) {
-        throw new ArtifactStoreError(400, "artifact_editor_cell_invalid", "A spreadsheet cell is outside the editable range.");
-      }
-    }
-    const source = path.join(workspace, path.basename(artifact.filename));
-    const commands = patches.map((patch) => ({
-      command: "set",
-      path: patch.anchor,
-      props: { value: patch.text },
-    }));
-    const result = await runOfficeCli(
-      ["batch", source, "--commands", JSON.stringify(commands), "--json"],
-      { cwd: workspace, timeoutMs: 90_000, env: OFFICE_EDITOR_ENV },
-    );
-    if (result.code !== 0 || result.timedOut) {
-      throw new OfficeCliError(
-        result.timedOut ? 504 : 422,
-        "spreadsheet_edit_failed",
-        result.stderr.trim() || result.stdout.trim() || "The spreadsheet edits could not be saved.",
-      );
-    }
-    parseOfficeJson(result.stdout, "Spreadsheet editing");
-    return await importEditedOffice(artifact, workspace, source, options);
-  } finally {
-    removeTemporaryWorkspace(workspace);
-  }
+  const source = deliveredArtifactFile(artifact, options);
+  const staged = await editSpreadsheetViaRuntime(
+    officeRuntimeScope(artifact),
+    source,
+    patches,
+    {
+      title: artifact.title,
+      idempotencySeed: `${artifact.id}:${artifact.current_version}:edit-spreadsheet`,
+      signal: options.signal,
+      control: options.officeRuntimeControl,
+    },
+  );
+  return importEditedOffice(artifact, staged, options);
 }
 
 export async function saveArtifactEditor(input: {
@@ -453,6 +404,8 @@ export async function saveArtifactEditor(input: {
       assistantMessageId: null,
       database: options.database,
       storageRoot: options.storageRoot,
+      signal: options.signal,
+      officeRuntimeControl: options.officeRuntimeControl,
     });
     if (rendered.status !== "ready") {
       throw new ArtifactStoreError(
@@ -471,7 +424,7 @@ export async function saveArtifactEditor(input: {
     try {
       const staged = path.join(workspace, path.basename(input.artifact.filename));
       fs.writeFileSync(staged, input.content, "utf8");
-      return importArtifactVersion({
+      return await importArtifactVersion({
         artifact: input.artifact,
         authorizedRoot: workspace,
         filePath: staged,
@@ -509,7 +462,7 @@ export async function saveArtifactPdfBytes(
   try {
     const staged = path.join(workspace, path.basename(artifact.filename));
     fs.writeFileSync(staged, bytes);
-    return importArtifactVersion({
+    return await importArtifactVersion({
       artifact,
       authorizedRoot: workspace,
       filePath: staged,

@@ -109,15 +109,25 @@ test("the card uses the shared run material, not a second card style", () => {
   }
 });
 
-test("the card guards its stream, closes on error, and reads its saved content", () => {
+test("the card guards its stream and delegates error plus teardown ownership", () => {
   const source = fs.readFileSync(
     path.join(dashboardRoot, "src", "app", "components", "hermes", "inline-wardrobe-run.tsx"),
     "utf8",
   );
   // EventSource reconnects on error forever by default; a replayed turn must
-  // never open one, and a live one must close rather than hammer a dead route.
+  // never open one. A live owner delegates error recovery to the shared
+  // single-flight supervisor and route teardown to the matching close helper,
+  // which also aborts any terminal-state probe still in flight.
   assert.match(source, /if \(replaying\) return;/);
-  assert.match(source, /source\.close\(\)/);
+  assert.match(
+    source,
+    /import \{ closeAgentRunStream, resolveAgentRunStreamError \} from "@\/lib\/agent-run-stream";/,
+  );
+  assert.match(
+    source,
+    /source\.onerror = \(\) => \{\s*resolveAgentRunStreamError\(\{\s*source,\s*base,/,
+  );
+  assert.match(source, /return \(\) => closeAgentRunStream\(source\);/);
   assert.match(source, /persistedContent/);
   assert.match(source, /\/api\/wardrobe\/runs\/\$\{runId\}/);
   // The gallery is the clone's own app on a local port — a link, never a frame.

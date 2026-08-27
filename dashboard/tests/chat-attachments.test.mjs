@@ -151,7 +151,7 @@ test('sent images persist into transcripts and open in the shared full-screen vi
     'utf8',
   );
 
-  assert.match(viewer, /fixed inset-0 z-\[200\][^\n]+bg-black/);
+  assert.match(viewer, /bb-viewer-overlay fixed z-\[200\][^\n]+bg-black/);
   assert.match(viewer, /aria-label="Close image preview"/);
   assert.match(viewer, /src=\{attachment\.dataUrl\}/);
   assert.match(viewer, /max-h-80[^\n]+object-contain/);

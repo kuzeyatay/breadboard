@@ -9,9 +9,12 @@ import {
   getConversationById,
   listConversationMessages,
 } from "../conversations/store.ts";
-import { getActiveCapabilityDecision } from "../hermes/runtime-store.ts";
+import {
+  getActiveCapabilityDecision,
+  getRuntimeSessionById,
+} from "../hermes/runtime-store.ts";
 import type { CapabilityMode } from "../hermes/capability-policy.ts";
-import { loopxEnabled } from "./runtime.ts";
+import { loopxEnabled } from "./state.ts";
 import { scheduleLoopxTick } from "./tick.ts";
 
 const ARTIFACT_TOOL = /artifact|document|render|image|video/i;
@@ -36,6 +39,12 @@ export function scheduleLoopxTickForConversation(
     return;
   }
   if (!conversation) return;
+  const runtimeSession = getRuntimeSessionById(input.runtimeSessionId);
+  if (
+    !runtimeSession ||
+    runtimeSession.user_id !== conversation.user_id ||
+    runtimeSession.conversation_id !== conversation.id
+  ) return;
   if (
     conversation.surface !== "dashboard_terminal" &&
     conversation.surface !== "garden_chat"
@@ -64,6 +73,8 @@ export function scheduleLoopxTickForConversation(
   }
 
   scheduleLoopxTick({
+    userId: conversation.user_id,
+    gardenId: runtimeSession.garden_id,
     conversationPublicId: conversation.public_id,
     surface: conversation.surface,
     mode,

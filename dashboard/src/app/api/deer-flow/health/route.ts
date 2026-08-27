@@ -9,9 +9,8 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   try {
     await requireUserId();
-    // The probe really starts a Python interpreter and imports the Gateway, so
-    // the default read uses the cached report; `?refresh=1` is the deliberate
-    // slow path taken after a setup step.
+    // This is a filesystem + Runtime-ledger observation only. `?refresh=1`
+    // invalidates its short cache after setup but never starts the Gateway.
     const refresh = new URL(request.url).searchParams.get("refresh") === "1";
     const snapshot = await health({ force: refresh });
     return NextResponse.json({

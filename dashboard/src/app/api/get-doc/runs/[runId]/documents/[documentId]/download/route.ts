@@ -2,19 +2,12 @@ import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import {
   ArtifactStoreError,
-  presentArtifact,
 } from "@/lib/hermes/artifact-store.ts";
 import {
-  closeGetDocArtifactContext,
-  openGetDocArtifactContext,
-  saveDocumentArtifact,
-} from "@/lib/get-doc/artifact.ts";
-import {
-  DocumentDownloadError,
-  downloadPdf,
-  pdfFilename,
-} from "@/lib/get-doc/download.ts";
-import { findDocument, recordDownload } from "@/lib/get-doc/run-manager.ts";
+  downloadDocumentViaRuntime,
+  RuntimeDocumentDownloadError,
+} from "@/lib/get-doc/download-runtime.ts";
+import { findDocument, recordDownload } from "@/lib/get-doc/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -48,7 +41,7 @@ export async function POST(
       );
     }
 
-    const found = findDocument(userId, runId, documentId);
+    const found = await findDocument(userId, runId, documentId);
     if (!found) {
       return NextResponse.json({ ok: false, error: "document_not_found" }, { status: 404 });
     }
@@ -68,63 +61,34 @@ export async function POST(
       );
     }
 
-    const context = openGetDocArtifactContext({
+    // Runtime owns DNS/fetch/redirect/body/artifact work. The dashboard sends
+    // only the server-selected catalog result, never a renderer-selected URL.
+    const downloaded = await downloadDocumentViaRuntime({
       userId,
+      sourceRunId: runId,
+      documentId,
       conversationPublicId: conversationId,
-      label: `Download: ${document.title}`,
-      agentRunId: runId,
+      document,
     });
-    if (!context) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "artifact_session_unavailable",
-          message: "The artifact workspace is not ready. Reopen the chat and try again.",
-        },
-        { status: 409 },
-      );
-    }
-
-    try {
-      // The garden an artifact lands in comes from the conversation, never from
-      // the request, so there is nothing further to authorize here: the
-      // conversation lookup above already refused anything not this user's.
-      const downloaded = await downloadPdf(document.pdfUrl);
-      const artifact = saveDocumentArtifact({
-        context,
-        document,
-        buffer: downloaded.buffer,
-        filename: pdfFilename({
-          title: document.title,
-          year: document.year,
-          firstAuthor: document.authors[0] ?? null,
-        }),
-        finalUrl: downloaded.finalUrl,
-      });
-      const saved = recordDownload({
-        userId,
-        runId,
-        documentId,
-        artifactId: artifact.id,
-        filename: artifact.filename,
-        byteSize: downloaded.byteSize,
-      });
-      closeGetDocArtifactContext(context, "completed");
-      return NextResponse.json({
-        ok: true,
-        saved,
-        alreadySaved: false,
-        artifact: presentArtifact(artifact),
-      });
-    } catch (error) {
-      closeGetDocArtifactContext(context, "failed");
-      throw error;
-    }
+    const saved = recordDownload({
+      userId,
+      runId,
+      documentId,
+      artifactId: downloaded.artifactId,
+      filename: downloaded.filename,
+      byteSize: downloaded.byteSize,
+    });
+    return NextResponse.json({
+      ok: true,
+      saved,
+      alreadySaved: false,
+      artifact: downloaded.artifact,
+    });
   } catch (error) {
-    if (error instanceof DocumentDownloadError) {
+    if (error instanceof RuntimeDocumentDownloadError) {
       return NextResponse.json(
         { ok: false, error: error.code, message: error.message },
-        { status: 502 },
+        { status: ["artifact_session_unavailable", "no_free_full_text"].includes(error.code) ? 409 : 502 },
       );
     }
     if (error instanceof ArtifactStoreError) {

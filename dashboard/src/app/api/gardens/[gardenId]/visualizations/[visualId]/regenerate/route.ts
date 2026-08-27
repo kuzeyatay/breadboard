@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import fs from 'fs';
-import path from 'path';
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
+import { externalRuntimeFilesystem as fs } from '@/lib/external-runtime-filesystem';
 import { DEFAULT_MODEL, createChatmockClient, resolveClusterNoteFile } from '@/lib/knowledge';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
@@ -23,6 +23,8 @@ import {
   loadGeneratedVisualManifest,
   replaceGeneratedVisualBlock,
 } from '@/lib/generated-visuals';
+import { runGeneratedVisualBrowserTestsViaRuntime } from '@/lib/runtime-v2/generated-visual-browser-job';
+import { compileGeneratedVisualizationViaRuntime } from '@/lib/runtime-v2/generated-visual-compiler-job';
 import {
   loadVisualizationPlan,
   persistedVisualizationOpportunityContractProblems,
@@ -78,7 +80,7 @@ export async function POST(
   const headers = corsHeaders(request);
   try {
     const { gardenId, visualId } = await params;
-    const { cluster } = await requireOwnedClusterFromSlug(gardenId);
+    const { cluster, userId } = await requireOwnedClusterFromSlug(gardenId);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
       return NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500, headers });
@@ -233,6 +235,24 @@ export async function POST(
           opportunity,
           pageMarkdown: surrounding,
           availableSourceAnchorIds,
+          abortSignal: request.signal,
+          compilerRunner: (sourceCode, opportunity, signal) =>
+            compileGeneratedVisualizationViaRuntime({
+              userId,
+              gardenId: cluster.slug,
+              sourceCode,
+              opportunity,
+              signal,
+            }),
+          browserTestRunner: ({ definition, outputDir, timeoutMs, signal }) =>
+            runGeneratedVisualBrowserTestsViaRuntime({
+              userId,
+              gardenId: cluster.slug,
+              definition,
+              outputDir,
+              timeoutMs,
+              signal,
+            }),
           onEvent: (event) => appendGardenEvent(stagedContentPath, cluster.slug, event.type, {
             ...event.data,
             pageId: relativePage.replace(/\.md$/i, ''),
@@ -312,7 +332,10 @@ export async function POST(
             { status: 409, headers },
           );
         }
-        await publishQuartzAfterMutation(`regenerate generated visual ${visualId} in ${cluster.slug}`);
+        await publishQuartzAfterMutation(
+          `regenerate generated visual ${visualId} in ${cluster.slug}`,
+          { userId },
+        );
         return NextResponse.json({ success: true, visual: result.manifest }, { headers });
       } finally {
         disposeDetachedGardenMutation(mutation);
@@ -465,7 +488,10 @@ export async function POST(
           { status: 409, headers },
         );
       }
-      await publishQuartzAfterMutation(`regenerate visual ${spec.id} in ${cluster.slug}`);
+      await publishQuartzAfterMutation(
+        `regenerate visual ${spec.id} in ${cluster.slug}`,
+        { userId },
+      );
       return NextResponse.json({ success: true, visual: spec }, { headers });
     } finally {
       disposeDetachedGardenMutation(mutation);

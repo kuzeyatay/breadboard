@@ -1,4 +1,4 @@
-// In-memory run manager for the Wardrobe agent.
+// Worker-local run manager for the Wardrobe agent.
 //
 // A run takes the photos attached to one message and walks each of them through
 // the clone's own pipeline: detect the garments, cut each one out, file it in the
@@ -6,7 +6,8 @@
 // clone owns every one of those steps; what lives here is the driving — the
 // order, the waiting, the decision at each review gate, and turning the whole
 // thing into events a card can render and a sentence a person can read a week
-// later.
+// later. This state exists only inside one fresh disposable Runtime V2 worker;
+// Rust persists the replayable projection and terminal outcome.
 //
 // The clone's review gates are the interesting part. Its own UI shows a person
 // each cutout and asks approve or reject. Headless, there is nobody to ask, so
@@ -17,6 +18,7 @@
 // gallery nobody opened.
 
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import type { ChatAttachment } from "../chat-attachments.ts";
 import {
   closeWardrobeArtifactContext,
@@ -35,7 +37,10 @@ import {
   type ImportJob,
   type LibraryItem,
 } from "./client.ts";
-import { ensureService } from "./service.ts";
+import {
+  ensureWardrobeService,
+  withWardrobeServiceLease,
+} from "./runtime-service.ts";
 import type { WardrobeRequest } from "./identity.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
 
@@ -71,6 +76,7 @@ interface RunState {
   aborted: boolean;
   summary: string;
   createdAt: number;
+  controller: AbortController;
 }
 
 const globalRuns = globalThis as typeof globalThis & {
@@ -90,7 +96,11 @@ const STAGE_TIMEOUT_MS = 6 * 60 * 1000;
 
 // ---- event plumbing ---------------------------------------------------------
 
-function emit(run: RunState, type: string, payload: Record<string, unknown> = {}): void {
+function emit(
+  run: RunState,
+  type: string,
+  payload: Record<string, unknown> = {},
+): void {
   run.sequence += 1;
   run.events.push({
     sequenceNumber: run.sequence,
@@ -115,8 +125,11 @@ function evict(): void {
     if (now - run.createdAt > RETENTION_MS) runs.delete(runId);
   }
   if (runs.size <= MAX_RUNS) return;
-  const ordered = [...runs.entries()].sort((left, right) => left[1].createdAt - right[1].createdAt);
-  for (const [runId] of ordered.slice(0, runs.size - MAX_RUNS)) runs.delete(runId);
+  const ordered = [...runs.entries()].sort(
+    (left, right) => left[1].createdAt - right[1].createdAt,
+  );
+  for (const [runId] of ordered.slice(0, runs.size - MAX_RUNS))
+    runs.delete(runId);
 }
 
 // ---- the written answer -----------------------------------------------------
@@ -185,8 +198,17 @@ export function summarizeImport(input: {
 
 export interface StartRunInput {
   userId: number;
+  /** Runtime identity. Present only inside the disposable worker. */
+  runtimeJobId?: string;
   request: WardrobeRequest;
   attachments: ChatAttachment[];
+  /** Canonical sealed photo paths supplied only by the Runtime worker. */
+  runtimePhotos?: ReadonlyArray<{
+    name: string;
+    inputPath: string;
+    mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+    sizeBytes: number;
+  }>;
   model: string;
   /** ChatMock's OpenAI-compatible base URL. */
   baseUrl: string;
@@ -195,9 +217,13 @@ export interface StartRunInput {
   conversationContext?: string;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
+export function startRun(input: StartRunInput): {
+  runId: string;
+  status: RunStatus;
+} {
   evict();
-  const runId = `wdrun_${randomUUID().replaceAll("-", "")}`;
+  const runId =
+    input.runtimeJobId ?? `wdrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -211,25 +237,59 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
     aborted: false,
     summary: "",
     createdAt: Date.now(),
+    controller: new AbortController(),
   };
   runs.set(runId, run);
   void drive(run, input).catch((error: unknown) => {
     if (run.aborted) return;
     run.status = "failed";
-    run.summary = error instanceof Error ? error.message : "The wardrobe import failed.";
+    run.summary =
+      error instanceof Error ? error.message : "The wardrobe import failed.";
     emit(run, "run.failed", { error: run.summary, summary: run.summary });
   });
   return { runId, status: "queued" };
 }
 
 /** The photographs a run works on — every image the message carried. */
-function photosFrom(attachments: ChatAttachment[]): Array<{ name: string; dataUrl: string }> {
-  return attachments
+interface WardrobePhoto {
+  name: string;
+  dataUrl: () => Promise<string>;
+}
+
+function photosFrom(input: StartRunInput): WardrobePhoto[] {
+  if (input.runtimePhotos?.length) {
+    return input.runtimePhotos.map((photo) => ({
+      name: photo.name,
+      async dataUrl() {
+        const metadata = fs.lstatSync(photo.inputPath);
+        if (
+          !metadata.isFile() ||
+          metadata.isSymbolicLink() ||
+          metadata.size !== photo.sizeBytes ||
+          metadata.size < 1 ||
+          metadata.size > 10 * 1024 * 1024
+        ) {
+          throw new Error("The sealed Wardrobe photo is unavailable.");
+        }
+        const bytes = await fs.promises.readFile(photo.inputPath);
+        if (bytes.byteLength !== photo.sizeBytes) {
+          throw new Error(
+            "The sealed Wardrobe photo changed while it was read.",
+          );
+        }
+        return `data:${photo.mediaType};base64,${bytes.toString("base64")}`;
+      },
+    }));
+  }
+  return input.attachments
     .filter(
       (attachment): attachment is Extract<ChatAttachment, { type: "image" }> =>
         attachment.type === "image",
     )
-    .map((attachment) => ({ name: attachment.name, dataUrl: attachment.dataUrl }));
+    .map((attachment) => ({
+      name: attachment.name,
+      dataUrl: () => Promise.resolve(attachment.dataUrl),
+    }));
 }
 
 /**
@@ -241,6 +301,7 @@ function saveArtifacts(input: {
   context: WardrobeArtifactContext | null;
   item: LibraryItem;
   baseUrl: string;
+  signal: AbortSignal;
 }): Promise<string[]> {
   if (!input.context) return Promise.resolve([]);
   const wanted: Array<{ path: string; kind: "cutout" | "modeled" }> = [
@@ -252,8 +313,12 @@ function saveArtifacts(input: {
   return Promise.all(
     wanted.map(async (entry) => {
       try {
-        const buffer = await fetchAsset(input.baseUrl, entry.path);
-        const artifact = saveGarmentArtifact({
+        const buffer = await fetchAsset(
+          input.baseUrl,
+          entry.path,
+          input.signal,
+        );
+        const artifact = await saveGarmentArtifact({
           context: input.context as WardrobeArtifactContext,
           item: input.item,
           buffer,
@@ -268,13 +333,28 @@ function saveArtifacts(input: {
 }
 
 /** The library record the clone wrote for a finished job. */
-async function importedRecord(baseUrl: string, jobId: string): Promise<LibraryItem | null> {
-  const items = await library(baseUrl);
+async function importedRecord(
+  baseUrl: string,
+  jobId: string,
+  signal: AbortSignal,
+): Promise<LibraryItem | null> {
+  const items = await library(baseUrl, signal);
   return items.find((item) => item.importJobId === jobId) ?? null;
 }
 
 async function drive(run: RunState, input: StartRunInput): Promise<void> {
-  const photos = photosFrom(input.attachments);
+  await withWardrobeServiceLease(
+    {
+      userId: run.userId,
+      runId: run.runId,
+      conversationPublicId: input.conversationPublicId,
+    },
+    () => driveLeased(run, input),
+  );
+}
+
+async function driveLeased(run: RunState, input: StartRunInput): Promise<void> {
+  const photos = photosFrom(input);
   if (!photos.length) {
     throw new Error(
       "Attach the photos of the clothes you want imported — Wardrobe reads the pictures, not the message.",
@@ -282,17 +362,28 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   }
 
   run.status = "running";
-  emit(run, "run.started", { photos: photos.length, direction: run.request.direction });
+  emit(run, "run.started", {
+    photos: photos.length,
+    direction: run.request.direction,
+  });
 
   emit(run, "service.starting", {});
-  const service = await ensureService({
-    upstreamUrl: input.baseUrl,
-    model: input.model,
-    quality: run.request.quality,
-  });
+  const service = await ensureWardrobeService(
+    {
+      userId: run.userId,
+      runId: run.runId,
+      conversationPublicId: input.conversationPublicId,
+    },
+    {
+      upstreamUrl: input.baseUrl,
+      model: input.model,
+      quality: run.request.quality,
+    },
+    run.controller.signal,
+  );
   if (run.aborted) return;
-  run.galleryUrl = service.baseUrl;
-  emit(run, "service.ready", { galleryUrl: service.baseUrl });
+  run.galleryUrl = "/api/wardrobe/gallery";
+  emit(run, "service.ready", { galleryUrl: run.galleryUrl });
 
   const context = openWardrobeArtifactContext({
     userId: input.userId,
@@ -305,13 +396,24 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   try {
     for (const [index, photo] of photos.entries()) {
       if (run.aborted) return;
-      emit(run, "photo.started", { name: photo.name, index: index + 1, total: photos.length });
+      emit(run, "photo.started", {
+        name: photo.name,
+        index: index + 1,
+        total: photos.length,
+      });
 
       let detected: { jobs: ImportJob[]; noClothingDetected: boolean };
       try {
-        detected = await createJobs(service.baseUrl, photo.dataUrl);
+        // Load only the photo being detected. Runtime inputs stay path-backed;
+        // ten base64 images are never retained together in the worker heap.
+        detected = await createJobs(
+          service.baseUrl,
+          await photo.dataUrl(),
+          run.controller.signal,
+        );
       } catch (error) {
-        const reason = error instanceof Error ? error.message : "detection failed";
+        const reason =
+          error instanceof Error ? error.message : "detection failed";
         run.skipped.push({ name: photo.name, reason });
         emit(run, "photo.failed", { name: photo.name, error: reason });
         continue;
@@ -329,13 +431,22 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
       // A cap that silently swallowed garments would read as "that photo only
       // had four things in it", so the ones left behind are named.
       for (const job of detected.jobs.slice(jobs.length)) {
-        run.skipped.push({ name: job.metadata.name, reason: "over the per-photo limit" });
+        run.skipped.push({
+          name: job.metadata.name,
+          reason: "over the per-photo limit",
+        });
       }
       if (dropped) emit(run, "photo.capped", { name: photo.name, dropped });
 
       for (const job of jobs) {
         if (run.aborted) return;
-        const saved = await importGarment({ run, service: service.baseUrl, job, context, input });
+        const saved = await importGarment({
+          run,
+          service: service.baseUrl,
+          job,
+          context,
+          input,
+        });
         if (saved === "artifacts_failed") artifactsFailed = true;
       }
     }
@@ -356,7 +467,10 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
       elapsedSec: (Date.now() - run.createdAt) / 1_000,
     });
   } finally {
-    closeWardrobeArtifactContext(context, run.status === "completed" ? "completed" : "failed");
+    closeWardrobeArtifactContext(
+      context,
+      run.status === "completed" ? "completed" : "failed",
+    );
   }
 }
 
@@ -381,7 +495,9 @@ async function importGarment(args: {
   const fail = async (reason: string) => {
     run.skipped.push({ name, reason });
     emit(run, "item.failed", { jobId: job.id, name, error: reason });
-    await deleteJob(service, job.id).catch(() => undefined);
+    await deleteJob(service, job.id, run.controller.signal).catch(
+      () => undefined,
+    );
   };
 
   try {
@@ -396,30 +512,59 @@ async function importGarment(args: {
         // Only a run that was actually given direction gets the chat with it:
         // with no direction there is nothing for an earlier message to qualify,
         // and this endpoint is the clone's only prompt.
-        promptWithContext(run.request.direction, args.input.conversationContext),
+        promptWithContext(
+          run.request.direction,
+          args.input.conversationContext,
+        ),
+        run.controller.signal,
       );
     }
-    await decideStage(service, job.id, "crop", "approve");
+    await decideStage(
+      service,
+      job.id,
+      "crop",
+      "approve",
+      run.controller.signal,
+    );
 
-    emit(run, "item.stage", { jobId: job.id, name, stage: "garment", status: "generating" });
+    emit(run, "item.stage", {
+      jobId: job.id,
+      name,
+      stage: "garment",
+      status: "generating",
+    });
     const cut = await waitForStage({
       baseUrl: service,
       jobId: job.id,
       stage: "garment",
       timeoutMs: STAGE_TIMEOUT_MS,
       aborted,
+      signal: run.controller.signal,
     });
     if (run.aborted) return "skipped";
     if (cut.stages.garment.status !== "review") {
-      await fail(cut.stages.garment.error ?? "the cutout could not be generated");
+      await fail(
+        cut.stages.garment.error ?? "the cutout could not be generated",
+      );
       return "skipped";
     }
 
     // Approving the cutout is what writes the piece into `data/library.json`,
     // and it is also what starts the modeled photo. From here the garment is in
     // the wardrobe whatever happens next.
-    await decideStage(service, job.id, "garment", "approve");
-    emit(run, "item.stage", { jobId: job.id, name, stage: "modeled", status: "generating" });
+    await decideStage(
+      service,
+      job.id,
+      "garment",
+      "approve",
+      run.controller.signal,
+    );
+    emit(run, "item.stage", {
+      jobId: job.id,
+      name,
+      stage: "modeled",
+      status: "generating",
+    });
 
     let modeled = false;
     try {
@@ -429,15 +574,24 @@ async function importGarment(args: {
         stage: "modeled",
         timeoutMs: STAGE_TIMEOUT_MS,
         aborted,
+        signal: run.controller.signal,
       });
       if (shot.stages.modeled.status === "review") {
-        await decideStage(service, job.id, "modeled", "approve");
+        await decideStage(
+          service,
+          job.id,
+          "modeled",
+          "approve",
+          run.controller.signal,
+        );
         modeled = true;
       } else {
         emit(run, "item.partial", {
           jobId: job.id,
           name,
-          error: shot.stages.modeled.error ?? "the modeled photo could not be generated",
+          error:
+            shot.stages.modeled.error ??
+            "the modeled photo could not be generated",
         });
       }
     } catch (error) {
@@ -445,11 +599,14 @@ async function importGarment(args: {
       emit(run, "item.partial", {
         jobId: job.id,
         name,
-        error: error instanceof Error ? error.message : "the modeled photo could not be generated",
+        error:
+          error instanceof Error
+            ? error.message
+            : "the modeled photo could not be generated",
       });
     }
 
-    const record = await importedRecord(service, job.id);
+    const record = await importedRecord(service, job.id, run.controller.signal);
     if (!record) {
       await fail("the piece was generated but not written to the wardrobe");
       return "skipped";
@@ -459,6 +616,7 @@ async function importGarment(args: {
       context: args.context,
       item: record,
       baseUrl: service,
+      signal: run.controller.signal,
     });
     const expected = record.modeledImage ? 2 : 1;
     run.imported.push({
@@ -478,7 +636,9 @@ async function importGarment(args: {
       modeled,
       artifactIds,
     });
-    return args.context && artifactIds.length < expected ? "artifacts_failed" : "imported";
+    return args.context && artifactIds.length < expected
+      ? "artifacts_failed"
+      : "imported";
   } catch (error) {
     if (run.aborted) return "skipped";
     await fail(error instanceof Error ? error.message : "the import failed");
@@ -488,12 +648,20 @@ async function importGarment(args: {
 
 // ---- read/control API -------------------------------------------------------
 
-export function getEventsSince(userId: number, runId: string, since = 0): WardrobeEvent[] {
-  return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
+export function getEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): WardrobeEvent[] {
+  return requireRun(userId, runId).events.filter(
+    (event) => event.sequenceNumber > since,
+  );
 }
 
 export function isTerminal(userId: number, runId: string): boolean {
-  return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
+  return ["completed", "failed", "aborted"].includes(
+    requireRun(userId, runId).status,
+  );
 }
 
 export function abortRun(userId: number, runId: string): boolean {
@@ -501,6 +669,9 @@ export function abortRun(userId: number, runId: string): boolean {
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;
   run.status = "aborted";
+  run.controller.abort(
+    new DOMException("Wardrobe import stopped", "AbortError"),
+  );
   // Whatever was already filed stays filed — the wardrobe is on disk, not in
   // this run — so the stopped summary reports it rather than implying a rollback.
   run.summary = run.imported.length
@@ -513,3 +684,17 @@ export function abortRun(userId: number, runId: string): boolean {
 export function runSummary(userId: number, runId: string): string {
   return requireRun(userId, runId).summary;
 }
+
+/** Worker-only entrypoint selected by the fixed Runtime adapter. */
+export function startRuntimeWorkerRun(
+  input: StartRunInput & { runtimeJobId: string },
+): { runId: string; status: RunStatus } {
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId)) {
+    throw new Error("Wardrobe Runtime identity is invalid.");
+  }
+  return startRun(input);
+}
+
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
+export const abortRuntimeWorkerRun = abortRun;

@@ -13,6 +13,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import db from "../db.ts";
+import { organizationIdsForUser } from "../organizations/store.ts";
 import {
   artifactFile,
   createImportedArtifact,
@@ -30,11 +32,39 @@ import {
 } from "../hermes/runtime-store.ts";
 import { getConversationForUser } from "../conversations/store.ts";
 import { findExternalAgentAssistantMessage } from "../conversations/external-agent-turns.ts";
-import { authorizeGardenAccess } from "../hermes/session-service.ts";
 import type { PresentedArtifact } from "../hermes/artifact-types.ts";
 import { parseStoredProgram, type VideoEditProgram } from "./program.ts";
 
 export const VIDEO_USE_TOOL = "video_use_edit";
+
+interface VideoUseGardenRow {
+  user_id: number;
+  visibility: "private" | "organization" | "public";
+  organization_id: number | null;
+  chat_accessible: number;
+}
+
+/**
+ * Worker-safe equivalent of the interactive route's Garden authorization.
+ * Keep this module free of `next/server`: a disposable Runtime worker has no
+ * Next module resolver and must make the same decision from durable state.
+ */
+function authorizeVideoArtifactGarden(userId: number, gardenSlug: string): void {
+  const garden = db
+    .prepare(
+      "SELECT user_id, visibility, organization_id, chat_accessible FROM clusters WHERE slug = ?",
+    )
+    .get(gardenSlug) as VideoUseGardenRow | undefined;
+  if (!garden) throw new Error("Garden not found.");
+  if (garden.user_id === userId) return;
+  const organizationAllowed =
+    garden.chat_accessible === 1 &&
+    garden.visibility === "organization" &&
+    typeof garden.organization_id === "number" &&
+    organizationIdsForUser(userId).includes(garden.organization_id);
+  const publicAllowed = garden.chat_accessible === 1 && garden.visibility === "public";
+  if (!organizationAllowed && !publicAllowed) throw new Error("Garden not found.");
+}
 
 /** Metadata keys the studio reads back. Kept in one place so both ends agree. */
 export const VIDEO_USE_METADATA = {
@@ -179,7 +209,7 @@ export function requireVideoArtifact(input: {
     userId: input.userId,
     conversationPublicId: input.conversationPublicId,
   });
-  if (artifact.garden_slug) authorizeGardenAccess(input.userId, artifact.garden_slug);
+  if (artifact.garden_slug) authorizeVideoArtifactGarden(input.userId, artifact.garden_slug);
   if (artifact.kind !== "video") {
     throw new Error("Only a video artifact can be edited here.");
   }
@@ -252,7 +282,7 @@ export interface PublishInput {
  * Store the render: a new version of the artifact when there is one, otherwise
  * a new artifact. Returns what the chat and the studio both show.
  */
-export function publishEditedVideo(input: PublishInput): PresentedArtifact {
+export async function publishEditedVideo(input: PublishInput): Promise<PresentedArtifact> {
   const metadata = metadataFor({
     program: input.program,
     history: input.history,
@@ -264,7 +294,7 @@ export function publishEditedVideo(input: PublishInput): PresentedArtifact {
 
   const assistantMessageId = assistantMessageFor(input.context);
   const stored = input.artifact
-    ? importArtifactVersion({
+    ? await importArtifactVersion({
         artifact: input.artifact,
         authorizedRoot: input.workspace,
         filePath: input.renderedPath,
@@ -272,7 +302,7 @@ export function publishEditedVideo(input: PublishInput): PresentedArtifact {
         assistantMessageId,
         metadata,
       })
-    : createImportedArtifact({
+    : await createImportedArtifact({
         userId: input.context.userId,
         runtimeSessionId: input.context.runtimeSessionId,
         hermesSessionId: input.context.hermesSessionId,

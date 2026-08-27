@@ -5,6 +5,7 @@ import { startRun } from "@/lib/agent-reach/run-manager.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { maxStepsSetting } from "@/lib/agent-settings/defaults.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -39,7 +40,7 @@ export async function POST(request: Request) {
     const { baseURL } = resolveChatmockBaseUrl(request);
     // How far a run may dig before it has to answer, from the user's settings.
     const maxSteps = maxStepsSetting(agentSettingsFor(userId, "agent-reach"), 16);
-    const run = startRun({
+    const run = await startRun({
       userId,
       task,
       model,
@@ -58,6 +59,8 @@ export async function POST(request: Request) {
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     return NextResponse.json(
       { ok: false, error: error instanceof Error ? error.message : "runtime_error" },
       { status: 502 },

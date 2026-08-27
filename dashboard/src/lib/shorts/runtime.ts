@@ -19,7 +19,15 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
+import {
+  dashboardDataDir,
+  repositoryRoot,
+  runtimeV2ServiceVenv,
+} from "../runtime-paths.ts";
 import { resolveFfmpeg } from "../vimax/video.ts";
 
 export interface ShortsRuntime {
@@ -72,9 +80,9 @@ function configured(value: string | undefined): string | null {
 /** A directory is the shorts clone when its package and CLI are both there. */
 export function isClone(candidate: string): boolean {
   return (
-    fs.existsSync(path.join(candidate, "shorts_generator", "pipeline.py")) &&
-    fs.existsSync(path.join(candidate, "shorts_generator", "local", "clipper.py")) &&
-    fs.existsSync(path.join(candidate, "main.py"))
+    externalRuntimePathExists(path.join(candidate, "shorts_generator", "pipeline.py")) &&
+    externalRuntimePathExists(path.join(candidate, "shorts_generator", "local", "clipper.py")) &&
+    externalRuntimePathExists(path.join(candidate, "main.py"))
   );
 }
 
@@ -89,8 +97,6 @@ export function resolveShortsRoot(env: NodeJS.ProcessEnv = process.env): ShortsR
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   const name = "AI-Youtube-Shorts-Generator";
   candidates.push({ root: path.join(repositoryRoot(), name), source: "repository" });
-  candidates.push({ root: path.resolve(process.cwd(), name), source: "cwd" });
-  candidates.push({ root: path.resolve(process.cwd(), "..", name), source: "cwd" });
   return candidates.find((candidate) => isClone(candidate.root)) ?? null;
 }
 
@@ -98,14 +104,13 @@ export function resolveShortsRoot(env: NodeJS.ProcessEnv = process.env): ShortsR
 export function bridgeScriptPath(): string | null {
   const candidates = [
     path.join(repositoryRoot(), "scripts", "shorts-bridge.py"),
-    path.resolve(process.cwd(), "scripts", "shorts-bridge.py"),
-    path.resolve(process.cwd(), "..", "scripts", "shorts-bridge.py"),
   ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  return candidates.find((candidate) => externalRuntimePathExists(candidate)) ?? null;
 }
 
 export function venvDirectory(root: string): string {
-  return path.join(root, ".venv");
+  void root;
+  return runtimeV2ServiceVenv("shorts");
 }
 
 /** The Python inside the clone's virtual environment, if it has been built. */
@@ -114,7 +119,7 @@ export function venvPython(root: string): string | null {
     process.platform === "win32"
       ? path.join(venvDirectory(root), "Scripts", "python.exe")
       : path.join(venvDirectory(root), "bin", "python");
-  return fs.existsSync(candidate) ? candidate : null;
+  return externalRuntimePathExists(candidate) ? candidate : null;
 }
 
 /**
@@ -135,7 +140,9 @@ export function resolveOnPath(
   executable: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  if (path.isAbsolute(executable)) return fs.existsSync(executable) ? executable : null;
+  if (path.isAbsolute(executable)) {
+    return externalRuntimePathExists(executable) ? executable : null;
+  }
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   const directories = (env[pathKey] ?? "").split(path.delimiter).filter(Boolean);
   const extensions =
@@ -145,7 +152,7 @@ export function resolveOnPath(
   for (const directory of directories) {
     for (const extension of extensions) {
       const candidate = path.join(directory, `${executable}${extension}`);
-      if (fs.existsSync(candidate)) return candidate;
+      if (externalRuntimePathExists(candidate)) return candidate;
     }
   }
   return null;
@@ -158,7 +165,7 @@ export function resolveOnPath(
  */
 export function findSystemPython(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = configured(env.SHORTS_PYTHON);
-  if (explicit && fs.existsSync(explicit)) return explicit;
+  if (explicit && externalRuntimePathExists(explicit)) return explicit;
   for (const name of ["python3", "python"]) {
     const found = resolveOnPath(name, env);
     // The Windows Store alias is a zero-byte reparse point that opens the Store
@@ -170,7 +177,7 @@ export function findSystemPython(env: NodeJS.ProcessEnv = process.env): string |
 
 function safeSize(file: string): number {
   try {
-    return fs.statSync(file).size;
+    return externalRuntimeStat(file).size;
   } catch {
     return 0;
   }
@@ -231,6 +238,7 @@ export function runCommand(
     timeoutMs: number;
     env?: Record<string, string | undefined>;
     maxOutputChars?: number;
+    signal?: AbortSignal;
   },
 ): Promise<CommandResult> {
   const limit = options.maxOutputChars ?? 200_000;
@@ -242,6 +250,7 @@ export function runCommand(
         windowsHide: true,
         env: shortsEnv(options.env ?? {}),
         stdio: ["ignore", "pipe", "pipe"],
+        ...(options.signal ? { signal: options.signal } : {}),
       });
     } catch (error) {
       resolve({
@@ -292,7 +301,7 @@ const globalCache = globalThis as typeof globalThis & {
   __breadboardShortsHealthInFlight?: Promise<ShortsHealth>;
 };
 
-async function probe(): Promise<ShortsHealth> {
+async function probe(signal?: AbortSignal): Promise<ShortsHealth> {
   const runtime = resolveShortsRoot();
   const bridgeFound = Boolean(bridgeScriptPath());
   const ffmpeg = resolveFfmpeg();
@@ -346,7 +355,7 @@ async function probe(): Promise<ShortsHealth> {
   const probeResult = await runCommand(
     python,
     ["-c", `missing = []\n${script}print("MISSING:" + ",".join(missing))`],
-    { cwd: runtime.root, timeoutMs: PROBE_TIMEOUT_MS },
+    { cwd: runtime.root, timeoutMs: PROBE_TIMEOUT_MS, signal },
   );
   const reported = /MISSING:(.*)/.exec(probeResult.stdout)?.[1] ?? null;
   const missing =
@@ -412,7 +421,9 @@ async function probe(): Promise<ShortsHealth> {
 }
 
 /** Cached because the probe really starts a Python interpreter. */
-export async function health(options: { force?: boolean } = {}): Promise<ShortsHealth> {
+export async function health(
+  options: { force?: boolean; signal?: AbortSignal } = {},
+): Promise<ShortsHealth> {
   const cached = globalCache.__breadboardShortsHealth;
   if (!options.force && cached && Date.now() - cached.at < HEALTH_CACHE_MS) {
     return cached.health;
@@ -420,7 +431,7 @@ export async function health(options: { force?: boolean } = {}): Promise<ShortsH
   if (globalCache.__breadboardShortsHealthInFlight) {
     return globalCache.__breadboardShortsHealthInFlight;
   }
-  const request = probe()
+  const request = probe(options.signal)
     .then((result) => {
       globalCache.__breadboardShortsHealth = { at: Date.now(), health: result };
       return result;

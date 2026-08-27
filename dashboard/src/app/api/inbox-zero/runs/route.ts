@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { inboxZeroDefaults } from "@/lib/agent-settings/defaults.ts";
-import { startRun } from "@/lib/inbox-zero/run-manager.ts";
-import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
+import { startRun } from "@/lib/inbox-zero/runtime-run-manager.ts";
+import {
+  contextConversationFromBody,
+  conversationContextFromBody,
+} from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -47,7 +49,8 @@ export async function POST(request: Request) {
 
     const stored = inboxZeroDefaults(agentSettingsFor(userId, "inbox-zero"));
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const conversation = contextConversationFromBody(userId, body);
+    const run = await startRun({
       userId,
       task,
       allowActions:
@@ -57,12 +60,14 @@ export async function POST(request: Request) {
       conversationKey:
         typeof body.chatSessionId === "number"
           ? `session:${body.chatSessionId}`
-          : `user:${userId}`,
+          : conversation
+            ? `conversation:${conversation.public_id}`
+            : `user:${userId}`,
       preferredEmail:
         (typeof body.mailbox === "string" ? body.mailbox.trim() : "") || stored.mailbox || undefined,
       chatmockBaseUrl: baseURL,
-      chatmockApiKey: chatmockApiKeyValue(),
       model,
+      ...(conversation ? { conversationPublicId: conversation.public_id } : {}),
       // The chat this was launched from, so a request that refers back to
       // it resolves instead of arriving as a bare fragment.
       conversationContext: conversationContextFromBody(userId, body),

@@ -22,8 +22,8 @@
 // replays the whole program against it, so ten revisions produce one generation
 // of encoding rather than ten, and "revert" needs nothing but an older program.
 
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
 
 /** The source key inside the EDL. One source per session, so one name. */

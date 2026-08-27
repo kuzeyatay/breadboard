@@ -19,7 +19,10 @@ export const sharedPageComponents: SharedLayout = {
   header: [],
   // The highlighter renders nothing until text is selected; it lives here so
   // every page (notes, folders, tags) gets the selection menu.
-  afterBody: [Component.Highlighter()],
+  // BreadboardAI stays hidden when Quartz is embedded because the Garden
+  // dashboard owns that view's one visible Assistant. Directly opened garden
+  // pages reveal the page-scoped Assistant from its client script.
+  afterBody: [Component.Highlighter(), Component.BreadboardAI()],
   footer: Component.Empty(),
 }
 

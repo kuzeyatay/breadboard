@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import db from "@/lib/db";
 import {
   ApiError,
   apiErrorResponse,
@@ -17,9 +18,8 @@ import {
   runtimeExternalSessionId,
 } from "@/lib/hermes/runtime-store.ts";
 import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
-import { OmhServiceError, runOmh } from "@/lib/hermes/omh-service.ts";
-import { readHermesConfig } from "@/lib/hermes/config.ts";
-import { directoryForWorkspaceKey } from "@/lib/hermes/workspace.ts";
+import { OmhServiceError, validateOmhArguments } from "@/lib/hermes/omh-request.ts";
+import { OmhRuntimeError, runOmhViaRuntime } from "@/lib/runtime-v2/omh-job.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -53,6 +53,18 @@ export async function POST(request: Request) {
         "oh-my-hermes session scope is invalid.",
       );
     }
+    const conversation = db.prepare(
+      "SELECT public_id FROM conversations WHERE id = ? AND user_id = ?",
+    ).get(session.conversation_id, session.user_id) as
+      | { public_id: string }
+      | undefined;
+    if (!conversation?.public_id) {
+      throw new ApiError(
+        403,
+        "omh_conversation_scope_mismatch",
+        "oh-my-hermes conversation scope is invalid.",
+      );
+    }
     const run = getActiveRuntimeRun(session.id);
     if (!run) {
       throw new ApiError(
@@ -78,7 +90,7 @@ export async function POST(request: Request) {
       body.args && typeof body.args === "object" && !Array.isArray(body.args)
         ? (body.args as Record<string, unknown>)
         : {};
-    const commandArguments = args.arguments;
+    const commandArguments = validateOmhArguments(args.arguments);
     // Only the command and subcommand are audited. The remaining positionals
     // carry the user's own message text on `chat route`, which belongs in the
     // conversation rather than duplicated into the audit log.
@@ -97,12 +109,14 @@ export async function POST(request: Request) {
       gardenId: session.garden_id,
       payload: { runId: run.id, command: commandName },
     });
-    const result = await runOmh({
+    const result = await runOmhViaRuntime({
+      scope: {
+        userId: session.user_id,
+        gardenId: session.garden_id,
+        conversationId: conversation.public_id,
+      },
+      workspaceKey: session.workspace_key,
       arguments: commandArguments,
-      workspaceDirectory: directoryForWorkspaceKey(
-        readHermesConfig(),
-        session.workspace_key,
-      ),
       signal: request.signal,
     });
     recordAuditEvent({
@@ -125,13 +139,16 @@ export async function POST(request: Request) {
         runtimeSessionId,
         payload: {
           reason:
-            error instanceof OmhServiceError
+            (error instanceof OmhServiceError || error instanceof OmhRuntimeError)
               ? error.code
               : error instanceof ApiError
                 ? error.code
                 : "omh_failed",
         },
       });
+    }
+    if (error instanceof OmhRuntimeError) {
+      return apiErrorResponse(new ApiError(error.status, error.code, error.message));
     }
     if (error instanceof OmhServiceError) {
       const status =

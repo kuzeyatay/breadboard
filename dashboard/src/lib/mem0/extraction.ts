@@ -22,7 +22,10 @@ import {
   type DurableMemoryKind,
 } from "../conversations/memory.ts";
 import { recordAuditEvent } from "../hermes/runtime-store.ts";
-import { semanticMemoryClient, type SemanticMemoryClient } from "./client.ts";
+import {
+  withSemanticMemoryClient,
+  type SemanticMemoryClient,
+} from "./client.ts";
 import { mem0Config } from "./config.ts";
 import { mirrorContentHash, upsertMirror } from "./mirror.ts";
 
@@ -54,13 +57,10 @@ export async function extractDurableCandidates(input: {
   // extraction engine. This is a privacy boundary, not merely a write filter.
   if (durableMemoryExclusionReason(input.userText)) return null;
   const config = mem0Config();
-  const client = input.clientOverride !== undefined
-    ? input.clientOverride
-    : config.extractionEnabled ? await semanticMemoryClient() : null;
-  if (!client) return null;
-
   const database = input.database ?? db;
-  try {
+  const extract = async (
+    client: SemanticMemoryClient,
+  ): Promise<ExtractionOutcome> => {
     const facts = await client.extract(
       [
         { role: "user", content: input.userText },
@@ -131,6 +131,14 @@ export async function extractDurableCandidates(input: {
       });
     }
     return { saved, skipped };
+  };
+
+  try {
+    if (input.clientOverride !== undefined) {
+      return input.clientOverride ? await extract(input.clientOverride) : null;
+    }
+    if (!config.extractionEnabled) return null;
+    return await withSemanticMemoryClient("extraction", extract);
   } catch {
     return null;
   }

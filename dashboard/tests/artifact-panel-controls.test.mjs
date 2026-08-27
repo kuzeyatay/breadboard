@@ -77,7 +77,7 @@ test("Garden artifact tabs use the archive icon without a duplicate panel header
   );
   assert.match(
     gardenWorkspace,
-    /<ArtifactPanel compact hideHeader gardenSlug=\{clusterSlug\} sourceSurface="garden_chat" \/>/,
+    /<ArtifactPanel[\s\S]{0,180}?compact[\s\S]{0,180}?hideHeader[\s\S]{0,180}?gardenSlug=\{clusterSlug\}[\s\S]{0,180}?sourceSurface="garden_chat"/,
   );
   assert.doesNotMatch(
     gardenWorkspace,

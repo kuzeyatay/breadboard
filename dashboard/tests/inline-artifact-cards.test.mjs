@@ -158,7 +158,7 @@ test("a chat's artifacts are asked for with its messages, not after they render"
   // the transcript to arrive before the artifacts are even requested.
   assert.match(
     agentSession,
-    /primeInlineArtifacts\(\{ conversationId: id \}\);[\s\S]*loadHermesSessionDetail\(surface, id\)/,
+    /primeInlineArtifacts\(\{ conversationId: id \}\);[\s\S]*loadHermesSessionDetail\(surface, id,[\s\S]*reuseRecentPrefetch: true/,
   );
   assert.match(
     agentSession,
@@ -168,6 +168,9 @@ test("a chat's artifacts are asked for with its messages, not after they render"
   // and joins a request already in flight instead of asking again.
   assert.match(cards, /const artifactCache = new Map</);
   assert.match(cards, /artifactCache\.get\(query\) \?\? \[\]/);
+  assert.match(cards, /const MAX_CACHED_ARTIFACT_QUERIES = 32;/);
+  assert.match(cards, /while \(artifactCache\.size > MAX_CACHED_ARTIFACT_QUERIES\)/);
+  assert.match(cards, /artifactCache\.delete\(oldest\);/);
   assert.match(cards, /const pending = artifactRequests\.get\(query\);/);
 });
 
@@ -184,7 +187,7 @@ test("both runtime and legacy garden chats pin artifact cards to their owning me
   );
   assert.match(
     gardenWorkspace,
-    /<InlineArtifactCardsProvider[\s\S]*legacyChatSessionId=\{chatSessionId\}[\s\S]*renderItem=\{[\s\S]*<InlineArtifactCards[\s\S]*ownerMessageId=\{msg\.artifactMessageId \?\? msg\.id \?\? null\}/,
+    /<InlineArtifactCardsProvider[\s\S]*legacyChatSessionId=\{chatSessionId\}[\s\S]*renderItem=\{[\s\S]*<InlineArtifactCards[\s\S]*ownerMessageId=\{\s*msg\.artifactMessageId \?\? msg\.id \?\? null/,
   );
   assert.match(agentSession, /artifactMessageId:\s*payload\.assistantMessageId/);
   assert.match(gardenWorkspace, /assistantMsg\.artifactMessageId = event\.assistantMessageId/);
@@ -201,7 +204,7 @@ test("markdown artifacts can be added to the Garden artifacts folder", () => {
   assert.match(viewer, /folder: ARTIFACTS_FOLDER/);
   assert.match(viewer, /const ARTIFACTS_FOLDER = "artifacts"/);
   assert.match(viewer, /GARDEN_DOCUMENTS_CHANGED_EVENT/);
-  assert.match(gardenWorkspace, /window\.addEventListener\(GARDEN_DOCUMENTS_CHANGED_EVENT/);
+  assert.match(gardenWorkspace, /window\.addEventListener\(\s*GARDEN_DOCUMENTS_CHANGED_EVENT/);
   assert.match(gardenWorkspace, /setExpandedFolders/);
   assert.match(gardenWorkspace, /void fetchDocuments\(\)/);
 });
@@ -216,7 +219,7 @@ test("PDF artifact clicks open Breadboard's native full-page PDF viewer", () => 
   assert.match(cards, /<a href=\{pdfHref\}/);
   assert.match(artifactPdfPage, /<PdfViewerClient/);
   assert.match(artifactPdfPage, /sourceUrl=\{sourceUrl\}/);
-  assert.match(artifactPdfPage, /\sreadOnly\s/);
+  assert.match(artifactPdfPage, /readOnly=\{!editable\}/);
   assert.match(nativePdfViewer, /sourceUrl\?: string/);
   assert.match(nativePdfViewer, /readOnly\?: boolean/);
   assert.match(nativePdfViewer, /readOnly \? "PDF artifact" : "PDF source"/);
@@ -231,7 +234,7 @@ test("Markdown artifacts keep their document reading surface in the dock", () =>
   // pad or scroll around it.
   assert.match(
     viewer,
-    /usesDocumentViewer \? "overflow-hidden p-0" : "overflow-auto px-5 py-4"/,
+    /usesDocumentViewer\s*\?\s*"overflow-hidden p-0"\s*:\s*artifact\.kind === "document" && !editingDocument\s*\?\s*"overflow-auto p-0"\s*:\s*"overflow-auto px-5 py-4"/,
   );
 });
 
@@ -248,11 +251,14 @@ test("an artifact opened in the Terminal fills a lane inside the dock, not the w
   // the lane costs nothing until something is opened into it.
   assert.match(globals, /\.bb-artifact-lane \{[\s\S]*?flex: 1 1 0%;/);
   assert.match(globals, /\.bb-artifact-lane:empty \{\s*display: none;/);
-  assert.match(terminal, /<div className="flex min-w-0 flex-1 flex-col">/);
+  assert.match(terminal, /<div className="relative flex min-w-0 flex-1 flex-col">/);
 
   // A surface with a lane must not also make the shell give up width for a
   // panel that is already inside it.
-  assert.match(viewer, /useReservedDockWidth\(Boolean\(artifact\) && !dockHost, DOCK_WIDTH\)/);
+  assert.match(
+    viewer,
+    /useReservedDockWidth\(Boolean\(artifact\) && !dockHost && !expanded, DOCK_WIDTH\)/,
+  );
 });
 
 test("a full-page surface with no lane pins the dock beside the page instead", () => {

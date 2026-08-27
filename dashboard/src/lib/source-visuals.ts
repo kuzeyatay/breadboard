@@ -13,9 +13,9 @@
 // Stage 3 (learning page planning) then assigns every visual to a page or
 // intentionally skips it with a reason — nothing disappears silently.
 
-import fs from "fs";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import os from "os";
-import path from "path";
 import crypto from "crypto";
 import type OpenAI from "openai";
 import { PDFParse } from "pdf-parse";

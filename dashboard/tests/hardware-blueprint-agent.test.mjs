@@ -172,16 +172,19 @@ test("the API routes exist for starting, streaming and stopping a run", () => {
     assert.match(source(route), /requireUserId/, `${route} does not authenticate`);
   }
   const route = source("src/app/api/hardware-blueprint/runs/route.ts");
-  const manager = source("src/lib/hardware/run-manager.ts");
+  const manager = source("src/lib/hardware/runtime-run-manager.ts");
+  const workerManager = source("src/lib/hardware/run-manager.ts");
   assert.match(route, /clientMessageId/);
   assert.match(route, /branchGroupId/);
   assert.match(route, /recordExternalAgentTurn/);
   assert.match(route, /setRunTerminalHandler/);
   assert.match(route, /finishExternalAgentTurn/);
   assert.match(route, /error instanceof ConversationStoreError/);
-  assert.match(manager, /__breadboardHardwareBlueprintLaunches/);
-  assert.match(manager, /existing\.requestSignature !== requestSignature/);
-  assert.match(manager, /publishTerminal/);
+  assert.match(manager, /startOuterAgentRun/);
+  assert.match(workerManager, /startRuntimeWorkerRun/);
+  assert.match(manager, /observeOuterAgentRun/);
+  assert.match(manager, /abortOuterAgentRun/);
+  assert.match(route, /await startRun\(/);
 });
 
 test("server-first persistence replays flagged Blueprint briefs without a descriptor conflict", () => {

@@ -10,6 +10,7 @@ import {
   savePersistentConfig,
   redactSecrets,
   redactedConfigSummary,
+  redactedPersistentConfigSummary,
   atomicWriteFile,
 } from "../src/main/runtime-config";
 
@@ -24,6 +25,8 @@ test("defaults generate strong distinct secrets", () => {
   assert.notEqual(a.hermesSessionToken, b.hermesSessionToken);
   assert.notEqual(a.hermesCapabilitySecret, b.hermesCapabilitySecret);
   assert.equal(a.scriberrEnabled, true);
+  assert.equal(a.comfyUiMode, "managed");
+  assert.equal(a.comfyUiExternalUrl, null);
   assert.equal(a.scriberrUsername, "breadboard");
   assert.ok(a.scriberrPassword.length >= 24);
   assert.notEqual(a.scriberrPassword, b.scriberrPassword);
@@ -63,6 +66,35 @@ test("version 1 configs migrate their runtime secrets to Hermes", () => {
   assert.equal(migrated.hermesCapabilitySecret, legacyCapabilitySecret);
 });
 
+test("ComfyUI desktop configuration is closed and external URLs are credential-free", () => {
+  const current = defaultPersistentConfig();
+  assert.equal(
+    validatePersistentConfig({
+      ...current,
+      comfyUiMode: "external",
+      comfyUiExternalUrl: "http://127.0.0.1:8188/",
+    }).comfyUiExternalUrl,
+    "http://127.0.0.1:8188",
+  );
+  assert.throws(() =>
+    validatePersistentConfig({
+      ...current,
+      comfyUiMode: "external",
+      comfyUiExternalUrl: null,
+    }),
+  );
+  assert.throws(() =>
+    validatePersistentConfig({
+      ...current,
+      comfyUiMode: "external",
+      comfyUiExternalUrl: "http://user:secret@127.0.0.1:8188",
+    }),
+  );
+  assert.throws(() =>
+    validatePersistentConfig({ ...current, comfyUiMode: "ambient" }),
+  );
+});
+
 test("save uses atomic replace and keeps file valid", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-cfg-"));
   const config = loadOrCreatePersistentConfig(dir);
@@ -97,6 +129,9 @@ test("log redaction removes every secret", () => {
 
 test("diagnostics summary exposes no secret values", () => {
   const persistent = defaultPersistentConfig();
+  const persistentSummary = JSON.stringify(
+    redactedPersistentConfigSummary(persistent),
+  );
   const summary = JSON.stringify(
     redactedConfigSummary({
       persistent,
@@ -105,7 +140,6 @@ test("diagnostics summary exposes no secret values", () => {
         chatmock: 8765,
         hermes: 9119,
         postiz: 4007,
-        postizSupervisor: 7721,
         quartz: 8081,
         quartzWs: 3001,
       },
@@ -117,4 +151,10 @@ test("diagnostics summary exposes no secret values", () => {
   assert.ok(!summary.includes(persistent.hermesToolSecret));
   assert.ok(!summary.includes(persistent.scriberrPassword));
   assert.ok(!summary.includes('"hermes":9119'));
+  assert.ok(!persistentSummary.includes(persistent.nextAuthSecret));
+  assert.ok(!persistentSummary.includes(persistent.hermesCapabilitySecret));
+  assert.ok(!persistentSummary.includes(persistent.hermesSessionToken));
+  assert.ok(!persistentSummary.includes(persistent.hermesToolSecret));
+  assert.ok(!persistentSummary.includes(persistent.scriberrPassword));
+  assert.ok(!persistentSummary.includes('"ports"'));
 });

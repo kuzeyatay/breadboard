@@ -2,7 +2,9 @@ mod bootstrap;
 mod control;
 mod durable_job_control;
 mod host;
+mod service_engine;
 mod shutdown;
+mod streaming_body;
 mod worker_dispatcher;
 
 fn main() {

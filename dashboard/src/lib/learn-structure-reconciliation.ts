@@ -13,8 +13,9 @@
  * modification time and never by title.
  */
 
-import fs from "node:fs";
-import path from "node:path";
+import type { Dirent } from "node:fs";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import {
@@ -119,7 +120,7 @@ function walkActivePages(gardenDir: string, activeBuildId: string): ScannedPage[
   const out: ScannedPage[] = [];
   const walk = (relDir: string) => {
     const absDir = path.join(gardenDir, relDir);
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(absDir, { withFileTypes: true });
     } catch {
@@ -463,7 +464,7 @@ function removeEmptyLearningSections(
 ): string[] {
   const removed: string[] = [];
   const learningDir = path.join(gardenDir, "learning");
-  let sectionDirs: fs.Dirent[];
+  let sectionDirs: Dirent[];
   try {
     sectionDirs = fs.readdirSync(learningDir, { withFileTypes: true });
   } catch {
@@ -500,7 +501,7 @@ function removeEmptyLearningSections(
 function walkAll(dir: string): string[] {
   const out: string[] = [];
   const walk = (current: string) => {
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
     } catch {
@@ -641,7 +642,7 @@ function removeEmptyLearningSectionsByPresence(gardenDir: string, keptRels: Set<
   const removed: string[] = [];
   const learningDir = path.join(gardenDir, "learning");
   const keptSections = new Set([...keptRels].map((rel) => rel.split("/").slice(0, 2).join("/")));
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(learningDir, { withFileTypes: true });
   } catch {

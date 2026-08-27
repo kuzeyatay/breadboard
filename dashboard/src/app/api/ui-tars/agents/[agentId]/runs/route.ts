@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
-import * as service from "@/lib/ui-tars/service.ts";
 import * as store from "@/lib/ui-tars/store.ts";
+import { UITarsServiceError } from "@/lib/ui-tars/errors.ts";
+import { refreshAgentRuns, startRun } from "@/lib/ui-tars/runtime-run-manager.ts";
 import { uiTarsErrorResponse, readBody } from "@/lib/ui-tars/route-helpers.ts";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +13,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ age
   try {
     const userId = await requireUserId();
     const { agentId } = await params;
-    service.requireAgent(userId, agentId);
+    if (!store.getAgent(userId, agentId)) throw new UITarsServiceError(404, "agent_not_found");
+    await refreshAgentRuns(userId, agentId);
     const runs = store.listRuns(userId, agentId).map((r) => ({
       id: r.id,
       status: r.status,
@@ -34,7 +36,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
     const userId = await requireUserId();
     const { agentId } = await params;
     const body = await readBody(request);
-    const summary = await service.startRun(userId, agentId, String(body.task ?? ""));
+    const summary = await startRun(userId, agentId, String(body.task ?? ""), {
+      requestId: typeof body.requestId === "string" ? body.requestId : undefined,
+    });
     return NextResponse.json({ ok: true, run: { id: summary.runId, status: summary.status } }, { status: 201 });
   } catch (error) {
     return uiTarsErrorResponse(error);

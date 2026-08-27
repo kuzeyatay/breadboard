@@ -1,6 +1,3 @@
-import { execFile } from "node:child_process";
-import path from "node:path";
-
 /**
  * Asking the operating system where this computer is.
  *
@@ -34,55 +31,7 @@ export type SystemLocationResult =
   /** This platform has no location service Breadboard can reach. */
   | { state: "unsupported"; reason: string };
 
-/** How long Windows is given to produce a first fix. */
-const FIX_TIMEOUT_MS = 10_000;
-/** The whole PowerShell round trip, including .NET startup. */
-const PROCESS_TIMEOUT_MS = 25_000;
-
 const NO_FIX = "Windows did not return a position for this computer.";
-
-/**
- * The watcher reports `Ready` once it holds a position. Until then its status
- * distinguishes the two failures worth telling apart: `Disabled` is the OS
- * privacy switch, anything else is a service that tried and came up empty.
- */
-const LOCATION_SCRIPT = `
-$ErrorActionPreference = 'Stop'
-$result = @{ state = 'unavailable'; reason = '${NO_FIX}' }
-try {
-  Add-Type -AssemblyName System.Device
-  $watcher = New-Object System.Device.Location.GeoCoordinateWatcher([System.Device.Location.GeoPositionAccuracy]::Default)
-  $watcher.Start()
-  $deadline = (Get-Date).AddMilliseconds(${FIX_TIMEOUT_MS})
-  while ($watcher.Status -ne [System.Device.Location.GeoPositionStatus]::Ready -and (Get-Date) -lt $deadline) {
-    if ($watcher.Permission -eq [System.Device.Location.GeoPositionPermission]::Denied) { break }
-    if ($watcher.Status -eq [System.Device.Location.GeoPositionStatus]::Disabled) { break }
-    Start-Sleep -Milliseconds 200
-  }
-  $location = $watcher.Position.Location
-  if ($watcher.Permission -eq [System.Device.Location.GeoPositionPermission]::Denied) {
-    $result = @{ state = 'blocked'; reason = 'Windows is not letting desktop apps use this computer''s location.' }
-  } elseif ($location -and -not $location.IsUnknown) {
-    $result = @{
-      state = 'available'
-      latitude = $location.Latitude
-      longitude = $location.Longitude
-      accuracyMeters = $location.HorizontalAccuracy
-    }
-  } elseif ($watcher.Status -eq [System.Device.Location.GeoPositionStatus]::Disabled) {
-    $result = @{ state = 'blocked'; reason = 'The Windows location service is turned off.' }
-  }
-  $watcher.Stop()
-} catch {
-  $result = @{ state = 'unavailable'; reason = "Windows location failed: $($_.Exception.Message)" }
-}
-[Console]::Out.Write(($result | ConvertTo-Json -Compress))
-`;
-
-function windowsPowerShell(): string {
-  const systemRoot = process.env["SystemRoot"] || "C:\\Windows";
-  return path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-}
 
 function finiteNumber(value: unknown): number | null {
   const numeric = typeof value === "string" ? Number(value) : value;
@@ -150,34 +99,10 @@ export function parseSystemLocationOutput(output: string): SystemLocationResult 
   return { state: "unavailable", reason: reasonFrom(record.reason, NO_FIX) };
 }
 
-/** Ask this machine's OS for a position. Never rejects. */
-export function readSystemLocation(
-  platform: NodeJS.Platform = process.platform,
-): Promise<SystemLocationResult> {
-  if (platform !== "win32") {
-    return Promise.resolve({
-      state: "unsupported",
-      reason: "This system has no location service Breadboard can read.",
-    });
-  }
-  return new Promise((resolve) => {
-    // Base64 UTF-16LE is PowerShell's own way in for a script with quotes and
-    // `$` in it, so nothing here depends on how a shell splits arguments.
-    const encoded = Buffer.from(LOCATION_SCRIPT, "utf16le").toString("base64");
-    execFile(
-      windowsPowerShell(),
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
-      { timeout: PROCESS_TIMEOUT_MS, windowsHide: true },
-      (error, stdout) => {
-        if (error && !stdout) {
-          resolve({
-            state: "unavailable",
-            reason: "Breadboard could not reach the Windows location service.",
-          });
-          return;
-        }
-        resolve(parseSystemLocationOutput(stdout));
-      },
-    );
-  });
+/** The stable answer for a platform with no reachable operating-system sensor. */
+export function unsupportedSystemLocation(): SystemLocationResult {
+  return {
+    state: "unsupported",
+    reason: "This system has no location service Breadboard can read.",
+  };
 }

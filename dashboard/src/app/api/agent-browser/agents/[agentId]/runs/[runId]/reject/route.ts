@@ -14,7 +14,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
     service.requireAgent(userId, agentId);
     const body = await readBody(request);
     const actionId = typeof body.actionId === "string" ? body.actionId : "";
-    const ok = decideApproval(userId, runId, actionId, "reject");
+    const ok = await decideApproval(userId, agentId, runId, actionId, "reject");
     return NextResponse.json({ ok });
   } catch (error) {
     return agentBrowserErrorResponse(error);

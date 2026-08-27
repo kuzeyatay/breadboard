@@ -283,8 +283,10 @@ test("the run reaches ChatMock and never a second model layer", () => {
   // The clone's own OpenAI client reads these, which is what lets it run on
   // Breadboard's models without editing the checkout.
   assert.match(manager, /OPENAI_BASE_URL:/);
-  assert.match(manager, /OPENAI_API_KEY: chatmockApiKeyValue\(\)/);
+  assert.match(manager, /OPENAI_API_KEY: input\.apiKey/);
   assert.match(manager, /LLM_PROVIDER: "openai"/);
+  assert.match(manager, /startOuterAgentRun/);
+  assert.match(manager, /kind: "shorts"/);
   // MuAPI is the clone's paid default; nothing here may reach for it.
   assert.doesNotMatch(manager, /MUAPI/i);
 });
@@ -293,7 +295,9 @@ test("a run installs nothing — only the setup route can", () => {
   const manager = read("src/lib/shorts/run-manager.ts");
   assert.doesNotMatch(manager, /pip install|uv (?:pip|venv)/);
   const setup = read("src/lib/shorts/setup.ts");
-  assert.match(setup, /requirements-local\.txt/);
+  const worker = read("scripts/runtime-v2-managed-setup-executor.mjs");
+  assert.doesNotMatch(setup, /node:child_process|\bspawn\s*\(|runCommand/);
+  assert.match(worker, /requirements-local\.txt/);
 });
 
 test("the upload store keeps one user's videos out of another's reach", async () => {

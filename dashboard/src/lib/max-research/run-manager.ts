@@ -103,18 +103,47 @@ export interface StartRunInput {
   /** Injected by tests so the orchestration can be exercised without services. */
   runtimeFor?: typeof participantRuntime;
   /** Injected by tests. Writes the final answer from the synthesis prompt. */
-  synthesize?: (prompt: string) => Promise<string>;
+  synthesize?: (prompt: string, signal?: AbortSignal) => Promise<string>;
 }
 
 export function startRun(input: StartRunInput): {
   runId: string;
   status: MaxResearchStatus;
 } {
+  return startLocalRun(
+    `mxrun_${randomUUID().replaceAll("-", "")}`,
+    input,
+  );
+}
+
+export interface RuntimeWorkerStartRunInput
+  extends Omit<StartRunInput, "runtimeFor" | "synthesize"> {
+  /** Runtime V2's fenced job identity. Never selected by a renderer. */
+  runtimeJobId: string;
+}
+
+/** Fixed disposable-worker entrypoint. Next.js must never call this export. */
+export function startRuntimeWorkerRun(
+  input: RuntimeWorkerStartRunInput,
+): { runId: string; status: MaxResearchStatus } {
+  if (
+    !Number.isSafeInteger(input.userId) ||
+    input.userId < 1 ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId)
+  ) {
+    throw new Error("The Max Research Runtime worker input is invalid.");
+  }
+  return startLocalRun(input.runtimeJobId, input);
+}
+
+function startLocalRun(
+  runId: string,
+  input: StartRunInput,
+): { runId: string; status: MaxResearchStatus } {
   evict();
   const question = input.question.trim();
   if (!question) throw new Error("max_research_question_required");
 
-  const runId = `mxrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -279,8 +308,12 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   const synthesize = input.synthesize ?? defaultSynthesizer(input);
   let answer: string;
   try {
-    answer = (await synthesize(prompt)).trim();
+    answer = (await synthesize(prompt, run.controller.signal)).trim();
   } catch (error) {
+    if (run.controller.signal.aborted) {
+      abort(run);
+      return;
+    }
     // The research all succeeded; only the last model call did not. Losing it
     // here would throw away every agent's work over one transient upstream
     // failure — which a live run did — so the findings stay on the run and
@@ -303,6 +336,10 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     return;
   }
 
+  if (run.controller.signal.aborted) {
+    abort(run);
+    return;
+  }
   if (!answer) {
     run.status = "failed";
     emit(run, "run.failed", {
@@ -323,6 +360,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     const reviewed = (
       await synthesize(
         maxResearchReviewPrompt({ plan, results: run.results, draft: answer }),
+        run.controller.signal,
       )
     ).trim();
     if (reviewedAnswerIsUsable(answer, reviewed)) {
@@ -336,12 +374,20 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
       emit(run, "review.skipped", { reason: "The audit returned nothing usable." });
     }
   } catch (error) {
+    if (run.controller.signal.aborted) {
+      abort(run);
+      return;
+    }
     emit(run, "review.skipped", {
       reason:
         error instanceof Error ? error.message : "The audit could not be run.",
     });
   }
 
+  if (run.controller.signal.aborted) {
+    abort(run);
+    return;
+  }
   run.answer = finalAnswer;
   run.status = "completed";
   emit(run, "run.completed", {
@@ -354,6 +400,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
 }
 
 function abort(run: RunState): void {
+  if (run.status === "aborted") return;
   run.status = "aborted";
   emit(run, "run.aborted", {});
 }
@@ -367,14 +414,15 @@ function abort(run: RunState): void {
  */
 function defaultSynthesizer(
   input: StartRunInput,
-): (prompt: string) => Promise<string> {
-  return async (prompt: string) => {
+): (prompt: string, signal?: AbortSignal) => Promise<string> {
+  return async (prompt: string, inputSignal?: AbortSignal) => {
     const { completeText } = await import("./completion.ts");
     return completeText({
       baseUrl: input.baseUrl,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
       prompt,
+      signal: inputSignal,
     });
   };
 }
@@ -412,6 +460,21 @@ export function abortRun(userId: number, runId: string): boolean {
   if (!run || isTerminal(userId, runId)) return false;
   run.controller.abort();
   abort(run);
+  return true;
+}
+
+/** Protocol controls consumed only by the fixed Runtime V2 adapter. */
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
+  const run = requireRun(userId, runId);
+  if (!run || isTerminal(userId, runId)) return false;
+  // Do not publish the terminal event yet. The active participant drivers see
+  // this signal, cancel their own nested Runtime jobs/services, and only then
+  // return to `drive`, which emits run.aborted. Keeping the coordinator alive
+  // until that acknowledgement prevents a cancelled Max run from orphaning
+  // the five jobs it commissioned.
+  run.controller.abort(new DOMException("Max Research stopped", "AbortError"));
   return true;
 }
 

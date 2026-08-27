@@ -158,15 +158,15 @@ test("a download that fails leaves the caller a browser rather than an exception
 });
 
 test("the sign-in window loads the extension when it is present, and opens regardless when it is not", () => {
-  const launch = source("src/lib/agent-browser/browser-profile.ts");
+  const launch = source("scripts/runtime-v2-agent-browser-profile-executor.mjs");
   assert.match(
     launch,
-    /const extension = installedOpenCliExtension\(env\);/,
+    /const extension = installedExtension\(launch\.dataRoot\);/,
     "the launch path reads the installed extension synchronously — opening a window must not await a download",
   );
   assert.match(
     launch,
-    /\.\.\.\(extension \? openCliExtensionArgs\(extension\.path\) : \[\]\)/,
+    /\.\.\.\(extension \? \[`--load-extension=\$\{extension\}`\] : \[\]\)/,
     "absent must degrade to no flags rather than blocking the launch",
   );
 
@@ -187,7 +187,7 @@ test("opening the sign-in browser is what installs the extension", () => {
   const open = route.slice(route.indexOf('action === "open"'), route.indexOf('action === "close"'));
   assert.match(open, /await ensureOpenCliExtension\(\)/);
   assert.ok(
-    open.indexOf("ensureOpenCliExtension") < open.indexOf("openSignInWindow"),
+    open.indexOf("ensureOpenCliExtension") < open.indexOf("openAgentBrowserProfileWindow"),
     "the fetch has to finish before the window opens, or the first launch misses it",
   );
 });
@@ -206,7 +206,7 @@ test("the release is pinned rather than resolved at runtime", () => {
 });
 
 test("a run's browser is a real window, hidden, and never headless", () => {
-  const launch = source("src/lib/agent-browser/browser-profile.ts");
+  const launch = source("src/lib/agent-browser/browser-profile-process.ts");
   const hider = source("src/lib/agent-browser/hide-window.ts");
 
   // Checked against the code rather than the file: the comments explaining why
@@ -226,7 +226,7 @@ test("a run's browser is a real window, hidden, and never headless", () => {
     "the off-screen window left a dead taskbar button behind",
   );
   // What actually removes it, applied only to Breadboard's own browser.
-  assert.match(launch, /if \(options\.background\) \{/);
+  assert.match(launch, /function openBackgroundBridgeWindow\(/);
   assert.match(launch, /hideBackgroundBrowser\(env\);/);
   assert.match(hider, /ShowWindow/);
   // Verified live: the extension does connect under --headless=new, and then
@@ -239,7 +239,7 @@ test("a run's browser is a real window, hidden, and never headless", () => {
 });
 
 test("a background window is reused, put away, and never taken from a person", () => {
-  const launch = source("src/lib/agent-browser/browser-profile.ts");
+  const launch = source("src/lib/agent-browser/browser-profile-process.ts");
   const ensure = launch.slice(launch.indexOf("export function ensureBridgeWindow"));
   assert.match(
     ensure,

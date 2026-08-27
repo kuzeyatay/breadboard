@@ -17,6 +17,11 @@ import {
   launchBreadboard,
   type BreadboardElectron,
 } from "./launch-breadboard";
+import {
+  resolveElectronQaHarnessLaunchOptions,
+  type ElectronQaHarnessLaunchOptions,
+} from "./harness-launch-options";
+import { withPackagedChildEnvironment } from "./packaged-environment";
 import { waitForPortsReleased } from "./process-ports";
 import { ScenarioRecorder } from "./scenario-recorder";
 
@@ -74,9 +79,17 @@ export class ElectronQaHarness {
   private activeTrace: ActiveTrace | null = null;
   private readonly traceCaptureFailures: string[] = [];
   private failed = false;
+  private readonly launchOptions: ElectronQaHarnessLaunchOptions;
 
-  constructor(run: QaRunEnvironment) {
-    this.run = run;
+  constructor(
+    run: QaRunEnvironment,
+    launchOptions: ElectronQaHarnessLaunchOptions = { mode: "development" },
+  ) {
+    this.launchOptions = resolveElectronQaHarnessLaunchOptions(launchOptions);
+    this.run =
+      this.launchOptions.mode === "packaged"
+        ? withPackagedChildEnvironment(run)
+        : run;
     this.resultsDir = path.join(
       run.paths.repoRoot,
       ".qa-results",
@@ -169,6 +182,26 @@ export class ElectronQaHarness {
   /** The Electron main PID can differ from the outer launcher PID on Windows. */
   async mainProcessPid(): Promise<number> {
     return this.app.application.evaluate(() => process.pid);
+  }
+
+  /** Exact OS PID for the real dashboard renderer owned by this Electron launch. */
+  async rendererProcessPid(): Promise<number> {
+    return this.app.application.evaluate(({ BrowserWindow }) => {
+      const dashboard = BrowserWindow.getAllWindows().find((window: {
+        isDestroyed(): boolean;
+        webContents: { getURL(): string; getOSProcessId(): number };
+      }) => {
+        if (window.isDestroyed()) return false;
+        const url = window.webContents.getURL();
+        return url.startsWith("http://") || url.startsWith("https://");
+      });
+      if (!dashboard) throw new Error("The Electron dashboard renderer is not running");
+      const pid = dashboard.webContents.getOSProcessId();
+      if (!Number.isSafeInteger(pid) || pid < 1) {
+        throw new Error("Electron returned an invalid dashboard renderer PID");
+      }
+      return pid;
+    });
   }
 
   markFailed(): void {
@@ -335,6 +368,13 @@ export class ElectronQaHarness {
       this.currentApp = await launchBreadboard({
         run: this.run,
         diagnostics,
+        ...(this.launchOptions.mode === "packaged"
+          ? {
+              packaged: true,
+              executablePath: this.launchOptions.executablePath,
+              mockNativeDialogs: false,
+            }
+          : {}),
       });
       this.currentPage = null;
       if (process.env["BREADBOARD_QA_NO_TRACE"] !== "1") {
@@ -361,12 +401,12 @@ export class ElectronQaHarness {
     const releasedPorts = criticalOwnedPorts(endpoints);
     const child = handle.application.process();
     const mainPid = await this.mainProcessPid();
-    // `BreadboardElectron.close()` has its own 60-second emergency bound. Keep
+    // `BreadboardElectron.close()` has its own 90-second emergency bound. Keep
     // this observer alive beyond it so it cannot reject unobserved while that
     // close is still awaiting the supported shutdown path.
     const exit = observeProcessExit(
       child,
-      Math.max(options.timeoutMs ?? PORT_RELEASE_TIMEOUT_MS, 75_000),
+      Math.max(options.timeoutMs ?? PORT_RELEASE_TIMEOUT_MS, 105_000),
     );
     let lifecycleError: unknown;
 
@@ -553,14 +593,41 @@ export const test = playwrightTest.extend<QaTestFixtures, QaWorkerFixtures>({
           return value ? [[key, value]] : [];
         }),
       );
+      const runtimeV2BurnIn = process.env["BREADBOARD_RUNTIME_V2_BURN_IN"] === "1";
+      const burnInOverrides = runtimeV2BurnIn
+        ? {
+            BREADBOARD_RUNTIME_V2_BURN_IN: "1",
+            BREADBOARD_RUNTIME_V2_BURN_IN_RECEIPT_PATH:
+              process.env["BREADBOARD_RUNTIME_V2_BURN_IN_RECEIPT_PATH"],
+            BREADBOARD_RUNTIME_V2_BURN_IN_SETTLE_WINDOW_MS:
+              process.env["BREADBOARD_RUNTIME_V2_BURN_IN_SETTLE_WINDOW_MS"],
+            BREADBOARD_RUNTIME_V2_BURN_IN_SAMPLE_INTERVAL_MS:
+              process.env["BREADBOARD_RUNTIME_V2_BURN_IN_SAMPLE_INTERVAL_MS"],
+            BREADBOARD_RUNTIME_V2_BURN_IN_DURATION_MS:
+              process.env["BREADBOARD_RUNTIME_V2_BURN_IN_DURATION_MS"],
+            BREADBOARD_RUNTIME_V2_SERVICE_EVIDENCE_BINDING:
+              process.env["BREADBOARD_RUNTIME_V2_SERVICE_EVIDENCE_BINDING"],
+            BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN:
+              process.env["BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN"],
+            GBRAIN_MODE: "required",
+          }
+        : {};
       const run = createQaEnvironment({
         preserve:
           process.env["BREADBOARD_QA_PRESERVE_RUNTIME"] === "1"
             ? "always"
             : "on-failure",
         providerAuthFile: process.env["BREADBOARD_QA_PROVIDER_AUTH_FILE"],
+        desktopConfigProfile: runtimeV2BurnIn
+          ? "production-required"
+          : "isolated-disabled",
+        gbrainMode: runtimeV2BurnIn ? "required" : "disabled",
+        allowCredentialEnv: runtimeV2BurnIn
+          ? ["BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN"]
+          : [],
         env: {
           ...dashboardMemoryOverrides,
+          ...burnInOverrides,
           BREADBOARD_DESKTOP_DASHBOARD_MODE:
             process.env["BREADBOARD_QA_DASHBOARD_MODE"] === "hot"
               ? "hot"

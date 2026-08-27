@@ -9,6 +9,8 @@ import {
   generateVisualizationCandidate,
   replaceGeneratedVisualBlock,
 } from "../src/lib/generated-visuals.ts";
+import { compileGeneratedVisualization } from "../src/lib/generated-visual-compiler.ts";
+import { runGeneratedVisualBrowserTestsLocally } from "../src/lib/generated-visual-browser-tests.ts";
 
 const dashboardDir = path.resolve(import.meta.dirname, "..");
 const gardenDir = path.resolve(dashboardDir, "../quartz/content/generated-visual-demo");
@@ -101,6 +103,9 @@ if (fs.existsSync(attemptsDir)) {
   }
 }
 const result = await createGeneratedVisualization({
+  compilerRunner: async (sourceCode, compilerOpportunity) =>
+    compileGeneratedVisualization(sourceCode, compilerOpportunity),
+  browserTestRunner: runGeneratedVisualBrowserTestsLocally,
   client,
   model,
   gardenDir,

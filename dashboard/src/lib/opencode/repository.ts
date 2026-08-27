@@ -1,6 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
 import db from "@/lib/db.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 export interface ConnectedRepository {
   gardenSlug: string;

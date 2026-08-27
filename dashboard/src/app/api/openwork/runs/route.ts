@@ -5,8 +5,9 @@ import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { openworkDefaults } from "@/lib/agent-settings/defaults.ts";
-import { startRun } from "@/lib/openwork/run-manager.ts";
+import { startRun } from "@/lib/openwork/runtime-run-manager.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -25,6 +26,8 @@ export async function POST(request: Request) {
     const model = typeof body.model === "string" ? body.model.trim() : "";
     const requestedEffort =
       typeof body.reasoningEffort === "string" ? body.reasoningEffort.trim().toLowerCase() : "";
+    const clientMessageId =
+      typeof body.clientMessageId === "string" ? body.clientMessageId.trim() : "";
 
     if (!task) return NextResponse.json({ ok: false, error: "empty_task" }, { status: 400 });
     if (task.length > 20_000) {
@@ -32,6 +35,18 @@ export async function POST(request: Request) {
     }
     if (!model) {
       return NextResponse.json({ ok: false, error: "model_not_configured" }, { status: 400 });
+    }
+    if (Buffer.byteLength(model, "utf8") > 256 || /\p{Cc}/u.test(model)) {
+      return NextResponse.json({ ok: false, error: "invalid_model" }, { status: 400 });
+    }
+    if (
+      clientMessageId &&
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(clientMessageId)
+    ) {
+      return NextResponse.json(
+        { ok: false, error: "invalid_client_message_id" },
+        { status: 400 },
+      );
     }
 
     // The task reaches the workspace agent verbatim, so a stacked `/skill`
@@ -51,8 +66,9 @@ export async function POST(request: Request) {
 
     const reasoningEffort = ALLOWED_EFFORTS.has(requestedEffort) ? requestedEffort : "medium";
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
+      ...(clientMessageId ? { requestId: clientMessageId } : {}),
       task,
       model,
       reasoningEffort,
@@ -65,6 +81,8 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
     }

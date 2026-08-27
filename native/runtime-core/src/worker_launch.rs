@@ -3,8 +3,8 @@ use crate::process_owner::{
 };
 use crate::{
     CurrentGenerationMembership, ProcessOwnerError, ProcessOwnerEvent, ProcessOwnerTerminal,
-    ProcessTreeExit, ProcessTreeResidency, RunningProcessOwner, WorkerDispatchClaim,
-    WorkerLaunchRequest,
+    ProcessTreeExit, ProcessTreeResidency, RunningProcessOwner, RuntimeGenerationScope,
+    WorkerDispatchClaim, WorkerLaunchRequest,
 };
 use breadboard_runtime_protocol::WorkerIdentity;
 use std::fmt;
@@ -43,8 +43,29 @@ impl fmt::Debug for WorkerLaunchOutcome {
 #[must_use = "no-process-created authority must be retried or durably finalized"]
 pub struct WorkerLaunchNotCreated {
     claim: Box<WorkerDispatchClaim>,
-    retry: WorkerLaunchRetryMaterial,
+    retry: Option<WorkerLaunchRetryMaterial>,
     error: ProcessOwnerError,
+}
+
+/// Opaque proof that a claimed attempt was durably terminalized after the
+/// process-creation boundary proved no process was created. It retains no
+/// launch material and exists only to authorize exact terminal blob cleanup.
+#[must_use = "no-process terminal cleanup authority must be reconciled"]
+pub struct WorkerLaunchNotCreatedCleanup {
+    pub(crate) generation_scope: RuntimeGenerationScope,
+    pub(crate) identity: WorkerIdentity,
+}
+
+impl fmt::Debug for WorkerLaunchNotCreatedCleanup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("WorkerLaunchNotCreatedCleanup(<opaque no-process proof>)")
+    }
+}
+
+impl WorkerLaunchNotCreatedCleanup {
+    pub fn identity(&self) -> &WorkerIdentity {
+        &self.identity
+    }
 }
 
 impl fmt::Debug for WorkerLaunchNotCreated {
@@ -67,42 +88,66 @@ impl WorkerLaunchNotCreated {
         &self.error
     }
 
-    pub fn retry(self, generation: &CurrentGenerationMembership) -> WorkerLaunchOutcome {
+    pub fn can_retry(&self) -> bool {
+        self.retry.is_some()
+    }
+
+    /// Performs the single retry retained by the initial no-process-created
+    /// outcome. A second failure remains finalizable but cannot recursively
+    /// mint another retry and bypass durable dispatch/backoff policy.
+    pub(crate) fn retry(
+        mut self,
+        generation: &CurrentGenerationMembership,
+    ) -> Result<WorkerLaunchOutcome, Self> {
+        let Some(retry) = self.retry.take() else {
+            return Err(self);
+        };
         let Self {
             claim,
-            retry,
+            retry: _,
             error: _,
         } = self;
-        match retry {
+        Ok(match retry {
             WorkerLaunchRetryMaterial::Request(request) => {
-                launch_request(claim, generation, request)
+                launch_request(claim, generation, request, false)
             }
             WorkerLaunchRetryMaterial::Prepared(launch) => {
-                launch_prepared(claim, generation, *launch)
+                launch_prepared(claim, generation, *launch, false)
             }
             #[cfg(test)]
             WorkerLaunchRetryMaterial::Test => {
                 WorkerLaunchOutcome::NotCreated(WorkerLaunchNotCreated {
                     claim,
-                    retry: WorkerLaunchRetryMaterial::Test,
+                    retry: None,
                     error: ProcessOwnerError::Spawn(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         "test-only pre-CreateProcess failure",
                     )),
                 })
             }
-        }
+        })
     }
 
     pub(crate) fn claim(&self) -> &WorkerDispatchClaim {
         self.claim.as_ref()
     }
 
+    pub(crate) fn rejected_before_creation(
+        claim: Box<WorkerDispatchClaim>,
+        error: ProcessOwnerError,
+    ) -> Self {
+        Self {
+            claim,
+            retry: None,
+            error,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(claim: WorkerDispatchClaim, error: ProcessOwnerError) -> Self {
         Self {
             claim: Box::new(claim),
-            retry: WorkerLaunchRetryMaterial::Test,
+            retry: Some(WorkerLaunchRetryMaterial::Test),
             error,
         }
     }
@@ -111,12 +156,16 @@ impl WorkerLaunchNotCreated {
     pub(crate) fn retry_for_test(self) -> Self {
         let Self {
             claim,
-            retry: _,
+            retry,
             error: _,
         } = self;
+        assert!(
+            retry.is_some(),
+            "test retry authority was already exhausted"
+        );
         Self {
             claim,
-            retry: WorkerLaunchRetryMaterial::Test,
+            retry: None,
             error: ProcessOwnerError::Spawn(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "test-only retried pre-CreateProcess failure",
@@ -312,6 +361,10 @@ impl WorkerTreeExitAuthority {
     pub(crate) fn parts(&self) -> (&WorkerDispatchClaim, &ProcessTreeExit) {
         (self.process.claim.as_ref(), &self.tree_exit)
     }
+
+    pub(crate) fn into_parts(self) -> (ClaimedWorkerProcess, ProcessTreeExit) {
+        (self.process, self.tree_exit)
+    }
 }
 
 /// A resident worker no longer carries a pending dispatch claim. It retains
@@ -427,12 +480,12 @@ impl WorkerLaunchUncertain {
 }
 
 impl WorkerDispatchClaim {
-    pub fn launch(
+    pub(crate) fn launch(
         self: Box<Self>,
         generation: &CurrentGenerationMembership,
         request: WorkerLaunchRequest,
     ) -> WorkerLaunchOutcome {
-        launch_request(self, generation, request)
+        launch_request(self, generation, request, true)
     }
 }
 
@@ -440,30 +493,31 @@ fn launch_request(
     claim: Box<WorkerDispatchClaim>,
     generation: &CurrentGenerationMembership,
     request: WorkerLaunchRequest,
+    retry_available: bool,
 ) -> WorkerLaunchOutcome {
     let request_scope = request.generation_scope();
     if !claim.matches_generation_scope(&request_scope) || !generation.matches_scope(&request_scope)
     {
         return WorkerLaunchOutcome::NotCreated(WorkerLaunchNotCreated {
             claim,
-            retry: WorkerLaunchRetryMaterial::Request(request),
+            retry: retry_available.then_some(WorkerLaunchRetryMaterial::Request(request)),
             error: ProcessOwnerError::GenerationScopeMismatch,
         });
     }
     if request.worker_kind() != claim.job().worker_kind.as_str() {
         return WorkerLaunchOutcome::NotCreated(WorkerLaunchNotCreated {
             claim,
-            retry: WorkerLaunchRetryMaterial::Request(request),
+            retry: retry_available.then_some(WorkerLaunchRetryMaterial::Request(request)),
             error: ProcessOwnerError::InvalidLaunch(
                 "worker registry material did not match the durable worker kind",
             ),
         });
     }
-    match prepare_claimed_worker_launch(claim.identity(), request) {
-        Ok(launch) => launch_prepared(claim, generation, launch),
+    match prepare_claimed_worker_launch(claim.as_ref(), request) {
+        Ok(launch) => launch_prepared(claim, generation, launch, retry_available),
         Err((request, error)) => WorkerLaunchOutcome::NotCreated(WorkerLaunchNotCreated {
             claim,
-            retry: WorkerLaunchRetryMaterial::Request(request),
+            retry: retry_available.then_some(WorkerLaunchRetryMaterial::Request(request)),
             error,
         }),
     }
@@ -473,13 +527,14 @@ fn launch_prepared(
     claim: Box<WorkerDispatchClaim>,
     generation: &CurrentGenerationMembership,
     launch: crate::process_owner::TrustedProcessLaunch,
+    retry_available: bool,
 ) -> WorkerLaunchOutcome {
     let scope = launch.generation_scope();
     let scope_matches = claim.matches_generation_scope(scope) && generation.matches_scope(scope);
     if !scope_matches {
         return WorkerLaunchOutcome::NotCreated(WorkerLaunchNotCreated {
             claim,
-            retry: WorkerLaunchRetryMaterial::Prepared(Box::new(launch)),
+            retry: retry_available.then_some(WorkerLaunchRetryMaterial::Prepared(Box::new(launch))),
             error: ProcessOwnerError::GenerationScopeMismatch,
         });
     }
@@ -490,7 +545,7 @@ fn launch_prepared(
         ProcessSpawnAttempt::NotCreated { launch, error } => {
             WorkerLaunchOutcome::NotCreated(WorkerLaunchNotCreated {
                 claim,
-                retry: WorkerLaunchRetryMaterial::Prepared(launch),
+                retry: retry_available.then_some(WorkerLaunchRetryMaterial::Prepared(launch)),
                 error,
             })
         }
@@ -503,8 +558,133 @@ fn launch_prepared(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ProcessOwnerLimits, RuntimeGenerationGuard, RuntimePaths};
+    use crate::{ProcessOwnerLimits, RuntimeGenerationGuard, RuntimeGenerationScope, RuntimePaths};
+    use breadboard_runtime_protocol::{parse_worker_start_manifest, WorkerExecutionScope};
     use std::fs;
+
+    #[test]
+    fn no_process_retry_material_is_available_exactly_once() {
+        let identity = WorkerIdentity {
+            job_id: "job_retry_once".into(),
+            attempt: 1,
+            worker_instance_id: "worker_retry_once".into(),
+        };
+        let claim = WorkerDispatchClaim::for_test(
+            RuntimeGenerationScope::from_trusted_data_root_identity(7, 11),
+            identity.clone(),
+        );
+        let first = WorkerLaunchNotCreated::for_test(
+            claim,
+            ProcessOwnerError::Spawn(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "initial pre-CreateProcess failure",
+            )),
+        );
+        assert!(first.can_retry());
+
+        let second = first.retry_for_test();
+        assert!(!second.can_retry());
+        assert_eq!(second.identity(), &identity);
+    }
+
+    #[test]
+    fn start_manifest_scope_is_minted_from_the_exact_claim_not_job_payload() {
+        let directory = tempfile::Builder::new()
+            .prefix("breadboard-worker-execution-scope-")
+            .tempdir()
+            .unwrap();
+        for relative in ["data", "app", "runtime/bin", "runtime/node"] {
+            fs::create_dir_all(directory.path().join(relative)).unwrap();
+        }
+        fs::write(
+            directory.path().join("runtime/bin/runtime-supervisor.exe"),
+            b"not executed",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("runtime/node/worker.exe"),
+            b"not executed",
+        )
+        .unwrap();
+        fs::write(directory.path().join("app/worker.mjs"), b"not executed").unwrap();
+
+        let paths = RuntimePaths::new(
+            directory.path().join("data"),
+            directory.path().join("app"),
+            directory.path().join("runtime"),
+        )
+        .unwrap();
+        drop(
+            paths
+                .stage_job_input(
+                    "job_scope",
+                    br#"{"conversationId":"forged-conversation","gardenId":"forged-garden","userId":999}"#,
+                )
+                .unwrap(),
+        );
+        let identity = WorkerIdentity {
+            job_id: "job_scope".into(),
+            attempt: 1,
+            worker_instance_id: "worker_scope".into(),
+        };
+        let expected_scope = WorkerExecutionScope::new(
+            Some(42),
+            Some("trusted-garden".into()),
+            Some("trusted-conversation".into()),
+        )
+        .unwrap();
+        let claim = WorkerDispatchClaim::for_test_with_execution_scope(
+            paths.runtime_generation_scope(),
+            identity.clone(),
+            expected_scope.clone(),
+        );
+        let request = WorkerLaunchRequest::from_registry(
+            "test-worker".into(),
+            paths.clone(),
+            paths
+                .pin_runtime_file_for_launch(
+                    &paths.resolve_runtime("bin/runtime-supervisor.exe").unwrap(),
+                )
+                .unwrap(),
+            paths
+                .pin_runtime_file_for_launch(&paths.resolve_runtime("node/worker.exe").unwrap())
+                .unwrap(),
+            Some(
+                paths
+                    .pin_app_file_for_launch(&paths.resolve_app("worker.mjs").unwrap())
+                    .unwrap(),
+            ),
+            crate::TrustedWorkerEnvironment::minimal_for_test(),
+            ProcessOwnerLimits {
+                soft_commit_bytes: 0,
+                hard_commit_bytes: 0,
+                graceful_shutdown: Duration::from_secs(1),
+                supervisor_exit_timeout: Duration::from_secs(1),
+                system_commit_guard: None,
+            },
+        );
+
+        let launch = prepare_claimed_worker_launch(&claim, request).unwrap();
+        drop(launch);
+        let encoded = fs::read(
+            paths
+                .data_root()
+                .join("runtime/jobs/job_scope/attempts/1/worker_scope/start.json"),
+        )
+        .unwrap();
+        let manifest = parse_worker_start_manifest(&encoded).unwrap();
+        assert_eq!(manifest.identity, identity);
+        assert_eq!(manifest.execution_scope, expected_scope);
+        assert_ne!(manifest.execution_scope.user_id, Some(999));
+        assert_ne!(
+            manifest.execution_scope.garden_id.as_deref(),
+            Some("forged-garden")
+        );
+        assert_ne!(
+            manifest.execution_scope.conversation_id.as_deref(),
+            Some("forged-conversation")
+        );
+    }
 
     #[cfg(windows)]
     #[test]
@@ -570,18 +750,21 @@ mod tests {
             supervisor,
             executable,
             Some(entrypoint),
+            crate::TrustedWorkerEnvironment::minimal_for_test(),
             ProcessOwnerLimits {
                 soft_commit_bytes: 0,
                 hard_commit_bytes: 0,
                 graceful_shutdown: Duration::from_secs(1),
                 supervisor_exit_timeout: Duration::from_secs(1),
+                system_commit_guard: None,
             },
         );
 
         assert!(matches!(
             claim.launch(&membership, request),
             WorkerLaunchOutcome::NotCreated(ref authority)
-                if matches!(authority.error(), ProcessOwnerError::GenerationScopeMismatch)
+                if authority.can_retry()
+                    && matches!(authority.error(), ProcessOwnerError::GenerationScopeMismatch)
         ));
         assert!(!request_paths
             .data_root()
@@ -614,17 +797,20 @@ mod tests {
                     .pin_app_file_for_launch(&claim_paths.resolve_app("worker.mjs").unwrap())
                     .unwrap(),
             ),
+            crate::TrustedWorkerEnvironment::minimal_for_test(),
             ProcessOwnerLimits {
                 soft_commit_bytes: 0,
                 hard_commit_bytes: 0,
                 graceful_shutdown: Duration::from_secs(1),
                 supervisor_exit_timeout: Duration::from_secs(1),
+                system_commit_guard: None,
             },
         );
         assert!(matches!(
             kind_claim.launch(&membership, kind_request),
             WorkerLaunchOutcome::NotCreated(ref authority)
-                if matches!(authority.error(), ProcessOwnerError::InvalidLaunch(_))
+                if authority.can_retry()
+                    && matches!(authority.error(), ProcessOwnerError::InvalidLaunch(_))
         ));
         assert!(!claim_paths
             .data_root()

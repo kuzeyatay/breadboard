@@ -325,8 +325,9 @@ async function openDesktopMicrophoneSettings(): Promise<boolean> {
  * A `ms-settings:` link is not one of them: Firefox will not hand an external
  * protocol to Windows from a page, and Chromium's confirmation can be silenced
  * for good, so the link is a button that visibly does nothing. The Electron
- * shell can open it, and so can the Breadboard server — which runs on this very
- * machine — leaving the address itself only as something to paste by hand.
+ * shell can open it. A plain browser receives the address only as something to
+ * paste by hand; the Next server never launches a detached operating-system
+ * process on the browser's behalf.
  */
 export async function openSystemMicrophoneSettings(): Promise<boolean> {
   if (await openDesktopMicrophoneSettings()) return true;

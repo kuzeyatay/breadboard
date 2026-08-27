@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import { NextResponse } from "next/server";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
 import {
@@ -84,7 +84,12 @@ export async function PUT(
     const artifact = await editableArtifact(request, artifactId);
     const expectedVersion = Number(new URL(request.url).searchParams.get("expectedVersion"));
     const bytes = new Uint8Array(await request.arrayBuffer());
-    const saved = await saveArtifactOfficeBytes(artifact, expectedVersion, bytes);
+    const saved = await saveArtifactOfficeBytes(
+      artifact,
+      expectedVersion,
+      bytes,
+      { signal: request.signal },
+    );
     return NextResponse.json({ artifact: presentArtifact(saved) });
   } catch (error) {
     return artifactError(error);

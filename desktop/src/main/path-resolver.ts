@@ -135,9 +135,13 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
       tempDir: qaMode
         ? path.join(dataRoot, "temp")
         : path.join(repoRoot, ".runtime", "desktop-temp"),
-      dashboardServerDir: qaMode
-        ? path.join(dataRoot, "dashboard-workspace")
-        : path.join(repoRoot, "dashboard"),
+      // Hot development must execute the real source tree so Turbopack sees
+      // physical dependencies beneath its narrow project root and HMR observes
+      // edits. QA still isolates every mutable Breadboard store in dataRoot;
+      // Next's checkout-scoped lock rejects a second hot compiler rather than
+      // queueing it; Electron's Hot checkout guard reports that before Runtime
+      // V2 starts.
+      dashboardServerDir: path.join(repoRoot, "dashboard"),
       hermesAppDir: path.join(repoRoot, "hermes-agent"),
       runtimesDir: "",
       binDir: path.join(repoRoot, "desktop", "resources", "bin"),

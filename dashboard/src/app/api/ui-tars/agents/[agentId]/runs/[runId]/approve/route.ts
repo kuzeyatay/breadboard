@@ -10,9 +10,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
   try {
     const userId = await requireUserId();
     const { agentId, runId } = await params;
-    service.requireAgent(userId, agentId);
     const body = await readBody(request);
-    await service.decide(userId, runId, String(body.actionId ?? ""), "approve");
+    await service.decide(userId, agentId, runId, String(body.actionId ?? ""), "approve");
     return NextResponse.json({ ok: true });
   } catch (error) {
     return uiTarsErrorResponse(error);

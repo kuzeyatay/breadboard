@@ -1,19 +1,16 @@
-// The bridge to the vendored mem0 OSS engine (mem0/mem0-ts, built to dist/).
+// Server-only client for the Runtime V2-owned mem0 semantic engine.
 //
-// Everything identity-bearing stays Breadboard's: mem0 sees an opaque
-// per-user tag and stores only derived index entries. The engine is imported
-// dynamically, so a checkout without the built vendor package — or with the
-// layer switched off — costs nothing and every caller degrades to lexical
-// retrieval.
-//
-// Extraction LLM calls go to ChatMock's chat endpoint; embeddings go wherever
-// lib/embeddings.ts points, so the semantic index lives in the same vector
-// space as every other Breadboard retriever.
+// The dashboard owns canonical memory rows and privacy policy. The service
+// owns only mem0's derived SQLite/vector handles, so those native allocations
+// disappear when the Runtime retires the on-demand service after its idle TTL.
 
-import fs from "node:fs";
-import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
-import { localChatmockBaseUrl } from "../chatmock-server.ts";
-import { mem0Config, type Mem0Config } from "./config.ts";
+import {
+  SupervisorResourceExhaustedError,
+  acquireServiceLease,
+  isRuntimeV2ServiceControlConfigured,
+  releaseSupervisorLease,
+} from "../supervisor-control.ts";
+import { mem0Config } from "./config.ts";
 
 export interface SemanticMemoryHit {
   mem0Id: string;
@@ -50,140 +47,326 @@ export function mem0UserTag(userId: number): string {
   return `bb-user-${userId}`;
 }
 
-type Mem0Global = typeof globalThis & {
-  __breadboardMem0?: { key: string; client: SemanticMemoryClient };
-};
+export class SemanticMemoryServiceError extends Error {
+  readonly code: string;
 
-/**
- * The live client, or null when the layer is off or the vendor package is
- * absent. Cached on globalThis (keyed by config) to survive dev-mode HMR —
- * better-sqlite3 handles are cheap to hold and expensive to churn.
- */
-export async function semanticMemoryClient(
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<SemanticMemoryClient | null> {
-  const config = mem0Config(env);
-  if (!config.enabled) return null;
-  const key = [
-    config.vectorStorePath,
-    config.embedding.baseUrl,
-    config.embedding.model,
-    config.llmModel,
-  ].join("|");
-  const cache = globalThis as Mem0Global;
-  if (cache.__breadboardMem0?.key === key) return cache.__breadboardMem0.client;
-  try {
-    const client = await createEngineClient(config, env);
-    cache.__breadboardMem0 = { key, client };
-    return client;
-  } catch {
-    // Missing vendor build, unwritable data dir, … — truthful degradation.
-    return null;
+  constructor(code: string, message = "Semantic memory is unavailable.") {
+    super(message);
+    this.name = "SemanticMemoryServiceError";
+    this.code = code;
   }
 }
 
-async function createEngineClient(
-  config: Mem0Config,
+interface ServiceEndpoint {
+  origin: string;
+  token: string;
+}
+
+interface ServiceEnvelope {
+  ok?: unknown;
+  result?: unknown;
+  error?: { code?: unknown; message?: unknown };
+}
+
+const LOOPBACK = new Set(["127.0.0.1", "[::1]"]);
+const MAX_RESPONSE_BYTES = 256 * 1024;
+const MIN_TOKEN_BYTES = 32;
+const MAX_TOKEN_BYTES = 1024;
+const REQUEST_TIMEOUT_MS = 65_000;
+
+function serviceEndpoint(env: NodeJS.ProcessEnv): ServiceEndpoint | null {
+  const raw = env.BREADBOARD_MEM0_SERVICE_URL?.trim();
+  const token = env.BREADBOARD_MEM0_SERVICE_TOKEN?.trim();
+  if (!raw && !token) return null;
+  if (!raw || !token) {
+    throw new SemanticMemoryServiceError("invalid_runtime_configuration");
+  }
+  const bytes = Buffer.from(token, "utf8");
+  if (
+    bytes.byteLength < MIN_TOKEN_BYTES ||
+    bytes.byteLength > MAX_TOKEN_BYTES ||
+    !bytes.every((byte) => byte >= 0x21 && byte <= 0x7e)
+  ) {
+    throw new SemanticMemoryServiceError("invalid_runtime_configuration");
+  }
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new SemanticMemoryServiceError("invalid_runtime_configuration");
+  }
+  if (
+    url.protocol !== "http:" ||
+    !LOOPBACK.has(url.hostname) ||
+    url.username ||
+    url.password ||
+    (url.pathname !== "/" && url.pathname !== "") ||
+    url.search ||
+    url.hash
+  ) {
+    throw new SemanticMemoryServiceError("invalid_runtime_configuration");
+  }
+  return { origin: url.origin, token };
+}
+
+function positiveUserId(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new TypeError("Semantic memory user scope is invalid.");
+  }
+  return value;
+}
+
+function boundedText(value: string, maximumBytes: number, label: string): string {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    Buffer.byteLength(value, "utf8") > maximumBytes ||
+    /\u0000/u.test(value)
+  ) {
+    throw new TypeError(`${label} is invalid.`);
+  }
+  return value;
+}
+
+async function readBoundedJson(response: Response): Promise<ServiceEnvelope> {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > MAX_RESPONSE_BYTES)) {
+    throw new SemanticMemoryServiceError("invalid_response");
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength < 1 || bytes.byteLength > MAX_RESPONSE_BYTES) {
+    throw new SemanticMemoryServiceError("invalid_response");
+  }
+  try {
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("invalid envelope");
+    }
+    return value as ServiceEnvelope;
+  } catch {
+    throw new SemanticMemoryServiceError("invalid_response");
+  }
+}
+
+async function serviceCall(
+  endpoint: ServiceEndpoint,
+  path: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${endpoint.origin}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${endpoint.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+      cache: "no-store",
+      redirect: "error",
+      signal: controller.signal,
+    });
+    const envelope = await readBoundedJson(response);
+    if (!response.ok || envelope.ok !== true) {
+      const code = typeof envelope.error?.code === "string"
+        ? envelope.error.code
+        : "service_request_failed";
+      throw new SemanticMemoryServiceError(code);
+    }
+    return envelope.result;
+  } catch (error) {
+    if (error instanceof SemanticMemoryServiceError) throw error;
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new SemanticMemoryServiceError(signal?.aborted ? "cancelled" : "timeout");
+    }
+    throw new SemanticMemoryServiceError("unavailable");
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+function rpcClient(
+  endpoint: ServiceEndpoint,
+  fingerprint: string,
   env: NodeJS.ProcessEnv,
-): Promise<SemanticMemoryClient> {
-  // mem0 phones telemetry to PostHog unless told otherwise. An explicit user
-  // choice wins; the default here is off, matching "no network but ChatMock".
-  if (env.MEM0_TELEMETRY === undefined) env.MEM0_TELEMETRY = "false";
-  const { Memory } = await import("mem0ai/oss");
-  fs.mkdirSync(config.dataDir, { recursive: true });
-  const dimension = config.embedding.dimension > 0 ? config.embedding.dimension : undefined;
-  const engine = new Memory({
-    llm: {
-      provider: "openai",
-      config: {
-        baseURL: localChatmockBaseUrl().replace(/\/$/, ""),
-        apiKey: chatmockApiKeyValue(env),
-        model: config.llmModel,
-        temperature: 0,
-        timeout: 60_000,
-      },
-    },
-    embedder: {
-      provider: "openai",
-      config: {
-        baseURL: config.embedding.baseUrl,
-        apiKey: config.embedding.apiKey,
-        model: config.embedding.model,
-        ...(dimension !== undefined ? { embeddingDims: dimension } : {}),
-      },
-    },
-    vectorStore: {
-      provider: "memory", // mem0's misleadingly named SQLite-on-disk store
-      config: {
-        collectionName: "breadboard_durable",
-        dbPath: config.vectorStorePath,
-        ...(dimension !== undefined ? { dimension } : {}),
-      },
-    },
-    historyStore: {
-      provider: "sqlite",
-      config: { historyDbPath: config.historyPath },
-    },
-  });
+  leaseEachOperation: boolean,
+): SemanticMemoryClient {
+  const call = async (path: string, body: Record<string, unknown>) => {
+    const operation = () => serviceCall(endpoint, path, { fingerprint, ...body });
+    if (!leaseEachOperation) return operation();
+    const lease = await acquireServiceLease(
+      "mem0-semantic-engine",
+      `semantic-memory:${path.slice(4)}`,
+      env,
+    );
+    try {
+      return await operation();
+    } finally {
+      await releaseSupervisorLease(lease, env);
+    }
+  };
 
   return {
     async index(text, scope) {
-      const added = await engine.add([{ role: "user", content: text }], {
-        userId: mem0UserTag(scope.userId),
-        infer: false,
+      const result = await call("/v1/index", {
+        text: boundedText(text, 4_000, "Semantic memory text"),
+        userId: positiveUserId(scope.userId),
         ...(scope.metadata ? { metadata: scope.metadata } : {}),
       });
-      const id = added.results?.[0]?.id;
-      if (id) return id;
-      // mem0 deduplicates by exact hash and answers with an empty result for
-      // text it already holds. Find the entry it kept instead.
-      const hits = await engine.search(text, {
-        filters: { user_id: mem0UserTag(scope.userId) },
-        topK: 3,
-      });
-      return hits.results?.find((item) => item.memory === text)?.id ?? null;
+      if (
+        !result ||
+        typeof result !== "object" ||
+        Array.isArray(result) ||
+        !Object.hasOwn(result, "mem0Id")
+      ) {
+        throw new SemanticMemoryServiceError("invalid_response");
+      }
+      const mem0Id = (result as { mem0Id: unknown }).mem0Id;
+      if (mem0Id !== null && (typeof mem0Id !== "string" || mem0Id.length > 512)) {
+        throw new SemanticMemoryServiceError("invalid_response");
+      }
+      return mem0Id;
     },
 
     async search(query, scope) {
-      const found = await engine.search(query, {
-        // search() rejects top-level entity params and requires snake_case
-        // filter keys — camelCase silently matches nothing.
-        filters: { user_id: mem0UserTag(scope.userId) },
-        topK: scope.topK ?? 24,
+      const topK = scope.topK ?? 24;
+      if (!Number.isSafeInteger(topK) || topK < 1 || topK > 100) {
+        throw new TypeError("Semantic memory result limit is invalid.");
+      }
+      const result = await call("/v1/search", {
+        query: boundedText(query, 32_000, "Semantic memory query"),
+        userId: positiveUserId(scope.userId),
+        topK,
       });
-      return (found.results ?? []).flatMap((item) => {
-        if (!item.id || typeof item.memory !== "string") return [];
-        const score = typeof item.score === "number" ? item.score : 0;
-        return [{
-          mem0Id: item.id,
-          text: item.memory,
-          similarity: Math.max(0, Math.min(1, score)),
-        }];
+      if (!Array.isArray(result) || result.length > 100) {
+        throw new SemanticMemoryServiceError("invalid_response");
+      }
+      return result.map((item) => {
+        if (
+          !item ||
+          typeof item !== "object" ||
+          Array.isArray(item) ||
+          typeof (item as { mem0Id?: unknown }).mem0Id !== "string" ||
+          typeof (item as { text?: unknown }).text !== "string" ||
+          typeof (item as { similarity?: unknown }).similarity !== "number"
+        ) {
+          throw new SemanticMemoryServiceError("invalid_response");
+        }
+        const value = item as SemanticMemoryHit;
+        if (
+          value.mem0Id.length > 512 ||
+          Buffer.byteLength(value.text, "utf8") > 32_000 ||
+          !Number.isFinite(value.similarity) ||
+          value.similarity < 0 ||
+          value.similarity > 1
+        ) {
+          throw new SemanticMemoryServiceError("invalid_response");
+        }
+        return value;
       });
     },
 
     async extract(messages, scope) {
-      const added = await engine.add(
-        messages.map((message) => ({
-          role: message.role,
-          content: message.content.slice(0, 4_000),
-        })),
-        { userId: mem0UserTag(scope.userId) },
-      );
-      return (added.results ?? []).flatMap((item) =>
-        item.id && typeof item.memory === "string" && item.memory.trim()
-          ? [{ mem0Id: item.id, text: item.memory }]
-          : [],
-      );
+      if (
+        !Array.isArray(messages) ||
+        messages.length < 1 ||
+        messages.length > 2 ||
+        messages.some((message) =>
+          !message ||
+          (message.role !== "user" && message.role !== "assistant") ||
+          typeof message.content !== "string" ||
+          Buffer.byteLength(message.content, "utf8") > 4_000 ||
+          /\u0000/u.test(message.content)
+        )
+      ) {
+        throw new TypeError("Semantic memory extraction messages are invalid.");
+      }
+      const result = await call("/v1/extract", {
+        messages,
+        userId: positiveUserId(scope.userId),
+      });
+      if (!Array.isArray(result) || result.length > 100) {
+        throw new SemanticMemoryServiceError("invalid_response");
+      }
+      return result.map((item) => {
+        if (
+          !item ||
+          typeof item !== "object" ||
+          Array.isArray(item) ||
+          typeof (item as { mem0Id?: unknown }).mem0Id !== "string" ||
+          typeof (item as { text?: unknown }).text !== "string"
+        ) {
+          throw new SemanticMemoryServiceError("invalid_response");
+        }
+        const value = item as SemanticFact;
+        if (value.mem0Id.length > 512 || Buffer.byteLength(value.text, "utf8") > 4_000) {
+          throw new SemanticMemoryServiceError("invalid_response");
+        }
+        return value;
+      });
     },
 
     async remove(mem0Id) {
       if (!mem0Id) return;
-      try {
-        await engine.delete(mem0Id);
-      } catch {
-        // Deleting an entry that is already gone is success, not failure.
-      }
+      await call("/v1/remove", {
+        mem0Id: boundedText(mem0Id, 512, "Semantic memory id"),
+      });
     },
   };
+}
+
+function configuredClient(
+  env: NodeJS.ProcessEnv,
+  leaseEachOperation: boolean,
+): SemanticMemoryClient | null {
+  const config = mem0Config(env);
+  if (!config.enabled || !isRuntimeV2ServiceControlConfigured(env)) return null;
+  const endpoint = serviceEndpoint(env);
+  return endpoint ? rpcClient(endpoint, config.fingerprint, env, leaseEachOperation) : null;
+}
+
+/**
+ * A client whose individual calls each hold a Runtime lease. This is useful to
+ * callers that perform one operation; retrieval/extraction use the scoped
+ * helper below so an entire multi-call reconciliation remains one lease.
+ */
+export async function semanticMemoryClient(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<SemanticMemoryClient | null> {
+  try {
+    return configuredClient(env, true);
+  } catch {
+    return null;
+  }
+}
+
+/** Hold exactly one lease across a complete semantic retrieval/extraction. */
+export async function withSemanticMemoryClient<T>(
+  reason: "retrieval" | "extraction",
+  operation: (client: SemanticMemoryClient) => Promise<T>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<T | null> {
+  let client: SemanticMemoryClient | null;
+  try {
+    client = configuredClient(env, false);
+  } catch {
+    return null;
+  }
+  if (!client) return null;
+  let lease;
+  try {
+    lease = await acquireServiceLease("mem0-semantic-engine", `semantic-memory:${reason}`, env);
+    return await operation(client);
+  } catch (error) {
+    if (error instanceof SupervisorResourceExhaustedError) throw error;
+    throw error;
+  } finally {
+    await releaseSupervisorLease(lease, env);
+  }
 }

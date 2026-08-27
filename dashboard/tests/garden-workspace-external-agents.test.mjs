@@ -129,15 +129,21 @@ test("the run card shows only the agent name and closes itself when the run land
   assert.doesNotMatch(card, /repository: string;/);
   assert.match(card, /<p[^>]*>\{agentName\}<\/p>/);
   // A live run shows its most recent steps; a finished one collapses to the
-  // status line on its own, with no expander for the reader to operate.
+  // status line on its own while retaining an explicit, accessible way to
+  // inspect the completed timeline.
   assert.match(card, /persistedActivity\?: ExternalAgentActivityEntry\[\];/);
   assert.match(
     card,
-    /const visibleTimeline = terminal \? \[\] : timeline\.slice\(-VISIBLE_ACTIVITY\)/,
+    /const visibleTimeline = !activityOpen[\s\S]*\? \[\][\s\S]*: terminal[\s\S]*\? timeline[\s\S]*: timeline\.slice\(-VISIBLE_ACTIVITY\)/,
   );
+  assert.match(
+    card,
+    /const \[activityOpen, setActivityOpen\] = useState\([\s\S]*persistedOutcome/,
+  );
+  assert.match(card, /setActivityOpen\(false\)/);
   assert.match(card, /\{visibleTimeline\.length \?/);
-  assert.doesNotMatch(card, /activityOpen/);
-  assert.doesNotMatch(card, /"Hide" : "Show"/);
+  assert.match(card, /aria-expanded=\{activityOpen\}/);
+  assert.match(card, /activityOpen \? "Hide" : "Show"/);
   // The duration and tokens are reported with the outcome and read back from
   // the saved turn, so a refreshed card keeps the meta row it earned.
   assert.match(card, /persistedUsage\?: ChatTokenUsage;/);
@@ -183,7 +189,10 @@ test("delegated workers stay hidden and preserve their Super Agent message acros
   assert.match(workspace, /content: message\.content/);
   assert.match(workspace, /externalAgentResult: result\.content/);
   assert.match(workspace, /msg\.delegatedAgentPreamble/);
-  assert.match(workspace, /msg\.delegatedAgentRun \? "hidden" : "contents"/);
+  assert.match(
+    workspace,
+    /storedMessage\.delegatedAgentRun === true &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+  );
   assert.match(updateRoute, /delegatedAgentPreamble\?: string/);
   assert.match(updateRoute, /externalAgentResult\?: string/);
   assert.match(updateRoute, /delegatedAgentRun = true/);

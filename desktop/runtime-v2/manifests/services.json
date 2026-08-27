@@ -1,21 +1,75 @@
 {
-  "version": 1,
+  "version": 4,
   "services": [
     {
       "id": "chatmock",
       "displayName": "Local AI (ChatMock)",
       "capabilityIds": ["provider:chatmock", "tool-family:model-gateway"],
-      "allowedExecutable": "runtimes/python/python.exe",
-      "allowedEntrypoint": "chatmock/chatmock.py",
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/python/python.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "chatmock/chatmock.py" },
+            { "kind": "literal", "value": "serve" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" },
+            { "kind": "literal", "value": "--reasoning-effort" },
+            { "kind": "literal", "value": "low" },
+            { "kind": "literal", "value": "--reasoning-summary" },
+            { "kind": "literal", "value": "detailed" },
+            { "kind": "literal", "value": "--reasoning-compat" },
+            { "kind": "literal", "value": "legacy" },
+            { "kind": "literal", "value": "--enable-web-search" }
+          ],
+          "environmentSource": "chatmock",
+          "workingDirectory": {
+            "kind": "app-subdirectory",
+            "path": "chatmock"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "runtime-root",
+                "path": "runtimes/python/python.exe"
+              },
+              {
+                "authority": "app-root",
+                "path": "chatmock/chatmock.py"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 768,
+            "softCommitLimitMb": 1536,
+            "hardCommitLimitMb": 2048
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 90000
+      },
       "startupPolicy": "eager",
       "resourceClass": "local-model",
       "dependencies": [],
-      "estimatedColdStartCommitMb": 768,
-      "softCommitLimitMb": 1536,
-      "hardCommitLimitMb": 2048,
+      "maximumConcurrentLeases": 64,
+      "maximumLeaseMs": 604800000,
       "idleTtlMs": null,
       "gracefulShutdownMs": 5000,
-      "restartPolicy": "on_failure"
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 3,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
     },
     {
       "id": "dashboard",
@@ -25,17 +79,150 @@
         "surface:garden-chat",
         "surface:quartz-ai"
       ],
-      "allowedExecutable": "runtimes/node/node.exe",
-      "allowedEntrypoint": "dashboard/scripts/runtime-v2-dashboard.mjs",
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            {
+              "kind": "app-path",
+              "path": "dashboard/scripts/runtime-v2-dashboard.mjs"
+            }
+          ],
+          "environmentSource": "dashboard",
+          "workingDirectory": {
+            "kind": "app-subdirectory",
+            "path": "dashboard"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "runtime-root",
+                "path": "runtimes/node/node.exe"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/scripts/runtime-v2-dashboard.mjs"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/.next-desktop/standalone/server.js"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 1536,
+            "softCommitLimitMb": 2048,
+            "hardCommitLimitMb": 3072
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            {
+              "kind": "app-path",
+              "path": "dashboard/scripts/runtime-v2-dashboard.mjs"
+            }
+          ],
+          "environmentSource": "dashboard",
+          "workingDirectory": {
+            "kind": "app-subdirectory",
+            "path": "dashboard"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "runtime-root",
+                "path": "runtimes/node/node.exe"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/scripts/runtime-v2-dashboard.mjs"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard-standalone/dashboard/server.js"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 1536,
+            "softCommitLimitMb": 2048,
+            "hardCommitLimitMb": 3072
+          }
+        },
+        {
+          "modes": ["hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            {
+              "kind": "app-path",
+              "path": "dashboard/scripts/runtime-v2-hot-dashboard.mjs"
+            },
+            { "kind": "literal", "value": "dev" },
+            { "kind": "literal", "value": "--webpack" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" },
+            { "kind": "literal", "value": "--hostname" },
+            { "kind": "literal", "value": "127.0.0.1" }
+          ],
+          "environmentSource": "dashboard",
+          "workingDirectory": {
+            "kind": "app-subdirectory",
+            "path": "dashboard"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "runtime-root",
+                "path": "runtimes/node/node.exe"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/scripts/runtime-v2-hot-dashboard.mjs"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/node_modules/next/dist/bin/next"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 3072,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 8192
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/api/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 3000,
+        "pollIntervalMs": 750,
+        "startupTimeoutMs": 180000
+      },
       "startupPolicy": "eager",
       "resourceClass": "core",
       "dependencies": ["chatmock"],
-      "estimatedColdStartCommitMb": 1536,
-      "softCommitLimitMb": 2048,
-      "hardCommitLimitMb": 3072,
+      "maximumConcurrentLeases": 64,
+      "maximumLeaseMs": 604800000,
       "idleTtlMs": null,
       "gracefulShutdownMs": 15000,
-      "restartPolicy": "on_failure"
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 3,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
     },
     {
       "id": "hermes",
@@ -45,17 +232,2272 @@
         "surface:dashboard-terminal",
         "surface:garden-chat"
       ],
-      "allowedExecutable": "runtimes/python/python.exe",
-      "allowedEntrypoint": "hermes-agent/hermes_cli/main.py",
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/python/python.exe",
+          "arguments": [
+            { "kind": "literal", "value": "-m" },
+            { "kind": "literal", "value": "hermes_cli.main" },
+            { "kind": "literal", "value": "serve" },
+            { "kind": "literal", "value": "--isolated" },
+            { "kind": "literal", "value": "--host" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" },
+            { "kind": "literal", "value": "--no-open" }
+          ],
+          "environmentSource": "hermes",
+          "workingDirectory": {
+            "kind": "app-subdirectory",
+            "path": "hermes-agent"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "runtime-root",
+                "path": "runtimes/python/python.exe"
+              },
+              {
+                "authority": "app-root",
+                "path": "hermes-agent/hermes_cli/main.py"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 1536,
+            "softCommitLimitMb": 3072,
+            "hardCommitLimitMb": 4096
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/api/status",
+        "expectedBodyContains": "\"version\"",
+        "requestTimeoutMs": 3000,
+        "pollIntervalMs": 750,
+        "startupTimeoutMs": 120000
+      },
       "startupPolicy": "on-demand",
       "resourceClass": "large-generation",
       "dependencies": ["chatmock"],
-      "estimatedColdStartCommitMb": 1536,
-      "softCommitLimitMb": 3072,
-      "hardCommitLimitMb": 4096,
+      "maximumConcurrentLeases": 8,
+      "maximumLeaseMs": 21600000,
       "idleTtlMs": 600000,
       "gracefulShutdownMs": 8000,
-      "restartPolicy": "on_failure"
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "gbrain",
+      "displayName": "Knowledge retrieval (GBrain)",
+      "capabilityIds": ["tool-family:gbrain", "surface:garden-chat"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "literal", "value": "--no-warnings" },
+            {
+              "kind": "literal",
+              "value": "--experimental-transform-types"
+            },
+            {
+              "kind": "app-path",
+              "path": "gbrain-adapter/src/node-entrypoint.mjs"
+            }
+          ],
+          "environmentSource": "gbrain",
+          "workingDirectory": {
+            "kind": "app-subdirectory",
+            "path": "gbrain-adapter"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "runtime-root",
+                "path": "runtimes/node/node.exe"
+              },
+              {
+                "authority": "app-root",
+                "path": "gbrain-adapter/src/node-entrypoint.mjs"
+              },
+              {
+                "authority": "app-root",
+                "path": "gbrain-adapter/src/node-loader.mjs"
+              },
+              {
+                "authority": "app-root",
+                "path": "gbrain-adapter/src/node-server.ts"
+              },
+              {
+                "authority": "app-root",
+                "path": "gbrain-adapter/src/request-handler.ts"
+              },
+              {
+                "authority": "app-root",
+                "path": "gbrain/src/core/engine-factory.ts"
+              },
+              {
+                "authority": "app-root",
+                "path": "gbrain-adapter/node_modules/@electric-sql/pglite/package.json"
+              },
+          {
+            "authority": "app-root",
+            "path": "gbrain/node_modules/@electric-sql/pglite/package.json"
+          },
+          {
+            "authority": "app-root",
+            "path": "gbrain/node_modules/js-yaml/package.json"
+          },
+          {
+            "authority": "app-root",
+            "path": "gbrain/node_modules/@dqbd/tiktoken/package.json"
+          },
+          {
+            "authority": "app-root",
+            "path": "gbrain/node_modules/web-tree-sitter/package.json"
+          },
+          {
+            "authority": "app-root",
+            "path": "gbrain/runtime-artifact.json"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 2048,
+            "softCommitLimitMb": 2560,
+            "hardCommitLimitMb": 3072
+          }
+        }
+      ],
+      "readiness": {
+      "path": "/ready",
+        "expectedBodyContains": "\"backend\":\"gbrain\"",
+        "requestTimeoutMs": 2500,
+        "pollIntervalMs": 750,
+        "startupTimeoutMs": 90000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "document-model",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 32,
+      "maximumLeaseMs": 1800000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 5000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "comfyui",
+      "displayName": "Advanced local image generation (ComfyUI)",
+      "capabilityIds": ["tool-family:image-generation", "runtime-agent:vimax"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "data-root",
+          "allowedExecutable": "runtime-v2/services/comfyui/.venv/Scripts/python.exe",
+          "arguments": [
+            { "kind": "literal", "value": "-s" },
+            {
+              "kind": "data-path",
+              "path": "runtime-v2/toolchains/comfyui/main.py"
+            },
+            { "kind": "literal", "value": "--cpu" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" },
+            { "kind": "literal", "value": "--listen" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--disable-auto-launch" },
+            { "kind": "literal", "value": "--dont-print-server" },
+            { "kind": "literal", "value": "--base-directory" },
+            { "kind": "data-path", "path": "comfyui" }
+          ],
+          "environmentSource": "comfyui",
+          "workingDirectory": {
+            "kind": "data-subdirectory",
+            "path": "runtime-v2/toolchains/comfyui"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/services/comfyui/.venv/Scripts/python.exe"
+              },
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/services/comfyui/.venv/.breadboard-comfyui-ready"
+              },
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/toolchains/comfyui/main.py"
+              },
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/toolchains/comfyui/requirements.txt"
+              },
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/toolchains/comfyui/folder_paths.py"
+              },
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/toolchains/comfyui/server.py"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 12288,
+            "hardCommitLimitMb": 16384
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/comfyui-python/python.exe",
+          "arguments": [
+            { "kind": "literal", "value": "-s" },
+            { "kind": "app-path", "path": "comfyui/main.py" },
+            { "kind": "literal", "value": "--cpu" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" },
+            { "kind": "literal", "value": "--listen" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--disable-auto-launch" },
+            { "kind": "literal", "value": "--dont-print-server" },
+            { "kind": "literal", "value": "--base-directory" },
+            { "kind": "data-path", "path": "comfyui" }
+          ],
+          "environmentSource": "comfyui",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "comfyui" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/comfyui-python/python.exe" },
+              { "authority": "runtime-root", "path": "runtimes/comfyui-python/runtime-artifact.json" },
+              { "authority": "app-root", "path": "comfyui/runtime-artifact.json" },
+              { "authority": "app-root", "path": "comfyui/pylock.packaged.toml" },
+              { "authority": "app-root", "path": "comfyui/main.py" },
+              { "authority": "app-root", "path": "comfyui/folder_paths.py" },
+              { "authority": "app-root", "path": "comfyui/server.py" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 12288,
+            "hardCommitLimitMb": 16384
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/system_stats",
+        "expectedBodyContains": "\"system\"",
+        "requestTimeoutMs": 4000,
+        "pollIntervalMs": 1000,
+        "startupTimeoutMs": 180000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "local-model",
+      "dependencies": [],
+      "maximumConcurrentLeases": 4,
+      "maximumLeaseMs": 900000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 10000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 1,
+        "windowMs": 300000,
+        "initialBackoffMs": 2000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "telegram-gateway",
+      "displayName": "Telegram gateway",
+      "capabilityIds": ["tool-family:telegram", "connection:telegram-self"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            {
+              "kind": "app-path",
+              "path": "dashboard/scripts/runtime-v2-telegram-gateway-service.mjs"
+            },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "telegram-gateway",
+          "workingDirectory": {
+            "kind": "app-subdirectory",
+            "path": "dashboard"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "runtime-root",
+                "path": "runtimes/node/node.exe"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/scripts/runtime-v2-telegram-gateway-service.mjs"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/scripts/runtime-v2-gateway-http.mjs"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 256,
+            "softCommitLimitMb": 768,
+            "hardCommitLimitMb": 1024
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "telegram-gateway",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 90000
+      },
+      "startupPolicy": "scheduled",
+      "resourceClass": "core",
+      "dependencies": ["dashboard"],
+      "maximumConcurrentLeases": 1,
+      "maximumLeaseMs": 604800000,
+      "idleTtlMs": 30000,
+      "gracefulShutdownMs": 15000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "whatsapp-gateway",
+      "displayName": "WhatsApp gateway",
+      "capabilityIds": ["tool-family:whatsapp", "connection:whatsapp-self"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            {
+              "kind": "app-path",
+              "path": "dashboard/scripts/runtime-v2-whatsapp-gateway-service.mjs"
+            },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "whatsapp-gateway",
+          "workingDirectory": {
+            "kind": "app-subdirectory",
+            "path": "dashboard"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "runtime-root",
+                "path": "runtimes/node/node.exe"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/scripts/runtime-v2-whatsapp-gateway-service.mjs"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/scripts/runtime-v2-gateway-http.mjs"
+              },
+              {
+                "authority": "app-root",
+                "path": "hermes-agent/scripts/whatsapp-bridge/bridge.js"
+              },
+              {
+                "authority": "app-root",
+                "path": "hermes-agent/scripts/whatsapp-bridge/package.json"
+              },
+              {
+                "authority": "app-root",
+                "path": "hermes-agent/scripts/whatsapp-bridge/node_modules/@whiskeysockets/baileys/package.json"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 1024,
+            "softCommitLimitMb": 2048,
+            "hardCommitLimitMb": 3072
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "whatsapp-gateway",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 90000
+      },
+      "startupPolicy": "scheduled",
+      "resourceClass": "browser-automation",
+      "dependencies": ["dashboard"],
+      "maximumConcurrentLeases": 1,
+      "maximumLeaseMs": 604800000,
+      "idleTtlMs": 30000,
+      "gracefulShutdownMs": 15000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "openwork",
+      "displayName": "OpenWork agent service",
+      "capabilityIds": ["runtime-agent:openwork"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+            { "kind": "literal", "value": "--agent" },
+            { "kind": "literal", "value": "openwork" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "openwork",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/learn-worker-import-hook.mjs" },
+              { "authority": "data-root", "path": "openwork-runtime/apps/server/src/cli.ts" },
+              { "authority": "data-root", "path": "openwork-runtime/apps/server/node_modules/@opencode-ai/sdk/package.json" },
+              { "authority": "data-root", "path": "openwork-runtime/breadboard-source.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 2048,
+            "softCommitLimitMb": 4096,
+            "hardCommitLimitMb": 6144
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+            { "kind": "literal", "value": "--agent" },
+            { "kind": "literal", "value": "openwork" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "openwork",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "runtime-root", "path": "runtimes/bun/bun.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/learn-worker-import-hook.mjs" },
+              { "authority": "app-root", "path": "openwork/apps/server/src/cli.ts" },
+              { "authority": "app-root", "path": "openwork-runtime/apps/server/src/cli.ts" },
+              { "authority": "app-root", "path": "openwork-runtime/apps/server/node_modules/@opencode-ai/sdk/package.json" },
+              { "authority": "app-root", "path": "openwork-runtime/runtime-artifact.json" },
+              { "authority": "app-root", "path": "opencode/bin/opencode.exe" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 2048,
+            "softCommitLimitMb": 4096,
+            "hardCommitLimitMb": 6144
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "openwork-agent-service",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 90000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "large-generation",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 4,
+      "maximumLeaseMs": 21600000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 10000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "openscience",
+      "displayName": "OpenScience agent service",
+      "capabilityIds": ["runtime-agent:openscience"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+            { "kind": "literal", "value": "--agent" },
+            { "kind": "literal", "value": "openscience" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "openscience",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/learn-worker-import-hook.mjs" },
+              { "authority": "data-root", "path": "openscience-cli/node_modules/@synsci/openscience/bin/openscience" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 1536,
+            "softCommitLimitMb": 3072,
+            "hardCommitLimitMb": 4096
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+            { "kind": "literal", "value": "--agent" },
+            { "kind": "literal", "value": "openscience" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "openscience",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/learn-worker-import-hook.mjs" },
+              { "authority": "app-root", "path": "openscience-cli/node_modules/@synsci/openscience/bin/openscience" },
+              { "authority": "app-root", "path": "openscience-cli/runtime-artifact.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 1536,
+            "softCommitLimitMb": 3072,
+            "hardCommitLimitMb": 4096
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "openscience-agent-service",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 90000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "large-generation",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 4,
+      "maximumLeaseMs": 21600000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 10000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "money-printer",
+      "displayName": "MoneyPrinter agent service",
+      "capabilityIds": ["runtime-agent:money-printer"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+            { "kind": "literal", "value": "--agent" },
+            { "kind": "literal", "value": "money-printer" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "money-printer",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/learn-worker-import-hook.mjs" },
+              { "authority": "data-root", "path": "runtime-v2/toolchains/money-printer/app/asgi.py" },
+              { "authority": "data-root", "path": "runtime-v2/toolchains/money-printer/app/services/task.py" },
+              { "authority": "data-root", "path": "runtime-v2/toolchains/money-printer/config.example.toml" },
+              { "authority": "data-root", "path": "runtime-v2/services/money-printer/.venv/Scripts/python.exe" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 3072,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 8192
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "money-printer-agent-service",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 90000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "media-processing",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 2,
+      "maximumLeaseMs": 21600000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 15000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "wardrobe",
+      "displayName": "Wardrobe agent service",
+      "capabilityIds": ["runtime-agent:wardrobe", "attachment:image"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+            { "kind": "literal", "value": "--agent" },
+            { "kind": "literal", "value": "wardrobe" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "wardrobe",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/learn-worker-import-hook.mjs" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 2048,
+            "softCommitLimitMb": 4096,
+            "hardCommitLimitMb": 6144
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+            { "kind": "literal", "value": "--agent" },
+            { "kind": "literal", "value": "wardrobe" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "wardrobe",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-agent-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/learn-worker-import-hook.mjs" },
+              { "authority": "app-root", "path": "wardrobe-runtime/runtime-artifact.json" },
+              { "authority": "app-root", "path": "wardrobe-runtime/index.html" },
+              { "authority": "app-root", "path": "wardrobe-runtime/scripts/import-job-api.mjs" },
+              { "authority": "app-root", "path": "wardrobe-runtime/node_modules/vite/bin/vite.js" },
+              { "authority": "app-root", "path": "wardrobe-runtime/node_modules/sharp/package.json" },
+              { "authority": "app-root", "path": "wardrobe-runtime/node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 2048,
+            "softCommitLimitMb": 4096,
+            "hardCommitLimitMb": 6144
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "wardrobe-agent-service",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 90000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "large-generation",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 4,
+      "maximumLeaseMs": 21600000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 10000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "penecho",
+      "displayName": "PenEcho canvas",
+      "capabilityIds": ["tool-family:canvas", "attachment:image"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "penecho/server.js" }
+          ],
+          "environmentSource": "penecho",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "penecho" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "penecho/server.js" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 512,
+            "softCommitLimitMb": 1024,
+            "hardCommitLimitMb": 1536
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/api/config",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 90000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "core",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 128,
+      "maximumLeaseMs": 21600000,
+      "idleTtlMs": 1800000,
+      "gracefulShutdownMs": 4000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "vlm-ocr",
+      "displayName": "Local VLM OCR",
+      "capabilityIds": ["tool-family:ingestion", "attachment:document", "attachment:image"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-vlm-ocr-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "vlm-ocr",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-vlm-ocr-service.mjs" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 8192
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-vlm-ocr-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "vlm-ocr",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-vlm-ocr-service.mjs" },
+              { "authority": "runtime-root", "path": "bin/vlm-ocr/runtime/llama-server.exe" },
+              { "authority": "runtime-root", "path": "bin/vlm-ocr/runtime-artifact.json" },
+              { "authority": "runtime-root", "path": "bin/vlm-ocr/models/HunyuanOCR-Q8_0.gguf" },
+              { "authority": "runtime-root", "path": "bin/vlm-ocr/models/mmproj-HunyuanOCR-Q8_0.gguf" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 8192
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/v1/models",
+        "expectedBodyContains": "\"data\"",
+        "requestTimeoutMs": 3000,
+        "pollIntervalMs": 1000,
+        "startupTimeoutMs": 600000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "local-model",
+      "dependencies": [],
+      "maximumConcurrentLeases": 1,
+      "maximumLeaseMs": 10800000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 15000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 1,
+        "windowMs": 300000,
+        "initialBackoffMs": 2000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "recall",
+      "displayName": "Recall capture engine",
+      "capabilityIds": ["tool-family:recall"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "data-root",
+          "allowedExecutable": "recall/cli/node_modules/@screenpipe/cli-win32-x64/bin/screenpipe.exe",
+          "arguments": [
+            { "kind": "literal", "value": "record" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" },
+            { "kind": "literal", "value": "--data-dir" },
+            { "kind": "data-path", "path": "recall/data" },
+            { "kind": "runtime-arguments", "value": "recall-capture" }
+          ],
+          "environmentSource": "recall",
+          "workingDirectory": { "kind": "app-root" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "data-root", "path": "recall/cli/node_modules/@screenpipe/cli-win32-x64/bin/screenpipe.exe" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 1024,
+            "softCommitLimitMb": 2048,
+            "hardCommitLimitMb": 4096
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "bin/recall/screenpipe.exe",
+          "arguments": [
+            { "kind": "literal", "value": "record" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" },
+            { "kind": "literal", "value": "--data-dir" },
+            { "kind": "data-path", "path": "recall/data" },
+            { "kind": "runtime-arguments", "value": "recall-capture" }
+          ],
+          "environmentSource": "recall",
+          "workingDirectory": {
+            "kind": "data-subdirectory",
+            "path": "recall"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "runtime-root",
+                "path": "bin/recall/screenpipe.exe"
+              },
+              {
+                "authority": "runtime-root",
+                "path": "bin/recall/runtime-artifact.json"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 1024,
+            "softCommitLimitMb": 2048,
+            "hardCommitLimitMb": 4096
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 120000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "media-processing",
+      "dependencies": [],
+      "maximumConcurrentLeases": 1,
+      "maximumLeaseMs": 600000,
+      "idleTtlMs": 1,
+      "gracefulShutdownMs": 8000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "mem0-semantic-engine",
+      "displayName": "Semantic memory engine",
+      "capabilityIds": ["tool-family:memory", "workflow:memory-autofetch"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-mem0-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "mem0-semantic-engine",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-mem0-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/node_modules/mem0ai/dist/index.mjs" },
+              { "authority": "app-root", "path": "dashboard/node_modules/better-sqlite3/build/Release/better_sqlite3.node" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 768,
+            "softCommitLimitMb": 1536,
+            "hardCommitLimitMb": 2048
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-mem0-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "mem0-semantic-engine",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-mem0-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/node_modules/mem0ai/runtime-artifact.json" },
+              { "authority": "app-root", "path": "dashboard/node_modules/mem0ai/dist/oss/index.mjs" },
+              { "authority": "app-root", "path": "dashboard/node_modules/mem0ai/node_modules/better-sqlite3/build/Release/better_sqlite3.node" },
+              { "authority": "app-root", "path": "dashboard/node_modules/mem0ai/node_modules/pg/package.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 768,
+            "softCommitLimitMb": 1536,
+            "hardCommitLimitMb": 2048
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "mem0-semantic-engine",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 120000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "document-model",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 32,
+      "maximumLeaseMs": 600000,
+      "idleTtlMs": 300000,
+      "gracefulShutdownMs": 5000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "local-mcp-broker",
+      "displayName": "Local MCP broker",
+      "capabilityIds": ["registry:mcp-connections", "connection-catalog:mcp"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-local-mcp-broker-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "local-mcp-broker",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-local-mcp-broker-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/node_modules/@modelcontextprotocol/sdk/package.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 512,
+            "softCommitLimitMb": 2048,
+            "hardCommitLimitMb": 4096
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "local-mcp-broker",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 30000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "browser-automation",
+      "dependencies": [],
+      "maximumConcurrentLeases": 32,
+      "maximumLeaseMs": 600000,
+      "idleTtlMs": 30000,
+      "gracefulShutdownMs": 5000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "postiz-coordinator",
+      "displayName": "Postiz coordinator",
+      "capabilityIds": ["runtime-agent:socials-manager", "workflow:social-publishing"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "literal", "value": "--experimental-strip-types" },
+            { "kind": "app-path", "path": "scripts/start-postiz-supervisor.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "postiz-coordinator",
+          "workingDirectory": { "kind": "app-root" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "scripts/start-postiz-supervisor.mjs" },
+              { "authority": "app-root", "path": "postiz-app/docker-compose.yaml" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 5120,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 7168
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "literal", "value": "--experimental-strip-types" },
+            { "kind": "app-path", "path": "scripts/start-postiz-supervisor.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "postiz-coordinator",
+          "workingDirectory": { "kind": "app-root" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "scripts/start-postiz-supervisor.mjs" },
+              { "authority": "app-root", "path": "postiz-app/docker-compose.yaml" },
+              { "authority": "app-root", "path": "postiz-app/oci-images.json" },
+              { "authority": "app-root", "path": "postiz-app/BREADBOARD_UPSTREAM_COMMIT" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 5120,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 7168
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "\"ok\":true",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 30000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "docker-stack",
+      "dependencies": [],
+      "maximumConcurrentLeases": 128,
+      "maximumLeaseMs": 1800000,
+      "idleTtlMs": 60000,
+      "gracefulShutdownMs": 180000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "inbox-zero-stack",
+      "displayName": "Inbox Zero stack coordinator",
+      "capabilityIds": ["runtime-agent:inbox-zero", "tool-family:mailbox"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-inbox-zero-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "inbox-zero-stack",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-inbox-zero-service.mjs" },
+              { "authority": "app-root", "path": "inbox-zero/docker-compose.yml" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 8192
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-inbox-zero-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "inbox-zero-stack",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-inbox-zero-service.mjs" },
+              { "authority": "app-root", "path": "inbox-zero/docker-compose.yml" },
+              { "authority": "app-root", "path": "inbox-zero/oci-images.json" },
+              { "authority": "app-root", "path": "inbox-zero/BREADBOARD_UPSTREAM_COMMIT" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 8192
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "inbox-zero-stack-service",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 30000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "docker-stack",
+      "dependencies": [],
+      "maximumConcurrentLeases": 128,
+      "maximumLeaseMs": 1800000,
+      "idleTtlMs": 60000,
+      "gracefulShutdownMs": 60000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "spotify-playback",
+      "displayName": "Spotify protected playback",
+      "capabilityIds": ["connection:spotify-native", "persona:spotify", "skill:first-party:spotify", "tool-family:spotify"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-spotify-playback-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "spotify-playback",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-spotify-playback-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 1536,
+            "softCommitLimitMb": 2560,
+            "hardCommitLimitMb": 3584
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "spotify-playback",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 30000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "browser-automation",
+      "dependencies": ["dashboard"],
+      "maximumConcurrentLeases": 128,
+      "maximumLeaseMs": 600000,
+      "idleTtlMs": 60000,
+      "gracefulShutdownMs": 10000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "cliproxy",
+      "displayName": "Subscriptions model proxy",
+      "capabilityIds": ["tool-family:model-gateway", "provider:cliproxy"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "data-root",
+          "allowedExecutable": "cliproxy/bin/cli-proxy-api.exe",
+          "arguments": [
+            { "kind": "literal", "value": "--config" },
+            { "kind": "data-path", "path": "cliproxy/config.yaml" }
+          ],
+          "environmentSource": "cliproxy",
+          "workingDirectory": { "kind": "app-root" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "data-root", "path": "cliproxy/bin/cli-proxy-api.exe" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 256,
+            "softCommitLimitMb": 512,
+            "hardCommitLimitMb": 1024
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-cliproxy-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "cliproxy",
+          "workingDirectory": {
+            "kind": "app-subdirectory",
+            "path": "dashboard"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-cliproxy-service.mjs" },
+              { "authority": "runtime-root", "path": "bin/cli-proxy-api.exe" },
+              { "authority": "runtime-root", "path": "bin/cliproxy-runtime-artifact.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 256,
+            "softCommitLimitMb": 512,
+            "hardCommitLimitMb": 1024
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/v1/models",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 2500,
+        "pollIntervalMs": 750,
+        "startupTimeoutMs": 45000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "core",
+      "dependencies": [],
+      "maximumConcurrentLeases": 64,
+      "maximumLeaseMs": 1800000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 5000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 3,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "quartz",
+      "displayName": "Garden site (Quartz)",
+      "capabilityIds": ["service:quartz", "surface:quartz-ai"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-quartz-static-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "quartz",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-quartz-static-service.mjs" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 256,
+            "softCommitLimitMb": 512,
+            "hardCommitLimitMb": 1024
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/__health",
+        "expectedBodyContains": "\"ready\":true",
+        "requestTimeoutMs": 3000,
+        "pollIntervalMs": 1000,
+        "startupTimeoutMs": 30000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "core",
+      "dependencies": ["dashboard"],
+      "maximumConcurrentLeases": 128,
+      "maximumLeaseMs": 1800000,
+      "idleTtlMs": 900000,
+      "gracefulShutdownMs": 5000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 3,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "ui-tars",
+      "displayName": "Agent TARS operator",
+      "capabilityIds": ["runtime-agent:agent-tars", "approval:agent-tars-action"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "literal", "value": "--experimental-strip-types" },
+            { "kind": "app-path", "path": "ui-tars-adapter/src/server.ts" }
+          ],
+          "environmentSource": "ui-tars",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "ui-tars-adapter" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "ui-tars-adapter/src/server.ts" },
+              { "authority": "app-root", "path": "ui-tars-adapter/package.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 7168
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 2500,
+        "pollIntervalMs": 750,
+        "startupTimeoutMs": 60000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "browser-automation",
+      "dependencies": [],
+      "maximumConcurrentLeases": 16,
+      "maximumLeaseMs": 2100000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 8000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "cad",
+      "displayName": "Parametric CAD (CadQuery)",
+      "capabilityIds": ["runtime-agent:parametric-cad", "runtime-agent:hardware-blueprint"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/cad-python/python.exe",
+          "arguments": [
+            { "kind": "literal", "value": "-m" },
+            { "kind": "literal", "value": "breadboard_cad" },
+            { "kind": "literal", "value": "serve" },
+            { "kind": "literal", "value": "--host" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "cad",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "cad-service" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/cad-python/python.exe" },
+              { "authority": "app-root", "path": "cad-service/breadboard_cad/__main__.py" },
+              { "authority": "runtime-root", "path": "runtimes/cad-python/runtime-artifact.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 3072,
+            "softCommitLimitMb": 4096,
+            "hardCommitLimitMb": 5120
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/cad-python/python.exe",
+          "arguments": [
+            { "kind": "literal", "value": "-m" },
+            { "kind": "literal", "value": "breadboard_cad" },
+            { "kind": "literal", "value": "serve" },
+            { "kind": "literal", "value": "--host" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "cad",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "cad-service" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/cad-python/python.exe" },
+              { "authority": "app-root", "path": "cad-service/breadboard_cad/__main__.py" },
+              { "authority": "runtime-root", "path": "runtimes/cad-python/runtime-artifact.json" },
+              { "authority": "app-root", "path": "cad-service/runtime-artifact.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 3072,
+            "softCommitLimitMb": 4096,
+            "hardCommitLimitMb": 5120
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 10000,
+        "pollIntervalMs": 750,
+        "startupTimeoutMs": 90000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "local-model",
+      "dependencies": [],
+      "maximumConcurrentLeases": 8,
+      "maximumLeaseMs": 1800000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 8000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "solidworks-mcp",
+      "displayName": "SolidWorks MCP bridge",
+      "capabilityIds": ["runtime-agent:parametric-cad", "workflow:parametric-cad"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-solidworks-mcp-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "solidworks-mcp",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "runtime-root", "path": "runtimes/python/python.exe" },
+              { "authority": "runtime-root", "path": "bin/uv.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-solidworks-mcp-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/learn-worker-import-hook.mjs" },
+              { "authority": "app-root", "path": "SolidworksMCP-python/pyproject.toml" },
+              { "authority": "app-root", "path": "SolidworksMCP-python/src/solidworks_mcp/server.py" },
+              { "authority": "app-root", "path": "SolidworksMCP-python/src/solidworks_mcp/config.py" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 8192
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-solidworks-mcp-service.mjs" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "solidworks-mcp",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "runtime-root", "path": "runtimes/solidworks-python/python.exe" },
+              { "authority": "runtime-root", "path": "runtimes/solidworks-python/runtime-artifact.json" },
+              { "authority": "runtime-root", "path": "runtimes/solidworks-python/pylock.packaged.toml" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-solidworks-mcp-service.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
+              { "authority": "app-root", "path": "dashboard/scripts/learn-worker-import-hook.mjs" },
+              { "authority": "app-root", "path": "SolidworksMCP-python/runtime-artifact.json" },
+              { "authority": "app-root", "path": "SolidworksMCP-python/pylock.packaged.toml" },
+              { "authority": "app-root", "path": "SolidworksMCP-python/src/solidworks_mcp/server.py" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 8192
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "solidworks-mcp",
+        "requestTimeoutMs": 2000,
+        "pollIntervalMs": 500,
+        "startupTimeoutMs": 30000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "large-generation",
+      "dependencies": [],
+      "maximumConcurrentLeases": 16,
+      "maximumLeaseMs": 1800000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 15000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "colpali",
+      "displayName": "Document page retrieval (ColPali)",
+      "capabilityIds": ["tool-family:document-page-retrieval", "attachment:document"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/colpali-python/python.exe",
+          "arguments": [
+            { "kind": "literal", "value": "-m" },
+            { "kind": "literal", "value": "breadboard_colpali" },
+            { "kind": "literal", "value": "serve" },
+            { "kind": "literal", "value": "--host" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "colpali",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "colpali-service" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/colpali-python/python.exe" },
+              { "authority": "app-root", "path": "colpali-service/breadboard_colpali/__main__.py" },
+              { "authority": "runtime-root", "path": "runtimes/colpali-python/runtime-artifact.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 6144,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 7168
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/colpali-python/python.exe",
+          "arguments": [
+            { "kind": "literal", "value": "-m" },
+            { "kind": "literal", "value": "breadboard_colpali" },
+            { "kind": "literal", "value": "serve" },
+            { "kind": "literal", "value": "--host" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "colpali",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "colpali-service" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/colpali-python/python.exe" },
+              { "authority": "app-root", "path": "colpali-service/breadboard_colpali/__main__.py" },
+              { "authority": "runtime-root", "path": "runtimes/colpali-python/runtime-artifact.json" },
+              { "authority": "app-root", "path": "colpali-service/runtime-artifact.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 6144,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 7168
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 5000,
+        "pollIntervalMs": 750,
+        "startupTimeoutMs": 60000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "document-model",
+      "dependencies": [],
+      "maximumConcurrentLeases": 8,
+      "maximumLeaseMs": 1800000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 8000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "humanizer",
+      "displayName": "Local rewriting (humanizer)",
+      "capabilityIds": ["skill:first-party:humanize", "tool-family:local-rewriting"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/humanizer-python/python.exe",
+          "arguments": [
+            { "kind": "literal", "value": "-m" },
+            { "kind": "literal", "value": "breadboard_humanizer" },
+            { "kind": "literal", "value": "serve" },
+            { "kind": "literal", "value": "--host" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" },
+            { "kind": "literal", "value": "--preload" }
+          ],
+          "environmentSource": "humanizer",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "humanizer-service" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/humanizer-python/python.exe" },
+              { "authority": "app-root", "path": "humanizer-service/breadboard_humanizer/__main__.py" },
+              { "authority": "runtime-root", "path": "runtimes/humanizer-python/runtime-artifact.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 6144,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 7168
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/humanizer-python/python.exe",
+          "arguments": [
+            { "kind": "literal", "value": "-m" },
+            { "kind": "literal", "value": "breadboard_humanizer" },
+            { "kind": "literal", "value": "serve" },
+            { "kind": "literal", "value": "--host" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" },
+            { "kind": "literal", "value": "--preload" }
+          ],
+          "environmentSource": "humanizer",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "humanizer-service" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/humanizer-python/python.exe" },
+              { "authority": "app-root", "path": "humanizer-service/breadboard_humanizer/__main__.py" },
+              { "authority": "runtime-root", "path": "runtimes/humanizer-python/runtime-artifact.json" },
+              { "authority": "app-root", "path": "humanizer-service/runtime-artifact.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 6144,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 7168
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 5000,
+        "pollIntervalMs": 750,
+        "startupTimeoutMs": 180000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "local-model",
+      "dependencies": [],
+      "maximumConcurrentLeases": 8,
+      "maximumLeaseMs": 1800000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 8000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "voicebox",
+      "displayName": "Local speech (Voicebox)",
+      "capabilityIds": ["tool-family:speech-synthesis", "attachment:audio"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "scripts/start-voicebox.mjs" }
+          ],
+          "environmentSource": "voicebox",
+          "workingDirectory": { "kind": "app-root" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "scripts/start-voicebox.mjs" },
+              { "authority": "app-root", "path": "scripts/setup-voicebox.mjs" },
+              { "authority": "app-root", "path": "scripts/voicebox-status.mjs" },
+              { "authority": "app-root", "path": "scripts/service-probe.mjs" },
+              { "authority": "app-root", "path": "voicebox/backend/main.py" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 6144,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 7168
+          }
+        },
+        {
+          "modes": ["packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "bin/voicebox-server.exe",
+          "arguments": [
+            { "kind": "literal", "value": "--host" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" },
+            { "kind": "literal", "value": "--data-dir" },
+            { "kind": "data-path", "path": "voicebox" }
+          ],
+          "environmentSource": "voicebox",
+          "workingDirectory": {
+            "kind": "data-subdirectory",
+            "path": "voicebox"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "bin/voicebox-server.exe" },
+              { "authority": "runtime-root", "path": "bin/voicebox-runtime-artifact.json" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 6144,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 7168
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 5000,
+        "pollIntervalMs": 1000,
+        "startupTimeoutMs": 1800000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "local-model",
+      "dependencies": [],
+      "maximumConcurrentLeases": 32,
+      "maximumLeaseMs": 3600000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 10000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "scriberr",
+      "displayName": "Video transcription (Scriberr)",
+      "capabilityIds": ["runtime-agent:meeting-notes", "tool-family:video-transcription", "attachment:video", "attachment:audio"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "bin/scriberr.exe",
+          "arguments": [],
+          "environmentSource": "scriberr",
+          "workingDirectory": { "kind": "app-root" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "bin/scriberr.exe" },
+              { "authority": "runtime-root", "path": "bin/ffmpeg.exe" },
+              { "authority": "runtime-root", "path": "bin/ffprobe.exe" },
+              { "authority": "runtime-root", "path": "bin/yt-dlp.exe" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 4096,
+            "hardCommitLimitMb": 6144
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 5000,
+        "pollIntervalMs": 1000,
+        "startupTimeoutMs": 300000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "media-processing",
+      "dependencies": [],
+      "maximumConcurrentLeases": 32,
+      "maximumLeaseMs": 3600000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 10000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "deep-research",
+      "displayName": "Deep Research sidecar",
+      "capabilityIds": ["runtime-agent:deep-research", "runtime-agent:max-research"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "deep-research/node_modules/tsx/dist/cli.mjs" },
+            { "kind": "app-path", "path": "deep-research/src/api.ts" }
+          ],
+          "environmentSource": "deep-research",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "deep-research" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "deep-research/node_modules/tsx/dist/cli.mjs" },
+              { "authority": "app-root", "path": "deep-research/src/api.ts" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 2048,
+            "softCommitLimitMb": 4096,
+            "hardCommitLimitMb": 6144
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "open-deep-research",
+        "requestTimeoutMs": 3000,
+        "pollIntervalMs": 750,
+        "startupTimeoutMs": 120000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "large-generation",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 32,
+      "maximumLeaseMs": 3600000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 10000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "deer-flow",
+      "displayName": "DeerFlow local service",
+      "capabilityIds": ["runtime-agent:deer-flow"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "data-root",
+          "allowedExecutable": "runtime-v2/services/deer-flow/.venv/Scripts/python.exe",
+          "arguments": [
+            { "kind": "literal", "value": "-m" },
+            { "kind": "literal", "value": "uvicorn" },
+            { "kind": "literal", "value": "app.gateway.app:app" },
+            { "kind": "literal", "value": "--host" },
+            { "kind": "literal", "value": "127.0.0.1" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "deer-flow",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "deer-flow/backend" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "data-root", "path": "runtime-v2/services/deer-flow/.venv/Scripts/python.exe" },
+              { "authority": "app-root", "path": "deer-flow/backend/app/gateway/app.py" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 4096,
+            "softCommitLimitMb": 6144,
+            "hardCommitLimitMb": 8192
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "deer-flow-gateway",
+        "requestTimeoutMs": 5000,
+        "pollIntervalMs": 1000,
+        "startupTimeoutMs": 300000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "large-generation",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 16,
+      "maximumLeaseMs": 3600000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 15000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "vibe-trading",
+      "displayName": "Vibe Trading local service",
+      "capabilityIds": ["runtime-agent:vibe-trading"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-managed-python-service.mjs" },
+            { "kind": "literal", "value": "--service" },
+            { "kind": "literal", "value": "vibe-trading" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "vibe-trading",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-managed-python-service.mjs" },
+              { "authority": "data-root", "path": "runtime-v2/services/vibe-trading/.venv/Scripts/python.exe" },
+              { "authority": "app-root", "path": "Vibe-Trading/agent/api_server.py" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 3072,
+            "softCommitLimitMb": 5120,
+            "hardCommitLimitMb": 7168
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 5000,
+        "pollIntervalMs": 1000,
+        "startupTimeoutMs": 300000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "large-generation",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 16,
+      "maximumLeaseMs": 3600000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 15000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
+    },
+    {
+      "id": "stock-analyst",
+      "displayName": "Stock Analyst local service",
+      "capabilityIds": ["runtime-agent:stock-analyst"],
+      "requirement": "required",
+      "launchProfiles": [
+        {
+          "modes": ["lean", "hot", "packaged"],
+          "executableAuthority": "runtime-root",
+          "allowedExecutable": "runtimes/node/node.exe",
+          "arguments": [
+            { "kind": "app-path", "path": "dashboard/scripts/runtime-v2-managed-python-service.mjs" },
+            { "kind": "literal", "value": "--service" },
+            { "kind": "literal", "value": "stock-analyst" },
+            { "kind": "literal", "value": "--port" },
+            { "kind": "runtime-value", "value": "service-port" }
+          ],
+          "environmentSource": "stock-analyst",
+          "workingDirectory": { "kind": "app-subdirectory", "path": "dashboard" },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
+              { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-managed-python-service.mjs" },
+              { "authority": "data-root", "path": "runtime-v2/services/stock-analyst/.venv/Scripts/python.exe" },
+              { "authority": "app-root", "path": "daily_stock_analysis/api/app.py" }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 3072,
+            "softCommitLimitMb": 5120,
+            "hardCommitLimitMb": 7168
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": null,
+        "requestTimeoutMs": 5000,
+        "pollIntervalMs": 1000,
+        "startupTimeoutMs": 300000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "large-generation",
+      "dependencies": ["chatmock"],
+      "maximumConcurrentLeases": 16,
+      "maximumLeaseMs": 3600000,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 15000,
+      "restartPolicy": "on_failure",
+      "restartBounds": {
+        "maximumRestarts": 2,
+        "windowMs": 300000,
+        "initialBackoffMs": 1000,
+        "maximumBackoffMs": 30000
+      }
     }
   ]
 }

@@ -335,14 +335,26 @@ function applySceneScale(
 }
 
 function disposeObject(root: THREE.Object3D): void {
+  const textures = new Set<THREE.Texture>();
+  const materials = new Set<THREE.Material>();
   root.traverse((object) => {
     if (object instanceof THREE.Mesh || object instanceof THREE.LineSegments) {
       object.geometry.dispose();
       const material = object.material;
-      if (Array.isArray(material)) material.forEach((item) => item.dispose());
-      else material.dispose();
+      if (Array.isArray(material)) {
+        material.forEach((item) => materials.add(item));
+      } else {
+        materials.add(material);
+      }
     }
   });
+  for (const material of materials) {
+    for (const value of Object.values(material)) {
+      if (value instanceof THREE.Texture) textures.add(value);
+    }
+    material.dispose();
+  }
+  for (const texture of textures) texture.dispose();
 }
 
 function buildGrid(
@@ -660,6 +672,9 @@ export default function ModelViewer({
       renderer.domElement.removeEventListener("contextmenu", onContextMenu);
       disposeObject(scene);
       renderer.dispose();
+      renderer.forceContextLoss();
+      renderer.domElement.width = 0;
+      renderer.domElement.height = 0;
       renderer.domElement.remove();
       refs.current = null;
     };

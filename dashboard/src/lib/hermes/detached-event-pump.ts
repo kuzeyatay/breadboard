@@ -24,10 +24,15 @@ class DetachedEventPump {
   private connected = false;
   private closed = false;
   private started = false;
+  private readonly settledPromise: Promise<void>;
+  private resolveSettled!: () => void;
 
   constructor(key: string, drive: DrivePump) {
     this.key = key;
     this.drive = drive;
+    this.settledPromise = new Promise((resolve) => {
+      this.resolveSettled = resolve;
+    });
   }
 
   start(onSettled: () => void): void {
@@ -45,7 +50,13 @@ class DetachedEventPump {
       .finally(() => {
         this.close();
         onSettled();
+        this.resolveSettled();
       });
+  }
+
+  /** Join the server-owned driver without attaching an SSE viewer. */
+  settled(): Promise<void> {
+    return this.settledPromise;
   }
 
   response(
@@ -161,4 +172,18 @@ export function acquireDetachedEventPump(
     if (pumps.get(key) === created) pumps.delete(key);
   });
   return created;
+}
+
+/**
+ * Wait until every pump currently owned by this process has settled.
+ *
+ * Runtime V2 finite workers use this after dispatching unattended turns. The
+ * old coordinator could return from a tick while its process-global pump kept
+ * running; a disposable worker must explicitly join that same durable work
+ * before its native owner lets the process exit.
+ */
+export async function waitForDetachedEventPumps(): Promise<void> {
+  while (registry().size > 0) {
+    await Promise.allSettled([...registry().values()].map((pump) => pump.settled()));
+  }
 }

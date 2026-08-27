@@ -107,12 +107,17 @@ def main() -> None:
     source = Path(job["source"]).resolve()
     workspace = Path(job["workspace"]).resolve()
     shaper_root = Path(job["shaperRoot"]).resolve()
+    shaper_state_root = Path(job["shaperStateRoot"]).resolve()
     preset = str(job.get("preset", "speed"))
     caption = str(job.get("caption", "a 3D object")).strip() or "a 3D object"
     if preset not in {"speed", "balance", "quality"}:
         preset = "speed"
     if not source.is_file():
         raise RuntimeError("The uploaded picture is no longer available.")
+    if not shaper_root.is_dir():
+        raise RuntimeError("The sealed ShapeR source is unavailable.")
+    if not shaper_state_root.is_dir():
+        raise RuntimeError("ShapeR's writable Runtime state is unavailable.")
 
     example = workspace / "example"
     output = workspace / "output"
@@ -147,7 +152,7 @@ def main() -> None:
             str(output),
             "--is_local_path",
         ],
-        shaper_root,
+        shaper_state_root,
         "reconstruct",
         env,
     )

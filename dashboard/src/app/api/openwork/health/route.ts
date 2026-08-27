@@ -1,25 +1,22 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { runtimeAvailability } from "@/lib/openwork/runtime.ts";
-import { setupStatus } from "@/lib/openwork/setup.ts";
-import { currentService } from "@/lib/openwork/service.ts";
+import { readOpenworkRuntimeStatus } from "@/lib/openwork/runtime-service.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    await requireUserId();
-    const availability = runtimeAvailability();
-    const service = currentService();
+    const userId = await requireUserId();
+    const { availability, setup, service } = await readOpenworkRuntimeStatus({ userId });
     return NextResponse.json({
       ok: true,
       available: availability.available,
       reason: availability.reason ?? null,
       missing: availability.missing,
-      setup: setupStatus(),
-      // A service is only reported when one is already running; health never
-      // starts the processes, so opening a settings panel cannot cost a boot.
+      setup,
+      // Runtime may start its small authenticated adapter to inspect setup;
+      // `service` still reports only the heavyweight OpenWork child tree.
       service: service
         ? {
             running: true,

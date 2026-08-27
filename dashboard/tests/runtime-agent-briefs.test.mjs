@@ -162,7 +162,7 @@ test("the catalogue renders grouped, described, and by id only where launchable"
   // outcome comes back as an internal turn.
   assert.match(superAgent, /It has not run when the tool returns/);
   assert.match(superAgent, /The agent cannot see this conversation/);
-  assert.match(superAgent, /Its outcome always returns to you as an internal turn/);
+  assert.match(superAgent, /Other outcomes return to you as internal turns/);
 });
 
 test("briefs stay short enough to list every agent in one prompt", () => {

@@ -85,7 +85,7 @@ export function requireWorkspaceOwner(userId: number, runId: string): MatraixOwn
   throw new MatraixWorkspaceError("run_not_found", "That MatrAIx run was not found.");
 }
 
-function artifactId(relativePath: string): string {
+export function matraixArtifactId(relativePath: string): string {
   return Buffer.from(relativePath, "utf8").toString("base64url");
 }
 
@@ -100,6 +100,7 @@ function collect(root: string, directory: string, output: MatraixArtifact[]): vo
   if (output.length >= 2_000) return;
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const absolute = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
       // `job/` is the clone's trial layout: hundreds of small files that exist
       // so `matraix results` can read the study, not so a person can browse it.
@@ -110,10 +111,13 @@ function collect(root: string, directory: string, output: MatraixArtifact[]): vo
     if (!entry.isFile() || SKIP.has(entry.name)) continue;
     const contentType = CONTENT_TYPES[path.extname(entry.name).toLowerCase()];
     if (!contentType) continue;
-    const stats = fs.statSync(absolute);
+    const stats = fs.lstatSync(absolute);
+    if (!stats.isFile() || stats.isSymbolicLink()) continue;
     const relativePath = path.relative(root, absolute).split(path.sep).join("/");
+    const id = matraixArtifactId(relativePath);
+    if (id.length > 512) continue;
     output.push({
-      id: artifactId(relativePath),
+      id,
       relativePath,
       name: entry.name,
       kind: kindFor(relativePath),
@@ -132,15 +136,37 @@ const KIND_ORDER: Record<MatraixArtifact["kind"], number> = {
   response: 3,
 };
 
-export function scanArtifacts(runId: string): MatraixArtifact[] {
-  const root = outputDirectory(runId);
-  if (!fs.existsSync(root)) return [];
+function samePath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const resolved = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(left) === normalize(right);
+}
+
+export function scanMatraixArtifacts(rootDirectory: string): MatraixArtifact[] {
+  const root = path.resolve(rootDirectory);
+  try {
+    const metadata = fs.lstatSync(root);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !samePath(fs.realpathSync.native(root), root)
+    ) return [];
+  } catch {
+    return [];
+  }
   const artifacts: MatraixArtifact[] = [];
   collect(root, root, artifacts);
   return artifacts.sort(
     (a, b) =>
       KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.relativePath.localeCompare(b.relativePath),
   );
+}
+
+export function scanArtifacts(runId: string): MatraixArtifact[] {
+  const root = outputDirectory(runId);
+  return scanMatraixArtifacts(root);
 }
 
 export function resolveArtifact(
@@ -169,8 +195,12 @@ export function resolveArtifact(
 
 /** The finished report, for the message the turn saves. */
 export function readStudyMarkdown(runId: string): string {
+  return readStudyMarkdownFrom(outputDirectory(runId));
+}
+
+export function readStudyMarkdownFrom(outputRoot: string): string {
   try {
-    return fs.readFileSync(path.join(outputDirectory(runId), "study.md"), "utf8");
+    return fs.readFileSync(path.join(path.resolve(outputRoot), "study.md"), "utf8");
   } catch {
     return "";
   }

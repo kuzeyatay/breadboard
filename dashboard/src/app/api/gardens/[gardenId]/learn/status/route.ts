@@ -10,7 +10,7 @@ export async function GET(
 ) {
   try {
     const { gardenId } = await params;
-    const { cluster } = await requireOwnedClusterFromSlug(gardenId);
+    const { userId, cluster } = await requireOwnedClusterFromSlug(gardenId);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
       return NextResponse.json(
@@ -20,6 +20,7 @@ export async function GET(
     }
 
     const snapshot = await getLearnStatusSnapshotForRoute({
+      userId,
       gardenId: cluster.slug,
       contentPath,
     });

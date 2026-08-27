@@ -17,6 +17,10 @@ import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import { useArtifactDockHost } from "./artifact-dock-host";
 import ChatMarkdown from "@/app/components/chat-markdown";
+import {
+  ReclaimingAudio,
+  ReclaimingVideo,
+} from "@/app/components/reclaiming-media";
 import { parseStoredDesign } from "@/lib/hardware/schemas.ts";
 import { parseStoredCadArtifact } from "@/lib/cad/schemas.ts";
 import { parseStoredProduction } from "@/lib/vimax/schemas.ts";
@@ -667,6 +671,7 @@ export default function ArtifactViewer({
 
   useEffect(() => {
     if (!interactive || !interactiveChannel) return;
+    const ownedFrame = interactiveFrameRef.current;
     const protocol = "breadboard:interactive-visualizer:v1";
     const theme = () => {
       const explicitTheme = document.documentElement.dataset.theme;
@@ -716,6 +721,11 @@ export default function ArtifactViewer({
       observer.disconnect();
       media.removeEventListener("change", sendTheme);
       window.removeEventListener("message", onMessage);
+      ownedFrame?.contentWindow?.postMessage({
+        protocol,
+        type: "host-dispose",
+        channel: interactiveChannel,
+      }, "*");
     };
   }, [interactive, interactiveChannel]);
 
@@ -938,27 +948,27 @@ export default function ArtifactViewer({
     if (artifact.kind === "audio") {
       return (
         <div className="flex min-h-56 items-center justify-center rounded-xl bg-[var(--paper-strong)] p-6">
-          <audio
+          <ReclaimingAudio
             controls
             preload="metadata"
             src={previewUrl}
             className="w-full max-w-xl"
           >
             Your browser cannot preview this audio file.
-          </audio>
+          </ReclaimingAudio>
         </div>
       );
     }
     if (artifact.kind === "video") {
       return (
-        <video
+        <ReclaimingVideo
           controls
           preload="metadata"
           src={previewUrl}
           className="mx-auto max-h-[70vh] w-full rounded-xl border border-[var(--line)] bg-black"
         >
           Your browser cannot preview this video file.
-        </video>
+        </ReclaimingVideo>
       );
     }
     if (artifact.kind === "pdf") {
@@ -975,6 +985,7 @@ export default function ArtifactViewer({
     if (interactive) {
       return (
         <iframe
+          key={interactivePreviewUrl}
           ref={interactiveFrameRef}
           title={`${artifact.title} interactive visualization`}
           sandbox="allow-scripts"

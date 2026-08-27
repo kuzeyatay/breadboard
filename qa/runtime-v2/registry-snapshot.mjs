@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { preserveHistoricalParityEvidence } from "./parity-drift.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const dashboardRoot = path.join(repoRoot, "dashboard");
@@ -416,7 +417,7 @@ function capabilityRow(input) {
     postMigrationEvidence: [],
     uiEntryPoint: input.uiEntryPoint ?? input.visibleEntryPoint ?? "Chat composer",
     selectionEvidence: evidence(input.selectionEvidence ?? refs),
-    runtimePath: input.runtimePath ?? "Next.js compatibility route -> legacy execution owner",
+    runtimePath: input.runtimePath ?? "Authenticated compatibility surface -> capability-specific current owner; installed integration evidence NOT RUN",
     serviceWorkerEvidence: evidence(input.serviceWorkerEvidence ?? refs),
     outputArtifactEvidence: evidence(input.outputArtifactEvidence ?? refs),
     cancellationEvidence: evidence(input.cancellationEvidence ?? refs),
@@ -440,6 +441,276 @@ function capabilityRow(input) {
 const capabilityRows = [];
 const add = (row) => capabilityRows.push(capabilityRow(row));
 
+const runtimeV2AgentContracts = {
+  "deep-research": {
+    refs: [
+      ["dashboard/src/lib/deep-research/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/deep-research/runtime-worker-run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-deep-research-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: ["outer-deep-research-node disposable worker", "service:deep-research"],
+    artifacts: ["research report or answer", "bounded source and evidence record"],
+    cancel: "the worker gets 60 seconds to abort the sealed upstream run before Rust termination and Deep Research lease release",
+    restart: "Durable run mapping, fenced Runtime events, and Deep Research snapshots survive Dashboard restart; interrupted work is never blindly resumed and retry creates a fresh worker.",
+    path: "authenticated durable Runtime submit -> outer-deep-research-node -> sealed Deep Research service lease and loopback RPC",
+    stopped: "Must remain visible while stopped: submitting a run cold-starts the Runtime-owned Deep Research service, whose own ChatMock dependency remains transitive.",
+  },
+  openscience: {
+    refs: [
+      ["dashboard/src/lib/openscience/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/openscience/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-openscience-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: ["outer-openscience-node disposable worker", "service:openscience"],
+    artifacts: ["research answer", "verified managed-workspace deliverables"],
+    cancel: "the worker gets 60 seconds for sealed upstream abort and deliverable cleanup before Rust termination and OpenScience lease release",
+    restart: "Durable run mapping, fenced Runtime events, the managed workspace, and verified deliverables survive Dashboard restart; retry creates a fresh leased worker.",
+    path: "trusted provider preparation -> authenticated durable Runtime submit -> outer-openscience-node -> sealed OpenScience service lease and endpoint-only RPC",
+    stopped: "Must remain visible while stopped: submitting a run cold-starts the Runtime-owned OpenScience service, whose ChatMock dependency remains transitive.",
+  },
+  openwork: {
+    refs: [
+      ["dashboard/src/lib/openwork/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/openwork/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/src/lib/openwork/runtime-worker-service.ts", /export async function preparedOpenworkService/],
+      ["dashboard/src/lib/openwork/runtime-artifact.ts", /export async function stageOpenworkRuntimeArtifact/],
+      ["dashboard/scripts/runtime-v2-openwork-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: [
+      "outer-openwork-node disposable worker",
+      "service:openwork",
+      "pinned immutable OpenWork setup source",
+    ],
+    artifacts: ["OpenWork answer and event projection", "up to 128 verified artifacts totaling 2 GiB"],
+    cancel: "the worker gets 60 seconds to await sealed upstream session cancellation before Rust terminates its tree and releases the OpenWork lease",
+    restart: "The durable exact-job mapping, fenced event projection, managed workspace state, and verified artifact references survive Dashboard restart; retry creates a fresh leased worker.",
+    path: "authenticated private-profile preparation -> durable Runtime submit -> outer-openwork-node -> sealed OpenWork service lease and endpoint-only RPC -> contained artifact download",
+    stopped: "Must remain visible while stopped: submitting a run cold-starts the Runtime-owned OpenWork service; its OpenCode engine and ChatMock dependency remain transitive and never enter the worker environment.",
+  },
+  "hardware-blueprint": {
+    refs: [
+      ["dashboard/src/lib/hardware/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/hardware/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-hardware-blueprint-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: [
+      "outer-hardware-blueprint-node disposable worker",
+      "service:chatmock",
+      "service:cad only when an enclosure is requested",
+      "service:solidworks-mcp only when the resolved backend is SolidWorks",
+    ],
+    artifacts: ["compiled hardware blueprint", "optional parametric CAD enclosure"],
+    cancel: "the worker gets 60 seconds for cooperative model/CAD cleanup before Rust tree termination and lease release",
+    restart: "The durable exact-job mapping, fenced event projection and verified artifact references survive Dashboard restart; a retry is a fresh worker.",
+    path: "authenticated durable Runtime submit -> outer-hardware-blueprint-node -> optional hardcoded CAD/SolidWorks service lease",
+    stopped: "Must remain visible while stopped: the submitted run cold-starts ChatMock, while CAD/SolidWorks start only if the resolved request needs them.",
+  },
+  "agent-tars": {
+    refs: [
+      ["dashboard/src/lib/ui-tars/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/ui-tars/runtime-worker-run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/src/lib/ui-tars/runtime-worker-client.ts", /export class UITarsRuntimeWorkerClient/],
+      ["dashboard/src/lib/ui-tars/run-profile.ts", /export function prepareUITarsRunProfile/],
+      ["dashboard/scripts/runtime-v2-agent-tars-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: [
+      "outer-agent-tars-node disposable worker",
+      "service:ui-tars",
+      "private data-root run profile",
+    ],
+    artifacts: ["durable UI-TARS run and event ledger", "bounded screenshots and exact approval decisions"],
+    cancel: "the worker gets 60 seconds to abort the sealed adapter run before Rust terminates its tree and releases the UI-TARS lease",
+    restart: "The durable exact-job mapping and UI-TARS run, event, approval, and screenshot ledgers survive Dashboard restart; adapter loss becomes runtime_lost and retry creates a fresh worker.",
+    path: "authenticated private-profile preparation -> durable Runtime submit -> outer-agent-tars-node -> sealed UI-TARS service lease and loopback adapter RPC",
+    stopped: "Must remain visible while stopped: submitting the run cold-starts the Runtime-owned UI-TARS service and its Chromium descendants, while approval and screenshot state remain authenticated and bounded.",
+  },
+  "get-doc": {
+    refs: [
+      ["dashboard/src/lib/get-doc/run-manager.ts", /export function startRun/],
+      ["dashboard/src/lib/get-doc/download-run-manager.ts", /export async function startDownloadRun/],
+      ["dashboard/scripts/runtime-v2-get-doc-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+      ["dashboard/scripts/runtime-v2-get-doc-download-worker.mjs", /runFiniteMcpWorker/],
+    ],
+    required: ["outer-get-doc-node disposable worker", "get-doc-download-node disposable worker", "service:chatmock"],
+    artifacts: ["bounded research result", "verified PDF artifact"],
+    cancel: "Runtime applies the exact 60-second main-worker or 30-second download-worker grace before final tree termination",
+    restart: "Durable run mapping, fenced terminal results, and verified PDF artifact references survive Dashboard restart; retry is a fresh worker.",
+    path: "authenticated durable Runtime submit -> outer-get-doc-node or get-doc-download-node",
+    stopped: "Must remain visible while stopped: a Get Doc run cold-starts ChatMock; public PDF downloads need no managed service.",
+  },
+  "meeting-notes": {
+    refs: [
+      ["dashboard/src/lib/meeting-notes/runtime-worker-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/meeting-notes/runtime-transcribe.ts", /export async function transcribeRuntimeMeeting/],
+      ["dashboard/scripts/runtime-v2-meeting-notes-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: [
+      "outer-meeting-notes-node disposable worker",
+      "service:scriberr only for audio engine scriberr",
+      "service:voicebox only for audio engine voicebox",
+      "service:chatmock only when a summary is requested",
+    ],
+    artifacts: ["meeting transcript", "meeting notes report"],
+    cancel: "the worker gets 60 seconds to cancel bounded media work before Rust tree termination and dependency release",
+    restart: "The durable exact-job mapping, authenticated input, fenced event projection, transcript and report references survive Dashboard restart.",
+    path: "authenticated one-blob Runtime submit -> outer-meeting-notes-node -> request-derived Scriberr, Voicebox, or ChatMock lease",
+    stopped: "Must remain visible while stopped: only the services selected by the canonical source/engine/transcriptOnly request are cold-started.",
+  },
+  "video-use": {
+    refs: [
+      ["dashboard/src/lib/video-use/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/video-use/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/src/lib/runtime-v2/speech-media-job.ts", /export async function renderVideoProgramViaRuntime/],
+      ["dashboard/src/lib/runtime-v2/subsai-transcription-job.ts", /export async function transcribeWithSubsAiViaRuntime/],
+      ["dashboard/scripts/runtime-v2-video-use-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: [
+      "outer-video-use-node disposable coordinator",
+      "service:chatmock",
+      "service:scriberr when managed and enabled",
+      "nested speech-media and subsai-transcription Runtime jobs",
+      "pinned staged Video Use source and fixed media toolchain",
+    ],
+    artifacts: ["versioned edited MP4", "immutable edit program and transcript metadata"],
+    cancel: "the coordinator gets 120 seconds to cancel exact nested speech-media or SubsAI jobs before Rust termination and service-lease release",
+    restart: "The durable exact-job mapping, fenced event projection, versioned MP4, program, and transcript receipts survive Dashboard restart; retry creates a fresh coordinator.",
+    path: "authenticated durable Runtime submit -> admission-held ChatMock and managed Scriberr services -> outer-video-use-node -> fixed nested speech-media or SubsAI Runtime jobs -> verified artifact",
+    stopped: "Must remain visible while stopped: admission cold-starts ChatMock and managed Scriberr when enabled; external or disabled Scriberr is not leased, and heavy nested jobs start only when the sealed plan needs them.",
+  },
+  "max-research": {
+    refs: [
+      ["dashboard/src/lib/max-research/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/max-research/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/src/lib/max-research/participants.ts", /export function participantRuntime/],
+      ["dashboard/scripts/runtime-v2-max-research-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: [
+      "outer-max-research-node disposable coordinator",
+      "service:chatmock",
+      "service:deep-research admission lease",
+      "service:openscience admission lease",
+      "fixed nested Agent Reach and Get Doc Runtime jobs",
+    ],
+    artifacts: ["multi-participant research answer", "participant evidence and document artifacts"],
+    cancel: "the coordinator gets 60 seconds to cancel active participants before Rust terminates its remaining Job tree and releases service authority",
+    restart: "The durable exact-job mapping, fenced event projection, participant evidence, and verified artifact references survive Dashboard restart; retry is a fresh coordinator.",
+    path: "authenticated durable Runtime submit -> admission-held ChatMock, Deep Research, and OpenScience services -> outer-max-research-node -> fixed nested Agent Reach and Get Doc jobs",
+    stopped: "Must remain visible while stopped: admission cold-starts ChatMock, Deep Research, and OpenScience before the participant plan runs; the worker receives only their sealed endpoints and cannot acquire services itself.",
+  },
+  "parametric-cad": {
+    refs: [
+      ["dashboard/src/lib/cad/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/cad/runtime-worker-adapter.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-parametric-cad-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: [
+      "outer-parametric-cad-node disposable worker",
+      "service:chatmock",
+      "service:cad",
+    ],
+    artifacts: ["validated immutable CAD revision", "CAD exports and report"],
+    cancel: "the worker gets 60 seconds for cooperative model/CAD cleanup before Rust tree termination and both service leases are released",
+    restart: "Durable run mapping, fenced Runtime events, revisioned CAD artifacts, and parameter updates survive Dashboard restart; retry is a fresh worker.",
+    path: "authenticated durable Runtime submit -> outer-parametric-cad-node -> sealed ChatMock and CAD service leases",
+    stopped: "Must remain visible while stopped: submitting the run cold-starts ChatMock and the Runtime-owned CAD service; SolidWorks is not selected by this request contract.",
+  },
+  wardrobe: {
+    refs: [
+      ["dashboard/src/lib/wardrobe/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/wardrobe/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-wardrobe-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: ["outer-wardrobe-node disposable worker", "service:wardrobe"],
+    artifacts: ["garment library", "generated wardrobe artifact"],
+    cancel: "the worker gets 30 seconds for cooperative service cleanup before Rust tree termination and Wardrobe lease release",
+    restart: "Durable run mapping, fenced Runtime events, garment state, and verified artifact references survive Dashboard restart; retry is a fresh worker.",
+    path: "authenticated one-to-ten-image Runtime submit -> outer-wardrobe-node -> sealed Wardrobe service lease",
+    stopped: "Must remain visible while stopped: submitting the run cold-starts the Runtime-owned Wardrobe service, which owns its own ChatMock dependency.",
+  },
+  "stock-analyst": {
+    refs: [
+      ["dashboard/src/lib/stock-analyst/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/stock-analyst/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-stock-analyst-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: ["outer-stock-analyst-node disposable worker", "service:stock-analyst"],
+    artifacts: ["stock analysis answer", "bounded tool-call and market evidence"],
+    cancel: "the worker gets 30 seconds for cooperative upstream cancellation before Rust tree termination and Stock Analyst lease release",
+    restart: "Durable run mapping, fenced Runtime events, and persisted Stock Analyst service state survive Dashboard restart; retry is a fresh worker.",
+    path: "authenticated durable Runtime submit -> outer-stock-analyst-node -> sealed Stock Analyst service lease",
+    stopped: "Must remain visible while stopped: submitting the run cold-starts the Runtime-owned Stock Analyst service, which owns its own ChatMock dependency.",
+  },
+  "vibe-trading": {
+    refs: [
+      ["dashboard/src/lib/vibe-trading/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/vibe-trading/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-vibe-trading-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: ["outer-vibe-trading-node disposable worker", "service:vibe-trading"],
+    artifacts: ["trading analysis answer", "bounded market evidence and reasoning events"],
+    cancel: "the worker gets 60 seconds for the upstream cancel acknowledgement before Rust tree termination and Vibe Trading lease release",
+    restart: "Durable run mapping and fenced Runtime events survive Dashboard restart; retry is a fresh worker against persisted service state.",
+    path: "authenticated durable Runtime submit -> outer-vibe-trading-node -> sealed Vibe Trading service lease",
+    stopped: "Must remain visible while stopped: submitting the run cold-starts the Runtime-owned Vibe Trading service, which owns its own ChatMock dependency.",
+  },
+  "deer-flow": {
+    refs: [
+      ["dashboard/src/lib/deer-flow/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/deer-flow/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-deer-flow-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: [
+      "outer-deer-flow-node disposable worker",
+      "service:chatmock",
+      "service:deer-flow",
+    ],
+    artifacts: ["DeerFlow research answer", "thread checkpoints and verified artifacts"],
+    cancel: "the worker gets 60 seconds for cooperative upstream cleanup before Rust tree termination and both dependency leases are released",
+    restart: "Upstream thread/checkpoint artifacts, durable run mapping, and fenced Runtime events survive Dashboard restart; retry is a fresh worker.",
+    path: "authenticated durable Runtime submit -> outer-deer-flow-node -> sealed ChatMock and DeerFlow service leases",
+    stopped: "Must remain visible while stopped: submitting the run cold-starts the Runtime-owned ChatMock and DeerFlow services in dependency order.",
+  },
+  "money-printer": {
+    refs: [
+      ["dashboard/src/lib/money-printer/runtime-run-manager.ts", /export function startRun/],
+      ["dashboard/src/lib/money-printer/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-money-printer-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: ["outer-money-printer-node disposable worker", "service:money-printer"],
+    artifacts: ["rendered video", "narration and bounded production metadata"],
+    cancel: "the worker gets 60 seconds for the sealed service stop acknowledgement before Rust termination and MoneyPrinter lease release",
+    restart: "Durable run mapping, fenced Runtime events, task state, and verified video artifacts survive Dashboard restart; retry creates a fresh leased worker.",
+    path: "authenticated durable Runtime submit -> outer-money-printer-node -> sealed MoneyPrinter service lease and loopback RPC",
+    stopped: "Must remain visible while stopped: submitting the run cold-starts the Runtime-owned MoneyPrinter service, which owns its own ChatMock dependency and heavyweight media reservation.",
+  },
+  "inbox-zero": {
+    refs: [
+      ["dashboard/src/lib/inbox-zero/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/inbox-zero/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-inbox-zero-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: ["outer-inbox-zero-node disposable worker", "service:inbox-zero-stack"],
+    artifacts: ["mailbox assistant transcript", "mailbox operation result"],
+    cancel: "the worker gets 30 seconds for cooperative service cancellation before Rust tree termination and stack-lease release",
+    restart: "Durable transcript and fenced Runtime events survive Dashboard restart; a retry is a fresh leased worker.",
+    path: "authenticated durable Runtime submit -> outer-inbox-zero-node -> sealed inbox-zero-stack service RPC",
+    stopped: "Must remain visible while stopped: submitting the run cold-starts the Runtime-owned Inbox Zero stack coordinator.",
+  },
+  "socials-manager": {
+    refs: [
+      ["dashboard/src/lib/socials-manager/runtime-run-manager.ts", /export async function startRun/],
+      ["dashboard/src/lib/socials-manager/run-manager.ts", /export function startRuntimeWorkerRun/],
+      ["dashboard/scripts/runtime-v2-socials-manager-worker.mjs", /runRuntimeV2OuterAgentWorker/],
+    ],
+    required: ["outer-socials-manager-node disposable worker", "service:postiz-coordinator", "service:chatmock"],
+    artifacts: ["social draft", "publishing result", "calendar artifact"],
+    cancel: "the worker gets 60 seconds for cooperative cleanup before Rust tree termination and both service leases are released",
+    restart: "Durable run mapping, draft/publishing artifacts, and fenced Runtime events survive Dashboard restart; retry is a fresh worker.",
+    path: "authenticated durable Runtime submit -> outer-socials-manager-node -> sealed Postiz coordinator and ChatMock leases",
+    stopped: "Must remain visible while stopped: submitting the run cold-starts ChatMock and the Runtime-owned Postiz coordinator.",
+  },
+};
+
 for (const agent of runtimeAgents) {
   const routeSources = [
     routeSourcePath(RUN_ROUTES[agent.id]),
@@ -451,7 +722,11 @@ for (const agent of runtimeAgents) {
     sourceAnchor("dashboard/src/lib/hermes/runtime-agent-briefs.ts", `"${agent.id}":`),
     ...routeSources.map((relativePath) => sourceAnchor(relativePath, /export async function/)),
     sourceAnchor("dashboard/src/lib/conversations/external-agent-runs.ts", `"${agent.durableRun.kind}"`),
+    ...(runtimeV2AgentContracts[agent.id]?.refs ?? []).map(([file, pattern]) =>
+      sourceAnchor(file, pattern),
+    ),
   ];
+  const runtimeV2Contract = runtimeV2AgentContracts[agent.id];
   add({
     capabilityId: `runtime-agent:${agent.id}`,
     sourceIdentity: agent.id,
@@ -461,22 +736,201 @@ for (const agent of runtimeAgents) {
     slashCommand: agent.command,
     selectionSemantics: JSON.stringify(agent.selectionSemantics),
     routeOrIpcContract: `${agent.routes.submit}; SSE ${agent.routes.events}; POST ${agent.routes.cancel}`,
-    requiredServiceOrWorker: [`runtime-agent:${agent.id}`],
+    requiredServiceOrWorker: runtimeV2Contract
+      ? runtimeV2Contract.required
+      : [`registered Runtime V2 ${agent.id} disposable worker`],
     inputTypes: agent.selectionSemantics.acceptsAttachments ? ["text", "chat-attachments"] : ["text"],
     outputTypes: ["chat-message", "external-agent-run-card", "durable-transcript-field"],
-    artifactTypes: ["agent-specific"],
-    progressEventContract: `Replayable events from ${agent.routes.events}.`,
-    cancellationBehavior: `POST ${agent.routes.cancel}; shared external-agent cancellation mapping.`,
+    artifactTypes: runtimeV2Contract
+      ? runtimeV2Contract.artifacts
+      : ["agent-specific"],
+    progressEventContract: runtimeV2Contract
+      ? `Fenced Runtime worker events are durably projected and replayed from ${agent.routes.events}.`
+      : `Fenced Runtime worker events are durably projected and replayed from ${agent.routes.events}.`,
+    cancellationBehavior: runtimeV2Contract
+      ? `POST ${agent.routes.cancel} cancels the exact Runtime job; ${runtimeV2Contract.cancel}.`
+      : `POST ${agent.routes.cancel} cancels the exact Runtime job; the native owner applies the registered graceful window and complete-tree termination.`,
     approvalBehavior: agent.selectionSemantics.requiresLaunchApproval
       ? "Model launch requires explicit approval; direct user selection is the launch authority."
       : "Direct user selection authorizes launch.",
     followUpContextBehavior: `Conversation-bound ${agent.durableRun.transcriptField} descriptor restores the run card and follow-up context.`,
-    restartBehavior: "Durable transcript descriptor survives restart; live worker recovery remains adapter-specific until Runtime V2 evidence exists.",
-    recoveryBehavior: `External run kind ${agent.durableRun.kind} maps to ${agent.durableRun.transcriptField}.`,
-    runtimePath: `${agent.routes.submit} -> legacy worker/run manager -> ${agent.routes.events}`,
+    restartBehavior: runtimeV2Contract
+      ? runtimeV2Contract.restart
+      : "The durable exact-job mapping, fenced event projection, and transcript descriptor survive Dashboard restart; installed restart evidence remains NOT RUN.",
+    recoveryBehavior: runtimeV2Contract
+      ? `External run kind ${agent.durableRun.kind} maps to ${agent.durableRun.transcriptField}; missing or mismatched Runtime identity fails closed without a Next fallback.`
+      : `External run kind ${agent.durableRun.kind} maps to ${agent.durableRun.transcriptField}; missing or mismatched Runtime identity fails closed without a Next fallback.`,
+    runtimePath: runtimeV2Contract
+      ? `${agent.routes.submit} -> ${runtimeV2Contract.path} -> fenced replay at ${agent.routes.events}`
+      : `${agent.routes.submit} -> authenticated durable Runtime submit -> registered ${agent.id} disposable worker${agent.id === "ruflo" ? " (immutable Ruflo package closure unavailable; package evidence NOT RUN)" : ""} -> fenced replay at ${agent.routes.events}`,
+    stoppedServiceBehavior: runtimeV2Contract
+      ? runtimeV2Contract.stopped
+      : undefined,
     sourceRefs: refs,
   });
 }
+
+add({
+  capabilityId: "workflow:runtime-setup",
+  sourceIdentity: "runtime-setup",
+  displayName: "Managed runtime setup",
+  category: "workflow",
+  visibleEntryPoint: "Settings and agent setup actions",
+  selectionSemantics: "An explicit authenticated setup/install/remove action selects one closed operation; no tokenless product fallback is allowed.",
+  routeOrIpcContract: "Authenticated setup routes submit a user-global Runtime V2 job and observe its fenced status/result.",
+  requiredServiceOrWorker: ["managed-setup-node and closed agent-specific setup workers"],
+  inputTypes: ["closed setup operation", "optional explicitly sealed credential blob"],
+  outputTypes: ["bounded setup status", "managed data-root toolchain receipt"],
+  artifactTypes: ["managed toolchain", "managed service venv", "bounded installation receipt"],
+  progressEventContract: "Fenced ready, heartbeat, progress, terminal, and cancellation events from a finite Runtime worker.",
+  streamingContract: "Routes poll or replay bounded Runtime state; installer stdout, paths, and credentials are never renderer payloads.",
+  cancellationBehavior: "Authenticated exact-job cancellation gets the profile's bounded cooperative grace before Rust reaps the complete attached installer tree.",
+  approvalBehavior: "The explicit authenticated setup action is the launch authority.",
+  followUpContextBehavior: "Subsequent status and launch checks derive the same fixed data-root outputs; no request-provided executable or output path is retained.",
+  restartBehavior: "Managed outputs and bounded receipts survive Dashboard restart; an interrupted operation is retried as a fresh idempotent job.",
+  recoveryBehavior: "Partial setup never becomes availability evidence; fixed probes must pass before the related service or worker is selectable.",
+  runtimePath: "authenticated setup route -> closed Runtime V2 setup profile -> fixed worker/executor -> attached installer descendants -> fenced result",
+  stoppedServiceBehavior: "Must remain visible while stopped: setup is observationally separate from service start, and completing setup does not cold-start the installed service.",
+  sourceRefs: [
+    sourceAnchor("desktop/runtime-v2/manifests/workers.json", /"kind": "managed-setup-node"/),
+    sourceAnchor("dashboard/scripts/runtime-v2-managed-setup-worker.mjs", /start\.json/),
+    sourceAnchor("dashboard/scripts/runtime-v2-managed-setup-executor.mjs", /protocolVersion/),
+    sourceAnchor("dashboard/src/app/api/comfyui/route.ts", /export async function POST/),
+    sourceAnchor("dashboard/src/lib/comfyui/server.ts", /managed-setup/),
+  ],
+});
+
+add({
+  capabilityId: "profile:device-location",
+  sourceIdentity: "device-location",
+  displayName: "Device location profile",
+  category: "profile",
+  visibleEntryPoint: "Profile settings -> Device location",
+  selectionSemantics: "Explicit signed-in user request from the profile surface.",
+  routeOrIpcContract: "POST /api/profile/device-location with authenticated user-global Runtime authority.",
+  requiredServiceOrWorker: ["system-location-node"],
+  inputTypes: ["authenticated empty request"],
+  outputTypes: ["bounded normalized device-location profile"],
+  progressEventContract: "Finite Runtime worker lifecycle with a single fenced result artifact.",
+  streamingContract: "No renderer stream; the route awaits the bounded disposable job result.",
+  cancellationBehavior: "Caller abort cancels the exact Runtime job and its complete process tree.",
+  approvalBehavior: "The explicit authenticated profile action is the launch authority.",
+  followUpContextBehavior: "The returned normalized location can be saved through the existing profile contract.",
+  restartBehavior: "The durable Runtime job is owner-scoped and can be reconciled after Dashboard restart.",
+  recoveryBehavior: "Missing terminal output fails closed; no alternate Next or shell fallback is used.",
+  runtimePath: "Profile route -> authenticated Runtime V2 job -> fresh system-location worker -> fixed Windows PowerShell",
+  sourceRefs: [
+    sourceAnchor("dashboard/src/app/api/profile/device-location/route.ts", /export async function POST/),
+    sourceAnchor("dashboard/src/lib/runtime-v2/system-location-job.ts", /export async function readSystemLocationViaRuntime/),
+    sourceAnchor("dashboard/scripts/runtime-v2-system-location-worker.mjs", /startFiniteMcpWorker/),
+    sourceAnchor("dashboard/scripts/runtime-v2-system-location-executor.mjs", /read-device-location/),
+  ],
+});
+
+add({
+  capabilityId: "provider:chatmock",
+  sourceIdentity: "chatmock-account",
+  displayName: "ChatMock account provider",
+  category: "provider",
+  visibleEntryPoint: "Settings -> Models -> ChatMock account",
+  selectionSemantics: "Explicit authenticated sign-in, status, cancellation, or logout action from the ChatMock account surface.",
+  routeOrIpcContract: "GET/POST/DELETE /api/chatmock/account/login plus GET/DELETE /api/chatmock/account.",
+  requiredServiceOrWorker: ["chatmock", "chatmock-login-node"],
+  inputTypes: ["authenticated account action"],
+  outputTypes: ["sanitized account status", "authorization URL", "bounded login state"],
+  progressEventContract: "Fenced Runtime checkpoint updates expose only bounded status and the authorization URL.",
+  streamingContract: "No raw child stream crosses the control protocol; the route reads the owner-scoped checkpoint.",
+  cancellationBehavior: "DELETE cancels the exact user-owned Runtime job and its attached login child.",
+  approvalBehavior: "The explicit signed-in account action is the sole launch authority.",
+  followUpContextBehavior: "Successful credentials remain under the sealed ChatMock CODEX_HOME and are never copied into conversation state.",
+  restartBehavior: "The user-scoped current pointer and fenced job checkpoint survive Dashboard restart.",
+  recoveryBehavior: "Interrupted login is reported truthfully and can be retried; there is no Next-owned child-process fallback.",
+  runtimePath: "ChatMock account route -> authenticated Runtime V2 job -> fresh login worker -> fixed ChatMock Python login command",
+  sourceRefs: [
+    sourceAnchor("dashboard/src/app/api/chatmock/account/route.ts", /export async function GET/),
+    sourceAnchor("dashboard/src/app/api/chatmock/account/login/route.ts", /export async function POST/),
+    sourceAnchor("dashboard/scripts/runtime-v2-chatmock-login-worker.mjs", /runRuntimeV2ChatmockLoginWorker/),
+    sourceAnchor("dashboard/scripts/runtime-v2-chatmock-login-executor.mjs", /executeChatmockLogin/),
+    sourceAnchor("chatmock/chatmock.py", /def main|if __name__/),
+  ],
+});
+
+const agentEditsSources = [
+  sourceAnchor("dashboard/src/app/api/agent-edits/route.ts", /export async function GET/),
+  sourceAnchor("dashboard/src/app/api/agent-edits/route.ts", /export async function POST/),
+  sourceAnchor("dashboard/src/lib/agent-edits/runtime-client.ts", /export async function runAgentEditsOperation/),
+  sourceAnchor("dashboard/scripts/runtime-v2-agent-edits-worker.mjs", /startFiniteMcpWorker/),
+  sourceAnchor("dashboard/scripts/runtime-v2-agent-edits-executor.mjs", /executeAgentEditsOperation/),
+];
+
+add({
+  capabilityId: "repository:snapshot-inspection",
+  sourceIdentity: "agent-edits-snapshot-inspection",
+  displayName: "Agent edit snapshot inspection",
+  category: "repository",
+  visibleEntryPoint: "Completed coding-agent run card -> Files changed",
+  selectionSemantics: "Explicit authenticated inspection of the immutable before/after snapshot pair attached to a completed coding-agent run.",
+  routeOrIpcContract: "GET /api/agent-edits with an owner-scoped before/after snapshot pair and optional file path.",
+  requiredServiceOrWorker: ["agent-edits-node"],
+  inputTypes: ["authenticated repository path", "immutable snapshot pair", "optional repository-relative file path"],
+  outputTypes: ["bounded edit summary", "verified patch artifact"],
+  artifactTypes: ["identity-bound JSON result", "streamed patch artifact"],
+  progressEventContract: "Finite Runtime worker lifecycle with a fenced result descriptor.",
+  streamingContract: "Large JSON stays in the identity-bound worker workspace and is streamed only after descriptor verification.",
+  cancellationBehavior: "Caller abort cancels the exact Runtime job and its complete Git process tree.",
+  approvalBehavior: "The authenticated inspection action is the launch authority; no command or executable comes from the renderer.",
+  followUpContextBehavior: "The durable run card retains only the immutable snapshot identifiers required for later inspection.",
+  restartBehavior: "Owner-scoped Runtime job state and immutable Git objects permit idempotent inspection after Dashboard restart.",
+  recoveryBehavior: "Missing or mismatched fenced output fails closed with no in-process Git fallback.",
+  runtimePath: "Agent run card -> agent-edits route -> authenticated Runtime V2 job -> fresh fixed-Git worker",
+  sourceRefs: agentEditsSources,
+});
+
+add({
+  capabilityId: "repository:agent-edits",
+  sourceIdentity: "agent-edits-artifact",
+  displayName: "Agent edit artifact",
+  category: "repository",
+  visibleEntryPoint: "Completed Codex, Ruflo, or OpenCode run card",
+  selectionSemantics: "A coding-agent worker captures immutable before/after snapshots and attaches their bounded descriptor to its terminal event.",
+  routeOrIpcContract: "Outer coding worker terminal event plus authenticated GET/POST /api/agent-edits operations.",
+  requiredServiceOrWorker: ["agent-edits-node", "outer-codex-node", "outer-ruflo-node", "outer-opencode-node"],
+  inputTypes: ["authenticated repository path", "coding-agent terminal event"],
+  outputTypes: ["durable before/after snapshot descriptor", "edit summary", "per-file patch"],
+  artifactTypes: ["identity-bound JSON result", "streamed patch artifact"],
+  progressEventContract: "The outer worker withholds terminal completion until the post-run snapshot is captured and fenced.",
+  streamingContract: "The compatibility route streams only the verified Runtime artifact; large bytes never cross the control JSON protocol.",
+  cancellationBehavior: "Outer-agent cancellation and inspection cancellation each terminate their exact Runtime-owned process tree.",
+  approvalBehavior: "The original authenticated coding-agent launch authorizes snapshot capture; later inspection is owner-scoped.",
+  followUpContextBehavior: "The run descriptor preserves edit identity without retaining a live Git process or in-memory cache.",
+  restartBehavior: "Durable terminal events restore the edit descriptor after Dashboard restart.",
+  recoveryBehavior: "Incomplete outer runs do not publish an unfenced edit pair; inspection never falls back to Next-owned Git.",
+  runtimePath: "Disposable coding worker -> fixed-Git snapshot executor -> durable terminal descriptor -> disposable inspection worker",
+  sourceRefs: agentEditsSources,
+});
+
+add({
+  capabilityId: "recovery:agent-undo",
+  sourceIdentity: "agent-edits-undo",
+  displayName: "Agent edit undo",
+  category: "recovery",
+  visibleEntryPoint: "Completed coding-agent run card -> Undo",
+  selectionSemantics: "Explicit authenticated undo for the exact immutable before/after snapshot pair owned by the requester.",
+  routeOrIpcContract: "POST /api/agent-edits with action undo and the owner-scoped snapshot pair.",
+  requiredServiceOrWorker: ["agent-edits-node"],
+  inputTypes: ["authenticated repository path", "immutable snapshot pair"],
+  outputTypes: ["bounded undo result"],
+  artifactTypes: ["identity-bound JSON result"],
+  progressEventContract: "Finite Runtime worker lifecycle with idempotent request identity and fenced completion.",
+  streamingContract: "The bounded undo result is read from the verified worker artifact.",
+  cancellationBehavior: "Caller abort cancels the exact Runtime job and its complete Git process tree.",
+  approvalBehavior: "Undo requires an explicit authenticated user action; no renderer-provided executable or environment is accepted.",
+  followUpContextBehavior: "The completed run card remains the source of the exact undo snapshot pair.",
+  restartBehavior: "The once-stable request identity and durable Runtime ledger prevent duplicate concurrent undo after restart.",
+  recoveryBehavior: "A missing terminal result is reconciled from the exact Runtime job; no direct Git fallback is used.",
+  runtimePath: "Undo action -> authenticated agent-edits route -> fresh fixed-Git Runtime worker -> fenced result",
+  sourceRefs: agentEditsSources,
+});
 
 const agencyRoot = path.join(repoRoot, "agency-agents");
 const agencyCatalog = loadAgencyAgentsCatalog({ rootPath: agencyRoot, cacheTtlMs: 0 });
@@ -840,9 +1294,18 @@ const surfaceSpecs = [
     entry: "Chat composer temporary-mode control",
     route: "Hermes session created with temporary flag; transcript remains conversation-local",
     runtime: "Conversation store -> Hermes runtime without cross-chat durable memory",
+    followUp:
+      "The live temporary conversation preserves its own exact transcript and selected context for a real second turn until the user leaves temporary mode or reloads.",
+    restart:
+      "Temporary conversations are intentionally excluded from history, browser restore pointers, drafts, titles, search and restart recovery.",
+    recovery: "Not applicable.",
     sources: [
       ["dashboard/src/app/api/hermes/sessions/route.ts", /temporary/],
-      ["dashboard/src/lib/conversations/memory.ts", /temporary/],
+      ["dashboard/src/app/components/hermes/dashboard-agent-terminal.tsx", /const \[temporaryChat/],
+      ["dashboard/src/app/components/hermes/use-agent-session.ts", /is a temporary chat, which is deliberately not somewhere you can come back/],
+      ["dashboard/src/lib/conversations/memory.ts", /A temporary chat keeps its own thread of context/],
+      ["dashboard/src/lib/conversations/store.ts", /WHERE user_id = \? AND temporary = 0/],
+      ["dashboard/tests/temporary-chat.test.mjs", /a temporary chat keeps its own thread of context/],
     ],
   },
 ];
@@ -864,11 +1327,12 @@ for (const surface of surfaceSpecs) {
     streamingContract: "Server-owned event pump survives request disconnect; Quartz supports authenticated or client-token isolation.",
     cancellationBehavior: "Abort route stops runtime and active child/tool work and revokes the capability grant.",
     approvalBehavior: "Per-turn capability decision and permission prompts; Quartz is read/proposal-only.",
-    followUpContextBehavior: "Same conversation preserves exact transcript, selected branch, source and artifact context.",
-    restartBehavior: surface.id === "legacy-garden-chat"
+    followUpContextBehavior:
+      surface.followUp ?? "Same conversation preserves exact transcript, selected branch, source and artifact context.",
+    restartBehavior: surface.restart ?? (surface.id === "legacy-garden-chat"
       ? "Legacy session rows persist; intent and attachment semantics are separately implemented and must remain parity-checked."
-      : "Durable conversation/run rows are resumed or terminally reconciled on restart.",
-    recoveryBehavior: "Refresh reconnects by session/run id and bounded event cursor.",
+      : "Durable conversation/run rows are resumed or terminally reconciled on restart."),
+    recoveryBehavior: surface.recovery ?? "Refresh reconnects by session/run id and bounded event cursor.",
     runtimePath: surface.runtime,
     sourceRefs: refs,
   });
@@ -923,6 +1387,7 @@ const TOOL_SERVICE_REQUIREMENTS = {
 
 for (const [id, name, exportName] of TOOL_FAMILY_EXPORTS) {
   const tools = toolScopes[exportName];
+  const runtimeV2Watermark = id === "watermark";
   if (!Array.isArray(tools) || tools.length === 0) fail(`tool family ${exportName} is empty or missing`);
   add({
     capabilityId: `tool-family:${id}`,
@@ -932,29 +1397,316 @@ for (const [id, name, exportName] of TOOL_FAMILY_EXPORTS) {
     visibleEntryPoint: "Selected automatically or by its reviewed skill/feature entry point in authenticated chat.",
     implicitTrigger: SKILL_INTENTS[id] ?? null,
     selectionSemantics: `Exact tool IDs: ${tools.join(", ")}. Surface composition is enforced by allowedToolsForSurface.`,
-    routeOrIpcContract: "Signed capability token and server-side task decision are revalidated by the internal tool route.",
-    requiredServiceOrWorker: TOOL_SERVICE_REQUIREMENTS[id] ?? [],
-    inputTypes: ["bounded-tool-arguments"],
-    outputTypes: ["typed-tool-result", "audit-event"],
-    artifactTypes: id === "artifacts" ? [...artifactTypes.ARTIFACT_KINDS] : [],
-    progressEventContract: "Tool start/completion/failure events are correlated to the conversation run.",
-    cancellationBehavior: "Owning conversation abort propagates to cancellable tool work; finite tools return a terminal result.",
+    routeOrIpcContract: runtimeV2Watermark
+      ? "Authenticated Watermark tool and automatic artifact-scrub callers submit one exact conversation-scoped Runtime job and accept only its fenced hashed result."
+      : "Signed capability token and server-side task decision are revalidated by the internal tool route.",
+    requiredServiceOrWorker: runtimeV2Watermark
+      ? ["Runtime V2 watermark-operation disposable worker"]
+      : TOOL_SERVICE_REQUIREMENTS[id] ?? [],
+    inputTypes: runtimeV2Watermark
+      ? ["one sealed owned file, or one bounded streamed audit bundle"]
+      : ["bounded-tool-arguments"],
+    outputTypes: runtimeV2Watermark
+      ? ["typed inspection/clean/audit result", "hashed fenced output receipt", "audit-event"]
+      : ["typed-tool-result", "audit-event"],
+    artifactTypes: runtimeV2Watermark
+      ? ["cleaned document or media artifact", "watermark audit report"]
+      : id === "artifacts" ? [...artifactTypes.ARTIFACT_KINDS] : [],
+    progressEventContract: runtimeV2Watermark
+      ? "The exact Runtime job reaches one fenced terminal result; no hidden Next-owned Python progress or fallback exists."
+      : "Tool start/completion/failure events are correlated to the conversation run.",
+    cancellationBehavior: runtimeV2Watermark
+      ? "Request or conversation abort cancels the exact Runtime job; the fixed Python child receives a graceful stop before native Job-tree reaping."
+      : "Owning conversation abort propagates to cancellable tool work; finite tools return a terminal result.",
     approvalBehavior: id === "gadgets"
       ? "Gadget writes are queued as durable user-approved actions."
       : id === "recall"
       ? "Recall control may require explicit per-action approval; reads honor the current agentAccess setting."
+      : runtimeV2Watermark
+      ? "Authenticated conversation ownership and the granted Watermark tool or automatic artifact-scrub policy authorize exactly one sealed input."
       : "Capability broker and tool route enforce the per-turn grant; write families retain their documented proposal/reversibility policy.",
     followUpContextBehavior: "Tool evidence and artifacts are stored against the owning conversation/run.",
-    restartBehavior: "Tool availability is recomputed from registry and service state; stopped services must not hide the capability.",
-    recoveryBehavior: "Durable tool/artifact events replay where supported; an unavailable dependency remains truthful rather than silently falling back.",
-    runtimePath: `Hermes turn -> capability broker -> ${exportName} internal route(s)`,
+    restartBehavior: runtimeV2Watermark
+      ? "A completed fenced receipt remains Runtime-owned; an interrupted synchronous operation retries as a fresh exact conversation-scoped job."
+      : "Tool availability is recomputed from registry and service state; stopped services must not hide the capability.",
+    recoveryBehavior: runtimeV2Watermark
+      ? "Only a verified hashed terminal receipt is promoted; uncertain submission is cancelled by idempotency identity and partial outputs are discarded."
+      : "Durable tool/artifact events replay where supported; an unavailable dependency remains truthful rather than silently falling back.",
+    stoppedServiceBehavior: runtimeV2Watermark
+      ? "The capability must remain visible while stopped or resource-blocked; no managed service is required and resource denial remains a typed Runtime-unavailable result."
+      : undefined,
+    runtimePath: runtimeV2Watermark
+      ? "Watermark tool or automatic artifact scrub -> Runtime V2 watermark-operation-node -> fixed staged Python script -> fenced hashed result"
+      : `Hermes turn -> capability broker -> ${exportName} internal route(s)`,
+    sourceRefs: runtimeV2Watermark
+      ? [
+          sourceAnchor("dashboard/src/lib/hermes/tool-scopes.ts", new RegExp(`export const ${exportName}`)),
+          sourceAnchor("dashboard/src/app/api/hermes/tools/watermarks/route.ts", /export async function POST/),
+          sourceAnchor("dashboard/src/lib/runtime-v2/watermark-job.ts", /export async function runWatermarkOperationViaRuntime/),
+          sourceAnchor("dashboard/src/lib/watermarks/scrub-file.ts", /watermark-job/),
+          sourceAnchor("dashboard/scripts/runtime-v2-watermark-worker.mjs", /export async function executeRuntimeV2WatermarkOperation/),
+        ]
+      : [
+          sourceAnchor("dashboard/src/lib/hermes/tool-scopes.ts", new RegExp(`export const ${exportName}`)),
+          sourceAnchor("dashboard/src/lib/hermes/capability-broker.ts", /export async function|export function/),
+          sourceAnchor("dashboard/src/lib/hermes/capability-token.ts", /export function/),
+        ],
+  });
+}
+
+// Runtime-owned service capabilities that are not members of the Hermes
+// tool-scope exports still need stable parity identities. Post-migration
+// execution remains NOT RUN until the normal Electron path is inspected.
+const RUNTIME_SERVICE_TOOL_FAMILIES = [
+  {
+    id: "model-gateway",
+    sourceIdentity: "cliproxy-model-gateway",
+    name: "Subscription model gateway",
+    entry: "Settings -> Providers -> CLIProxy login/account controls and model selection",
+    route: "Authenticated CLIProxy status/login/accounts routes and OpenAI-compatible model traffic",
+    service: "Runtime V2 cliproxy service",
+    input: ["provider login action", "OpenAI-compatible model request"],
+    output: ["provider account state", "model response stream"],
+    progress: "Login polling and model-stream lifecycle remain bounded and user-visible.",
+    cancel: "Login leases release on completion/abort; model cancellation closes the owning request.",
+    approval: "The authenticated user explicitly starts provider login; ordinary model use follows the selected provider configuration.",
+    restart: "Provider credentials/configuration persist outside the process; the on-demand service is reacquired after restart.",
+    recovery: "Stopped or failed service state stays visible and the original action reacquires it without a hidden direct-spawn fallback.",
+    sources: [
+      ["dashboard/src/lib/cliproxy/runtime-lease.ts", /export async function withCliproxyLease/],
+      ["desktop/runtime-v2/manifests/services.json", /"id": "cliproxy"/],
+    ],
+  },
+  {
+    id: "document-page-retrieval",
+    sourceIdentity: "colpali-document-page-retrieval",
+    name: "Document page retrieval",
+    entry: "Document question when a visual-page index is available",
+    route: "ColPali health/index/search/forget client contract",
+    service: "Runtime V2 colpali service",
+    input: ["owned document", "bounded page-query request"],
+    output: ["ranked page text", "page image references"],
+    progress: "Bounded index and retrieval lifecycle remains tied to the owning document action.",
+    cancel: "Owning request cancellation releases the service lease and stops cancellable work.",
+    approval: "Only the authenticated owner may index or query the document.",
+    restart: "Indexes and model cache persist under the sealed data root; the service is reacquired on demand.",
+    recovery: "Unavailable visual retrieval leaves the original document path intact and never fabricates page evidence.",
+    sources: [
+      ["dashboard/src/lib/colpali/service.ts", /export async function colpaliSearch/],
+      ["desktop/runtime-v2/manifests/services.json", /"id": "colpali"/],
+    ],
+  },
+  {
+    id: "local-rewriting",
+    sourceIdentity: "humanizer-local-rewriting",
+    name: "Local rewriting",
+    entry: "Humanize skill, implicit humanize intent, and authenticated rewrite controls",
+    route: "Humanizer rewrite/cancel/status contract",
+    service: "Runtime V2 humanizer service",
+    input: ["bounded source text", "rewrite settings"],
+    output: ["rewritten text", "version/status metadata"],
+    progress: "Rewrite progress and terminal failure remain visible to the owning action.",
+    cancel: "The authenticated cancel path aborts active rewriting and releases the service lease.",
+    approval: "Capability-token and authenticated-user scope gate each rewrite.",
+    restart: "Checkpoint/cache state persists under the sealed data root; service process state is disposable.",
+    recovery: "A missing checkpoint or failed local model is reported truthfully; no remote or canned rewrite counts as parity.",
+    sources: [
+      ["dashboard/src/lib/humanizer/service.ts", /export async function humanizerRewrite/],
+      ["desktop/runtime-v2/manifests/services.json", /"id": "humanizer"/],
+    ],
+  },
+  {
+    id: "speech-synthesis",
+    sourceIdentity: "voicebox-speech-synthesis",
+    name: "Speech synthesis",
+    entry: "Read-aloud and speech synthesis/profile controls",
+    route: "POST /api/speech/synthesize and /api/speech/synthesize/mp3",
+    service: "Runtime V2 voicebox service plus speech-media-node for fixed MP3 encoding",
+    input: ["bounded text", "voice/profile selection"],
+    output: ["audio response", "MP3 artifact"],
+    progress: "Model loading and synthesis status remain explicit, including the existing 202 loading response.",
+    cancel: "Owning HTTP/turn cancellation closes synthesis and releases the service lease.",
+    approval: "Authenticated explicit read-aloud/synthesis action selects the configured voice profile.",
+    restart: "Profiles/models persist under the sealed data root; Voicebox is reacquired on demand and every MP3 conversion is a fresh durable Runtime job.",
+    recovery: "Partial audio is never presented as completed synthesis; the fenced MP3 result survives Dashboard restart and an interrupted caller retries a fresh exact operation.",
+    sources: [
+      ["dashboard/src/lib/speech/synthesis.ts", /export async function synthesizeSpeech/],
+      ["dashboard/src/lib/runtime-v2/speech-media-job.ts", /export async function encodeSpeechMp3ViaRuntime/],
+      ["dashboard/scripts/runtime-v2-speech-media-worker.mjs", /loadRuntimeV2SpeechMediaLaunch/],
+      ["dashboard/scripts/runtime-v2-speech-media-executor.mjs", /export async function executeSpeechMedia/],
+      ["desktop/runtime-v2/manifests/workers.json", /"kind": "speech-media-node"/],
+      ["desktop/runtime-v2/manifests/services.json", /"id": "voicebox"/],
+    ],
+  },
+  {
+    id: "video-transcription",
+    sourceIdentity: "scriberr-video-transcription",
+    name: "Video transcription",
+    entry: "Garden video upload/YouTube transcription and Meeting Notes",
+    route: "Garden video-transcription create/detail/retry/cancel/inspect APIs",
+    service: "Runtime V2 scriberr service or explicit external Scriberr endpoint plus speech-media-node for fixed media preparation",
+    input: ["owned video upload", "validated YouTube URL"],
+    output: ["speaker-aware transcript", "indexed Garden source"],
+    progress: "Durable SQLite state, heartbeat and checkpoint transitions remain observable.",
+    cancel: "Dedicated authenticated cancel persists intent and stops the active transcription stage.",
+    approval: "The authenticated Garden owner explicitly queues or retries transcription.",
+    restart: "Queued jobs and checkpoint paths persist; the local service is reacquired on demand and each media preparation operation is a fresh durable Runtime job.",
+    recovery: "Retry resumes from a valid checkpoint or source and preserves terminal states; fenced speech/media outputs cannot escape their private attempt stage and external mode remains explicit.",
+    sources: [
+      ["dashboard/src/lib/scriberr/job-runner.ts", /recoverStaleJobs/],
+      ["dashboard/src/lib/runtime-v2/speech-media-job.ts", /export async function downloadVideoSourceViaRuntime/],
+      ["dashboard/scripts/runtime-v2-speech-media-worker.mjs", /loadRuntimeV2SpeechMediaLaunch/],
+      ["dashboard/scripts/runtime-v2-speech-media-executor.mjs", /export async function executeSpeechMedia/],
+      ["desktop/runtime-v2/manifests/workers.json", /"kind": "speech-media-node"/],
+      ["desktop/runtime-v2/manifests/services.json", /"id": "scriberr"/],
+    ],
+  },
+];
+
+for (const capability of RUNTIME_SERVICE_TOOL_FAMILIES) {
+  add({
+    capabilityId: `tool-family:${capability.id}`,
+    sourceIdentity: capability.sourceIdentity,
+    displayName: capability.name,
+    category: "tool-family",
+    visibleEntryPoint: capability.entry,
+    selectionSemantics: `The existing visible action selects ${capability.name}; a stopped managed service is cold-started by that same action.`,
+    routeOrIpcContract: capability.route,
+    requiredServiceOrWorker: [capability.service],
+    inputTypes: capability.input,
+    outputTypes: capability.output,
+    progressEventContract: capability.progress,
+    cancellationBehavior: capability.cancel,
+    approvalBehavior: capability.approval,
+    restartBehavior: capability.restart,
+    recoveryBehavior: capability.recovery,
+    runtimePath: `${capability.entry} -> authenticated dashboard adapter -> ${capability.service}`,
+    sourceRefs: capability.sources.map(([relativePath, matcher]) => sourceAnchor(relativePath, matcher)),
+  });
+}
+
+// Generated Garden visuals use a fresh private Runtime V2 browser job for the
+// screenshot/render phase. These two stable tool-family identities are not
+// exported through Hermes tool-scopes, so keep their parity contract beside
+// the other explicit Runtime-owned tool families.
+const GENERATED_VISUAL_BROWSER_TOOL_FAMILIES = [
+  {
+    id: "artifact-render",
+    sourceIdentity: "generated-visual-artifact-render",
+    name: "Generated visual artifact rendering",
+  },
+  {
+    id: "image-generation",
+    sourceIdentity: "generated-visual-image-generation",
+    name: "Generated visual image rendering",
+  },
+];
+
+for (const capability of GENERATED_VISUAL_BROWSER_TOOL_FAMILIES) {
+  add({
+    capabilityId: `tool-family:${capability.id}`,
+    sourceIdentity: capability.sourceIdentity,
+    displayName: capability.name,
+    category: "tool-family",
+    visibleEntryPoint: "Garden generated-visual regenerate action",
+    selectionSemantics:
+      "The authenticated Garden visualization action submits one fixed Runtime V2 browser job for the exact owned visual and accepts only its fenced screenshot result.",
+    routeOrIpcContract:
+      "POST /api/gardens/[gardenId]/visualizations/[visualId]/regenerate -> exact user/Garden job authority -> generated-visual-browser result fence.",
+    requiredServiceOrWorker: ["Runtime V2 generated-visual-browser disposable worker"],
+    inputTypes: ["one owned generated-visual HTML blob, at most 12 MiB"],
+    outputTypes: ["bounded fenced screenshot result"],
+    artifactTypes: ["image", "generated-visual"],
+    progressEventContract:
+      "Runtime job state and the existing regenerate response expose completion or a typed failure without a hidden Next-owned browser.",
+    streamingContract:
+      "No long-lived browser stream is exposed; the bounded regenerate request accepts only the exact terminal fenced screenshot result.",
+    cancellationBehavior:
+      "Request abort cancels the exact Runtime job; graceful browser cleanup is followed by the native Job-tree reap.",
+    approvalBehavior:
+      "Authenticated Garden ownership and the explicit regenerate action authorize the one sealed visual input.",
+    followUpContextBehavior:
+      "The accepted screenshot remains attached to the same owned visualization and Garden publication state.",
+    restartBehavior:
+      "A completed fenced result remains Runtime-owned; an interrupted regenerate action submits a fresh exact scoped job rather than reconnecting to an unproven browser process.",
+    recoveryBehavior:
+      "Uncertain submission is cancelled by its idempotency identity; foreign, stale, malformed, or tampered result fences are rejected.",
+    runtimePath:
+      "Garden regenerate route -> Runtime V2 generated-visual-browser-node -> private Chromium descendant -> fenced screenshot",
     sourceRefs: [
-      sourceAnchor("dashboard/src/lib/hermes/tool-scopes.ts", new RegExp(`export const ${exportName}`)),
-      sourceAnchor("dashboard/src/lib/hermes/capability-broker.ts", /export async function|export function/),
-      sourceAnchor("dashboard/src/lib/hermes/capability-token.ts", /export function/),
+      sourceAnchor(
+        "dashboard/src/app/api/gardens/[gardenId]/visualizations/[visualId]/regenerate/route.ts",
+        /export async function POST/,
+      ),
+      sourceAnchor(
+        "dashboard/src/lib/runtime-v2/generated-visual-browser-job.ts",
+        /export async function runGeneratedVisualBrowserInvocationViaRuntime/,
+      ),
+      sourceAnchor(
+        "dashboard/scripts/runtime-v2-generated-visual-browser-executor.mjs",
+        /export async function executeGeneratedVisualBrowserOperation/,
+      ),
     ],
   });
 }
+
+// Graft is not part of the Hermes tool-scope exports above: it is a
+// repository-scoped MCP server attached to coding-agent runs. It still has a
+// visible Garden setting and a finite index-build boundary, so it needs its own
+// stable capability row instead of remaining an inventory-only ID.
+const GRAFT_PRE_MIGRATION_EVIDENCE = [
+  "dashboard/src/app/actions/clusters.ts:747",
+  "dashboard/src/app/dashboard/dashboard-client.tsx:3246",
+  "dashboard/src/lib/code-index/garden.ts:22",
+  "dashboard/src/lib/code-index/index-service.ts:141",
+  "dashboard/tests/graft-code-index.test.mjs:199",
+];
+add({
+  capabilityId: "tool-family:code-index",
+  sourceIdentity: "graft-code-index",
+  displayName: "Graft code index",
+  category: "tool-family",
+  visibleEntryPoint: "Edit garden -> Graft code index; connected-repository coding-agent runs",
+  implicitTrigger: "A coding-agent run against an enabled Garden repository requests the existing graph or starts its background build.",
+  selectionSemantics:
+    "Enabled by default per Garden with an explicit opt-out. A ready graph is attached as the graft MCP server; a missing CLI or in-progress graph leaves the same coding-agent run on direct repository search and is reported truthfully.",
+  routeOrIpcContract:
+    "Authenticated Garden server actions persist the setting; Codex, OpenCode and Ruflo run routes resolve the owned repository and attach a repository-scoped graft MCP definition when ready.",
+  requiredServiceOrWorker: ["finite Graft index build", "per-run Graft MCP server"],
+  externalSoftwareRequirements: ["@nanonets/graft CLI"],
+  inputTypes: ["owned connected Git repository", "Garden code-index setting"],
+  outputTypes: ["persistent code graph", "repository-scoped MCP tools"],
+  progressEventContract:
+    "Repository connection reports ready, building or unavailable; the legacy background build has no durable progress stream.",
+  streamingContract: "Each eligible coding-agent run receives graft over its scoped MCP stdio transport.",
+  cancellationBehavior:
+    "The legacy build has only its bounded timeout and child kill; it has no user cancellation route and must become a Runtime V2 finite job.",
+  approvalBehavior:
+    "Only the authenticated Garden owner can connect the repository or change the setting; agent access remains scoped to that connected repository.",
+  followUpContextBehavior:
+    "The Garden setting and external graph directory are reused by later coding-agent runs for the same repository.",
+  restartBehavior:
+    "A completed graph persists outside the connected repository; an in-flight legacy build record is process-local and must be reconciled after migration.",
+  recoveryBehavior:
+    "A missing or failed graph starts or retries a bounded build, while the requested coding-agent run continues without claiming indexed results.",
+  preMigrationEvidence: GRAFT_PRE_MIGRATION_EVIDENCE,
+  selectionEvidence: GRAFT_PRE_MIGRATION_EVIDENCE,
+  serviceWorkerEvidence: GRAFT_PRE_MIGRATION_EVIDENCE,
+  outputArtifactEvidence: GRAFT_PRE_MIGRATION_EVIDENCE,
+  cancellationEvidence: GRAFT_PRE_MIGRATION_EVIDENCE,
+  recoveryEvidence: GRAFT_PRE_MIGRATION_EVIDENCE,
+  runtimePath:
+    "Garden repository setting -> finite graft build -> repository-scoped graft MCP on Codex/OpenCode/Ruflo runs",
+  stoppedServiceBehavior:
+    "Must remain visible while stopped or the CLI is unavailable; the coding-agent action proceeds without indexed tools and reports the unavailable/building state instead of requiring resubmission.",
+  sourceRefs: [
+    sourceAnchor("dashboard/src/app/dashboard/dashboard-client.tsx", /Graft code index/),
+    sourceAnchor("dashboard/src/app/actions/clusters.ts", /export async function setClusterGraftEnabled/),
+    sourceAnchor("dashboard/src/lib/code-index/garden.ts", /export function graftEnabledForGarden/),
+    sourceAnchor("dashboard/src/lib/code-index/index-service.ts", /export function ensureGraftIndex/),
+    sourceAnchor("dashboard/tests/graft-code-index.test.mjs", /every coding agent that resolves a connected repository/),
+  ],
+});
 
 const attachmentSpecs = [
   {
@@ -1102,6 +1854,37 @@ add({
   sourceRefs: [
     sourceAnchor("dashboard/src/lib/hermes/artifact-types.ts", /export type ArtifactRendererId/),
     sourceAnchor("dashboard/src/lib/hermes/artifact-renderers.ts", /export function availableArtifactRenderers/),
+  ],
+});
+
+add({
+  capabilityId: "service:quartz",
+  sourceIdentity: "quartz-static-site-service",
+  displayName: "Quartz prebuilt Garden server",
+  category: "registry",
+  visibleEntryPoint: "Published Garden page and its hidden view heartbeat",
+  selectionSemantics:
+    "Opening a published Garden acquires the on-demand prebuilt-output server; publishing itself remains a separate fresh disposable job.",
+  routeOrIpcContract:
+    "Authenticated Quartz view lease plus loopback static server over the atomically published data-root output.",
+  requiredServiceOrWorker: ["Runtime V2 quartz service", "quartz-publish-node worker"],
+  inputTypes: ["published Garden navigation", "bounded view heartbeat"],
+  outputTypes: ["prebuilt static Garden assets"],
+  artifactTypes: ["published-garden"],
+  progressEventContract:
+    "Serving has an observational service snapshot; compiler progress belongs only to the disposable publisher job.",
+  streamingContract: "Static HTTP asset responses; no compiler or watch stream is resident in the serving process.",
+  cancellationBehavior:
+    "Page hide/navigation releases the view hold; Runtime stops the server after the final lease and bounded idle TTL.",
+  approvalBehavior: "Only authenticated Garden publication/view contracts can hold the internal service.",
+  followUpContextBehavior: "Published URLs and Quartz AI surface identity remain stable across service restarts.",
+  restartBehavior: "The service restarts against the last atomically published output and never rebuilds on startup.",
+  recoveryBehavior: "A failed publish preserves the prior public tree; a stopped server is reacquired by the original view.",
+  runtimePath: "Published Garden view -> authenticated view lease -> Runtime V2 quartz static service",
+  sourceRefs: [
+    sourceAnchor("dashboard/scripts/runtime-v2-quartz-static-service.mjs", /startRuntimeV2QuartzStaticService/),
+    sourceAnchor("dashboard/src/lib/quartz-view-lease.ts", /export async function renewQuartzViewLease/),
+    sourceAnchor("desktop/runtime-v2/manifests/services.json", /"id": "quartz"/),
   ],
 });
 
@@ -1257,6 +2040,29 @@ for (const catalog of [
 
 const workflowSpecs = [
   {
+    id: "learn",
+    name: "Garden Learn planning and generation",
+    entry: "Garden Learn setup, syllabus, progress and lesson controls",
+    route: "Authenticated /api/gardens/[gardenId]/learn plan/generate/confirm/rebuild/status/events/cancel routes",
+    services: ["Runtime V2 learn-node disposable worker", "selected model provider"],
+    input: ["Garden sources", "optional syllabus", "model and Learn settings"],
+    output: ["learning map", "generated lessons", "progress and validation report"],
+    artifacts: ["Garden Learn lessons", "learning-map checkpoint"],
+    progress: "Existing Learn status DTO and replayable SSE events bridge the Runtime V2 job and its causally bound durable Learn job.",
+    cancel: "Authenticated Garden cancellation persists Runtime V2 intent, cancels the exact causally bound Learn job, and removes the disposable worker tree.",
+    approval: "Authenticated Garden ownership plus the existing explicit plan/generate/confirm action.",
+    restart: "Runtime job receipt, event replay and explicit Runtime-to-Learn binding reconnect the same job after renderer/dashboard restart.",
+    recovery: "The fixed internal recovery sweep reconciles abandoned durable Learn checkpoints without inferring ownership from timestamps or repeating uncertain provider work.",
+    runtimePath: "Authenticated Learn routes -> causally bound Runtime V2 learn-node job -> fresh sealed Learn worker -> durable checkpoints/events/result; installed Electron and memory evidence NOT RUN",
+    sources: [
+      ["dashboard/src/app/api/gardens/[gardenId]/learn/plan/route.ts", /executeLearnOperationForRoute/],
+      ["dashboard/src/app/api/gardens/[gardenId]/learn/status/route.ts", /export async function GET/],
+      ["dashboard/src/app/api/gardens/[gardenId]/learn/events/route.ts", /getRuntimeV2LearnEventCompatibility/],
+      ["dashboard/src/app/api/gardens/[gardenId]/learn/cancel/route.ts", /cancelRuntimeV2LearnOperation/],
+      ["dashboard/src/lib/learn-operation-runtime-v2.ts", /export async function executeLearnOperationForRoute/],
+    ],
+  },
+  {
     id: "ingestion",
     name: "Garden source ingestion",
     entry: "Garden Add source/upload controls",
@@ -1265,11 +2071,12 @@ const workflowSpecs = [
     input: ["PDF", "CSV", "DOCX", "PPTX", "XLSX", "ZIP", "text", "supported Anydoc formats"],
     output: ["Garden source Markdown", "figures", "source PDF", "semantic index"],
     artifacts: ["garden-source"],
-    progress: "SSE progress, usage, result, error and DONE frames.",
-    cancel: "Client disconnect stops streaming; staged upload cleanup is bounded; long parser ownership must migrate to a finite Runtime V2 job.",
+    progress: "SSE progress, usage, result, error and DONE frames bridge the causally bound Runtime job.",
+    cancel: "Client disconnect cancels the exact Runtime job; private staging cleanup, lease release, and owned-tree reaping are bounded.",
     approval: "Authenticated Garden ownership and explicit upload action.",
-    restart: "Original/staged source and indexed Garden data persist; incomplete in-process extraction is not yet a Runtime V2 recovery claim.",
-    recovery: "Duplicate filename/content and partial extraction paths are explicit; no successful post-migration evidence exists.",
+    restart: "Original staging, Runtime events, and committed Garden/index data persist; incomplete work is reconciled through the exact fenced job.",
+    recovery: "Duplicate filename/content and partial extraction paths are explicit; fenced staged promotion prevents a partial Garden commit.",
+    runtimePath: "POST /api/ingest -> authenticated Runtime V2 document-ingestion-node job -> private bounded staging -> fenced Garden/index promotion; installed Electron and memory evidence NOT RUN",
     sources: [
       ["dashboard/src/app/api/ingest/route.ts", /export async function POST/],
       ["dashboard/src/lib/ingest-upload.ts", /DEFAULT_MAX_UPLOAD_BYTES/],
@@ -1290,6 +2097,7 @@ const workflowSpecs = [
     approval: "Explicit build action; reads are user/session scoped.",
     restart: "Hash-keyed building/ready/failed state and contained files persist.",
     recovery: "Failed builds can retry; completed hashes are reused without claiming a missing result.",
+    runtimePath: "Document-skill routes -> authenticated Runtime V2 office-artifact-node job -> fresh sealed document bridge/validator tree -> versioned skill result; installed OfficeCLI tree and memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/document-skills/store.ts", /export function claimDocumentSkillBuild/],
       ["dashboard/src/app/api/document-skills/build/route.ts", /export async function POST/],
@@ -1310,6 +2118,7 @@ const workflowSpecs = [
     approval: "User-owned attachment/workspace and capability token; edits cannot escape the authorized file tuple.",
     restart: "Artifact versions and source history persist.",
     recovery: "Expected-version checks prevent lost updates; rollback restores a prior valid version.",
+    runtimePath: "Document tool/edit routes -> authenticated Runtime V2 office-artifact-node job -> no-auto-resident OfficeCLI tree -> atomic artifact version; installed OfficeCLI tree and memory evidence NOT RUN",
     sources: [
       ["dashboard/src/app/api/hermes/tools/document/route.ts", /const TOOLS/],
       ["dashboard/src/lib/hermes/artifact-store.ts", /rollback/],
@@ -1330,6 +2139,7 @@ const workflowSpecs = [
     approval: "Authenticated artifact ownership and explicit operation.",
     restart: "Completed image artifact/version persists; in-flight provider calls require honest interruption classification.",
     recovery: "Partial provider output may be captured explicitly; no deterministic substitute may count as parity.",
+    runtimePath: "Image operations -> provider HTTP branch or leased Runtime V2 ComfyUI service; browser regeneration -> generated-visual-browser-node disposable job; installed Electron/provider/browser memory evidence NOT RUN",
     sources: [
       ["dashboard/src/app/api/hermes/artifacts/images/route.ts", /export async function POST/],
       ["dashboard/src/lib/hermes/artifact-image-service.ts", /export async function generateArtifactImage/],
@@ -1349,6 +2159,7 @@ const workflowSpecs = [
     approval: "Read-only public index query authorized by the turn capability.",
     restart: "No durable private state; result evidence remains in the transcript.",
     recovery: "Unavailable/unconfigured/launch/upstream failures retain distinct truthful errors.",
+    runtimePath: "Image-search tool route -> authenticated Runtime V2 image-search-node job -> fixed vendored search runtime -> bounded links/result; installed Electron and memory evidence NOT RUN",
     sources: [
       ["dashboard/src/app/api/hermes/tools/image-search/route.ts", /export async function POST/],
       ["dashboard/src/lib/hermes/image-search-service.ts", /MAX_COUNT/],
@@ -1368,6 +2179,7 @@ const workflowSpecs = [
     approval: "Tool can name only an image already attached to the owned conversation.",
     restart: "Completed model artifact persists; active reconstruction needs Runtime V2 interruption evidence.",
     recovery: "Missing image/runtime fails explicitly and automatic selection falls back only to an ordinary answer, never a fake model.",
+    runtimePath: "Image-to-3D route -> authenticated Runtime V2 sf3d-node job -> one sealed owned image -> bounded GLB artifact; installed GPU/Electron and memory evidence NOT RUN",
     sources: [
       ["dashboard/src/app/api/hermes/tools/image-to-3d/route.ts", /export async function POST/],
       ["dashboard/src/lib/sf3d/artifact.ts", /IMAGE_TO_3D_TOOL/],
@@ -1385,8 +2197,9 @@ const workflowSpecs = [
     progress: "audio analysis/comparison started/completed/failed events.",
     cancel: "Conversation abort stops the local analysis process.",
     approval: "Only owned attachment names resolve; model-written paths are rejected.",
-    restart: "Result remains in the transcript; active analysis needs finite-job recovery after migration.",
+    restart: "Result remains in the transcript; the fenced Runtime job result reconnects after Dashboard restart.",
     recovery: "Unavailable/timeout/file errors remain typed and never become a fabricated analysis.",
+    runtimePath: "Audio tool route -> authenticated Runtime V2 audio-analyzer-node job -> fixed finite MCP/analyzer tree -> bounded result; installed Electron and memory evidence NOT RUN",
     sources: [
       ["dashboard/src/app/api/hermes/tools/audio/route.ts", /export async function POST/],
       ["dashboard/src/lib/audio-analyzer/service.ts", /MAX_TIME_SECONDS/],
@@ -1404,11 +2217,33 @@ const workflowSpecs = [
     progress: "Watch tool lifecycle/progress events on the conversation stream.",
     cancel: "Conversation abort stops Watch and its process tree.",
     approval: "Terminal-only capability; URL and workspace containment are server-owned.",
-    restart: "Completed artifacts persist; active work requires Runtime V2 interrupted/uncertain classification.",
+    restart: "Completed artifacts persist; the exact Runtime job is replayed or classified interrupted/uncertain after restart.",
     recovery: "Unavailable runtime/ffmpeg preserves the ordinary-turn fallback without claiming video analysis.",
+    runtimePath: "Watch tool route -> authenticated Runtime V2 watch-node job -> fixed sealed Watch/ffmpeg tree -> bounded artifacts/result; installed Electron and memory evidence NOT RUN",
     sources: [
       ["dashboard/src/app/api/hermes/tools/watch/route.ts", /export async function POST/],
       ["dashboard/src/lib/hermes/watch-intent.ts", /export function watchCommandText/],
+    ],
+  },
+  {
+    id: "loopx",
+    name: "LoopX post-turn continuation planning",
+    entry: "Automatic post-turn hook for an opted-in conversation with a LoopX goal",
+    route: "Persisted Hermes turn hook -> conversation-scoped Runtime V2 loopx-tick job",
+    services: ["Runtime V2 loopx-node disposable worker"],
+    input: ["persisted conversation turn", "conversation-scoped LoopX goal and snapshot"],
+    output: ["durable LoopX goal state", "bounded continuation snapshot"],
+    artifacts: ["LoopX conversation snapshot"],
+    progress: "Durable Runtime job events and loopx.tick_failed audit events; no detached Next timer owns the work.",
+    cancel: "Authenticated exact-job cancellation propagates through every attached LoopX Python child before Rust reaps the job tree.",
+    approval: "ENABLE_LOOPX opt-in and authenticated conversation ownership are required; no renderer-selected executable or path is accepted.",
+    restart: "The deterministic conversation-and-turn idempotency key reconnects or replays the same durable Runtime job after Dashboard restart.",
+    recovery: "Durable goal and snapshot files remain conversation-scoped; an uncertain active tick is reconciled by Runtime without a Next-owned fallback.",
+    runtimePath: "Persisted Hermes turn -> scheduleLoopxTickForConversation -> deterministic loopx-tick Runtime job -> fresh loopx-node worker -> bounded durable snapshot",
+    sources: [
+      ["dashboard/src/lib/loopx/conversation-tick.ts", /export function scheduleLoopxTickForConversation/],
+      ["dashboard/src/lib/loopx/tick.ts", /export async function runLoopxTick/],
+      ["dashboard/src/lib/runtime-v2/loopx-tick-job.ts", /export async function runLoopxTickViaRuntime/],
     ],
   },
   {
@@ -1420,11 +2255,12 @@ const workflowSpecs = [
     input: ["CAD brief", "parameters", "board/enclosure data"],
     output: ["validated immutable CAD revision", "exports", "report"],
     artifacts: ["model", "parametric-cad"],
-    progress: "Replayable in-memory CAD run events plus durable revision/artifact events.",
-    cancel: "POST CAD abort stops the active run.",
+    progress: "Replayable Runtime job/CAD run events plus durable revision/artifact events.",
+    cancel: "POST CAD abort cancels the exact Runtime V2 worker and releases only the dependencies selected by the canonical request.",
     approval: "User/garden ownership and validated parameter/file tuple; backend selection is registry-bound.",
-    restart: "Projects/revisions/artifacts persist, but active run/events are currently ephemeral.",
-    recovery: "Last validated revision survives; process restart loses the live run and must become interrupted under Runtime V2.",
+    restart: "Projects, revisions, artifacts, Runtime descriptors, and fenced events reconnect after Dashboard restart.",
+    recovery: "The last validated revision survives; an interrupted or uncertain worker is classified without blindly applying a parameter update twice.",
+    runtimePath: "CAD routes -> authenticated Runtime V2 outer-parametric-cad-node job -> request-derived ChatMock/CAD leases -> fresh sealed CAD worker -> immutable revision; installed CAD/Electron and memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/cad/types.ts", /export type CadExportFormat/],
       ["dashboard/src/lib/cad/run-manager.ts", /Runs are ephemeral/],
@@ -1440,11 +2276,12 @@ const workflowSpecs = [
     input: ["browser task", "shared signed-in profile", "approval decisions"],
     output: ["browser run card", "screenshots", "action/result transcript"],
     artifacts: ["image"],
-    progress: "SSE/JSON event replay with cursor and awaiting_approval state.",
-    cancel: "Explicit run abort terminates the live browser execution.",
+    progress: "SSE/JSON event replay with cursor and awaiting_approval state bridges the causally bound Runtime worker.",
+    cancel: "Explicit run abort cancels the exact Runtime worker and terminates its owned browser/action tree.",
     approval: "Sensitive browser actions pause in awaiting_approval for approve/reject.",
-    restart: "Only browser agent configuration persists; runs/events/screenshots/approvals are currently in memory.",
-    recovery: "Refresh within the same process replays events; process restart loses live state and requires Runtime V2 interruption handling.",
+    restart: "Runtime descriptors/events and browser profile artifacts persist; interrupted work is fenced rather than resumed blindly.",
+    recovery: "Ordinary run trees and the separate profile sign-in window are Runtime-owned and fenced; neither is resumed blindly after interruption.",
+    runtimePath: "Agent Browser run routes -> authenticated Runtime V2 outer-agent-browser-node job -> fresh contained Chromium/action tree; explicit profile actions -> separate agent-browser-profile-node job -> attached sign-in Chromium tree; installed memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/agent-browser/schema.ts", /runs\/events\/screenshots/],
       ["dashboard/src/lib/agent-browser/run-manager.ts", /Runs are ephemeral/],
@@ -1465,6 +2302,7 @@ const workflowSpecs = [
     approval: "Super Agent capability decision is required; external actions retain their own gates.",
     restart: "Research state is deliberately globalThis/in-memory today and is lost on process restart.",
     recovery: "Current loss-on-restart policy is recorded as a known parity gap; no stale ledger is synthesized.",
+    runtimePath: "Authenticated research tools -> bounded in-process coverage ledger and selected model/web providers; intentionally no child process launch, while durable restart parity remains pending",
     sources: [
       ["dashboard/src/lib/research/types.ts", /export interface ResearchSessionState/],
       ["dashboard/src/lib/research/store.ts", /Deliberately not in SQLite/],
@@ -1485,6 +2323,7 @@ const workflowSpecs = [
     approval: "Read-only and garden ownership/capability-token scoped.",
     restart: "FTS/vector indexes and source records persist/rebuild incrementally.",
     recovery: "Embedding failure falls back to lexical retrieval explicitly; source/citation identity is preserved.",
+    runtimePath: "Garden retrieval helpers -> bounded Dashboard query -> leased mandatory GBrain and optional Runtime V2 Mem0/ChatMock dependencies -> ranked grounded result; installed model-memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/semantic-retrieval.ts", /export async function retrieveGraphRag/],
       ["dashboard/src/lib/hermes/garden-tools.ts", /garden_search/],
@@ -1504,23 +2343,29 @@ const workflowSpecs = [
     approval: "User-owned document only.",
     restart: "Usable visual index persists; stopped ColPali must not hide document capability.",
     recovery: "No usable index leaves the original document path intact; no fabricated visual result.",
+    runtimePath: "Document retrieval -> leased Runtime V2 ColPali service plus registered office-artifact page rendering when needed -> bounded page evidence; installed model/Office memory evidence NOT RUN",
     sources: [["dashboard/src/lib/colpali/retrieval.ts", /export async function/]],
   },
   {
     id: "quartz-publishing",
     name: "Quartz Garden publishing",
     entry: "Garden/document/artifact mutations that publish the static Garden",
-    route: "publishQuartzAfterMutation queue and Quartz build lease",
-    services: ["Quartz compiler"],
+    route: "publishQuartzAfterMutation to authenticated user-global Runtime V2 job",
+    services: ["Runtime V2 quartz-publish-node worker", "Quartz compiler"],
     input: ["Garden mutation reason", "Quartz content tree"],
     output: ["published static Garden"],
     artifacts: ["published-garden"],
-    progress: "Server log/awaited promise only; no durable user-facing job stream yet.",
-    cancel: "Current spawned build has timeout/SIGTERM but no user cancellation route.",
-    approval: "The originating authenticated mutation is the publish authority.",
-    restart: "Queue is in memory; an active compiler build has no durable Runtime V2 job recovery yet.",
-    recovery: "Serialized/coalesced queue retries only within process; failures are logged/returned according to requireSuccess.",
-    sources: [["dashboard/src/lib/quartz-publish.ts", /export async function publishQuartzAfterMutation/]],
+    progress: "The compatibility caller preserves awaited/background behavior while the durable Runtime job records bounded progress.",
+    cancel: "Runtime V2 stop/shutdown aborts the compiler and reaps its complete owned tree without publishing a partial stage.",
+    approval: "The originating authenticated mutation submits exact user-global authority; garden identifiers are non-authoritative payload only.",
+    restart: "Every attempt is a fresh disposable worker; active state and terminal output are durable Runtime V2 records.",
+    recovery: "A fenced stage/public/previous transaction either promotes a complete build or restores the prior public tree; ingestion retries publication only after its garden/result commit is sealed.",
+    runtimePath: "Garden mutation -> authenticated user-global Runtime V2 quartz-publish-node job -> fresh contained Quartz/esbuild tree -> fenced stage/public/previous promotion; installed compiler memory evidence NOT RUN",
+    sources: [
+      ["dashboard/src/lib/quartz-publish.ts", /export async function publishQuartzAfterMutation/],
+      ["dashboard/scripts/runtime-v2-quartz-publish-worker.mjs", /runRuntimeV2QuartzPublishWorker/],
+      ["dashboard/scripts/runtime-v2-quartz-publish-executor.mjs", /createSealedRuntimeV2QuartzPublishExecutor/],
+    ],
   },
   {
     id: "scriberr-transcription",
@@ -1536,6 +2381,7 @@ const workflowSpecs = [
     approval: "Authenticated Garden owner explicitly queues transcription.",
     restart: "Stale jobs recover from Scriberr/checkpoint state after server restart.",
     recovery: "Retry resumes from the last valid checkpoint or requeues from source; terminal states remain terminal.",
+    runtimePath: "Garden transcription routes -> authenticated Runtime V2 scriberr-node job -> leased Scriberr plus fixed yt-dlp/ffmpeg leaves -> fenced transcript and ingestion; installed media-tree memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/scriberr/types.ts", /export type VideoTranscriptionJobStatus/],
       ["dashboard/src/lib/scriberr/job-runner.ts", /recoverStaleJobs/],
@@ -1547,17 +2393,22 @@ const workflowSpecs = [
     name: "Recording speech transcription",
     entry: "Voice/recording upload in chat",
     route: "POST /api/speech/transcribe and streamed /api/speech/transcribe-upload",
-    services: ["Voicebox", "ffmpeg"],
+    services: ["Voicebox", "Runtime V2 speech-media-node with fixed ffmpeg"],
     input: ["recorded audio"],
     output: ["transcript text"],
     artifacts: [],
     progress: "Segment/model-download/transcription progress; Voicebox may return 202 while loading a model.",
     cancel: "Upload/transcription request cancellation is propagated.",
     approval: "Explicit recording/upload action.",
-    restart: "No durable generic speech job is claimed yet.",
-    recovery: "Partial segment work is not presented as a completed transcript.",
+    restart: "Every recording segmentation is a fresh durable Runtime job with a fenced checkpoint/result; Voicebox is reacquired separately on demand.",
+    recovery: "Partial segment work is not presented as a completed transcript; an interrupted caller retries a fresh exact scoped media job.",
+    runtimePath: "Speech upload -> authenticated Runtime V2 speech-media-node job for fixed segmentation/ffmpeg leaves plus separately leased Voicebox transcription -> fenced transcript; installed media/model memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/speech/recording-transcription.ts", /export async function/],
+      ["dashboard/src/lib/runtime-v2/speech-media-job.ts", /export async function segmentRecordingViaRuntime/],
+      ["dashboard/scripts/runtime-v2-speech-media-worker.mjs", /loadRuntimeV2SpeechMediaLaunch/],
+      ["dashboard/scripts/runtime-v2-speech-media-executor.mjs", /export async function executeSpeechMedia/],
+      ["desktop/runtime-v2/manifests/workers.json", /"kind": "speech-media-node"/],
       ["dashboard/src/app/api/speech/transcribe/route.ts", /export async function POST/],
       ["dashboard/src/app/api/speech/transcribe-upload/route.ts", /export async function POST/],
     ],
@@ -1574,8 +2425,9 @@ const workflowSpecs = [
     progress: "Upload/transcription/formatting run events.",
     cancel: "Run cancellation and scratch Scriberr job cleanup.",
     approval: "Explicit agent launch/upload action.",
-    restart: "External run descriptor persists; underlying engine recovery depends on Scriberr versus Voicebox path.",
+    restart: "Runtime descriptor/events and the output artifact persist; request-derived Scriberr or Voicebox leases are reacquired only for the exact attempt.",
     recovery: "Engine fallback is declared and must remain visible in evidence; fallback output cannot be counted as the preferred-engine pass.",
+    runtimePath: "Meeting Notes routes -> authenticated Runtime V2 outer-meeting-notes-node job -> request-derived Scriberr/Voicebox/ChatMock leases plus contained ffmpeg -> durable notes artifact; installed Electron/model memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/meeting-notes/transcribe.ts", /Scriberr/],
       ["dashboard/src/app/api/meeting-notes/uploads/route.ts", /export async function POST/],
@@ -1595,6 +2447,7 @@ const workflowSpecs = [
     approval: "save_memory only on authenticated conversational surfaces; secrets/opt-out/temporary chats are excluded.",
     restart: "Durable rows/profile/tree persist; derived indexes are rebuildable.",
     recovery: "State/policy is rechecked after hybrid retrieval; changed keys supersede rather than duplicate.",
+    runtimePath: "Conversation memory APIs -> durable Dashboard stores plus leased Runtime V2 Mem0 semantic engine and mandatory GBrain/ChatMock dependencies as selected -> bounded context; installed model memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/conversations/memory.ts", /export type DurableMemoryState/],
       ["dashboard/src/lib/conversations/memory-profile.ts", /export type MemoryProfileStatus/],
@@ -1615,6 +2468,7 @@ const workflowSpecs = [
     approval: "Conversation/garden ownership and capability token; gadget actions add separate approval.",
     restart: "Artifact/version/event/provenance tables survive restart.",
     recovery: "Atomic validated publish and rollback preserve prior valid state.",
+    runtimePath: "Artifact CRUD/version routes -> durable artifact store -> exact registered Runtime V2 renderer leaf (Office, visual browser, Manim, watermark, or interactive visualizer) only when required; installed renderer memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/hermes/artifact-store.ts", /export function|export async function/],
       ["dashboard/src/lib/hermes/artifact-schema.ts", /CREATE TABLE IF NOT EXISTS hermes_artifacts/],
@@ -1633,8 +2487,9 @@ const workflowSpecs = [
     progress: "Proposal validation and publish/transfer lifecycle.",
     cancel: "Owning turn abort; destructive folder deletion requires explicit user intent.",
     approval: "Ownership is mandatory; Quartz only proposes, Garden may perform documented direct/reversible structure writes.",
-    restart: "Garden/database/files persist; publish queue is currently in memory.",
+    restart: "Garden/database/files persist; Quartz publication is a durable user-global Runtime job with replayable terminal state.",
     recovery: "Version/source history and transfer validation protect stored content.",
+    runtimePath: "Authenticated Garden mutation -> durable Dashboard commit -> registered Runtime V2 quartz-publish-node job when publication is required; installed Electron/compiler memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/hermes/garden-tools.ts", /export async function|export function/],
       ["dashboard/src/app/api/gardens/[gardenId]/settings/route.ts", /export async function PATCH/],
@@ -1655,6 +2510,7 @@ const workflowSpecs = [
     approval: "Every binding mutation is queued and requires approval unless a narrowly stored auto-approval applies.",
     restart: "Gadgets/actions/observations/storage persist in SQLite.",
     recovery: "Retry/revert operates on durable action state with reauthorization on every host call.",
+    runtimePath: "Gadget tool/host APIs -> durable approval/action store -> exact registered renderer or provider path when needed; no generic artifact process owner; installed renderer memory evidence NOT RUN",
     sources: [
       ["dashboard/src/lib/hermes/gadget-types.ts", /export type GadgetActionStatus/],
       ["dashboard/src/lib/hermes/gadget-schema.ts", /CREATE TABLE/],
@@ -1664,6 +2520,9 @@ const workflowSpecs = [
 ];
 
 for (const workflow of workflowSpecs) {
+  if (!workflow.runtimePath) {
+    throw new Error(`Workflow ${workflow.id} must declare an explicit current runtimePath.`);
+  }
   add({
     capabilityId: `workflow:${workflow.id}`,
     displayName: workflow.name,
@@ -1684,7 +2543,7 @@ for (const workflow of workflowSpecs) {
     followUpContextBehavior: "Conversation, Garden, source, job and artifact identifiers remain bound across follow-ups.",
     restartBehavior: workflow.restart,
     recoveryBehavior: workflow.recovery,
-    runtimePath: `${workflow.route} -> current legacy service/worker path; Runtime V2 post path NOT RUN`,
+    runtimePath: workflow.runtimePath,
     sourceRefs: workflow.sources.map(([relativePath, matcher]) => sourceAnchor(relativePath, matcher)),
   });
 }
@@ -1746,6 +2605,16 @@ const approvalSpecs = [
     sources: [["dashboard/src/lib/agent-browser/run-manager.ts", /awaiting_approval/]],
   },
   {
+    id: "agent-tars-action",
+    name: "Agent TARS sensitive-action approval",
+    behavior: "A user-owned UI-TARS run pauses for the exact action id and only the matching authenticated approve/reject route may resume it.",
+    route: "POST /api/ui-tars/agents/[agentId]/runs/[runId]/{approve,reject}",
+    sources: [
+      ["dashboard/src/lib/ui-tars/service.ts", /decision: "approve" \| "reject"/],
+      ["ui-tars-adapter/src/server.ts", /POST \/runs\/:id\/\{approve,reject,abort\}/],
+    ],
+  },
+  {
     id: "recall-control",
     name: "Recall capture control approval",
     behavior: "Recall reads honor agentAccess immediately; start/stop capture asks unless the user stored always-allow.",
@@ -1778,6 +2647,28 @@ for (const approval of approvalSpecs) {
 }
 
 const recoverySpecs = [
+  {
+    id: "durable-runtime-jobs",
+    name: "Runtime V2 durable job lifecycle",
+    behavior: "The native JobStore persists identity, authority, attempts, fencing, events, cancellation intent, terminal classification, and verified completion before an owned tree is released.",
+    status: "DURABLE_SOURCE_CONTRACT",
+    sources: [
+      ["native/runtime-core/src/store.rs", /pub struct JobStore/],
+      ["native/runtime-core/src/process_owner.rs", /WorkerCompletionProof/],
+    ],
+  },
+  {
+    id: "learn-checkpoints",
+    name: "Learn checkpoint and abandoned-job recovery",
+    behavior: "Runtime V2 persists the owning job and explicit durable Learn binding; a fixed internal disposable recovery job reconciles abandoned checkpoints without timestamp correlation or blind provider retry.",
+    status: "DURABLE_SOURCE_CONTRACT",
+    sources: [
+      ["dashboard/src/lib/learn-operation-runtime-v2.ts", /readRuntimeV2LearnBinding/],
+      ["dashboard/src/lib/runtime-v2/learn-binding.ts", /export function writeRuntimeV2LearnBinding/],
+      ["dashboard/src/lib/learn-recovery-background.ts", /launchAbandonedLearnRecoveryWorker/],
+      ["dashboard/scripts/runtime-v2-learn-worker.mjs", /request.operation === "recovery"/],
+    ],
+  },
   {
     id: "hermes-run",
     name: "Hermes durable run and event-pump recovery",
@@ -1818,22 +2709,23 @@ const recoverySpecs = [
   },
   {
     id: "browser-ephemeral",
-    name: "Agent Browser ephemeral-run boundary",
-    behavior: "Same-process replay exists, but restart loses active run/events/screenshots/approval. Runtime V2 must persist interrupted/uncertain state before parity can pass.",
-    status: "KNOWN_GAP",
+    name: "Agent Browser fenced run recovery",
+    behavior: "Runtime V2 persists the exact run fence and terminal event projection; profile artifacts survive while interrupted live browser work is classified rather than resumed blindly.",
+    status: "DURABLE_SOURCE_CONTRACT_LIVE_RESTART_PENDING",
     sources: [
       ["dashboard/src/lib/agent-browser/schema.ts", /runs\/events\/screenshots/],
-      ["dashboard/src/lib/agent-browser/run-manager.ts", /Runs are ephemeral/],
+      ["dashboard/src/lib/agent-browser/run-manager.ts", /runtime/],
+      ["dashboard/src/lib/runtime-v2/agent-browser-profile-job.ts", /cancelRuntimeJob/],
     ],
   },
   {
     id: "cad-hybrid",
-    name: "CAD durable-project/ephemeral-run boundary",
-    behavior: "Validated revisions/artifacts persist, while live CAD run events are in-memory and must become interrupted on runtime restart.",
-    status: "KNOWN_GAP",
+    name: "CAD durable project and fenced run recovery",
+    behavior: "Validated revisions and artifacts persist with the exact Runtime job mapping and fenced event projection; interrupted work is classified without blindly replaying parameter side effects.",
+    status: "DURABLE_SOURCE_CONTRACT_LIVE_RESTART_PENDING",
     sources: [
       ["dashboard/src/lib/cad/project-store.ts", /export function|export async function/],
-      ["dashboard/src/lib/cad/run-manager.ts", /Runs are ephemeral/],
+      ["dashboard/src/lib/cad/runtime-run-manager.ts", /export async function/],
     ],
   },
   {
@@ -1862,12 +2754,21 @@ for (const recovery of recoverySpecs) {
     restartBehavior: recovery.behavior,
     recoveryBehavior: recovery.behavior,
     preMigrationStatus: recovery.status,
-    runtimePath: "Current persistence/replay owner -> Runtime V2 post path NOT RUN",
+    runtimePath: "Capability-specific durable persistence/replay owner -> installed restart and reconciliation evidence NOT RUN",
     sourceRefs: recovery.sources.map(([relativePath, matcher]) => sourceAnchor(relativePath, matcher)),
   });
 }
 
 const registrySpecs = [
+  {
+    id: "runtime-v2-execution-inventory",
+    name: "Runtime V2 execution inventory",
+    contract: "Every managed, finite, scheduled, core, or external process boundary has one stable lifecycle disposition; migrated capability references fail closed when they do not join this parity registry.",
+    sources: [
+      ["qa/runtime-v2/validate-execution-inventory.mjs", /const inventory = readJson/],
+      ["qa/runtime-v2/process-source-validation.mjs", /export function validateProcessSources/],
+    ],
+  },
   {
     id: "slash-commands",
     name: "Slash command registry",
@@ -2071,18 +2972,11 @@ const featureParity = {
         message: "Garden tool composition currently contains HUMANIZER_TOOLS twice; inventory preserves unique tool identity and records the source drift.",
       },
       {
-        code: "ephemeral_run_managers",
+        code: "research_session_ephemeral",
         evidence: [
-          sourceAnchor("dashboard/src/lib/agent-browser/run-manager.ts", /Runs are ephemeral/),
-          sourceAnchor("dashboard/src/lib/cad/run-manager.ts", /Runs are ephemeral/),
           sourceAnchor("dashboard/src/lib/research/store.ts", /Deliberately not in SQLite/),
         ],
-        message: "Browser and CAD live runs and research coverage state do not yet meet Runtime V2 restart recovery.",
-      },
-      {
-        code: "quartz_publish_compiler",
-        evidence: [sourceAnchor("dashboard/src/lib/quartz-publish.ts", /"build"/)],
-        message: "Quartz publication still spawns a compiler build from the mutation path; post-migration evidence is required after disposable-job cutover.",
+        message: "Research coverage state is intentionally process-local and does not yet meet durable restart recovery; Browser and CAD now have separately fenced Runtime job projections.",
       },
     ],
   },
@@ -2151,10 +3045,18 @@ ${capabilityTable}
 if (process.argv.includes("--write-artifacts")) {
   const featurePath = path.join(import.meta.dirname, "feature-parity.json");
   const matrixPath = path.join(import.meta.dirname, "FEATURE_PARITY_MATRIX.md");
-  fs.writeFileSync(featurePath, `${JSON.stringify(featureParity, null, 2)}\n`, "utf8");
-  fs.writeFileSync(matrixPath, featureParityMarkdown(featureParity), "utf8");
+  const previous = fs.existsSync(featurePath)
+    ? JSON.parse(fs.readFileSync(featurePath, "utf8"))
+    : null;
+  const reconciledFeatureParity = preserveHistoricalParityEvidence(featureParity, previous);
+  fs.writeFileSync(
+    featurePath,
+    `${JSON.stringify(reconciledFeatureParity, null, 2)}\n`,
+    "utf8",
+  );
+  fs.writeFileSync(matrixPath, featureParityMarkdown(reconciledFeatureParity), "utf8");
   process.stdout.write(
-    `[runtime-v2-registry] wrote ${relativeToRepo(featurePath)} and ${relativeToRepo(matrixPath)} (${featureParity.capabilityCount} rows)\n`,
+    `[runtime-v2-registry] wrote ${relativeToRepo(featurePath)} and ${relativeToRepo(matrixPath)} (${reconciledFeatureParity.capabilityCount} rows; historical evidence preserved)\n`,
   );
 } else {
   process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`);

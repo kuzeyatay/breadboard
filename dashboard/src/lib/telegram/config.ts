@@ -8,7 +8,7 @@
 // transport.
 
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 const DEFAULT_API_BASE = "https://api.telegram.org";
 

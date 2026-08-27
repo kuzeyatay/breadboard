@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { invalidateHealth } from "@/lib/video-use/runtime.ts";
 import { invalidateSpeechEngine, scriberrSpeechStatus } from "@/lib/video-use/speech.ts";
-import { buildEnvironment, removeEnvironment } from "@/lib/subsai/setup.ts";
+import { invalidateSubsAiHealth } from "@/lib/runtime-v2/subsai-probe-job.ts";
+import {
+  ManagedSetupExecutionError,
+  runManagedSetupJob,
+} from "@/lib/runtime-v2/managed-setup-job.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,8 +21,12 @@ export const runtime = "nodejs";
  */
 export async function POST(request: Request) {
   try {
-    await requireUserId();
-    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const userId = await requireUserId();
+    const text = await request.text();
+    if (text.length > 8 * 1024) {
+      return NextResponse.json({ ok: false, error: "payload_too_large" }, { status: 413 });
+    }
+    const body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     const action = typeof body.action === "string" ? body.action : "";
 
     // Someone who just started Scriberr should not have to wait out the
@@ -40,16 +49,41 @@ export async function POST(request: Request) {
     // Building the local subtitle engine is gigabytes and minutes, so it only
     // ever happens here — behind a button somebody pressed, never behind a run.
     if (action === "build_subtitles") {
-      const result = await buildEnvironment();
+      const result = await runManagedSetupJob({
+        userId,
+        serviceId: "subsai",
+        action: "build-subtitles",
+        signal: request.signal,
+      });
+      invalidateSubsAiHealth();
+      invalidateHealth();
+      invalidateSpeechEngine();
       return NextResponse.json({ ok: true, result });
     }
 
     if (action === "remove_subtitles") {
-      return NextResponse.json({ ok: true, result: removeEnvironment() });
+      const result = await runManagedSetupJob({
+        userId,
+        serviceId: "subsai",
+        action: "remove-subtitles",
+        signal: request.signal,
+      });
+      invalidateSubsAiHealth();
+      invalidateHealth();
+      invalidateSpeechEngine();
+      return NextResponse.json({ ok: true, result });
     }
 
     return NextResponse.json({ ok: false, error: "unknown_action" }, { status: 400 });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
+    if (error instanceof SyntaxError) {
+      return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
+    }
+    if (error instanceof ManagedSetupExecutionError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+    }
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }

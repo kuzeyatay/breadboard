@@ -11,13 +11,20 @@
 // once, next to the blob, makes the ask-time path a file read — which is also
 // what makes it safe to run for every attachment on every question.
 
+import { createHash, randomUUID } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { colpaliMode, colpaliModel } from "./config.ts";
-import { MAX_INDEXED_PAGES, writeIndexStatus } from "./index-status.ts";
+import {
+  indexIsUsable,
+  MAX_INDEXED_PAGES,
+  readIndexStatus,
+  writeIndexStatus,
+} from "./index-status.ts";
 import { renderDocumentPages } from "./page-images.ts";
 import { colpaliIndex } from "./service.ts";
 import type { DocumentAttachmentFormat } from "../document-attachments.ts";
+import { documentBlobPath } from "../conversations/document-blob-store.ts";
 
 /**
  * Documents being indexed right now, so a re-upload of the same blob or a
@@ -25,6 +32,13 @@ import type { DocumentAttachmentFormat } from "../document-attachments.ts";
  * of the same document.
  */
 const inFlight = new Set<string>();
+const PAGE_CACHE_PROTOCOL_VERSION = 1;
+const MAX_CACHED_PAGE_BYTES = 32 * 1024 * 1024;
+
+interface PageCacheManifest {
+  protocolVersion: typeof PAGE_CACHE_PROTOCOL_VERSION;
+  pages: Array<{ pageNumber: number; sizeBytes: number; sha256: string }>;
+}
 
 export function pageCacheDirectory(blobPath: string): string {
   const directory = path.dirname(blobPath);
@@ -36,16 +50,70 @@ export function pageImagePath(blobPath: string, pageNumber: number): string {
   return path.join(pageCacheDirectory(blobPath), `page-${pageNumber}.png`);
 }
 
-export async function readCachedPage(
+function pageCacheManifestPath(blobPath: string): string {
+  return path.join(pageCacheDirectory(blobPath), "manifest.json");
+}
+
+function validManifest(value: unknown): value is PageCacheManifest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const manifest = value as Partial<PageCacheManifest>;
+  if (
+    manifest.protocolVersion !== PAGE_CACHE_PROTOCOL_VERSION ||
+    !Array.isArray(manifest.pages) ||
+    manifest.pages.length < 1 ||
+    manifest.pages.length > MAX_INDEXED_PAGES
+  ) return false;
+  const seen = new Set<number>();
+  return manifest.pages.every((page) => {
+    if (
+      !page ||
+      !Number.isSafeInteger(page.pageNumber) ||
+      page.pageNumber < 1 ||
+      page.pageNumber > MAX_INDEXED_PAGES ||
+      !Number.isSafeInteger(page.sizeBytes) ||
+      page.sizeBytes < 1 ||
+      page.sizeBytes > MAX_CACHED_PAGE_BYTES ||
+      typeof page.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(page.sha256) ||
+      seen.has(page.pageNumber)
+    ) return false;
+    seen.add(page.pageNumber);
+    return true;
+  });
+}
+
+async function readPageCacheManifest(blobPath: string): Promise<PageCacheManifest | null> {
+  try {
+    const parsed = JSON.parse(await fsp.readFile(pageCacheManifestPath(blobPath), "utf8"));
+    return validManifest(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readManifestPage(
   blobPath: string,
-  pageNumber: number,
+  page: PageCacheManifest["pages"][number],
 ): Promise<string | null> {
   try {
-    const bytes = await fsp.readFile(pageImagePath(blobPath, pageNumber));
+    const file = pageImagePath(blobPath, page.pageNumber);
+    const metadata = await fsp.lstat(file);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size !== page.sizeBytes) return null;
+    const bytes = await fsp.readFile(file);
+    if (createHash("sha256").update(bytes).digest("hex") !== page.sha256) return null;
     return bytes.toString("base64");
   } catch {
     return null;
   }
+}
+
+export async function readCachedPage(
+  blobPath: string,
+  pageNumber: number,
+): Promise<string | null> {
+  const manifest = await readPageCacheManifest(blobPath);
+  const page = manifest?.pages.find((entry) => entry.pageNumber === pageNumber);
+  return page ? readManifestPage(blobPath, page) : null;
 }
 
 /** Drops the cached pictures. The service's vectors are dropped separately. */
@@ -59,11 +127,66 @@ async function cachePages(
 ): Promise<void> {
   const directory = pageCacheDirectory(blobPath);
   await fsp.mkdir(directory, { recursive: true });
-  await Promise.all(
-    pages.map((page) =>
-      fsp.writeFile(pageImagePath(blobPath, page.pageNumber), Buffer.from(page.imageBase64, "base64")),
-    ),
-  );
+  const nonce = `${process.pid}-${randomUUID()}`;
+  const pending: Array<{ temporary: string; target: string }> = [];
+  const manifest: PageCacheManifest = { protocolVersion: PAGE_CACHE_PROTOCOL_VERSION, pages: [] };
+  try {
+    for (const page of pages) {
+      if (
+        !Number.isSafeInteger(page.pageNumber) ||
+        page.pageNumber < 1 ||
+        page.pageNumber > MAX_INDEXED_PAGES ||
+        manifest.pages.some((entry) => entry.pageNumber === page.pageNumber)
+      ) throw new Error("The ColPali page cache received an invalid page number.");
+      const bytes = Buffer.from(page.imageBase64, "base64");
+      if (bytes.byteLength < 1 || bytes.byteLength > MAX_CACHED_PAGE_BYTES) {
+        throw new Error("A ColPali page image is empty or exceeds its cache bound.");
+      }
+      const target = pageImagePath(blobPath, page.pageNumber);
+      const temporary = `${target}.${nonce}.tmp`;
+      const handle = await fsp.open(temporary, "wx", 0o600);
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      pending.push({ temporary, target });
+      manifest.pages.push({
+        pageNumber: page.pageNumber,
+        sizeBytes: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      });
+    }
+    manifest.pages.sort((left, right) => left.pageNumber - right.pageNumber);
+    for (const entry of pending) await fsp.rename(entry.temporary, entry.target);
+
+    const manifestPath = pageCacheManifestPath(blobPath);
+    const temporaryManifest = `${manifestPath}.${nonce}.tmp`;
+    const handle = await fsp.open(temporaryManifest, "wx", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(manifest)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fsp.rename(temporaryManifest, manifestPath);
+  } finally {
+    await Promise.all(pending.map(({ temporary }) => fsp.rm(temporary, { force: true })));
+    const temporaryManifest = `${pageCacheManifestPath(blobPath)}.${nonce}.tmp`;
+    await fsp.rm(temporaryManifest, { force: true });
+  }
+}
+
+async function cachedPages(blobPath: string): Promise<Array<{ pageNumber: number; imageBase64: string }>> {
+  const manifest = await readPageCacheManifest(blobPath);
+  if (!manifest) return [];
+  const values = await Promise.all(manifest.pages.map(async (page) => ({
+    pageNumber: page.pageNumber,
+    imageBase64: await readManifestPage(blobPath, page),
+  })));
+  if (values.some((page) => page.imageBase64 === null)) return [];
+  return values.map((page) => ({ pageNumber: page.pageNumber, imageBase64: page.imageBase64! }));
 }
 
 /**
@@ -73,6 +196,7 @@ async function cachePages(
  * this document whole", which is what Breadboard did before ColPali existed.
  */
 export async function indexDocument(input: {
+  userId: number;
   blobId: string;
   blobPath: string;
   format: DocumentAttachmentFormat;
@@ -80,9 +204,19 @@ export async function indexDocument(input: {
 }): Promise<void> {
   const env = input.env ?? process.env;
   const modelId = colpaliModel(env);
+  const expectedBlobPath = documentBlobPath({
+    userId: input.userId,
+    blobId: input.blobId,
+    format: input.format,
+  });
+  const sameBlobPath = process.platform === "win32"
+    ? path.resolve(input.blobPath).toLowerCase() === path.resolve(expectedBlobPath).toLowerCase()
+    : path.resolve(input.blobPath) === path.resolve(expectedBlobPath);
+  if (!sameBlobPath) return;
 
   if (colpaliMode(env) === "disabled") return;
   if (inFlight.has(input.blobId)) return;
+  if (indexIsUsable(readIndexStatus(input.blobPath), modelId)) return;
   inFlight.add(input.blobId);
 
   try {
@@ -94,7 +228,13 @@ export async function indexDocument(input: {
       detail: "",
     });
 
-    const rendered = await renderDocumentPages(input.blobPath, input.format);
+    const recoveredPages = await cachedPages(input.blobPath);
+    const rendered = recoveredPages.length > 0
+      ? { pages: recoveredPages, unsupported: "" }
+      : await renderDocumentPages(input.blobPath, input.format, {
+          userId: input.userId,
+          blobId: input.blobId,
+        });
     if (rendered.pages.length === 0) {
       writeIndexStatus(input.blobPath, {
         state: "unsupported",
@@ -153,6 +293,7 @@ export async function indexDocument(input: {
  * never take the server down over a document nobody has asked about yet.
  */
 export function enqueueDocumentIndex(input: {
+  userId: number;
   blobId: string;
   blobPath: string;
   format: DocumentAttachmentFormat;

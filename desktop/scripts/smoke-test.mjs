@@ -140,7 +140,7 @@ function gbrainNoOrphanProcess() {
     const out = spawnSync("powershell.exe", [
       "-NoProfile",
       "-Command",
-      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*gbrain-adapter*server.ts*' } | Measure-Object | Select-Object -ExpandProperty Count",
+      "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and (($_.Name -eq 'node.exe' -and $_.CommandLine -like '*gbrain-adapter*node-entrypoint.mjs*') -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like '*gbrain-adapter*server.ts*')) } | Measure-Object | Select-Object -ExpandProperty Count",
     ], { encoding: "utf8" });
     const count = Number((out.stdout ?? "0").trim()) || 0;
     record("no orphan GBrain adapter process remains after shutdown", count === 0, `count ${count}`);

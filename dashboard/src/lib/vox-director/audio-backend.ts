@@ -21,8 +21,7 @@ import { voiceboxJson, voiceboxFetch } from "../speech/voicebox-client.ts";
 import { getSpeechSettings } from "../speech/settings.ts";
 import { parseDriverJson } from "./image-backend.ts";
 import { relativeInWorkspace, resolveInWorkspace, writeSpec } from "./workspace.ts";
-import { runVoxDriver } from "./runtime.ts";
-import { resolveFfprobe } from "../video-use/runtime.ts";
+import { resolveVoxFfprobe, runVoxDriver, voxDirectorEnv } from "./runtime.ts";
 import { spawn } from "node:child_process";
 
 interface VoiceProfile {
@@ -170,7 +169,7 @@ export async function narrateBeat(input: {
   fs.mkdirSync(path.dirname(absolute), { recursive: true });
   fs.writeFileSync(absolute, audio);
 
-  const seconds = await probeDuration(absolute);
+  const seconds = await probeDuration(absolute, input.signal);
   if (seconds <= 0) {
     return { ok: false, reason: "the narration file could not be read back" };
   }
@@ -178,8 +177,9 @@ export async function narrateBeat(input: {
 }
 
 /** Seconds of audio in a file, straight from ffprobe. 0 when it cannot be read. */
-export function probeDuration(absolutePath: string): Promise<number> {
-  const ffprobe = resolveFfprobe();
+export function probeDuration(absolutePath: string, signal?: AbortSignal): Promise<number> {
+  if (signal?.aborted) return Promise.resolve(0);
+  const ffprobe = resolveVoxFfprobe();
   if (!ffprobe) return Promise.resolve(0);
   return new Promise((resolve) => {
     let out = "";
@@ -193,20 +193,35 @@ export function probeDuration(absolutePath: string): Promise<number> {
       const child = spawn(
         ffprobe,
         ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", absolutePath],
-        { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
+        {
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "ignore"],
+          env: voxDirectorEnv(),
+        },
       );
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         out += chunk;
       });
-      const timer = setTimeout(() => done(0), 30_000);
+      const onAbort = () => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // Already gone.
+        }
+        done(0);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const timer = setTimeout(onAbort, 30_000);
       timer.unref?.();
       child.on("error", () => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         done(0);
       });
       child.on("close", () => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         const parsed = Number.parseFloat(out.trim());
         done(Number.isFinite(parsed) && parsed > 0 ? parsed : 0);
       });

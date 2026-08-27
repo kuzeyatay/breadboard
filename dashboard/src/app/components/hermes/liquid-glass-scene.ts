@@ -15,6 +15,7 @@
 // expensive part only re-runs when the page itself actually changes.
 
 import { toCanvas } from "html-to-image";
+import { releaseCanvasPixels } from "@/app/components/canvas-resource";
 
 /** Quiet period before a DOM change is worth re-rasterising for. */
 const CAPTURE_DEBOUNCE_MS = 800;
@@ -23,9 +24,23 @@ const CAPTURE_MIN_INTERVAL_MS = 3000;
 /** Canvases have per-side limits, and a raster this large is already overkill. */
 const MAX_RASTER_SIDE_PX = 12_000;
 
+let colorProbe: HTMLCanvasElement | null = null;
+
+function colorProbeContext(): CanvasRenderingContext2D | null {
+  if (!colorProbe) {
+    colorProbe = document.createElement("canvas");
+    // The default canvas is 300x150 even though fillStyle parsing needs no
+    // pixels. Keep one four-byte backing store instead of allocating three
+    // default-sized canvases on every scroll repaint.
+    colorProbe.width = 1;
+    colorProbe.height = 1;
+  }
+  return colorProbe.getContext("2d");
+}
+
 /** Resolve a CSS colour to rgba() at the given alpha, via the canvas parser. */
 function withAlpha(color: string, alpha: number): string {
-  const probe = document.createElement("canvas").getContext("2d");
+  const probe = colorProbeContext();
   if (!probe) return color;
   probe.fillStyle = "#000";
   probe.fillStyle = color;
@@ -239,8 +254,13 @@ export function createPageSceneSource({
         // the wrong place — so the scene carries content only.
         style: { background: "transparent" },
       });
-      if (destroyed) return;
+      if (destroyed) {
+        releaseCanvasPixels(next);
+        return;
+      }
+      const previous = raster;
       raster = next;
+      if (previous !== next) releaseCanvasPixels(previous);
       rasterScale = scale;
       rasterOrigin = { x: origin.x, y: origin.y };
       // Readable in devtools: tells you at a glance whether the bar is
@@ -280,7 +300,9 @@ export function createPageSceneSource({
       destroyed = true;
       if (debounceTimer !== null) window.clearTimeout(debounceTimer);
       if (frame) cancelAnimationFrame(frame);
+      releaseCanvasPixels(raster);
       raster = null;
+      releaseCanvasPixels(canvas);
     },
   };
 }

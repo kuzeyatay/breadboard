@@ -139,6 +139,53 @@ describe('stringifyPgliteInitError — non-Error rejections (#2674)', () => {
     );
   });
 
+  test('plain object without a message preserves its own diagnostic fields', () => {
+    const rejection = {
+      name: 'RuntimeError',
+      code: 'ENOMEM',
+      cause: { requestedBytes: 64 * 1024 * 1024 },
+      stack: 'wasm-function[42]@pglite.wasm',
+    };
+    const rendered = stringifyPgliteInitError(rejection);
+    expect(rendered).not.toContain('[object Object]');
+    expect(rendered).toContain('"name":"RuntimeError"');
+    expect(rendered).toContain('"code":"ENOMEM"');
+    expect(rendered).toContain('"requestedBytes":67108864');
+    expect(rendered).toContain('"stack":"wasm-function[42]@pglite.wasm"');
+  });
+
+  test('non-enumerable fields are captured without invoking getters', () => {
+    let getterInvoked = false;
+    const rejection: Record<string, unknown> = {};
+    Object.defineProperties(rejection, {
+      message: { value: 'WASM allocation failed', enumerable: false },
+      code: { value: 'ENOMEM', enumerable: false },
+      dangerous: {
+        enumerable: false,
+        get() {
+          getterInvoked = true;
+          throw new Error('must not run');
+        },
+      },
+    });
+
+    const rendered = stringifyPgliteInitError(rejection);
+    expect(getterInvoked).toBe(false);
+    expect(rendered).toContain('WASM allocation failed');
+    expect(rendered).toContain('"code":"ENOMEM"');
+    expect(rendered).toContain('"dangerous":"[Getter]"');
+  });
+
+  test('circular rejections remain JSON-safe and bounded', () => {
+    const rejection: { detail?: string; self?: unknown } = {};
+    rejection.self = rejection;
+    rejection.detail = 'x'.repeat(5000);
+    const rendered = stringifyPgliteInitError(rejection);
+    expect(rendered).toContain('[Circular Object]');
+    expect(rendered).toEndWith('… [truncated]');
+    expect(rendered.length).toBe(4096);
+  });
+
   test('primitive rejections stringify as-is', () => {
     expect(stringifyPgliteInitError('raw string')).toBe('raw string');
     expect(stringifyPgliteInitError(42)).toBe('42');

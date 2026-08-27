@@ -55,9 +55,10 @@ fine — Breadboard moves; nothing needs configuring.
 ## Leftover processes
 
 Quitting the app terminates the whole service process tree (`taskkill /T`).
-If a machine crash leaves orphans: `taskkill /f /im bun.exe`,
-`taskkill /f /im python.exe`, and any `node.exe` whose command line mentions
-`breadboard`/`server.js` — then start the app again.
+If a machine crash leaves orphans, inspect the command lines first, then stop
+only the stale `bun.exe`, `python.exe`, or `node.exe` processes that point into
+the Breadboard install. The GBrain adapter now appears as a `node.exe` command
+line ending in `gbrain-adapter/src/node-entrypoint.mjs`.
 
 ## Resetting
 

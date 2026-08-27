@@ -4,7 +4,11 @@ import {
   readLearnRouteJsonObject,
 } from "@/lib/learn-route-errors";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { createChatmockClient, scanClusterKnowledge, writeDocumentKnowledge } from "@/lib/knowledge";
+import {
+  createChatmockClient,
+  scanClusterKnowledge,
+  writeDocumentKnowledge,
+} from "@/lib/knowledge";
 import {
   parseGeneratedSyllabus,
   renderSyllabusMarkdown,
@@ -12,7 +16,10 @@ import {
   SYLLABUS_PROMPT_MAX_CHARS,
   type SyllabusGardenContextDocument,
 } from "@/lib/learn-syllabus-authoring";
-import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
+import {
+  requireOwnedClusterFromSlug,
+  routeErrorResponse,
+} from "@/lib/server-auth";
 import { selectedModelForUser } from "@/lib/selected-model";
 
 export const dynamic = "force-dynamic";
@@ -42,7 +49,9 @@ export async function POST(
 
     const body = await readLearnRouteJsonObject(request);
     const prompt =
-      typeof body.prompt === "string" ? body.prompt.trim().slice(0, SYLLABUS_PROMPT_MAX_CHARS) : "";
+      typeof body.prompt === "string"
+        ? body.prompt.trim().slice(0, SYLLABUS_PROMPT_MAX_CHARS)
+        : "";
     if (!prompt) {
       return NextResponse.json(
         { error: "Describe what you want to learn." },
@@ -110,6 +119,7 @@ export async function POST(
         relationships: [],
         suggestedTags: [],
       },
+      publicationUserId: userId,
       sourceMetadata: {
         syllabus_generated: "true",
         syllabus_prompt: prompt,

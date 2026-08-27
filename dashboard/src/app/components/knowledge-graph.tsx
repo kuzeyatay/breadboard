@@ -12,6 +12,7 @@ import {
 import Link from 'next/link';
 import RailDivider from './hermes/rail-divider';
 import { useRailResize } from './hermes/use-rail-resize';
+import { useQuartzViewLease } from '@/app/garden/use-quartz-view-lease';
 
 interface GraphNode {
   slug: string;
@@ -146,6 +147,9 @@ function KnowledgeGraph({
   });
   const graph = data ?? emptyResponse;
   const loading = data === null;
+  const quartzLease = useQuartzViewLease(
+    sidebarOpen && !loading && graph.nodes.length > 0,
+  );
 
   // The edge sits on the panel's own left border rather than beside it in the
   // row, because the panel is the last thing in the layout and a sibling would
@@ -179,8 +183,11 @@ function KnowledgeGraph({
     [clusterSlug, refreshKey],
   );
 
-  const previewStatus: PreviewStatus =
-    previewState.url === quartzPreviewUrl ? previewState.status : 'loading';
+  const previewStatus: PreviewStatus = quartzLease.failed
+    ? 'error'
+    : previewState.url === quartzPreviewUrl
+      ? previewState.status
+      : 'loading';
 
   useEffect(() => {
     const handlePreviewMessage = (event: MessageEvent) => {
@@ -268,7 +275,7 @@ function KnowledgeGraph({
                 <iframe
                   ref={previewFrameRef}
                   key={quartzPreviewUrl}
-                  src={quartzPreviewUrl}
+                  src={quartzLease.ready ? quartzPreviewUrl : undefined}
                   title="Garden learning map preview"
                   className={`pointer-events-none h-full w-full border-0 bg-gray-950 transition-opacity duration-300 ${
                     previewStatus === 'ready' ? 'opacity-100' : 'opacity-0'
@@ -287,10 +294,10 @@ function KnowledgeGraph({
                   href={graphHref(clusterSlug)}
                   prefetch
                   className="absolute inset-0"
-                  aria-label="View garden"
+                  aria-label="Explore"
                 >
                   <span className="neu-button absolute bottom-2 right-2 rounded-md border border-gray-700 bg-gray-950/85 px-2 py-1 text-[11px] font-medium text-gray-300 shadow-sm transition-colors group-hover:text-white">
-                    View garden
+                    Explore
                   </span>
                 </Link>
               </>

@@ -83,17 +83,28 @@ function stubResponse(options: {
   method?: string;
   contentType?: string;
   body?: string;
+  contentLength?: number | null;
+  onText?: () => void;
 }): Response {
+  const body = options.body ?? '{"error":"cluster index write failed"}';
   const headers: Record<string, string> = {
     "content-type": options.contentType ?? "application/json",
   };
+  if (options.contentLength !== null) {
+    headers["content-length"] = String(
+      options.contentLength ?? Buffer.byteLength(body, "utf8"),
+    );
+  }
   return {
     status: () => options.status,
     statusText: () => (options.status === 500 ? "Internal Server Error" : "Error"),
     url: () => options.url ?? "http://127.0.0.1:41234/api/clusters",
     headers: () => headers,
     request: () => ({ method: () => options.method ?? "POST" }) as unknown as Request,
-    text: async () => options.body ?? '{"error":"cluster index write failed"}',
+    text: async () => {
+      options.onText?.();
+      return body;
+    },
   } as unknown as Response;
 }
 
@@ -267,6 +278,70 @@ test.describe("fault category D: meaningful HTTP failure", () => {
       const malformed = eventsNamed(collector, "malformed-json-response");
       expect(malformed).toHaveLength(1);
       expect(malformed[0]?.level).toBe("error");
+    }),
+  );
+
+  test(
+    "a valid oversized JSON response is not misreported after bounded evidence truncation",
+    withCollector(async ({ collector, page }) => {
+      const body = JSON.stringify({
+        skills: [{
+          name: "publisher-metadata",
+          description: `line one\nline two\t\u0000${"x".repeat(40 * 1024)}`,
+        }],
+      });
+      let bodyRead = false;
+      page.emit(
+        "response",
+        stubResponse({
+          status: 200,
+          url: "http://127.0.0.1:41234/api/hermes/skills",
+          body,
+          onText: () => { bodyRead = true; },
+        }),
+      );
+      await collector.finalize({ snapshotServiceLogs: false });
+
+      expect(bodyRead).toBe(false);
+      expect(eventsNamed(collector, "malformed-json-response")).toHaveLength(0);
+      const skipped = collector.entries.find(
+        (entry) => entry.event === "json-response-validation-skipped",
+      );
+      expect(skipped?.actionable).toBe(false);
+      expect(skipped?.data).toMatchObject({
+        reason: "content_length_exceeds_limit",
+      });
+      expect(JSON.stringify(skipped?.data)).toContain("[truncated]");
+      expect(collector.hasActionableErrors).toBe(false);
+    }),
+  );
+
+  test(
+    "a chunked JSON response is not read without a bounded content length",
+    withCollector(async ({ collector, page }) => {
+      let bodyRead = false;
+      page.emit(
+        "response",
+        stubResponse({
+          status: 200,
+          url: "http://127.0.0.1:41234/api/hermes/skills?filter=all",
+          body: JSON.stringify({ skills: [{ description: "x".repeat(40 * 1024) }] }),
+          contentLength: null,
+          onText: () => { bodyRead = true; },
+        }),
+      );
+      await collector.finalize({ snapshotServiceLogs: false });
+
+      expect(bodyRead).toBe(false);
+      expect(eventsNamed(collector, "malformed-json-response")).toHaveLength(0);
+      const skipped = collector.entries.find(
+        (entry) => entry.event === "json-response-validation-skipped",
+      );
+      expect(skipped?.data).toMatchObject({
+        reason: "content_length_unavailable",
+        body: "[body not read: content length unavailable]",
+      });
+      expect(collector.hasActionableErrors).toBe(false);
     }),
   );
 

@@ -5,10 +5,24 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  createGeneratedVisualization,
+  createGeneratedVisualization as createGeneratedVisualizationWithCompiler,
   generateVisualizationCandidate,
   validateGeneratedVisualizationCandidateEnvelope,
 } from "../src/lib/generated-visuals.ts";
+import { compileGeneratedVisualization } from "../src/lib/generated-visual-compiler.ts";
+import { runGeneratedVisualBrowserTestsLocally } from "../src/lib/generated-visual-browser-tests.ts";
+
+const localCompilerRunner = async (sourceCode, opportunity) =>
+  compileGeneratedVisualization(sourceCode, opportunity);
+
+function createGeneratedVisualization(input) {
+  return createGeneratedVisualizationWithCompiler({
+    ...input,
+    compilerRunner: input.compilerRunner ?? localCompilerRunner,
+    browserTestRunner:
+      input.browserTestRunner ?? runGeneratedVisualBrowserTestsLocally,
+  });
+}
 
 const validSource = `import { defineVisualization } from "@breadboard/visual-sdk";
 export default defineVisualization({
@@ -195,13 +209,13 @@ test("candidate envelope rejects missing, extra, and malformed fields without de
 
 test("candidate envelope failure consumes one bounded generation attempt and reaches repair", async () => {
   const malformed = JSON.stringify({ sourceCode: validSource, testCases: [] });
-  const modelClient = candidateClient([malformed, JSON.stringify(validEnvelope())]);
+  const requests = [];
+  const modelClient = candidateClient([malformed, JSON.stringify(validEnvelope())], requests);
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-candidate-envelope-"));
-  const candidateInputs = [];
   const events = [];
   try {
     const result = await createGeneratedVisualization({
-      client: {},
+      client: modelClient,
       model: "test-model",
       gardenDir,
       opportunity,
@@ -209,10 +223,6 @@ test("candidate envelope failure consumes one bounded generation attempt and rea
       maxAttempts: 2,
       runBrowserTests: false,
       onEvent: (event) => events.push(event),
-      candidateProvider: async (input) => {
-        candidateInputs.push(input);
-        return generateVisualizationCandidate({ ...input, client: modelClient });
-      },
       criticProvider: async () => ({
         approved: true,
         checkedAt: new Date().toISOString(),
@@ -223,9 +233,12 @@ test("candidate envelope failure consumes one bounded generation attempt and rea
     });
 
     assert.equal(result.manifest?.generationAttempt, 2, result.errors.join("; "));
-    assert.equal(candidateInputs.length, 2);
-    assert.match(candidateInputs[1].errors.join("; "), /candidate\.title is required/);
-    assert.match(candidateInputs[1].errors.join("; "), /candidate\.pedagogicalClaims must be an array/);
+    assert.equal(requests.length, 2);
+    const repairRequest = requests[1].messages
+      .map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))
+      .join("\n");
+    assert.match(repairRequest, /candidate\.title is required/);
+    assert.match(repairRequest, /candidate\.pedagogicalClaims must be an array/);
     assert.equal(events.filter((event) => event.type === "visual_generation_failed").length, 1);
     assert.equal(events.filter((event) => event.type === "visual_repair_started").length, 1);
   } finally {
@@ -235,30 +248,26 @@ test("candidate envelope failure consumes one bounded generation attempt and rea
 
 test("persistent candidate envelope failure exhausts the bounded budget without publishing", async () => {
   const malformed = JSON.stringify({ sourceCode: validSource, testCases: [] });
-  const modelClient = candidateClient([malformed, malformed]);
+  const requests = [];
+  const modelClient = candidateClient([malformed, malformed], requests);
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-candidate-envelope-exhaust-"));
-  let candidateCalls = 0;
   let criticCalls = 0;
   try {
     const result = await createGeneratedVisualization({
-      client: {},
+      client: modelClient,
       model: "test-model",
       gardenDir,
       opportunity: { ...opportunity, id: "visual-envelope-exhaust" },
       pageMarkdown: "Source-grounded fixture text.",
       maxAttempts: 2,
       runBrowserTests: false,
-      candidateProvider: async (input) => {
-        candidateCalls += 1;
-        return generateVisualizationCandidate({ ...input, client: modelClient });
-      },
       criticProvider: async () => {
         criticCalls += 1;
         throw new Error("critic must not receive an invalid candidate envelope");
       },
     });
 
-    assert.equal(candidateCalls, 2);
+    assert.equal(requests.length, 2);
     assert.equal(criticCalls, 0);
     assert.equal(result.manifest, null);
     assert.equal(result.failureCategory, "generation");

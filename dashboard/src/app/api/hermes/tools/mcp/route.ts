@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   addProxyMcpConnection,
   callProxyMcpTool,
+  LocalMcpBrokerError,
   proxyMcpTools,
 } from "@/lib/agent-runtime/mcp-proxy.ts";
 import {
@@ -357,6 +358,7 @@ export async function POST(request: Request) {
         slug,
         tool,
         args,
+        signal: request.signal,
       });
       recordAuditEvent({
         eventType: "mcp.tool_completed",
@@ -373,7 +375,7 @@ export async function POST(request: Request) {
         },
       });
       return NextResponse.json({ ok: true, data });
-    } catch {
+    } catch (error) {
       recordAuditEvent({
         eventType: "mcp.tool_completed",
         runtimeSessionId: session.id,
@@ -388,6 +390,20 @@ export async function POST(request: Request) {
           success: false,
         },
       });
+      if (error instanceof LocalMcpBrokerError) {
+        if (error.code === "BREADBOARD_RESOURCE_EXHAUSTED") {
+          throw new ApiError(503, error.code, error.message);
+        }
+        if (error.code === "cancelled") {
+          throw new ApiError(499, "mcp_tool_cancelled", "The MCP tool call was cancelled.");
+        }
+        if (error.code === "timeout") {
+          throw new ApiError(504, "mcp_tool_timeout", "The MCP tool did not finish in time.");
+        }
+        if (error.code === "runtime_unavailable" || error.code === "unavailable") {
+          throw new ApiError(503, "mcp_runtime_unavailable", "The local MCP runtime is unavailable.");
+        }
+      }
       throw new ApiError(
         502,
         "mcp_tool_failed",

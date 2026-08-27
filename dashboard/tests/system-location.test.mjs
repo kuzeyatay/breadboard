@@ -7,7 +7,7 @@ import test from "node:test";
 
 import {
   parseSystemLocationOutput,
-  readSystemLocation,
+  unsupportedSystemLocation,
 } from "../src/lib/system-location.ts";
 
 test("a position comes back as an available fix", () => {
@@ -64,7 +64,7 @@ test("noise around the JSON, and no JSON at all, stay recoverable", () => {
   }
 });
 
-test("a platform with no location service Breadboard can read says so", async () => {
-  const result = await readSystemLocation("darwin");
+test("a platform with no location service Breadboard can read says so", () => {
+  const result = unsupportedSystemLocation();
   assert.equal(result.state, "unsupported");
 });

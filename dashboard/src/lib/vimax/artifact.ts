@@ -219,7 +219,7 @@ export async function drawProductionImage(input: {
     const extension = generated.mimeType === "image/jpeg" ? "jpg"
       : generated.mimeType === "image/webp" ? "webp"
       : "png";
-    const artifact = importArtifactImage({
+    const artifact = await importArtifactImage({
       context: {
         userId: input.context.userId,
         conversationPublicId: input.context.conversationPublicId,
@@ -300,7 +300,7 @@ export async function publishProductionVideo(input: {
   if (!rendered.ok) return { ok: false, reason: rendered.reason };
 
   try {
-    const artifact = createImportedArtifact({
+    const artifact = await createImportedArtifact({
       userId: input.context.userId,
       runtimeSessionId: input.context.runtimeSessionId,
       hermesSessionId: input.context.hermesSessionId,

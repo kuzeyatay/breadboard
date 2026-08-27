@@ -56,8 +56,6 @@ export interface DeepResearchLaunchOptions {
 }
 
 const ERROR_TEXT: Record<string, string> = {
-  deep_research_disabled:
-    "Deep Research is disabled (DEEP_RESEARCH_MODE=disabled).",
   service_unavailable:
     "Breadboard could not start the local research service. Check the Deep Research checkout and try again.",
   service_misconfigured:
@@ -118,8 +116,8 @@ export function useDeepResearchAgent(
     );
   }, [session.messages, session.sessionId]);
 
-  /** Activating checks the service so an unusable agent says so up front. */
-  const select = useCallback(async (): Promise<DeepResearchAgent | null> => {
+  /** Activating selects immediately; health only supplies advisory status. */
+  const select = useCallback(async (): Promise<DeepResearchAgent> => {
     onStatus?.("");
     setAgent(AGENT);
     // Warm the settings cache while the person is still typing, so the launch

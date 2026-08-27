@@ -1,0 +1,753 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://breadboard.local/qa/runtime-v2-burn-in-receipt.schema.json",
+  "title": "Breadboard Runtime V2 actual-Electron burn-in receipt",
+  "description": "Structural contract. Cross-operation uniqueness, settled-baseline formulas, parity, cleanup, and disposition rules are enforced by runtime-v2-burn-in-contract.mjs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "workloadProject",
+    "runtimeMode",
+    "metricSource",
+    "runId",
+    "startedAt",
+    "finishedAt",
+    "outcome",
+    "acceptance",
+    "stackEvidence",
+    "serviceEvidence",
+    "serviceCoverage",
+    "sequential",
+    "mixedCycles",
+    "admissionDenial",
+    "cancellation",
+    "restart",
+    "idleStop",
+    "postMixedSample",
+    "browserAgent",
+    "postiz",
+    "endurance",
+    "quit",
+    "orphanCount",
+    "duplicateServiceIds"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "workloadProject": { "const": "runtime-v2-burn-in" },
+    "runtimeMode": { "const": "actual-electron" },
+    "metricSource": { "const": "GetPerformanceInfo" },
+    "runId": { "type": "string", "minLength": 1 },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "outcome": { "enum": ["PASS", "BLOCKED"] },
+    "acceptance": { "$ref": "#/$defs/acceptance" },
+    "stackEvidence": { "$ref": "#/$defs/stackEvidence" },
+    "serviceEvidence": { "$ref": "#/$defs/serviceEvidence" },
+    "serviceCoverage": { "$ref": "#/$defs/serviceCoverage" },
+    "sequential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["learn", "ingestion", "artifact"],
+      "properties": {
+        "learn": { "$ref": "#/$defs/tenOperations" },
+        "ingestion": { "$ref": "#/$defs/tenOperations" },
+        "artifact": { "$ref": "#/$defs/tenOperations" }
+      }
+    },
+    "mixedCycles": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/mixedCycle" }
+    },
+    "admissionDenial": { "$ref": "#/$defs/admissionDenial" },
+    "cancellation": { "$ref": "#/$defs/cancellation" },
+    "restart": { "$ref": "#/$defs/restart" },
+    "idleStop": { "$ref": "#/$defs/idleStop" },
+    "postMixedSample": { "$ref": "#/$defs/postMixedSample" },
+    "browserAgent": { "$ref": "#/$defs/fiveBrowserAgentRuns" },
+    "postiz": { "$ref": "#/$defs/fivePostizRuns" },
+    "endurance": { "$ref": "#/$defs/endurance" },
+    "quit": { "$ref": "#/$defs/quit" },
+    "orphanCount": { "const": 0 },
+    "duplicateServiceIds": { "type": "array", "maxItems": 0 }
+  },
+  "$defs": {
+    "pass": { "const": "PASS" },
+    "conditionalDisposition": { "enum": ["PASS", "BLOCKED"] },
+    "nonNegativeNumber": { "type": "number", "minimum": 0 },
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "pidArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/positiveInteger" }
+    },
+    "stringArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "boundedText": { "type": "string", "maxLength": 500 },
+    "nullableString": {
+      "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }]
+    },
+    "nullableNonNegativeNumber": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/nonNegativeNumber" }]
+    },
+    "nullablePositiveInteger": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/positiveInteger" }]
+    },
+    "nullableNonNegativeInteger": {
+      "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }]
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequentialRepetitions",
+        "mixedCycles",
+        "ordinaryFreeCommitFloorMb",
+        "priorDangerStateMb",
+        "sequentialGrowthFloorMb",
+        "mixedGrowthFloorMb",
+        "growthPercent",
+        "postMixedSampleMs",
+        "defaultSettleWindowMs",
+        "requiredDurationMs",
+        "measurementCadenceMs",
+        "settleWindowMs",
+        "serviceIdleTtlMs"
+      ],
+      "properties": {
+        "sequentialRepetitions": { "const": 10 },
+        "mixedCycles": { "const": 5 },
+        "ordinaryFreeCommitFloorMb": { "const": 8192 },
+        "priorDangerStateMb": { "const": 2900 },
+        "sequentialGrowthFloorMb": { "const": 512 },
+        "mixedGrowthFloorMb": { "const": 768 },
+        "growthPercent": { "const": 0.1 },
+        "postMixedSampleMs": { "const": 300000 },
+        "defaultSettleWindowMs": { "const": 30000 },
+        "requiredDurationMs": { "const": 21600000 },
+        "measurementCadenceMs": { "$ref": "#/$defs/positiveInteger" },
+        "settleWindowMs": { "$ref": "#/$defs/positiveInteger" },
+        "serviceIdleTtlMs": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "stackEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "electron", "runtimeLaunchMode", "dashboardMode", "runtimeOwner", "runtimePid", "runtimeProcessName"],
+      "properties": {
+        "classification": { "$ref": "#/$defs/pass" },
+        "electron": { "const": true },
+        "runtimeLaunchMode": { "const": "lean" },
+        "dashboardMode": { "const": "standalone" },
+        "runtimeOwner": { "const": "rust-runtime-v2" },
+        "runtimePid": { "$ref": "#/$defs/positiveInteger" },
+        "runtimeProcessName": { "type": "string", "pattern": "^breadboard-runtime(?:\\.exe)?$" }
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-F]{64}$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z]:[\\\\/]|/).+"
+    },
+    "serviceEvidenceArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "bytes": { "$ref": "#/$defs/positiveInteger" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "serviceEvidenceSourceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serviceManifestSha256", "executionInventorySha256", "runnerSha256", "contractSha256", "implementationClosureSha256"],
+      "properties": {
+        "serviceManifestSha256": { "$ref": "#/$defs/sha256" },
+        "executionInventorySha256": { "$ref": "#/$defs/sha256" },
+        "runnerSha256": { "$ref": "#/$defs/sha256" },
+        "contractSha256": { "$ref": "#/$defs/sha256" },
+        "implementationClosureSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "serviceEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority",
+        "pointerPath",
+        "pointerSha256",
+        "receiptPath",
+        "receiptSha256",
+        "runId",
+        "suite",
+        "runtimeMode",
+        "outcome",
+        "startedAt",
+        "finishedAt",
+        "validatedAt",
+        "maximumAgeMs",
+        "serviceCount",
+        "gbrainIncluded",
+        "executable",
+        "sourceIdentity"
+      ],
+      "properties": {
+        "authority": { "const": "runtime-v2-services-receipt" },
+        "pointerPath": { "$ref": "#/$defs/absolutePath" },
+        "pointerSha256": { "$ref": "#/$defs/sha256" },
+        "receiptPath": { "$ref": "#/$defs/absolutePath" },
+        "receiptSha256": { "$ref": "#/$defs/sha256" },
+        "runId": { "type": "string", "minLength": 1 },
+        "suite": { "const": "burn" },
+        "runtimeMode": { "const": "packaged" },
+        "outcome": { "const": "PASS" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "finishedAt": { "type": "string", "format": "date-time" },
+        "validatedAt": { "type": "string", "format": "date-time" },
+        "maximumAgeMs": { "const": 21600000 },
+        "serviceCount": { "const": 32 },
+        "gbrainIncluded": { "const": true },
+        "executable": { "$ref": "#/$defs/serviceEvidenceArtifact" },
+        "sourceIdentity": { "$ref": "#/$defs/serviceEvidenceSourceIdentity" }
+      }
+    },
+    "observedService": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serviceId", "observedPids"],
+      "properties": {
+        "serviceId": { "enum": ["chatmock", "dashboard", "gbrain", "quartz"] },
+        "observedPids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/positiveInteger" }
+        }
+      }
+    },
+    "serviceCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "mandatoryServiceIds", "eagerRequiredServiceIds", "observedServiceIds", "manifestWideEvidenceAuthority", "services", "missingObservedServiceIds", "gbrainBackend"],
+      "properties": {
+        "classification": { "$ref": "#/$defs/pass" },
+        "mandatoryServiceIds": {
+          "type": "array",
+          "minItems": 32,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "prefixItems": [
+            { "const": "cad" },
+            { "const": "chatmock" },
+            { "const": "cliproxy" },
+            { "const": "colpali" },
+            { "const": "comfyui" },
+            { "const": "dashboard" },
+            { "const": "deep-research" },
+            { "const": "deer-flow" },
+            { "const": "gbrain" },
+            { "const": "hermes" },
+            { "const": "humanizer" },
+            { "const": "inbox-zero-stack" },
+            { "const": "local-mcp-broker" },
+            { "const": "mem0-semantic-engine" },
+            { "const": "money-printer" },
+            { "const": "openscience" },
+            { "const": "openwork" },
+            { "const": "penecho" },
+            { "const": "postiz-coordinator" },
+            { "const": "quartz" },
+            { "const": "recall" },
+            { "const": "scriberr" },
+            { "const": "solidworks-mcp" },
+            { "const": "spotify-playback" },
+            { "const": "stock-analyst" },
+            { "const": "telegram-gateway" },
+            { "const": "ui-tars" },
+            { "const": "vibe-trading" },
+            { "const": "vlm-ocr" },
+            { "const": "voicebox" },
+            { "const": "wardrobe" },
+            { "const": "whatsapp-gateway" }
+          ],
+          "items": false
+        },
+        "eagerRequiredServiceIds": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [{ "const": "chatmock" }, { "const": "dashboard" }],
+          "items": false
+        },
+        "observedServiceIds": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            { "const": "chatmock" },
+            { "const": "dashboard" },
+            { "const": "gbrain" },
+            { "const": "quartz" }
+          ],
+          "items": false
+        },
+        "manifestWideEvidenceAuthority": { "const": "runtime-v2-services-receipt" },
+        "services": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/observedService" }
+        },
+        "missingObservedServiceIds": { "type": "array", "maxItems": 0 },
+        "gbrainBackend": { "const": "gbrain" }
+      }
+    },
+    "peakPrivateMb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker", "dashboard", "renderer", "services"],
+      "properties": {
+        "worker": { "$ref": "#/$defs/nonNegativeNumber" },
+        "dashboard": { "$ref": "#/$defs/nonNegativeNumber" },
+        "renderer": { "$ref": "#/$defs/nonNegativeNumber" },
+        "services": { "$ref": "#/$defs/nonNegativeNumber" }
+      }
+    },
+    "operationEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["electron", "windowsSampler", "runtimeStore"],
+      "properties": {
+        "electron": { "const": true },
+        "windowsSampler": { "const": "GetPerformanceInfo" },
+        "runtimeStore": { "const": "runtime-v2-sqlite" }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operationId",
+        "phase",
+        "kind",
+        "ordinal",
+        "jobType",
+        "workerKind",
+        "capabilityId",
+        "jobId",
+        "rootWorkerPid",
+        "workerInstanceId",
+        "descendantPids",
+        "survivingDescendantPids",
+        "treeExited",
+        "peakPrivateMb",
+        "minimumFreeCommitMb",
+        "settledCommitMb",
+        "settledOwnedPrivateMb",
+        "settledOwnedProcessCount",
+        "orphanCount",
+        "classification",
+        "exitLatencyMs",
+        "idleStopLatencyMs",
+        "serviceIds",
+        "duplicateServiceIds",
+        "evidence"
+      ],
+      "properties": {
+        "operationId": { "type": "string", "minLength": 1 },
+        "phase": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["learn", "ingestion", "artifact"] },
+        "ordinal": { "$ref": "#/$defs/positiveInteger" },
+        "jobType": { "enum": ["learn", "document-ingestion", "office-artifact"] },
+        "workerKind": { "enum": ["learn-node", "document-ingestion-node", "office-artifact-node"] },
+        "capabilityId": { "enum": ["workflow:learn", "tool-family:ingestion", "registry:artifact-renderers"] },
+        "jobId": { "type": "string", "minLength": 1 },
+        "rootWorkerPid": { "$ref": "#/$defs/positiveInteger" },
+        "workerInstanceId": { "type": "string", "minLength": 1 },
+        "descendantPids": { "$ref": "#/$defs/pidArray" },
+        "survivingDescendantPids": { "type": "array", "maxItems": 0 },
+        "treeExited": { "const": true },
+        "peakPrivateMb": { "$ref": "#/$defs/peakPrivateMb" },
+        "minimumFreeCommitMb": { "type": "number", "exclusiveMinimum": 8192 },
+        "settledCommitMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "settledOwnedPrivateMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "settledOwnedProcessCount": { "type": "integer", "minimum": 0 },
+        "orphanCount": { "const": 0 },
+        "classification": { "$ref": "#/$defs/pass" },
+        "exitLatencyMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "idleStopLatencyMs": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/nonNegativeNumber" }]
+        },
+        "serviceIds": { "$ref": "#/$defs/stringArray" },
+        "duplicateServiceIds": { "type": "array", "maxItems": 0 },
+        "evidence": { "$ref": "#/$defs/operationEvidence" }
+      }
+    },
+    "tenOperations": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": { "$ref": "#/$defs/operation" }
+    },
+    "mixedCycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cycle", "classification", "surfaceEvidence", "conditionalEvidence", "operations", "minimumFreeCommitMb", "settledCommitMb", "settledOwnedPrivateMb", "settledOwnedProcessCount", "serviceIds", "orphanCount", "duplicateServiceIds"],
+      "properties": {
+        "cycle": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "classification": { "$ref": "#/$defs/conditionalDisposition" },
+        "surfaceEvidence": { "$ref": "#/$defs/mixedSurfaceEvidence" },
+        "conditionalEvidence": { "$ref": "#/$defs/mixedConditionalEvidence" },
+        "operations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["learn", "ingestion", "artifact"],
+          "properties": {
+            "learn": { "$ref": "#/$defs/operation" },
+            "ingestion": { "$ref": "#/$defs/operation" },
+            "artifact": { "$ref": "#/$defs/operation" }
+          }
+        },
+        "minimumFreeCommitMb": { "type": "number", "exclusiveMinimum": 8192 },
+        "settledCommitMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "settledOwnedPrivateMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "settledOwnedProcessCount": { "type": "integer", "minimum": 0 },
+        "serviceIds": { "$ref": "#/$defs/stringArray" },
+        "orphanCount": { "const": 0 },
+        "duplicateServiceIds": { "type": "array", "maxItems": 0 }
+      }
+    },
+    "mixedSurfaceEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gardenChat", "retrieval", "quartzBuild", "actualElectronUi"],
+      "properties": {
+        "gardenChat": { "const": true },
+        "retrieval": { "const": true },
+        "quartzBuild": { "const": true },
+        "actualElectronUi": { "const": true }
+      }
+    },
+    "mixedConditionalEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["browserAgent", "postiz"],
+      "properties": {
+        "browserAgent": { "$ref": "#/$defs/conditionalDisposition" },
+        "postiz": { "$ref": "#/$defs/conditionalDisposition" }
+      }
+    },
+    "admissionDenial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "reserveUnavailableObserved", "heavyweightSubmissionAttempted", "jobId", "jobState", "failureCode", "requiredHeadroomMb", "availableHeadroomMb", "minimumFreeCommitMb"],
+      "properties": {
+        "classification": { "$ref": "#/$defs/pass" },
+        "reserveUnavailableObserved": { "const": true },
+        "heavyweightSubmissionAttempted": { "const": true },
+        "jobId": { "type": "string", "minLength": 1 },
+        "jobState": { "const": "resource_exhausted" },
+        "failureCode": { "type": "string", "minLength": 1 },
+        "requiredHeadroomMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "availableHeadroomMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "minimumFreeCommitMb": { "type": "number", "exclusiveMinimum": 8192 }
+      }
+    },
+    "cancellation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "jobId", "workerInstanceId", "rootWorkerPid", "descendantPids", "survivingDescendantPids", "terminalState", "treeExited", "orphanCount", "reclaimLatencyMs", "minimumFreeCommitMb"],
+      "properties": {
+        "classification": { "$ref": "#/$defs/pass" },
+        "jobId": { "type": "string", "minLength": 1 },
+        "workerInstanceId": { "type": "string", "minLength": 1 },
+        "rootWorkerPid": { "$ref": "#/$defs/positiveInteger" },
+        "descendantPids": { "$ref": "#/$defs/pidArray" },
+        "survivingDescendantPids": { "type": "array", "maxItems": 0 },
+        "terminalState": { "const": "cancelled" },
+        "treeExited": { "const": true },
+        "orphanCount": { "const": 0 },
+        "reclaimLatencyMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "minimumFreeCommitMb": { "type": "number", "exclusiveMinimum": 8192 }
+      }
+    },
+    "restart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "beforeRuntimePid", "afterRuntimePid", "priorOwnedPids", "survivingPriorOwnedPids", "jobIdsBefore", "jobIdsAfter", "lostJobIds", "duplicateJobIds", "minimumFreeCommitMb", "orphanCount"],
+      "properties": {
+        "classification": { "$ref": "#/$defs/pass" },
+        "beforeRuntimePid": { "$ref": "#/$defs/positiveInteger" },
+        "afterRuntimePid": { "$ref": "#/$defs/positiveInteger" },
+        "priorOwnedPids": { "$ref": "#/$defs/pidArray" },
+        "survivingPriorOwnedPids": { "type": "array", "maxItems": 0 },
+        "jobIdsBefore": { "$ref": "#/$defs/stringArray" },
+        "jobIdsAfter": { "$ref": "#/$defs/stringArray" },
+        "lostJobIds": { "type": "array", "maxItems": 0 },
+        "duplicateJobIds": { "type": "array", "maxItems": 0 },
+        "minimumFreeCommitMb": { "type": "number", "exclusiveMinimum": 8192 },
+        "orphanCount": { "const": 0 }
+      }
+    },
+    "idleStop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "serviceId", "servicePid", "lifecycleState", "configuredIdleTtlMs", "idleStopLatencyMs", "privateMbBefore", "privateMbAfter", "survivingDescendantPids", "minimumFreeCommitMb", "orphanCount"],
+      "properties": {
+        "classification": { "$ref": "#/$defs/pass" },
+        "serviceId": { "type": "string", "minLength": 1 },
+        "servicePid": { "$ref": "#/$defs/positiveInteger" },
+        "lifecycleState": { "const": "available-but-stopped" },
+        "configuredIdleTtlMs": { "$ref": "#/$defs/positiveInteger" },
+        "idleStopLatencyMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "privateMbBefore": { "$ref": "#/$defs/nonNegativeNumber" },
+        "privateMbAfter": { "$ref": "#/$defs/nonNegativeNumber" },
+        "survivingDescendantPids": { "type": "array", "maxItems": 0 },
+        "minimumFreeCommitMb": { "type": "number", "exclusiveMinimum": 8192 },
+        "orphanCount": { "const": 0 }
+      }
+    },
+    "postMixedSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "durationMs", "sampleCount", "minimumFreeCommitMb", "settledCommitMb", "settledOwnedPrivateMb", "settledOwnedProcessCount", "orphanCount"],
+      "properties": {
+        "classification": { "$ref": "#/$defs/pass" },
+        "durationMs": { "type": "number", "minimum": 300000 },
+        "sampleCount": { "type": "integer", "minimum": 2 },
+        "minimumFreeCommitMb": { "type": "number", "exclusiveMinimum": 8192 },
+        "settledCommitMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "settledOwnedPrivateMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "settledOwnedProcessCount": { "type": "integer", "minimum": 0 },
+        "orphanCount": { "const": 0 }
+      }
+    },
+    "browserAvailability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["probe", "checkedAt", "httpStatus", "probeLatencyMs", "runtimeAvailable", "agentId", "agentRuntimeState", "reasonCode", "detail"],
+      "properties": {
+        "probe": { "const": "/api/agent-browser/agents" },
+        "checkedAt": { "type": "string", "format": "date-time" },
+        "httpStatus": { "type": "integer", "minimum": 0, "maximum": 599 },
+        "probeLatencyMs": { "type": "number", "minimum": 0, "maximum": 30000 },
+        "runtimeAvailable": { "type": "boolean" },
+        "agentId": { "$ref": "#/$defs/nullableString" },
+        "agentRuntimeState": { "$ref": "#/$defs/nullableString" },
+        "reasonCode": { "$ref": "#/$defs/nullableString" },
+        "detail": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "browserAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cycle", "classification", "availability", "actualElectronUi", "jobId", "workerInstanceId", "rootWorkerPid", "browserPids", "descendantPids", "survivingDescendantPids", "treeExited", "peakTreePrivateMb", "minimumFreeCommitMb", "settledCommitMb", "settledOwnedPrivateMb", "settledOwnedProcessCount", "orphanCount", "reclaimLatencyMs", "duplicateServiceIds"],
+      "properties": {
+        "cycle": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "classification": { "$ref": "#/$defs/conditionalDisposition" },
+        "availability": { "$ref": "#/$defs/browserAvailability" },
+        "actualElectronUi": { "type": "boolean" },
+        "jobId": { "$ref": "#/$defs/nullableString" },
+        "workerInstanceId": { "$ref": "#/$defs/nullableString" },
+        "rootWorkerPid": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "browserPids": { "$ref": "#/$defs/pidArray" },
+        "descendantPids": { "$ref": "#/$defs/pidArray" },
+        "survivingDescendantPids": { "$ref": "#/$defs/pidArray" },
+        "treeExited": { "type": "boolean" },
+        "peakTreePrivateMb": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "minimumFreeCommitMb": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "settledCommitMb": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "settledOwnedPrivateMb": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "settledOwnedProcessCount": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "orphanCount": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "reclaimLatencyMs": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "duplicateServiceIds": { "type": "array", "maxItems": 0 }
+      }
+    },
+    "fiveBrowserAgentRuns": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/browserAgent" }
+    },
+    "postizRouteProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["probe", "checkedAt", "httpStatus", "probeLatencyMs", "mode", "state", "reachable", "reason"],
+      "properties": {
+        "probe": { "const": "/api/socials-manager/stack?probe=docker" },
+        "checkedAt": { "type": "string", "format": "date-time" },
+        "httpStatus": { "type": "integer", "minimum": 0, "maximum": 599 },
+        "probeLatencyMs": { "type": "number", "minimum": 0, "maximum": 30000 },
+        "mode": { "type": "string", "minLength": 1 },
+        "state": { "type": "string", "minLength": 1 },
+        "reachable": { "type": "boolean" },
+        "reason": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "containerProbeAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "executable", "code", "durationMs", "timedOut", "errorCode", "detail"],
+      "properties": {
+        "engine": { "enum": ["docker", "podman"] },
+        "executable": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$" },
+        "capability": { "const": "compose" },
+        "code": { "oneOf": [{ "type": "null" }, { "type": "integer" }] },
+        "durationMs": { "type": "number", "minimum": 0, "maximum": 30000 },
+        "timedOut": { "type": "boolean" },
+        "errorCode": { "$ref": "#/$defs/nullableString" },
+        "detail": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "containerEngineProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checkedAt", "timeoutMs", "attemptLimit", "totalTimeoutMs", "probeDurationMs", "reasonCode", "attempts"],
+      "properties": {
+        "checkedAt": { "type": "string", "format": "date-time" },
+        "timeoutMs": { "const": 15000 },
+        "attemptLimit": { "const": 8 },
+        "totalTimeoutMs": { "const": 120000 },
+        "probeDurationMs": { "type": "number", "minimum": 0, "maximum": 125000 },
+        "reasonCode": { "$ref": "#/$defs/nullableString" },
+        "attempts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/containerProbeAttempt" }
+        },
+        "engine": { "enum": ["docker", "podman"] },
+        "daemonRunningAtBaseline": { "type": "boolean" },
+        "daemonProbeDurationMs": { "type": "number", "minimum": 0, "maximum": 30000 },
+        "daemonProbeErrorCode": { "$ref": "#/$defs/nullableString" },
+        "daemonProbeDetail": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "postizActivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["httpStatus", "actionLatencyMs", "actionTimeoutMs", "readyPollTimeoutMs", "ready", "state", "ownership", "reason"],
+      "properties": {
+        "httpStatus": { "type": "integer", "minimum": 0, "maximum": 599 },
+        "actionLatencyMs": { "type": "number", "minimum": 0, "maximum": 185000 },
+        "actionTimeoutMs": { "const": 180000 },
+        "readyPollTimeoutMs": { "const": 600000 },
+        "ready": { "type": "boolean" },
+        "state": { "type": "string", "minLength": 1 },
+        "ownership": { "enum": ["unknown", "pre-existing", "breadboard"] },
+        "reason": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "postizActivationCleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["httpStatus", "actionLatencyMs", "actionTimeoutMs", "stopped", "reason"],
+      "properties": {
+        "httpStatus": { "const": 200 },
+        "actionLatencyMs": { "type": "number", "minimum": 0, "maximum": 185000 },
+        "actionTimeoutMs": { "const": 180000 },
+        "stopped": { "const": true },
+        "reason": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "postiz": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cycle", "classification", "reasonCode", "routeProbe", "engineProbe", "activation", "activationCleanup", "actualRuntimeActivation", "serviceId", "servicePid", "ownership", "configuredStackIdleTtlMs", "configuredServiceIdleTtlMs", "idleStopLatencyMs", "privateMbBefore", "privateMbAfter", "containersActive", "containersAfter", "volumesBefore", "volumesActive", "volumesAfter", "coordinatorDescendantPids", "survivingCoordinatorPids", "treeExited", "minimumFreeCommitMb", "settledCommitMb", "orphanCount", "duplicateServiceIds"],
+      "properties": {
+        "cycle": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "classification": { "$ref": "#/$defs/conditionalDisposition" },
+        "reasonCode": { "$ref": "#/$defs/nullableString" },
+        "routeProbe": { "$ref": "#/$defs/postizRouteProbe" },
+        "engineProbe": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/containerEngineProbe" }]
+        },
+        "activation": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/postizActivation" }]
+        },
+        "activationCleanup": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/postizActivationCleanup" }]
+        },
+        "actualRuntimeActivation": { "type": "boolean" },
+        "serviceId": { "const": "postiz-coordinator" },
+        "servicePid": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "ownership": {
+          "oneOf": [{ "type": "null" }, { "enum": ["unknown", "pre-existing", "breadboard"] }]
+        },
+        "configuredStackIdleTtlMs": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "configuredServiceIdleTtlMs": { "$ref": "#/$defs/positiveInteger" },
+        "idleStopLatencyMs": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "privateMbBefore": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "privateMbAfter": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "containersActive": { "$ref": "#/$defs/stringArray" },
+        "containersAfter": { "$ref": "#/$defs/stringArray" },
+        "volumesBefore": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/stringArray" }]
+        },
+        "volumesActive": { "$ref": "#/$defs/stringArray" },
+        "volumesAfter": { "$ref": "#/$defs/stringArray" },
+        "coordinatorDescendantPids": { "$ref": "#/$defs/pidArray" },
+        "survivingCoordinatorPids": { "$ref": "#/$defs/pidArray" },
+        "treeExited": { "type": "boolean" },
+        "minimumFreeCommitMb": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "settledCommitMb": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "orphanCount": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "duplicateServiceIds": { "type": "array", "maxItems": 0 }
+      }
+    },
+    "fivePostizRuns": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/postiz" }
+    },
+    "endurance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "requiredDurationMs", "durationMs", "settleDurationMs", "sampleCount", "firstSampleAt", "lastSampleAt", "initialSampleDelayMs", "maximumSampleGapMs", "allowedSampleGapMs", "minimumFreeCommitMb", "peakCommitTotalMb", "settledCommitMb", "settledOwnedPrivateMb", "settledOwnedProcessCount", "orphanCount", "duplicateServiceIds"],
+      "properties": {
+        "classification": { "$ref": "#/$defs/pass" },
+        "requiredDurationMs": { "const": 21600000 },
+        "durationMs": { "type": "number", "minimum": 21600000 },
+        "settleDurationMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "sampleCount": { "type": "integer", "minimum": 2 },
+        "firstSampleAt": { "$ref": "#/$defs/positiveInteger" },
+        "lastSampleAt": { "$ref": "#/$defs/positiveInteger" },
+        "initialSampleDelayMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "maximumSampleGapMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "allowedSampleGapMs": { "$ref": "#/$defs/positiveInteger" },
+        "minimumFreeCommitMb": { "type": "number", "exclusiveMinimum": 8192 },
+        "peakCommitTotalMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "settledCommitMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "settledOwnedPrivateMb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "settledOwnedProcessCount": { "type": "integer", "minimum": 0 },
+        "orphanCount": { "const": 0 },
+        "duplicateServiceIds": { "type": "array", "maxItems": 0 }
+      }
+    },
+    "quit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "ownedRootPids", "survivingOwnedPids", "ownedProcessCount", "minimumFreeCommitMb", "orphanCount"],
+      "properties": {
+        "classification": { "$ref": "#/$defs/pass" },
+        "ownedRootPids": { "$ref": "#/$defs/pidArray" },
+        "survivingOwnedPids": { "type": "array", "maxItems": 0 },
+        "ownedProcessCount": { "const": 0 },
+        "minimumFreeCommitMb": { "type": "number", "exclusiveMinimum": 8192 },
+        "orphanCount": { "const": 0 }
+      }
+    }
+  }
+}

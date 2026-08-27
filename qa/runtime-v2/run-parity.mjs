@@ -12,6 +12,7 @@ import {
   same,
   sameMockOrFallbackDeclarations,
 } from "./parity-drift.mjs";
+import { validateRecordedParityEvidence } from "./parity-evidence-contract.mjs";
 
 const qaDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(qaDir, "..", "..");
@@ -204,7 +205,9 @@ const exactMinimums = {
   "first-party-skill": 26,
   "installed-reviewed-skill": 3,
   "default-prompt": 10,
-  provider: 12,
+  // Twelve selectable ChatMock model providers plus the ChatMock account/
+  // credential provider that is itself a user-visible integration contract.
+  provider: 13,
   attachment: 6,
   "artifact-type": 16,
 };
@@ -286,12 +289,16 @@ if (structuralFailures.length > 0) {
     ]) {
       if (!evidenceHasPost(row[field])) postFailures.push(`${row.capabilityId}: no post ${field}`);
     }
-    if (row.result === "PASS" && /mock|canned|lower-capability/i.test(row.postMigrationEvidence.join(" "))) {
+    if (row.result === "PASS" && /\b(?:mock|canned|lower-capability)\b/i.test(row.postMigrationEvidence.join(" "))) {
       postFailures.push(`${row.capabilityId}: PASS evidence declares a prohibited mock/canned/lower-capability path`);
     }
     if (row.result === "BLOCKED" && row.preMigrationStatus !== "BLOCKED") {
       postFailures.push(`${row.capabilityId}: newly BLOCKED without a matching pre-migration blocker`);
     }
+  }
+  const recordedEvidence = validateRecordedParityEvidence({ inventory: baseline, repoRoot });
+  for (const error of recordedEvidence.errors) {
+    postFailures.push(`sealed receipt: ${error}`);
   }
   for (const failure of postFailures.slice(0, 40)) {
     process.stderr.write(`[runtime-v2-parity] FAIL evidence: ${failure}\n`);

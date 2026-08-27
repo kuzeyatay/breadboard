@@ -257,7 +257,10 @@ test("a delegated run stays private and leaves the originating assistant message
   assert.match(session, /delegatedAgentPreamble\?: string/);
   assert.match(session, /externalAgentResult\?: string/);
   assert.match(panel, /message\.delegatedAgentPreamble/);
-  assert.match(panel, /message\.delegatedAgentRun \? "hidden" : "contents"/);
+  assert.match(
+    panel,
+    /message\.delegatedAgentRun && !message\.openGymRun[\s\S]*?\? "hidden"[\s\S]*?: "contents"/,
+  );
   assert.match(route, /body\.attachToExistingTurn === true/);
   assert.match(route, /attachExternalAgentRun\(\{/);
 });
@@ -297,36 +300,39 @@ test("duplicate submit events cannot launch duplicate Deep Research turns", () =
   assert.match(legacyGarden, /if \(externalAgentLaunchRef\.current\) return/);
 });
 
-test("selecting Deep Research recovers its local service on demand", () => {
+test("a real Deep Research run is one durable Runtime job while status stays observational", () => {
   const service = source("src/lib/deep-research/service.ts");
-  const runtime = source("src/lib/deep-research/runtime.ts");
+  const facade = source("src/lib/deep-research/runtime-run-manager.ts");
+  const worker = source("src/lib/deep-research/runtime-worker-run-manager.ts");
+  const route = source("src/app/api/deep-research/runs/route.ts");
 
-  assert.match(service, /await ensureDeepResearchService\(\)/);
-  assert.match(runtime, /DEEP_RESEARCH_AUTOSTART/);
-  assert.match(runtime, /path\.join\(root, "deep-research"\)/);
-  assert.match(runtime, /windowsHide: true/);
-  assert.match(runtime, /DEEP_RESEARCH_SECRET: config\.secret/);
-  assert.match(runtime, /CHATMOCK_BASE_URL:/);
-  assert.match(runtime, /new URL\("\/health", url\)/);
-  assert.match(runtime, /attempt < 120/);
+  assert.match(facade, /startOuterAgentRun\(\{[\s\S]*?kind: "deep-research"/);
+  assert.match(route, /runtime-run-manager/);
+  assert.match(worker, /client\.createRun\(/);
+  assert.match(service, /readSupervisedServiceSnapshot\("deep-research"\)/);
+  assert.doesNotMatch(worker, /supervisor-control|ServiceLease|node:child_process|spawn\(/);
+  assert.equal(
+    fs.existsSync(new URL("../src/lib/deep-research/runtime.ts", import.meta.url)),
+    false,
+  );
+  assert.doesNotMatch(
+    service.match(/export async function health[\s\S]*?Worker-internal direct sidecar API/)?.[0] ?? "",
+    /startOuterAgentRun|submitRuntimeJob|acquireServiceLease/,
+  );
 });
 
-test("event polling restarts a lost sidecar and reconciles interrupted runs", () => {
-  const service = source("src/lib/deep-research/service.ts");
-  const runtime = source("src/lib/deep-research/runtime.ts");
+test("event polling and cancellation use the fenced durable Runtime projection", () => {
+  const facade = source("src/lib/deep-research/runtime-run-manager.ts");
+  const worker = source("src/lib/deep-research/runtime-worker-run-manager.ts");
+  const events = source("src/app/api/deep-research/runs/[runId]/events/route.ts");
+  const abort = source("src/app/api/deep-research/runs/[runId]/abort/route.ts");
 
-  assert.match(service, /function isRecoverableConnectionFailure/);
-  assert.match(service, /error\.code === "unavailable"/);
-  assert.match(service, /error\.code === "timeout"/);
-  assert.match(
-    service,
-    /listEvents[\s\S]*?ensureDeepResearchService\(\)[\s\S]*?eventsSince\(runId, userId, since\)/,
-  );
-  assert.match(runtime, /local service exited/);
-  assert.match(runtime, /local service failed to start/);
-  assert.match(runtime, /const surviveWorkerRestart = env\.NODE_ENV === "development"/);
-  assert.match(runtime, /detached: surviveWorkerRestart/);
-  assert.match(runtime, /if \(surviveWorkerRestart\) child\.unref\(\)/);
+  assert.match(events, /outerAgentEventsResponse/);
+  assert.match(events, /readOuterAgentRunView\("deep-research"/);
+  assert.match(abort, /await abortRun\(userId, runId\)/);
+  assert.match(facade, /abortOuterAgentRun\("deep-research"/);
+  assert.match(worker, /await client\.abort\(run\.runId, run\.userId\)/);
+  assert.match(worker, /await run\.abortPromise/);
 });
 
 test("the inline run card uses the paper design tokens, not the dialog's palette", () => {
@@ -350,11 +356,19 @@ test("Deep Research stop is single-click and consumes terminal recovery response
   assert.match(inline, /disabled=\{stopPending\}/);
   assert.match(inline, /aria-busy=\{stopPending\}/);
   assert.match(inline, /motion-reduce:animate-none/);
+  const stopRecovery = inline.match(
+    /const stop = async \(\) => \{[\s\S]*?\n  \};/,
+  )?.[0] ?? "";
+  assert.match(stopRecovery, /if \(!response\.ok \|\| !data\?\.run\) throw/);
   assert.match(
-    inline,
-    /if \(response\.ok\)[\s\S]*?for \(const event of data\?\.events \?\? \[\]\) applyEvent\(event\)/,
+    stopRecovery,
+    /if \(run\.result\)[\s\S]*?type: "run\.result"[\s\S]*?payload: \{ result: run\.result \}/,
   );
-  assert.match(inline, /type: `run\.\$\{run\.status\}`/);
+  assert.match(
+    stopRecovery,
+    /if \(run\.status && run\.status !== "running"\)[\s\S]*?type: `run\.\$\{run\.status\}`[\s\S]*?run\.failure\?\.code[\s\S]*?run\.failure\?\.message[\s\S]*?run\.usage/,
+  );
+  assert.doesNotMatch(stopRecovery, /data\?\.events|for \(const event/);
 });
 
 test("completed research clears its writing phase and reports aggregated model usage", () => {
@@ -384,7 +398,7 @@ test("mode defaults to optional and only accepts known values", () => {
   );
   assert.equal(
     config.deepResearchMode({ DEEP_RESEARCH_MODE: "disabled" }),
-    "disabled",
+    "optional",
   );
   assert.equal(
     config.deepResearchMode({ DEEP_RESEARCH_MODE: "nonsense" }),
@@ -392,7 +406,7 @@ test("mode defaults to optional and only accepts known values", () => {
   );
   assert.equal(
     config.deepResearchEnabled({ DEEP_RESEARCH_MODE: "disabled" }),
-    false,
+    true,
   );
   assert.equal(config.deepResearchEnabled({}), true);
 });

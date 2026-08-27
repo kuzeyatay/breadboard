@@ -543,47 +543,28 @@ test("the settings status reports index coverage, not intent", async () => {
   assert.equal(after.totalMemories, 2);
 });
 
-// The regression this guards: availability used to be inferred from
-// `require.resolve("mem0ai/oss")`, which the bundler rewrites to return the
-// module id rather than a path — so a built, loadable engine reported itself as
-// missing and the panel told the user to run a setup step they had already run.
-// Whatever the engine's real state is here, the panel must agree with the loader.
-test("the settings status agrees with what the loader can actually load", async () => {
+test("the settings status is observational and never imports or starts mem0", async () => {
   const status = await import("../src/lib/mem0/status.ts");
-  let loadable = true;
-  try {
-    const { Memory } = await import("mem0ai/oss");
-    loadable = typeof Memory === "function";
-  } catch {
-    loadable = false;
-  }
-
   const reported = await status.semanticMemoryStatus(1, db, {});
-  assert.equal(reported.engineAvailable, loadable);
-  if (loadable) {
-    assert.equal(
-      reported.degradedReason,
-      null,
-      "a loadable engine must not be reported as unbuilt",
-    );
-  } else {
-    assert.match(reported.degradedReason ?? "", /mem0 engine/i);
-  }
-});
-
-test("Turbopack leaves the linked mem0 engine as a Node runtime dependency", () => {
-  const nextConfig = fs.readFileSync(new URL("../next.config.ts", import.meta.url), "utf8");
-  const bridge = fs.readFileSync(
-    new URL("../src/lib/mem0/mem0ai-oss-runtime.ts", import.meta.url),
+  assert.equal(reported.engineAvailable, false);
+  assert.match(reported.degradedReason ?? "", /Runtime service owner/i);
+  const source = fs.readFileSync(
+    new URL("../src/lib/mem0/status.ts", import.meta.url),
     "utf8",
   );
-  assert.match(
-    nextConfig,
-    /['"]mem0ai\/oss['"]:\s*['"]\.\/src\/lib\/mem0\/mem0ai-oss-runtime\.ts['"]/,
+  assert.doesNotMatch(source, /mem0ai\/oss|semanticMemoryClient|acquireServiceLease/);
+});
+
+test("the dashboard mem0 client has no in-process engine fallback", async () => {
+  const source = fs.readFileSync(
+    new URL("../src/lib/mem0/client.ts", import.meta.url),
+    "utf8",
   );
-  assert.match(bridge, /const importRuntimeExternal = Function\(/);
-  assert.match(bridge, /importRuntimeExternal\("mem0ai\/oss"\)/);
-  assert.doesNotMatch(bridge, /await import\("mem0ai\/oss"\)/);
+  assert.doesNotMatch(source, /mem0ai\/oss|new Memory\s*\(/);
+  assert.match(source, /acquireServiceLease\(\s*"mem0-semantic-engine"/);
+  assert.match(source, /BREADBOARD_MEM0_SERVICE_TOKEN/);
+  const { semanticMemoryClient } = await import("../src/lib/mem0/client.ts");
+  assert.equal(await semanticMemoryClient({}), null);
 });
 
 test("the settings status explains why recall is degraded", async () => {

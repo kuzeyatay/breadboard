@@ -1,4 +1,4 @@
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import type { HermesSurface } from "./config.ts";
 
 export type CapabilityMode =

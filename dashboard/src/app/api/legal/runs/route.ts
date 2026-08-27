@@ -9,7 +9,7 @@ import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
 import { LEGAL_AGENT_ID, parseLegalRequest } from "@/lib/legal/identity.ts";
-import { startRun } from "@/lib/legal/run-manager.ts";
+import { startRun } from "@/lib/legal/runtime-run-manager.ts";
 import {
   DEFAULT_LEGAL_SETTINGS,
   legalSettingsFrom,
@@ -105,7 +105,7 @@ export async function POST(request: Request) {
     });
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
       request: legalRequest,
       settings,

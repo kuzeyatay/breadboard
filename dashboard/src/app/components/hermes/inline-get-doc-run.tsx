@@ -32,6 +32,7 @@ import {
   normalizeChatTokenUsage,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
+import { closeAgentRunStream, resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
 
 const ChatMarkdown = dynamic(() => import("@/app/components/chat-markdown"), { ssr: false });
@@ -237,6 +238,7 @@ export default function InlineGetDocRun({
         setStatus(outcome);
         setStage("");
         eventSourceRef.current?.close();
+        eventSourceRef.current = null;
         if (!reportedTerminalRef.current) {
           reportedTerminalRef.current = true;
           const content =
@@ -304,22 +306,29 @@ export default function InlineGetDocRun({
       eventSource.addEventListener(type, handle as EventListener),
     );
     eventSource.onerror = () => {
-      void (async () => {
-        try {
-          const response = await fetch(`${base}/events?since=0`);
-          if (response.ok) return; // transient drop; the stream reconnects itself
-          eventSource.close();
+      resolveAgentRunStreamError({
+        source: eventSource,
+        base,
+        replayEnding: applyEvent,
+        onUnavailable: (reason) => {
+          if (eventSourceRef.current === eventSource) {
+            eventSourceRef.current = null;
+          }
           setStatus("failed");
-          setFailure(ERROR_TEXT.run_not_found);
-        } catch {
-          /* offline: leave the stream retrying */
-        }
-      })();
+          setFailure(
+            reason === "run_not_found"
+              ? ERROR_TEXT.run_not_found
+              : "The Get Doc event stream is unavailable.",
+          );
+        },
+      });
     };
     eventSourceRef.current = eventSource;
     return () => {
-      eventSource.close();
-      eventSourceRef.current = null;
+      closeAgentRunStream(eventSource);
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
     };
   }, [applyEvent, base, persistedOutcome]);
 

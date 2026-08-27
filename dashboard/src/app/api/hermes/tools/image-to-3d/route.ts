@@ -22,8 +22,12 @@ import {
   RECENT_MESSAGE_LOOKBACK,
   selectImage,
 } from "@/lib/sf3d/images.ts";
-import { parseSf3dOptions, runImageTo3d, Sf3dServiceError } from "@/lib/sf3d/service.ts";
+import { parseSf3dOptions, Sf3dServiceError } from "@/lib/sf3d/request.ts";
 import { publishReconstructedMesh } from "@/lib/sf3d/artifact.ts";
+import {
+  runImageTo3dViaRuntime,
+  Sf3dRuntimeError,
+} from "@/lib/runtime-v2/sf3d-job.ts";
 import { IMAGE_TO_3D_SKILL } from "@/lib/hermes/image-3d-intent.ts";
 
 export const dynamic = "force-dynamic";
@@ -60,6 +64,16 @@ export async function POST(request: Request) {
         403,
         "image_to_3d_session_scope_mismatch",
         "3D reconstruction is available only in an authenticated chat session.",
+      );
+    }
+    const conversation = db.prepare(
+      "SELECT public_id FROM conversations WHERE id = ? AND user_id = ?",
+    ).get(session.conversation_id, session.user_id) as { public_id: string } | undefined;
+    if (!conversation?.public_id) {
+      throw new ApiError(
+        403,
+        "image_to_3d_conversation_scope_mismatch",
+        "3D reconstruction conversation scope is invalid.",
       );
     }
     const run = getActiveRuntimeRun(session.id);
@@ -119,70 +133,76 @@ export async function POST(request: Request) {
       },
     });
 
-    const result = await runImageTo3d({
+    const result = await runImageTo3dViaRuntime({
+      scope: {
+        userId: session.user_id,
+        gardenId: session.garden_id,
+        conversationId: conversation.public_id,
+      },
       image: image.bytes,
       imageName: image.name,
+      mediaType: image.mimeType,
       options,
       signal: request.signal,
     });
+    try {
+      const dispatch = parseRuntimeRunDispatch(run);
+      const assistantMessage = dispatch.clientMessageId
+        ? (db
+            .prepare(
+              `SELECT id FROM conversation_messages
+               WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'`,
+            )
+            .get(session.conversation_id, dispatch.clientMessageId) as { id: number } | undefined)
+        : undefined;
 
-    const dispatch = parseRuntimeRunDispatch(run);
-    const assistantMessage = dispatch.clientMessageId
-      ? (db
-          .prepare(
-            `SELECT id FROM conversation_messages
-             WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'`,
-          )
-          .get(session.conversation_id, dispatch.clientMessageId) as { id: number } | undefined)
-      : undefined;
+      const { artifact, summary } = await publishReconstructedMesh({
+        context: {
+          userId: session.user_id,
+          runtimeSessionId: session.id,
+          hermesSessionId: runtimeExternalSessionId(session)!,
+          conversationId: session.conversation_id,
+          clusterId: session.cluster_id,
+          surface: session.surface,
+          runId: run.id,
+          assistantMessageId: assistantMessage?.id ?? null,
+          toolCallId: typeof body.toolCallId === "string" ? body.toolCallId.slice(0, 200) : null,
+        },
+        result,
+        sourceImageName: image.name,
+      });
 
-    const { artifact, summary } = publishReconstructedMesh({
-      context: {
-        userId: session.user_id,
+      recordAuditEvent({
+        eventType: "image_to_3d.reconstruction_completed",
         runtimeSessionId: session.id,
-        hermesSessionId: runtimeExternalSessionId(session)!,
-        conversationId: session.conversation_id,
-        clusterId: session.cluster_id,
-        surface: session.surface,
-        runId: run.id,
-        assistantMessageId: assistantMessage?.id ?? null,
-        toolCallId: typeof body.toolCallId === "string" ? body.toolCallId.slice(0, 200) : null,
-      },
-      result,
-      sourceImageName: image.name,
-    });
+        userId: session.user_id,
+        payload: {
+          runId: run.id,
+          artifactId: artifact.id,
+          durationSeconds: result.durationSeconds,
+          device: result.device,
+          ...(summary.triangles === undefined ? {} : { triangles: summary.triangles }),
+        },
+      });
 
-    recordAuditEvent({
-      eventType: "image_to_3d.reconstruction_completed",
-      runtimeSessionId: session.id,
-      userId: session.user_id,
-      payload: {
-        runId: run.id,
-        artifactId: artifact.id,
-        durationSeconds: result.durationSeconds,
-        device: result.device,
-        ...(summary.triangles === undefined ? {} : { triangles: summary.triangles }),
-      },
-    });
-
-    return NextResponse.json({
-      ok: true,
-      data: {
-        artifact: presentArtifact(artifact),
-        sourceImage: image.name,
-        // Repeated in the payload the model reads, not only in the artifact
-        // metadata, because the sentence it writes underneath is the only place
-        // most people will ever see it.
-        provenance:
-          "Reconstructed from a single image by Stable Fast 3D; surfaces the picture does not show are inferred.",
-        device: result.device,
-        durationSeconds: result.durationSeconds,
-        textureResolution: options.textureResolution,
-        remesh: options.remesh,
-        ...(result.peakMemoryMb === null ? {} : { peakMemoryMb: result.peakMemoryMb }),
-        mesh: summary,
-      },
-    });
+      return NextResponse.json({
+        ok: true,
+        data: {
+          artifact: presentArtifact(artifact),
+          sourceImage: image.name,
+          provenance:
+            "Reconstructed from a single image by Stable Fast 3D; surfaces the picture does not show are inferred.",
+          device: result.device,
+          durationSeconds: result.durationSeconds,
+          textureResolution: options.textureResolution,
+          remesh: options.remesh,
+          ...(result.peakMemoryMb === null ? {} : { peakMemoryMb: result.peakMemoryMb }),
+          mesh: summary,
+        },
+      });
+    } finally {
+      result.cleanup();
+    }
   } catch (error) {
     if (runtimeSessionId !== null) {
       recordAuditEvent({
@@ -190,13 +210,16 @@ export async function POST(request: Request) {
         runtimeSessionId,
         payload: {
           reason:
-            error instanceof Sf3dServiceError
+            (error instanceof Sf3dServiceError || error instanceof Sf3dRuntimeError)
               ? error.code
               : error instanceof ApiError
                 ? error.code
                 : "image_to_3d_failed",
         },
       });
+    }
+    if (error instanceof Sf3dRuntimeError) {
+      return apiErrorResponse(new ApiError(error.status, error.code, error.message));
     }
     if (error instanceof Sf3dServiceError) {
       const status =

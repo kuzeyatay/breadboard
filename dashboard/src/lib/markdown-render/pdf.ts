@@ -695,6 +695,10 @@ function resolveImagePath(url: string | undefined, clusterSlug: string): string 
 
   let imagePath: string | null = null;
   if (parts.length >= 3 && parts[1] === "assets") {
+    // A PDF job is scoped to one authenticated Garden. An absolute Markdown
+    // asset URL must name that same Garden; an empty Garden scope has no
+    // authority to read any Garden asset directory.
+    if (!clusterSlug || parts[0] !== clusterSlug) return null;
     imagePath = path.resolve(root, parts[0], "assets", ...parts.slice(2));
   } else if (parts.length >= 2 && parts[0] === "assets" && clusterSlug) {
     imagePath = path.resolve(root, clusterSlug, "assets", ...parts.slice(1));

@@ -12,21 +12,25 @@
 // and so does this. `session.idle` for the run's own session is the completion
 // signal; text arrives as `message.part.updated`.
 
-import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
 import {
   abortSession,
   createSession,
   listArtifacts,
   listMessages,
-  readArtifact,
   type OpenworkArtifact,
   type OpenworkConnection,
   type OpenworkMessage,
 } from "./client.ts";
-import { runInstruction, sessionTitle, type PromptOptions } from "./prompt.ts";
-import { ensureService } from "./service.ts";
-import { promptWithContext } from "../conversations/agent-context.ts";
+import { promptWithContext, runInstruction, sessionTitle } from "./prompt.ts";
+import { preparedOpenworkService } from "./runtime-worker-service.ts";
+import {
+  MAX_OPENWORK_ARTIFACT_BYTES,
+  MAX_OPENWORK_ARTIFACTS,
+  stageOpenworkRuntimeArtifact,
+  type OpenworkRuntimeArtifact,
+} from "./runtime-artifact.ts";
 
 export interface OpenworkEvent {
   sequenceNumber: number;
@@ -71,6 +75,10 @@ interface RunState {
   startedAt: number;
   sessionId: string | null;
   connection: OpenworkConnection | null;
+  /** Fixed by Runtime, never selected by a browser. */
+  runtimeWorkspacePath: string;
+  /** Opaque server-selected id of the immutable private service profile. */
+  serviceScopeId: string;
   /** Accumulated assistant text, keyed by the engine's part id. */
   parts: Map<string, string>;
   /** Ordering of the part ids, so the answer reads in the order it streamed. */
@@ -82,14 +90,12 @@ interface RunState {
    */
   messageRoles: Map<string, string>;
   toolCount: number;
-  artifacts: OpenworkArtifact[];
+  artifacts: OpenworkRuntimeArtifact[];
   /** Outbox entries that already existed, so only this run's are reported. */
   knownArtifacts: Set<string>;
   abort: AbortController;
   aborted: boolean;
   usage?: ChatTokenUsage;
-  terminalResult?: OpenworkTerminalResult;
-  terminalHandler?: (result: OpenworkTerminalResult) => void;
 }
 
 const runtimeGlobal = globalThis as typeof globalThis & {
@@ -160,27 +166,15 @@ function answerText(run: RunState): string {
     .slice(0, MAX_ANSWER_CHARS);
 }
 
-function publishTerminal(run: RunState, result: OpenworkTerminalResult): void {
-  if (run.terminalResult) return;
-  run.terminalResult = result;
-  try {
-    run.terminalHandler?.(result);
-  } catch {
-    // The run stays replayable even when transcript persistence fails.
-  }
-}
-
 function finish(run: RunState, outcome: OpenworkTerminalResult["outcome"], content: string): void {
   if (reachedTerminal(run)) return;
   run.status = outcome;
   emit(run, `run.${outcome}`, {
     content: content.slice(0, 4_000),
-    artifacts: run.artifacts.length,
-  });
-  publishTerminal(run, {
-    outcome,
-    content,
-    ...(run.usage ? { usage: run.usage } : {}),
+    // The terminal checkpoint repeats the small artifact receipts so a long
+    // event stream can be compacted without making old download links depend
+    // on an earlier `artifact.ready` frame.
+    artifacts: run.artifacts,
   });
 }
 
@@ -227,12 +221,32 @@ function errorText(value: unknown): string {
 async function collectArtifacts(run: RunState): Promise<void> {
   if (!run.connection) return;
   try {
-    const items = await listArtifacts(run.connection);
-    const fresh = items.filter((item) => !run.knownArtifacts.has(item.id));
+    const items = await listArtifacts(run.connection, run.abort.signal);
+    const fresh = items
+      .filter((item) => !run.knownArtifacts.has(item.id))
+      .slice(0, MAX_OPENWORK_ARTIFACTS);
+    let remainingBytes = MAX_OPENWORK_ARTIFACT_BYTES;
     for (const item of fresh) {
+      if (run.aborted || remainingBytes < 1) break;
       run.knownArtifacts.add(item.id);
-      run.artifacts.push(item);
-      emit(run, "artifact.ready", { id: item.id, path: item.path, size: item.size });
+      const artifact = await stageOpenworkRuntimeArtifact({
+        connection: run.connection,
+        artifact: item,
+        runtimeWorkspacePath: run.runtimeWorkspacePath,
+        index: run.artifacts.length,
+        maximumBytes: remainingBytes,
+        signal: run.abort.signal,
+      });
+      remainingBytes -= artifact.size;
+      run.artifacts.push(artifact);
+      emit(run, "artifact.ready", {
+        id: artifact.id,
+        path: artifact.path,
+        size: artifact.size,
+        updatedAt: artifact.updatedAt,
+        contentType: artifact.contentType,
+        relativePath: artifact.relativePath,
+      });
     }
   } catch {
     // A deliverable that cannot be listed still exists in the workspace; the
@@ -280,6 +294,9 @@ async function followSession(run: RunState, engineUrl: string): Promise<void> {
       const { done, value } = await reader.read();
       if (done) return;
       buffer += decoder.decode(value, { stream: true });
+      if (Buffer.byteLength(buffer, "utf8") > 4 * 1024 * 1024) {
+        throw new Error("The OpenWork event stream exceeded its frame bound.");
+      }
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? "";
       for (const line of lines) {
@@ -355,15 +372,16 @@ async function followSession(run: RunState, engineUrl: string): Promise<void> {
   }
 }
 
-async function execute(run: RunState, options: StartInput): Promise<void> {
+async function execute(run: RunState): Promise<void> {
   try {
     emit(run, "service.starting", {});
-    const service = await ensureService({
-      baseUrl: options.baseUrl,
-      apiKey: options.apiKey,
-      model: run.model,
-      prompt: options.prompt,
-    });
+    const service = await preparedOpenworkService(
+      { userId: run.userId, runId: run.serviceScopeId },
+      run.abort.signal,
+    );
+    if (!service.models.includes(run.model)) {
+      throw new Error("The prepared OpenWork service does not include the requested model.");
+    }
     run.connection = {
       serverUrl: service.serverUrl,
       token: service.token,
@@ -377,7 +395,9 @@ async function execute(run: RunState, options: StartInput): Promise<void> {
     // Snapshot the outbox before the turn so only this run's deliverables are
     // reported back to the chat.
     try {
-      for (const item of await listArtifacts(run.connection)) run.knownArtifacts.add(item.id);
+      for (const item of await listArtifacts(run.connection, run.abort.signal)) {
+        run.knownArtifacts.add(item.id);
+      }
     } catch {
       // An unreadable outbox means everything found later counts as new, which
       // is the safe direction to be wrong in.
@@ -393,19 +413,20 @@ async function execute(run: RunState, options: StartInput): Promise<void> {
       prompt: promptWithContext(runInstruction(run.task), run.conversationContext),
       model: run.model,
       variant: run.variant,
-    });
+    }, run.abort.signal);
     run.sessionId = session.id;
     run.status = "running";
     run.stage = "working";
     emit(run, "session.created", { sessionId: session.id, title: session.title });
 
     await followSession(run, service.engineUrl);
+    if (run.aborted) return;
     if (reachedTerminal(run)) return;
 
     run.stage = "delivering";
     emit(run, "stage", { stage: run.stage });
 
-    const messages = await listMessages(run.connection, session.id).catch(
+    const messages = await listMessages(run.connection, session.id, run.abort.signal).catch(
       () => [] as OpenworkMessage[],
     );
     run.usage = usageFrom(messages);
@@ -455,20 +476,34 @@ async function execute(run: RunState, options: StartInput): Promise<void> {
 
 export interface StartInput {
   userId: number;
+  /** Fenced Runtime identity. It is never selected by a renderer. */
+  runtimeJobId: string;
+  /** Fenced Runtime workspace used only for durable artifact copies. */
+  runtimeWorkspacePath: string;
+  /** Server-selected immutable private service profile identity. */
+  serviceScopeId: string;
   task: string;
   model: string;
   reasoningEffort: string;
-  baseUrl: string;
-  apiKey: string;
-  /** The agent's stored preferences, resolved by the run route. */
-  prompt: PromptOptions;
   /** The chat this was launched from, so a task can refer back to it. */
   conversationContext?: string;
 }
 
-export function startRun(input: StartInput): OpenworkRunSummary {
+/** Fixed disposable-worker entrypoint. Product routes never import this file. */
+export function startRuntimeWorkerRun(input: StartInput): OpenworkRunSummary {
+  if (
+    !Number.isSafeInteger(input.userId) ||
+    input.userId < 1 ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(input.serviceScopeId) ||
+    !path.isAbsolute(input.runtimeWorkspacePath) ||
+    Buffer.byteLength(input.runtimeWorkspacePath, "utf8") > 4_096 ||
+    /[\u0000\r\n]/u.test(input.runtimeWorkspacePath)
+  ) {
+    throw new Error("The OpenWork Runtime worker input is invalid.");
+  }
   const run: RunState = {
-    runId: randomUUID(),
+    runId: input.runtimeJobId,
     userId: input.userId,
     task: input.task,
     conversationContext: input.conversationContext ?? "",
@@ -481,6 +516,8 @@ export function startRun(input: StartInput): OpenworkRunSummary {
     startedAt: Date.now(),
     sessionId: null,
     connection: null,
+    runtimeWorkspacePath: path.resolve(input.runtimeWorkspacePath),
+    serviceScopeId: input.serviceScopeId,
     parts: new Map(),
     partOrder: [],
     messageRoles: new Map(),
@@ -492,7 +529,7 @@ export function startRun(input: StartInput): OpenworkRunSummary {
   };
   runs.set(run.runId, run);
   emit(run, "run.started", { task: run.task.slice(0, 2_000), model: run.model });
-  void execute(run, input);
+  void execute(run);
   return summary(run);
 }
 
@@ -509,52 +546,32 @@ export function getEventsSince(
 }
 
 export function isTerminal(userId: number, runId: string): boolean {
-  const run = runs.get(runId);
-  if (!run || run.userId !== userId) return true;
-  return reachedTerminal(run);
+  return reachedTerminal(requireRun(userId, runId));
 }
 
-export async function abortRun(userId: number, runId: string): Promise<void> {
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
   const run = requireRun(userId, runId);
-  if (isTerminal(userId, runId)) return;
+  if (reachedTerminal(run)) return false;
   run.aborted = true;
   if (run.connection && run.sessionId) {
-    await abortSession(run.connection, run.sessionId).catch(() => undefined);
+    await abortSession(
+      run.connection,
+      run.sessionId,
+      AbortSignal.timeout(10_000),
+    ).catch(() => undefined);
   }
   run.abort.abort();
   finish(run, "aborted", answerText(run) || "The run was stopped.");
+  return true;
 }
 
-/**
- * One of the run's deliverables, fetched back through the workspace server.
- *
- * The bytes are never served from a path the caller supplies: the artifact id
- * has to be one this run reported, so a crafted id cannot walk out of the
- * outbox even though the server would also refuse it.
- */
-export async function readRunArtifact(
-  userId: number,
-  runId: string,
-  artifactId: string,
-): Promise<{ bytes: Buffer; contentType: string; path: string }> {
-  const run = requireRun(userId, runId);
-  const artifact = run.artifacts.find((item) => item.id === artifactId);
-  if (!artifact || !run.connection) throw new Error("artifact_not_found");
-  const { bytes, contentType } = await readArtifact(run.connection, artifactId);
-  return { bytes, contentType, path: artifact.path };
-}
+/** Protocol controls consumed only by the fixed Runtime V2 adapter. */
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
+export const abortRuntimeWorkerRun = abortRun;
 
-/**
- * Register the handler that writes the finished turn into the chat transcript.
- * A run that has already finished calls it at once, so a handler attached after
- * a fast run still gets its result.
- */
-export function onTerminal(
-  userId: number,
-  runId: string,
-  handler: (result: OpenworkTerminalResult) => void,
-): void {
-  const run = requireRun(userId, runId);
-  run.terminalHandler = handler;
-  if (run.terminalResult) handler(run.terminalResult);
+/** Test seam: a production disposable worker has one run and exits. */
+export function resetOpenworkRuns(): void {
+  for (const run of runs.values()) run.abort.abort();
+  runs.clear();
 }

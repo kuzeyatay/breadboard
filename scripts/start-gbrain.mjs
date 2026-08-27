@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Focused launcher for the Breadboard GBrain adapter (Bun sidecar).
+// Focused launcher for the Breadboard GBrain adapter (Node sidecar).
 //
 // Honors GBRAIN_MODE: `disabled` exits immediately (no process), `preferred` and
 // `required` launch the loopback adapter. The adapter binds only to 127.0.0.1 and
@@ -27,8 +27,7 @@ if (mode === "disabled") {
   process.exit(0);
 }
 
-const bun = process.platform === "win32" ? "bun.exe" : "bun";
-const adapterEntry = path.join(repoRoot, "gbrain-adapter", "src", "server.ts");
+const adapterEntry = path.join(repoRoot, "gbrain-adapter", "src", "node-entrypoint.mjs");
 
 const secret = process.env.GBRAIN_ADAPTER_SECRET?.trim() || crypto.randomBytes(24).toString("hex");
 const dataDir =
@@ -71,7 +70,11 @@ await exitIfAlreadyRunning("gbrain", {
   acceptStatuses: [200, 204, 400, 404, 405],
 });
 
-const child = spawn(bun, ["run", adapterEntry], { cwd: repoRoot, env, stdio: "inherit" });
+const child = spawn(
+  process.execPath,
+  ["--no-warnings", "--experimental-transform-types", adapterEntry],
+  { cwd: repoRoot, env, stdio: "inherit" },
+);
 child.on("error", (error) => {
   process.stderr.write(`[gbrain] failed to spawn adapter: ${error.message}\n`);
   process.exit(mode === "required" ? 1 : 0);

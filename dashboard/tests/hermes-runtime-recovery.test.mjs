@@ -24,7 +24,7 @@ test("every Breadboard Hermes session permanently includes real web lookup", asy
     title: "Web invariant",
   });
   const create = requests.find((request) => request.method === "session.create");
-  assert.deepEqual(create.params.enabled_toolsets, ["breadboard", "web"]);
+  assert.deepEqual(create.params.enabled_toolsets, ["breadboard", "web", "tokenjuice"]);
   const capabilities = await adapter.listCapabilities();
   assert.ok(capabilities.tools.includes("web_search"));
   assert.ok(capabilities.tools.includes("web_extract"));

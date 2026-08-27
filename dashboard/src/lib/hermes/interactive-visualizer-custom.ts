@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import path from "node:path";
 import { build } from "esbuild";
 import ts from "typescript";
 import { interactiveVisualizerConfig } from "./interactive-visualizer-config.ts";
@@ -8,6 +9,11 @@ import {
   type InteractiveVisualizerPlan,
   type InteractiveVisualizerValidation,
 } from "./interactive-visualizer-types.ts";
+
+// Workers execute from a per-attempt data directory, which must never become
+// a package-resolution authority. Resolve Three.js and other reviewed browser
+// dependencies from dashboard/ in both source and staged worker layouts.
+const interactiveVisualizerModuleRoot = path.resolve(import.meta.dirname, "..", "..", "..");
 
 export const CUSTOM_INTERACTIVE_VISUALIZER_SCHEMA_VERSION = 2;
 export const CUSTOM_INTERACTIVE_VISUALIZER_RUNTIME_VERSION = "2.0.0";
@@ -396,12 +402,22 @@ async function customBootstrap(mode: InteractiveVisualizerMode): Promise<string>
   const source = `${three}
 const protocol="breadboard:interactive-visualizer:v1";
 const params=new URLSearchParams(location.search);const channel=params.get("channel")||"standalone";
-const send=(type,payload={})=>parent.postMessage({protocol,type,channel,...payload},"*");
+const cleanups=[];let disposed=false;
+const addCleanup=cleanup=>{if(disposed){try{cleanup()}catch{}}else cleanups.push(cleanup)};
+const dispose=()=>{if(disposed)return;disposed=true;for(const cleanup of cleanups.splice(0).reverse()){try{cleanup()}catch{}}};
+const send=(type,payload={})=>{if(!disposed)parent.postMessage({protocol,type,channel,...payload},"*")};
 document.documentElement.dataset.theme=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";
-addEventListener("message",event=>{const data=event.data;if(event.source!==parent||!data||data.protocol!==protocol||data.channel!==channel)return;if(data.type==="host-theme"&&(data.theme==="light"||data.theme==="dark")){document.documentElement.dataset.theme=data.theme;dispatchEvent(new CustomEvent("breadboard:themechange",{detail:{theme:data.theme}}))}if(data.type==="host-presentation"&&data.presentation==="inline")document.documentElement.dataset.presentation="inline"});
-globalThis.__BREADBOARD_VISUALIZER__={mode:${JSON.stringify(mode)},three:${mode === "2d" ? "false" : "true"},send};`;
+const onHostMessage=event=>{const data=event.data;if(event.source!==parent||!data||data.protocol!==protocol||data.channel!==channel)return;if(data.type==="host-dispose"){dispose();return}if(data.type==="host-theme"&&(data.theme==="light"||data.theme==="dark")){document.documentElement.dataset.theme=data.theme;dispatchEvent(new CustomEvent("breadboard:themechange",{detail:{theme:data.theme}}))}if(data.type==="host-presentation"&&data.presentation==="inline")document.documentElement.dataset.presentation="inline"};
+addEventListener("message",onHostMessage);addCleanup(()=>removeEventListener("message",onHostMessage));
+addEventListener("pagehide",dispose,{once:true});addEventListener("beforeunload",dispose,{once:true});
+globalThis.__BREADBOARD_VISUALIZER__={mode:${JSON.stringify(mode)},three:${mode === "2d" ? "false" : "true"},send,addCleanup,dispose};`;
   const result = await build({
-    stdin: { contents: source, resolveDir: process.cwd(), sourcefile: "custom-visualizer-bootstrap.ts", loader: "ts" },
+    stdin: {
+      contents: source,
+      resolveDir: interactiveVisualizerModuleRoot,
+      sourcefile: "custom-visualizer-bootstrap.ts",
+      loader: "ts",
+    },
     bundle: true,
     write: false,
     minify: true,
@@ -448,25 +464,32 @@ export async function bundleCustomInteractiveVisualizer(
   const runner = `
 (function(){
   const html=document.documentElement,app=document.getElementById("app");
+  const api=globalThis.__BREADBOARD_VISUALIZER__;
   let webgl=true;
-  if(${needsWebgl}){try{const probe=document.createElement("canvas");webgl=!!(probe.getContext("webgl2")||probe.getContext("webgl"));}catch{webgl=false}}
-  if(!webgl){app.replaceChildren(Object.assign(document.createElement("p"),{className:"viz-fallback",textContent:"3D rendering is unavailable on this device."}));}
+  if(${needsWebgl}){try{const probe=document.createElement("canvas"),context=probe.getContext("webgl2")||probe.getContext("webgl");webgl=!!context;context&&context.getExtension("WEBGL_lose_context")?.loseContext();probe.width=0;probe.height=0}catch{webgl=false}}
+  delete html.dataset.breadboardWebglFallback;
+  if(!webgl){html.dataset.breadboardWebglFallback="rendered";app.replaceChildren(Object.assign(document.createElement("p"),{className:"viz-fallback",textContent:"3D rendering is unavailable on this device."}));}
   else{try{${scriptSafe(generated)}}catch(error){html.dataset.breadboardRuntimeTests="failed";app.replaceChildren(Object.assign(document.createElement("p"),{className:"viz-fallback",textContent:"This visualization could not start."}));console.error(error)}}
+  api.addCleanup(()=>{
+    document.querySelectorAll("audio,video").forEach(media=>{try{media.pause();media.removeAttribute("src");media.load()}catch{}});
+    document.querySelectorAll("canvas").forEach(canvas=>{try{const context=canvas.getContext("webgl2")||canvas.getContext("webgl");context&&context.getExtension("WEBGL_lose_context")?.loseContext()}catch{}canvas.width=0;canvas.height=0});
+  });
   const inspectOverflow=()=>{
     const viewport=html.clientWidth;
     const overflowing=[...document.body.querySelectorAll("*")].some(node=>{const rect=node.getBoundingClientRect(),style=getComputedStyle(node);return rect.right>viewport+2||rect.left<-2||(style.overflowX==="visible"&&node.scrollWidth>node.clientWidth+2)});
     html.dataset.breadboardOverflow=overflowing?"true":"false";
   };
-  requestAnimationFrame(()=>{
+  let overflowTimer=0;const startupFrame=requestAnimationFrame(()=>{
     const visual=app&&app.querySelector("canvas,svg");
     const focusable=app&&app.querySelector("button,input,select,[tabindex]");
     if(!html.dataset.breadboardRuntimeTests)html.dataset.breadboardRuntimeTests=visual?"passed":"failed";
     html.dataset.breadboardInteractionTests=(visual&&(focusable||${visualizer.manifest.mode !== "2d"}))?"passed":"failed";
-    inspectOverflow();setTimeout(inspectOverflow,50);
+    inspectOverflow();overflowTimer=setTimeout(inspectOverflow,50);
     if(${visualizer.manifest.mode !== "2d"}&&visual)html.dataset.breadboardWebgl="ready";
-    const api=globalThis.__BREADBOARD_VISUALIZER__;api.send("ready",{height:html.scrollHeight});
-    new ResizeObserver(()=>{inspectOverflow();api.send("resize",{height:html.scrollHeight})}).observe(document.body);
+    api.send("ready",{height:html.scrollHeight});
+    const bodyObserver=new ResizeObserver(()=>{inspectOverflow();api.send("resize",{height:html.scrollHeight})});bodyObserver.observe(document.body);api.addCleanup(()=>bodyObserver.disconnect());
   });
+  api.addCleanup(()=>{cancelAnimationFrame(startupFrame);clearTimeout(overflowTimer)});
 })();`;
   const csp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src 'none'; worker-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
   const html = [

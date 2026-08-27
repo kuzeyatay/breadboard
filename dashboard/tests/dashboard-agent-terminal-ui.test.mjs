@@ -46,23 +46,23 @@ const runtimeHealthRoute = fs.readFileSync(
   new URL("../src/app/api/hermes/health/route.ts", import.meta.url),
   "utf8",
 );
-const developmentRuntime = fs.readFileSync(
-  new URL("../src/lib/hermes/development-runtime.ts", import.meta.url),
-  "utf8",
+const developmentRuntimeUrl = new URL(
+  "../src/lib/hermes/development-runtime.ts",
+  import.meta.url,
 );
 
 test("Hermes terminal uses the original Breadboard terminal shell", () => {
   assert.match(terminal, /breadboard:knowledge-terminal-height/);
   assert.match(
     terminal,
-    /: isOpen\s*\? "var\(--paper-surface\)"\s*: "var\(--terminal-bar\)"/,
+    /background: glassActive[\s\S]{0,180}?bodyMounted[\s\S]{0,120}?"var\(--paper-surface\)"[\s\S]{0,80}?"var\(--terminal-bar\)"/,
   );
   assert.match(
     terminal,
-    /style=\{\{ background: glassActive \? "transparent" : "var\(--terminal-bar\)" \}\}/,
+    /style=\{\{[\s\S]{0,80}?background: glassActive \? "transparent" : "var\(--terminal-bar\)"[\s\S]{0,40}?\}\}/,
   );
   // The rail is opened and closed by its own edge, not by a toolbar button.
-  assert.match(terminalSidebar, /aria-label="Toggle the sidebar"/);
+  assert.match(terminalSidebar, /name="Toggle the sidebar"/);
   assert.doesNotMatch(terminal, /aria-label="Toggle the sidebar"/);
   // New chat and Recents live in the rail the divider opens.
   assert.match(terminalSidebar, /label="New chat"/);
@@ -112,7 +112,7 @@ test("the dock slides open rather than growing open", () => {
 test("the brown terminal header toggles fully open and fully closed", () => {
   assert.match(
     terminal,
-    /function defaultOpenHeight\(\): number \{\s*return maxHeight\(\);\s*\}/,
+    /function openHeight\(preferred: number \| null\): number \{[\s\S]{0,600}?return preferred === null\s*\? max\s*:\s*Math\.min\(Math\.max\(preferred, MIN_OPEN_HEIGHT\), max\);\s*\}/,
   );
   assert.match(
     terminal,
@@ -124,14 +124,11 @@ test("the brown terminal header toggles fully open and fully closed", () => {
   );
   assert.match(
     terminal,
-    /wasOpen[\s\S]*?\? COLLAPSED_HEIGHT[\s\S]*?preferredOpenHeightRef\.current \?\? defaultOpenHeight\(\)/,
+    /const target = open\s*\? openHeight\(preferredOpenHeightRef\.current\)\s*: COLLAPSED_HEIGHT/,
   );
-  assert.match(terminal, /aria-label=\{isOpen \? undefined : "Open terminal"\}/);
+  assert.match(terminal, /aria-label=\{isOpen \? undefined : `Open terminal\$\{unreadSuffix\}`\}/);
   assert.match(terminal, /event\.key === "Enter" \|\| event\.key === " "/);
-  assert.match(
-    terminal,
-    /setHeight\(preferredOpenHeightRef\.current \?\? defaultOpenHeight\(\)\)/,
-  );
+  assert.match(terminal, /toggleDock\(true\)/);
 });
 
 test("opening the terminal puts the native caret in the chat field", () => {
@@ -151,12 +148,18 @@ test("the terminal always starts collapsed and uses saved height only after open
     assert.match(source, /useState\(COLLAPSED_HEIGHT\)/);
     assert.match(source, /preferredOpenHeightRef\.current = clampHeight\(saved(?:Height)?\)/);
     assert.doesNotMatch(source, /setHeight\(clampHeight\(saved(?:Height)?\)\)/);
-    assert.match(source, /if \(height <= COLLAPSED_HEIGHT \+ 8\) return/);
   }
+  assert.match(terminal, /if \(height < minOpenHeight\(\)\) return/);
+  assert.match(legacyTerminal, /if \(height <= COLLAPSED_HEIGHT \+ 8\) return/);
 });
 
 test("the collapsed terminal bar has no implementation-status copy", () => {
-  assert.match(lazyTerminal, />\s*Terminal\s*<\/button>/);
+  assert.match(
+    lazyTerminal,
+    /import DashboardAgentTerminal from "\.\/dashboard-agent-terminal"/,
+  );
+  assert.match(lazyTerminal, /<DashboardAgentTerminal \{\.\.\.props\} \/>/);
+  assert.doesNotMatch(lazyTerminal, /next\/dynamic|loading:|Loading Terminal|setEnabled|onClick/);
   assert.doesNotMatch(lazyTerminal, /open when needed/i);
 });
 
@@ -252,13 +255,12 @@ test("the red terminal status offers a transcript-preserving reconnect action", 
     /acquireServiceLease\("hermes", "terminal-reconnect"\)/,
   );
   assert.match(runtimeHealthRoute, /releaseSupervisorLease\(lease\)/);
-  assert.match(
+  assert.equal(fs.existsSync(developmentRuntimeUrl), false);
+  assert.doesNotMatch(
     runtimeHealthRoute,
-    /if \(!lease\) \{[\s\S]*ensureDevelopmentHermesRuntime/,
+    /node:child_process|ensureDevelopmentHermesRuntime|start-hermes\.mjs/,
   );
-  assert.match(developmentRuntime, /process\.env\.NODE_ENV !== "development"/);
-  assert.match(developmentRuntime, /scripts", "start-hermes\.mjs"/);
-  assert.match(developmentRuntime, /__breadboardHermesDevelopmentStart/);
+  assert.match(runtimeHealthRoute, /never launch[\s\S]{0,80}detached child/);
   assert.doesNotMatch(refreshHealth, /status: "checking"/);
   assert.match(terminal, /if \(!runtimeReady\) return/);
   assert.match(
@@ -360,7 +362,10 @@ test("active conversations show a small spinner beside their row controls", () =
 });
 
 test("initial transcript and Recents loading use the same text-free circle", () => {
-  assert.match(runtime, /<BreadboardLoader label="Loading this chat" \/>/);
+  assert.match(
+    runtime,
+    /<BreadboardLoader[\s\S]{0,120}?label="Loading this chat"[\s\S]{0,120}?\/>/,
+  );
   assert.match(historyControls, /export function ChatHistoryLoading/);
   assert.match(historyControls, /<SpinnerIcon className="h-3\.5 w-3\.5" \/>/);
   assert.doesNotMatch(historyControls, /<span>\{label\}<\/span>/);
@@ -372,7 +377,7 @@ test("initial transcript and Recents loading use the same text-free circle", () 
 test("a fully open terminal stops the page behind it from scrolling", () => {
   const start = terminal.indexOf("const previousOverflow = body.style.overflow;");
   assert.ok(start > 0, "the terminal must remember the page's own overflow before locking it");
-  const lock = terminal.slice(start - 400, start + 900);
+  const lock = terminal.slice(start - 400, start + 2_400);
 
   // Only at full height: a part-open dock still shows the page, which must
   // keep scrolling. `isOpen` is the wrong trigger — it is true at any height.
@@ -390,7 +395,7 @@ test("a fully open terminal stops the page behind it from scrolling", () => {
   assert.match(lock, /body\.style\.overflow = previousOverflow;[\s\S]*body\.style\.paddingRight = previousPaddingRight;/);
 
   // Re-runs as the dock is dragged, so releasing below full height unlocks.
-  const effectTail = terminal.slice(start, start + 1400);
+  const effectTail = terminal.slice(start, start + 2_800);
   assert.match(effectTail, /\}, \[height\]\);/);
 });
 
@@ -440,7 +445,7 @@ test("a message queues while its chat is still loading", () => {
   // agent cannot bind its run to a conversation that has not settled either.
   assert.match(
     terminal,
-    /const submit = useCallback\([\s\S]{0,400}if \(session\.loadingSession\) return;/,
+    /const submit = useCallback\([\s\S]{0,800}if \(session\.loadingSession \|\| openGymRoutingRef\.current\) return;/,
   );
   // The terminal's empty-state openers used to be a second dispatch path and
   // carried the same guard. They now only fill the composer, so submit is the

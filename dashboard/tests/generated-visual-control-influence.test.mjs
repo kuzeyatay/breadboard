@@ -4,10 +4,10 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  compileGeneratedVisualization,
   runGeneratedVisualDeterministicTests,
   validateGeneratedVisualizationDefinition,
 } from "../src/lib/generated-visuals.ts";
+import { compileGeneratedVisualization } from "../src/lib/generated-visual-compiler.ts";
 
 const controls = [
   {

@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 
 
-CONFIG_DIR = Path.home() / ".config" / "watch"
+CONFIG_DIR = Path(
+    os.environ.get("WATCH_CONFIG_DIR") or (Path.home() / ".config" / "watch")
+).expanduser().resolve()
 CONFIG_FILE = CONFIG_DIR / ".env"
 
 DEFAULT_DETAIL = "balanced"

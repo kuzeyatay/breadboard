@@ -17,13 +17,18 @@ import {
   type DeepResearchMode,
 } from "./config.ts";
 import { DEEP_RESEARCH_AGENT_ID } from "./identity.ts";
-import { ensureDeepResearchService } from "./runtime.ts";
 import type { EvidenceWebsite } from "../hermes/evidence.ts";
 import { composeAgentMemoryContext } from "../conversations/agent-memory-context.ts";
 import {
   contextSection,
   conversationContextFromBody,
 } from "../conversations/agent-context.ts";
+import { randomUUID } from "node:crypto";
+import {
+  isRuntimeV2ServiceControlConfigured,
+  readSupervisedServiceSnapshot,
+} from "../supervisor-control.ts";
+import { readOuterAgentRunView } from "../runtime-v2/outer-agent-run.ts";
 
 export class DeepResearchError extends Error {
   status: number;
@@ -36,9 +41,9 @@ export class DeepResearchError extends Error {
   }
 }
 
-export type RuntimeState = "available" | "unavailable" | "misconfigured" | "disabled";
+export type RuntimeState = "available" | "unavailable" | "misconfigured";
 
-const DISABLED_HEALTH: ServiceHealth = {
+const STOPPED_HEALTH: ServiceHealth = {
   status: "unavailable",
   engine: null,
   version: null,
@@ -49,52 +54,23 @@ const DISABLED_HEALTH: ServiceHealth = {
   activeRuns: 0,
 };
 
-// Per-user launch rate limiting. A run costs model quota and search credits, so
-// the ceiling is low and deliberate.
-const buckets = new Map<string, { count: number; resetAt: number }>();
-function rateLimit(key: string, max: number, windowMs: number): void {
-  const now = Date.now();
-  const bucket = buckets.get(key);
-  if (!bucket || now > bucket.resetAt) {
-    buckets.set(key, { count: 1, resetAt: now + windowMs });
-    return;
-  }
-  if (bucket.count >= max) throw new DeepResearchError(429, "rate_limited");
-  bucket.count += 1;
-}
-
 function client(): DeepResearchClient {
   return new DeepResearchClient(resolveDeepResearchConfig());
 }
 
-function isRecoverableConnectionFailure(error: unknown): boolean {
-  return (
-    error instanceof ClientError &&
-    (error.code === "unavailable" || error.code === "timeout")
-  );
-}
-
-/** Map a client-side failure code onto an HTTP-shaped service error. */
 function translate(error: unknown): DeepResearchError {
   if (error instanceof DeepResearchError) return error;
   if (error instanceof ClientError) {
-    switch (error.code) {
-      case "unauthorized":
-        return new DeepResearchError(503, "service_misconfigured");
-      case "run_not_found":
-        return new DeepResearchError(404, "run_not_found");
-      case "search_not_configured":
-        return new DeepResearchError(409, "search_not_configured");
-      case "model_not_configured":
-        return new DeepResearchError(409, "model_not_configured");
-      case "too_many_runs":
-        return new DeepResearchError(429, "too_many_runs");
-      case "timeout":
-      case "unavailable":
-        return new DeepResearchError(503, "service_unavailable");
-      default:
-        return new DeepResearchError(502, error.code);
-    }
+    const status = error.code === "run_not_found"
+      ? 404
+      : error.code === "too_many_runs"
+        ? 429
+        : ["search_not_configured", "model_not_configured"].includes(error.code)
+          ? 409
+          : ["unauthorized", "timeout", "unavailable"].includes(error.code)
+            ? 503
+            : 502;
+    return new DeepResearchError(status, error.code);
   }
   return new DeepResearchError(500, "internal_error");
 }
@@ -109,17 +85,23 @@ export async function health(): Promise<{
   health: ServiceHealth;
 }> {
   const currentMode = deepResearchMode();
-  if (currentMode === "disabled") {
-    return { mode: currentMode, runtimeState: "disabled", health: DISABLED_HEALTH };
+  if (isRuntimeV2ServiceControlConfigured()) {
+    const snapshot = await readSupervisedServiceSnapshot("deep-research");
+    if (!snapshot) {
+      return { mode: currentMode, runtimeState: "unavailable", health: STOPPED_HEALTH };
+    }
+    if (snapshot.state === "available-but-stopped" || snapshot.state === "stopped") {
+      return { mode: currentMode, runtimeState: "available", health: STOPPED_HEALTH };
+    }
+    if (
+      snapshot.state === "installation-unavailable" ||
+      snapshot.state === "resource-blocked" ||
+      snapshot.state === "failed"
+    ) {
+      return { mode: currentMode, runtimeState: "unavailable", health: STOPPED_HEALTH };
+    }
   }
-  let serviceHealth = await client().health();
-  if (
-    serviceHealth.status !== "healthy" &&
-    resolveDeepResearchConfig().secret.trim()
-  ) {
-    await ensureDeepResearchService();
-    serviceHealth = await client().health();
-  }
+  const serviceHealth = await client().health();
   const runtimeState: RuntimeState =
     serviceHealth.status !== "healthy"
       ? "unavailable"
@@ -129,58 +111,37 @@ export async function health(): Promise<{
   return { mode: currentMode, runtimeState, health: serviceHealth };
 }
 
-/** The launching chat, when the caller sent one. Never required. */
-function conversationPublicIdFrom(body: unknown): string | null {
-  if (typeof body !== "object" || body === null) return null;
-  const value = (body as Record<string, unknown>).conversationPublicId;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function requireEnabled(): void {
-  if (deepResearchMode() === "disabled") throw new DeepResearchError(409, "deep_research_disabled");
+/**
+ * Worker-internal direct sidecar API used by Max Research's optional nested
+ * participant. Public Deep Research routes never call these functions; their
+ * finite attempts go through runtime-run-manager.ts. The Max coordinator is
+ * itself a fresh Runtime worker and receives only this service capability.
+ */
+export async function startRun(userId: number, body: unknown): Promise<RunSummary> {
   if (!resolveDeepResearchConfig().secret) {
-    // Without the shared secret every call would 401; say so instead of
-    // reporting the service as merely "down".
     throw new DeepResearchError(503, "service_misconfigured");
   }
-}
-
-export async function startRun(userId: number, body: unknown): Promise<RunSummary> {
-  requireEnabled();
-  await ensureDeepResearchService();
   const validated = validateRunRequest(body);
   if (!validated.ok) throw new DeepResearchError(400, validated.error);
-  rateLimit(`run:${userId}`, 5, 10 * 60 * 1000);
-  // Durable memory about the user, selected against this question. Never blocks
-  // the run: an unavailable memory layer resolves to no context. It travels as
-  // its own field rather than inside the query, which the engine embeds in a
-  // <prompt> tag to generate search terms — memory belongs in the system
-  // prompt, not in what gets searched for.
+  const request = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  const conversationPublicId = typeof request.conversationPublicId === "string"
+    ? request.conversationPublicId.trim() || null
+    : null;
   const memory = await composeAgentMemoryContext({
     userId,
     agentId: DEEP_RESEARCH_AGENT_ID,
     query: validated.value.query,
-    // Carried alongside the validated request rather than inside it: the run
-    // itself has no use for the chat id, only the memory gate does.
-    conversationPublicId: conversationPublicIdFrom(body),
+    conversationPublicId,
   });
   try {
     return await client().createRun({
+      runId: `drrun_${randomUUID().replaceAll("-", "")}`,
       ownerUserId: userId,
       ...validated.value,
-      // The chat travels here for the same reason the memory does: the query
-      // is what gets searched for, and an earlier message is background.
       userContext: [
         memory?.text ?? "",
-        contextSection(
-          conversationContextFromBody(
-            userId,
-            body && typeof body === "object" ? (body as Record<string, unknown>) : {},
-          ),
-        ),
-      ]
-        .filter((section) => section.trim())
-        .join("\n\n"),
+        contextSection(conversationContextFromBody(userId, request)),
+      ].filter((section) => section.trim()).join("\n\n"),
     });
   } catch (error) {
     throw translate(error);
@@ -188,7 +149,6 @@ export async function startRun(userId: number, body: unknown): Promise<RunSummar
 }
 
 export async function getRun(userId: number, runId: string): Promise<RunSummary> {
-  requireEnabled();
   try {
     return await client().getRun(runId, userId);
   } catch (error) {
@@ -201,27 +161,14 @@ export async function listEvents(
   runId: string,
   since: number,
 ): Promise<RunEvent[]> {
-  requireEnabled();
   try {
     return await client().eventsSince(runId, userId, since);
   } catch (error) {
-    if (!isRecoverableConnectionFailure(error)) throw translate(error);
-
-    // A run can outlive the Next.js worker that launched the bundled sidecar.
-    // Restart it while the event stream is still polling. Its durable snapshot
-    // then becomes an explicit service_restarted failure, which lets the chat
-    // persist a truthful terminal state instead of counting forever.
-    if (!(await ensureDeepResearchService())) throw translate(error);
-    try {
-      return await client().eventsSince(runId, userId, since);
-    } catch (retryError) {
-      throw translate(retryError);
-    }
+    throw translate(error);
   }
 }
 
 export async function abortRun(userId: number, runId: string): Promise<RunSummary> {
-  requireEnabled();
   try {
     return await client().abort(runId, userId);
   } catch (error) {
@@ -239,19 +186,24 @@ export async function abortRun(userId: number, runId: string): Promise<RunSummar
  * the browser's, so a listed source is one the run really registered.
  *
  * Never throws and never blocks: an unavailable service, a pruned run or a
- * disabled integration all resolve to an empty list, which the panel renders as
+ * unavailable integration all resolve to an empty list, which the panel renders as
  * the same "no sources" it would have shown anyway.
  */
 export async function runWebsites(
   userId: number,
   runId: string,
 ): Promise<EvidenceWebsite[]> {
-  if (deepResearchMode() === "disabled") return [];
-  let events: RunEvent[];
+  let events: readonly RunEvent[];
   try {
-    events = await listEvents(userId, runId, 0);
+    events = (await readOuterAgentRunView("deep-research", userId, runId, 0)).events;
   } catch {
-    return [];
+    try {
+      // Max Research can run an optional nested participant directly inside
+      // its own Runtime worker; that sidecar sub-run has no outer correlation.
+      events = await client().eventsSince(runId, userId, 0);
+    } catch {
+      return [];
+    }
   }
 
   const byUrl = new Map<string, EvidenceWebsite>();

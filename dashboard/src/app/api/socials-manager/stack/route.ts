@@ -16,7 +16,7 @@ export const runtime = "nodejs";
  */
 export async function GET(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const config = resolveSocialsManagerConfig();
     if (config.mode !== "stack") {
       return NextResponse.json({
@@ -30,7 +30,7 @@ export async function GET(request: Request) {
       ok: true,
       mode: config.mode,
       url: config.baseUrl,
-      status: await observeStack(config, { probeDocker }),
+      status: await observeStack(config, { userId }, { probeDocker }),
     });
   } catch (error) {
     if (error instanceof RouteError) {
@@ -50,8 +50,12 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
-    await requireUserId();
-    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const userId = await requireUserId();
+    const text = await request.text();
+    if (Buffer.byteLength(text, "utf8") > 8 * 1024) {
+      return NextResponse.json({ ok: false, error: "payload_too_large" }, { status: 413 });
+    }
+    const body = (text ? JSON.parse(text) : {}) as Record<string, unknown>;
     const action = typeof body.action === "string" ? body.action : "start";
     const config = resolveSocialsManagerConfig();
     if (config.mode !== "stack") {
@@ -61,14 +65,18 @@ export async function POST(request: Request) {
       );
     }
     if (action === "stop") {
-      return NextResponse.json({ ok: true, stopped: await deactivateStack(config) });
+      return NextResponse.json({ ok: true, stopped: await deactivateStack(config, { userId }) });
     }
     const outcome = await activateStack(config, {
+      scope: { userId },
       reason: "manual",
       timeoutMs: config.readyTimeoutMs,
     });
     return NextResponse.json({ ok: true, status: outcome });
   } catch (error) {
+    if (error instanceof SyntaxError) {
+      return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
+    }
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }

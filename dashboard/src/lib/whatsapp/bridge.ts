@@ -119,7 +119,6 @@ export class WhatsAppBridge {
   private pairProcess: ChildProcess | null = null;
   private pairCancelled = false;
   private gatewayProcess: ChildProcess | null = null;
-  private installPromise: Promise<void> | null = null;
   private pairingPromise: Promise<PairingOutcome> | null = null;
   private onPaired: ((outcome: PairingOutcome) => void) | null = null;
 
@@ -177,10 +176,7 @@ export class WhatsAppBridge {
     };
   }
 
-  /**
-   * Install the bridge's npm dependencies. This is what `hermes whatsapp` does
-   * before showing a QR code, and it is the slow part of a first connect.
-   */
+  /** Verify the immutable packaged bridge closure before starting a child. */
   async ensureDependencies(): Promise<void> {
     if (bridgeDependenciesInstalled()) return;
     if (!bridgeScriptAvailable()) {
@@ -188,46 +184,11 @@ export class WhatsAppBridge {
         `The Hermes WhatsApp bridge was not found at ${whatsAppBridgeScript()}.`,
       );
     }
-    if (this.installPromise) return this.installPromise;
-
-    this.setState("installing");
-    this.installPromise = new Promise<void>((resolve, reject) => {
-      const command = process.platform === "win32" ? "npm.cmd" : "npm";
-      // Fixed arguments only — nothing here is derived from user input.
-      const child = spawn(command, ["install", "--omit=dev", "--no-audit", "--no-fund"], {
-        cwd: whatsAppBridgeDir(),
-        env: process.env,
-        windowsHide: true,
-        shell: process.platform === "win32",
-      });
-      const timer = setTimeout(() => {
-        child.kill();
-        reject(new Error("Installing the WhatsApp bridge dependencies timed out."));
-      }, whatsAppTimings().installTimeoutMs);
-      timer.unref?.();
-
-      child.stdout?.on("data", (chunk: Buffer) => this.appendLog(String(chunk)));
-      child.stderr?.on("data", (chunk: Buffer) => this.appendLog(String(chunk)));
-      child.on("error", (cause) => {
-        clearTimeout(timer);
-        reject(new Error(`npm could not be started: ${cause.message}`));
-      });
-      child.on("exit", (code) => {
-        clearTimeout(timer);
-        if (code === 0 && bridgeDependenciesInstalled()) resolve();
-        else reject(new Error(`Installing the WhatsApp bridge failed (npm exit ${code}).`));
-      });
-    })
-      .finally(() => {
-        this.installPromise = null;
-      });
-
-    try {
-      await this.installPromise;
-    } catch (cause) {
-      this.setState("error", cause instanceof Error ? cause.message : String(cause));
-      throw cause;
-    }
+    const error = new Error(
+      "The packaged WhatsApp bridge dependencies are unavailable. Repair or reinstall Breadboard.",
+    );
+    this.setState("error", error.message);
+    throw error;
   }
 
   /**

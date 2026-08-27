@@ -23,7 +23,7 @@ import {
   type TutorRequest,
 } from "./identity.ts";
 import { provisionHome } from "./home.ts";
-import { ensureIndex, knowledgeBaseForTurn, type IndexState } from "./knowledge-base.ts";
+import { indexState, knowledgeBaseForTurn, type IndexState } from "./knowledge-base.ts";
 import { resolveScope, selectEagerMaterial, type ScopeInput, type TutorScope } from "./materials.ts";
 import {
   bridgeScriptPath,
@@ -166,8 +166,9 @@ function clearSessionId(home: string): void {
 
 // --- the run ---------------------------------------------------------------
 
-export interface StartRunInput {
+export interface DeepTutorRuntimeWorkerRunInput {
   userId: number;
+  runtimeJobId?: string;
   request: TutorRequest;
   scope: ScopeInput;
   /** The chat's model — the tutor answers on the same one. */
@@ -179,7 +180,10 @@ export interface StartRunInput {
   conversationContext?: string;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
+/** Fixed Runtime worker entrypoint. Next.js routes must call `startRun`. */
+export function startRuntimeWorkerRun(
+  input: DeepTutorRuntimeWorkerRunInput,
+): { runId: string; status: RunStatus } {
   const runtime = resolveDeepTutorRoot();
   if (!runtime) throw new Error("The DeepTutor clone was not found next to the dashboard.");
   const python = venvPython(runtime.root);
@@ -202,7 +206,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
     language: input.request.language,
   });
 
-  const runId = `dtrun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId ?? `dtrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -241,7 +245,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
 
 function drive(
   run: RunState,
-  input: StartRunInput,
+  input: DeepTutorRuntimeWorkerRunInput,
   paths: { python: string; bridge: string; root: string; materialsMounted: boolean },
 ): void {
   if (run.request.fresh) clearSessionId(run.home);
@@ -249,14 +253,12 @@ function drive(
   const sessionId = pointer.sessionId;
 
   // Retrieval, when the Garden's index is genuinely current. A missing or
-  // out-of-date index starts rebuilding here and is not waited for: this turn
-  // answers from the file tools, and the next one gets `rag`.
+  // Index building is a separate Runtime V2 job. A disposable tutoring worker
+  // may consume a ready index, but must never leave a detached builder behind.
   const knowledgeBase = run.request.useMaterial
     ? knowledgeBaseForTurn(run.userId, run.scope)
     : null;
-  const index = run.request.useMaterial
-    ? ensureIndex(run.userId, run.scope).state
-    : null;
+  const index = run.request.useMaterial ? indexState(run.userId, run.scope) : null;
 
   // Eager attachments are how a turn is grounded before the first model call.
   // With retrieval available the tutor can fetch what it needs itself, so the
@@ -598,15 +600,19 @@ function scheduleCleanup(run: RunState): void {
   timer.unref?.();
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): DeepTutorEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): DeepTutorEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;
@@ -624,4 +630,59 @@ export function abortRun(userId: number, runId: string): boolean {
   });
   scheduleCleanup(run);
   return true;
+}
+
+export interface StartRunInput {
+  userId: number;
+  requestId?: string;
+  request: TutorRequest;
+  scope: ScopeInput;
+  model: string;
+  reasoningEffort: string;
+  baseUrl: string;
+  conversationContext?: string;
+}
+
+/** Public durable facade. Runtime V2, rather than Next.js, owns the process tree. */
+export async function startRun(
+  input: StartRunInput,
+): Promise<{ runId: string; status: RunStatus }> {
+  const { startOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return startOuterAgentRun({
+    kind: "deep-tutor",
+    userId: input.userId,
+    requestId: input.requestId,
+    requestPayload: {
+      request: input.request,
+      scope: {
+        surface: input.scope.surface,
+        clusterSlug: input.scope.clusterSlug ?? null,
+        gardenName: input.scope.gardenName ?? null,
+      },
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      baseUrl: input.baseUrl,
+      conversationContext: input.conversationContext ?? "",
+    },
+  }) as Promise<{ runId: string; status: RunStatus }>;
+}
+
+export async function getEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): Promise<DeepTutorEvent[]> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  const view = await readOuterAgentRunView("deep-tutor", userId, runId, since);
+  return view.events as DeepTutorEvent[];
+}
+
+export async function isTerminal(userId: number, runId: string): Promise<boolean> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  return (await readOuterAgentRunView("deep-tutor", userId, runId, 0)).terminal;
+}
+
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
+  const { abortOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return abortOuterAgentRun("deep-tutor", userId, runId);
 }

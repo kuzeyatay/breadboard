@@ -25,7 +25,22 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import { repositoryRoot } from "../runtime-paths.ts";
+import { LoopxError, loopxText } from "./request.ts";
+import {
+  loopxEnabled,
+  loopxPaths,
+} from "./state.ts";
+
+export { LoopxError, loopxText } from "./request.ts";
+export {
+  conversationGoalId,
+  loopxEnabled,
+  loopxGoalExists,
+  loopxHome,
+  loopxPaths,
+  type LoopxPaths,
+} from "./state.ts";
 
 const MAX_ARGUMENT_LENGTH = 4_096;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -52,41 +67,9 @@ export interface LoopxRuntime {
   packageRoot: string;
 }
 
-export interface LoopxPaths {
-  /** Root Breadboard owns; nothing LoopX writes may escape it. */
-  home: string;
-  /** Shared `--runtime-root`, replacing `~/.codex/loopx`. */
-  runtimeRoot: string;
-  /** This conversation's project directory. */
-  project: string;
-  /** This conversation's `--registry`. */
-  registry: string;
-  /** Where the cached projection for the read path lives. */
-  snapshot: string;
-  /** LoopX's own durable goal document. */
-  stateFile: string;
-  goalId: string;
-}
-
-export class LoopxError extends Error {
-  readonly code: string;
-
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "LoopxError";
-    this.code = code;
-  }
-}
-
 function configuredPath(value: string | undefined): string | null {
   const configured = value?.trim();
   return configured ? path.resolve(configured) : null;
-}
-
-export function loopxEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env.ENABLE_LOOPX?.trim().toLowerCase();
-  if (!raw) return true;
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
 }
 
 /**
@@ -117,78 +100,6 @@ export function resolveLoopxRuntime(
     }
   }
   return null;
-}
-
-/** A LoopX goal id derived from a conversation, safe as a path segment. */
-export function conversationGoalId(conversationPublicId: string): string {
-  const slug = conversationPublicId
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 48);
-  if (!slug) {
-    throw new LoopxError(
-      "loopx_invalid_conversation",
-      "A LoopX goal needs a conversation identifier.",
-    );
-  }
-  return `bb-${slug}`;
-}
-
-export function loopxHome(env: NodeJS.ProcessEnv = process.env): string {
-  return (
-    configuredPath(env.BREADBOARD_LOOPX_HOME) ??
-    path.join(dashboardDataDir(), "loopx-goals")
-  );
-}
-
-export function loopxPaths(
-  conversationPublicId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): LoopxPaths {
-  const goalId = conversationGoalId(conversationPublicId);
-  const home = loopxHome(env);
-  const project = path.join(home, "conversations", goalId);
-  return {
-    home,
-    runtimeRoot: path.join(home, "runtime"),
-    project,
-    registry: path.join(project, ".loopx", "registry.json"),
-    snapshot: path.join(project, "snapshot.json"),
-    stateFile: path.join(
-      project,
-      ".codex",
-      "goals",
-      goalId,
-      "ACTIVE_GOAL_STATE.md",
-    ),
-    goalId,
-  };
-}
-
-/** True once this conversation has durable LoopX state. */
-export function loopxGoalExists(
-  conversationPublicId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  try {
-    return fs.existsSync(loopxPaths(conversationPublicId, env).registry);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * LoopX takes free text (a goal objective, a recorded next action) as argv
- * values. Nothing is passed through a shell, so this is not quoting: it is a
- * bound on what a user message can push into durable control-plane state.
- */
-export function loopxText(value: string, limit = 400): string {
-  const flattened = value
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return flattened.slice(0, Math.min(limit, MAX_ARGUMENT_LENGTH));
 }
 
 function childEnvironment(runtime: LoopxRuntime): NodeJS.ProcessEnv {
@@ -259,6 +170,7 @@ export async function runLoopx(input: {
   timeoutMs?: number;
   runtime?: LoopxRuntime | null;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<LoopxCommandResult> {
   const env = input.env ?? process.env;
   if (!loopxEnabled(env)) {
@@ -328,11 +240,13 @@ export async function runLoopx(input: {
     let outputBytes = 0;
     let settled = false;
     let timedOut = false;
+    let cancelled = false;
 
     const finish = (error: Error | null, exitCode: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      input.signal?.removeEventListener("abort", onAbort);
       if (error) {
         reject(error);
         return;
@@ -368,6 +282,17 @@ export async function runLoopx(input: {
       void terminate(child);
     }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
+    const onAbort = () => {
+      cancelled = true;
+      void terminate(child).finally(() =>
+        finish(
+          new LoopxError("loopx_cancelled", "LoopX was cancelled."),
+          child.exitCode,
+        )
+      );
+    };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+
     const capture = (chunk: Buffer, target: "out" | "err") => {
       outputBytes += chunk.byteLength;
       if (outputBytes > MAX_OUTPUT_BYTES) {
@@ -388,6 +313,7 @@ export async function runLoopx(input: {
       finish(new LoopxError("loopx_launch_failed", "LoopX could not start."), null),
     );
     child.once("close", (code) => {
+      if (cancelled) return;
       if (timedOut) {
         finish(
           new LoopxError("loopx_timeout", "LoopX did not finish in time."),
@@ -397,5 +323,6 @@ export async function runLoopx(input: {
       }
       finish(null, code);
     });
+    if (input.signal?.aborted) onAbort();
   });
 }
