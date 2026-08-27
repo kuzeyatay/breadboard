@@ -9183,7 +9183,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_admissions_observe_one_durable_heavyweight_reservation() {
+    fn concurrent_heavyweight_admissions_observe_durable_worker_limits_only() {
         let (_directory, store) = store();
         store.submit_raw(&input("job_1", "request_1")).unwrap();
         store.submit_raw(&input("job_2", "request_2")).unwrap();
@@ -9217,35 +9217,35 @@ mod tests {
                 .iter()
                 .filter(|outcome| matches!(outcome, JobAdmissionResult::Admitted(_)))
                 .count(),
-            1
+            2
         );
         assert_eq!(
             outcomes
                 .iter()
                 .filter(|outcome| matches!(outcome, JobAdmissionResult::Denied(_)))
                 .count(),
-            1
+            0
         );
-        assert_eq!(active_reservation_count(store.as_ref()), 1);
+        assert_eq!(active_reservation_count(store.as_ref()), 2);
         let states = ["job_1", "job_2"].map(|job_id| store.get(&context(1), job_id).unwrap().state);
         assert_eq!(
             states
                 .iter()
                 .filter(|state| **state == JobState::ResourceExhausted)
                 .count(),
-            1
+            0
         );
         assert_eq!(
             states
                 .iter()
                 .filter(|state| **state == JobState::Admitted)
                 .count(),
-            1
+            2
         );
     }
 
     #[test]
-    fn packaged_pending_eager_heavyweight_blocks_global_heavyweight_admission() {
+    fn packaged_pending_eager_heavyweight_does_not_block_global_admission() {
         let (_directory, store) = store();
         store.submit_raw(&input("job_1", "request_1")).unwrap();
         insert_service_reservation(
@@ -9269,65 +9269,11 @@ mod tests {
                 },
             )
             .unwrap();
-        let JobAdmissionResult::Denied(denial) = result else {
-            panic!("expected heavyweight service denial")
-        };
-        assert_eq!(denial.resource, "heavyweight_concurrency");
-        let denied = store.get(&context(1), "job_1").unwrap();
-        assert_eq!(denied.state, JobState::ResourceExhausted);
-        assert_eq!(
-            denied.failure_code.as_deref(),
-            Some(ADMISSION_RESOURCE_EXHAUSTED_FAILURE_CODE)
-        );
-        assert_eq!(
-            denied.failure_message.as_deref(),
-            Some(ADMISSION_RESOURCE_EXHAUSTED_FAILURE_MESSAGE)
-        );
-        assert_eq!(active_job_reservation_count(&store, "job_1"), 0);
-        let events = store.events_after(&context(1), "job_1", 0, 10).unwrap();
-        let terminal = events
-            .iter()
-            .find(|event| event.event_type == "resource_exhausted")
-            .expect("permanent admission denial must append its terminal event");
-        assert_eq!(terminal.payload["state"], "resource_exhausted");
-        assert_eq!(terminal.payload["reservationCreated"], false);
-        assert_eq!(
-            terminal.payload["admissionDenial"]["resource"],
-            "heavyweight_concurrency"
-        );
-        assert_eq!(terminal.payload["admissionDenial"]["retryable"], false);
-
-        let response = crate::runtime_job_response(&denied).unwrap();
-        let breadboard_runtime_protocol::RuntimeJobResponse::RuntimeJob { job, .. } = response;
-        assert_eq!(
-            job.resource_exhaustion,
-            Some(breadboard_runtime_protocol::RuntimeResourceExhaustion {
-                resource: "windows_commit".into(),
-                required_headroom_mb: denial.required_headroom_mb,
-                available_headroom_mb: denial.available_headroom_mb,
-                retryable: false,
-            })
-        );
-        let projected = crate::runtime_job_events_response(&denied, true, 0, 10, &events).unwrap();
-        let breadboard_runtime_protocol::RuntimeJobEventsResponse::RuntimeJobEvents {
-            events: projected_events,
-            ..
-        } = projected;
-        let projected_terminal = projected_events
-            .iter()
-            .find(|event| {
-                event.event_type
-                    == breadboard_runtime_protocol::RuntimeJobEventType::JobResourceExhausted
-            })
-            .unwrap();
-        assert_eq!(
-            projected_terminal.payload.resource_exhaustion,
-            job.resource_exhaustion
-        );
-        let encoded = serde_json::to_string(projected_terminal).unwrap();
-        assert!(!encoded.contains("reason"));
-        assert!(!encoded.contains("heavyweight_concurrency"));
-        assert!(!encoded.contains("admissionDenial"));
+        assert!(matches!(result, JobAdmissionResult::Admitted(_)));
+        let admitted = store.get(&context(1), "job_1").unwrap();
+        assert_eq!(admitted.state, JobState::Admitted);
+        assert_eq!(admitted.failure_code, None);
+        assert_eq!(active_job_reservation_count(&store, "job_1"), 1);
     }
 
     #[test]
@@ -9652,7 +9598,7 @@ mod tests {
     }
 
     #[test]
-    fn resident_heavyweight_still_blocks_a_conflicting_heavyweight_admission() {
+    fn resident_heavyweight_does_not_block_a_second_bounded_worker() {
         let (_directory, store) = store();
         for (job_id, key) in [("job_1", "request_1"), ("job_2", "request_2")] {
             store.submit_raw(&input(job_id, key)).unwrap();
@@ -9662,21 +9608,16 @@ mod tests {
         claim_and_settle(&store, "job_1", "worker_1");
         assert_eq!(latest_reservation_state(&store, "job_1"), "resident");
 
-        let denial = match store
+        let result = store
             .try_admit_job("job_2", &first, AdmissionPolicy::default(), || {
                 Ok(SystemCommit {
                     total_mb: 0,
                     limit_mb: 64 * 1024,
                 })
             })
-            .unwrap()
-        {
-            JobAdmissionResult::Denied(denial) => denial,
-            JobAdmissionResult::Admitted(_) => {
-                panic!("resident heavyweight must keep the global class occupied")
-            }
-        };
-        assert_eq!(denial.resource, "heavyweight_concurrency");
+            .unwrap();
+        assert!(matches!(result, JobAdmissionResult::Admitted(_)));
+        assert_eq!(active_job_reservation_count(&store, "job_2"), 1);
     }
 
     #[test]
