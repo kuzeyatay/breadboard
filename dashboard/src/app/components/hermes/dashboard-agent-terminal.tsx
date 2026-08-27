@@ -13,6 +13,7 @@ import {
   useState,
   type ChangeEvent,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
@@ -77,6 +78,7 @@ import { externalAgentCardContent } from "@/lib/conversations/external-agent-run
 import { useWorkflowAutomation } from "./use-workflow-automation";
 import { useAssistantModels } from "../use-assistant-models";
 import { useLiquidGlassBar } from "./use-liquid-glass-bar";
+import { useTerminalHeaderClickGuard } from "../terminal-header-click-guard";
 import {
   TERMINAL_ATTACHMENT_ACCEPT,
   chatMessageAttachments,
@@ -956,6 +958,7 @@ function RuntimeTerminal({
   const [glideMoving, setGlideMoving] = useState(false);
   const glideTimer = useRef<number | null>(null);
   const glideRaf = useRef<number | null>(null);
+  const headerClickGuard = useTerminalHeaderClickGuard();
   // Set while a press on the collapsed bar has already built the opening
   // glide's first frame, before the release that asks for it. See prewarmOpen.
   const prewarmRef = useRef(false);
@@ -7396,6 +7399,8 @@ function RuntimeTerminal({
 
   function handleResizeStart(event: ReactPointerEvent<HTMLElement>) {
     event.preventDefault();
+    const isHeader = event.currentTarget.tagName === "HEADER";
+    if (isHeader) headerClickGuard.beginPointerSequence();
     resizeStartRef.current = {
       startY: event.clientY,
       // Where the edge actually is, which is not the height in state while a
@@ -7412,7 +7417,7 @@ function RuntimeTerminal({
     document.body.style.userSelect = "none";
     // Only the header toggles on release, so only a press there is worth
     // prewarming; the thin edge handle above it is always a drag.
-    if (event.currentTarget.tagName === "HEADER" && !isOpen) prewarmOpen();
+    if (isHeader && !isOpen) prewarmOpen();
   }
 
   function handleResizeMove(event: ReactPointerEvent<HTMLElement>) {
@@ -7441,6 +7446,7 @@ function RuntimeTerminal({
     setIsResizing(false);
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
+    if (clickedHeader) headerClickGuard.endPointerSequence();
     if (!moved && event.type !== "pointercancel" && clickedHeader) {
       toggleDock(!start.wasOpen);
     } else if (prewarmRef.current) {
@@ -7449,6 +7455,20 @@ function RuntimeTerminal({
       // Nothing of it was ever visible, so putting it back is invisible too.
       cancelGlide();
     }
+  }
+
+  function handleHeaderClick(event: ReactMouseEvent<HTMLElement>) {
+    if (
+      event.target instanceof Element &&
+      event.target.closest("button, a, input, select, textarea")
+    ) {
+      return;
+    }
+    if (!headerClickGuard.shouldHandleClick() || isOpen) return;
+    // Pointer events normally own this interaction. A standalone click is the
+    // hydration bridge replaying a gesture that landed before those handlers
+    // existed, so it must still be able to open the collapsed terminal.
+    toggleDock(true);
   }
 
   const terminalStyle: CSSProperties = {
@@ -7549,6 +7569,7 @@ function RuntimeTerminal({
         onPointerMove={handleResizeMove}
         onPointerUp={handleResizeEnd}
         onPointerCancel={handleResizeEnd}
+        onClick={handleHeaderClick}
         role={isOpen ? undefined : "button"}
         tabIndex={isOpen ? undefined : 0}
         aria-expanded={isOpen ? undefined : false}

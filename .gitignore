@@ -87,9 +87,8 @@ dashboard/playwright-report/
 *.db-shm
 /runtime/jobs/
 /runtime/endpoints.json
-/runtime-v2/runtime-v2.sqlite3
-/runtime-v2/runtime-v2.sqlite3-shm
-/runtime-v2/runtime-v2.sqlite3-wal
+/runtime-v2/
+/database/
 
 # Machine-local integration credentials and generated optimizer state.
 /cliproxy/api-key

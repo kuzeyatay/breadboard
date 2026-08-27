@@ -18,6 +18,21 @@ const layoutSource = fs.readFileSync(
   path.join(dashboardRoot, "src", "app", "layout.tsx"),
   "utf8",
 );
+const runtimeTerminalSource = fs.readFileSync(
+  path.join(
+    dashboardRoot,
+    "src",
+    "app",
+    "components",
+    "hermes",
+    "dashboard-agent-terminal.tsx",
+  ),
+  "utf8",
+);
+const legacyTerminalSource = fs.readFileSync(
+  path.join(dashboardRoot, "src", "app", "components", "knowledge-terminal.tsx"),
+  "utf8",
+);
 
 function loadJsdom() {
   try {
@@ -35,6 +50,7 @@ let dom;
 let outDirectory;
 let InteractionHydrationGate;
 let interactionHydrationBootstrapScript;
+let useTerminalHeaderClickGuard;
 
 before(async () => {
   if (skip) return;
@@ -47,6 +63,7 @@ before(async () => {
     [
       'export { default as InteractionHydrationGate } from "@/app/components/interaction-hydration-gate";',
       'export { interactionHydrationBootstrapScript } from "@/app/components/interaction-hydration-bridge";',
+      'export { useTerminalHeaderClickGuard } from "@/app/components/terminal-header-click-guard";',
       "",
     ].join("\n"),
   );
@@ -89,6 +106,7 @@ before(async () => {
   ({
     InteractionHydrationGate,
     interactionHydrationBootstrapScript,
+    useTerminalHeaderClickGuard,
   } = require(path.join(outDirectory, "bundle.cjs")));
 });
 
@@ -111,6 +129,34 @@ function terminalButton(React, onOpen) {
   );
 }
 
+function pointerDrivenTerminal(React, onOpen) {
+  function TerminalTrigger() {
+    const clickGuard = useTerminalHeaderClickGuard();
+    return React.createElement(
+      "header",
+      {
+        id: "terminal",
+        className: "h-screen",
+        role: "button",
+        tabIndex: 0,
+        "aria-expanded": false,
+        "aria-label": "Open terminal",
+        onPointerDown: clickGuard.beginPointerSequence,
+        onPointerUp: () => {
+          clickGuard.endPointerSequence();
+          onOpen();
+        },
+        onClick: () => {
+          if (clickGuard.shouldHandleClick()) onOpen();
+        },
+      },
+      "Terminal",
+    );
+  }
+
+  return React.createElement(TerminalTrigger);
+}
+
 test("the hydration gate preserves direct body-child page shells without inert markup", () => {
   assert.match(gateSource, /return <>\{children\}<\/>/u);
   assert.doesNotMatch(gateSource, /<div|\binert\b|display:\s*"contents"/u);
@@ -119,6 +165,60 @@ test("the hydration gate preserves direct body-child page shells without inert m
     /<head>[\s\S]*interactionHydrationBootstrapScript[\s\S]*<\/head>[\s\S]*<body/u,
   );
 });
+
+test("both terminal headers accept the hydration bridge's standalone click", () => {
+  for (const source of [runtimeTerminalSource, legacyTerminalSource]) {
+    assert.match(source, /useTerminalHeaderClickGuard/u);
+    assert.match(source, /onClick=\{handleHeaderClick\}/u);
+  }
+});
+
+test(
+  "a pre-hydration click opens a pointer-driven terminal without double-opening after hydration",
+  { skip },
+  async () => {
+    const React = require("react");
+    const { act } = React;
+    const { hydrateRoot } = require("react-dom/client");
+    document.body.innerHTML =
+      '<header id="terminal" class="h-screen" role="button" tabindex="0" aria-expanded="false" aria-label="Open terminal">Terminal</header>';
+    delete window.__breadboardInteractionHydration;
+    window.eval(interactionHydrationBootstrapScript);
+    let opens = 0;
+    const handleOpen = () => {
+      opens += 1;
+    };
+
+    const acceptedImmediately = document.querySelector("#terminal").dispatchEvent(
+      new window.MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    assert.equal(acceptedImmediately, false);
+
+    let root;
+    await act(async () => {
+      root = hydrateRoot(
+        document.body,
+        React.createElement(
+          InteractionHydrationGate,
+          null,
+          pointerDrivenTerminal(React, handleOpen),
+        ),
+      );
+    });
+    assert.equal(opens, 1, "the replayed click did not open the terminal");
+
+    await act(async () => {
+      const terminal = document.querySelector("#terminal");
+      terminal.dispatchEvent(new window.Event("pointerdown", { bubbles: true }));
+      terminal.dispatchEvent(new window.Event("pointerup", { bubbles: true }));
+      terminal.dispatchEvent(
+        new window.MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+    });
+    assert.equal(opens, 2, "pointerup and its following click opened twice");
+    await act(async () => root.unmount());
+  },
+);
 
 test("a click before hydration is replayed once when handlers attach", { skip }, async () => {
   const React = require("react");

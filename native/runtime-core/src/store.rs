@@ -3933,7 +3933,7 @@ struct PersistedCompletionConfirmation {
 pub(crate) struct GlobalAdmissionSnapshot {
     pub(crate) pending_commit_mb: u64,
     pub(crate) active_job_classes: Vec<ResourceClass>,
-    pub(crate) active_service_classes: Vec<ResourceClass>,
+    pub(crate) active_service_burst_classes: Vec<ResourceClass>,
     pub(crate) active_job_definitions: Vec<String>,
 }
 
@@ -3959,14 +3959,10 @@ pub(crate) fn evaluate_global_admission(
     let load = RuntimeLoad {
         accepting_work,
         active_job_classes: snapshot.active_job_classes,
-        active_service_classes: snapshot.active_service_classes,
-    };
-    let durable_policy = AdmissionPolicy {
-        one_heavyweight_at_a_time: true,
-        ..policy
+        active_service_classes: snapshot.active_service_burst_classes,
     };
     GlobalAdmissionEvaluation {
-        decision: durable_policy.decide(request, effective_commit, &load),
+        decision: policy.decide(request, effective_commit, &load),
         effective_commit,
     }
 }
@@ -4505,7 +4501,7 @@ fn global_admission_snapshot_inner_tx(
                         // has already transitioned to `resident`.
                         summary.pending_commit_mb =
                             checked_pending_commit_sum(summary.pending_commit_mb, estimate)?;
-                        summary.active_service_classes.push(resource_class);
+                        summary.active_service_burst_classes.push(resource_class);
                     }
                     Some("ready") => {
                         if reservation_state != "resident" || has_pending_generation_lease {
@@ -4513,12 +4509,13 @@ fn global_admission_snapshot_inner_tx(
                                 "ready service reservation {subject_id} has an invalid reservation or lease state"
                             )));
                         }
-                        if startup_policy != "eager" && has_active_generation_lease {
-                            // A resident dynamic service holds its logical
-                            // class only while this exact generation owns an
-                            // active lease. Its memory is already sampled.
-                            summary.active_service_classes.push(resource_class);
-                        }
+                        // A ready resident service is a sampled baseline even
+                        // while ordinary exact-generation leases keep it in
+                        // use. Its enforced process-tree cap remains active,
+                        // while current commit is already present in the live
+                        // system sample. Counting it again as a static class
+                        // hold would reject an independently bounded service
+                        // despite sufficient measured headroom.
                     }
                     Some("stopping") => {
                         if has_pending_generation_lease || has_active_generation_lease {
@@ -4529,7 +4526,7 @@ fn global_admission_snapshot_inner_tx(
                         if reservation_state == "pending" {
                             summary.pending_commit_mb =
                                 checked_pending_commit_sum(summary.pending_commit_mb, estimate)?;
-                            summary.active_service_classes.push(resource_class);
+                            summary.active_service_burst_classes.push(resource_class);
                         }
                     }
                     Some("available_but_stopped" | "failed") => {
@@ -9248,7 +9245,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_eager_heavyweight_blocks_global_heavyweight_admission() {
+    fn packaged_pending_eager_heavyweight_blocks_global_heavyweight_admission() {
         let (_directory, store) = store();
         store.submit_raw(&input("job_1", "request_1")).unwrap();
         insert_service_reservation(
@@ -9263,10 +9260,7 @@ mod tests {
             .try_admit_job(
                 "job_1",
                 &default_admission(),
-                AdmissionPolicy {
-                    one_heavyweight_at_a_time: false,
-                    ..AdmissionPolicy::default()
-                },
+                AdmissionPolicy::default(),
                 || {
                     Ok(SystemCommit {
                         total_mb: 0,
@@ -9367,7 +9361,7 @@ mod tests {
     }
 
     #[test]
-    fn resident_on_demand_heavyweight_with_an_active_lease_remains_a_concurrency_hold() {
+    fn resident_on_demand_heavyweight_with_an_active_lease_is_a_sampled_baseline() {
         let (_directory, store) = store();
         store.submit_raw(&input("job_1", "request_1")).unwrap();
         insert_service_reservation(
@@ -9393,10 +9387,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let JobAdmissionResult::Denied(denial) = result else {
-            panic!("resident on-demand heavyweight must keep the global class occupied")
-        };
-        assert_eq!(denial.resource, "heavyweight_concurrency");
+        assert!(matches!(result, JobAdmissionResult::Admitted(_)));
     }
 
     #[test]
