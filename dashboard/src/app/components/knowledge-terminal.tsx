@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
@@ -60,6 +61,7 @@ import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
 import { requestChatTitleFromFirstMessage } from '@/lib/chat-session-title';
 import { forgetChatDrafts } from '@/lib/conversations/drafts';
 import { useChatDraft } from '@/app/components/hermes/use-chat-draft';
+import { useTerminalHeaderClickGuard } from '@/app/components/terminal-header-click-guard';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -247,6 +249,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const [height, setHeight] = useState(COLLAPSED_HEIGHT);
   const [isResizing, setIsResizing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const headerClickGuard = useTerminalHeaderClickGuard();
 
   const isOpen = height > COLLAPSED_HEIGHT + 8;
 
@@ -751,6 +754,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
   function handleResizeStart(event: ReactPointerEvent<HTMLElement>) {
     event.preventDefault();
+    if (event.currentTarget.tagName === 'HEADER') {
+      headerClickGuard.beginPointerSequence();
+    }
     resizeStartRef.current = { startY: event.clientY, startHeight: height };
     event.currentTarget.setPointerCapture(event.pointerId);
     setIsResizing(true);
@@ -775,9 +781,23 @@ export default function KnowledgeTerminal({ scope }: Props) {
     setIsResizing(false);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+    if (event.currentTarget.tagName === 'HEADER') {
+      headerClickGuard.endPointerSequence();
+    }
     if (!moved && event.type !== 'pointercancel' && !isOpen) {
       setHeight(preferredOpenHeightRef.current ?? defaultOpenHeight());
     }
+  }
+
+  function handleHeaderClick(event: ReactMouseEvent<HTMLElement>) {
+    if (
+      event.target instanceof Element &&
+      event.target.closest('button, a, input, select, textarea')
+    ) {
+      return;
+    }
+    if (!headerClickGuard.shouldHandleClick() || isOpen) return;
+    setHeight(preferredOpenHeightRef.current ?? defaultOpenHeight());
   }
 
   const terminalStyle: CSSProperties = {
@@ -822,6 +842,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
         onPointerMove={handleResizeMove}
         onPointerUp={handleResizeEnd}
         onPointerCancel={handleResizeEnd}
+        onClick={handleHeaderClick}
         role={isOpen ? undefined : 'button'}
         tabIndex={isOpen ? undefined : 0}
         aria-expanded={isOpen ? undefined : false}

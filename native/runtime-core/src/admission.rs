@@ -32,7 +32,11 @@ impl SystemCommit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeLoad {
     pub accepting_work: bool,
+    /// Finite job reservations retain their class until complete tree exit.
     pub active_job_classes: Vec<ResourceClass>,
+    /// Service cold-start/restart holds only. Ready resident services are
+    /// already included in the live system-commit sample and are not counted
+    /// a second time as a static class hold.
     pub active_service_classes: Vec<ResourceClass>,
 }
 
@@ -189,10 +193,13 @@ impl AdmissionPolicy {
         }
     }
 
-    /// Development process trees retain manifest hard caps, heavyweight
-    /// serialization, and a live commit sample at each durable reservation.
-    /// This policy lowers only the idle system reserve; packaged mode keeps the
-    /// fixed architecture floor above.
+    /// Development process trees retain manifest hard caps, serialized pending
+    /// commit estimates, a live commit sample at each durable reservation, and
+    /// the supervisor's single cross-process dynamic-burst lease. Static class
+    /// serialization is therefore unnecessary in development: independent
+    /// bounded trees may coexist only while measured commit headroom fits.
+    /// Packaged mode keeps the fixed architecture reserve and conservative
+    /// class serialization above.
     pub(crate) fn for_runtime_mode(mode: RuntimeMode) -> Self {
         if mode == RuntimeMode::Packaged {
             return Self::default();
@@ -200,7 +207,7 @@ impl AdmissionPolicy {
         Self {
             minimum_reserve_mb: DEVELOPMENT_RESERVE_FLOOR_MB,
             critical_reserve_mb: DEVELOPMENT_RESERVE_FLOOR_MB,
-            one_heavyweight_at_a_time: true,
+            one_heavyweight_at_a_time: false,
             reserve_strategy: AdmissionReserveStrategy::Development,
         }
     }
@@ -343,6 +350,49 @@ mod tests {
             &load,
         );
         assert!(matches!(result, AdmissionDecision::Denied(_)));
+    }
+
+    #[test]
+    fn development_heavyweights_follow_live_headroom_while_packaged_stays_serialized() {
+        let mut load = empty_load();
+        load.active_service_classes
+            .push(ResourceClass::BrowserAutomation);
+        let policy = AdmissionPolicy::for_runtime_mode(RuntimeMode::Hot);
+        let request = AdmissionRequest {
+            resource_class: ResourceClass::LargeGeneration,
+            estimated_cold_start_commit_mb: 1_536,
+            reserve_floor_mb: None,
+        };
+        let sufficient = SystemCommit {
+            total_mb: 40_221 - 8_706,
+            limit_mb: 40_221,
+        };
+
+        assert_eq!(
+            policy.decide(request, sufficient, &load),
+            AdmissionDecision::Admitted
+        );
+        let AdmissionDecision::Denied(packaged) =
+            AdmissionPolicy::default().decide(request, sufficient, &load)
+        else {
+            panic!("packaged admission must retain static class serialization")
+        };
+        assert_eq!(packaged.resource, "heavyweight_concurrency");
+
+        // 40,221 MiB derives the 4,352 MiB guarded development reserve.
+        // Equality with that reserve plus Hermes' 1,536 MiB estimate remains
+        // fail-closed even though the static class gate is disabled.
+        let exact_allowance = SystemCommit {
+            total_mb: 40_221 - 5_888,
+            limit_mb: 40_221,
+        };
+        let AdmissionDecision::Denied(pressure) = policy.decide(request, exact_allowance, &load)
+        else {
+            panic!("actual commit pressure must still deny the second tree")
+        };
+        assert_eq!(pressure.resource, "windows_commit");
+        assert_eq!(pressure.required_headroom_mb, 5_888);
+        assert_eq!(pressure.available_headroom_mb, 5_888);
     }
 
     #[test]

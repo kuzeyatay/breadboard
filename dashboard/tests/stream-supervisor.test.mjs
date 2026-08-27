@@ -179,6 +179,12 @@ test("the browser watchdog reports first so the server bound is looser", async (
   assert.ok(SILENT_STREAM_TIMEOUT_MS > AGENT_STREAM_FIRST_ACTIVITY_TIMEOUT_MS);
 });
 
+test("resource admission failures cross the SSE boundary as terminal structured errors", () => {
+  assert.match(eventStream, /runtimeStartupResourceFailure\(error\)/);
+  assert.match(eventStream, /code: resourceFailure\?\.code \?\? "stream_error"/);
+  assert.match(eventStream, /recoverable: !resourceFailure/);
+});
+
 test("cold route compilation cannot expire the stream before prompt dispatch", async () => {
   const { AGENT_STREAM_FIRST_ACTIVITY_TIMEOUT_MS } = await import(
     "../src/app/components/hermes/agent-stream-watchdog.ts"

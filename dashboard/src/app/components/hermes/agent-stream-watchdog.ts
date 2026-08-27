@@ -41,6 +41,94 @@ export class AgentStreamDisconnectedError extends Error {
   }
 }
 
+export class AgentStreamReportedError extends Error {
+  readonly code: string;
+  readonly status?: number;
+
+  constructor(input: { message: string; code: string; status?: number }) {
+    super(input.message);
+    this.name = "AgentStreamReportedError";
+    this.code = input.code;
+    this.status = input.status;
+  }
+}
+
+function reportedMessage(value: unknown, fallback: string): string {
+  if (
+    value &&
+    typeof value === "object" &&
+    "error" in value &&
+    typeof value.error === "string" &&
+    value.error.trim()
+  ) {
+    return value.error.trim();
+  }
+  return fallback;
+}
+
+function reportedCode(value: unknown, fallback: string): string {
+  if (
+    value &&
+    typeof value === "object" &&
+    "code" in value &&
+    typeof value.code === "string" &&
+    value.code.trim()
+  ) {
+    return value.code.trim();
+  }
+  return fallback;
+}
+
+function isResourceExhaustionCode(code: string): boolean {
+  return (
+    code === "runtime_resource_exhausted" ||
+    code === "BREADBOARD_RESOURCE_EXHAUSTED"
+  );
+}
+
+/**
+ * Preserve a structured route rejection instead of turning every 5xx into an
+ * indistinguishable transport disconnect. Resource admission denials are
+ * deterministic and explicitly non-retryable, while an ordinary 5xx keeps the
+ * bounded reconnect behavior used for dashboard process restarts.
+ */
+export async function agentStreamOpenFailure(response: Response): Promise<Error> {
+  const payload = await response.json().catch(() => null);
+  const fallback =
+    response.status >= 500
+      ? `The agent event stream returned ${response.status}.`
+      : "Could not open the agent event stream.";
+  const message = reportedMessage(payload, fallback);
+  const code = reportedCode(payload, `http_${response.status}`);
+
+  if (isResourceExhaustionCode(code) || response.status < 500) {
+    return new AgentStreamReportedError({ message, code, status: response.status });
+  }
+  return new AgentStreamDisconnectedError(message);
+}
+
+/** Build the terminal error carried by an SSE `error` frame. */
+export function agentStreamReportedFailure(
+  payload: Record<string, unknown>,
+): AgentStreamReportedError {
+  const message =
+    typeof payload.message === "string" && payload.message.trim()
+      ? payload.message.trim()
+      : "The agent reported an error.";
+  const code =
+    typeof payload.code === "string" && payload.code.trim()
+      ? payload.code.trim()
+      : "stream_error";
+  return new AgentStreamReportedError({ message, code });
+}
+
+/** A server-reported failure remains authoritative when its SSE body closes. */
+export function agentStreamClosedFailure(
+  reportedFailure: AgentStreamReportedError | null,
+): Error {
+  return reportedFailure ?? new AgentStreamDisconnectedError();
+}
+
 export function isAgentStreamTimeoutError(
   value: unknown,
 ): value is AgentStreamTimeoutError {

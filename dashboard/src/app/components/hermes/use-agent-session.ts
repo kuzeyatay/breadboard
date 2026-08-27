@@ -65,6 +65,10 @@ import { externalAgentAbortUrl } from "@/lib/conversations/external-agent-runs";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
 import {
   AgentStreamDisconnectedError,
+  AgentStreamReportedError,
+  agentStreamClosedFailure,
+  agentStreamOpenFailure,
+  agentStreamReportedFailure,
   agentStreamReconnectDelay,
   agentStreamTimeout,
   disposeAgentStreamReader,
@@ -1504,6 +1508,7 @@ export function useAgentSession(
       const decoder = new TextDecoder();
       let buffer = "";
       let failed = false;
+      let reportedFailure: AgentStreamReportedError | null = null;
       let connected = false;
       let sawTurnActivity = false;
       const tools = new Map<string, ToolActivity>();
@@ -1581,12 +1586,11 @@ export function useAgentSession(
             signal: controller.signal,
           },
         );
-        if (!response.ok || !response.body) {
-          throw response.status >= 500
-            ? new AgentStreamDisconnectedError(
-                `The agent event stream returned ${response.status}.`,
-              )
-            : new Error("Could not open the agent event stream.");
+        if (!response.ok) {
+          throw await agentStreamOpenFailure(response);
+        }
+        if (!response.body) {
+          throw new AgentStreamDisconnectedError();
         }
         streamReader = response.body.getReader();
         for (;;) {
@@ -1601,7 +1605,7 @@ export function useAgentSession(
             timeout,
           );
           if (done) {
-            throw new AgentStreamDisconnectedError();
+            throw agentStreamClosedFailure(reportedFailure);
           }
           buffer += decoder.decode(value, { stream: true });
           const frames = buffer.split("\n\n");
@@ -1958,9 +1962,8 @@ export function useAgentSession(
               break;
             case "error":
               {
-                const message = String(
-                  payload.message ?? "The agent reported an error.",
-                );
+                const streamFailure = agentStreamReportedFailure(payload);
+                const message = streamFailure.message;
                 if (
                   stopRequestedRef.current &&
                   isExpectedCancellationError(message)
@@ -1969,6 +1972,7 @@ export function useAgentSession(
                   break;
                 }
                 failed = true;
+                reportedFailure = streamFailure;
                 setError(message);
               }
               break;

@@ -7,6 +7,7 @@
 import { leastPrivilegeDecision } from "./dispatch-core.ts";
 import db from "../db.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
+import { runtimeStartupResourceFailure } from "../agent-runtime/startup-error.ts";
 import { encodeSseEvent, type NormalizedAgentEvent } from "./events.ts";
 import {
   appendRuntimeMessage,
@@ -1093,14 +1094,17 @@ function driveSessionEventPump(
       } catch (error) {
         if (abandonedBeforeDispatch) return;
         finalStatus = "failed";
+        const resourceFailure = runtimeStartupResourceFailure(error);
         emit({
           type: "error",
           sessionId: session.hermesSessionId,
           timestamp: new Date().toISOString(),
           payload: {
-            code: "stream_error",
-            message: error instanceof Error ? error.message : "stream error",
-            recoverable: true,
+            code: resourceFailure?.code ?? "stream_error",
+            message:
+              resourceFailure?.message ??
+              (error instanceof Error ? error.message : "stream error"),
+            recoverable: !resourceFailure,
           },
         });
         recordAuditEvent({

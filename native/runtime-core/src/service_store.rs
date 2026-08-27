@@ -1240,12 +1240,14 @@ impl JobStore {
                 ) && service.resource_class.is_heavyweight()
                     && generation_active == 0
                 {
-                    // An idle dynamic resident is reflected in sampled commit
-                    // but owns no logical heavyweight hold. Serialize the
-                    // first exact-generation active lease with global
-                    // admission, using a zero incremental estimate because no
-                    // cold start occurs. On denial the uncommitted transaction
-                    // restores expired leases and the original idle deadline.
+                    // A ready dynamic resident is reflected in sampled commit
+                    // and owns no static class hold, whether idle or leased.
+                    // Recheck the first exact-generation active lease against
+                    // global admission with a zero incremental estimate because
+                    // no cold start occurs. The process-tree cap and the one
+                    // cross-process dynamic-burst lease continue to bound later
+                    // growth. On denial the uncommitted transaction restores
+                    // expired leases and the original idle deadline.
                     let sampled_commit =
                         sample_commit().map_err(DurableServiceStoreError::Store)?;
                     let snapshot = service_acquire_admission_snapshot_tx(
@@ -4018,10 +4020,108 @@ mod tests {
         let summary = global_admission_snapshot_tx(&transaction).unwrap();
         assert_eq!(summary.pending_commit_mb, 512);
         assert_eq!(
-            summary.active_service_classes,
-            vec![ResourceClass::LocalModel, ResourceClass::LocalModel]
+            summary.active_service_burst_classes,
+            vec![ResourceClass::LocalModel]
         );
         transaction.rollback().unwrap();
+    }
+
+    #[test]
+    fn ready_spotify_view_lease_and_hermes_start_coexist_with_hot_headroom() {
+        let (_directory, store) = store();
+        insert_active_service_reservation_for_summary(
+            &store,
+            "spotify-playback",
+            ServiceStartupPolicy::OnDemand,
+            ResourceClass::BrowserAutomation,
+            "resident",
+            1_536,
+            100,
+        );
+        insert_service_lease_for_summary(&store, "spotify-playback", "spotify-view-lease", 1, true);
+        let hermes = registration_with_policy_and_class(
+            "hermes",
+            ServiceStartupPolicy::OnDemand,
+            ResourceClass::LargeGeneration,
+        );
+        let hermes_profile = admission_profile("hermes", RuntimeMode::Hot, 1_536);
+        store.register_durable_service(&hermes, 101).unwrap();
+
+        let result = store
+            .begin_durable_service_acquire(
+                &hermes,
+                &hermes_profile,
+                "hermes-chat-lease",
+                500,
+                102,
+                AdmissionPolicy::for_runtime_mode(RuntimeMode::Hot),
+                || {
+                    Ok(SystemCommit {
+                        total_mb: 40_221 - 8_706,
+                        limit_mb: 40_221,
+                    })
+                },
+            )
+            .unwrap();
+        let DurableServiceAcquireResult::Acquired(hermes_claim) = result else {
+            panic!("Hermes must start beside a ready Spotify view when live headroom fits")
+        };
+        assert_eq!(hermes_claim.state(), ServiceLeaseClaimState::Pending);
+        assert_eq!(active_service_reservations(&store), 2);
+        assert_eq!(active_service_leases(&store, "spotify-playback"), 1);
+        assert_eq!(active_service_leases(&store, "hermes"), 1);
+        assert_eq!(outbox_count(&store, Some("pending")), 1);
+    }
+
+    #[test]
+    fn spotify_and_hermes_are_still_denied_under_actual_hot_commit_pressure() {
+        let (_directory, store) = store();
+        insert_active_service_reservation_for_summary(
+            &store,
+            "spotify-playback",
+            ServiceStartupPolicy::OnDemand,
+            ResourceClass::BrowserAutomation,
+            "resident",
+            1_536,
+            100,
+        );
+        insert_service_lease_for_summary(&store, "spotify-playback", "spotify-view-lease", 1, true);
+        let hermes = registration_with_policy_and_class(
+            "hermes",
+            ServiceStartupPolicy::OnDemand,
+            ResourceClass::LargeGeneration,
+        );
+        let hermes_profile = admission_profile("hermes", RuntimeMode::Hot, 1_536);
+        store.register_durable_service(&hermes, 101).unwrap();
+
+        let result = store
+            .begin_durable_service_acquire(
+                &hermes,
+                &hermes_profile,
+                "hermes-pressure-lease",
+                500,
+                102,
+                AdmissionPolicy::for_runtime_mode(RuntimeMode::Hot),
+                || {
+                    Ok(SystemCommit {
+                        // The Hot reserve is 4,352 MiB at this commit limit;
+                        // equality after Hermes' 1,536 MiB estimate must fail.
+                        total_mb: 40_221 - 5_888,
+                        limit_mb: 40_221,
+                    })
+                },
+            )
+            .unwrap();
+        let DurableServiceAcquireResult::Denied(denial) = result else {
+            panic!("real commit pressure must still reject Hermes")
+        };
+        assert_eq!(denial.resource, "windows_commit");
+        assert_eq!(denial.required_headroom_mb, 5_888);
+        assert_eq!(denial.available_headroom_mb, 5_888);
+        assert_eq!(active_service_reservations(&store), 1);
+        assert_eq!(active_service_leases(&store, "spotify-playback"), 1);
+        assert_eq!(active_service_leases(&store, "hermes"), 0);
+        assert_eq!(outbox_count(&store, None), 0);
     }
 
     #[test]
@@ -4043,7 +4143,7 @@ mod tests {
             let snapshot = global_admission_snapshot_tx(&transaction).unwrap();
             assert_eq!(snapshot.pending_commit_mb, 512);
             assert_eq!(
-                snapshot.active_service_classes,
+                snapshot.active_service_burst_classes,
                 vec![ResourceClass::LocalModel]
             );
             transaction.rollback().unwrap();
@@ -4067,7 +4167,7 @@ mod tests {
             let snapshot = global_admission_snapshot_tx(&transaction).unwrap();
             assert_eq!(snapshot.pending_commit_mb, 512);
             assert_eq!(
-                snapshot.active_service_classes,
+                snapshot.active_service_burst_classes,
                 vec![ResourceClass::LocalModel]
             );
             transaction.rollback().unwrap();
@@ -4088,7 +4188,7 @@ mod tests {
         let transaction = connection.transaction().unwrap();
         let snapshot = global_admission_snapshot_tx(&transaction).unwrap();
         assert_eq!(snapshot.pending_commit_mb, 0);
-        assert!(snapshot.active_service_classes.is_empty());
+        assert!(snapshot.active_service_burst_classes.is_empty());
         transaction.rollback().unwrap();
     }
 
