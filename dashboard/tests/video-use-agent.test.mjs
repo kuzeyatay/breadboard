@@ -571,7 +571,10 @@ test("the run card guards its stream, recovers from a broken one, and reads its 
   assert.match(card, /attempt <= MAX_STREAM_ATTEMPTS/);
   assert.match(card, /window\.setTimeout\(\(\) => void recover\(\), POLL_INTERVAL_MS\)/);
   // The run's end is read off the events, not off state that lands a render later.
-  assert.match(card, /if \(TERMINAL_EVENT_TYPES\.has\(event\.type\)\) finished = true/);
+  assert.match(
+    card,
+    /if \(TERMINAL_EVENT_TYPES\.has\(event\.type\)\) \{\s*finished = true;/,
+  );
 });
 
 test("a quiet run leaves stopping to the shared composer", () => {
@@ -584,7 +587,10 @@ test("a quiet run leaves stopping to the shared composer", () => {
   assert.doesNotMatch(quiet, />\s*Stop\s*</);
   assert.doesNotMatch(quiet, /onClick=\{stop\}/);
   const runtimePanel = read("src/app/components/hermes/agent-runtime-panel.tsx");
-  assert.match(runtimePanel, /onStop=\{canStop \? stopEverything : undefined\}/);
+  assert.match(
+    runtimePanel,
+    /onStop=\{canStop && !respondingToInlineSelection \? stopEverything : undefined\}/,
+  );
   // The same abort call remains available on the named run card.
   assert.match(card, /const stop = useCallback\(\(\) => \{/);
   assert.match(card, /fetch\(`\$\{base\}\/abort`, \{ method: "POST" \}\)/);
@@ -607,7 +613,7 @@ test("the studio opens for every video artifact, from every surface that shows o
 
 test("the finished video artifact follows the assistant turn that requested the edit", () => {
   const artifact = read("src/lib/video-use/artifact.ts");
-  const publish = artifact.slice(artifact.indexOf("export function publishEditedVideo"));
+  const publish = artifact.slice(artifact.indexOf("export async function publishEditedVideo"));
 
   // Linked and uploaded sources are adopted before the run descriptor has
   // necessarily been saved, so version one may have no originating message.
@@ -667,7 +673,7 @@ test("the adopted source is owned by the turn producing it, not by the pile", ()
 
 test("a run that publishes nothing takes its adopted copy with it", () => {
   const manager = read("src/lib/video-use/run-manager.ts");
-  assert.match(manager, /void discardAdoptedArtifact\(run\)/);
+  assert.match(manager, /await discardAdoptedArtifact\(run\)/);
 
   const discard = manager.slice(manager.indexOf("async function discardAdoptedArtifact"));
   assert.match(discard, /await deleteArtifact\(\{/);
@@ -678,13 +684,13 @@ test("a run that publishes nothing takes its adopted copy with it", () => {
   // Success is the only thing that stops the cleanup, and only once the
   // publish has actually returned.
   const drive = manager.slice(manager.indexOf("async function drive("));
-  const publish = drive.indexOf("const stored = publishEditedVideo({");
+  const publish = drive.indexOf("const stored = await publishEditedVideo({");
   const cleared = drive.indexOf("run.adoptedArtifactId = null");
   assert.ok(publish > 0 && cleared > publish);
 
   // Stopping a first edit is the same situation: nothing was produced.
   const finish = manager.slice(
-    manager.indexOf("function finish(run: RunState"),
+    manager.indexOf("async function finish("),
     manager.indexOf("async function discardAdoptedArtifact"),
   );
   assert.match(finish, /discardAdoptedArtifact/);
@@ -860,7 +866,10 @@ test("the transcript keeps what the person wrote", () => {
   // Super Agent mode, where no agent was chosen at all, misrepresents the turn.
   assert.match(terminal, /const userContent = options\.userContent \?\? videoUseUserMessage\(prompt\)/);
   // Every launch passes the text as the person left it.
-  assert.match(terminal, /launchVideoUseRun\(videoUseTask, commandVideo, \{ userContent: text \}\)/);
+  assert.match(
+    terminal,
+    /launchVideoUseRun\(videoUseTask, commandVideo, \{\s*userContent: text,?\s*\}\)/,
+  );
   assert.match(terminal, /launchVideoUseRun\(text, editableVideo, \{ userContent: text \}\)/);
   assert.match(terminal, /userContent: previousUser\.content,/);
 });
@@ -903,8 +912,9 @@ test("starting a run never blocks the server or wedges the composer", () => {
     /spawnSync/,
     "health must not spawn a process",
   );
-  assert.match(runtime, /export function probeVisualQc/);
-  assert.match(runtime, /cachedWhich/, "`where python` is a spawn too; memoize it");
+  assert.match(runtime, /export async function probeVisualQc/);
+  assert.match(runtime, /probeVideoVisualQcViaRuntime/);
+  assert.doesNotMatch(runtime, /node:child_process|\bspawn\(|\bspawnSync\(/);
 
   // And the launch request is bounded, because the run card — the only place
   // with a Stop button — does not exist until it resolves.
@@ -1131,11 +1141,13 @@ test("speech is local: nothing in the editor calls a hosted transcriber", () => 
 
 test("the renderer is invoked the way its own documentation invokes it", () => {
   const render = read("src/lib/video-use/render.ts");
-  assert.match(render, /"--build-subtitles"/);
-  assert.match(render, /"--preview"/);
+  assert.match(render, /renderVideoProgramViaRuntime/);
+  assert.doesNotMatch(render, /node:child_process|\bspawn\(/);
+  const executor = read("scripts/runtime-v2-speech-media-executor.mjs");
+  assert.match(executor, /"--build-subtitles"/);
+  assert.match(executor, /"--preview"/);
   // Windows consoles default to cp1252 and the helpers print "→", which raises
   // UnicodeEncodeError and kills the render before the first segment.
-  const runtime = read("src/lib/video-use/runtime.ts");
-  assert.match(runtime, /PYTHONUTF8: "1"/);
-  assert.match(runtime, /PYTHONIOENCODING: "utf-8"/);
+  assert.match(executor, /result\.PYTHONUTF8 = "1"/);
+  assert.match(executor, /result\.PYTHONIOENCODING = "utf-8"/);
 });

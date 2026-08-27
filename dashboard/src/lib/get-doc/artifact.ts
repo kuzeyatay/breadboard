@@ -11,7 +11,6 @@
 // lets the same signature check run over the copy that is actually stored.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {
   createImportedArtifact,
@@ -110,7 +109,11 @@ export function closeGetDocArtifactContext(
 }
 
 /** What the artifact remembers about where a paper came from. */
-export function documentMetadata(document: DocumentHit, finalUrl: string): Record<string, unknown> {
+export function documentMetadata(
+  document: DocumentHit,
+  finalUrl: string,
+  runtimeIdentity?: { runId: string; documentId: string },
+): Record<string, unknown> {
   return {
     getDocDocument: true,
     documentTitle: document.title,
@@ -123,25 +126,42 @@ export function documentMetadata(document: DocumentHit, finalUrl: string): Recor
     documentPdfSource: document.pdfSource,
     documentCatalogs: document.sources,
     documentOpenAccess: document.openAccess,
+    ...(runtimeIdentity
+      ? {
+          getDocRuntimeJobId: runtimeIdentity.runId,
+          getDocDocumentId: runtimeIdentity.documentId,
+        }
+      : {}),
   };
 }
 
 /** Store one downloaded PDF as a durable, verified artifact. */
-export function saveDocumentArtifact(input: {
+export async function saveDocumentArtifact(input: {
   context: GetDocArtifactContext;
   document: DocumentHit;
-  buffer: Buffer;
+  /** Runtime-private, already bounded PDF. It is imported without buffering. */
+  sourceFile: string;
+  authorizedRoot: string;
   filename: string;
   finalUrl: string;
-}): ArtifactRow {
-  const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-get-doc-"));
+  runtimeIdentity?: { runId: string; documentId: string };
+}): Promise<ArtifactRow> {
   const stagedName =
     input.filename.replace(/[^a-z0-9._-]+/gi, "-").replace(/^\.+/, "").slice(0, 120) ||
     "document.pdf";
-  const stagedFile = path.join(stagingRoot, stagedName);
-  try {
-    fs.writeFileSync(stagedFile, input.buffer, { flag: "wx" });
-    return createImportedArtifact({
+  const canonicalRoot = fs.realpathSync.native(path.resolve(input.authorizedRoot));
+  const canonicalFile = fs.realpathSync.native(path.resolve(input.sourceFile));
+  const relative = path.relative(canonicalRoot, canonicalFile);
+  if (
+    !relative ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative) ||
+    !fs.lstatSync(canonicalFile).isFile()
+  ) {
+    throw new Error("The Runtime PDF escaped its authorized workspace.");
+  }
+  return await createImportedArtifact({
       userId: input.context.userId,
       runtimeSessionId: input.context.runtimeSessionId,
       hermesSessionId: input.context.hermesSessionId,
@@ -153,16 +173,13 @@ export function saveDocumentArtifact(input: {
       kind: "pdf",
       title: input.document.title.slice(0, 240),
       filename: stagedName,
-      authorizedRoot: stagingRoot,
-      filePath: stagedFile,
-      metadata: documentMetadata(input.document, input.finalUrl),
+      authorizedRoot: canonicalRoot,
+      filePath: canonicalFile,
+      metadata: documentMetadata(input.document, input.finalUrl, input.runtimeIdentity),
       sourceHermesTool: GET_DOC_DOWNLOAD_TOOL,
       // Breadboard fetched this paper, it did not write it. Its XMP carries the
       // authors, the DOI and the license, and stripping that would destroy
       // somebody else's bibliographic record rather than clean up our own.
       scrubProvenance: false,
     });
-  } finally {
-    fs.rmSync(stagingRoot, { recursive: true, force: true });
-  }
 }

@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { NextResponse } from "next/server";
 
 import {
@@ -19,18 +21,62 @@ import db from "@/lib/db";
 import { OFFICE_TOOLS, OFFICE_WRITE_TOOLS } from "@/lib/hermes/tool-scopes.ts";
 import {
   createImportedArtifact,
+  getArtifactById,
   presentArtifact,
   ArtifactStoreError,
 } from "@/lib/hermes/artifact-store.ts";
+import { OfficeCliError, officeWorkspaceFor } from "@/lib/office/contract.ts";
 import {
-  OfficeCliError,
-  officeWorkspaceFor,
-  prepareOfficeExport,
-  runOfficeCommand,
-} from "@/lib/office/agent-query.ts";
+  prepareOfficeExportViaRuntime,
+  runOfficeCommandViaRuntime,
+} from "@/lib/office/runtime-v2.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+function completedOfficeExport(input: {
+  userId: number;
+  runtimeSessionId: number;
+  conversationId: number;
+  runId: string;
+  toolCallId: string | null;
+}): unknown | null {
+  // A tool-call id is the stable publication fence. Returning its already
+  // promoted artifact makes a retried request independent of the disposable
+  // worker workspace and Runtime job-retention window.
+  if (input.toolCallId === null) return null;
+  const row = db.prepare(`
+    SELECT id
+    FROM hermes_artifacts
+    WHERE user_id = ?
+      AND runtime_session_id = ?
+      AND conversation_id = ?
+      AND originating_run_id = ?
+      AND originating_tool_call_id = ?
+      AND source_skill = 'office'
+      AND source_hermes_tool = 'office_export'
+      AND status = 'ready'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(
+    input.userId,
+    input.runtimeSessionId,
+    input.conversationId,
+    input.runId,
+    input.toolCallId,
+  ) as { id: string } | undefined;
+  if (!row) return null;
+  const artifact = getArtifactById(row.id);
+  if (!artifact) return null;
+  const presented = presentArtifact(artifact);
+  const file = typeof presented.metadata.officeFile === "string"
+    ? presented.metadata.officeFile
+    : artifact.filename;
+  const previewRendered = typeof presented.metadata.officePreviewRendered === "boolean"
+    ? presented.metadata.officePreviewRendered
+    : Boolean(artifact.preview_location && artifact.preview_location !== artifact.output_location);
+  return { artifact: presented, file, previewRendered };
+}
 
 /**
  * Internal server-to-server endpoint for the Hermes `office_*` tools. Not a
@@ -97,53 +143,90 @@ export async function POST(request: Request) {
         ? (body.args as Record<string, unknown>)
         : {};
     const workspace = officeWorkspaceFor(session);
+    const conversation = db.prepare(
+      "SELECT public_id FROM conversations WHERE id = ? AND user_id = ?",
+    ).get(session.conversation_id, session.user_id) as { public_id: string } | undefined;
+    if (!conversation?.public_id) {
+      throw new ApiError(403, "office_conversation_scope_mismatch", "Office conversation scope is invalid.");
+    }
+    const officeScope = {
+      userId: session.user_id,
+      gardenId: session.garden_id,
+      conversationId: conversation.public_id,
+    };
+    const toolCallId =
+      typeof body.toolCallId === "string" ? body.toolCallId.slice(0, 200) : null;
 
     let data: unknown;
     if (toolName === "office_run") {
-      data = await runOfficeCommand(workspace, args);
+      data = await runOfficeCommandViaRuntime(
+        { ...officeScope, runtimeSessionId: session.id },
+        workspace,
+        args,
+        { idempotencySeed: toolCallId, signal: request.signal },
+      );
     } else {
       const run = getActiveRuntimeRun(session.id);
       if (!run) {
         throw new ApiError(409, "office_run_required", "office_export requires a current Hermes run.");
       }
-      const dispatch = parseRuntimeRunDispatch(run);
-      const assistantMessage = dispatch.clientMessageId
-        ? db.prepare(`
-            SELECT id FROM conversation_messages
-            WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'
-          `).get(session.conversation_id, dispatch.clientMessageId) as { id: number } | undefined
-        : undefined;
-      const toolCallId =
-        typeof body.toolCallId === "string" ? body.toolCallId.slice(0, 200) : null;
-      const staged = await prepareOfficeExport(workspace, args);
-      try {
-        const artifact = createImportedArtifact({
-          userId: session.user_id,
-          runtimeSessionId: session.id,
-          hermesSessionId: runtimeExternalSessionId(session)!,
-          conversationId: session.conversation_id,
-          clusterId: session.cluster_id,
-          runId: run.id,
-          assistantMessageId: assistantMessage?.id ?? null,
-          toolCallId,
-          surface: session.surface as "dashboard_terminal" | "garden_chat",
-          kind: staged.kind,
-          title: staged.title,
-          filename: staged.filename,
-          metadata: { officeExport: true, officeFile: staged.relativeFile },
-          sourceSkill: "office",
-          sourceHermesTool: "office_export",
-          authorizedRoot: workspace,
-          filePath: staged.filePath,
-          previewFilePath: staged.previewFilePath,
-        });
-        data = {
-          artifact: presentArtifact(artifact),
-          file: staged.relativeFile,
-          previewRendered: staged.previewFilePath !== null,
-        };
-      } finally {
-        staged.cleanup();
+      const recovered = completedOfficeExport({
+        userId: session.user_id,
+        runtimeSessionId: session.id,
+        conversationId: session.conversation_id,
+        runId: run.id,
+        toolCallId,
+      });
+      if (recovered) {
+        data = recovered;
+      } else {
+        const dispatch = parseRuntimeRunDispatch(run);
+        const assistantMessage = dispatch.clientMessageId
+          ? db.prepare(`
+              SELECT id FROM conversation_messages
+              WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'
+            `).get(session.conversation_id, dispatch.clientMessageId) as { id: number } | undefined
+          : undefined;
+        const staged = await prepareOfficeExportViaRuntime(
+          officeScope,
+          workspace,
+          args,
+          { idempotencySeed: `${run.id}:${toolCallId ?? "office-export"}`, signal: request.signal },
+        );
+        try {
+          const artifact = await createImportedArtifact({
+            userId: session.user_id,
+            runtimeSessionId: session.id,
+            hermesSessionId: runtimeExternalSessionId(session)!,
+            conversationId: session.conversation_id,
+            clusterId: session.cluster_id,
+            runId: run.id,
+            assistantMessageId: assistantMessage?.id ?? null,
+            toolCallId,
+            surface: session.surface as "dashboard_terminal" | "garden_chat",
+            kind: staged.kind,
+            title: staged.title,
+            filename: staged.filename,
+            metadata: {
+              officeExport: true,
+              officeFile: staged.relativeFile,
+              officePreviewRendered: staged.previewFilePath !== null,
+            },
+            sourceSkill: "office",
+            sourceHermesTool: "office_export",
+            authorizedRoot: path.dirname(staged.filePath),
+            filePath: staged.filePath,
+            previewFilePath: staged.previewFilePath,
+            signal: request.signal,
+          });
+          data = {
+            artifact: presentArtifact(artifact),
+            file: staged.relativeFile,
+            previewRendered: staged.previewFilePath !== null,
+          };
+        } finally {
+          staged.cleanup();
+        }
       }
     }
 

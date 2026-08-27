@@ -7,21 +7,34 @@
 // what the workspace's setup state is right now, and the reporting contract for
 // the chat transcript.
 
-import fs from "node:fs";
-import path from "node:path";
 import { breadSystemPrompt } from "../assistant-identity.ts";
+import { externalRuntimeReadUtf8 } from "../external-runtime-filesystem.ts";
+import { resolveExistingInsideRoot } from "./commands.ts";
 import type { CareerOpsMode } from "./identity.ts";
 import type { CareerOpsHealth } from "./runtime.ts";
 
 /** A mode file bigger than this is read on demand rather than preloaded. */
 export const PRELOADED_MODE_MAX_CHARS = 20_000;
 
-function readIfPresent(file: string): string {
+function readIfPresent(root: string, relative: string): string {
+  const file = resolveExistingInsideRoot(relative, root, "file");
+  if (!file) return "";
   try {
-    return fs.readFileSync(file, "utf8");
+    return externalRuntimeReadUtf8(file.absolute);
   } catch {
     return "";
   }
+}
+
+function modeRelativePath(mode: string): string | null {
+  const segments = mode
+    .trim()
+    .toLowerCase()
+    .split("/")
+    .filter(Boolean);
+  if (!segments.length || segments.length > 2) return null;
+  if (segments.some((segment) => !/^[a-z0-9][a-z0-9-]*$/.test(segment))) return null;
+  return ["modes", ...segments.slice(0, -1), `${segments.at(-1)}.md`].join("/");
 }
 
 /**
@@ -31,20 +44,15 @@ function readIfPresent(file: string): string {
  * out of `modes/`.
  */
 export function modeFilePath(root: string, mode: string): string | null {
-  const segments = mode
-    .trim()
-    .toLowerCase()
-    .split("/")
-    .filter(Boolean);
-  if (!segments.length || segments.length > 2) return null;
-  if (segments.some((segment) => !/^[a-z0-9][a-z0-9-]*$/.test(segment))) return null;
-  const file = path.join(root, "modes", ...segments.slice(0, -1), `${segments.at(-1)}.md`);
-  return fs.existsSync(file) ? file : null;
+  const relative = modeRelativePath(mode);
+  if (!relative) return null;
+  return resolveExistingInsideRoot(relative, root, "file")?.absolute ?? null;
 }
 
 export function readMode(root: string, mode: string): string | null {
-  const file = modeFilePath(root, mode);
-  return file ? readIfPresent(file) : null;
+  const relative = modeRelativePath(mode);
+  if (!relative || !modeFilePath(root, mode)) return null;
+  return readIfPresent(root, relative);
 }
 
 function setupSection(health: CareerOpsHealth): string {
@@ -92,15 +100,13 @@ export interface BuiltPrompt {
 }
 
 export function buildSystemPrompt(input: PromptInput): BuiltPrompt {
-  const skill = readIfPresent(
-    path.join(input.root, ".agents", "skills", "career-ops", "SKILL.md"),
-  );
-  const shared = readIfPresent(path.join(input.root, "modes", "_shared.md"));
+  const skill = readIfPresent(input.root, ".agents/skills/career-ops/SKILL.md");
+  const shared = readIfPresent(input.root, "modes/_shared.md");
   // The user layer, which _shared.md says must be read after it and which
   // overrides its defaults. Small files, and the run is worthless without them.
   const userLayer = ["_profile.md", "_custom.md", "_brief.md"]
     .map((name) => {
-      const body = readIfPresent(path.join(input.root, "modes", name));
+      const body = readIfPresent(input.root, `modes/${name}`);
       return body ? `\n### modes/${name}\n${body}` : "";
     })
     .filter(Boolean)

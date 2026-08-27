@@ -2,7 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
-import { runOfficeCli } from "../office/officecli.ts";
+import {
+  prepareOfficeExportViaRuntime,
+  type RuntimeV2OfficeControl,
+} from "../office/runtime-v2.ts";
 import {
   ArtifactStoreError,
   importArtifactVersion,
@@ -12,14 +15,12 @@ import {
 import { artifactEditorMode } from "./artifact-editor-types.ts";
 
 const MAX_OFFICE_EDITOR_BYTES = 128 * 1024 * 1024;
-const OFFICE_EDITOR_ENV: NodeJS.ProcessEnv = {
-  ...process.env,
-  OFFICECLI_NO_AUTO_RESIDENT: "1",
-};
 
 export interface ArtifactOfficeSaveOptions {
   database?: Database.Database;
   storageRoot?: string;
+  signal?: AbortSignal;
+  officeRuntimeControl?: RuntimeV2OfficeControl;
 }
 
 function temporaryWorkspace(): string {
@@ -49,31 +50,6 @@ function validateExpectedVersion(
       "This artifact changed after the editor opened. Reload it before saving.",
     );
   }
-}
-
-async function renderDocxPreview(
-  workspace: string,
-  filePath: string,
-): Promise<string | null> {
-  const previewFilePath = path.join(workspace, "editor-preview.html");
-  try {
-    const rendered = await runOfficeCli(
-      ["view", filePath, "html", "-o", previewFilePath],
-      { cwd: workspace, timeoutMs: 60_000, env: OFFICE_EDITOR_ENV },
-    );
-    if (
-      rendered.code === 0 &&
-      fs.existsSync(previewFilePath) &&
-      fs.statSync(previewFilePath).size > 0
-    ) {
-      return previewFilePath;
-    }
-  } catch {
-    // A preview is an enhancement. The edited DOCX remains downloadable even
-    // when the local Office renderer is unavailable.
-  }
-  fs.rmSync(previewFilePath, { force: true });
-  return null;
 }
 
 /**
@@ -117,21 +93,45 @@ export async function saveArtifactOfficeBytes(
   try {
     const staged = path.join(workspace, path.basename(artifact.filename));
     fs.writeFileSync(staged, bytes);
-    const previewFilePath = await renderDocxPreview(workspace, staged);
-    return importArtifactVersion({
-      artifact,
-      authorizedRoot: workspace,
-      filePath: staged,
-      previewFilePath,
-      runId: artifact.originating_run_id,
-      assistantMessageId: null,
-      metadata: {
-        lastEditedBy: "human",
-        reviewWorkflow: "genoffice-docs",
+    if (!artifact.conversation_public_id) {
+      throw new ArtifactStoreError(
+        403,
+        "artifact_conversation_scope_mismatch",
+        "The artifact conversation scope is unavailable.",
+      );
+    }
+    const rendered = await prepareOfficeExportViaRuntime(
+      {
+        userId: artifact.user_id,
+        gardenId: artifact.garden_slug ?? null,
+        conversationId: artifact.conversation_public_id,
       },
-      database: options.database,
-      storageRoot: options.storageRoot,
-    });
+      workspace,
+      { file: path.basename(staged), title: artifact.title },
+      {
+        idempotencySeed: `${artifact.id}:${artifact.current_version}:genoffice-docs`,
+        signal: options.signal,
+        control: options.officeRuntimeControl,
+      },
+    );
+    try {
+      return await importArtifactVersion({
+        artifact,
+        authorizedRoot: path.dirname(rendered.filePath),
+        filePath: rendered.filePath,
+        previewFilePath: rendered.previewFilePath,
+        runId: artifact.originating_run_id,
+        assistantMessageId: null,
+        metadata: {
+          lastEditedBy: "human",
+          reviewWorkflow: "genoffice-docs",
+        },
+        database: options.database,
+        storageRoot: options.storageRoot,
+      });
+    } finally {
+      rendered.cleanup();
+    }
   } finally {
     removeTemporaryWorkspace(workspace);
   }

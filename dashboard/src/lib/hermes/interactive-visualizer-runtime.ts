@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import path from "node:path";
 import { build } from "esbuild";
 import type {
   InteractiveVisualizerDefinition,
@@ -6,6 +7,12 @@ import type {
   InteractiveVisualizerMode,
 } from "./interactive-visualizer-types.ts";
 import { interactiveVisualizerConfig } from "./interactive-visualizer-config.ts";
+
+// Runtime V2 launches each job from a private attempt directory. Resolve
+// browser dependencies from the trusted dashboard module tree instead of that
+// mutable job cwd. The same three-level ascent reaches dashboard/ from both
+// src/lib/hermes (development) and worker-src/lib/hermes (packaged).
+const interactiveVisualizerModuleRoot = path.resolve(import.meta.dirname, "..", "..", "..");
 
 const runtimeCache = new Map<InteractiveVisualizerMode, string>();
 
@@ -36,6 +43,7 @@ function renderOrbit(sceneDef, mount, state, testState) {
   try {
     renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true, powerPreference:"high-performance"});
   } catch (error) {
+    document.documentElement.dataset.breadboardWebglFallback="rendered";
     const fallback = element("p", "iv-error", "3D rendering is unavailable on this device.");
     wrap.replaceChildren(fallback); testState.fail("three renderer", error instanceof Error ? error.message : "WebGL unavailable");
     return {update(){}, destroy(){}};
@@ -76,31 +84,31 @@ function renderOrbit(sceneDef, mount, state, testState) {
   canvas.addEventListener("pointerdown",down);canvas.addEventListener("pointermove",move);canvas.addEventListener("pointerup",up);canvas.addEventListener("pointercancel",up);canvas.addEventListener("wheel",wheel,{passive:false});canvas.addEventListener("keydown",keyMove);
   const resize=()=>{const rect=wrap.getBoundingClientRect();const width=Math.max(260,Math.floor(rect.width));const height=Math.max(300,Math.floor(rect.height));renderer.setSize(width,height,false);camera.aspect=width/height;camera.updateProjectionMatrix()};
   const observer=new ResizeObserver(resize);observer.observe(wrap);resize();
-  let stopped=false,start=performance.now(),hidden=document.hidden;
+  let stopped=false,frameRequest=0,start=performance.now(),hidden=document.hidden;
   const visibility=()=>{hidden=document.hidden};document.addEventListener("visibilitychange",visibility);
   const frame=now=>{
-    if(stopped)return;if(hidden||state.__animationPaused){requestAnimationFrame(frame);return}const elapsed=(now-start)/1000;const scale=Number(state[sceneDef.timeScaleInput]??1);const gravity=Math.max(.0001,Number(state[sceneDef.gravityInput]??1));const velocity=Math.max(.0001,Number(state[sceneDef.initialVelocityInput]??1));const dynamics=Math.sqrt(gravity)*velocity;
+    if(stopped)return;if(hidden||state.__animationPaused){frameRequest=requestAnimationFrame(frame);return}const elapsed=(now-start)/1000;const scale=Number(state[sceneDef.timeScaleInput]??1);const gravity=Math.max(.0001,Number(state[sceneDef.gravityInput]??1));const velocity=Math.max(.0001,Number(state[sceneDef.initialVelocityInput]??1));const dynamics=Math.sqrt(gravity)*velocity;
     central.rotation.y=elapsed*.08;
     bodyObjects.forEach(item=>{const {body,pivot,mesh,trail,historyTrail,velocityArrow,history,phase}=item;pivot.rotation.y=phase+elapsed*body.orbitSpeed*scale*dynamics;mesh.rotation.y=elapsed*Number(body.rotationSpeed||.2);trail.visible=sceneDef.showTrailsInput?Boolean(state[sceneDef.showTrailsInput]):true;const current=new THREE.Vector3();mesh.getWorldPosition(current);const previous=history[history.length-1];if(historyLimit>1){history.push(current.clone());while(history.length>historyLimit)history.shift();historyTrail.geometry.setFromPoints(history);historyTrail.visible=trail.visible}if(previous){const direction=current.clone().sub(previous);if(direction.lengthSq()>1e-10)velocityArrow.setDirection(direction.normalize())}velocityArrow.position.copy(current);velocityArrow.visible=sceneDef.showVelocityVectorsInput?Boolean(state[sceneDef.showVelocityVectorsInput]):false});
     camera.position.set(Math.cos(yaw)*Math.cos(pitch)*distance,Math.sin(pitch)*distance,Math.sin(yaw)*Math.cos(pitch)*distance);camera.lookAt(0,0,0);
-    renderer.render(scene,camera);requestAnimationFrame(frame)
-  }; requestAnimationFrame(frame);
+    renderer.render(scene,camera);frameRequest=requestAnimationFrame(frame)
+  }; frameRequest=requestAnimationFrame(frame);
   testState.pass("three renderer");testState.pass("3d controls");canvas.dataset.breadboardWebgl="ready";
-  return {update(reset){if(reset){yaw=.65;pitch=.42;distance=Math.max(16,...sceneDef.bodies.map(body=>body.distance))*2.35;start=performance.now();for(const item of bodyObjects){item.history.length=0;item.historyTrail.geometry.setFromPoints([])}}renderer.render(scene,camera)},destroy(){stopped=true;observer.disconnect();document.removeEventListener("visibilitychange",visibility);scene.traverse(object=>{if(object.geometry)object.geometry.dispose();const materials=Array.isArray(object.material)?object.material:[object.material];for(const material of materials){if(material&&typeof material.dispose==="function")material.dispose()}});renderer.dispose();canvas.removeEventListener("pointerdown",down);canvas.removeEventListener("pointermove",move);canvas.removeEventListener("pointerup",up);canvas.removeEventListener("pointercancel",up);canvas.removeEventListener("wheel",wheel);canvas.removeEventListener("keydown",keyMove)}};
+  return {update(reset){if(reset){yaw=.65;pitch=.42;distance=Math.max(16,...sceneDef.bodies.map(body=>body.distance))*2.35;start=performance.now();for(const item of bodyObjects){item.history.length=0;item.historyTrail.geometry.setFromPoints([])}}renderer.render(scene,camera)},destroy(){stopped=true;cancelAnimationFrame(frameRequest);observer.disconnect();document.removeEventListener("visibilitychange",visibility);disposeThreeRenderer(scene,renderer,canvas);canvas.removeEventListener("pointerdown",down);canvas.removeEventListener("pointermove",move);canvas.removeEventListener("pointerup",up);canvas.removeEventListener("pointercancel",up);canvas.removeEventListener("wheel",wheel);canvas.removeEventListener("keydown",keyMove)}};
 }
 function renderSpatial(sceneDef,mount,state,testState){
   const wrap=element("div","iv-canvas-wrap"),canvas=document.createElement("canvas");canvas.setAttribute("aria-label",sceneDef.title+" interactive 3D scene");canvas.tabIndex=0;wrap.append(canvas);mount.append(wrap,element("p","iv-description",sceneDef.objects.map(item=>item.label).join(", ")));
-  let renderer;try{renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true,powerPreference:"high-performance"})}catch(error){wrap.replaceChildren(element("p","iv-error","3D rendering is unavailable on this device."));testState.fail("three renderer",error instanceof Error?error.message:"WebGL unavailable");return{update(){},destroy(){}}}
+  let renderer;try{renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true,powerPreference:"high-performance"})}catch(error){document.documentElement.dataset.breadboardWebglFallback="rendered";wrap.replaceChildren(element("p","iv-error","3D rendering is unavailable on this device."));testState.fail("three renderer",error instanceof Error?error.message:"WebGL unavailable");return{update(){},destroy(){}}}
   renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));renderer.outputColorSpace=THREE.SRGBColorSpace;const scene=new THREE.Scene(),perspective=sceneDef.camera==="perspective";const camera=perspective?new THREE.PerspectiveCamera(42,1,.1,2000):new THREE.OrthographicCamera(-8,8,8,-8,.1,2000);scene.add(new THREE.AmbientLight(0xffffff,1.4));const key=new THREE.DirectionalLight(0xffffff,2.3);key.position.set(8,12,10);scene.add(key);
   const geometry=shape=>shape==="box"?new THREE.BoxGeometry(1,1,1):shape==="cylinder"?new THREE.CylinderGeometry(.5,.5,1,24):shape==="torus"?new THREE.TorusGeometry(.7,.22,16,36):new THREE.SphereGeometry(.5,28,20);
   const objects=new Map(sceneDef.objects.map(def=>{const mesh=new THREE.Mesh(geometry(def.shape),new THREE.MeshStandardMaterial({color:def.color,roughness:.58,metalness:.06}));mesh.name=def.label;mesh.scale.set(...def.scale);scene.add(mesh);return[def.id,{def,mesh}]}));
   const connections=sceneDef.connections.map(def=>{const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]),new THREE.LineBasicMaterial({color:def.color}));scene.add(line);return{def,line}});
-  let yaw=.7,pitch=.42,distance=18,dragging=false,lastX=0,lastY=0,stopped=false,hidden=document.hidden;const down=e=>{dragging=true;lastX=e.clientX;lastY=e.clientY;canvas.setPointerCapture(e.pointerId)},move=e=>{if(!dragging)return;yaw+=(e.clientX-lastX)*.008;pitch=clamp(pitch+(e.clientY-lastY)*.006,-1.15,1.15);lastX=e.clientX;lastY=e.clientY},up=()=>{dragging=false},wheel=e=>{e.preventDefault();distance=clamp(distance*(1+Math.sign(e.deltaY)*.08),4,120)},keyMove=e=>{if(e.key==="ArrowLeft")yaw-=.12;if(e.key==="ArrowRight")yaw+=.12;if(e.key==="ArrowUp")pitch=clamp(pitch-.1,-1.15,1.15);if(e.key==="ArrowDown")pitch=clamp(pitch+.1,-1.15,1.15);if(e.key==="+"||e.key==="=")distance=clamp(distance*.9,4,120);if(e.key==="-")distance=clamp(distance*1.1,4,120)},visibility=()=>{hidden=document.hidden};
+  let yaw=.7,pitch=.42,distance=18,dragging=false,lastX=0,lastY=0,stopped=false,frameRequest=0,hidden=document.hidden;const down=e=>{dragging=true;lastX=e.clientX;lastY=e.clientY;canvas.setPointerCapture(e.pointerId)},move=e=>{if(!dragging)return;yaw+=(e.clientX-lastX)*.008;pitch=clamp(pitch+(e.clientY-lastY)*.006,-1.15,1.15);lastX=e.clientX;lastY=e.clientY},up=()=>{dragging=false},wheel=e=>{e.preventDefault();distance=clamp(distance*(1+Math.sign(e.deltaY)*.08),4,120)},keyMove=e=>{if(e.key==="ArrowLeft")yaw-=.12;if(e.key==="ArrowRight")yaw+=.12;if(e.key==="ArrowUp")pitch=clamp(pitch-.1,-1.15,1.15);if(e.key==="ArrowDown")pitch=clamp(pitch+.1,-1.15,1.15);if(e.key==="+"||e.key==="=")distance=clamp(distance*.9,4,120);if(e.key==="-")distance=clamp(distance*1.1,4,120)},visibility=()=>{hidden=document.hidden};
   canvas.addEventListener("pointerdown",down);canvas.addEventListener("pointermove",move);canvas.addEventListener("pointerup",up);canvas.addEventListener("pointercancel",up);canvas.addEventListener("wheel",wheel,{passive:false});canvas.addEventListener("keydown",keyMove);document.addEventListener("visibilitychange",visibility);
   const resize=()=>{const rect=wrap.getBoundingClientRect(),width=Math.max(260,Math.floor(rect.width)),height=Math.max(300,Math.floor(rect.height));renderer.setSize(width,height,false);if(perspective)camera.aspect=width/height;else{const size=8;camera.left=-size*width/height;camera.right=size*width/height;camera.top=size;camera.bottom=-size}camera.updateProjectionMatrix()},observer=new ResizeObserver(resize);observer.observe(wrap);resize();
   const update=()=>{for(const {def,mesh} of objects.values())mesh.position.set(...def.position.map(expression=>valueOf(expression,state)));for(const {def,line} of connections){const from=objects.get(def.from)?.mesh.position,to=objects.get(def.to)?.mesh.position;if(from&&to)line.geometry.setFromPoints([from,to])}};
-  const frame=()=>{if(stopped)return;if(!hidden&&!state.__animationPaused){update();const speed=Number(state[sceneDef.rotationSpeedInput]??0);scene.rotation.y+=Number.isFinite(speed)?speed*.002:0;camera.position.set(Math.cos(yaw)*Math.cos(pitch)*distance,Math.sin(pitch)*distance,Math.sin(yaw)*Math.cos(pitch)*distance);camera.lookAt(0,0,0);renderer.render(scene,camera)}requestAnimationFrame(frame)};update();requestAnimationFrame(frame);testState.pass("three renderer");testState.pass("3d controls");canvas.dataset.breadboardWebgl="ready";
-  return{update,destroy(){stopped=true;observer.disconnect();document.removeEventListener("visibilitychange",visibility);scene.traverse(object=>{if(object.geometry)object.geometry.dispose();const materials=Array.isArray(object.material)?object.material:[object.material];for(const material of materials){if(material&&typeof material.dispose==="function")material.dispose()}});renderer.dispose();canvas.removeEventListener("pointerdown",down);canvas.removeEventListener("pointermove",move);canvas.removeEventListener("pointerup",up);canvas.removeEventListener("pointercancel",up);canvas.removeEventListener("wheel",wheel);canvas.removeEventListener("keydown",keyMove)}}
+  const frame=()=>{if(stopped)return;if(!hidden&&!state.__animationPaused){update();const speed=Number(state[sceneDef.rotationSpeedInput]??0);scene.rotation.y+=Number.isFinite(speed)?speed*.002:0;camera.position.set(Math.cos(yaw)*Math.cos(pitch)*distance,Math.sin(pitch)*distance,Math.sin(yaw)*Math.cos(pitch)*distance);camera.lookAt(0,0,0);renderer.render(scene,camera)}frameRequest=requestAnimationFrame(frame)};update();frameRequest=requestAnimationFrame(frame);testState.pass("three renderer");testState.pass("3d controls");canvas.dataset.breadboardWebgl="ready";
+  return{update,destroy(){stopped=true;cancelAnimationFrame(frameRequest);observer.disconnect();document.removeEventListener("visibilitychange",visibility);disposeThreeRenderer(scene,renderer,canvas);canvas.removeEventListener("pointerdown",down);canvas.removeEventListener("pointermove",move);canvas.removeEventListener("pointerup",up);canvas.removeEventListener("pointercancel",up);canvas.removeEventListener("wheel",wheel);canvas.removeEventListener("keydown",keyMove)}}
 }` : `
 function renderOrbit(_sceneDef, mount, _state, testState) {
   mount.append(element("p","iv-error","A 3D scene was supplied to the 2D runtime."));
@@ -116,11 +124,19 @@ const channel=params.get("channel")||"standalone";
 const testing=params.get("test")==="1";
 const root=document.getElementById("app");
 const cleanups=[];
+let disposed=false;
 const testChecks=[];
 const testState={pass(name){testChecks.push({name,passed:true})},fail(name,detail){testChecks.push({name,passed:false,detail:String(detail||"failed")})}};
 function element(tag,className,text){const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=String(text);return node}
 function transportIcon(kind){const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");svg.setAttribute("viewBox","0 0 24 24");svg.setAttribute("width","20");svg.setAttribute("height","20");svg.setAttribute("aria-hidden","true");svg.setAttribute("fill",kind==="reset"?"none":"currentColor");if(kind==="pause"){for(const x of [7,13]){const rect=document.createElementNS(svg.namespaceURI,"rect");rect.setAttribute("x",String(x));rect.setAttribute("y","5");rect.setAttribute("width","4");rect.setAttribute("height","14");rect.setAttribute("rx","1");svg.append(rect)}}else{const path=document.createElementNS(svg.namespaceURI,"path");path.setAttribute("d",kind==="play"?"M8 5v14l11-7z":"M20 11a8 8 0 1 0-2.34 5.66M20 11V5m0 6h-6");if(kind==="reset"){path.setAttribute("stroke","currentColor");path.setAttribute("stroke-width","1.8");path.setAttribute("stroke-linecap","round");path.setAttribute("stroke-linejoin","round")}svg.append(path)}return svg}
 function clamp(value,min,max){return Math.max(min,Math.min(max,value))}
+function disposeRuntime(){if(disposed)return;disposed=true;for(const cleanup of cleanups.splice(0).reverse()){try{cleanup()}catch{}}}
+function disposeThreeRenderer(scene,renderer,canvas){
+  const textures=new Set();
+  scene.traverse(object=>{if(object.geometry)object.geometry.dispose();const materials=Array.isArray(object.material)?object.material:[object.material];for(const material of materials){if(!material)continue;for(const value of Object.values(material)){if(value&&value.isTexture)textures.add(value)}if(typeof material.dispose==="function")material.dispose()}});
+  for(const texture of textures){if(typeof texture.dispose==="function")texture.dispose()}
+  renderer.dispose();if(typeof renderer.forceContextLoss==="function")renderer.forceContextLoss();canvas.width=0;canvas.height=0;
+}
 function valueOf(expression,state){
   if(!expression)return NaN;
   if(expression.kind==="constant")return expression.value;
@@ -159,8 +175,8 @@ function renderPendulum(sceneDef,mount,state,testState){
   const wrap=element("div","iv-canvas-wrap");const canvas=document.createElement("canvas");canvas.setAttribute("role","img");canvas.setAttribute("aria-label",sceneDef.title+" animated double pendulum");wrap.append(canvas);mount.append(wrap);const context=canvas.getContext("2d");let width=0,height=0,last=performance.now(),a1=Number(state[sceneDef.angle1Input]),a2=Number(state[sceneDef.angle2Input]),v1=0,v2=0,trail=[];
   const resize=()=>{const rect=wrap.getBoundingClientRect();const ratio=Math.min(devicePixelRatio||1,2);width=Math.max(260,Math.floor(rect.width));height=Math.max(300,Math.floor(rect.height));canvas.width=width*ratio;canvas.height=height*ratio;context.setTransform(ratio,0,0,ratio,0,0)};const observer=new ResizeObserver(resize);observer.observe(wrap);resize();
   const reset=()=>{a1=Number(state[sceneDef.angle1Input]);a2=Number(state[sceneDef.angle2Input]);v1=v2=0;trail=[]};
-  let stopped=false,hidden=document.hidden;const visibility=()=>{hidden=document.hidden};document.addEventListener("visibilitychange",visibility);const frame=now=>{if(stopped)return;if(hidden||state.__animationPaused){last=now;requestAnimationFrame(frame);return}const speed=Math.max(.05,Number(state[sceneDef.speedInput]??1));const dt=Math.min(.018,Math.max(.001,(now-last)/1000))*speed;last=now;const g=Number(state[sceneDef.gravityInput]),l1=Number(state[sceneDef.length1Input]),l2=Number(state[sceneDef.length2Input]),m1=Number(state[sceneDef.mass1Input]),m2=Number(state[sceneDef.mass2Input]);const c=Math.cos(a1-a2),s=Math.sin(a1-a2),den1=(m1+m2)*l1-m2*l1*c*c,den2=(l2/l1)*den1;const acc1=(m2*l1*v1*v1*s*c+m2*g*Math.sin(a2)*c+m2*l2*v2*v2*s-(m1+m2)*g*Math.sin(a1))/den1;const acc2=(-m2*l2*v2*v2*s*c+(m1+m2)*(g*Math.sin(a1)*c-l1*v1*v1*s-g*Math.sin(a2)))/den2;v1+=acc1*dt;v2+=acc2*dt;a1+=v1*dt;a2+=v2*dt;const scale=Math.min(width,height)*.19,ox=width/2,oy=height*.23,x1=ox+Math.sin(a1)*l1*scale,y1=oy+Math.cos(a1)*l1*scale,x2=x1+Math.sin(a2)*l2*scale,y2=y1+Math.cos(a2)*l2*scale;trail.push([x2,y2]);if(trail.length>240)trail.shift();context.clearRect(0,0,width,height);if(sceneDef.trail&&trail.length>1){context.beginPath();trail.forEach((point,index)=>index?context.lineTo(point[0],point[1]):context.moveTo(point[0],point[1]));context.strokeStyle="rgba(86,115,91,.38)";context.lineWidth=1.5;context.stroke()}context.beginPath();context.moveTo(ox,oy);context.lineTo(x1,y1);context.lineTo(x2,y2);context.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue("--iv-ink");context.lineWidth=3;context.stroke();for(const [x,y,r] of [[x1,y1,9],[x2,y2,11]]){context.beginPath();context.arc(x,y,r,0,Math.PI*2);context.fillStyle=getComputedStyle(document.documentElement).getPropertyValue("--iv-accent");context.fill()}requestAnimationFrame(frame)};requestAnimationFrame(frame);testState.pass("double pendulum physics");
-  return{update:reset,destroy(){stopped=true;observer.disconnect();document.removeEventListener("visibilitychange",visibility)}}
+  let stopped=false,frameRequest=0,hidden=document.hidden;const visibility=()=>{hidden=document.hidden};document.addEventListener("visibilitychange",visibility);const frame=now=>{if(stopped)return;if(hidden||state.__animationPaused){last=now;frameRequest=requestAnimationFrame(frame);return}const speed=Math.max(.05,Number(state[sceneDef.speedInput]??1));const dt=Math.min(.018,Math.max(.001,(now-last)/1000))*speed;last=now;const g=Number(state[sceneDef.gravityInput]),l1=Number(state[sceneDef.length1Input]),l2=Number(state[sceneDef.length2Input]),m1=Number(state[sceneDef.mass1Input]),m2=Number(state[sceneDef.mass2Input]);const c=Math.cos(a1-a2),s=Math.sin(a1-a2),den1=(m1+m2)*l1-m2*l1*c*c,den2=(l2/l1)*den1;const acc1=(m2*l1*v1*v1*s*c+m2*g*Math.sin(a2)*c+m2*l2*v2*v2*s-(m1+m2)*g*Math.sin(a1))/den1;const acc2=(-m2*l2*v2*v2*s*c+(m1+m2)*(g*Math.sin(a1)*c-l1*v1*v1*s-g*Math.sin(a2)))/den2;v1+=acc1*dt;v2+=acc2*dt;a1+=v1*dt;a2+=v2*dt;const scale=Math.min(width,height)*.19,ox=width/2,oy=height*.23,x1=ox+Math.sin(a1)*l1*scale,y1=oy+Math.cos(a1)*l1*scale,x2=x1+Math.sin(a2)*l2*scale,y2=y1+Math.cos(a2)*l2*scale;trail.push([x2,y2]);if(trail.length>240)trail.shift();context.clearRect(0,0,width,height);if(sceneDef.trail&&trail.length>1){context.beginPath();trail.forEach((point,index)=>index?context.lineTo(point[0],point[1]):context.moveTo(point[0],point[1]));context.strokeStyle="rgba(86,115,91,.38)";context.lineWidth=1.5;context.stroke()}context.beginPath();context.moveTo(ox,oy);context.lineTo(x1,y1);context.lineTo(x2,y2);context.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue("--iv-ink");context.lineWidth=3;context.stroke();for(const [x,y,r] of [[x1,y1,9],[x2,y2,11]]){context.beginPath();context.arc(x,y,r,0,Math.PI*2);context.fillStyle=getComputedStyle(document.documentElement).getPropertyValue("--iv-accent");context.fill()}frameRequest=requestAnimationFrame(frame)};frameRequest=requestAnimationFrame(frame);testState.pass("double pendulum physics");
+  return{update:reset,destroy(){stopped=true;cancelAnimationFrame(frameRequest);observer.disconnect();document.removeEventListener("visibilitychange",visibility);trail=[];canvas.width=0;canvas.height=0}}
 }
 ${orbitRenderer}
 function render(){
@@ -179,10 +195,11 @@ function render(){
   document.documentElement.dataset.breadboardInteractionTests=interactionPassed?"passed":"failed";
   document.documentElement.dataset.breadboardOverflow=document.documentElement.scrollWidth>document.documentElement.clientWidth+2?"true":"false";
 }
-function send(type,payload={}){parent.postMessage({protocol,type,channel,...payload},"*")}
-addEventListener("message",event=>{const data=event.data;if(event.source!==parent||!data||data.protocol!==protocol||data.channel!==channel)return;if(data.type==="host-theme"&&(data.theme==="light"||data.theme==="dark")){document.documentElement.dataset.theme=data.theme;dispatchEvent(new CustomEvent("breadboard:themechange",{detail:{theme:data.theme}}))}if(data.type==="host-presentation"&&data.presentation==="inline")document.documentElement.dataset.presentation="inline"});
-addEventListener("beforeunload",()=>cleanups.splice(0).forEach(cleanup=>cleanup()));
-render();send("ready",{height:document.documentElement.scrollHeight});new ResizeObserver(()=>send("resize",{height:document.documentElement.scrollHeight})).observe(document.body);
+function send(type,payload={}){if(!disposed)parent.postMessage({protocol,type,channel,...payload},"*")}
+const onHostMessage=event=>{const data=event.data;if(event.source!==parent||!data||data.protocol!==protocol||data.channel!==channel)return;if(data.type==="host-dispose"){disposeRuntime();return}if(data.type==="host-theme"&&(data.theme==="light"||data.theme==="dark")){document.documentElement.dataset.theme=data.theme;dispatchEvent(new CustomEvent("breadboard:themechange",{detail:{theme:data.theme}}))}if(data.type==="host-presentation"&&data.presentation==="inline")document.documentElement.dataset.presentation="inline"};
+addEventListener("message",onHostMessage);cleanups.push(()=>removeEventListener("message",onHostMessage));
+addEventListener("pagehide",disposeRuntime,{once:true});addEventListener("beforeunload",disposeRuntime,{once:true});
+render();send("ready",{height:document.documentElement.scrollHeight});const bodyObserver=new ResizeObserver(()=>send("resize",{height:document.documentElement.scrollHeight}));bodyObserver.observe(document.body);cleanups.push(()=>bodyObserver.disconnect());
 `;
 }
 
@@ -194,7 +211,7 @@ export async function buildInteractiveVisualizerRuntime(
   const result = await build({
     stdin: {
       contents: runtimeEntry(mode),
-      resolveDir: process.cwd(),
+      resolveDir: interactiveVisualizerModuleRoot,
       sourcefile: `breadboard-interactive-visualizer-${mode}.ts`,
       loader: "ts",
     },

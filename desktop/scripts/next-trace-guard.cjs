@@ -30,7 +30,6 @@ const mutableDirectories = [
   path.resolve(dashboardDir, "..", ".runtime"),
   path.resolve(dashboardDir, "..", ".agents"),
 ];
-const matcherCache = new Map();
 
 function isMutableDataPath(candidate) {
   if (typeof candidate !== "string" && !Buffer.isBuffer(candidate) && !(candidate instanceof URL)) {
@@ -47,11 +46,12 @@ function isMutableDataPath(candidate) {
 function globTouchesMutableData(candidate) {
   const pattern = String(candidate).replaceAll("\\", "/");
   if (!pattern.includes("*")) return false;
-  let matcher = matcherCache.get(pattern);
-  if (!matcher) {
-    matcher = picomatch(pattern, { dot: true });
-    matcherCache.set(pattern, matcher);
-  }
+  // NFT synthesizes asset globs while tracing dynamic fs expressions. Most of
+  // those patterns are unique, so retaining a compiled matcher for every one
+  // grows for the entire server compilation without producing cache hits.
+  // Compile the one matcher needed for this bounded six-sample check and let it
+  // go immediately after the call.
+  const matcher = picomatch(pattern, { dot: true });
   return mutableTraceSamples.some((sample) => matcher(sample));
 }
 

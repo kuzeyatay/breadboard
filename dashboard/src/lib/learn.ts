@@ -1,8 +1,8 @@
-import fs from "fs";
 import { createHash } from "crypto";
 import os from "os";
-import path from "path";
 import type OpenAI from "openai";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import db from "@/lib/db";
 import { withCouncil, type CouncilMode, type CouncilTaskType } from "@/lib/council";
 import {
@@ -100,7 +100,6 @@ import {
   canonicalizeLearnerWikilinks,
   containsRawVisualPlaceholder,
   excludeSyllabusFromSources,
-  persistedLearnSelection,
   formatQualityProblemForRepair,
   parseJsonCandidate,
   publicLearningVersionId,
@@ -133,7 +132,6 @@ import { extractVerbatimDisplayMath, normalizeQuartzMarkdown } from "@/lib/quart
 import {
   attachLearnTokenUsageTracking,
   emptyLearnTokenUsage,
-  sumLearnTokenUsage,
   type LearnTokenUsage,
   type LearnTokenUsageEvent,
 } from "@/lib/learn-token-usage";
@@ -229,7 +227,7 @@ import {
   planningReceiptProvesOneExactModelCall,
 } from "@/lib/learn-planning-route-proof";
 import { transitionLearnTimer } from "@/lib/learn-timer";
-import { failedGenerationRequiresReplanFromEvents } from "@/lib/learn-replan-recovery";
+import { getLearnStatusSnapshot as projectLearnStatusSnapshot } from "@/lib/learn-status-projection";
 import {
   authoredSyllabusLocatorCatalog,
   buildSyllabusCoverageSourceCatalog,
@@ -326,6 +324,8 @@ import {
   createGeneratedVisualization,
   GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
 } from "@/lib/generated-visuals";
+import { compileGeneratedVisualization } from "@/lib/generated-visual-compiler";
+import { runGeneratedVisualBrowserTestsLocally } from "@/lib/generated-visual-browser-tests";
 import { stableGeneratedVisualCouncilRecoveryRoot } from "@/lib/generated-visual-council-receipts";
 import {
   persistLearnVisualRejectedAttemptAudit,
@@ -1484,53 +1484,6 @@ function parseSourceIds(value: string | null | undefined): string[] {
 
 function learnTokenUsageForJob(jobId: string): LearnTokenUsage {
   return persistedLearnTokenUsageForJob(db, jobId);
-}
-
-/** A user-visible Learn workflow crosses two persisted jobs: planning creates
- * the learning map, then generation consumes that confirmed map. Aggregate the
- * map's planning job with only the currently visible generation/regeneration
- * job, so historical generation attempts are not counted again. */
-function learnTokenUsageForWorkflow(job: LearnJob): LearnTokenUsage {
-  const jobIds = new Set([job.id]);
-  const learningMapId = job.confirmedLearningMapId ?? job.proposedLearningMapId;
-  if (learningMapId) {
-    const mapOwner = db
-      .prepare("SELECT garden_id, job_id FROM learn_maps WHERE id = ?")
-      .get(learningMapId) as { garden_id: string; job_id: string } | undefined;
-    if (mapOwner?.garden_id === job.gardenId && mapOwner.job_id) {
-      jobIds.add(mapOwner.job_id);
-    }
-  }
-  return sumLearnTokenUsage(
-    Array.from(jobIds, (jobId) => learnTokenUsageForJob(jobId)),
-  );
-}
-
-function learnTimerForWorkflow(job: LearnJob): {
-  elapsedMs: number;
-  timerStartedAt?: string;
-} {
-  let elapsedMs = job.elapsedMs;
-  const learningMapId = job.confirmedLearningMapId ?? job.proposedLearningMapId;
-  if (learningMapId) {
-    const mapOwner = db
-      .prepare(
-        `SELECT j.id, j.active_elapsed_ms
-         FROM learn_maps m
-         JOIN learn_jobs j ON j.id = m.job_id
-         WHERE m.id = ? AND m.garden_id = ?`,
-      )
-      .get(learningMapId, job.gardenId) as
-      | { id: string; active_elapsed_ms: number | null }
-      | undefined;
-    if (mapOwner && mapOwner.id !== job.id) {
-      elapsedMs += Number(mapOwner.active_elapsed_ms ?? 0);
-    }
-  }
-  return {
-    elapsedMs,
-    ...(job.timerStartedAt ? { timerStartedAt: job.timerStartedAt } : {}),
-  };
 }
 
 function recordLearnTokenUsageEvent(jobId: string, event: LearnTokenUsageEvent): void {
@@ -10656,27 +10609,6 @@ export function getLearnValidationReport({
   };
 }
 
-function getLearnScopedRepairSummary(gardenId: string, contentPath: string): LearnScopedRepairSummary | null {
-  try {
-    const raw = JSON.parse(fs.readFileSync(path.join(clusterPath(contentPath, gardenId), ".breadboard", "scoped-repair.json"), "utf8")) as Record<string, unknown>;
-    const scope = raw.scope && typeof raw.scope === "object" ? raw.scope as Record<string, unknown> : {};
-    const policy = raw.policy && typeof raw.policy === "object" ? raw.policy as Record<string, unknown> : {};
-    const ids = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
-    return {
-      repairId: String(raw.repairId ?? scope.repairId ?? ""),
-      issueCount: ids(scope.issueIds).length,
-      unitIds: ids(scope.unitIds), pageIds: ids(scope.pageIds), sectionIds: ids(scope.sectionIds), visualIds: ids(scope.visualIds),
-      allowedFiles: ids(policy.allowedFiles), changedFiles: ids(raw.filesActuallyChanged),
-      modelCalls: Number(raw.modelCalls ?? 0), blockersBefore: ids(raw.blockersBefore).length, blockersAfter: ids(raw.blockersAfter).length,
-      unaffectedPageHashesVerified: raw.unaffectedPageHashesVerified === true,
-      accepted: raw.accepted === true, publishReady: raw.publishReady === true,
-      reason: String(raw.reason ?? ""),
-    };
-  } catch {
-    return null;
-  }
-}
-
 function assertInsideCluster(clusterDir: string, filePath: string): void {
   const resolvedCluster = path.resolve(clusterDir);
   const resolvedFile = path.resolve(filePath);
@@ -11480,6 +11412,9 @@ async function reconcileInteractiveVisuals({
       sourceContext,
       sourceFigureSummaries: sourceFigures,
       formulaDefinitions: subsection.sourceFormulaContracts ?? [],
+      compilerRunner: async (sourceCode, compilerOpportunity) =>
+        compileGeneratedVisualization(sourceCode, compilerOpportunity),
+      browserTestRunner: runGeneratedVisualBrowserTestsLocally,
       // Every interaction in this plan was explicitly selected by the model.
       // Give each one the same bounded repair budget; code may not silently
       // demote a recommended or optional model decision after planning.
@@ -17184,99 +17119,6 @@ function recoverableLearnStatus(status: LearnStatus): boolean {
   return status === "idle" || activeStatus(status);
 }
 
-function learnSelectionDiffersFromMapBinding({
-  selection,
-  map,
-  jobSourceSetHash,
-}: {
-  selection: {
-    sourceIds: readonly string[];
-    syllabusSourceId?: string | null;
-  } | null;
-  map: Pick<StoredLearningMap, "sourceIds" | "syllabusSourceId" | "sourceSetHash"> | null;
-  jobSourceSetHash?: string;
-}): boolean {
-  if (!selection || !map) return false;
-  const selectionSyllabus = selection.syllabusSourceId?.trim() || null;
-  const mapSyllabus = map.syllabusSourceId?.trim() || null;
-  return (
-    selection.sourceIds.length !== map.sourceIds.length ||
-    selection.sourceIds.some((sourceId, index) => sourceId !== map.sourceIds[index]) ||
-    selectionSyllabus !== mapSyllabus ||
-    Boolean(jobSourceSetHash && jobSourceSetHash !== map.sourceSetHash)
-  );
-}
-
-function learnLifecycleMapBindingMismatch({
-  versionMapId,
-  confirmedMapId,
-  jobMapId,
-}: {
-  versionMapId?: string;
-  confirmedMapId?: string;
-  jobMapId?: string;
-}): boolean {
-  if (!versionMapId) return false;
-  return Boolean(
-    (confirmedMapId && confirmedMapId !== versionMapId) ||
-    (jobMapId && jobMapId !== versionMapId),
-  );
-}
-
-function buttonLabelForSnapshot({
-  latestJob,
-  confirmedMap,
-  latestVersion,
-  hasTextbook,
-  sourceSetChanged,
-}: {
-  latestJob: LearnJob | null;
-  confirmedMap: StoredLearningMap | null;
-  latestVersion: LearnVersionRow | null;
-  hasTextbook: boolean;
-  sourceSetChanged: boolean;
-}): string {
-  if (latestJob?.status === "paused") return "Paused";
-  if (latestJob && activeStatus(latestJob.status)) return "Learning...";
-  if (latestJob?.status === "awaiting_confirmation") {
-    return hasTextbook || latestVersion ? "Repair issues" : "Review Learning Map";
-  }
-  if (sourceSetChanged && (hasTextbook || latestVersion)) return "Learn";
-  if (confirmedMap && !latestVersion) return "Learn";
-  if (hasTextbook || latestVersion) return "Repair issues";
-  return "Learn";
-}
-
-const LEARN_STATUS_CONTEXT_CACHE_TTL_MS = 5_000;
-const learnStatusContextCache = new Map<
-  string,
-  { context: LearnSourceContext; expiresAt: number }
->();
-
-function collectLearnStatusContext(
-  contentPath: string,
-  gardenId: string,
-): LearnSourceContext {
-  const key = `${path.resolve(contentPath)}\0${gardenId}`;
-  const now = Date.now();
-  const cached = learnStatusContextCache.get(key);
-  if (cached && cached.expiresAt > now) return cached.context;
-  const context = collectLearnSourceContext(contentPath, gardenId);
-  learnStatusContextCache.delete(key);
-  learnStatusContextCache.set(key, {
-    context,
-    expiresAt: now + LEARN_STATUS_CONTEXT_CACHE_TTL_MS,
-  });
-  while (learnStatusContextCache.size > 64) {
-    const oldestKey = learnStatusContextCache.keys().next().value as
-      | string
-      | undefined;
-    if (!oldestKey) break;
-    learnStatusContextCache.delete(oldestKey);
-  }
-  return context;
-}
-
 export function getLearnStatusSnapshot({
   gardenId,
   contentPath,
@@ -17284,215 +17126,5 @@ export function getLearnStatusSnapshot({
   gardenId: string;
   contentPath: string;
 }): LearnStatusSnapshot {
-  ensureLearnTables();
-  const context = collectLearnStatusContext(contentPath, gardenId);
-  const storedLatestJob = getLatestLearnJob(gardenId);
-  const latestConfirmed = getLatestConfirmedLearnMap(gardenId);
-  const confirmedMap = isContractBackedLearningMap(latestConfirmed) ? latestConfirmed : null;
-  const confirmedMapPlanningJob = confirmedMap
-    ? getLearnMapPlanningJob(confirmedMap, gardenId)
-    : null;
-  // Jobs created before requires_replan was added still have a durable,
-  // structured event receipt. Recover only the exact fail-closed formula-review
-  // outcome; never infer from human-facing error text.
-  const legacyReplanRequired = Boolean(
-    storedLatestJob &&
-      storedLatestJob.status === "failed" &&
-      storedLatestJob.mode === "generate" &&
-      !storedLatestJob.requiresReplan &&
-      failedGenerationRequiresReplanFromEvents({
-        gardenDir: clusterPath(contentPath, gardenId),
-        jobId: storedLatestJob.id,
-        expectedFormulaReviewSetHash: confirmedMap
-          ? sourceFormulaReviewSetHashFromCoveragePlan(confirmedMap.coveragePlan)
-          : undefined,
-      }),
-  );
-  const latestJob = legacyReplanRequired && storedLatestJob
-    ? { ...storedLatestJob, requiresReplan: true }
-    : storedLatestJob;
-  const latestProposed = latestJob?.proposedLearningMapId
-    ? getLearnMapById(latestJob.proposedLearningMapId, gardenId)
-    : getLatestProposedLearnMap(gardenId);
-  const contractProposed = isContractBackedLearningMap(latestProposed) ? latestProposed : null;
-  const visibleJob =
-    latestJob?.status === "awaiting_confirmation" && !contractProposed
-      ? null
-      : latestJob;
-  const workflowTimer = visibleJob ? learnTimerForWorkflow(visibleJob) : null;
-  const visibleJobWithWorkflowUsage = visibleJob && workflowTimer
-    ? {
-        ...visibleJob,
-        tokenUsage: learnTokenUsageForWorkflow(visibleJob),
-        elapsedMs: workflowTimer.elapsedMs,
-        timerStartedAt: workflowTimer.timerStartedAt,
-      }
-    : null;
-  const latestVersion = getLatestLearnVersion(gardenId);
-  const hasTextbook = context.existingTextbookPages.length > 0;
-  const availableSourceIdSet = new Set(context.sources.map((source) => source.slug));
-  const latestJobBoundMapId =
-    latestJob?.proposedLearningMapId ?? latestJob?.confirmedLearningMapId;
-  const latestJobBoundMapCandidate = latestJobBoundMapId
-    ? getLearnMapById(latestJobBoundMapId, gardenId)
-    : null;
-  const latestJobBoundMap = isContractBackedLearningMap(latestJobBoundMapCandidate)
-    ? latestJobBoundMapCandidate
-    : null;
-  const persistedSelection = persistedLearnSelection<SyllabusCoverage>(
-    latestJob,
-    latestJob ? latestJobBoundMap : contractProposed,
-    confirmedMap,
-  );
-  const selectedSourceIds = persistedSelection
-    ? persistedSelection.sourceIds.filter((sourceId) => availableSourceIdSet.has(sourceId))
-    : context.sources.map((source) => source.slug);
-  // A syllabus the user has since deleted is reported as none, so the panel
-  // never shows a designation that no longer resolves to a document.
-  const syllabusSourceId =
-    persistedSelection?.syllabusSourceId &&
-    availableSourceIdSet.has(persistedSelection.syllabusSourceId)
-      ? persistedSelection.syllabusSourceId
-      : null;
-  const persistedCoverage = persistedSelection?.syllabusCoverage ?? null;
-  const syllabusCoverage =
-    syllabusSourceId && persistedCoverage
-      ? {
-          ...summarizeSyllabusCoverage(persistedCoverage),
-          missingCitations: persistedCoverage.missingCitations,
-        }
-      : null;
-
-  const versionMapCandidate = latestVersion
-    ? getLearnMapById(latestVersion.learning_map_id, gardenId)
-    : null;
-  const versionMap = isContractBackedLearningMap(versionMapCandidate)
-    ? versionMapCandidate
-    : null;
-  const sourceBindingMap = latestVersion
-    ? versionMap
-    : contractProposed ?? confirmedMap;
-  let sourceSetChanged =
-    Boolean(latestVersion && !versionMap) ||
-    learnLifecycleMapBindingMismatch({
-      versionMapId: latestVersion?.learning_map_id,
-      confirmedMapId: confirmedMap?.id,
-      jobMapId: latestJobBoundMapId,
-    }) ||
-    learnSelectionDiffersFromMapBinding({
-      selection: persistedSelection,
-      map: sourceBindingMap,
-      jobSourceSetHash: latestJob?.sourceSetHash,
-    });
-  if (sourceBindingMap) {
-    try {
-      const selectedSources = selectLearnSources(
-        context.sources,
-        sourceBindingMap.sourceIds.length ? sourceBindingMap.sourceIds : undefined,
-      );
-      const syllabus = selectLearnSyllabus(
-        context.sources,
-        sourceBindingMap.syllabusSourceId,
-      );
-      const teachingSources = excludeSyllabusFromSources(selectedSources, syllabus);
-      if (syllabus && teachingSources.length === 0) {
-        throw new Error("The saved source selection no longer contains teaching material.");
-      }
-      const baseCurrentHash = sourceSetHashWithSyllabus(
-        sourceSetHashForSources(teachingSources),
-        syllabus,
-      );
-      let currentHash = baseCurrentHash;
-      const selectedSourceOrder = teachingSources.map((source) => source.slug);
-      const sourceIdentityMap = resolveSourceVisualSourceIdentityMap({
-        contentPath,
-        gardenSlug: gardenId,
-        sourceIds: selectedSourceOrder,
-        persist: false,
-      });
-      const selectedTeachingSourceIds = new Set(selectedSourceOrder);
-      const ledgerVisuals = loadSourceVisuals(contentPath, gardenId);
-      const formulaIds = ledgerVisuals
-        .filter((visual) => selectedTeachingSourceIds.has(visual.sourceId) && visual.type === "equation")
-        .map((visual) => visual.sourceVisualId)
-        .sort();
-      const manifest = loadSourceFormulaReviewSetManifest(contentPath, gardenId);
-      if (
-        manifest &&
-        manifest.baseSourceSetHash === baseCurrentHash &&
-        JSON.stringify(manifest.sourceIds) === JSON.stringify(selectedSourceOrder) &&
-        manifest.sourceIdentityMapHash === sourceVisualSourceIdentityMapHash(sourceIdentityMap) &&
-        JSON.stringify(manifest.sourceIdentityMap) === JSON.stringify(sourceIdentityMap) &&
-        JSON.stringify(manifest.formulaIds) === JSON.stringify(formulaIds) &&
-        computeSourceFormulaReviewSetHash(
-          ledgerVisuals,
-          formulaIds,
-          selectedSourceOrder,
-          sourceIdentityMap,
-          manifest.topologyReviewPageReceipts,
-        ) === manifest.reviewSetHash
-      ) {
-        currentHash = sourceSetHashWithReviewedFormulas(baseCurrentHash, manifest.reviewSetHash);
-      }
-      const currentArtifactInventoryHash = selectedSourceArtifactInventorySnapshot({
-        selectedSourceIds: selectedSourceOrder,
-        sourceIdentityMap,
-        visuals: ledgerVisuals,
-      }).sourceArtifactInventoryHash;
-      const expectedSourceSetHash = latestVersion
-        ? latestVersion.source_set_hash
-        : sourceBindingMap.sourceSetHash;
-      const expectedArtifactInventoryHash = latestVersion
-        ? latestVersion.source_artifact_inventory_hash
-        : sourceBindingMap.sourceArtifactInventoryHash;
-      sourceSetChanged =
-        sourceSetChanged ||
-        expectedSourceSetHash !== currentHash ||
-        !/^[0-9a-f]{64}$/.test(expectedArtifactInventoryHash) ||
-        expectedArtifactInventoryHash !== currentArtifactInventoryHash ||
-        (latestVersion !== null &&
-          (latestVersion.source_set_hash !== sourceBindingMap.sourceSetHash ||
-            latestVersion.source_artifact_inventory_hash !==
-              sourceBindingMap.sourceArtifactInventoryHash));
-    } catch {
-      // A selected source/artifact was removed or its durable identity became invalid.
-      sourceSetChanged = true;
-    }
-  }
-
-  return {
-    job: visibleJobWithWorkflowUsage,
-    proposedLearningMap:
-      visibleJob?.status === "awaiting_confirmation" || contractProposed?.status === "proposed"
-        ? contractProposed?.learningMap ?? null
-        : null,
-    confirmedLearningMapId: confirmedMap?.id,
-    confirmedLearningMapModel: confirmedMapPlanningJob?.model,
-    latestTextbookVersionId: latestVersion?.id,
-    humanizer: latestVersion
-      ? readLearnHumanizerVersionState(
-          clusterPath(contentPath, gardenId),
-          latestVersion.id,
-        )
-      : null,
-    hasSources: context.sources.length > 0,
-    sourceCount: context.sources.length,
-    selectedSourceIds,
-    selectedSourceCount: selectedSourceIds.length,
-    syllabusSourceId,
-    syllabusCoverage,
-    hasTextbook,
-    sourceSetChanged,
-    buttonLabel: buttonLabelForSnapshot({
-      latestJob: visibleJob,
-      confirmedMap,
-      latestVersion,
-      hasTextbook,
-      sourceSetChanged,
-    }),
-    validationReport: visibleJob?.status === "failed"
-      ? getLearnValidationReport({ gardenId, contentPath })
-      : null,
-    scopedRepair: getLearnScopedRepairSummary(gardenId, contentPath),
-  };
+  return projectLearnStatusSnapshot({ gardenId, contentPath }) as LearnStatusSnapshot;
 }

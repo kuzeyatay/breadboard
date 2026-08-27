@@ -1,5 +1,9 @@
 // Provision the audio analyzer: the Rust binaries Breadboard runs to hear music.
 //
+// EXTERNAL PROVISIONING BOUNDARY: this developer/build-time command is never
+// imported or launched by Electron or Next. Product setup is an authenticated
+// Runtime V2 managed-setup job and has no direct-process fallback to this file.
+//
 // Two ways in, in this order:
 //
 //   1. A source build, when the machine has a Rust toolchain and the
@@ -9,8 +13,8 @@
 //      cargo, and an audio analyzer that only works for people who installed
 //      Rust is not an innate feature.
 //
-// Either way the two binaries end up in `.runtime/audio-analyzer/bin`, which is
-// the only place dashboard/src/lib/audio-analyzer/config.ts looks.
+// Either way the developer binaries end up in `.runtime/audio-analyzer/bin`.
+// Installed-product Runtime data uses its separately verified data-root copy.
 //
 //   node scripts/setup-audio-analyzer.mjs            provision (build or download)
 //   node scripts/setup-audio-analyzer.mjs --check    report, install nothing

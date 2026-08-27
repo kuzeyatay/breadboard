@@ -1,13 +1,6 @@
-import { createReadStream, statSync } from "node:fs";
-import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { liveArtifacts } from "@/lib/bolt-slides/run-manager.ts";
-import {
-  BoltSlidesWorkspaceError,
-  requireWorkspaceOwner,
-  resolveArtifact,
-} from "@/lib/bolt-slides/workspace.ts";
+import { readArtifact } from "@/lib/bolt-slides/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,8 +12,10 @@ export async function GET(
   try {
     const userId = await requireUserId();
     const { runId, artifactId } = await params;
-    if (!liveArtifacts(userId, runId)) requireWorkspaceOwner(userId, runId);
-    const { record, absolutePath } = resolveArtifact(runId, artifactId);
+    const artifact = await readArtifact(userId, runId, artifactId);
+    if (!artifact) {
+      return NextResponse.json({ ok: false, error: "artifact_not_found" }, { status: 404 });
+    }
     // These are the deck's sources, and a person opens them to read them. They
     // are served as plain text rather than by their own type — `index.html` is
     // the page shell, and rendering it would show an empty page that looks like
@@ -28,23 +23,20 @@ export async function GET(
     const inline = new URL(request.url).searchParams.get("download") !== "1";
     const headers = new Headers({
       "content-type": inline ? "text/plain; charset=utf-8" : "application/octet-stream",
-      "content-length": String(statSync(absolutePath).size),
+      "content-length": String(artifact.record.size),
       "x-content-type-options": "nosniff",
       "cache-control": "private, max-age=0, must-revalidate",
-      "content-disposition": `${inline ? "inline" : "attachment"}; filename="${record.name.replace(/["\r\n]/g, "")}"`,
+      "content-disposition": `${inline ? "inline" : "attachment"}; filename="${artifact.record.name.replace(/["\r\n]/g, "")}"`,
     });
-    const stream = Readable.toWeb(createReadStream(absolutePath)) as ReadableStream<Uint8Array>;
-    return new Response(stream, { status: 200, headers });
+    return new Response(artifact.stream, { status: 200, headers });
   } catch (error) {
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
-    if (error instanceof BoltSlidesWorkspaceError) {
-      return NextResponse.json(
-        { ok: false, error: error.code },
-        { status: error.code === "invalid_run_id" ? 400 : 404 },
-      );
-    }
-    return NextResponse.json({ ok: false, error: "internal_error" }, { status: 500 });
+    const status = error instanceof Error && error.message === "run_not_found" ? 404 : 500;
+    return NextResponse.json(
+      { ok: false, error: status === 404 ? "run_not_found" : "internal_error" },
+      { status },
+    );
   }
 }

@@ -15,8 +15,8 @@ test("the slash button opens capabilities while typed slash opens only ready com
   assert.match(palette, /aria-label="Open capabilities"/);
   assert.match(composer, /slashQuery[\s\S]{0,220}setShowSlashCommands\(true\)[\s\S]{0,100}setShowCommandHub\(false\)/);
   assert.doesNotMatch(composer, /next === ['"]\/['"][\s\S]{0,100}setShowCommandHub\(true\)/);
-  assert.match(slashMenu, /Slash commands/);
-  assert.match(slashMenu, /Ready slash commands/);
+  assert.match(slashMenu, /directSlashCommandItems/);
+  assert.match(slashMenu, /aria-label="Available capabilities"/);
   assert.match(composer, /insertCommandToken\(`\/\$\{item\.token\}`\)/);
   assert.match(composer, /const token = `\$\{command\} `/);
   assert.doesNotMatch(composer, /`\/\$\{item\.kind\}:\$\{item\.slug\}/);

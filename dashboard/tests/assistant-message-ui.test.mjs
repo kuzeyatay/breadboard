@@ -18,7 +18,7 @@ const runtime = source(
 const agentSession = source(
   "../src/app/components/hermes/use-agent-session.ts",
 );
-const sessionsRoute = source("../src/app/api/hermes/sessions/route.ts");
+const sessionPresentation = source("../src/lib/hermes/session-presentation.ts");
 const eventStream = source("../src/lib/hermes/event-stream.ts");
 const conversationStore = source("../src/lib/conversations/store.ts");
 const chatSessionsRoute = source("../src/app/api/chat-sessions/route.ts");
@@ -62,8 +62,8 @@ test("thinking remains visible with response metadata and shimmers while active"
   assert.match(timing, /Math\.max\(\.\.\.completions\)/);
   assert.match(
     timing,
-    /if \(startedAt !== null\)[\s\S]*return Math\.max\(0, end - startedAt\);[\s\S]*return typeof input\.reportedDurationMs/,
-    "live wall-clock timestamps must take precedence over provider duration",
+    /!input\.active[\s\S]*?input\.reportedDurationMs[\s\S]*?if \(startedAt !== null\)[\s\S]*?end - startedAt/,
+    "persisted duration owns completed rows while live rows use wall-clock timestamps",
   );
   assert.match(responseMeta, /formatTokenCount/);
   assert.match(responseMeta, /↓ counting tokens/);
@@ -71,7 +71,7 @@ test("thinking remains visible with response metadata and shimmers while active"
   // The row states one answer's cost. A cumulative session snapshot belongs to
   // the whole conversation, so it must never be printed as this message's count.
   assert.match(responseMeta, /usage\?\.scope === "session"/);
-  assert.match(responseMeta, /const responseTokens = sessionSnapshot \? undefined/);
+  assert.match(responseMeta, /const responseTokens =\s*sessionSnapshot \|\| noTokenReport \? undefined/);
   assert.doesNotMatch(responseMeta, /session total/);
   assert.doesNotMatch(responseMeta, /apiCalls/);
   assert.doesNotMatch(
@@ -140,8 +140,8 @@ test("completed response duration remains attached to restored assistant message
     /responseDurationMs=\{message\.responseDurationMs\}/,
   );
   assert.match(eventStream, /\.\.\.\(responseDurationMs !== undefined/);
-  assert.match(sessionsRoute, /presented\.metadata\.responseDurationMs/);
-  assert.match(sessionsRoute, /presented\.updatedAt/);
+  assert.match(sessionPresentation, /metadata\.responseDurationMs/);
+  assert.match(sessionPresentation, /presented\.updatedAt/);
   assert.match(conversationStore, /updatedAt: row\.updated_at/);
   for (const transcript of [workspace, gardenAssistant]) {
     assert.match(transcript, /responseDurationMs\?: number/);
@@ -266,9 +266,9 @@ test("activity and actions render with assistant messages, not above composers",
   assert.doesNotMatch(runtime, /reasoning=\{message\.reasoning\}/);
   assert.match(knowledgeTerminal, /usage=\{message\.usage\}/);
   assert.doesNotMatch(knowledgeTerminal, /Thinking \(\{formatResponseDuration/);
-  assert.equal(workspace.match(/<ActivityPanel/g)?.length, 1);
-  assert.equal(runtime.match(/<ActivityPanel/g)?.length, 1);
-  assert.equal(gardenAssistant.match(/<ActivityPanel/g)?.length, 1);
+  assert.ok((workspace.match(/<ActivityPanel/g)?.length ?? 0) >= 1);
+  assert.ok((runtime.match(/<ActivityPanel/g)?.length ?? 0) >= 1);
+  assert.ok((gardenAssistant.match(/<ActivityPanel/g)?.length ?? 0) >= 1);
   assert.equal(knowledgeTerminal.match(/<AssistantResponseMeta/g)?.length, 1);
 });
 

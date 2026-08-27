@@ -93,9 +93,12 @@ export interface StartVimaxRunInput {
   conversationContext?: string;
 }
 
-export function startRun(input: StartVimaxRunInput): { runId: string; status: RunStatus } {
+function startRunWithId(
+  input: StartVimaxRunInput,
+  runId: string,
+): { runId: string; status: RunStatus } {
   if (!input.parsed.brief.trim()) throw new Error("empty_brief");
-  const runId = `vmxrun_${randomUUID().replaceAll("-", "")}`;
+  if (!/^vmxrun_[0-9a-f]{32}$/u.test(runId)) throw new Error("invalid_run_id");
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -124,6 +127,20 @@ export function startRun(input: StartVimaxRunInput): { runId: string; status: Ru
     schedule(run);
   });
   return { runId, status: "queued" };
+}
+
+/** Dashboard compatibility for focused pipeline tests; production routes use
+ * `runtime-run-manager.ts` and never execute this worker-local manager. */
+export function startRun(input: StartVimaxRunInput): { runId: string; status: RunStatus } {
+  return startRunWithId(input, `vmxrun_${randomUUID().replaceAll("-", "")}`);
+}
+
+/** Fixed worker seam: the dashboard-generated public run id is preserved so
+ * artifacts attach to the assistant turn that launched the Runtime job. */
+export function startRuntimeWorkerRun(
+  input: StartVimaxRunInput & { runId: string },
+): { runId: string; status: RunStatus } {
+  return startRunWithId(input, input.runId);
 }
 
 async function drive(run: RunState, input: StartVimaxRunInput): Promise<void> {

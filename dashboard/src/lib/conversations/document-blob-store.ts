@@ -16,11 +16,10 @@
 // markdown can point at them by name.
 
 import crypto from "node:crypto";
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
 import { forgetColpaliIndex } from "../colpali/cleanup.ts";
 import {
@@ -30,6 +29,8 @@ import {
   DOCUMENT_ATTACHMENT_EXTENSIONS,
   type DocumentAttachmentFormat,
 } from "../document-attachments.ts";
+
+const fsp = fs.promises;
 
 export class DocumentBlobError extends Error {
   readonly code: string;

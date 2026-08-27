@@ -12,9 +12,9 @@
 // blocking issues. Zero runtime deps beyond fs/path so it runs under
 // `node --experimental-strip-types`.
 
-import fs from "node:fs";
-import path from "node:path";
 import { createHash } from "node:crypto";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   applyAnchorCriticDecision,
   auditCanonicalRegistryIntegrity,

@@ -271,7 +271,7 @@ export function createRunRecord(input: {
 }): RunRow {
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO ui_tars_runs
+    `INSERT OR IGNORE INTO ui_tars_runs
       (id, agent_id, owner_user_id, conversation_id, status, task, operator_type, runtime_session_id, created_at, updated_at)
      VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
   ).run(
@@ -285,7 +285,18 @@ export function createRunRecord(input: {
     now,
     now,
   );
-  return db.prepare("SELECT * FROM ui_tars_runs WHERE id = ?").get(input.id) as RunRow;
+  const row = db.prepare("SELECT * FROM ui_tars_runs WHERE id = ?").get(input.id) as
+    | RunRow
+    | undefined;
+  if (
+    !row ||
+    row.agent_id !== input.agentId ||
+    row.owner_user_id !== input.userId ||
+    row.task !== input.task
+  ) {
+    throw new Error("The Agent TARS Runtime identity was reused with different inputs.");
+  }
+  return row;
 }
 
 export function getRun(userId: number, runId: string): RunRow | null {
@@ -293,6 +304,16 @@ export function getRun(userId: number, runId: string): RunRow | null {
     (db
       .prepare("SELECT * FROM ui_tars_runs WHERE id = ? AND owner_user_id = ?")
       .get(runId, userId) as RunRow | undefined) ?? null
+  );
+}
+
+export function getRunForAgent(userId: number, agentId: string, runId: string): RunRow | null {
+  return (
+    (db
+      .prepare(
+        "SELECT * FROM ui_tars_runs WHERE id = ? AND agent_id = ? AND owner_user_id = ?",
+      )
+      .get(runId, agentId, userId) as RunRow | undefined) ?? null
   );
 }
 
@@ -348,8 +369,10 @@ export function persistEvents(
   const tx = db.transaction((evs: typeof events) => {
     for (const e of evs) {
       const res = insert.run(runId, e.sequenceNumber, e.type, JSON.stringify(e.payload ?? {}));
-      if (res.changes > 0) inserted += 1;
-      applyEventSideEffects(runId, e);
+      if (res.changes > 0) {
+        inserted += 1;
+        applyEventSideEffects(runId, e);
+      }
     }
   });
   tx(events);
@@ -379,7 +402,7 @@ function applyEventSideEffects(
       updateRunStatus(runId, "completed");
       break;
     case "run.failed":
-      updateRunStatus(runId, "failed", {
+      updateRunStatus(runId, e.payload.code === "runtime_lost" ? "runtime_lost" : "failed", {
         code: String(e.payload.code ?? "failed"),
         message: String(e.payload.message ?? ""),
       });
@@ -477,14 +500,125 @@ export function recordApproval(runId: string, payload: Record<string, unknown>):
 }
 
 function setApprovalDecision(runId: string, actionId: string, decision: "approved" | "rejected"): void {
+  const deciding = decision === "approved" ? "deciding_approve" : "deciding_reject";
   db.prepare(
     `UPDATE ui_tars_approvals SET decision = ?, decided_at = datetime('now')
-     WHERE run_id = ? AND action_id = ? AND decision = 'pending'`,
-  ).run(decision, runId, actionId);
+     WHERE run_id = ? AND action_id = ? AND decision IN ('pending', ?)`,
+  ).run(decision, runId, actionId, deciding);
 }
 
 export function markApprovalDecidedBy(runId: string, actionId: string, userId: number): void {
   db.prepare(
     `UPDATE ui_tars_approvals SET decided_by_user_id = ? WHERE run_id = ? AND action_id = ?`,
   ).run(userId, runId, actionId);
+}
+
+export interface PendingUITarsApproval {
+  readonly actionId: string;
+  readonly action: string;
+  readonly target: string;
+  readonly explanation: string;
+  readonly risk: string;
+  readonly screenshotBefore?: string;
+  readonly requestedAt: string;
+  readonly expiresAt: string;
+}
+
+export function pendingApproval(
+  userId: number,
+  agentId: string,
+  runId: string,
+): PendingUITarsApproval | null {
+  if (!getRunForAgent(userId, agentId, runId)) return null;
+  const row = db.prepare(
+    `SELECT action_id, action_type, requested_payload_json, requested_at
+       FROM ui_tars_approvals
+      WHERE run_id = ? AND decision = 'pending'
+      ORDER BY requested_at DESC LIMIT 1`,
+  ).get(runId) as
+    | {
+        action_id: string;
+        action_type: string;
+        requested_payload_json: string;
+        requested_at: string;
+      }
+    | undefined;
+  if (!row) return null;
+  const payload = safeJson(row.requested_payload_json);
+  return {
+    actionId: row.action_id,
+    action: typeof payload.action === "string" ? payload.action : row.action_type,
+    target: typeof payload.target === "string" ? payload.target : "",
+    explanation: typeof payload.explanation === "string" ? payload.explanation : "",
+    risk: typeof payload.risk === "string" ? payload.risk : "low",
+    ...(typeof payload.screenshotBefore === "string"
+      ? { screenshotBefore: payload.screenshotBefore }
+      : {}),
+    requestedAt:
+      typeof payload.requestedAt === "string" ? payload.requestedAt : row.requested_at,
+    expiresAt: typeof payload.expiresAt === "string" ? payload.expiresAt : row.requested_at,
+  };
+}
+
+export type ApprovalClaim =
+  | "claimed"
+  | "already_same"
+  | "in_flight"
+  | "conflict"
+  | "missing";
+
+/** Serialize competing decisions in the durable ownership ledger. */
+export function claimApprovalDecision(
+  userId: number,
+  agentId: string,
+  runId: string,
+  actionId: string,
+  decision: "approve" | "reject",
+): ApprovalClaim {
+  const deciding = decision === "approve" ? "deciding_approve" : "deciding_reject";
+  const final = decision === "approve" ? "approved" : "rejected";
+  return db.transaction((): ApprovalClaim => {
+    if (!getRunForAgent(userId, agentId, runId)) return "missing";
+    const row = db.prepare(
+      "SELECT decision FROM ui_tars_approvals WHERE run_id = ? AND action_id = ?",
+    ).get(runId, actionId) as { decision: string } | undefined;
+    if (!row) return "missing";
+    if (row.decision === deciding) return "in_flight";
+    if (row.decision === final) return "already_same";
+    if (row.decision !== "pending") return "conflict";
+    const changed = db.prepare(
+      `UPDATE ui_tars_approvals
+          SET decision = ?, decided_by_user_id = ?, decided_at = datetime('now')
+        WHERE run_id = ? AND action_id = ? AND decision = 'pending'`,
+    ).run(deciding, userId, runId, actionId);
+    return changed.changes === 1 ? "claimed" : "conflict";
+  })();
+}
+
+export function finalizeApprovalDecision(
+  runId: string,
+  actionId: string,
+  userId: number,
+  decision: "approve" | "reject",
+): void {
+  const deciding = decision === "approve" ? "deciding_approve" : "deciding_reject";
+  const final = decision === "approve" ? "approved" : "rejected";
+  db.prepare(
+    `UPDATE ui_tars_approvals
+        SET decision = ?, decided_by_user_id = ?, decided_at = datetime('now')
+      WHERE run_id = ? AND action_id = ? AND decision = ?`,
+  ).run(final, userId, runId, actionId, deciding);
+}
+
+export function rollbackApprovalDecision(
+  runId: string,
+  actionId: string,
+  decision: "approve" | "reject",
+): void {
+  const deciding = decision === "approve" ? "deciding_approve" : "deciding_reject";
+  db.prepare(
+    `UPDATE ui_tars_approvals
+        SET decision = 'pending', decided_by_user_id = NULL, decided_at = NULL
+      WHERE run_id = ? AND action_id = ? AND decision = ?`,
+  ).run(runId, actionId, deciding);
 }

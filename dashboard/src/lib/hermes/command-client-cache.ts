@@ -4,10 +4,23 @@ import type { HermesSurface } from "@/lib/hermes/config.ts";
 
 /** Capability catalogs are stable between explicit mutations and cheap to revalidate. */
 export const COMMAND_RESPONSE_CACHE_TTL_MS = 5 * 60_000;
+export const COMMAND_RESPONSE_CACHE_MAX_ENTRIES = 32;
 
 const responses = new Map<string, { expiresAt: number; value: unknown }>();
 const requests = new Map<string, Promise<unknown>>();
 let cacheGeneration = 0;
+
+function cacheResponse(url: string, value: unknown, expiresAt: number): void {
+  // Refresh insertion order on replacement so eviction remains true LRU for
+  // the palette entries the user actually revisits.
+  responses.delete(url);
+  responses.set(url, { expiresAt, value });
+  while (responses.size > COMMAND_RESPONSE_CACHE_MAX_ENTRIES) {
+    const oldest = responses.keys().next().value;
+    if (typeof oldest !== "string") break;
+    responses.delete(oldest);
+  }
+}
 
 export function commandResponseUrl({
   surface,
@@ -29,7 +42,11 @@ export function commandResponseUrl({
 
 export function peekCachedCommandResponse<T>(url: string): T | null {
   const cached = responses.get(url);
-  if (!cached || cached.expiresAt <= Date.now()) return null;
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    responses.delete(url);
+    return null;
+  }
   return cached.value as T;
 }
 
@@ -56,7 +73,7 @@ export async function loadCachedCommandResponse<T>(
       }
       const value = await response.json();
       if (requestGeneration === cacheGeneration) {
-        responses.set(url, { expiresAt: Date.now() + maxAgeMs, value });
+        cacheResponse(url, value, Date.now() + maxAgeMs);
       }
       return value;
     })

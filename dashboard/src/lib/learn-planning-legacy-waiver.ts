@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "crypto";
-import fs from "fs";
-import path from "path";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 import { canonicalCouncilJsonV1 } from "./council-request-hash.ts";
 

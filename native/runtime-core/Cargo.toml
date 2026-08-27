@@ -7,6 +7,7 @@ description = "Durable lifecycle, registry, admission, and recovery core for Bre
 
 [dependencies]
 breadboard-runtime-protocol = { path = "../runtime-protocol" }
+getrandom = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true

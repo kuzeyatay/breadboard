@@ -60,7 +60,8 @@ test("config: browser and computer operators are valid, unknown targets are reje
   assert.equal(config.validateAgentConfiguration({ ...defaults, operator: "computer" }).ok, true);
   assert.equal(config.validateAgentConfiguration({ ...defaults, operator: "phone" }).ok, false);
   assert.equal(config.validateAgentConfiguration(config.defaultAgentConfiguration()).ok, true);
-  const { desktopCoordinateSpace: _legacyField, ...legacy } = defaults;
+  const legacy = { ...defaults };
+  delete legacy.desktopCoordinateSpace;
   assert.equal(
     config.validateAgentConfiguration(legacy).value.desktopCoordinateSpace,
     "screen_pixels",
@@ -210,11 +211,11 @@ test("run wiring: ChatMock gets the server credential; other providers are untou
   assert.equal(passthrough.providerApiKey, undefined);
 });
 
-test("mode: defaults optional; disabled/required honored", () => {
+test("mode: optional means failure-isolated and never hides the mandatory agent", () => {
   assert.equal(adapterConfig.uiTarsMode({ UI_TARS_MODE: undefined }), "optional");
-  assert.equal(adapterConfig.uiTarsMode({ UI_TARS_MODE: "disabled" }), "disabled");
+  assert.equal(adapterConfig.uiTarsMode({ UI_TARS_MODE: "disabled" }), "optional");
   assert.equal(adapterConfig.uiTarsMode({ UI_TARS_MODE: "required" }), "required");
-  assert.equal(adapterConfig.uiTarsEnabled({ UI_TARS_MODE: "disabled" }), false);
+  assert.equal(adapterConfig.uiTarsEnabled(), true);
 });
 
 // ---------------- store: ownership + secrets ----------------
@@ -433,10 +434,11 @@ test("historical Agent TARS screenshots are restored through the authorized dash
   const service = source("src/lib/ui-tars/service.ts");
   assert.match(client, /restoreScreenshotHistory/);
   assert.match(client, /\/screenshots\/restore/);
-  assert.match(service, /store\.getRun\(userId, runId\)/);
+  assert.match(service, /store\.getRunForAgent\(userId, agentId, runId\)/);
   assert.match(service, /adapter\.restoreScreenshotHistory\(runId, userId\)/);
   assert.ok(
-    service.indexOf("store.getRun(userId, runId)") < service.indexOf("adapter.restoreScreenshotHistory(runId, userId)"),
+    service.indexOf("store.getRunForAgent(userId, agentId, runId)") <
+      service.indexOf("adapter.restoreScreenshotHistory(runId, userId)"),
     "the durable dashboard run owner must be verified before legacy screenshot restoration",
   );
 });
@@ -462,4 +464,59 @@ test("run events are idempotent (duplicate sequence numbers ignored) and drive s
   assert.equal(store.listEvents(userB, runId, 0).length, 0);
   // Owner can resume from a sequence cursor.
   assert.equal(store.listEvents(userA, runId, 1).length, 1);
+  store.persistEvents(runId, [
+    { sequenceNumber: 3, type: "run.completed", payload: { summary: "done" } },
+  ]);
+  assert.equal(store.getRun(userA, runId).status, "completed");
+  store.persistEvents(runId, [events[1]]);
+  assert.equal(
+    store.getRun(userA, runId).status,
+    "completed",
+    "replayed approval events cannot reopen a terminal run",
+  );
+});
+
+test("approval ownership and competing decisions are durable and exactly once", () => {
+  const agent = store.ensureDefaultAgent(userA);
+  const runId = store.publicId("run");
+  store.createRunRecord({ id: runId, agentId: agent.id, userId: userA, task: "publish" });
+  store.persistEvents(runId, [
+    {
+      sequenceNumber: 1,
+      type: "approval.requested",
+      payload: {
+        actionId: "publish_1",
+        action: "click",
+        target: "Publish",
+        explanation: "Publishes the release",
+        risk: "high",
+        requestedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    },
+  ]);
+  assert.equal(store.pendingApproval(userB, agent.id, runId), null);
+  assert.equal(store.pendingApproval(userA, "uta_" + "f".repeat(32), runId), null);
+  assert.equal(
+    store.claimApprovalDecision(userB, agent.id, runId, "publish_1", "approve"),
+    "missing",
+  );
+  assert.equal(
+    store.claimApprovalDecision(userA, agent.id, runId, "publish_1", "approve"),
+    "claimed",
+  );
+  assert.equal(
+    store.claimApprovalDecision(userA, agent.id, runId, "publish_1", "approve"),
+    "in_flight",
+  );
+  assert.equal(
+    store.claimApprovalDecision(userA, agent.id, runId, "publish_1", "reject"),
+    "conflict",
+  );
+  store.finalizeApprovalDecision(runId, "publish_1", userA, "approve");
+  assert.equal(
+    store.claimApprovalDecision(userA, agent.id, runId, "publish_1", "approve"),
+    "already_same",
+  );
+  assert.equal(store.pendingApproval(userA, agent.id, runId), null);
 });

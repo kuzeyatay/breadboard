@@ -24,6 +24,7 @@ import {
 } from "@/lib/humanizer/config.ts";
 import { describeWarnings, scoreReview } from "@/lib/humanizer/review.ts";
 import { humanizerHealth, humanizerRewrite } from "@/lib/humanizer/service.ts";
+import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -215,6 +216,12 @@ export async function POST(request: Request) {
           reason: error instanceof ApiError ? error.code : "humanizer_tool_failed",
         },
       });
+    }
+    if (error instanceof SupervisorResourceExhaustedError) {
+      return NextResponse.json(
+        { error: error.message, ...error.result },
+        { status: 503 },
+      );
     }
     return apiErrorResponse(error);
   }

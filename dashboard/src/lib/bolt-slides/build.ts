@@ -67,6 +67,18 @@ export function buildDeck(
   runId: string,
   onLog?: (line: string) => void,
 ): BuildHandle {
+  return buildDeckAt(runDirectory(runId), onLog, process.env);
+}
+
+/**
+ * Build one Runtime attempt. The caller supplies the deliberately closed child
+ * environment; the Vite process never inherits credentials by accident.
+ */
+export function buildDeckAt(
+  workspaceRoot: string,
+  onLog?: (line: string) => void,
+  environment: NodeJS.ProcessEnv = process.env,
+): BuildHandle {
   const entry = viteEntry();
   const startedAt = Date.now();
   if (!entry) {
@@ -85,11 +97,11 @@ export function buildDeck(
   const promise = new Promise<BuildResult>((resolve) => {
     let log = "";
     const spawned = spawn(process.execPath, [entry, "build"], {
-      cwd: runDirectory(runId),
+      cwd: workspaceRoot,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       env: {
-        ...process.env,
+        ...environment,
         NO_COLOR: "1",
         FORCE_COLOR: "0",
         // Vite reads this to decide `import.meta.env.MODE`; a deck is only ever

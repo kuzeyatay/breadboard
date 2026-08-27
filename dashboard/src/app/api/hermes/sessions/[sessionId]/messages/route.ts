@@ -23,6 +23,7 @@ import {
 } from "@/lib/conversations/branch-history.ts";
 import { normalizeChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
 import { parseCurrentLocationPayload } from "@/lib/hermes/current-location-context.ts";
+import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -79,6 +80,8 @@ export async function POST(
         userId,
         resolveDocumentAttachments(userId, parseChatAttachments(body.attachments)),
         text,
+        process.env,
+        request.signal,
       ),
       // Super agent is a per-message flag, never a stored session property: the
       // switch the user had on when they pressed send governs that turn only.
@@ -142,6 +145,12 @@ export async function POST(
       } catch {
         // The reservation may not have happened; preserve the original error.
       }
+    }
+    if (error instanceof SupervisorResourceExhaustedError) {
+      return NextResponse.json(
+        { error: error.message, ...error.result },
+        { status: 503 },
+      );
     }
     return apiErrorResponse(error);
   }

@@ -6,6 +6,8 @@ import test from "node:test";
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+const repoSource = (relativePath) =>
+  fs.readFileSync(new URL(`../../${relativePath}`, import.meta.url), "utf8");
 
 const identity = await import("../src/lib/ruflo/identity.ts");
 const runManager = await import("../src/lib/ruflo/run-manager.ts");
@@ -70,7 +72,7 @@ test("Ruflo falls back to safe defaults when the CLI reports nothing useful", ()
 });
 
 test("Ruflo parses the real `hive-mind spawn` output verbatim", () => {
-  // Captured from `ruflo@3.34.0 hive-mind spawn --claude --non-interactive
+  // Captured from `@claude-flow/cli@3.34.0 hive-mind spawn --claude --non-interactive
   // --dry-run --queen-type tactical --consensus raft --topology mesh` on
   // Windows. Note the CLI reports topology only inside the prompt preview.
   const stdout = [
@@ -181,12 +183,12 @@ test("Ruflo carries image attachments through the chat, route, and swarm objecti
   assert.match(launcher, /attachments: persistedAttachments/);
   assert.match(
     terminal,
-    /rufloTask \|\| "Review the attached screenshot and implement the requested fix\."/,
+    /rufloTask\s*\|\|\s*"Review the attached screenshot and implement the requested fix\."/,
   );
   assert.match(terminal, /await launchRufloRun\([\s\S]*?pendingAttachments/);
   assert.match(
     terminal,
-    /if \(ruflo\.agent\)[\s\S]*?chatAttachments\.length === 0[\s\S]*?setChatAttachments\(\[\]\)[\s\S]*?void launchRufloRun\([\s\S]*?pendingAttachments/,
+    /const rufloTask = taskFromRufloCommand\(text\)[\s\S]*?const pendingAttachments = chatAttachments[\s\S]*?setChatAttachments\(\[\]\)[\s\S]*?const selected = ruflo\.agent \?\? \(await selectRuflo\(\)\)[\s\S]*?await launchRufloRun\([\s\S]*?pendingAttachments/,
   );
   assert.match(
     gardenWorkspace,
@@ -202,7 +204,7 @@ test("Ruflo carries image attachments through the chat, route, and swarm objecti
   );
   assert.match(
     gardenWorkspace,
-    /if \(rufloAgent\)[\s\S]*?setChatAttachments\(\[\]\)[\s\S]*?void launchRuflo\([\s\S]*?pendingAttachments/,
+    /const rufloTask = taskFromRufloCommand\(text\)[\s\S]*?const rufloAttachments = pendingAttachments[\s\S]*?setChatAttachments\(\[\]\)[\s\S]*?if \(!rufloAgent\) await selectRuflo\(\)[\s\S]*?await launchRuflo\([\s\S]*?rufloAttachments/,
   );
 
   assert.match(route, /normalizeChatMessageAttachments\(body\.attachments\)/);
@@ -222,6 +224,127 @@ test("Ruflo reports what is missing instead of failing silently", () => {
   assert.equal(typeof withoutClone.available, "boolean");
   assert.equal(typeof withoutClone.installed, "boolean");
   if (!withoutClone.available) assert.equal(typeof withoutClone.reason, "string");
+});
+
+test("Ruflo health discovers its planner and Claude statically", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-ruflo-static-health-"));
+  const root = path.join(dir, "ruflo");
+  const planner = path.join(root, "configured-planner.mjs");
+  const bin = path.join(dir, "claude-package", "bin");
+  const claude = path.join(bin, process.platform === "win32" ? "claude.EXE" : "claude");
+  const marker = path.join(dir, "executed.txt");
+  try {
+    fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+    fs.mkdirSync(path.join(root, "v3", "@claude-flow", "cli"), { recursive: true });
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "3.34.0" }));
+    fs.writeFileSync(path.join(root, "bin", "cli.js"), "// source checkout marker\n");
+    fs.writeFileSync(path.join(root, "v3", "@claude-flow", "cli", "package.json"), "{}");
+    fs.writeFileSync(
+      planner,
+      `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(marker)}, "planner ran");`,
+    );
+    fs.writeFileSync(
+      path.join(dir, "claude-package", "package.json"),
+      JSON.stringify({ name: "@anthropic-ai/claude-code", version: "9.8.7" }),
+    );
+    fs.writeFileSync(claude, `#!/bin/sh\nprintf ran > ${JSON.stringify(marker)}\n`);
+    if (process.platform !== "win32") fs.chmodSync(claude, 0o755);
+
+    const availability = runtime.runtimeAvailability({
+      RUFLO_ROOT: root,
+      RUFLO_BIN: planner,
+      PATH: bin,
+      PATHEXT: ".EXE",
+    });
+    assert.deepEqual(availability, {
+      available: true,
+      installed: true,
+      version: "3.34.0",
+      source: "configured",
+      executor: { available: true, version: "9.8.7" },
+    });
+    assert.equal(fs.existsSync(marker), false, "health must not execute either toolchain");
+
+    const resolverSource = source("src/lib/ruflo/runtime.ts");
+    assert.doesNotMatch(resolverSource, /node:child_process|spawnSync\s*\(|["']--version["']/u);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("packaged Ruflo and Claude receipts are resolved without global tools", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-ruflo-packaged-health-"));
+  const root = path.join(dir, "app-services", "ruflo");
+  const bin = path.join(dir, "bin");
+  const planner = path.join(root, "bin", "cli.js");
+  const claude = path.join(bin, process.platform === "win32" ? "claude.exe" : "claude");
+  try {
+    fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+    fs.mkdirSync(path.join(root, "dist", "src"), { recursive: true });
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "@claude-flow/cli", version: "3.34.0" }),
+    );
+    fs.writeFileSync(planner, "// packaged planner\n");
+    fs.writeFileSync(path.join(root, "dist", "src", "index.js"), "// packaged dist\n");
+    fs.writeFileSync(claude, "packaged claude fixture\n");
+    fs.writeFileSync(
+      path.join(bin, "claude-runtime-artifact.json"),
+      JSON.stringify({ claudeCode: { version: "2.1.239" } }),
+    );
+    if (process.platform !== "win32") fs.chmodSync(claude, 0o755);
+
+    assert.equal(runtime.resolveRufloRoot({ RUFLO_ROOT: root }), root);
+    assert.deepEqual(
+      runtime.runtimeAvailability({
+        RUFLO_ROOT: root,
+        RUFLO_BIN: planner,
+        RUFLO_CLAUDE_BIN: claude,
+        PATH: "",
+      }),
+      {
+        available: true,
+        installed: true,
+        version: "3.34.0",
+        source: "configured",
+        executor: { available: true, version: "2.1.239" },
+      },
+    );
+    const resolverSource = source("src/lib/ruflo/runtime.ts");
+    assert.match(resolverSource, /`@claude-flow\/cli@\$\{version\}`/u);
+    assert.doesNotMatch(resolverSource, /`ruflo@\$\{version\}`/u);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("desktop packaging freezes the complete Ruflo runtime closure", () => {
+  const prepare = repoSource("desktop/scripts/prepare-app-resources.mjs");
+  const verify = repoSource("desktop/scripts/verify-package.mjs");
+  const environment = repoSource("native/runtime-core/src/service_environment.rs");
+  const receipt = JSON.parse(
+    repoSource("desktop/runtime-v2/vendor/ruflo/runtime-artifact.json"),
+  );
+  const lock = JSON.parse(repoSource("desktop/runtime-v2/vendor/ruflo/package-lock.json"));
+  const lockedCli = lock.packages["node_modules/@claude-flow/cli"];
+
+  assert.equal(receipt.ruflo.package, "@claude-flow/cli");
+  assert.equal(receipt.ruflo.version, "3.34.0");
+  assert.equal(lockedCli.version, receipt.ruflo.version);
+  assert.equal(lockedCli.integrity, receipt.ruflo.npmIntegrity);
+  assert.deepEqual(receipt.ruflo.omittedDependencyClasses, ["dev", "optional"]);
+  assert.match(prepare, /"ci",\s*\n\s*"--omit=dev",\s*\n\s*"--omit=optional"/u);
+  assert.match(prepare, /copyTree\(installedModules, path\.join\(target, "node_modules"\)\)/u);
+  assert.match(prepare, /Preserve npm's package boundary verbatim/u);
+  assert.match(prepare, /BREADBOARD_DEPENDENCY_LOCK\.json/u);
+  assert.match(prepare, /claude-runtime-artifact\.json/u);
+  assert.match(verify, /const rufloReceipt = path\.join\(rufloRoot, "runtime-artifact\.json"\)/u);
+  assert.match(verify, /PINNED_RUFLO_RUNTIME/u);
+  assert.match(verify, /pinned Claude Code executor/u);
+  assert.match(environment, /"RUFLO_ROOT", paths\.app_root\(\)\.join\("ruflo"\)/u);
+  assert.match(environment, /paths\.runtime_root\(\)\.join\("bin"\)\.join\("claude\.exe"\)/u);
 });
 
 test("Ruflo plans with its own CLI and executes through Claude Code", () => {
@@ -271,7 +394,7 @@ test("Ruflo plans with its own CLI and executes through Claude Code", () => {
   assert.match(route, /executionTarget: "ruflo"/);
   // The resolved skill text is still what the swarm runs; it now arrives
   // behind the chat the objective was typed into.
-  assert.match(route, /instruction: withConversationContext\(\n\s+resolved\.text,/);
+  assert.match(route, /instruction: withConversationContext\(\r?\n\s+resolved\.text,/);
 });
 
 test("Coding skills may run through Codex, Ruflo, or OpenCode", () => {
@@ -325,7 +448,7 @@ test("Ruflo appears in Agents and renders durable inline run output", () => {
   assert.match(gardenWorkspace, /onSelectRuflo/);
   assert.match(gardenWorkspace, /taskFromRufloCommand\(text\)/);
   assert.match(gardenWorkspace, /gardenSlug: clusterSlug/);
-  assert.match(gardenWorkspace, /ruflo-pending-/);
+  assert.match(gardenWorkspace, /rufloRun: \{[\s\S]*?externalAgentOutcome: "running"/);
   assert.match(gardenWorkspace, /<InlineRufloRun/);
   assert.match(panel, /message\.rufloRun/);
   assert.match(panel, /<InlineRufloRun/);

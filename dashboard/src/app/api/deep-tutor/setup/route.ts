@@ -1,13 +1,47 @@
 import { NextResponse } from "next/server";
+import db from "@/lib/db.ts";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { isSetupAction, runSetupAction, SetupError } from "@/lib/deep-tutor/setup.ts";
 import { clearHome } from "@/lib/deep-tutor/home.ts";
 import { resolveScope } from "@/lib/deep-tutor/materials.ts";
-import { indexState, rebuildIndex } from "@/lib/deep-tutor/knowledge-base.ts";
+import { indexState } from "@/lib/deep-tutor/knowledge-base.ts";
 import { invalidateEmbeddingsHealth } from "@/lib/deep-tutor/embeddings.ts";
+import {
+  ManagedSetupExecutionError,
+  runManagedSetupJob,
+} from "@/lib/runtime-v2/managed-setup-job.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
+import {
+  cancelDeepTutorIndex,
+  rebuildDeepTutorIndex,
+} from "@/lib/runtime-v2/deep-tutor-maintenance-job.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+interface ClusterRow {
+  slug: string;
+  name: string;
+  user_id: number;
+}
+
+function requireOwnGarden(userId: number, slug: string): ClusterRow {
+  const row = db
+    .prepare("SELECT slug, name, user_id FROM clusters WHERE slug = ?")
+    .get(slug) as ClusterRow | undefined;
+  if (!row) throw new RouteError(404, "garden_not_found");
+  if (row.user_id !== userId) throw new RouteError(403, "garden_not_yours");
+  return row;
+}
+
+function scopedGarden(userId: number, gardenSlug: string) {
+  const garden = gardenSlug ? requireOwnGarden(userId, gardenSlug) : null;
+  return resolveScope({
+    userId,
+    surface: garden ? "garden_chat" : "dashboard_terminal",
+    clusterSlug: garden?.slug ?? null,
+    gardenName: garden?.name ?? null,
+  });
+}
 
 /**
  * Two kinds of setup step, both of which only the user can authorise: building
@@ -29,11 +63,7 @@ export async function POST(request: Request) {
 
     if (body.action === "reindex") {
       const gardenSlug = typeof body.gardenSlug === "string" ? body.gardenSlug.trim() : "";
-      const scope = resolveScope({
-        userId,
-        surface: gardenSlug ? "garden_chat" : "dashboard_terminal",
-        clusterSlug: gardenSlug || null,
-      });
+      const scope = scopedGarden(userId, gardenSlug);
       // The embedder may have been installed since the last probe; a rebuild
       // is exactly the moment to stop trusting a cached "unavailable".
       invalidateEmbeddingsHealth();
@@ -48,7 +78,9 @@ export async function POST(request: Request) {
           },
         });
       }
-      const { started, state } = rebuildIndex(userId, scope);
+      const { started, state } = await rebuildDeepTutorIndex(userId, scope, {
+        signal: request.signal,
+      });
       return NextResponse.json({
         ok: true,
         result: {
@@ -64,13 +96,26 @@ export async function POST(request: Request) {
       });
     }
 
+    if (body.action === "cancel-reindex") {
+      const gardenSlug = typeof body.gardenSlug === "string" ? body.gardenSlug.trim() : "";
+      const scope = scopedGarden(userId, gardenSlug);
+      const state = await cancelDeepTutorIndex(userId, scope);
+      return NextResponse.json({
+        ok: true,
+        result: {
+          ok: true,
+          message: "Deep Tutor indexing was cancelled.",
+          detail: state.error ?? "",
+        },
+        index: state,
+      });
+    }
+
     if (body.action === "forget") {
       const gardenSlug = typeof body.gardenSlug === "string" ? body.gardenSlug.trim() : "";
-      const scope = resolveScope({
-        userId,
-        surface: gardenSlug ? "garden_chat" : "dashboard_terminal",
-        clusterSlug: gardenSlug || null,
-      });
+      const scope = scopedGarden(userId, gardenSlug);
+      // Do not race a Runtime-owned writer against deletion of its home.
+      await cancelDeepTutorIndex(userId, scope);
       const removed = clearHome(userId, scope.id);
       return NextResponse.json({
         ok: true,
@@ -85,16 +130,23 @@ export async function POST(request: Request) {
     }
 
     const action = typeof body.action === "string" ? body.action.trim().toLowerCase() : "";
-    if (!isSetupAction(action)) {
+    if (!["install", "reinstall", "remove"].includes(action)) {
       return NextResponse.json({ ok: false, error: "unknown_action" }, { status: 400 });
     }
-    const result = await runSetupAction(action);
+    const result = await runManagedSetupJob({
+      userId,
+      serviceId: "deep-tutor",
+      action,
+      signal: request.signal,
+    });
     return NextResponse.json({ ok: true, result });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
     }
-    if (error instanceof SetupError) {
+    if (error instanceof ManagedSetupExecutionError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
     if (error instanceof RouteError) {

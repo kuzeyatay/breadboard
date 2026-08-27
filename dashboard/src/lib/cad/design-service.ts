@@ -12,7 +12,7 @@
 import { cadDefaults, type CadDefaults } from "./defaults.ts";
 import { buildCadManifest } from "./artifact.ts";
 import { DEFAULT_CAD_ENGINE, type CadEngineId } from "./engines.ts";
-import { solidworksAvailability } from "./solidworks/availability.ts";
+import { readSolidWorksRuntimeStatus } from "./solidworks/runtime-service.ts";
 import { runCadAgentLoop, runCadProjectBuildPhase } from "./model-client.ts";
 import { cadSystemPrompt, summariseProjectForModel } from "./prompts.ts";
 import { getCadProject, readRevisionParameters, type CadProjectRow } from "./project-store.ts";
@@ -137,7 +137,7 @@ export async function designCadPart(
   const requested: CadEngineId = input.engine ?? DEFAULT_CAD_ENGINE;
   let engine = requested;
   if (requested === "solidworks") {
-    const availability = await solidworksAvailability();
+    const { availability } = await readSolidWorksRuntimeStatus();
     if (!availability.available) {
       if (input.engineExplicit) {
         return {

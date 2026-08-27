@@ -7,8 +7,8 @@
 // way in, so a partially written export can never be served as a complete one.
 
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
 import type { CADExportFormat } from "./types.ts";
 

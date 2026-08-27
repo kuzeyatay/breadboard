@@ -17,6 +17,7 @@
 // the same object as every other external-agent run.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ReclaimingVideo } from "@/app/components/reclaiming-media";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import ChatMarkdown from "@/app/components/chat-markdown";
@@ -26,7 +27,7 @@ import type {
 } from "@/lib/conversations/external-agent-runs";
 import { normalizeChatTokenUsage, type ChatTokenUsage } from "@/lib/chat-token-usage";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
-import { resolveAgentRunStreamError } from "@/lib/agent-run-stream";
+import { closeAgentRunStream, resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 
 interface RunEvent {
   sequenceNumber: number;
@@ -328,7 +329,7 @@ export default function InlineOpenMontageRun({
         },
       });
     };
-    return () => source.close();
+    return () => closeAgentRunStream(source);
   }, [applyEvent, base, replaying]);
 
   // A finished production is re-read from its workspace, so the video still
@@ -498,7 +499,7 @@ export default function InlineOpenMontageRun({
 
           {video ? (
             <figure className="overflow-hidden rounded-[10px] border border-[color-mix(in_srgb,var(--line)_55%,transparent)] bg-black">
-              <video
+              <ReclaimingVideo
                 className="block max-h-[420px] w-full bg-black"
                 src={`${base}/artifacts/${encodeURIComponent(video.id)}`}
                 controls

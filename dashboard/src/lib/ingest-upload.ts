@@ -2,17 +2,28 @@ if (typeof window !== "undefined") {
   throw new Error("Breadboard ingestion staging is server-only.");
 }
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import Busboy from "busboy";
+import {
+  abandonRuntimeJobInput,
+  reserveRuntimeJobInput,
+  uploadRuntimeJobInput,
+  type RuntimeJobAuthority,
+  type RuntimeJobInput,
+  type RuntimeJobInputReservation,
+} from "./supervisor-control.ts";
 
-export interface IngestUploadFile {
+export interface IngestUploadMetadata {
   name: string;
   type: string;
   size: number;
+}
+
+export interface IngestUploadFile extends IngestUploadMetadata {
   readBuffer(): Promise<Buffer>;
   text(): Promise<string>;
 }
@@ -20,14 +31,39 @@ export interface IngestUploadFile {
 export class StagedIngestUpload implements IngestUploadFile {
   size = 0;
   private cachedBytes: Buffer | null = null;
+  private readonly streamedDigest = createHash("sha256");
+  private completedDigest: string | null = null;
   readonly name: string;
   readonly type: string;
   readonly path: string;
+  readonly stagingId: string;
 
-  constructor(name: string, type: string, diskPath: string) {
+  constructor(name: string, type: string, stagingId: string, diskPath: string) {
     this.name = name;
     this.type = type;
+    this.stagingId = stagingId;
     this.path = diskPath;
+  }
+
+  noteChunk(chunk: Buffer): void {
+    if (this.completedDigest !== null) {
+      throw new Error("The completed ingestion upload cannot accept more bytes.");
+    }
+    this.size += chunk.byteLength;
+    this.streamedDigest.update(chunk);
+  }
+
+  sealDigest(): void {
+    if (this.completedDigest === null) {
+      this.completedDigest = this.streamedDigest.digest("hex");
+    }
+  }
+
+  get sha256(): string {
+    if (this.completedDigest === null) {
+      throw new Error("The ingestion upload digest is not complete.");
+    }
+    return this.completedDigest;
   }
 
   async readBuffer(): Promise<Buffer> {
@@ -44,8 +80,18 @@ export class StagedIngestUpload implements IngestUploadFile {
 
 export interface ParsedIngestUpload {
   fields: Map<string, string>;
-  file: IngestUploadFile | null;
+  file: IngestUploadMetadata | null;
+  stageRuntimeInput(
+    authority: RuntimeJobAuthority,
+    signal?: AbortSignal,
+  ): Promise<RuntimeJobInput>;
+  markRuntimeInputSubmitted(): void;
   cleanup(): Promise<void>;
+}
+
+export interface RuntimeIngestUploadOptions {
+  readonly authority: RuntimeJobAuthority;
+  readonly declaredSizeBytes: number;
 }
 
 export function uploadLimitBytes(env: NodeJS.ProcessEnv = process.env): number {
@@ -60,86 +106,190 @@ export function uploadLimitBytes(env: NodeJS.ProcessEnv = process.env): number {
   return mb * 1024 * 1024;
 }
 
-function browserFile(file: File): IngestUploadFile {
-  let cachedBytes: Buffer | null = null;
-  return {
-    name: file.name,
-    type: file.type,
-    size: file.size,
-    async readBuffer() {
-      cachedBytes ??= Buffer.from(await file.arrayBuffer());
-      return cachedBytes;
-    },
-    async text() {
-      return cachedBytes ? cachedBytes.toString("utf8") : file.text();
-    },
-  };
+async function createPrivateStagingDirectory(root: string): Promise<{
+  stagingId: string;
+  stagingDir: string;
+}> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const stagingId = `blob_${randomUUID().replaceAll("-", "")}`;
+    const stagingDir = path.join(root, stagingId);
+    try {
+      await fs.promises.mkdir(stagingDir, { mode: 0o700 });
+      return { stagingId, stagingDir };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error("A private ingestion staging identity could not be created.");
 }
 
-export async function parseIngestUpload(request: Request): Promise<ParsedIngestUpload> {
+async function removePrivateStagingDirectory(
+  root: string,
+  stagingDir: string | null,
+): Promise<void> {
+  if (!stagingDir) return;
+  const resolvedRoot = path.resolve(root);
+  const resolvedStaging = path.resolve(stagingDir);
+  if (
+    path.dirname(resolvedStaging) !== resolvedRoot ||
+    !/^blob_[a-f0-9]{32}$/u.test(path.basename(resolvedStaging))
+  ) {
+    throw new Error("Refusing to remove an invalid ingestion staging directory.");
+  }
+  await fs.promises.rm(resolvedStaging, { recursive: true, force: true });
+}
+
+function sameAuthority(
+  left: RuntimeJobAuthority,
+  right: RuntimeJobAuthority,
+): boolean {
+  return (
+    left.userId === right.userId &&
+    left.gardenId === right.gardenId &&
+    left.conversationId === right.conversationId
+  );
+}
+
+export async function parseIngestUpload(
+  request: Request,
+  runtime?: RuntimeIngestUploadOptions,
+): Promise<ParsedIngestUpload> {
   const contentType = request.headers.get("content-type") ?? "";
   if (!/^multipart\/form-data\b/i.test(contentType) || !request.body) {
-    const form = await request.formData();
-    const file = form.get("file");
-    return {
-      fields: new Map(
-        [...form.entries()].flatMap(([key, value]) =>
-          typeof value === "string" ? [[key, value] as const] : [],
-        ),
-      ),
-      file: file instanceof File ? browserFile(file) : null,
-      cleanup: async () => undefined,
-    };
+    throw new Error("Document ingestion requires a multipart upload stream.");
   }
 
   const root = process.env.BREADBOARD_DATA_DIR?.trim()
     ? path.join(process.env.BREADBOARD_DATA_DIR, "runtime", "ingest-uploads")
     : path.join(os.tmpdir(), "breadboard-ingest-uploads");
-  await fs.promises.mkdir(root, { recursive: true });
-  const stagingDir = await fs.promises.mkdtemp(path.join(root, "upload-"));
+  let stagingDir: string | null = null;
+  let stagingId: string | null = null;
+  if (!runtime) {
+    await fs.promises.mkdir(root, { recursive: true });
+    ({ stagingId, stagingDir } = await createPrivateStagingDirectory(root));
+  }
   const fields = new Map<string, string>();
   const writes: Promise<void>[] = [];
   let staged: StagedIngestUpload | null = null;
+  let metadata: IngestUploadMetadata | null = null;
+  let reservation: RuntimeJobInputReservation | null = null;
+  let runtimeInput: RuntimeJobInput | null = null;
+  let runtimeAuthority: RuntimeJobAuthority | null = runtime?.authority ?? null;
+  let submitted = false;
+  let stagingRemoved = false;
   let parseError: Error | null = null;
+  const maximumBytes = uploadLimitBytes();
+  if (
+    runtime &&
+    (!Number.isSafeInteger(runtime.declaredSizeBytes) ||
+      runtime.declaredSizeBytes < 1 ||
+      runtime.declaredSizeBytes > maximumBytes)
+  ) {
+    throw new Error("The declared ingestion file size is invalid.");
+  }
   const parser = Busboy({
     headers: { "content-type": contentType },
-    limits: { fileSize: uploadLimitBytes(), files: 1, fields: 32, fieldSize: 64 * 1024, parts: 33 },
+    limits: {
+      // Busboy reports `limit` when the byte count reaches the configured
+      // value. Permit the exact declared maximum and fail on the first extra
+      // byte; Rust independently seals only the exact Content-Length.
+      fileSize: (runtime?.declaredSizeBytes ?? maximumBytes) + 1,
+      files: 1,
+      fields: 32,
+      fieldSize: 64 * 1024,
+      parts: 33,
+    },
   });
-  parser.on("field", (name, value) => fields.set(name, value));
+  parser.on("field", (name, value) => {
+    if (
+      new TextEncoder().encode(name).byteLength > 256 ||
+      new TextEncoder().encode(value).byteLength >= 64 * 1024
+    ) {
+      parseError ??= new Error("An ingestion field exceeds its configured limit.");
+      return;
+    }
+    fields.set(name, value);
+  });
   parser.on("file", (name, stream, info) => {
-    if (name !== "file" || staged) {
+    if (name !== "file" || metadata) {
       stream.resume();
       return;
     }
-    const diskPath = path.join(stagingDir, randomUUID());
+    const displayName = path.basename(info.filename || "upload");
+    const mediaType = info.mimeType || "application/octet-stream";
+    metadata = {
+      name: displayName,
+      type: mediaType,
+      size: runtime?.declaredSizeBytes ?? 0,
+    };
+    stream.on("limit", () => {
+      parseError ??= new Error("Upload exceeds the configured ingestion size limit.");
+    });
+
+    if (runtime) {
+      writes.push((async () => {
+        try {
+          reservation = await reserveRuntimeJobInput(
+            runtime.authority,
+            {
+              gardenId: runtime.authority.gardenId,
+              conversationId: runtime.authority.conversationId,
+              displayName,
+              mediaType,
+              declaredSizeBytes: runtime.declaredSizeBytes,
+            },
+          );
+          runtimeInput = await uploadRuntimeJobInput(
+            runtime.authority,
+            reservation,
+            Readable.toWeb(stream as unknown as Readable) as ReadableStream<Uint8Array>,
+            request.signal,
+          );
+          metadata = {
+            name: runtimeInput.displayName,
+            type: runtimeInput.mediaType ?? "application/octet-stream",
+            size: runtimeInput.sizeBytes,
+          };
+        } catch (error) {
+          parseError ??= error instanceof Error ? error : new Error("Upload staging failed.");
+          stream.resume();
+        }
+      })());
+      return;
+    }
+
+    const diskPath = path.join(stagingDir!, "payload");
     staged = new StagedIngestUpload(
-      path.basename(info.filename || "upload"),
-      info.mimeType || "application/octet-stream",
+      displayName,
+      mediaType,
+      stagingId!,
       diskPath,
     );
     const output = fs.createWriteStream(diskPath, { flags: "wx", mode: 0o600 });
     writes.push(new Promise<void>((resolve) => {
-      output.once("finish", resolve);
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      output.once("finish", finish);
       output.once("error", (error) => {
         parseError ??= error;
-        resolve();
+        finish();
       });
       output.once("close", () => {
         if (!output.writableFinished) {
           parseError ??= new Error("Upload staging ended early.");
-          resolve();
         }
+        finish();
       });
       stream.once("error", (error) => {
         parseError ??= error;
-        resolve();
+        finish();
       });
     }));
-    stream.on("data", (chunk: Buffer) => { if (staged) staged.size += chunk.byteLength; });
-    stream.on("limit", () => {
-      parseError = new Error("Upload exceeds the configured ingestion size limit.");
-      output.destroy(parseError);
-    });
+    stream.on("data", (chunk: Buffer) => staged?.noteChunk(chunk));
     stream.pipe(output);
   });
   parser.on("filesLimit", () => { parseError = new Error("Only one ingestion file is allowed."); });
@@ -147,6 +297,25 @@ export async function parseIngestUpload(request: Request): Promise<ParsedIngestU
   parser.on("partsLimit", () => { parseError = new Error("Too many ingestion parts."); });
 
   const source = Readable.fromWeb(request.body as never);
+  const abandonReservation = async () => {
+    if (!reservation || !runtimeAuthority || submitted) return;
+    const uploadId = reservation.uploadId;
+    reservation = null;
+    runtimeInput = null;
+    try {
+      await abandonRuntimeJobInput(runtimeAuthority, uploadId);
+    } catch (error) {
+      console.warn(
+        "[ingest-upload] Runtime input abandonment failed:",
+        error instanceof Error ? error.message : "unknown error",
+      );
+    }
+  };
+  const removeStaging = async () => {
+    if (stagingRemoved) return;
+    await removePrivateStagingDirectory(root, stagingDir);
+    stagingRemoved = true;
+  };
   try {
     await new Promise<void>((resolve, reject) => {
       source.once("error", reject);
@@ -156,14 +325,62 @@ export async function parseIngestUpload(request: Request): Promise<ParsedIngestU
     });
     await Promise.all(writes);
     if (parseError) throw parseError;
+    const completedStaged = staged as StagedIngestUpload | null;
+    if (completedStaged) {
+      completedStaged.sealDigest();
+      metadata = completedStaged;
+    }
     return {
       fields,
-      file: staged,
-      cleanup: () => fs.promises.rm(stagingDir, { recursive: true, force: true }),
+      file: metadata,
+      async stageRuntimeInput(authority, signal) {
+        if (runtimeInput) {
+          if (!runtimeAuthority || !sameAuthority(runtimeAuthority, authority)) {
+            throw new Error("The staged ingestion upload belongs to another scope.");
+          }
+          return runtimeInput;
+        }
+        if (!staged) throw new Error("The ingestion upload does not contain a file.");
+        runtimeAuthority = authority;
+        reservation = await reserveRuntimeJobInput(authority, {
+          gardenId: authority.gardenId,
+          conversationId: authority.conversationId,
+          displayName: staged.name,
+          mediaType: staged.type || null,
+          declaredSizeBytes: staged.size,
+        });
+        try {
+          const input = fs.createReadStream(staged.path);
+          runtimeInput = await uploadRuntimeJobInput(
+            authority,
+            reservation,
+            Readable.toWeb(input) as ReadableStream<Uint8Array>,
+            signal,
+          );
+          await removeStaging();
+          return runtimeInput;
+        } catch (error) {
+          await abandonReservation();
+          throw error;
+        }
+      },
+      markRuntimeInputSubmitted() {
+        if (!runtimeInput) {
+          throw new Error("The ingestion input cannot be adopted before it is sealed.");
+        }
+        submitted = true;
+      },
+      async cleanup() {
+        await abandonReservation();
+        await removeStaging();
+      },
     };
   } catch (error) {
     source.unpipe(parser);
-    await fs.promises.rm(stagingDir, { recursive: true, force: true });
+    source.destroy();
+    await Promise.allSettled(writes);
+    await abandonReservation();
+    await removeStaging();
     throw error;
   }
 }

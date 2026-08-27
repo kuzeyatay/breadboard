@@ -28,6 +28,6 @@ test("specialized save modules stay independent of heavyweight editor readers", 
     assert.doesNotMatch(moduleSource, /genoffice\/agent-query/);
     assert.doesNotMatch(moduleSource, /office\/agent-query/);
   }
-  assert.match(officeSave, /runOfficeCli/);
+  assert.match(officeSave, /prepareOfficeExportViaRuntime/);
   assert.match(pdfSave, /importArtifactVersion/);
 });

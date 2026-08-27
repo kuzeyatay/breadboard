@@ -16,7 +16,11 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { repositoryRoot } from "../runtime-paths.ts";
+import {
+  dashboardDataDir,
+  repositoryRoot,
+  runtimeV2ServiceVenv,
+} from "../runtime-paths.ts";
 
 export interface MoneyPrinterRuntime {
   /** Directory of the cloned repository — the cwd of every command. */
@@ -85,6 +89,10 @@ export function resolveMoneyPrinterRoot(
   }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({
+    root: path.join(dashboardDataDir(), "runtime-v2", "toolchains", "money-printer"),
+    source: "configured",
+  });
+  candidates.push({
     root: path.join(repositoryRoot(), "MoneyPrinterTurbo"),
     source: "repository",
   });
@@ -102,7 +110,8 @@ export function tasksDirectory(root: string): string {
 }
 
 export function venvDirectory(root: string): string {
-  return path.join(root, ".venv");
+  void root;
+  return runtimeV2ServiceVenv("money-printer");
 }
 
 /** The Python inside the clone's virtual environment, if it has been built. */

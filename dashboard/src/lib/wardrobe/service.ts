@@ -15,7 +15,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { config } from "./client.ts";
 import { ensureImagesBridge } from "./bridge.ts";
-import { modelReferencePath, resolveWardrobeRoot, viteEntry } from "./runtime.ts";
+import {
+  modelReferencePath,
+  resolveWardrobeRoot,
+  viteEntry,
+  wardrobeDataDir,
+  wardrobeRuntimeRoot,
+} from "./runtime.ts";
 
 export interface WardrobeService {
   /** The dev server's origin — the API base and the gallery address both. */
@@ -119,10 +125,10 @@ async function waitForReady(baseUrl: string, child: ChildProcess, log: () => str
 }
 
 async function start(options: StartOptions): Promise<WardrobeService> {
-  const root = resolveWardrobeRoot();
-  if (!root) {
+  if (!resolveWardrobeRoot()) {
     throw new Error("The Wardrobe clone is missing. Clone tandpfun/wardrobe next to the dashboard.");
   }
+  const root = wardrobeRuntimeRoot();
   const entry = viteEntry();
   if (!entry) {
     throw new Error("Wardrobe is not installed yet. Open its settings and install it once.");
@@ -147,6 +153,7 @@ async function start(options: StartOptions): Promise<WardrobeService> {
         OPENAI_IMAGE_MODEL: options.model,
         OPENAI_IMAGE_QUALITY: options.quality,
         WARDROBE_MODEL_REFERENCE: modelReferencePath() ?? "data/model-reference.png",
+        WARDROBE_DATA_DIR: wardrobeDataDir(),
         NODE_ENV: "development",
         NO_COLOR: "1",
         BROWSER: "none",

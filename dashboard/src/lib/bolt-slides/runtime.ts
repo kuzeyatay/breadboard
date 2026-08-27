@@ -12,8 +12,8 @@
 // pointing back at the clone's. That is what lets many decks be built from one
 // install while the checkout stays exactly as it was cloned.
 
-import fs from "node:fs";
 import path from "node:path";
+import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
 import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
 
 /** Files that identify a directory as the bolt-slides clone rather than a namesake. */
@@ -34,7 +34,7 @@ function configured(value: string | undefined): string | null {
 
 function isCheckout(candidate: string | null): boolean {
   return Boolean(
-    candidate && MARKERS.every((marker) => fs.existsSync(path.join(candidate, marker))),
+    candidate && MARKERS.every((marker) => externalRuntimePathExists(path.join(candidate, marker))),
   );
 }
 
@@ -44,8 +44,6 @@ export function resolveBoltSlidesRoot(env: NodeJS.ProcessEnv = process.env): str
   const candidates = [
     explicit,
     path.join(repositoryRoot(), "bolt-slides"),
-    path.resolve(process.cwd(), "bolt-slides"),
-    path.resolve(process.cwd(), "..", "bolt-slides"),
   ];
   return candidates.find(isCheckout) ?? null;
 }
@@ -57,10 +55,16 @@ export function boltSlidesWorkspaceRoot(env: NodeJS.ProcessEnv = process.env): s
   );
 }
 
-/** The clone's `node_modules`, which every run's workspace links back to. */
-export function boltSlidesModules(env: NodeJS.ProcessEnv = process.env): string | null {
-  const root = resolveBoltSlidesRoot(env);
-  return root ? path.join(root, "node_modules") : null;
+/** Runtime-owned dependencies, which every run's workspace links back to. */
+export function boltSlidesModules(env: NodeJS.ProcessEnv = process.env): string {
+  void env;
+  return path.join(
+    dashboardDataDir(),
+    "runtime-v2",
+    "toolchains",
+    "bolt-slides",
+    "node_modules",
+  );
 }
 
 /**
@@ -70,17 +74,15 @@ export function boltSlidesModules(env: NodeJS.ProcessEnv = process.env): string 
  */
 export function viteEntry(env: NodeJS.ProcessEnv = process.env): string | null {
   const modules = boltSlidesModules(env);
-  if (!modules) return null;
   const entry = path.join(modules, "vite", "bin", "vite.js");
-  return fs.existsSync(entry) ? entry : null;
+  return externalRuntimePathExists(entry) ? entry : null;
 }
 
 /** Which of the required packages are actually unpacked in the clone. */
 export function missingPackages(env: NodeJS.ProcessEnv = process.env): string[] {
   const modules = boltSlidesModules(env);
-  if (!modules) return [...REQUIRED_PACKAGES];
   return REQUIRED_PACKAGES.filter(
-    (name) => !fs.existsSync(path.join(modules, ...name.split("/"), "package.json")),
+    (name) => !externalRuntimePathExists(path.join(modules, ...name.split("/"), "package.json")),
   );
 }
 

@@ -11,6 +11,7 @@ import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { useYoloMode } from "@/app/components/use-yolo-mode";
 import { normalizeChatTokenUsage } from "@/lib/chat-token-usage";
+import { appendBoundedAgentRunEvent } from "@/lib/agent-run-history";
 import type {
   ExternalAgentOutcome,
   ExternalAgentTerminalOutcome,
@@ -128,11 +129,7 @@ export default function InlineAgentBrowserRun({
 
   const applyEvent = useCallback((event: RunEvent) => {
     receivedEventRef.current = true;
-    setEvents((previous) =>
-      previous.some((item) => item.sequenceNumber === event.sequenceNumber)
-        ? previous
-        : [...previous, event].sort((a, b) => a.sequenceNumber - b.sequenceNumber),
-    );
+    setEvents((previous) => appendBoundedAgentRunEvent(previous, event));
     if (event.type === "observation.screenshot") {
       const screenshotId = String((event.payload as { screenshotId?: string }).screenshotId ?? "");
       if (screenshotId) setShot(screenshotId);
@@ -152,6 +149,8 @@ export default function InlineAgentBrowserRun({
       !reportedTerminalRef.current &&
       ["run.completed", "run.failed", "run.aborted"].includes(event.type)
     ) {
+      esRef.current?.close();
+      esRef.current = null;
       reportedTerminalRef.current = true;
       const outcome = event.type.replace("run.", "") as ExternalAgentTerminalOutcome;
       const content =

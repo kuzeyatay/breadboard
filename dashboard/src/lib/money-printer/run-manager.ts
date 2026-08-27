@@ -1,4 +1,4 @@
-// In-memory run manager for the MoneyPrinter agent.
+// Worker-local run manager for the MoneyPrinter agent.
 //
 // Unlike the ChatMock-driven agents, Breadboard does not run a tool loop here.
 // The cloned project owns the whole pipeline — write the script, pick the search
@@ -12,12 +12,12 @@
 // begins. That number is the only thing it says about where a run has got to, so
 // this module is where it becomes a sentence a person can read.
 //
-// Runs are ephemeral; what they produce is not. Events live here and the SSE
-// route replays them; the finished cut becomes an artifact bound to the chat.
+// One fresh Runtime V2 worker owns this map for exactly one run. Rust persists
+// its bounded event projection and terminal outcome; the finished cut remains
+// an artifact bound to the chat.
 
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import {
   closeMoneyPrinterArtifactContext,
@@ -25,11 +25,14 @@ import {
   publishTaskVideo,
   type PublishedVideo,
 } from "./artifact.ts";
-import { configuredFootageSources } from "./config-file.ts";
+import { configuredFootageSources } from "./config-inspect.ts";
 import { availableFootageSources } from "./credentials.ts";
 import { moneyPrinterRunLabel, type MoneyPrinterRequest } from "./identity.ts";
-import { ensureService, serviceLog, stopService } from "./service.ts";
-import { invalidateHealth, tasksDirectory } from "./runtime.ts";
+import {
+  ensureMoneyPrinterService,
+  readMoneyPrinterServiceLog,
+  stopMoneyPrinterWorkerService,
+} from "./runtime-service.ts";
 import { taskRequestBody } from "./settings.ts";
 
 export interface MoneyPrinterEvent {
@@ -44,6 +47,7 @@ type RunStatus = "queued" | "running" | "completed" | "failed" | "aborted";
 interface RunState {
   runId: string;
   userId: number;
+  conversationPublicId: string;
   request: MoneyPrinterRequest;
   status: RunStatus;
   sequence: number;
@@ -69,6 +73,9 @@ const RETENTION_MS = 30 * 60 * 1000;
 const RUN_TIMEOUT_MS = 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 1_500;
+const MAX_SERVICE_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES = 16 * 1024;
+const MAX_LOCAL_MATERIALS = 1_000;
 /** The clone's own task states, from app/models/const.py. */
 const TASK_STATE = { failed: -1, complete: 1, processing: 4 } as const;
 
@@ -127,15 +134,6 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-/** How many runs are still driving the shared service. */
-function activeRunCount(): number {
-  let active = 0;
-  for (const run of runs.values()) {
-    if (run.status === "queued" || run.status === "running") active += 1;
-  }
-  return active;
-}
-
 // ---- the clone's HTTP surface ----------------------------------------------
 
 async function call(
@@ -150,13 +148,48 @@ async function call(
   });
 }
 
+async function readBoundedBody(response: Response, maximumBytes: number): Promise<Buffer> {
+  const declared = response.headers.get("content-length");
+  if (
+    declared !== null &&
+    (!/^\d+$/u.test(declared) || Number(declared) > maximumBytes)
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error("MoneyPrinter returned more data than this run accepts.");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return Buffer.alloc(0);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maximumBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("MoneyPrinter returned more data than this run accepts.");
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total);
+}
+
+async function readBoundedJson(response: Response): Promise<unknown> {
+  const bytes = await readBoundedBody(response, MAX_SERVICE_RESPONSE_BYTES);
+  try {
+    return JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error("MoneyPrinter returned invalid JSON.");
+  }
+}
+
 /**
  * Every response the clone sends is wrapped in `{status, data, message}`, and
  * `data` is omitted entirely when it is falsy — so an empty object here means
  * "nothing to report", not "malformed".
  */
 async function envelope(response: Response): Promise<Record<string, unknown>> {
-  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  const body = record(await readBoundedJson(response));
   return record(body.data);
 }
 
@@ -174,8 +207,13 @@ async function localMaterials(url: string): Promise<string[]> {
     const files = (await envelope(response)).files;
     if (!Array.isArray(files)) return [];
     return files
+      .slice(0, MAX_LOCAL_MATERIALS)
       .map((entry) => text(record(entry).file) || text(record(entry).name))
-      .filter(Boolean);
+      .filter((entry) =>
+        entry.length > 0 &&
+        entry.length <= 1_024 &&
+        !/[\u0000\r\n]/u.test(entry)
+      );
   } catch {
     // An empty list produces a clear refusal below; a thrown error here would
     // report a transport problem the run does not actually have.
@@ -193,7 +231,9 @@ async function createTask(
     body: JSON.stringify(taskRequestBody(request, materials)),
   });
   if (!response.ok) {
-    const detail = await response.text().catch(() => "");
+    const detail = await readBoundedBody(response, MAX_ERROR_RESPONSE_BYTES)
+      .then((bytes) => bytes.toString("utf8"))
+      .catch(() => "");
     throw new Error(
       response.status === 429
         ? "MoneyPrinter is already cutting as many videos as it can at once. Try again when the current one finishes."
@@ -201,7 +241,9 @@ async function createTask(
     );
   }
   const taskId = text((await envelope(response)).task_id);
-  if (!taskId) throw new Error("MoneyPrinter accepted the request without returning a task.");
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(taskId)) {
+    throw new Error("MoneyPrinter accepted the request without returning a valid task.");
+  }
   return taskId;
 }
 
@@ -224,8 +266,8 @@ export function resolveTaskVideos(videos: unknown, tasksRoot: string): string[] 
   if (!Array.isArray(videos)) return [];
   const root = path.resolve(tasksRoot);
   const resolved: string[] = [];
-  for (const entry of videos) {
-    if (typeof entry !== "string" || !entry.trim()) continue;
+  for (const entry of videos.slice(0, 20)) {
+    if (typeof entry !== "string" || !entry.trim() || entry.length > 4_096) continue;
     let reference = entry.trim();
     if (/^https?:\/\//i.test(reference)) {
       try {
@@ -251,6 +293,8 @@ export function resolveTaskVideos(videos: unknown, tasksRoot: string): string[] 
 
 export interface StartRunInput {
   userId: number;
+  /** Fenced Runtime identity supplied only to the disposable worker. */
+  runtimeJobId: string;
   conversationPublicId: string;
   request: MoneyPrinterRequest;
   /** The chat's model — what the clone writes the script with. */
@@ -259,12 +303,19 @@ export interface StartRunInput {
   baseUrl: string;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
+export function startRuntimeWorkerRun(
+  input: StartRunInput,
+): { runId: string; status: RunStatus } {
   if (!input.request.subject.trim()) throw new Error("empty_brief");
-  const runId = `mptrun_${randomUUID().replaceAll("-", "")}`;
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId)) {
+    throw new Error("MoneyPrinter Runtime identity is invalid.");
+  }
+  const runId = input.runtimeJobId;
+  if (runs.has(runId)) throw new Error("MoneyPrinter Runtime identity was reused.");
   const run: RunState = {
     runId,
     userId: input.userId,
+    conversationPublicId: input.conversationPublicId,
     request: input.request,
     status: "queued",
     sequence: 0,
@@ -279,18 +330,32 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   const timer = setTimeout(() => {
     if (["completed", "failed", "aborted"].includes(run.status)) return;
     run.aborted = true;
-    finish(run, "failed", {
-      error: "The video ran past its time limit and was stopped.",
-    });
+    run.polling.abort(new DOMException("MoneyPrinter timed out", "AbortError"));
+    void stopMoneyPrinterWorkerService({
+      userId: run.userId,
+      runId: run.runId,
+      conversationPublicId: run.conversationPublicId,
+    })
+      .catch(() => undefined)
+      .finally(() => {
+        finish(run, "failed", {
+          error: "The video ran past its time limit and was stopped.",
+        });
+      });
   }, RUN_TIMEOUT_MS);
   timer.unref?.();
 
   void drive(run, input)
-    .catch((error: unknown) => {
+    .catch(async (error: unknown) => {
       if (run.aborted) return;
+      const detail = await readMoneyPrinterServiceLog({
+        userId: run.userId,
+        runId: run.runId,
+        conversationPublicId: input.conversationPublicId,
+      }).catch(() => "");
       finish(run, "failed", {
         error: error instanceof Error ? error.message : "The MoneyPrinter run failed.",
-        detail: serviceLog(),
+        detail,
       });
     })
     .finally(() => clearTimeout(timer));
@@ -311,11 +376,18 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   });
 
   emit(run, "service.starting", {});
-  const service = await ensureService({
-    baseUrl: input.baseUrl,
-    apiKey: chatmockApiKeyValue(),
-    model: input.model,
-  });
+  const service = await ensureMoneyPrinterService(
+    {
+      userId: run.userId,
+      runId: run.runId,
+      conversationPublicId: input.conversationPublicId,
+    },
+    {
+      baseUrl: input.baseUrl,
+      apiKey: chatmockApiKeyValue(),
+      model: input.model,
+    },
+  );
   if (run.aborted) return;
   emit(run, "service.ready", {
     model: service.model,
@@ -379,22 +451,27 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
 
     const finished = await pollTask(run, service.url, taskId);
     if (run.aborted || ["completed", "failed", "aborted"].includes(run.status)) return;
+    const finishedScript = text(finished.script).slice(0, 40_000);
 
     if (count(finished.state) === TASK_STATE.failed) {
       finish(run, "failed", {
-        error: text(finished.error, "MoneyPrinter could not finish this video."),
-        stage: text(finished.failed_stage),
-        script: text(finished.script),
+        error: text(finished.error, "MoneyPrinter could not finish this video.").slice(0, 1_000),
+        stage: text(finished.failed_stage).slice(0, 200),
+        script: finishedScript,
       });
       return;
     }
 
-    const tasksRoot = tasksDirectory(service.root);
+    const tasksRoot = path.join(service.root, "storage", "tasks");
     const files = resolveTaskVideos(finished.videos, tasksRoot);
     if (files.length === 0) {
       finish(run, "failed", {
         error: "MoneyPrinter reported the video as finished but produced no file.",
-        detail: serviceLog(),
+        detail: await readMoneyPrinterServiceLog({
+          userId: run.userId,
+          runId: run.runId,
+          conversationPublicId: input.conversationPublicId,
+        }).catch(() => ""),
       });
       return;
     }
@@ -403,7 +480,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     const rejected: string[] = [];
     for (const [index, file] of files.entries()) {
       if (!context) break;
-      const stored = publishTaskVideo({
+      const stored = await publishTaskVideo({
         context,
         tasksRoot,
         filePath: file,
@@ -439,13 +516,13 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     finish(run, "completed", {
       summary: chatSummary({
         request: run.request,
-        script: text(finished.script),
+        script: finishedScript,
         terms: finished.terms,
         published,
         notice,
         cutCount: files.length,
       }),
-      script: text(finished.script),
+      script: finishedScript,
       videoArtifactIds: published.map((video) => video.artifactId),
       taskId,
     });
@@ -591,9 +668,6 @@ function finish(run: RunState, status: RunStatus, payload: Record<string, unknow
     status === "completed" ? "run.completed" : status === "aborted" ? "run.aborted" : "run.failed",
     { ...payload, elapsedSec: (Date.now() - run.createdAt) / 1_000 },
   );
-  // A finished run may have started or lost the service; the settings panel
-  // reads that from health.
-  invalidateHealth();
   scheduleCleanup(run);
 }
 
@@ -617,22 +691,26 @@ export function isTerminal(userId: number, runId: string): boolean {
  *
  * The clone has no way to cancel a task in flight: its own delete endpoint
  * refuses a busy task, and the pipeline runs on a thread pool inside the
- * service. So stopping the last run also stops the service, which is the only
- * thing that actually ends the work rather than hiding it. With another run
- * still going, the service stays up and this one simply stops being followed —
- * killing it would take somebody else's video with it.
+ * service. Runtime admits this media class exclusively, so stopping its single
+ * owned attempt also stops the clone before publishing the terminal event.
  */
-export function abortRun(userId: number, runId: string): boolean {
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;
-  const alone = activeRunCount() <= 1;
+  run.polling.abort(new DOMException("MoneyPrinter was stopped", "AbortError"));
+  await stopMoneyPrinterWorkerService({
+    userId,
+    runId,
+    conversationPublicId: run.conversationPublicId,
+  }).catch(() => undefined);
   finish(run, "aborted", {
-    summary: alone
-      ? "The video was stopped."
-      : "This video was stopped. Another one is still being cut, so the service is still running.",
-    stoppedService: alone,
+    summary: "The video was stopped.",
+    stoppedService: true,
   });
-  if (alone) void stopService();
   return true;
 }
+
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
+export const abortRuntimeWorkerRun = abortRun;

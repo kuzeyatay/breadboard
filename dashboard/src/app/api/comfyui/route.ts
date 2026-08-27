@@ -14,8 +14,14 @@ import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, readJsonBody, requireEnabled } from "@/lib/hermes/route-helpers.ts";
 import { resolveComfyUiConfig } from "@/lib/comfyui/config.ts";
-import { comfyUiStatus } from "@/lib/comfyui/service.ts";
-import { beginSetup, ensureComfyUiRunning } from "@/lib/comfyui/server.ts";
+import { comfyUiStatus, startComfyUi } from "@/lib/comfyui/service.ts";
+import {
+  beginSetup,
+  recordSetupSubmissionFailure,
+} from "@/lib/comfyui/server.ts";
+import { submitManagedSetupJob } from "@/lib/runtime-v2/managed-setup-job.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
+import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -26,13 +32,20 @@ export async function GET() {
     requireEnabled();
     return NextResponse.json({ ok: true, comfyui: await comfyUiStatus() });
   } catch (error) {
+    if (error instanceof SupervisorResourceExhaustedError) {
+      return NextResponse.json(
+        { error: error.message, ...error.result },
+        { status: 503 },
+      );
+    }
     return apiErrorResponse(error);
   }
 }
 
 export async function POST(request: Request) {
+  let setupConfig: ReturnType<typeof resolveComfyUiConfig> | null = null;
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     requireEnabled();
     const body = await readJsonBody(request);
     const config = resolveComfyUiConfig();
@@ -45,12 +58,19 @@ export async function POST(request: Request) {
           { status: 409 },
         );
       }
+      setupConfig = config;
+      await submitManagedSetupJob({
+        userId,
+        serviceId: "comfyui",
+        action: "install",
+        signal: request.signal,
+      });
       return NextResponse.json({ ok: true, comfyui: await comfyUiStatus(config) });
     }
 
     if (body.action === "start") {
-      const running = await ensureComfyUiRunning(config);
-      const status = await comfyUiStatus(config);
+      const status = await startComfyUi(config);
+      const running = status.state === "ready" || status.state === "no_models";
       return NextResponse.json(
         { ok: running, comfyui: status, ...(running ? {} : { error: status.message }) },
         { status: running ? 200 : 409 },
@@ -59,6 +79,15 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ok: false, error: "Unknown action." }, { status: 400 });
   } catch (error) {
+    if (setupConfig) recordSetupSubmissionFailure(setupConfig, error);
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
+    if (error instanceof SupervisorResourceExhaustedError) {
+      return NextResponse.json(
+        { error: error.message, ...error.result },
+        { status: 503 },
+      );
+    }
     return apiErrorResponse(error);
   }
 }

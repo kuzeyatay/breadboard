@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { toolchainStatus } from "@/lib/openmontage/setup.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
+import { runOpenMontageProbeViaRuntime } from "@/lib/runtime-v2/openmontage-probe-job.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    await requireUserId();
-    const status = toolchainStatus();
+    const userId = await requireUserId();
+    const status = await runOpenMontageProbeViaRuntime({ userId, signal: request.signal });
     return NextResponse.json({
       ok: true,
       available: status.ready,
@@ -16,6 +17,8 @@ export async function GET() {
       status,
     });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }

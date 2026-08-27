@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { gardenDocumentHref } from "@/lib/garden-document-route";
 import { useRouter } from "next/navigation";
+import { releaseCanvasPixels } from "@/app/components/canvas-resource";
 import FastReadReader from "@/app/components/fastread-reader";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
@@ -302,6 +303,9 @@ export default function PdfViewerClient({
   const saveAgainRef = useRef(false);
   const saveInFlightRef = useRef(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pointerSaveTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(
+    new Set(),
+  );
   const saveEditedPdfRef = useRef<() => Promise<boolean>>(async () => true);
   const hasInMemoryUndoRef = useRef(false);
   const serverUndoRef = useRef<() => Promise<void>>(async () => {});
@@ -937,11 +941,17 @@ export default function PdfViewerClient({
     //   in its own bubble-phase handler before we call saveDocument().
     // keyup: catches text edits and annotation deletions (Delete/Backspace).
     const container = containerRef.current;
+    const viewerElement = viewerRef.current;
+    const pointerSaveTimers = pointerSaveTimersRef.current;
     const inContainer = (event: Event) =>
       container != null && event.composedPath().includes(container);
     const onPointerUp = (event: PointerEvent) => {
       if (!readOnly && inContainer(event)) {
-        setTimeout(() => { void saveEditedPdfRef.current(); }, 50);
+        const timer = setTimeout(() => {
+          pointerSaveTimers.delete(timer);
+          void saveEditedPdfRef.current();
+        }, 50);
+        pointerSaveTimers.add(timer);
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
@@ -956,7 +966,12 @@ export default function PdfViewerClient({
       cancelled = true;
       document.removeEventListener("pointerup", onPointerUp, { capture: true });
       document.removeEventListener("keyup", onKeyUp, { capture: true });
+      for (const timer of pointerSaveTimers) clearTimeout(timer);
+      pointerSaveTimers.clear();
       eventBusRef.current = null;
+      viewerElement
+        ?.querySelectorAll("canvas")
+        .forEach((canvas) => releaseCanvasPixels(canvas));
       pdfViewerRef.current?.setDocument(null);
       pdfViewerRef.current?.cleanup();
       pdfViewerRef.current = null;

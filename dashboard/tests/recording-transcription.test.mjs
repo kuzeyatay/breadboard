@@ -25,6 +25,7 @@ const source = (relativePath) => fs.readFileSync(new URL(relativePath, import.me
 const dictation = source("../src/app/components/speech-dictation-button.tsx");
 const uploadRoute = source("../src/app/api/speech/transcribe-upload/route.ts");
 const pipeline = source("../src/lib/speech/recording-transcription.ts");
+const mediaWorker = source("../scripts/runtime-v2-speech-media-executor.mjs");
 const selectionMenu = source("../src/app/components/chat-text-selection-ui.tsx");
 
 test("the picker offers recordings a phone or a laptop actually produces", () => {
@@ -197,13 +198,16 @@ test("long recordings are cut into parts the local model can chew", () => {
 
   // Mono 16 kHz PCM is what Whisper wants; -vn drops the picture so a video
   // costs no more than the audio inside it.
-  assert.match(pipeline, /"-vn"/);
-  assert.match(pipeline, /"-ac", "1"/);
-  assert.match(pipeline, /"-ar", "16000"/);
-  assert.match(pipeline, /"-f", "segment"/);
-  assert.match(pipeline, /"-segment_time", String\(RECORDING_SEGMENT_SECONDS\)/);
+  const recordingSegment = mediaWorker.match(
+    /case "recording-segments": \{[\s\S]*?case "video-source-inspect":/,
+  )?.[0] ?? "";
+  assert.match(recordingSegment, /"-vn"/);
+  assert.match(recordingSegment, /"-ac", "1"/);
+  assert.match(recordingSegment, /"-ar", "16000"/);
+  assert.match(recordingSegment, /"-f", "segment"/);
+  assert.match(recordingSegment, /"-segment_time", "300"/);
   // Segmenting needs no duration probe: the parts on disk are the count.
-  assert.doesNotMatch(pipeline, /ffprobe/);
+  assert.doesNotMatch(recordingSegment, /ffprobe/);
 
   // The upload is written through, never buffered whole.
   assert.match(pipeline, /createWriteStream/);

@@ -44,26 +44,52 @@
     "directory": "runtime-v2/manifests",
     "workerFile": "workers.json",
     "serviceFile": "services.json",
-    "workerManifestVersion": 1,
-    "serviceManifestVersion": 1,
+    "workerManifestVersion": 2,
+    "serviceManifestVersion": 4,
     "maximumFileBytes": 262144,
     "manifestAuthority": "runtimeRoot",
     "allowedExecutableAuthority": "runtimeRoot",
-    "allowedEntrypointAuthority": "appRoot",
     "sourceDirectory": "desktop/runtime-v2/manifests",
     "developmentStageDirectory": "desktop/build-resources/runtime-v2/manifests",
     "installedDirectory": "resources/runtime-v2/manifests",
     "requiredServiceIds": ["chatmock", "dashboard", "hermes"],
-    "requiredWorkerJobTypes": ["learn", "document-ingestion"],
+    "requiredWorkerJobTypes": ["learn", "document-ingestion", "quartz-publish"],
     "rejectMissingDefinitions": true,
     "rejectAbsoluteOrTraversingPaths": true,
     "ordinaryRequestsCannotSupplyDefinitions": true
+  },
+  "resourceAdmission": {
+    "signal": "windows-commit",
+    "sampledInsideSerializedDurableReservation": true,
+    "pendingEstimatesAreAdditive": true,
+    "reserveEqualityIsDenied": true,
+    "oneHeavyweightClassAtATime": true,
+    "packaged": {
+      "modes": ["packaged"],
+      "strategy": "fixed",
+      "reserveFloorMb": 8192,
+      "adaptiveProcessTreeGuard": false
+    },
+    "development": {
+      "modes": ["lean", "hot"],
+      "strategy": "max-floor-or-bounded-tenth-plus-guard",
+      "reserveFloorMb": 4096,
+      "commitLimitDivisor": 10,
+      "derivedReserveMinimumMb": 1536,
+      "derivedReserveMaximumMb": 8192,
+      "guardBandMb": 256,
+      "adaptiveProcessTreeGuard": true,
+      "guardPollIntervalMs": 25,
+      "manifestHardCeilingsRemain": true,
+      "onlyDashboardMayIncreaseLiveCeiling": true,
+      "onlyDashboardTerminatesAtGlobalReserve": true
+    }
   },
   "jobSubmission": {
     "method": "POST",
     "path": "/v1/jobs",
     "requiredFields": ["jobType", "idempotencyKey", "requestPayload"],
-    "optionalFields": ["gardenId", "conversationId"],
+    "optionalFields": ["gardenId", "conversationId", "inputUploads"],
     "forbiddenAuthorityFields": [
       "owner",
       "ownerPrincipal",
@@ -85,7 +111,119 @@
     "idempotencyKeyGrammar": "nonempty-unicode-without-control-characters",
     "maximumScopeIdBytes": 256,
     "requestPayload": "plain-finite-json-value",
-    "maximumJsonNodesBeforeSerialization": 100000
+    "maximumJsonNodesBeforeSerialization": 100000,
+    "inputUploads": {
+      "maximumCount": 16,
+      "itemFields": ["uploadId"],
+      "uniqueUploadIds": true,
+      "metadataAuthority": "runtime-upload-ledger",
+      "callerPathsForbidden": true
+    }
+  },
+  "jobInputUploads": {
+    "authority": "dashboard-server-bearer-and-job-authority-headers",
+    "maximumUploadBytes": 2147483648,
+    "aggregateQuota": {
+      "accounting": "all-upload-ledger-rows-with-cleanedAt-null-including-adopted",
+      "perOwnerMaximumCount": 16,
+      "perOwnerMaximumDeclaredBytes": 4294967296,
+      "globalMaximumCount": 256,
+      "globalMaximumDeclaredBytes": 17179869184,
+      "enforcement": "same-immediate-sqlite-transaction-as-reservation",
+      "errorCode": "JOB_INPUT_QUOTA_EXCEEDED"
+    },
+    "reservation": {
+      "method": "POST",
+      "path": "/v1/job-inputs",
+      "maximumBodyBytes": 16384,
+      "requestFields": ["gardenId", "conversationId", "displayName", "mediaType", "declaredSizeBytes"],
+      "responseFields": ["uploadId", "expiresAt", "maximumBytes"],
+      "expiresAt": "positive-future-json-safe-integer",
+      "denyUnknownFields": true
+    },
+    "stream": {
+      "method": "PUT",
+      "pathTemplate": "/v1/job-inputs/{uploadId}",
+      "contentType": "application/octet-stream",
+      "framing": "bounded-content-length-or-chunked",
+      "digestAuthority": "rust-stream-and-trusted-reopen",
+      "responseFields": ["type", "protocolVersion", "uploadId", "state", "sizeBytes", "sha256"],
+      "responseFixed": { "type": "runtime-job-input", "protocolVersion": 1, "state": "sealed" },
+      "denyUnknownResponseFields": true
+    },
+    "abandon": {
+      "method": "POST",
+      "pathTemplate": "/v1/job-inputs/{uploadId}/abandon",
+      "responseFields": ["ok"],
+      "okMustBeTrue": true,
+      "idempotent": true,
+      "denyUnknownResponseFields": true
+    },
+    "lifecycleStates": ["pending", "uploading", "sealed", "adopted", "abandoning", "abandoned", "expired", "cleanup_blocked"],
+    "adoptionPathTemplate": "runtime/jobs/{jobId}/inputs/{blobId}/payload",
+    "uploadIsNeverAJob": true
+  },
+  "jobLookup": {
+    "method": "POST",
+    "path": "/v1/jobs/lookup",
+    "maximumBodyBytes": 1024,
+    "requestFields": ["idempotencyKey"],
+    "authority": "dashboard-server-bearer-and-job-authority-headers",
+    "ownerAndScopesForbiddenInBody": true,
+    "response": "runtime-job-or-job-not-found",
+    "idempotencyKeyNeverReturned": true,
+    "denyUnknownFields": true
+  },
+  "jobIdempotencyCancellation": {
+    "method": "POST",
+    "path": "/v1/jobs/cancel-by-idempotency",
+    "maximumBodyBytes": 1024,
+    "requestFields": ["idempotencyKey"],
+    "authority": "dashboard-server-bearer-and-exact-job-authority-headers",
+    "ownerAndScopesForbiddenInBody": true,
+    "idempotencyKeyNeverReturned": true,
+    "tombstoneTtlMs": 86400000,
+    "aggregateQuota": {
+      "perOwnerMaximumCount": 128,
+      "globalMaximumCount": 4096,
+      "enforcement": "same-immediate-sqlite-transaction-as-cancellation",
+      "errorCode": "JOB_CANCELLATION_QUOTA_EXCEEDED"
+    },
+    "onlineCleanup": {
+      "maximumBatch": 64,
+      "periodicBatch": 8,
+      "touchesOnlyExpiredTombstones": true
+    },
+    "submissionRace": "active-tombstone-is-consumed-in-the-job-insert-transaction-and-job-is-never-admission-visible-before-terminal-cancelled",
+    "response": {
+      "type": "runtime-job-idempotency-cancellation",
+      "protocolVersion": 1,
+      "exactFields": ["type", "protocolVersion", "jobId", "state", "accepted"],
+      "pendingDisposition": { "jobId": null, "state": "pending", "accepted": true },
+      "acceptedJobStates": ["cancelling", "cancelled"],
+      "alreadyTerminalStates": ["succeeded", "failed", "resource_exhausted", "interrupted", "uncertain"],
+      "alreadyTerminalAccepted": false,
+      "denyUnknownFields": true
+    },
+    "denyUnknownFields": true
+  },
+  "learnRecoverySubmission": {
+    "method": "POST",
+    "path": "/v1/internal/jobs/learn-recovery",
+    "maximumBodyBytes": 1024,
+    "requestFields": ["idempotencyKey"],
+    "idempotencyKeyGrammar": "learn-recovery-v2-colon-decimal-generation",
+    "authority": "dashboard-server-bearer-only",
+    "authorityHeadersForbidden": ["x-breadboard-user-id", "x-breadboard-garden-id", "x-breadboard-conversation-id"],
+    "fixedInternalPrincipal": "internal:learn-recovery",
+    "fixedJobType": "learn",
+    "fixedScopes": { "gardenId": null, "conversationId": null },
+    "fixedRequestPayload": { "operation": "recovery" },
+    "fixedInputUploads": [],
+    "forbiddenBodyFields": ["jobType", "requestPayload", "inputUploads", "owner", "ownerPrincipal", "principal", "userId", "gardenId", "conversationId"],
+    "normalSubmissionAdmissionGateApplies": true,
+    "response": "runtime-job",
+    "denyUnknownFields": true
   },
   "jobAuthorityHeaders": {
     "required": ["x-breadboard-user-id"],
@@ -95,6 +233,55 @@
     "scopeGrammar": "visible-ascii-without-whitespace",
     "scopeValuesMustMatchSubmission": true,
     "neverRendererAccessible": true
+  },
+  "serviceLeaseControl": {
+    "authority": "dashboard-server-bearer-only",
+    "maximumBodyBytes": 8192,
+    "maximumReasonBytes": 256,
+    "reasonGrammar": "nonempty-unicode-without-control-characters",
+    "serviceIdentityAuthority": "authenticated-route-and-trusted-service-registry",
+    "leaseDurationAuthority": "trusted-service-registry",
+    "acquireDeadline": {
+      "method": "GET",
+      "pathTemplate": "/v1/services/{serviceId}/lease-contract",
+      "requestBody": "none",
+      "responseFields": ["protocolVersion", "serviceId", "acquireTimeoutMs"],
+      "responseBinding": "requested-service-id",
+      "startupTimeoutAuthority": "trusted-service-registry-readiness",
+      "maximumManifestStartupMs": 604800000,
+      "settlementGraceMs": 5000,
+      "responseGraceMs": 5000,
+      "dashboardTransportGraceMs": 5000,
+      "passive": true,
+      "denyUnknownFields": true
+    },
+    "acquire": {
+      "method": "POST",
+      "pathTemplate": "/v1/services/{serviceId}/lease",
+      "requestFields": ["reason"],
+      "forbiddenRequestFields": [
+        "serviceId",
+        "maximumLeaseMs",
+        "executable",
+        "args",
+        "cwd",
+        "env"
+      ],
+      "responseFields": ["ok", "leaseId", "serviceId"],
+      "okMustBeTrue": true,
+      "responseBinding": "requested-service-id",
+      "responseDeliveryFailure": "release-returned-lease-immediately",
+      "denyUnknownFields": true
+    },
+    "release": {
+      "method": "POST",
+      "pathTemplate": "/v1/leases/{leaseId}/release",
+      "requestFields": [],
+      "requestBody": "exact-empty-json-object",
+      "responseFields": ["ok", "released"],
+      "okMustBeTrue": true,
+      "denyUnknownFields": true
+    }
   },
   "jobStatus": {
     "type": "runtime-job",
@@ -143,6 +330,14 @@
       "nonNullValue": "Runtime job execution failed.",
       "rawWorkerOrDurableValuesNeverReturned": true
     },
+    "resourceExhaustion": {
+      "nullable": true,
+      "allowedOnlyForState": "resource_exhausted",
+      "fields": ["resource", "requiredHeadroomMb", "availableHeadroomMb", "retryable"],
+      "resource": "windows_commit",
+      "retryable": false,
+      "privateReasonAndPolicyLabelsForbidden": true
+    },
     "resourceClasses": [
       "core",
       "large-generation",
@@ -175,6 +370,7 @@
       "progressTotal",
       "failureCode",
       "failureMessage",
+      "resourceExhaustion",
       "cancellationRequested"
     ],
     "forbiddenFields": [
@@ -371,7 +567,12 @@
       "worker-ready": {
         "origin": "worker",
         "fence": "worker",
-        "payload": { "exactFields": ["state"], "fixed": { "state": "running" } }
+        "payload": {
+          "exactVariants": [
+            { "exactFields": ["state"], "fixed": { "state": "running" } },
+            { "exactFields": ["state"], "fixed": { "state": "cancelling" } }
+          ]
+        }
       },
       "worker-heartbeat": {
         "origin": "worker",
@@ -419,12 +620,17 @@
         "origin": "worker",
         "fence": "worker",
         "payload": {
-          "exactFields": ["state", "failureCode", "failureMessage"],
-          "fixed": {
-            "state": "failed",
-            "failureCode": "WORKER_FAILED",
-            "failureMessage": "Runtime job execution failed."
-          }
+          "exactVariants": [
+            {
+              "exactFields": ["state", "failureCode", "failureMessage"],
+              "fixed": {
+                "state": "failed",
+                "failureCode": "WORKER_FAILED",
+                "failureMessage": "Runtime job execution failed."
+              }
+            },
+            { "exactFields": ["state"], "fixed": { "state": "cancelling" } }
+          ]
         }
       },
       "worker-cancellation-acknowledged": {
@@ -471,8 +677,14 @@
         "origin": "runtime",
         "fence": "runtime-current",
         "payload": {
-          "exactFields": ["state"],
-          "fixed": { "state": "resource_exhausted" }
+          "exactVariants": [
+            { "exactFields": ["state"], "fixed": { "state": "resource_exhausted" } },
+            {
+              "exactFields": ["state", "resourceExhaustion"],
+              "fixed": { "state": "resource_exhausted" },
+              "resourceExhaustion": "jobStatus.resourceExhaustion"
+            }
+          ]
         }
       },
       "job-interrupted": {
@@ -493,7 +705,8 @@
       "progressTotal",
       "artifactKind",
       "failureCode",
-      "failureMessage"
+      "failureMessage",
+      "resourceExhaustion"
     ],
     "payloadForbiddenFields": [
       "identity",
@@ -532,6 +745,27 @@
     "pathTemplate": "/v1/jobs/{jobId}/cancel",
     "response": "runtime-job"
   },
+  "jobOutputs": {
+    "maximumContentBytes": 1048576,
+    "maximumSerializedResponseBytes": 1114112,
+    "checkpoint": {
+      "method": "GET",
+      "pathTemplate": "/v1/jobs/{jobId}/checkpoint"
+    },
+    "result": {
+      "method": "GET",
+      "pathTemplate": "/v1/jobs/{jobId}/result"
+    },
+    "response": {
+      "type": "runtime-job-output",
+      "protocolVersion": 1,
+      "exactFields": ["type", "protocolVersion", "jobId", "kind", "content"],
+      "kindValues": ["checkpoint", "result"],
+      "content": "plain-finite-json-value",
+      "bindings": ["requestedJobId", "requestedKind"],
+      "denyUnknownFields": true
+    }
+  },
   "errorResponse": {
     "type": "runtime-error",
     "codes": [
@@ -539,6 +773,14 @@
       "JOB_SCOPE_FORBIDDEN",
       "JOB_NOT_FOUND",
       "JOB_CONFLICT",
+      "JOB_OUTPUT_NOT_READY",
+      "JOB_INPUT_TOO_LARGE",
+      "JOB_INPUT_QUOTA_EXCEEDED",
+      "JOB_CANCELLATION_QUOTA_EXCEEDED",
+      "JOB_CANCELLED_BEFORE_SUBMISSION",
+      "INVALID_SERVICE_REQUEST",
+      "SERVICE_NOT_FOUND",
+      "SERVICE_LEASE_CONFLICT",
       "BREADBOARD_RESOURCE_EXHAUSTED",
       "RUNTIME_UNAVAILABLE",
       "RUNTIME_INTERNAL_ERROR"
@@ -591,6 +833,7 @@
       "id",
       "displayName",
       "required",
+      "startupPolicy",
       "state",
       "lastError",
       "restarts",
@@ -606,6 +849,7 @@
       "failed",
       "stopping"
     ],
+    "startupPolicies": ["eager", "on-demand", "scheduled", "external"],
     "maximumRecords": 256,
     "maximumIdBytes": 128,
     "maximumDisplayNameBytes": 256,
@@ -621,14 +865,84 @@
     "maximumTokenBytes": 1024,
     "maximumResponseBytes": 65536,
     "maximumJsonSafeInteger": 9007199254740991,
+    "maximumActiveConnections": 40,
+    "maximumActiveDashboardConnections": 32,
+    "maximumDashboardJobConnections": 16,
+    "maximumDashboardServiceConnections": 8,
+    "minimumCrossRealmDashboardReserve": 8,
+    "minimumLifecycleConnectionReserve": 8,
+    "requestPreludeDeadlineMs": 2000,
+    "developmentRequestPreludeDeadlineMs": 60000,
+    "requestReadDeadlineMs": 2000,
+    "responseWriteDeadlineMs": 2000,
+    "responseDeadlineStartsAfterHandler": true,
+    "overloadBehavior": "authenticated-dashboard-503-with-lifecycle-handler-reserve",
+    "authorityRoles": {
+      "lifecycle": ["status", "shutdown"],
+      "dashboard": [
+        "status",
+        "submitJob",
+        "lookupJob",
+        "cancelJobByIdempotencyKey",
+        "submitLearnRecovery",
+        "inspectJob",
+        "replayJobEvents",
+        "cancelJob",
+        "reserveJobInput",
+        "uploadJobInput",
+        "abandonJobInput",
+        "readJobCheckpoint",
+        "readJobResult",
+        "readServiceLeaseContract",
+        "acquireServiceLease",
+        "releaseLease"
+      ],
+      "bearersMustBeDistinct": true,
+      "unclassifiedRoutes": "deny"
+    },
     "status": { "method": "GET", "path": "/v1/status" },
     "submitJob": { "method": "POST", "path": "/v1/jobs" },
+    "lookupJob": { "method": "POST", "path": "/v1/jobs/lookup" },
+    "cancelJobByIdempotencyKey": {
+      "method": "POST",
+      "path": "/v1/jobs/cancel-by-idempotency"
+    },
+    "submitLearnRecovery": {
+      "method": "POST",
+      "path": "/v1/internal/jobs/learn-recovery"
+    },
     "inspectJob": { "method": "GET", "pathTemplate": "/v1/jobs/{jobId}" },
     "replayJobEvents": {
       "method": "GET",
       "pathTemplate": "/v1/jobs/{jobId}/events?after={sequence}&limit={limit}"
     },
     "cancelJob": { "method": "POST", "pathTemplate": "/v1/jobs/{jobId}/cancel" },
+    "reserveJobInput": { "method": "POST", "path": "/v1/job-inputs" },
+    "uploadJobInput": { "method": "PUT", "pathTemplate": "/v1/job-inputs/{uploadId}" },
+    "abandonJobInput": {
+      "method": "POST",
+      "pathTemplate": "/v1/job-inputs/{uploadId}/abandon"
+    },
+    "readJobCheckpoint": {
+      "method": "GET",
+      "pathTemplate": "/v1/jobs/{jobId}/checkpoint"
+    },
+    "readJobResult": {
+      "method": "GET",
+      "pathTemplate": "/v1/jobs/{jobId}/result"
+    },
+    "readServiceLeaseContract": {
+      "method": "GET",
+      "pathTemplate": "/v1/services/{serviceId}/lease-contract"
+    },
+    "acquireServiceLease": {
+      "method": "POST",
+      "pathTemplate": "/v1/services/{serviceId}/lease"
+    },
+    "releaseLease": {
+      "method": "POST",
+      "pathTemplate": "/v1/leases/{leaseId}/release"
+    },
     "shutdown": { "method": "POST", "path": "/v1/shutdown" },
     "shutdownResponse": { "ok": true }
   }

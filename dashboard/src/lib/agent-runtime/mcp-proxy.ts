@@ -1,19 +1,26 @@
 import crypto from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import {
-  StdioClientTransport,
-  getDefaultEnvironment,
-} from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { RuntimeMcpConfig } from "../hermes/mcp-connections.ts";
+import {
+  getMcpConnectionBySlug,
+  runtimeMcpConfig,
+  type RuntimeMcpConfig,
+} from "../hermes/mcp-connections.ts";
 import type {
   RuntimeCapabilities,
   RuntimeMcpStatus,
 } from "./contracts.ts";
+import {
+  addLocalMcpBrokerConnection,
+  callLocalMcpBrokerTool,
+  disconnectLocalMcpBrokerConnection,
+  LocalMcpBrokerError,
+  type LocalMcpBrokerTool,
+} from "./local-mcp-broker.ts";
 
-interface ProxyTool {
+interface ProxyTool extends LocalMcpBrokerTool {
   name: string;
   description?: string;
   inputSchema: {
@@ -29,6 +36,12 @@ interface ProxyTool {
   };
 }
 
+interface LocalProxyConnection {
+  userId: number;
+  slug: string;
+  tools: ProxyTool[];
+}
+
 interface ProxyConnection {
   userId: number;
   slug: string;
@@ -40,6 +53,7 @@ interface ProxyConnection {
 }
 
 const connections = new Map<string, ProxyConnection>();
+const localConnections = new Map<string, LocalProxyConnection>();
 const statuses = new Map<string, RuntimeMcpStatus>();
 const MAX_SAFE_RESULT_BYTES = 1024 * 1024;
 
@@ -75,6 +89,9 @@ function configSignature(config: RuntimeMcpConfig): string {
 }
 
 function safeErrorStatus(error: unknown): RuntimeMcpStatus {
+  if (error instanceof LocalMcpBrokerError && error.code === "BREADBOARD_RESOURCE_EXHAUSTED") {
+    return { status: "failed", error: error.message };
+  }
   const message = error instanceof Error ? error.message : "";
   if (/unauthori[sz]ed|oauth|authentication|required.*auth/i.test(message)) {
     return { status: "needs_auth" };
@@ -91,23 +108,9 @@ function remoteHeaders(config: Extract<RuntimeMcpConfig, { type: "remote" }>) {
     : undefined;
 }
 
-function createTransport(config: RuntimeMcpConfig): Transport {
-  if (config.type === "local") {
-    const [command, ...args] = config.command;
-    if (!command) throw new Error("The MCP executable is missing.");
-    return new StdioClientTransport({
-      command,
-      args,
-      cwd: config.cwd,
-      env: {
-        ...getDefaultEnvironment(),
-        ...(config.environment ?? {}),
-      },
-      // Never inherit an MCP server's stderr into Breadboard logs, where it
-      // could print credentials or provider configuration.
-      stderr: "ignore",
-    });
-  }
+function createTransport(
+  config: Extract<RuntimeMcpConfig, { type: "remote" }>,
+): Transport {
   const url = new URL(config.url);
   return new StreamableHTTPClientTransport(url, {
     requestInit: remoteHeaders(config),
@@ -130,7 +133,7 @@ async function closeConnection(connection: ProxyConnection | undefined) {
 async function connect(
   userId: number,
   slug: string,
-  config: RuntimeMcpConfig,
+  config: Extract<RuntimeMcpConfig, { type: "remote" }>,
 ): Promise<ProxyConnection> {
   const connectionKey = key(userId, slug);
   const signature = configSignature(config);
@@ -145,11 +148,10 @@ async function connect(
   const primary = createTransport(config);
   try {
     await client.connect(primary, { timeout: config.timeout });
-  } catch (primaryError) {
+  } catch {
     await client.close().catch(() => undefined);
     // Some existing remote connections still expose the legacy SSE transport.
-    // Retry it only after Streamable HTTP fails; local transports never retry.
-    if (config.type !== "remote") throw primaryError;
+    // Retry it only after Streamable HTTP fails.
     const legacyClient = new Client(
       { name: "breadboard-mcp-proxy", version: "1.0.0" },
       { capabilities: {} },
@@ -202,10 +204,32 @@ export async function addProxyMcpConnection(
   const connectionKey = key(userId, slug);
   if (!config?.enabled) {
     await closeConnection(connections.get(connectionKey));
+    localConnections.delete(connectionKey);
+    await disconnectLocalMcpBrokerConnection({ userId, slug });
     statuses.set(connectionKey, { status: "disabled" });
     return { [slug]: { status: "disabled" } };
   }
   try {
+    if (config.type === "local") {
+      await closeConnection(connections.get(connectionKey));
+      const loaded = await addLocalMcpBrokerConnection({
+        userId,
+        slug,
+        config,
+      });
+      statuses.set(connectionKey, loaded.status);
+      if (loaded.status.status === "connected") {
+        localConnections.set(connectionKey, {
+          userId,
+          slug,
+          tools: loaded.tools as ProxyTool[],
+        });
+      } else {
+        localConnections.delete(connectionKey);
+      }
+      return { [slug]: loaded.status };
+    }
+    localConnections.delete(connectionKey);
     await connect(userId, slug, config);
   } catch (error) {
     const status = safeErrorStatus(error);
@@ -224,12 +248,14 @@ export async function setProxyMcpConnectionConnected(
   const connectionKey = key(userId, slug);
   if (!connected) {
     await closeConnection(connections.get(connectionKey));
+    localConnections.delete(connectionKey);
+    await disconnectLocalMcpBrokerConnection({ userId, slug });
     statuses.set(connectionKey, { status: "disabled" });
     return true;
   }
   // Reconnection requires the server-owned stored configuration. Callers sync
   // it through addProxyMcpConnection immediately after toggling.
-  return connections.has(connectionKey);
+  return connections.has(connectionKey) || localConnections.has(connectionKey);
 }
 
 export function proxyMcpDiscovery(userId: number): RuntimeCapabilities {
@@ -239,7 +265,7 @@ export function proxyMcpDiscovery(userId: number): RuntimeCapabilities {
     if (!connectionKey.startsWith(`${userId}:`)) continue;
     const slug = connectionKey.slice(connectionKey.indexOf(":") + 1);
     mcp[slug] = status;
-    const connection = connections.get(connectionKey);
+    const connection = connections.get(connectionKey) ?? localConnections.get(connectionKey);
     if (connection && status.status === "connected") {
       tools.push(
         ...connection.tools.map((tool) => `${slug}_${tool.name}`),
@@ -250,27 +276,54 @@ export function proxyMcpDiscovery(userId: number): RuntimeCapabilities {
 }
 
 export function proxyMcpTools(userId: number, slug: string): ProxyTool[] {
-  return [...(connections.get(key(userId, safeSlug(slug)))?.tools ?? [])];
+  const connectionKey = key(userId, safeSlug(slug));
+  return [...(
+    connections.get(connectionKey)?.tools ??
+    localConnections.get(connectionKey)?.tools ??
+    []
+  )];
 }
+
+export { LocalMcpBrokerError } from "./local-mcp-broker.ts";
 
 export async function callProxyMcpTool(input: {
   userId: number;
   slug: string;
   tool: string;
   args: Record<string, unknown>;
+  signal?: AbortSignal;
 }): Promise<unknown> {
   const slug = safeSlug(input.slug);
   if (!/^[A-Za-z0-9_.:/-]{1,200}$/.test(input.tool)) {
     throw new Error("The MCP tool name is invalid.");
   }
-  const connection = connections.get(key(input.userId, slug));
+  const connectionKey = key(input.userId, slug);
+  const local = localConnections.get(connectionKey);
+  if (local) {
+    const declared = local.tools.find((tool) => tool.name === input.tool);
+    if (!declared) throw new Error("The MCP tool is not available.");
+    const stored = getMcpConnectionBySlug(input.userId, slug);
+    const config = stored ? runtimeMcpConfig(stored) : null;
+    if (!config || config.type !== "local" || !config.enabled) {
+      throw new Error("The MCP connection is not connected.");
+    }
+    return callLocalMcpBrokerTool({
+      userId: input.userId,
+      slug,
+      config,
+      tool: declared.name,
+      args: input.args,
+      signal: input.signal,
+    });
+  }
+  const connection = connections.get(connectionKey);
   if (!connection) throw new Error("The MCP connection is not connected.");
   const declared = connection.tools.find((tool) => tool.name === input.tool);
   if (!declared) throw new Error("The MCP tool is not available.");
   const result = await connection.client.callTool(
     { name: declared.name, arguments: input.args },
     undefined,
-    { timeout: connection.timeoutMs },
+    { timeout: connection.timeoutMs, signal: input.signal },
   );
   const serialized = JSON.stringify(result);
   if (Buffer.byteLength(serialized, "utf8") > MAX_SAFE_RESULT_BYTES) {
@@ -284,4 +337,15 @@ export async function disposeProxyMcpConnections(userId?: number) {
     (connection) => userId === undefined || connection.userId === userId,
   );
   await Promise.all(selected.map(closeConnection));
+  const selectedLocal = [...localConnections.values()].filter(
+    (connection) => userId === undefined || connection.userId === userId,
+  );
+  for (const connection of selectedLocal) {
+    localConnections.delete(key(connection.userId, connection.slug));
+  }
+  await Promise.all(selectedLocal.map((connection) =>
+    disconnectLocalMcpBrokerConnection({
+      userId: connection.userId,
+      slug: connection.slug,
+    })));
 }

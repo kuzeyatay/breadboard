@@ -94,6 +94,7 @@ export async function retrieveDocumentAttachments(
   attachments: readonly ChatAttachment[],
   query: string,
   env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
 ): Promise<ChatAttachment[]> {
   if (colpaliMode(env) === "disabled") return [...attachments];
   if (!query.trim()) return [...attachments];
@@ -128,7 +129,7 @@ export async function retrieveDocumentAttachments(
       continue;
     }
 
-    const found = await colpaliSearch(attachment.blobId, query, env, topK);
+    const found = await colpaliSearch(attachment.blobId, query, env, topK, signal);
     if (!found.ok || found.pages.length === 0) {
       rewritten.push(attachment);
       continue;

@@ -2,10 +2,266 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Readable, Writable } from "node:stream";
+import { MAX_RUNTIME_STARTUP_TIMEOUT_MS } from "./runtime-startup-timeout";
 
 export const RUNTIME_PROTOCOL_VERSION = 1 as const;
 export const RUNTIME_EXECUTABLE_NAME = "breadboard-runtime.exe";
 export const MAX_RUNTIME_PROTOCOL_LINE_BYTES = 64 * 1024;
+
+/**
+ * The only product settings Electron may forward into the native Runtime.
+ * Keep this byte-for-byte vocabulary aligned with
+ * `OPTIONAL_ELECTRON_GATED_PRODUCT_ENVIRONMENT_NAMES` in
+ * `native/runtime-core/src/service_environment.rs`. Native then narrows each
+ * value again to the one trusted service/worker profile that consumes it.
+ */
+export const RUNTIME_PRODUCT_ENVIRONMENT_NAMES = [
+  "CHATMOCK_MODEL",
+  "SKILLS_CATALOG_DB",
+  "SKILLS_CATALOG_SYNC_INTERVAL_MINUTES",
+  "BREADBOARD_CALDAV_SYNC_INTERVAL_MS",
+  "BREADBOARD_EMAIL_DISABLED",
+  "BREADBOARD_EMAIL_CREDENTIALS_FILE",
+  "BREADBOARD_EMAIL_POLL_MS",
+  "BREADBOARD_EMAIL_TURN_TIMEOUT_MS",
+  "BREADBOARD_EMAIL_NEW_THREAD_MS",
+  "BREADBOARD_TELEGRAM_ENABLED",
+  "BREADBOARD_TELEGRAM_API_BASE",
+  "BREADBOARD_TELEGRAM_TOKEN_FILE",
+  "BREADBOARD_TELEGRAM_BOT_TOKEN",
+  "BREADBOARD_TELEGRAM_NEW_CHAT_AFTER_MINUTES",
+  "BREADBOARD_WHATSAPP_ENABLED",
+  "BREADBOARD_WHATSAPP_BRIDGE_DIR",
+  "BREADBOARD_WHATSAPP_SESSION_DIR",
+  "BREADBOARD_WHATSAPP_BRIDGE_PORT",
+  "BREADBOARD_WHATSAPP_NODE",
+  "BREADBOARD_WHATSAPP_REPLY_PREFIX",
+  "BREADBOARD_WHATSAPP_NEW_CHAT_AFTER_MINUTES",
+  "HERMES_APP_DIR",
+  "BREADBOARD_IFIXAI_MODE",
+  "BREADBOARD_IFIXAI_PYTHON",
+  "BREADBOARD_IFIXAI_ENDPOINT",
+  "BREADBOARD_IFIXAI_SUITE",
+  "BREADBOARD_IFIXAI_SUT_MODEL",
+  "BREADBOARD_IFIXAI_JUDGE_MODEL",
+  "BREADBOARD_IFIXAI_REPAIR_MODEL",
+  "BREADBOARD_IFIXAI_SEED",
+  "BREADBOARD_IFIXAI_INTERVAL_HOURS",
+  "BREADBOARD_IFIXAI_STARTUP_DELAY_SECONDS",
+  "BREADBOARD_IFIXAI_TIMEOUT_MINUTES",
+  "BREADBOARD_IFIXAI_JUDGE_MAX_CALLS",
+  "BREADBOARD_IFIXAI_MAX_ATTEMPTS",
+  "BREADBOARD_IFIXAI_MINIMUM_IMPROVEMENT",
+  "BREADBOARD_IFIXAI_MAXIMUM_CATEGORY_REGRESSION",
+  "VLM_OCR_ENABLED",
+  "VLM_OCR_BASE_URL",
+  "VLM_OCR_API_KEY",
+  "VLM_OCR_MODEL",
+  "VLM_OCR_AUTO_START",
+  "VLM_OCR_SERVER_BINARY",
+  "VLM_OCR_HF_REPO",
+  "VLM_OCR_MODEL_PATH",
+  "VLM_OCR_MMPROJ_PATH",
+  "VLM_OCR_GPU_LAYERS",
+  "VLM_OCR_CONTEXT_SIZE",
+  "VLM_OCR_STARTUP_TIMEOUT_MS",
+  "VLM_OCR_REQUEST_TIMEOUT_MS",
+  "VLM_OCR_MAX_TOKENS",
+  "VLM_OCR_TEMPERATURE",
+  "VLM_OCR_TOP_P",
+  "VLM_OCR_TOP_K",
+  "VLM_OCR_REPEAT_PENALTY",
+  "VLM_OCR_PAGE_IMAGE_WIDTH",
+  "VLM_OCR_MAX_PAGES",
+  "VLM_OCR_CONCURRENCY",
+  "BREADBOARD_EMBEDDING_BASE_URL",
+  "BREADBOARD_EMBEDDING_API_KEY",
+  "BREADBOARD_EMBEDDING_MODEL",
+  "BREADBOARD_EMBEDDING_DIMENSIONS",
+  "BREADBOARD_EMBEDDINGS",
+  "BREADBOARD_AGENT_MEMORY",
+  "BREADBOARD_AGENT_MEMORY_AGENTS",
+  "BREADBOARD_MEM0",
+  "BREADBOARD_MEM0_EXTRACTION",
+  "BREADBOARD_MEM0_LLM_MODEL",
+  "BREADBOARD_GOOGLE_IMAGES_API_KEY",
+  "BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID",
+  "BREADBOARD_GRAFT_CLI",
+  "BREADBOARD_GIT_BIN",
+  "RUFLO_CLAUDE_MODEL",
+  "RUFLO_DANGEROUSLY_SKIP_PERMISSIONS",
+  "BREADBOARD_VISUAL_BROWSER_PATH",
+  "BREADBOARD_SPOTIFY_BROWSER_PATH",
+  "BREADBOARD_SOLIDWORKS_EXE",
+  "BREADBOARD_SOLIDWORKS_VERSION",
+  "AGENT_BROWSER_EXECUTABLE_PATH",
+  "SF3D_DEVICE",
+  "SF3D_PRETRAINED_MODEL",
+  "SF3D_TIMEOUT_MS",
+  "UV_PATH",
+  "SUBSAI_DEVICE",
+  "SUBSAI_COMPUTE_TYPE",
+  "SCRIBERR_API_TOKEN",
+  "SCRIBERR_REQUEST_TIMEOUT_MS",
+  "SCRIBERR_TRANSCRIPTION_TIMEOUT_MS",
+  "SCRIBERR_POLL_INTERVAL_MS",
+  "SCRIBERR_MODEL_FAMILY",
+  "SCRIBERR_MODEL",
+  "SCRIBERR_LANGUAGE",
+  "SCRIBERR_DIARIZATION",
+  "VIDEO_TRANSCRIPTION_DELETE_SCRIBERR_JOBS",
+  "VIDEO_TRANSCRIPTION_KEEP_MEDIA",
+  "VIDEO_TRANSCRIPTION_MAX_UPLOAD_MB",
+  "VIDEO_TRANSCRIPTION_MAX_DURATION_SECONDS",
+  "VIDEO_TRANSCRIPTION_TEMP_RETENTION_HOURS",
+  "YTDLP_DOWNLOAD_TIMEOUT_MS",
+  "VIDEO_TRANSCRIPTION_MAX_QUEUED_PER_GARDEN",
+  "QUARTZ_AUTO_PUBLISH",
+  "QUARTZ_PUBLISH_MODE",
+  "QUARTZ_BUILD_CONCURRENCY",
+  "QUARTZ_BUILD_TIMEOUT_MS",
+  "GET_DOC_CONTACT_EMAIL",
+  "OPENALEX_MAILTO",
+  "UNPAYWALL_EMAIL",
+  "CORE_API_KEY",
+  "HUGGINGFACE_TOKEN",
+  "HF_TOKEN",
+  "HUGGING_FACE_HUB_TOKEN",
+  "CUDA_VISIBLE_DEVICES",
+  "CUDA_PATH",
+  "CUDA_HOME",
+  "CUDA_INCLUDE",
+  "CUDA_LIB",
+  "OMP_NUM_THREADS",
+  "HF_HUB_OFFLINE",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  "LANG",
+  "LC_ALL",
+  "FONTCONFIG_FILE",
+  "FONTCONFIG_PATH",
+  "FAL_KEY",
+  "FAL_AI_API_KEY",
+  "REPLICATE_API_TOKEN",
+  "HIGGSFIELD_API_KEY",
+  "HIGGSFIELD_API_SECRET",
+  "KLING_API_KEY",
+  "KLING_API_BASE_URL",
+  "GOOGLE_API_KEY",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+  "ELEVENLABS_API_KEY",
+  "OPENAI_API_KEY",
+  "XAI_API_KEY",
+  "DOUBAO_SPEECH_API_KEY",
+  "DOUBAO_SPEECH_VOICE_TYPE",
+  "DASHSCOPE_API_KEY",
+  "SUNO_API_KEY",
+  "HEYGEN_API_KEY",
+  "RUNWAY_API_KEY",
+  "VOLC_ACCESSKEY",
+  "VOLC_SECRETKEY",
+  "VIDEO_GEN_LOCAL_ENABLED",
+  "VIDEO_GEN_LOCAL_MODEL",
+  "MODAL_LTX2_ENDPOINT_URL",
+  "PEXELS_API_KEY",
+  "PIXABAY_API_KEY",
+  "UNSPLASH_ACCESS_KEY",
+  "AZURE_SPEECH_KEY",
+  "AZURE_SPEECH_REGION",
+  "VIMAX_IMAGE_MODEL",
+  "VOX_DIRECTOR_MUSIC_DIR",
+  "SHORTS_WHISPER_DEVICE",
+  "INTERACTIVE_VISUALIZER_ENABLED",
+  "INTERACTIVE_VISUALIZER_BROWSER_TESTS",
+  "INTERACTIVE_VISUALIZER_THREE_ENABLED",
+  "INTERACTIVE_VISUALIZER_MAX_ATTEMPTS",
+  "INTERACTIVE_VISUALIZER_MAX_SOURCE_BYTES",
+  "INTERACTIVE_VISUALIZER_MAX_BUNDLE_BYTES",
+  "INTERACTIVE_VISUALIZER_MAX_ARTIFACT_BYTES",
+  "INTERACTIVE_VISUALIZER_BROWSER_TIMEOUT_MS",
+  "INTERACTIVE_VISUALIZER_MAX_THREE_OBJECTS",
+  "INTERACTIVE_VISUALIZER_MAX_VERTICES",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "DOCKER_CLI_PATH",
+  "PODMAN_CLI_PATH",
+  "DOCKER_DESKTOP_PATH",
+  "DOCKER_HOST",
+  "DOCKER_CONTEXT",
+  "DOCKER_CONFIG",
+  "MANIM_DOCKER_IMAGE",
+  "MANIM_TIMEOUT_MS",
+  "POSTIZ_IDLE_TIMEOUT_MS",
+  "POSTIZ_IDLE_CHECK_MS",
+  "SOCIALS_MANAGER_READY_TIMEOUT_MS",
+  "INBOX_ZERO_GOOGLE_CLIENT_ID",
+  "INBOX_ZERO_GOOGLE_CLIENT_SECRET",
+  "INBOX_ZERO_MICROSOFT_CLIENT_ID",
+  "INBOX_ZERO_MICROSOFT_CLIENT_SECRET",
+  "X_API_KEY",
+  "X_API_SECRET",
+  "X_URL",
+  "LINKEDIN_CLIENT_ID",
+  "LINKEDIN_CLIENT_SECRET",
+  "REDDIT_CLIENT_ID",
+  "REDDIT_CLIENT_SECRET",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "THREADS_APP_ID",
+  "THREADS_APP_SECRET",
+  "FACEBOOK_APP_ID",
+  "FACEBOOK_APP_SECRET",
+  "INSTAGRAM_APP_ID",
+  "INSTAGRAM_APP_SECRET",
+  "YOUTUBE_CLIENT_ID",
+  "YOUTUBE_CLIENT_SECRET",
+  "GOOGLE_GMB_CLIENT_ID",
+  "GOOGLE_GMB_CLIENT_SECRET",
+  "TIKTOK_CLIENT_ID",
+  "TIKTOK_CLIENT_SECRET",
+  "PINTEREST_CLIENT_ID",
+  "PINTEREST_CLIENT_SECRET",
+  "DRIBBBLE_CLIENT_ID",
+  "DRIBBBLE_CLIENT_SECRET",
+  "TUMBLR_CLIENT_ID",
+  "TUMBLR_CLIENT_SECRET",
+  "DISCORD_CLIENT_ID",
+  "DISCORD_CLIENT_SECRET",
+  "DISCORD_BOT_TOKEN_ID",
+  "SLACK_ID",
+  "SLACK_SECRET",
+  "SLACK_SIGNING_SECRET",
+  "KICK_CLIENT_ID",
+  "KICK_SECRET",
+  "TWITCH_CLIENT_ID",
+  "TWITCH_CLIENT_SECRET",
+  "WHOP_CLIENT_ID",
+  "VK_ID",
+  "MEWE_APP_ID",
+  "MEWE_API_KEY",
+  "MEWE_HOST",
+  "NEYNAR_CLIENT_ID",
+  "NEYNAR_SECRET_KEY",
+  "TELEGRAM_BOT_NAME",
+  "TELEGRAM_TOKEN",
+  "BREADBOARD_POSTIZ_POSTIZ_MEMORY_MB",
+  "BREADBOARD_POSTIZ_POSTIZ_POSTGRES_MEMORY_MB",
+  "BREADBOARD_POSTIZ_POSTIZ_REDIS_MEMORY_MB",
+  "BREADBOARD_POSTIZ_SPOTLIGHT_MEMORY_MB",
+  "BREADBOARD_POSTIZ_TEMPORAL_ELASTICSEARCH_MEMORY_MB",
+  "BREADBOARD_POSTIZ_TEMPORAL_POSTGRESQL_MEMORY_MB",
+  "BREADBOARD_POSTIZ_TEMPORAL_MEMORY_MB",
+  "BREADBOARD_POSTIZ_TEMPORAL_ADMIN_TOOLS_MEMORY_MB",
+  "BREADBOARD_POSTIZ_TEMPORAL_UI_MEMORY_MB",
+  "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
+] as const;
 
 const MAX_RUNTIME_SERVICES = 256;
 const MAX_SERVICE_ID_BYTES = 128;
@@ -30,6 +286,13 @@ const RUNTIME_SERVICE_STATES = new Set<RuntimeServiceState>([
   "stopping",
 ]);
 
+const RUNTIME_SERVICE_STARTUP_POLICIES = new Set<RuntimeServiceStartupPolicy>([
+  "eager",
+  "on-demand",
+  "scheduled",
+  "external",
+]);
+
 export type RuntimeLaunchMode = "lean" | "hot" | "packaged";
 
 export type RuntimeServiceState =
@@ -42,10 +305,17 @@ export type RuntimeServiceState =
   | "failed"
   | "stopping";
 
+export type RuntimeServiceStartupPolicy =
+  | "eager"
+  | "on-demand"
+  | "scheduled"
+  | "external";
+
 export interface RuntimeServiceStatus {
   readonly id: string;
   readonly displayName: string;
   readonly required: boolean;
+  readonly startupPolicy: RuntimeServiceStartupPolicy;
   readonly state: RuntimeServiceState;
   readonly lastError: string | null;
   readonly restarts: number;
@@ -73,6 +343,14 @@ export interface RuntimeStatusSnapshot {
   readonly runtimePid: number;
   readonly acceptingWork: boolean;
   readonly services: readonly RuntimeServiceStatus[];
+}
+
+export interface RuntimeServiceRetryResult {
+  readonly protocolVersion: typeof RUNTIME_PROTOCOL_VERSION;
+  readonly ok: true;
+  readonly serviceId: string;
+  readonly accepted: boolean;
+  readonly state: RuntimeServiceState;
 }
 
 export type RuntimeProcessState =
@@ -249,7 +527,12 @@ export class RuntimeProcess {
       configRoot: normalizeAbsolutePath(options.bootstrap.configRoot, "configRoot"),
     });
     this.#timeouts = Object.freeze({
-      startup: validateTimeout(options.startupTimeoutMs, 15_000, "startupTimeoutMs"),
+      startup: validateTimeout(
+        options.startupTimeoutMs,
+        15_000,
+        "startupTimeoutMs",
+        MAX_RUNTIME_STARTUP_TIMEOUT_MS,
+      ),
       controlRequest: validateTimeout(
         options.controlRequestTimeoutMs,
         2_000,
@@ -378,7 +661,10 @@ export class RuntimeProcess {
       return this.#readySnapshot;
     } catch (error) {
       readyReader?.cancel();
-      if (this.#state !== "stopping" && this.#state !== "stopped") {
+      // `stop()` may run while `start()` is awaiting bootstrap/readiness. Keep
+      // that asynchronous transition visible to TypeScript through a helper;
+      // local control-flow narrowing cannot observe mutation from another task.
+      if (!runtimeShutdownStarted(this.#state)) {
         this.#state = "failed";
       }
       this.#clearControlAuthority();
@@ -396,7 +682,25 @@ export class RuntimeProcess {
   async status(): Promise<RuntimeStatusSnapshot> {
     this.#requireReady("read status");
     const redactionToken = this.#controlToken as string;
-    const value = await this.#controlJson("/v1/status", "GET");
+    let value: unknown;
+    try {
+      value = await this.#controlJson("/v1/status", "GET");
+    } catch (error) {
+      // The private listener is bound before the ready record is published,
+      // but a cold Hot compiler can temporarily starve the Electron fetch and
+      // native connection-handler threads at that exact handoff. Status is a
+      // passive read, so permit one bounded second read only while the same
+      // fixed runtime root is still observed ready. Mutations, rejected HTTP
+      // responses, protocol faults, and process exits are never retried.
+      if (
+        !(error instanceof RuntimeProcessError) ||
+        error.code !== "CONTROL_UNAVAILABLE" ||
+        this.#state !== "ready"
+      ) {
+        throw error;
+      }
+      value = await this.#controlJson("/v1/status", "GET");
+    }
     const status = parseStatusRecord(value, this.#runtimePid as number, redactionToken);
     if (this.#state !== "ready") {
       throw new RuntimeProcessError(
@@ -406,6 +710,27 @@ export class RuntimeProcess {
     }
     this.#statusSnapshot = status;
     return status;
+  }
+
+  /** Retries one exact manifest service through lifecycle-only authority. */
+  async retryService(serviceId: string): Promise<RuntimeServiceRetryResult> {
+    this.#requireReady("retry service");
+    if (
+      Buffer.byteLength(serviceId, "utf8") > MAX_SERVICE_ID_BYTES ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(serviceId)
+    ) {
+      throw new RuntimeProcessError(
+        "INVALID_CONFIGURATION",
+        "Runtime V2 service retry id is invalid.",
+      );
+    }
+    const value = await this.#controlJson(
+      `/v1/lifecycle/services/${serviceId}/retry`,
+      "POST",
+      false,
+      {},
+    );
+    return parseServiceRetryResult(value, serviceId);
   }
 
   /**
@@ -424,6 +749,26 @@ export class RuntimeProcess {
   stop(): Promise<RuntimeStopResult> {
     if (!this.#stopPromise) this.#stopPromise = this.#stopOnce();
     return this.#stopPromise;
+  }
+
+  /**
+   * Last-resort synchronous exit path for Electron fatal handlers.
+   *
+   * Only the already-launched fixed Runtime V2 root can be signalled here.
+   * Runtime V2 owns its descendants in one kill-on-close process tree, so this
+   * deliberately does not enumerate, adopt, or directly terminate services.
+   */
+  terminateNow(): void {
+    if (this.#state === "idle") {
+      this.#state = "stopped";
+      return;
+    }
+    if (this.#state === "stopped" || this.#exitSettled) {
+      this.#closePrivateStdin();
+      return;
+    }
+    this.#state = "stopping";
+    this.#forceTerminate();
   }
 
   async #requestShutdown(): Promise<void> {
@@ -509,9 +854,10 @@ export class RuntimeProcess {
   }
 
   async #controlJson(
-    endpoint: "/v1/status" | "/v1/shutdown",
+    endpoint: string,
     method: "GET" | "POST",
     allowStopping = false,
+    body?: Record<string, never>,
   ): Promise<unknown> {
     if (!allowStopping) this.#requireReady(`${method} ${endpoint}`);
     const baseUrl = this.#controlBaseUrl;
@@ -534,7 +880,9 @@ export class RuntimeProcess {
           headers: {
             Accept: "application/json",
             Authorization: `Bearer ${token}`,
+            ...(body ? { "Content-Type": "application/json" } : {}),
           },
+          ...(body ? { body: JSON.stringify(body) } : {}),
           cache: "no-store",
           redirect: "error",
           signal: controller.signal,
@@ -829,6 +1177,37 @@ function parseStatusRecord(
   });
 }
 
+function parseServiceRetryResult(
+  value: unknown,
+  expectedServiceId: string,
+): RuntimeServiceRetryResult {
+  if (!isRecord(value)) {
+    throw protocolViolation("Runtime V2 service retry response is invalid.");
+  }
+  requireExactKeys(
+    value,
+    ["protocolVersion", "ok", "serviceId", "accepted", "state"],
+    "service retry response",
+  );
+  requireProtocolVersion(value["protocolVersion"]);
+  if (
+    value["ok"] !== true ||
+    value["serviceId"] !== expectedServiceId ||
+    typeof value["accepted"] !== "boolean" ||
+    typeof value["state"] !== "string" ||
+    !RUNTIME_SERVICE_STATES.has(value["state"] as RuntimeServiceState)
+  ) {
+    throw protocolViolation("Runtime V2 service retry response is invalid.");
+  }
+  return Object.freeze({
+    protocolVersion: RUNTIME_PROTOCOL_VERSION,
+    ok: true,
+    serviceId: expectedServiceId,
+    accepted: value["accepted"],
+    state: value["state"] as RuntimeServiceState,
+  });
+}
+
 function parseServices(value: unknown, redactionToken: string): readonly RuntimeServiceStatus[] {
   if (!Array.isArray(value) || value.length > MAX_RUNTIME_SERVICES) {
     throw protocolViolation(
@@ -840,7 +1219,16 @@ function parseServices(value: unknown, redactionToken: string): readonly Runtime
     if (!isRecord(candidate)) throw protocolViolation("Runtime V2 service record is invalid.");
     requireExactKeys(
       candidate,
-      ["id", "displayName", "required", "state", "lastError", "restarts", "adopted"],
+      [
+        "id",
+        "displayName",
+        "required",
+        "startupPolicy",
+        "state",
+        "lastError",
+        "restarts",
+        "adopted",
+      ],
       "service record",
     );
     const id = candidate["id"];
@@ -871,6 +1259,13 @@ function parseServices(value: unknown, redactionToken: string): readonly Runtime
     }
     if (typeof candidate["required"] !== "boolean") {
       throw protocolViolation("Runtime V2 service required flag is invalid.");
+    }
+    const startupPolicy = candidate["startupPolicy"];
+    if (
+      typeof startupPolicy !== "string" ||
+      !RUNTIME_SERVICE_STARTUP_POLICIES.has(startupPolicy as RuntimeServiceStartupPolicy)
+    ) {
+      throw protocolViolation("Runtime V2 service startupPolicy is invalid.");
     }
     const state = candidate["state"];
     if (typeof state !== "string" || !RUNTIME_SERVICE_STATES.has(state as RuntimeServiceState)) {
@@ -914,6 +1309,7 @@ function parseServices(value: unknown, redactionToken: string): readonly Runtime
       id,
       displayName,
       required: candidate["required"],
+      startupPolicy: startupPolicy as RuntimeServiceStartupPolicy,
       state: state as RuntimeServiceState,
       lastError: sanitizedLastError,
       restarts: restarts as number,
@@ -1010,6 +1406,10 @@ function protocolViolation(message: string): RuntimeProcessError {
   return new RuntimeProcessError("PROTOCOL_VIOLATION", message);
 }
 
+function runtimeShutdownStarted(state: RuntimeProcessState): boolean {
+  return state === "stopping" || state === "stopped";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1051,12 +1451,17 @@ function normalizeAbsolutePath(value: string, label: string): string {
   return path.normalize(value);
 }
 
-function validateTimeout(value: number | undefined, fallback: number, label: string): number {
+function validateTimeout(
+  value: number | undefined,
+  fallback: number,
+  label: string,
+  maximum = MAX_TIMEOUT_MS,
+): number {
   const timeout = value ?? fallback;
-  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > MAX_TIMEOUT_MS) {
+  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > maximum) {
     throw new RuntimeProcessError(
       "INVALID_CONFIGURATION",
-      `${label} must be an integer from 1 through ${MAX_TIMEOUT_MS}.`,
+      `${label} must be an integer from 1 through ${maximum}.`,
     );
   }
   return timeout;
@@ -1074,6 +1479,8 @@ function selectRuntimeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
     ["LOCALAPPDATA", "LocalAppData"],
     ["APPDATA", "AppData"],
     ["PROGRAMDATA", "ProgramData"],
+    ["PROGRAMFILES", "ProgramFiles"],
+    ["PROGRAMFILES(X86)", "ProgramFiles(x86)"],
     ["HOME"],
     ["USER"],
     ["TMPDIR"],
@@ -1088,6 +1495,14 @@ function selectRuntimeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
         break;
       }
     }
+  }
+  for (const name of RUNTIME_PRODUCT_ENVIRONMENT_NAMES) {
+    const value = source[name];
+    // QA keeps denied credentials explicitly empty in Electron's environment
+    // so dotenv loading cannot restore a developer secret. Optional native
+    // settings represent that same state by absence: forwarding an empty value
+    // would make the fail-closed Rust environment validator reject startup.
+    if (value !== undefined && value.length > 0) target[name] = value;
   }
   return target;
 }

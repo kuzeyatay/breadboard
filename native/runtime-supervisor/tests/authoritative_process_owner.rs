@@ -1,14 +1,20 @@
 #![cfg(windows)]
 
 use breadboard_runtime_core::{
-    ProcessExitClassification, ProcessOwnerError, ProcessOwnerEvent, Registry, RunningProcessOwner,
-    RuntimeGenerationGuard, RuntimePaths, ServiceLaunchOutcome,
+    AdmissionPolicy, DashboardControlEnvironment, DurableServiceOutboxClaim,
+    DurableServiceStartResult, JobStore, ProcessOwnerEvent, Registry, RetainedServiceStopProgress,
+    RuntimeGenerationGuard, RuntimePaths, RuntimeSchedulerAuthority, ServiceEndpointMap,
+    ServiceLaunchRetentionDisposition, SystemCommit, TrustedDirectoryPin, TrustedOsEnvironment,
+    TrustedServiceEnvironment, TrustedServiceEnvironmentSet,
 };
 use breadboard_runtime_protocol::{
-    ResourceClass, RestartPolicy, ServiceDefinition, ServiceManifest, ServiceStartupPolicy,
+    ResourceClass, RestartPolicy, RuntimeMode, RuntimeServiceState, ServiceDefinition,
+    ServiceExecutableAuthority, ServiceHttpReadiness, ServiceInstallProbe,
+    ServiceInstallProbeAuthority, ServiceInstallProbeFile, ServiceLaunchArgument,
+    ServiceLaunchProfile, ServiceManifest, ServiceRequirement, ServiceResourceLimits,
+    ServiceStartupPolicy, ServiceWorkingDirectoryPolicy, TrustedServiceEnvironmentSource,
     WorkerManifest, SERVICE_MANIFEST_VERSION, WORKER_MANIFEST_VERSION,
 };
-use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -32,10 +38,28 @@ const OUTER_GENERATION_OWNER_MODE: &str = "owner";
 const OUTER_GENERATION_SUCCESSOR_MODE: &str = "successor";
 const OUTER_GENERATION_READY_PREFIX: &str = "BREADBOARD_OUTER_GENERATION_READY ";
 const OUTER_GENERATION_SUCCESSOR_READY: &str = "BREADBOARD_OUTER_GENERATION_SUCCESSOR_READY";
+const GUARDED_HOT_SHUTDOWN_TEST_NAME: &str =
+    "guarded_hot_dashboard_normal_stop_does_not_queue_terminal_behind_memory_telemetry";
+const GUARDED_HOT_SHUTDOWN_CHILD_ENV: &str = "BREADBOARD_GUARDED_HOT_SHUTDOWN_TEST_CHILD";
 const TEST_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const TEST_PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_SUSPEND_RESUME_ACCESS: u32 = 0x0800;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+const AUTHORITATIVE_DATABASE_RELATIVE_PATH: &str = "runtime-services.sqlite3";
+const CHATMOCK_TEST_PORT: u16 = 43_120;
+const DASHBOARD_TEST_PORT: u16 = 43_121;
+const HERMES_TEST_PORT: u16 = 43_122;
+const DASHBOARD_CONTROL_TEST_PORT: u16 = 43_123;
+const GBRAIN_TEST_PORT: u16 = 43_124;
+const COMFYUI_TEST_PORT: u16 = 43_125;
+const TELEGRAM_GATEWAY_TEST_PORT: u16 = 43_126;
+const WHATSAPP_GATEWAY_TEST_PORT: u16 = 43_127;
+const TEST_CONTROL_TOKEN: &str = "runtime-v2-supervisor-control-test-token";
+const TEST_NEXT_AUTH_SECRET: &str = "runtime-v2-next-auth-test-secret";
+const TEST_GBRAIN_ADAPTER_SECRET: &str = "runtime-v2-gbrain-adapter-test-secret";
+const TEST_HERMES_SESSION_TOKEN: &str = "runtime-v2-hermes-session-test-token";
+const TEST_HERMES_TOOL_SECRET: &str = "runtime-v2-hermes-tool-test-secret";
+const TEST_HERMES_CAPABILITY_SECRET: &str = "runtime-v2-hermes-capability-test-secret";
 
 // Test-only causal-isolation primitive. Suspending the helper prevents its
 // stdin-EOF thread from running after the runtime dies, so a signaled helper
@@ -299,7 +323,68 @@ fn generation_test_paths(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (root.join("app"), root.join("data"), root.join("runtime"))
 }
 
-fn service_registry(service_id: &str, allowed_executable: &str) -> Registry {
+fn literal_service_arguments(arguments: &[&str]) -> Vec<ServiceLaunchArgument> {
+    arguments
+        .iter()
+        .map(|value| ServiceLaunchArgument::Literal {
+            value: (*value).into(),
+        })
+        .collect()
+}
+
+fn service_launch_profiles_with_limits(
+    allowed_executable: &str,
+    arguments: Vec<ServiceLaunchArgument>,
+    environment_source: TrustedServiceEnvironmentSource,
+    resource_limits: ServiceResourceLimits,
+) -> Vec<ServiceLaunchProfile> {
+    vec![ServiceLaunchProfile {
+        modes: vec![RuntimeMode::Lean, RuntimeMode::Hot, RuntimeMode::Packaged],
+        executable_authority: ServiceExecutableAuthority::RuntimeRoot,
+        allowed_executable: allowed_executable.into(),
+        arguments,
+        environment_source,
+        working_directory: ServiceWorkingDirectoryPolicy::AppRoot,
+        install_probe: ServiceInstallProbe::FilesPresent {
+            files: vec![ServiceInstallProbeFile {
+                authority: ServiceInstallProbeAuthority::RuntimeRoot,
+                path: allowed_executable.into(),
+            }],
+        },
+        resource_limits,
+    }]
+}
+
+fn service_registry(
+    service_id: &str,
+    allowed_executable: &str,
+    arguments: Vec<ServiceLaunchArgument>,
+    environment_source: TrustedServiceEnvironmentSource,
+) -> Registry {
+    service_registry_with_profile(
+        service_id,
+        allowed_executable,
+        arguments,
+        environment_source,
+        RuntimeMode::Lean,
+        ServiceResourceLimits {
+            estimated_cold_start_commit_mb: 1,
+            soft_commit_limit_mb: 256,
+            hard_commit_limit_mb: 512,
+        },
+        500,
+    )
+}
+
+fn service_registry_with_profile(
+    service_id: &str,
+    allowed_executable: &str,
+    arguments: Vec<ServiceLaunchArgument>,
+    environment_source: TrustedServiceEnvironmentSource,
+    mode: RuntimeMode,
+    resource_limits: ServiceResourceLimits,
+    graceful_shutdown_ms: u64,
+) -> Registry {
     Registry::new(
         WorkerManifest {
             version: WORKER_MANIFEST_VERSION,
@@ -311,21 +396,200 @@ fn service_registry(service_id: &str, allowed_executable: &str) -> Registry {
                 id: service_id.into(),
                 display_name: "Process owner test service".into(),
                 capability_ids: vec!["process-owner-test".into()],
-                allowed_executable: allowed_executable.into(),
-                allowed_entrypoint: None,
+                requirement: ServiceRequirement::Required,
+                launch_profiles: service_launch_profiles_with_limits(
+                    allowed_executable,
+                    arguments,
+                    environment_source,
+                    resource_limits,
+                ),
+                readiness: ServiceHttpReadiness {
+                    path: "/health".into(),
+                    expected_body_contains: None,
+                    request_timeout_ms: 100,
+                    poll_interval_ms: 100,
+                    startup_timeout_ms: 1_000,
+                },
                 startup_policy: ServiceStartupPolicy::Eager,
                 resource_class: ResourceClass::Core,
                 dependencies: vec![],
-                estimated_cold_start_commit_mb: 1,
-                soft_commit_limit_mb: 0,
-                hard_commit_limit_mb: 0,
+                maximum_concurrent_leases: 1,
+                maximum_lease_ms: 1_000,
                 idle_ttl_ms: None,
-                graceful_shutdown_ms: 500,
+                graceful_shutdown_ms,
                 restart_policy: RestartPolicy::Never,
+                restart_bounds: None,
             }],
         },
+        mode,
     )
     .unwrap()
+}
+
+struct ServiceEnvironmentFixture {
+    _config_root: TrustedDirectoryPin,
+    endpoints: ServiceEndpointMap,
+    environments: TrustedServiceEnvironmentSet,
+}
+
+impl ServiceEnvironmentFixture {
+    fn new(root: &Path, paths: &RuntimePaths) -> Self {
+        Self::new_for_mode(root, paths, RuntimeMode::Lean)
+    }
+
+    fn new_for_mode(root: &Path, paths: &RuntimePaths, mode: RuntimeMode) -> Self {
+        let config_root_path = root.join("config");
+        fs::create_dir_all(&config_root_path).unwrap();
+        fs::write(
+            config_root_path.join("desktop-config.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 2,
+                "nextAuthSecret": TEST_NEXT_AUTH_SECRET,
+                "gbrainMode": "preferred",
+                "gbrainAdapterSecret": TEST_GBRAIN_ADAPTER_SECRET,
+                "hermesSessionToken": TEST_HERMES_SESSION_TOKEN,
+                "hermesToolSecret": TEST_HERMES_TOOL_SECRET,
+                "hermesCapabilitySecret": TEST_HERMES_CAPABILITY_SECRET,
+                "initialInviteCode": "BREAD0123456789"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let config_root = TrustedDirectoryPin::pin_existing("configuration", config_root_path)
+            .expect("pin integration-test configuration root");
+        let endpoints = ServiceEndpointMap::new(
+            [
+                CHATMOCK_TEST_PORT,
+                COMFYUI_TEST_PORT,
+                DASHBOARD_TEST_PORT,
+                GBRAIN_TEST_PORT,
+                HERMES_TEST_PORT,
+                TELEGRAM_GATEWAY_TEST_PORT,
+                WHATSAPP_GATEWAY_TEST_PORT,
+                43_128,
+                43_129,
+                43_130,
+                43_131,
+                43_132,
+                43_133,
+                43_134,
+                43_135,
+                43_136,
+                43_137,
+                43_138,
+                43_139,
+                43_140,
+                43_141,
+                43_142,
+                43_143,
+                43_144,
+                43_145,
+                43_146,
+                43_147,
+                43_148,
+                43_149,
+                43_150,
+                43_151,
+                43_152,
+            ],
+            [43_153, 43_154, 43_155, 43_156, 43_157],
+        )
+        .unwrap();
+        let dashboard_control = DashboardControlEnvironment::new(
+            format!("http://127.0.0.1:{DASHBOARD_CONTROL_TEST_PORT}"),
+            TEST_CONTROL_TOKEN,
+        )
+        .unwrap();
+        let os_environment = TrustedOsEnvironment::capture_electron_gated()
+            .expect("capture the Electron-gated OS environment");
+        let environments = TrustedServiceEnvironmentSet::load(
+            mode,
+            paths,
+            &config_root,
+            &endpoints,
+            dashboard_control,
+            os_environment,
+        )
+        .unwrap();
+
+        Self {
+            _config_root: config_root,
+            endpoints,
+            environments,
+        }
+    }
+
+    fn mint_for_registry(
+        &self,
+        registry: &Registry,
+        service_id: &str,
+    ) -> (u16, TrustedServiceEnvironment) {
+        self.mint_for_registry_in_mode(registry, service_id, RuntimeMode::Lean)
+    }
+
+    fn mint_for_registry_in_mode(
+        &self,
+        registry: &Registry,
+        service_id: &str,
+        mode: RuntimeMode,
+    ) -> (u16, TrustedServiceEnvironment) {
+        let launch_profile = registry
+            .service(service_id)
+            .unwrap()
+            .launch_profile(mode)
+            .expect("validated service launch profile for integration-test mode");
+        let port = self
+            .endpoints
+            .port_for(launch_profile.environment_source)
+            .get();
+        let environment = self
+            .environments
+            .prepare_for_launch_profile(service_id, launch_profile)
+            .unwrap();
+        (port, environment)
+    }
+}
+
+fn open_authoritative_store(paths: &RuntimePaths) -> JobStore {
+    let database_path = paths
+        .resolve_data(AUTHORITATIVE_DATABASE_RELATIVE_PATH)
+        .unwrap();
+    let database_pin = paths.pin_data_file_for_update(&database_path).unwrap();
+    JobStore::open_authoritative(database_pin, paths.runtime_generation_scope()).unwrap()
+}
+
+fn mint_eager_start_claim(
+    store: &JobStore,
+    registry: &Registry,
+    service_id: &str,
+) -> DurableServiceOutboxClaim {
+    let registration = registry.durable_service_registration(service_id).unwrap();
+    let admission_profile = registry
+        .durable_service_admission_profile(service_id)
+        .unwrap();
+    store.register_durable_service(&registration, 100).unwrap();
+    assert_eq!(
+        store
+            .begin_eager_durable_service_start(
+                &registration,
+                &admission_profile,
+                101,
+                AdmissionPolicy::default(),
+                || {
+                    Ok(SystemCommit {
+                        total_mb: 0,
+                        limit_mb: 64 * 1024,
+                    })
+                },
+            )
+            .unwrap(),
+        DurableServiceStartResult::Queued
+    );
+    store
+        .claim_next_durable_service_intent(1_000, 102)
+        .unwrap()
+        .expect("eager service StartTree intent")
 }
 
 fn write_pipe_marker(marker: &str) {
@@ -343,29 +607,49 @@ fn run_generation_owner_child(root: &Path) -> ! {
         RuntimeGenerationGuard::acquire(generation_scope, Duration::ZERO, TEST_PROCESS_TIMEOUT)
             .unwrap();
     let generation_membership = generation_guard.membership();
-    let nested_cwd = data
-        .join("runtime/services/outer_generation_test/outer_generation_owner_1")
-        .into_os_string();
-    let nested_command = runtime.join("bin/long-lived-target.exe").into_os_string();
-    let launch = service_registry("outer_generation_test", "bin/long-lived-target.exe")
+    let nested_cwd_path = data.join("runtime/targets/outer_generation_owner_1");
+    fs::create_dir_all(&nested_cwd_path).unwrap();
+    let nested_cwd = nested_cwd_path.to_string_lossy().into_owned();
+    let nested_command = runtime
+        .join("bin/long-lived-target.exe")
+        .to_string_lossy()
+        .into_owned();
+    let registry = service_registry(
+        "dashboard",
+        "bin/long-lived-target.exe",
+        literal_service_arguments(&["--cwd", &nested_cwd, "--", &nested_command]),
+        TrustedServiceEnvironmentSource::Dashboard,
+    );
+    let environment_fixture = ServiceEnvironmentFixture::new(root, &paths);
+    let store = open_authoritative_store(&paths);
+    let start_claim = mint_eager_start_claim(&store, &registry, "dashboard");
+    let (service_port, environment) = environment_fixture.mint_for_registry(&registry, "dashboard");
+    let launch = registry
         .prepare_service_launch(
             &paths,
-            "outer_generation_test",
-            "outer_generation_owner_1",
-            vec![
-                OsString::from("--cwd"),
-                nested_cwd,
-                OsString::from("--"),
-                nested_command,
-            ],
+            &RuntimeSchedulerAuthority::from_current_generation(&generation_membership),
+            "dashboard",
+            service_port,
+            environment,
+            None,
         )
         .unwrap();
-    let mut owner = match RunningProcessOwner::spawn_service(&generation_membership, launch) {
-        ServiceLaunchOutcome::Running(owner) => owner,
-        unexpected => panic!("service launch did not create its contained owner: {unexpected:?}"),
-    };
+    assert_eq!(
+        store
+            .acknowledge_and_launch_durable_service_start(
+                start_claim,
+                103,
+                &generation_membership,
+                launch,
+            )
+            .unwrap(),
+        ServiceLaunchRetentionDisposition::Retained
+    );
     let target_pid = loop {
-        match owner.read_event(TEST_PROCESS_TIMEOUT).unwrap() {
+        match store
+            .read_retained_durable_service_launch_event("dashboard", 1, TEST_PROCESS_TIMEOUT)
+            .unwrap()
+        {
             ProcessOwnerEvent::Lifecycle(event)
                 if event.get("type").and_then(|value| value.as_str()) == Some("started") =>
             {
@@ -379,15 +663,18 @@ fn run_generation_owner_child(root: &Path) -> ! {
             unexpected => panic!("unexpected pre-start supervisor event: {unexpected:?}"),
         }
     };
-    assert_eq!(owner.root_pid(), Some(target_pid));
+    let (supervisor_pid, root_pid) = store
+        .retained_durable_service_launch_pids("dashboard", 1)
+        .unwrap();
+    assert_eq!(root_pid, Some(target_pid));
     write_pipe_marker(&format!(
         "{OUTER_GENERATION_READY_PREFIX}runtimePid={} supervisorPid={} targetPid={target_pid}",
         std::process::id(),
-        owner.supervisor_pid(),
+        supervisor_pid,
     ));
 
     loop {
-        std::hint::black_box((&generation_guard, &generation_membership, &owner));
+        std::hint::black_box((&generation_guard, &generation_membership, &store));
         thread::park_timeout(Duration::from_secs(1));
     }
 }
@@ -427,7 +714,7 @@ fn parse_generation_ready_marker(line: &str) -> (u32, u32, u32) {
 }
 
 #[test]
-fn pinned_existing_supervisor_returns_a_bounded_zero_resident_exit_receipt() {
+fn pinned_supervisor_returns_bounded_post_start_and_pre_start_exit_receipts() {
     let directory = tempfile::tempdir().unwrap();
     let app = directory.path().join("app");
     let data = directory.path().join("data");
@@ -449,58 +736,285 @@ fn pinned_existing_supervisor_returns_a_bounded_zero_resident_exit_receipt() {
         RuntimeGenerationGuard::acquire(generation_scope, Duration::ZERO, Duration::from_secs(10))
             .unwrap();
     let generation_membership = generation_guard.membership();
-    let registry = service_registry("process_owner_test", "bin/finite-target.exe");
-    let foreign_data = directory.path().join("foreign-data");
-    fs::create_dir_all(&foreign_data).unwrap();
-    let foreign_paths = RuntimePaths::new(&foreign_data, &app, &runtime).unwrap();
-    let foreign_request = registry
-        .prepare_service_launch(
-            &foreign_paths,
-            "process_owner_test",
-            "foreign_service_process_owner_test",
-            vec![OsString::from("--not-an-option")],
-        )
-        .unwrap();
-    assert!(matches!(
-        RunningProcessOwner::spawn_service(&generation_membership, foreign_request),
-        ServiceLaunchOutcome::NotCreated(ref denied)
-            if matches!(denied.error(), ProcessOwnerError::GenerationScopeMismatch)
-    ));
-    assert!(!foreign_data
-        .join("runtime/services/process_owner_test/foreign_service_process_owner_test")
-        .exists());
-
+    let store = open_authoritative_store(&paths);
+    let environment_fixture = ServiceEnvironmentFixture::new(directory.path(), &paths);
+    let registry = service_registry(
+        "dashboard",
+        "bin/finite-target.exe",
+        literal_service_arguments(&["--not-an-option"]),
+        TrustedServiceEnvironmentSource::Dashboard,
+    );
+    let start_claim = mint_eager_start_claim(&store, &registry, "dashboard");
+    let (service_port, environment) = environment_fixture.mint_for_registry(&registry, "dashboard");
     let launch = registry
         .prepare_service_launch(
             &paths,
-            "process_owner_test",
-            "service_process_owner_test",
-            vec![OsString::from("--not-an-option")],
+            &RuntimeSchedulerAuthority::from_current_generation(&generation_membership),
+            "dashboard",
+            service_port,
+            environment,
+            None,
         )
         .unwrap();
 
-    let mut owner = match RunningProcessOwner::spawn_service(&generation_membership, launch) {
-        ServiceLaunchOutcome::Running(owner) => owner,
-        unexpected => panic!("service launch did not create its contained owner: {unexpected:?}"),
+    assert_eq!(
+        store
+            .acknowledge_and_launch_durable_service_start(
+                start_claim,
+                103,
+                &generation_membership,
+                launch,
+            )
+            .unwrap(),
+        ServiceLaunchRetentionDisposition::Retained
+    );
+    let started = store
+        .read_retained_durable_service_launch_event("dashboard", 1, Duration::from_secs(10))
+        .unwrap();
+    let ProcessOwnerEvent::Lifecycle(started) = started else {
+        panic!("unexpected first supervisor event: {started:?}");
     };
-    let mut started_pid = None;
-    let terminal = owner
-        .wait_for_terminal(Duration::from_secs(10), |event| {
-            if let ProcessOwnerEvent::Lifecycle(event) = event {
-                if event.get("type").and_then(|value| value.as_str()) == Some("started") {
-                    started_pid = event.get("pid").and_then(|value| value.as_u64());
+    assert_eq!(
+        started.get("type").and_then(|value| value.as_str()),
+        Some("started")
+    );
+    assert!(started
+        .get("pid")
+        .and_then(|value| value.as_u64())
+        .is_some());
+    let terminal = loop {
+        match store
+            .read_retained_durable_service_launch_event("dashboard", 1, Duration::from_secs(10))
+            .unwrap()
+        {
+            ProcessOwnerEvent::Terminal(terminal) => break terminal,
+            ProcessOwnerEvent::Lifecycle(_) => {}
+            unexpected => panic!("unexpected post-start supervisor event: {unexpected:?}"),
+        }
+    };
+    let snapshot = store
+        .confirm_and_finish_retained_durable_service_exit("dashboard", 1, &terminal, 104)
+        .unwrap();
+    assert_eq!(snapshot.status.state, RuntimeServiceState::Failed);
+    assert_eq!(
+        snapshot.status.last_error.as_deref(),
+        Some("Service process exited unexpectedly")
+    );
+
+    // Generation ownership is deliberately process-lifetime. Exercise the
+    // pre-CreateProcess failure in the same runtime generation instead of
+    // attempting to mint a second guard in this test process.
+    fs::write(bin.join("invalid-target.exe"), b"not a Windows executable").unwrap();
+    let registry = service_registry(
+        "chatmock",
+        "bin/invalid-target.exe",
+        vec![],
+        TrustedServiceEnvironmentSource::Chatmock,
+    );
+    let start_claim = mint_eager_start_claim(&store, &registry, "chatmock");
+    let (service_port, environment) = environment_fixture.mint_for_registry(&registry, "chatmock");
+    let launch = registry
+        .prepare_service_launch(
+            &paths,
+            &RuntimeSchedulerAuthority::from_current_generation(&generation_membership),
+            "chatmock",
+            service_port,
+            environment,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .acknowledge_and_launch_durable_service_start(
+                start_claim,
+                103,
+                &generation_membership,
+                launch,
+            )
+            .unwrap(),
+        ServiceLaunchRetentionDisposition::Retained
+    );
+    let terminal = match store
+        .read_retained_durable_service_launch_event("chatmock", 1, Duration::from_secs(10))
+        .unwrap()
+    {
+        ProcessOwnerEvent::Terminal(terminal) => terminal,
+        unexpected => panic!("unexpected pre-start supervisor event: {unexpected:?}"),
+    };
+    let (_, root_pid) = store
+        .retained_durable_service_launch_pids("chatmock", 1)
+        .unwrap();
+    assert_eq!(root_pid, None);
+    assert_eq!(terminal.failure().unwrap().code(), "SPAWN_FAILED");
+
+    let snapshot = store
+        .confirm_and_finish_retained_durable_service_exit("chatmock", 1, &terminal, 104)
+        .unwrap();
+    assert_eq!(snapshot.status.state, RuntimeServiceState::Failed);
+    assert_eq!(
+        snapshot.status.last_error.as_deref(),
+        Some("Service process tree supervision failed")
+    );
+}
+
+#[test]
+fn guarded_hot_dashboard_normal_stop_does_not_queue_terminal_behind_memory_telemetry() {
+    if std::env::var_os(GUARDED_HOT_SHUTDOWN_CHILD_ENV).is_some() {
+        run_guarded_hot_dashboard_normal_stop();
+        return;
+    }
+    let status =
+        Command::new(std::env::current_exe().expect("current integration-test executable"))
+            .arg("--exact")
+            .arg(GUARDED_HOT_SHUTDOWN_TEST_NAME)
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(GUARDED_HOT_SHUTDOWN_CHILD_ENV, "1")
+            .status()
+            .expect("spawn isolated guarded-Hot shutdown integration test");
+    assert!(
+        status.success(),
+        "isolated guarded-Hot shutdown integration test failed with {status}"
+    );
+}
+
+fn run_guarded_hot_dashboard_normal_stop() {
+    let directory = tempfile::tempdir().unwrap();
+    let app = directory.path().join("app");
+    let data = directory.path().join("data");
+    let runtime = directory.path().join("runtime");
+    let bin = runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&app).unwrap();
+    fs::create_dir_all(&data).unwrap();
+
+    let built_supervisor = env!("CARGO_BIN_EXE_runtime-supervisor");
+    fs::copy(built_supervisor, bin.join("runtime-supervisor.exe")).unwrap();
+    let system_root = PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"));
+    fs::copy(
+        system_root.join("System32/ping.exe"),
+        bin.join("guarded-target.exe"),
+    )
+    .unwrap();
+
+    let paths = RuntimePaths::new(&data, &app, &runtime).unwrap();
+    let generation_scope = paths.runtime_generation_scope();
+    let (generation_guard, _prior_generation_drained) =
+        RuntimeGenerationGuard::acquire(generation_scope, Duration::ZERO, TEST_PROCESS_TIMEOUT)
+            .unwrap();
+    let generation_membership = generation_guard.membership();
+    let store = open_authoritative_store(&paths);
+    let environment_fixture =
+        ServiceEnvironmentFixture::new_for_mode(directory.path(), &paths, RuntimeMode::Hot);
+    let registry = service_registry_with_profile(
+        "dashboard",
+        "bin/guarded-target.exe",
+        literal_service_arguments(&["-t", "127.0.0.1"]),
+        TrustedServiceEnvironmentSource::Dashboard,
+        RuntimeMode::Hot,
+        ServiceResourceLimits {
+            estimated_cold_start_commit_mb: 1,
+            soft_commit_limit_mb: 0,
+            hard_commit_limit_mb: 64,
+        },
+        1_000,
+    );
+    let start_claim = mint_eager_start_claim(&store, &registry, "dashboard");
+    let (service_port, environment) =
+        environment_fixture.mint_for_registry_in_mode(&registry, "dashboard", RuntimeMode::Hot);
+    let launch = registry
+        .prepare_service_launch(
+            &paths,
+            &RuntimeSchedulerAuthority::from_current_generation(&generation_membership),
+            "dashboard",
+            service_port,
+            environment,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .acknowledge_and_launch_durable_service_start(
+                start_claim,
+                103,
+                &generation_membership,
+                launch,
+            )
+            .unwrap(),
+        ServiceLaunchRetentionDisposition::Retained
+    );
+
+    loop {
+        match store
+            .read_retained_durable_service_launch_event("dashboard", 1, TEST_PROCESS_TIMEOUT)
+            .unwrap()
+        {
+            ProcessOwnerEvent::Lifecycle(event)
+                if event.get("type").and_then(|value| value.as_str()) == Some("started") =>
+            {
+                break;
+            }
+            ProcessOwnerEvent::Lifecycle(_) => {}
+            unexpected => panic!("unexpected guarded-dashboard startup event: {unexpected:?}"),
+        }
+    }
+
+    assert_eq!(store.begin_durable_service_shutdown(104).unwrap(), 1);
+    let stop_claim = store
+        .claim_next_durable_service_intent(1_000, 105)
+        .unwrap()
+        .expect("Hot dashboard StopTree intent");
+    let (_, stop_progress) = store
+        .acknowledge_and_bind_retained_durable_service_stop(stop_claim, 106, false)
+        .unwrap();
+    assert_eq!(stop_progress, RetainedServiceStopProgress::Bound);
+
+    // Match the service controller's 100 ms cadence. Before telemetry was
+    // separated from the 25 ms system-commit guard, this consumer accumulated
+    // roughly forty memory records during the one-second grace period and did
+    // not reach the already-valid terminal until about four seconds later.
+    let stop_started = Instant::now();
+    let mut memory_events = 0_usize;
+    let terminal = loop {
+        let event = store
+            .read_retained_durable_service_launch_event("dashboard", 1, TEST_PROCESS_TIMEOUT)
+            .unwrap_or_else(|error| {
+                panic!("guarded Hot dashboard process-owner event failed: {error:?}")
+            });
+        match event {
+            ProcessOwnerEvent::Terminal(terminal) => break terminal,
+            ProcessOwnerEvent::Lifecycle(event) => {
+                if event.get("type").and_then(|value| value.as_str()) == Some("memory") {
+                    memory_events += 1;
                 }
             }
-        })
-        .unwrap();
-    assert!(started_pid.is_some());
+            unexpected => panic!("unexpected guarded-dashboard stop event: {unexpected:?}"),
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    assert!(!terminal.resource_exhausted());
+    assert!(terminal.failure().is_none());
+    let snapshot = store
+        .confirm_and_finish_retained_durable_service_exit("dashboard", 1, &terminal, 107)
+        .unwrap_or_else(|error| {
+            panic!("guarded Hot dashboard terminal confirmation failed: {error:?}")
+        });
+    let elapsed = stop_started.elapsed();
 
-    let exit = owner.confirm_exit(&terminal).unwrap();
-    assert_eq!(exit.root_exit_code(), Some(64));
-    assert_eq!(exit.classification(), ProcessExitClassification::TargetExit);
-    assert!(exit.accounting().complete);
-    assert!(owner.confirm_exit(&terminal).is_err());
-    assert!(exit.into_completion_authority().is_err());
+    assert_eq!(
+        snapshot.status.state,
+        RuntimeServiceState::AvailableButStopped
+    );
+    assert_eq!(snapshot.status.last_error, None);
+    assert!(
+        memory_events <= 12,
+        "guarded stop emitted {memory_events} memory records before its terminal"
+    );
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "guarded stop terminal remained backlogged for {elapsed:?}"
+    );
 }
 
 #[test]

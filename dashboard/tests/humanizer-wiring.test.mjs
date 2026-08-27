@@ -310,7 +310,7 @@ test("every way of starting Breadboard starts the humanizer when it is provision
   // got "the local rewriter is not running" no matter how the setup had gone.
   const devAll = fromRepo("scripts/dev-all.mjs");
   assert.match(devAll, /humanizer-venv/, "dev-all: detects the environment");
-  assert.match(devAll, /startService\("humanizer"/, "dev-all: starts it");
+  assert.match(devAll, /startUnlessRunning\(\s*"humanizer"/, "dev-all: starts it");
   assert.match(devAll, /HUMANIZER_MODE: humanizerEnabled \? "local" : "disabled"/);
   assert.match(devAll, /HUMANIZER_SERVICE_URL: humanizerServiceUrl/);
   // Absent environment is a printed note, never a failed stack.
@@ -320,10 +320,22 @@ test("every way of starting Breadboard starts the humanizer when it is provision
   assert.ok(startBat.includes("humanizer-venv\\Scripts\\python.exe"));
   assert.match(startBat, /start-humanizer\.mjs/);
 
-  const definitions = fromRepo("desktop/src/main/service-definitions.ts");
-  assert.match(definitions, /id: "humanizer"/);
-  assert.match(definitions, /resolveHumanizerPython\(paths\)/);
-  assert.match(fromRepo("desktop/src/main/app-lifecycle.ts"), /humanizer: await allocatePort\(7735/);
+  const rootPackage = JSON.parse(fromRepo("package.json"));
+  assert.equal(rootPackage.scripts.dev, "npm run desktop:dev:hot");
+  const manifest = JSON.parse(
+    fromRepo("desktop/runtime-v2/manifests/services.json"),
+  );
+  const humanizer = manifest.services.find((service) => service.id === "humanizer");
+  assert.ok(humanizer, "Runtime V2 owns the humanizer service");
+  assert.deepEqual(
+    [...new Set(humanizer.launchProfiles.flatMap((profile) => profile.modes))].sort(),
+    ["hot", "lean", "packaged"],
+  );
+  assert.equal(humanizer.launchProfiles[0].environmentSource, "humanizer");
+  assert.match(
+    fromRepo("native/runtime-core/src/service_environment.rs"),
+    /TrustedServiceEnvironmentProfile::Humanizer/,
+  );
 });
 
 test("setup downloads the model only when explicitly asked", () => {

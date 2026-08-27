@@ -45,6 +45,17 @@ interface ArtifactScopeProps {
  */
 const artifactCache = new Map<string, PresentedArtifact[]>();
 const artifactRequests = new Map<string, Promise<PresentedArtifact[]>>();
+const MAX_CACHED_ARTIFACT_QUERIES = 32;
+
+function cacheArtifacts(query: string, artifacts: PresentedArtifact[]): void {
+  artifactCache.delete(query);
+  artifactCache.set(query, artifacts);
+  while (artifactCache.size > MAX_CACHED_ARTIFACT_QUERIES) {
+    const oldest = artifactCache.keys().next().value;
+    if (oldest === undefined) break;
+    artifactCache.delete(oldest);
+  }
+}
 
 export function inlineArtifactQuery({
   conversationId,
@@ -70,7 +81,7 @@ async function requestArtifacts(
   const artifacts = Array.isArray(data.artifacts)
     ? (data.artifacts as PresentedArtifact[])
     : [];
-  artifactCache.set(query, artifacts);
+  cacheArtifacts(query, artifacts);
   return artifacts;
 }
 
@@ -445,10 +456,13 @@ export function InlineArtifactCardsProvider({
         await deleteArtifactRequest(artifact);
         // The cache is written by every path that sets the snapshot, so it is
         // the current list even mid-render.
-        const remaining = (artifactCache.get(query) ?? []).filter(
+        const cachedOrVisible = artifactCache.get(query) ?? (
+          snapshotRef.current.query === query ? snapshotRef.current.artifacts : []
+        );
+        const remaining = cachedOrVisible.filter(
           (item) => item.id !== artifact.id,
         );
-        artifactCache.set(query, remaining);
+        cacheArtifacts(query, remaining);
         setSnapshot({ query, artifacts: remaining });
         setOpenId((current) => (current === artifact.id ? null : current));
         void refresh();
@@ -493,13 +507,16 @@ export function InlineArtifactCardsProvider({
     [query, refresh],
   );
   const registerArtifact = useCallback((artifact: PresentedArtifact) => {
+    const cachedOrVisible = artifactCache.get(query) ?? (
+      snapshotRef.current.query === query ? snapshotRef.current.artifacts : []
+    );
     const artifacts = [
       artifact,
-      ...(artifactCache.get(query) ?? []).filter(
+      ...cachedOrVisible.filter(
         (item) => item.id !== artifact.id,
       ),
     ];
-    artifactCache.set(query, artifacts);
+    cacheArtifacts(query, artifacts);
     setSnapshot({ query, artifacts });
     void refresh();
   }, [query, refresh]);

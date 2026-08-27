@@ -36,6 +36,7 @@ export default function InlineInteractiveVisualizer({ artifact, onOpen }: Props)
   const previewUrl = `${artifactUrl(artifact, "preview")}&channel=${encodeURIComponent(channel)}`;
 
   useEffect(() => {
+    const ownedFrame = frameRef.current;
     const sendContext = () => {
       const target = frameRef.current?.contentWindow;
       target?.postMessage({
@@ -82,6 +83,11 @@ export default function InlineInteractiveVisualizer({ artifact, onOpen }: Props)
       observer.disconnect();
       media.removeEventListener("change", sendContext);
       window.removeEventListener("message", onMessage);
+      ownedFrame?.contentWindow?.postMessage({
+        protocol: PROTOCOL,
+        type: "host-dispose",
+        channel,
+      }, "*");
     };
   }, [channel]);
 
@@ -106,6 +112,7 @@ export default function InlineInteractiveVisualizer({ artifact, onOpen }: Props)
         </svg>
       </button>
       <iframe
+        key={previewUrl}
         ref={frameRef}
         title={`${artifact.title} interactive visualization`}
         sandbox="allow-scripts"

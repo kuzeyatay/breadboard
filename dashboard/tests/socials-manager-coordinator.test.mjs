@@ -24,8 +24,11 @@ import {
   isAuthorized,
 } from "../src/lib/socials-manager/coordinator-server.ts";
 import {
+  clearStackOwnership,
   DEFAULT_IDLE_TIMEOUT_MS,
+  hasStackOwnershipReceipt,
   pendingScheduledWork,
+  recordStackOwnership,
   resolveIdleTimeoutMs,
 } from "../src/lib/socials-manager/coordinator-runtime.ts";
 import {
@@ -242,6 +245,35 @@ test("a stack that was already up is adopted, not claimed", async () => {
   assert.equal(calls.start, 0, "an already-running stack must not be started again");
 });
 
+test("a sealed ownership receipt restores idle cleanup after a coordinator crash", async () => {
+  const { coordinator, calls, state } = harness({ recoverOwnership: async () => true });
+  state.reachable = true;
+  const recovered = await coordinator.ensureReady({ reason: "run" });
+  assert.equal(recovered.ownership, "breadboard");
+  state.now += 10_001;
+  assert.equal(await coordinator.idleTick(), true);
+  assert.equal(calls.stop, 1);
+});
+
+test("Postiz ownership receipts are exact, bounded, and clearable", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "bb-postiz-owner-"));
+  const ownedConfig = { ...config, stateDir };
+  try {
+    assert.equal(hasStackOwnershipReceipt(ownedConfig), false);
+    recordStackOwnership(ownedConfig);
+    assert.equal(hasStackOwnershipReceipt(ownedConfig), true);
+    writeFileSync(
+      path.join(stateDir, "runtime-v2-stack-ownership.json"),
+      JSON.stringify({ version: 1, projectName: "foreign-project" }),
+    );
+    assert.equal(hasStackOwnershipReceipt(ownedConfig), false);
+    clearStackOwnership(ownedConfig);
+    assert.equal(hasStackOwnershipReceipt(ownedConfig), false);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("a pre-existing stack is never stopped by the idle timer", async () => {
   const { coordinator, calls, state } = harness();
   state.reachable = true;
@@ -255,11 +287,17 @@ test("a pre-existing stack is never stopped by the idle timer", async () => {
 });
 
 test("a pre-existing stack is left running when Breadboard exits", async () => {
-  const { coordinator, calls, state } = harness();
+  let admissionReleases = 0;
+  const { coordinator, calls, state } = harness({
+    releaseAdmission: async () => {
+      admissionReleases += 1;
+    },
+  });
   state.reachable = true;
   await coordinator.ensureReady({ reason: "run" });
   assert.equal(await coordinator.close(), false);
   assert.equal(calls.stop, 0);
+  assert.equal(admissionReleases, 1, "service exit releases admission without stopping containers");
 });
 
 // ------------------------------------------------------------- idle policy
@@ -470,12 +508,24 @@ test("the generated override keeps a deliberate stop stopped without a restart l
 // ------------------------------------------------------------- the control plane
 
 const TOKEN = "capability-token-0123456789abcdef";
+const CONTROL_SCOPE = { userId: 7, runId: "postiz-test-run" };
+
+function ensureControlBody(overrides = {}) {
+  return JSON.stringify({
+    scope: CONTROL_SCOPE,
+    reason: "run",
+    timeoutMs: 1_000,
+    hold: false,
+    nextScheduledAt: null,
+    ...overrides,
+  });
+}
 
 test("an unauthenticated control request is refused and changes nothing", async () => {
   const { coordinator, calls } = harness();
   for (const authorization of [undefined, "", "Bearer ", "Bearer wrong", TOKEN, "Basic x"]) {
     const response = await handleCoordinatorRequest(
-      { method: "POST", url: "/ensure-ready", authorization, body: '{"reason":"run"}' },
+      { method: "POST", url: "/ensure-ready", authorization, body: ensureControlBody() },
       coordinator,
       TOKEN,
     );
@@ -535,13 +585,23 @@ test("no control response carries the capability token", async () => {
   const auth = `Bearer ${TOKEN}`;
   const responses = [
     await handleCoordinatorRequest({ method: "GET", url: "/health" }, coordinator, TOKEN),
-    await handleCoordinatorRequest({ method: "GET", url: "/status", authorization: auth }, coordinator, TOKEN),
+    await handleCoordinatorRequest({
+      method: "POST",
+      url: "/status",
+      authorization: auth,
+      body: JSON.stringify({ scope: CONTROL_SCOPE, probeDocker: false }),
+    }, coordinator, TOKEN),
     await handleCoordinatorRequest(
-      { method: "POST", url: "/ensure-ready", authorization: auth, body: '{"reason":"run"}' },
+      { method: "POST", url: "/ensure-ready", authorization: auth, body: ensureControlBody() },
       coordinator,
       TOKEN,
     ),
-    await handleCoordinatorRequest({ method: "POST", url: "/stop", authorization: auth }, coordinator, TOKEN),
+    await handleCoordinatorRequest({
+      method: "POST",
+      url: "/stop",
+      authorization: auth,
+      body: JSON.stringify({ scope: CONTROL_SCOPE }),
+    }, coordinator, TOKEN),
     await handleCoordinatorRequest({ method: "GET", url: "/nope", authorization: auth }, coordinator, TOKEN),
   ];
   for (const response of responses) {
@@ -565,28 +625,33 @@ test("an oversized control body is refused before it is parsed", async () => {
   assert.equal(calls.start, 0);
 });
 
-test("a malformed body is treated as empty rather than failing the request", async () => {
+test("a malformed body fails closed before it can start the stack", async () => {
   const { coordinator } = harness();
   const response = await handleCoordinatorRequest(
     { method: "POST", url: "/ensure-ready", authorization: `Bearer ${TOKEN}`, body: "{not json" },
     coordinator,
     TOKEN,
   );
-  assert.equal(response.status, 200);
-  assert.equal(response.json.ready, true);
+  assert.equal(response.status, 400);
+  assert.equal(response.json.error, "invalid_control_request");
 });
 
 test("status over the control plane is authenticated and side-effect-free", async () => {
   const { coordinator, calls } = harness();
   const unauthenticated = await handleCoordinatorRequest(
-    { method: "GET", url: "/status" },
+    { method: "POST", url: "/status", body: JSON.stringify({ scope: CONTROL_SCOPE, probeDocker: false }) },
     coordinator,
     TOKEN,
   );
   assert.equal(unauthenticated.status, 401);
 
   const authenticated = await handleCoordinatorRequest(
-    { method: "GET", url: "/status?whatever=1", authorization: `Bearer ${TOKEN}` },
+    {
+      method: "POST",
+      url: "/status",
+      authorization: `Bearer ${TOKEN}`,
+      body: JSON.stringify({ scope: CONTROL_SCOPE, probeDocker: false }),
+    },
     coordinator,
     TOKEN,
   );
@@ -600,14 +665,24 @@ test("release drops exactly one hold", async () => {
   const { coordinator } = harness();
   const auth = `Bearer ${TOKEN}`;
   const activated = await handleCoordinatorRequest(
-    { method: "POST", url: "/ensure-ready", authorization: auth, body: '{"reason":"run","hold":true}' },
+    {
+      method: "POST",
+      url: "/ensure-ready",
+      authorization: auth,
+      body: ensureControlBody({ hold: true }),
+    },
     coordinator,
     TOKEN,
   );
   const leaseId = activated.json.leaseId;
   assert.ok(typeof leaseId === "string");
   const released = await handleCoordinatorRequest(
-    { method: "POST", url: "/release", authorization: auth, body: JSON.stringify({ leaseId }) },
+    {
+      method: "POST",
+      url: "/release",
+      authorization: auth,
+      body: JSON.stringify({ scope: CONTROL_SCOPE, leaseId }),
+    },
     coordinator,
     TOKEN,
   );
@@ -615,16 +690,59 @@ test("release drops exactly one hold", async () => {
   assert.equal(released.json.leases, 0);
 });
 
+test("a hold can only be released by its exact authenticated scope", async () => {
+  const { coordinator } = harness();
+  const auth = `Bearer ${TOKEN}`;
+  const activated = await handleCoordinatorRequest(
+    {
+      method: "POST",
+      url: "/ensure-ready",
+      authorization: auth,
+      body: ensureControlBody({ hold: true }),
+    },
+    coordinator,
+    TOKEN,
+  );
+  const leaseId = activated.json.leaseId;
+  const foreign = await handleCoordinatorRequest(
+    {
+      method: "POST",
+      url: "/release",
+      authorization: auth,
+      body: JSON.stringify({
+        scope: { ...CONTROL_SCOPE, runId: "another-run" },
+        leaseId,
+      }),
+    },
+    coordinator,
+    TOKEN,
+  );
+  assert.equal(foreign.json.released, false);
+  assert.equal(foreign.json.leases, 1);
+  const owner = await handleCoordinatorRequest(
+    {
+      method: "POST",
+      url: "/release",
+      authorization: auth,
+      body: JSON.stringify({ scope: CONTROL_SCOPE, leaseId }),
+    },
+    coordinator,
+    TOKEN,
+  );
+  assert.equal(owner.json.released, true);
+  assert.equal(owner.json.leases, 0);
+});
+
 // ------------------------------------------------- the dashboard's client
 
 test("a coordinator endpoint needs both halves and must be loopback", () => {
   assert.equal(resolveCoordinatorEndpoint({}), null);
   assert.equal(resolveCoordinatorEndpoint({ POSTIZ_COORDINATOR_URL: "http://127.0.0.1:7721" }), null);
-  assert.equal(resolveCoordinatorEndpoint({ POSTIZ_COORDINATOR_TOKEN: "t" }), null);
+  assert.equal(resolveCoordinatorEndpoint({ POSTIZ_COORDINATOR_TOKEN: TOKEN }), null);
   assert.equal(
     resolveCoordinatorEndpoint({
       POSTIZ_COORDINATOR_URL: "http://example.com:7721",
-      POSTIZ_COORDINATOR_TOKEN: "t",
+      POSTIZ_COORDINATOR_TOKEN: TOKEN,
     }),
     null,
     "the capability token must never be sent off-box",
@@ -632,9 +750,9 @@ test("a coordinator endpoint needs both halves and must be loopback", () => {
   assert.deepEqual(
     resolveCoordinatorEndpoint({
       POSTIZ_COORDINATOR_URL: "http://127.0.0.1:7721/",
-      POSTIZ_COORDINATOR_TOKEN: "t",
+      POSTIZ_COORDINATOR_TOKEN: TOKEN,
     }),
-    { url: "http://127.0.0.1:7721", token: "t" },
+    { url: "http://127.0.0.1:7721", token: TOKEN },
   );
 });
 
@@ -679,18 +797,27 @@ test("the dashboard activates through the coordinator, bearing the capability to
   );
   t.after(() => fake.close());
 
-  const outcome = await activateStack(config, { reason: "run", timeoutMs: 1_000, hold: true }, fake.env);
+  const outcome = await activateStack(config, {
+    scope: CONTROL_SCOPE,
+    reason: "run",
+    timeoutMs: 1_000,
+    hold: true,
+  }, fake.env);
   assert.equal(outcome.ready, true);
   assert.equal(outcome.via, "coordinator");
   assert.equal(outcome.leaseId, "L1");
   assert.equal(fake.seen[0].authorization, `Bearer ${TOKEN}`);
-  assert.equal(JSON.parse(fake.seen[0].body).reason, "run");
+  assert.deepEqual(JSON.parse(fake.seen[0].body).scope, CONTROL_SCOPE);
 });
 
 test("an unreachable coordinator degrades truthfully instead of starting a second launcher", async (t) => {
   const fake = await fakeCoordinator(() => ({ status: 500, json: {} }));
   t.after(() => fake.close());
-  const outcome = await activateStack(config, { reason: "run", timeoutMs: 500 }, fake.env);
+  const outcome = await activateStack(config, {
+    scope: CONTROL_SCOPE,
+    reason: "run",
+    timeoutMs: 500,
+  }, fake.env);
   assert.equal(outcome.ready, false);
   assert.equal(outcome.via, "coordinator");
   assert.match(outcome.reason ?? "", /coordinator did not respond/i);
@@ -703,11 +830,11 @@ test("observing the stack asks the coordinator and starts nothing", async (t) =>
       : { status: 404, json: {} },
   );
   t.after(() => fake.close());
-  const status = await observeStack(config, {}, fake.env);
+  const status = await observeStack(config, CONTROL_SCOPE, {}, fake.env);
   assert.equal(status.state, "stopped");
   assert.equal(status.reachable, false);
   assert.equal(fake.seen.length, 1);
-  assert.equal(fake.seen[0].method, "GET");
+  assert.equal(fake.seen[0].method, "POST");
   assert.match(fake.seen[0].url, /^\/status/);
 });
 
@@ -718,9 +845,9 @@ test("stopping goes through the coordinator, and release is fire-and-forget-safe
       : { status: 200, json: { ok: true, released: true } },
   );
   t.after(() => fake.close());
-  assert.equal(await deactivateStack(config, fake.env), true);
-  await releaseActivation("L1", fake.env);
-  await releaseActivation(null, fake.env);
+  assert.equal(await deactivateStack(config, CONTROL_SCOPE, fake.env), true);
+  await releaseActivation(CONTROL_SCOPE, "L1", fake.env);
+  await releaseActivation(CONTROL_SCOPE, null, fake.env);
   assert.equal(fake.seen.length, 2, "a null lease must not produce a request");
 });
 
@@ -829,7 +956,10 @@ test("Docker being unavailable leaves the run drafting locally, with a reason", 
   );
   t.after(() => fake.close());
 
-  const availability = await openPostizSession({ reason: "run" }, offlineEnv(fake.env));
+  const availability = await openPostizSession(
+    { scope: CONTROL_SCOPE, reason: "run" },
+    offlineEnv(fake.env),
+  );
   assert.equal(availability.session, null);
   assert.equal(availability.state, "stopped");
   assert.equal(availability.reason, "The container engine is not running.");
@@ -854,7 +984,10 @@ test("a cold start that outruns the run budget degrades truthfully to local draf
   );
   t.after(() => fake.close());
 
-  const availability = await openPostizSession({ reason: "run", hold: true }, offlineEnv(fake.env));
+  const availability = await openPostizSession(
+    { scope: CONTROL_SCOPE, reason: "run", hold: true },
+    offlineEnv(fake.env),
+  );
   assert.equal(availability.session, null);
   // "starting", not "running" and not "failed": the containers really are
   // coming up, and the next run will find them.
@@ -864,11 +997,10 @@ test("a cold start that outruns the run budget degrades truthfully to local draf
 });
 
 test("the Socials Manager still drafts locally with no coordinator configured at all", async () => {
-  // No POSTIZ_COORDINATOR_* at all and an unreachable Postiz: the direct
-  // fallback is selected. It is given `adapter` mode so the assertion is about
-  // the degrade path and no Docker command is ever issued from a test.
+  // No POSTIZ_COORDINATOR_* at all and an unreachable Postiz: the process-free
+  // local drafting path is selected, and no Docker command is ever issued.
   const availability = await openPostizSession(
-    { reason: "run" },
+    { scope: CONTROL_SCOPE, reason: "run" },
     { SOCIALS_MANAGER_MODE: "adapter", SOCIALS_MANAGER_URL: "http://127.0.0.1:1" },
   );
   assert.equal(availability.session, null);
@@ -964,7 +1096,12 @@ test("the exit endpoint is conditional where the manual stop is not", async () =
   manual.state.reachable = true;
   await manual.coordinator.ensureReady({ reason: "manual" });
   const stopped = await handleCoordinatorRequest(
-    { method: "POST", url: "/stop", authorization: auth },
+    {
+      method: "POST",
+      url: "/stop",
+      authorization: auth,
+      body: JSON.stringify({ scope: CONTROL_SCOPE }),
+    },
     manual.coordinator,
     TOKEN,
   );

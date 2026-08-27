@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-The tested desktop toolchain is Windows 10/11 x64, Node ≥ 22, npm, Bun ≥
-1.3.14, and Python ≥ 3.11 with pip. Windows x64 is the only supported
+The tested desktop toolchain is Windows 10/11 x64, Node ≥ 22, npm, Rust/Cargo,
+Bun ≥ 1.3.14, and Python ≥ 3.11 with pip. Windows x64 is the only supported
 installer target. The shell and pure unit tests are portable, but non-Windows
 desktop development and packaging are not release-verified.
 
@@ -19,42 +19,64 @@ cd hermes && bun install && cd ..
 ChatMock is source-only Python; its dependencies are assembled into the
 packaged runtime by `npm run desktop:prepare`.
 
-## Dev mode
+### Explicit developer/build provisioning
 
+`npm run setup:audio-analyzer` and `node scripts/setup-google-images.mjs` are
+developer/build-time provisioning commands. Electron, Next, and the installed
+Breadboard product never launch them, and they are not descendants of the
+running Breadboard process tree. They may mutate only their documented checkout
+or `.runtime` developer outputs. Product-visible setup remains an authenticated
+Runtime V2 job using staged or data-root-owned artifacts, with no direct-process
+fallback to either command.
+
+## Normal development: lean mode
+
+```bat
+npm run dev
 ```
-npm run desktop:dev
-```
 
-compiles the shell (`tsc`) and launches Electron with `--breadboard-dev`:
+is the primary integrated-development command. It selects
+`desktop:dev:lean`, builds or reuses the standalone production-like dashboard,
+and launches the real Electron application with Runtime V2:
 
-- services run from the repo exactly like `scripts/dev-all.mjs` does
-  (system node/bun/python, Next dev server with Turbopack, dev data layout);
-- the startup screen, supervisor, health checks, log capture and process-tree
-  cleanup are the same code paths as the packaged app;
+- Electron owns windows and exactly one fixed `breadboard-runtime.exe` root;
+- Rust owns every Breadboard service, finite worker, and descendant process;
+- the webpack/Turbopack development compiler is not left running;
+- the startup screen, health projection, log capture, and process-tree cleanup
+  use the same Runtime V2 contracts as the packaged app;
 - logs: `.runtime/desktop-logs/*.log`;
 - desktop config/secrets: `.runtime/desktop-config/desktop-config.json`.
 
-The existing workflows are untouched: `start.bat`, `npm run dev`,
-`npm run dev:dashboard`, etc. keep working without Electron.
-
-For production-like dashboard speed without per-route compilation, run:
+The explicit equivalent is:
 
 ```bat
-npm run desktop:dev:fast
+npm run desktop:dev:lean
 ```
 
-This builds the standalone dashboard once and launches the same desktop
-supervisor against it. Re-run the command after changing dashboard code. It
-keeps using the normal development database and content paths.
+If dashboard inputs changed but Windows cannot preserve the configured commit
+reserve during a rebuild, lean mode reuses the last complete compatible build.
+If no compatible build exists, it fails with an actionable error and does not
+fall back to a hot compiler.
+
+## Explicit dashboard hot mode
+
+Use the hot Next compiler only while actively editing dashboard UI or API code:
+
+```bat
+npm run desktop:dev:hot
+```
+
+Hot mode still launches the real Electron application and the same Rust
+runtime. The difference is limited to the dashboard launch profile.
 
 ## Mode separation
 
-`desktop/src/main/path-resolver.ts` is the only place that distinguishes dev
-from packaged. Everything downstream (service definitions, migration,
-provisioning) consumes its `ResolvedPaths`, so path logic cannot fork
-elsewhere. In dev mode `runtimesDir` is empty and runtime binaries resolve
-via PATH; in packaged mode every runtime is an absolute path under
-`resources/` and the service environment is minimal.
+`desktop/src/main/path-resolver.ts` derives the immutable application/runtime
+roots and mutable data roots for development and packaged launches. Electron
+passes those roots and the selected `lean`, `hot`, or `packaged` mode through a
+bounded private bootstrap record. Runtime V2 then resolves only allowlisted
+manifest entrypoints and environments; Electron and Next do not construct
+service commands.
 
 ## Tests
 
@@ -63,15 +85,11 @@ npm run desktop:test
 ```
 
 compiles `desktop/tests/**` and runs them with `node --test`. The suite covers
-path resolution, config validation/redaction, port allocation, dependency
-ordering + cycles, health-check semantics and timeouts, required vs optional
-failure, restart-loop protection, reverse-order shutdown, grandchild
-process-tree termination, migration planning/idempotency, and renderer
-navigation lockdown. It also checks the complete preload/IPC channel contract,
-startup data-directory validation, security-sensitive BrowserWindow options,
-and launches a real Electron process to verify the sandboxed preload bridge.
-The service-manager tests spawn real child processes. On non-Windows hosts the
-real-Electron integration test is explicitly skipped.
+path resolution, config validation/redaction, the fixed Runtime V2 bootstrap
+and control protocol, startup recovery/retry, shutdown, migration, renderer
+navigation lockdown, the preload/IPC contract, and security-sensitive
+BrowserWindow options. Real process ownership, worker cleanup, and product
+parity are covered by the separate Runtime V2 Electron QA commands.
 
 Dashboard checks are separate:
 
@@ -94,13 +112,12 @@ npm run desktop:build:dashboard
 - `desktop/src/startup/**` — the startup page (plain script, strict CSP; no
   frameworks).
 
-After edits: `npm run build` inside `desktop/` (or just re-run
-`npm run desktop:dev`).
+After edits: `npm run build` inside `desktop/` (or rerun `npm run dev`).
 
 ## Environment and launch overrides
 
 - `BREADBOARD_DESKTOP_RELEASE_DIR`: overrides the installer output directory.
-- `BREADBOARD_DESKTOP_DASHBOARD_MODE=standalone`: uses an existing `.next-desktop` standalone build (normally set by `desktop:dev:fast`).
+- `BREADBOARD_DESKTOP_DASHBOARD_MODE=standalone`: selects the lean standalone dashboard profile (normally set by `desktop:dev:lean`).
 - `BREADBOARD_DASHBOARD_MAX_OLD_SPACE_MB`: expert override for the development
   dashboard's V8 old-space budget, in MiB. See "Development dashboard memory"
   below. Accepted range 512–16384; anything else (non-integer, out of range,
@@ -110,50 +127,22 @@ After edits: `npm run build` inside `desktop/` (or just re-run
 - `--breadboard-dev`: forces repository-backed development mode.
 - `--breadboard-user-data-dir=<absolute-path>`: isolates Electron data for automated installed testing; filesystem roots and relative paths are rejected.
 
-`NEXTAUTH_SECRET`, service ports, Hermes credentials/capability secrets,
-data paths, and internal URLs are generated or resolved by the Electron main
-process. They should not be hard-coded in a packaged launch.
+`NEXTAUTH_SECRET`, service ports, credentials/capability secrets, data paths,
+and private internal URLs are generated or resolved by trusted Runtime V2
+authorities. They must not be hard-coded in a packaged launch or exposed to a
+renderer.
 
 ## Development dashboard memory
 
-`next dev` uses Next 16's default Turbopack compiler and compiles routes on
-demand. The earlier Webpack audit showed why an old-space cap alone did not fix
-the incident: evaluated route entries remained loaded, while native buffers,
-source maps, mapped cache files, and compiler descendants consumed memory that
-V8's heap counter cannot see. Repeated requests to already compiled routes were
-flat; compiling new entries was the growth trigger.
+The hot compiler can retain evaluated route graphs, source maps, native
+buffers, mapped cache files, and compiler descendants that are not represented
+by V8 old-space alone. That is why it is opt-in rather than the ordinary
+long-running desktop runtime.
 
-Next.js guards against this itself: after every dev request it compares
-`used_heap_size` with `0.8 * heap_size_limit` and restarts its server child when
-it crosses. `heap_size_limit` is whatever `--max-old-space-size` says, so the
-heap budget is really the *recycle* threshold, not just a ceiling.
+Lean mode avoids that persistent compiler. Runtime V2 additionally isolates
+heavy finite operations in fresh workers so successful, failed, cancelled, and
+resource-denied work returns memory through process exit. Service idle leases
+and Windows Job Object ownership bound the remaining long-lived trees. Resource
+caps remain emergency backstops, not the reclamation mechanism.
 
-`desktop/src/main/memory-policy.ts` computes the current heap, tree, and commit
-reserves from detected physical memory and Windows commit. The V8 budget sets a
-recycle/old-space boundary; the descendant-tree budget and commit governor are
-the actual containment layers for memory outside that heap.
-
-The ceiling is a trade-off in both directions. Too high and the process is
-unbounded — that is the incident. Too low and Next recycles often enough to drop
-in-flight interactive work: at 4 GiB a recycle landed in the middle of a QA
-document ingest. Long-running work survives a recycle regardless (Learn owns
-durable jobs with fenced, staleness-detected leases and a resume path), but the
-request in flight does not.
-
-An earlier policy granted 75% of physical RAM capped at 24 GiB. On a 32 GiB
-machine that moved the recycle point to ~19.8 GiB of heap — more commit than the
-machine had to give — and the dashboard exhausted the system commit limit
-instead, taking out the Desktop Window Manager and Chromium's GPU process.
-
-Two backstops sit behind the budget:
-
-- The supervisor samples the dashboard's **whole process tree**, not the
-  `next dev` wrapper (which stays at ~65 MB while its server child grows). A
-  sustained breach of the budget in `service-definitions.ts` is logged and the
-  tree is terminated; the normal restart policy and its cap take it from there.
-- `npm run dev` and `npm run desktop:dev` each warn if the other is already
-  running against this checkout, since two dev servers double the exposure.
-
-Raise `BREADBOARD_DASHBOARD_MAX_OLD_SPACE_MB` only if you have measured that you
-need it, and keep the total below what the machine can commit alongside
-everything else.
+See `docs/MEMORY_TUNING.md` for the reserve policy and measurement commands.

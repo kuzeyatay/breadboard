@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { matraixDefaults } from "@/lib/agent-settings/defaults.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { MATRAIX_AGENT_ID, parseMatraixRequest } from "@/lib/matraix/identity.ts";
-import { startRun } from "@/lib/matraix/run-manager.ts";
+import { startRun } from "@/lib/matraix/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -56,14 +55,12 @@ export async function POST(request: Request) {
     const rawEffort = typeof body.reasoningEffort === "string" ? body.reasoningEffort.toLowerCase() : "";
     const reasoningEffort = rawEffort === "max" ? "xhigh" : EFFORTS.has(rawEffort) ? rawEffort : undefined;
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
-      brief,
       request: parsed,
       model,
-      reasoningEffort,
+      reasoningEffort: reasoningEffort ?? "",
       baseUrl: baseURL,
-      apiKey: chatmockApiKeyValue(),
       // The chat this was launched from, so a study that refers back to it —
       // "ask them about the pricing we just worked out" — resolves.
       conversationContext: conversationContextFromBody(userId, body),

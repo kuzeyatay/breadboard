@@ -30,6 +30,10 @@ export interface PersistentDesktopConfig {
   gbrainMode: "disabled" | "preferred" | "required";
   /** Per-install secret for the loopback GBrain adapter (never logged). */
   gbrainAdapterSecret: string;
+  /** Local Runtime V2 ownership, explicitly configured external server, or off. */
+  comfyUiMode: "disabled" | "managed" | "external";
+  /** Server-only base URL used only when comfyUiMode is external. */
+  comfyUiExternalUrl: string | null;
   /** UI-TARS browser-operator runtime mode. Additive; default optional. */
   uiTarsMode: "disabled" | "optional" | "required";
   /** Per-install secret for the loopback UI-TARS adapter (never logged). */
@@ -89,8 +93,6 @@ export interface LaunchPorts {
   hermes: number;
   /** Host port where the optional Postiz web/API container is published. */
   postiz: number;
-  /** Private readiness endpoint owned by the Postiz supervisor process. */
-  postizSupervisor: number;
   /** Electron-owned authenticated lifecycle/governor control plane. */
   supervisorControl?: number;
   quartz: number;
@@ -123,26 +125,17 @@ export interface LaunchPorts {
 /**
  * Secrets minted fresh on every launch and never written to disk.
  *
- * A per-install secret in `desktop-config.json` is the right shape for a
- * credential the user's data outlives (NextAuth, Hermes). A capability token
- * that only authorizes one running loopback coordinator is the opposite: it
- * should die with the process that issued it, so a copy scraped from anywhere
- * is worthless the moment Breadboard restarts.
+ * Runtime V2 mints service capabilities inside the native authority. The only
+ * legacy launch secret retained here authorizes the dashboard to reach that
+ * control plane; Electron does not mint service-specific process capabilities.
  */
 export interface LaunchSecrets {
-  /**
-   * Authorizes control of the Postiz lifecycle coordinator: activation, stop,
-   * and status. Handed only to the coordinator process and the dashboard
-   * server process, never to a renderer, endpoints.json, or any API response.
-   */
-  postizCoordinatorToken: string;
   /** Authorizes the dashboard server to acquire service/job leases. */
   supervisorControlToken?: string;
 }
 
 export function mintLaunchSecrets(): LaunchSecrets {
   return {
-    postizCoordinatorToken: randomSecret(),
     supervisorControlToken: randomSecret(),
   };
 }
@@ -173,6 +166,8 @@ export function defaultPersistentConfig(): PersistentDesktopConfig {
     hermesCapabilitySecret: randomSecret(),
     gbrainMode: "preferred",
     gbrainAdapterSecret: randomSecret(24),
+    comfyUiMode: "managed",
+    comfyUiExternalUrl: null,
     uiTarsMode: "optional",
     uiTarsAdapterSecret: randomSecret(24),
     cadMode: "optional",
@@ -193,7 +188,9 @@ export function defaultPersistentConfig(): PersistentDesktopConfig {
   };
 }
 
-export function validatePersistentConfig(value: unknown): PersistentDesktopConfig {
+export function validatePersistentConfig(
+  value: unknown,
+): PersistentDesktopConfig {
   if (typeof value !== "object" || value === null) {
     throw new Error("desktop-config.json is not an object");
   }
@@ -206,11 +203,33 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
     return raw;
   };
   if (record["version"] !== 1 && record["version"] !== 2) {
-    throw new Error(`desktop-config.json: unsupported version ${String(record["version"])}`);
+    throw new Error(
+      `desktop-config.json: unsupported version ${String(record["version"])}`,
+    );
   }
   const legacyPrefix = ["open", "harness"].join("");
   const legacyToolSecret = record[`${legacyPrefix}ToolSecret`];
   const legacyCapabilitySecret = record[`${legacyPrefix}CapabilitySecret`];
+  const rawComfyUiMode = record["comfyUiMode"];
+  let comfyUiMode: PersistentDesktopConfig["comfyUiMode"];
+  if (rawComfyUiMode === undefined) comfyUiMode = "managed";
+  else if (
+    rawComfyUiMode === "disabled" ||
+    rawComfyUiMode === "managed" ||
+    rawComfyUiMode === "external"
+  ) {
+    comfyUiMode = rawComfyUiMode;
+  } else {
+    throw new Error('desktop-config.json: invalid "comfyUiMode"');
+  }
+  const comfyUiExternalUrl = normalizeExternalComfyUiUrl(
+    record["comfyUiExternalUrl"],
+  );
+  if (comfyUiMode === "external" && comfyUiExternalUrl === null) {
+    throw new Error(
+      'desktop-config.json: "comfyUiExternalUrl" is required in external mode',
+    );
+  }
   return {
     version: 2,
     nextAuthSecret: requireString("nextAuthSecret"),
@@ -228,12 +247,13 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
         ? (record["hermesToolSecret"] as string)
         : typeof legacyToolSecret === "string" && legacyToolSecret.length >= 32
           ? legacyToolSecret
-        : randomSecret(),
+          : randomSecret(),
     hermesCapabilitySecret:
       typeof record["hermesCapabilitySecret"] === "string" &&
       record["hermesCapabilitySecret"].length >= 32
         ? (record["hermesCapabilitySecret"] as string)
-        : typeof legacyCapabilitySecret === "string" && legacyCapabilitySecret.length >= 32
+        : typeof legacyCapabilitySecret === "string" &&
+            legacyCapabilitySecret.length >= 32
           ? legacyCapabilitySecret
           : randomSecret(),
     // GBrain fields backfilled for configs written before they existed. An
@@ -244,22 +264,27 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
         ? (record["gbrainMode"] as "disabled" | "required")
         : "preferred",
     gbrainAdapterSecret:
-      typeof record["gbrainAdapterSecret"] === "string" && record["gbrainAdapterSecret"].length > 0
+      typeof record["gbrainAdapterSecret"] === "string" &&
+      record["gbrainAdapterSecret"].length > 0
         ? (record["gbrainAdapterSecret"] as string)
         : randomSecret(24),
+    comfyUiMode,
+    comfyUiExternalUrl,
     // UI-TARS fields backfilled for configs written before they existed.
     uiTarsMode:
       record["uiTarsMode"] === "disabled" || record["uiTarsMode"] === "required"
         ? (record["uiTarsMode"] as "disabled" | "required")
         : "optional",
     uiTarsAdapterSecret:
-      typeof record["uiTarsAdapterSecret"] === "string" && record["uiTarsAdapterSecret"].length > 0
+      typeof record["uiTarsAdapterSecret"] === "string" &&
+      record["uiTarsAdapterSecret"].length > 0
         ? (record["uiTarsAdapterSecret"] as string)
         : randomSecret(24),
     // CAD fields backfilled for configs written before the service existed.
     cadMode: record["cadMode"] === "disabled" ? "disabled" : "optional",
     cadServiceSecret:
-      typeof record["cadServiceSecret"] === "string" && record["cadServiceSecret"].length > 0
+      typeof record["cadServiceSecret"] === "string" &&
+      record["cadServiceSecret"].length > 0
         ? (record["cadServiceSecret"] as string)
         : randomSecret(24),
     // ColPali fields backfilled for configs written before the service existed.
@@ -271,9 +296,11 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
         : randomSecret(24),
     // Humanizer fields backfilled for configs written before the service
     // existed. An install that explicitly turned it off keeps it off.
-    humanizerMode: record["humanizerMode"] === "disabled" ? "disabled" : "local",
+    humanizerMode:
+      record["humanizerMode"] === "disabled" ? "disabled" : "local",
     humanizerDevice:
-      record["humanizerDevice"] === "cuda" || record["humanizerDevice"] === "cpu"
+      record["humanizerDevice"] === "cuda" ||
+      record["humanizerDevice"] === "cpu"
         ? (record["humanizerDevice"] as "cuda" | "cpu")
         : "auto",
     humanizerServiceSecret:
@@ -285,36 +312,44 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
     // supervised. Existing installs gain it as `optional`, which is what makes
     // already-connected subscriptions start working without any user action.
     cliproxyMode:
-      record["cliproxyMode"] === "disabled" || record["cliproxyMode"] === "required"
+      record["cliproxyMode"] === "disabled" ||
+      record["cliproxyMode"] === "required"
         ? (record["cliproxyMode"] as "disabled" | "required")
         : "optional",
     // Backfilled for configs written before the field existed.
     initialInviteCode:
-      typeof record["initialInviteCode"] === "string" && record["initialInviteCode"].length > 0
+      typeof record["initialInviteCode"] === "string" &&
+      record["initialInviteCode"].length > 0
         ? (record["initialInviteCode"] as string)
         : `BREAD${crypto.randomBytes(5).toString("hex").toUpperCase()}`,
     scriberrEnabled: record["scriberrEnabled"] === true,
     scriberrBaseUrl:
-      typeof record["scriberrBaseUrl"] === "string" && record["scriberrBaseUrl"].length > 0
+      typeof record["scriberrBaseUrl"] === "string" &&
+      record["scriberrBaseUrl"].length > 0
         ? (record["scriberrBaseUrl"] as string)
         : null,
     // Backfill a stable, private account for installations created before the
     // native Scriberr sidecar existed. The dashboard registers it only when
     // the dedicated local database contains no users yet.
     scriberrUsername:
-      typeof record["scriberrUsername"] === "string" && record["scriberrUsername"].length >= 3
+      typeof record["scriberrUsername"] === "string" &&
+      record["scriberrUsername"].length >= 3
         ? (record["scriberrUsername"] as string)
         : "breadboard",
     scriberrPassword:
-      typeof record["scriberrPassword"] === "string" && record["scriberrPassword"].length >= 24
+      typeof record["scriberrPassword"] === "string" &&
+      record["scriberrPassword"].length >= 24
         ? (record["scriberrPassword"] as string)
         : randomSecret(24),
     migratedFrom:
-      typeof record["migratedFrom"] === "string" && record["migratedFrom"].length > 0
+      typeof record["migratedFrom"] === "string" &&
+      record["migratedFrom"].length > 0
         ? (record["migratedFrom"] as string)
         : null,
     migrationVersion:
-      typeof record["migrationVersion"] === "number" ? (record["migrationVersion"] as number) : 0,
+      typeof record["migrationVersion"] === "number"
+        ? (record["migrationVersion"] as number)
+        : 0,
   };
 }
 
@@ -322,12 +357,17 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
 export function atomicWriteFile(filePath: string, contents: string): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  const tmp = path.join(
+    dir,
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+  );
   fs.writeFileSync(tmp, contents, { encoding: "utf8", mode: 0o600 });
   fs.renameSync(tmp, filePath);
 }
 
-export function loadOrCreatePersistentConfig(configDir: string): PersistentDesktopConfig {
+export function loadOrCreatePersistentConfig(
+  configDir: string,
+): PersistentDesktopConfig {
   const file = path.join(configDir, CONFIG_FILE);
   if (fs.existsSync(file)) {
     const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -344,25 +384,43 @@ export function loadOrCreatePersistentConfig(configDir: string): PersistentDeskt
   return created;
 }
 
-export function savePersistentConfig(configDir: string, config: PersistentDesktopConfig): void {
-  atomicWriteFile(path.join(configDir, CONFIG_FILE), JSON.stringify(config, null, 2));
+export function savePersistentConfig(
+  configDir: string,
+  config: PersistentDesktopConfig,
+): void {
+  atomicWriteFile(
+    path.join(configDir, CONFIG_FILE),
+    JSON.stringify(config, null, 2),
+  );
 }
 
-/** Values safe to include in logs/diagnostics — no secrets. */
-export function redactedConfigSummary(config: DesktopRuntimeConfig): Record<string, unknown> {
+/** Persisted values safe to include in logs/diagnostics — no secrets. */
+export function redactedPersistentConfigSummary(
+  persistent: PersistentDesktopConfig,
+): Record<string, unknown> {
   return {
-    version: config.persistent.version,
+    version: persistent.version,
     agentRuntime: "hermes",
-    gbrainMode: config.persistent.gbrainMode,
-    uiTarsMode: config.persistent.uiTarsMode,
-    cadMode: config.persistent.cadMode,
-    colpaliMode: config.persistent.colpaliMode,
-    humanizerMode: config.persistent.humanizerMode,
-    humanizerDevice: config.persistent.humanizerDevice,
-    cliproxyMode: config.persistent.cliproxyMode,
-    scriberrEnabled: config.persistent.scriberrEnabled,
-    migratedFrom: config.persistent.migratedFrom,
-    migrationVersion: config.persistent.migrationVersion,
+    gbrainMode: persistent.gbrainMode,
+    comfyUiMode: persistent.comfyUiMode,
+    uiTarsMode: persistent.uiTarsMode,
+    cadMode: persistent.cadMode,
+    colpaliMode: persistent.colpaliMode,
+    humanizerMode: persistent.humanizerMode,
+    humanizerDevice: persistent.humanizerDevice,
+    cliproxyMode: persistent.cliproxyMode,
+    scriberrEnabled: persistent.scriberrEnabled,
+    migratedFrom: persistent.migratedFrom,
+    migrationVersion: persistent.migrationVersion,
+  };
+}
+
+/** Legacy full-config summary retained for non-lifecycle callers during cutover. */
+export function redactedConfigSummary(
+  config: DesktopRuntimeConfig,
+): Record<string, unknown> {
+  return {
+    ...redactedPersistentConfigSummary(config.persistent),
     // Hermes's port is deliberately omitted: diagnostics are renderer-visible.
     ports: {
       dashboard: config.ports.dashboard,
@@ -376,6 +434,34 @@ export function redactedConfigSummary(config: DesktopRuntimeConfig): Record<stri
       ...(config.ports.cliproxy ? { cliproxy: config.ports.cliproxy } : {}),
     },
   };
+}
+
+function normalizeExternalComfyUiUrl(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (
+    typeof value !== "string" ||
+    value.length > 2_048 ||
+    /[\u0000-\u0020\u007f]/u.test(value)
+  ) {
+    throw new Error('desktop-config.json: invalid "comfyUiExternalUrl"');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error('desktop-config.json: invalid "comfyUiExternalUrl"');
+  }
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    !parsed.hostname
+  ) {
+    throw new Error('desktop-config.json: invalid "comfyUiExternalUrl"');
+  }
+  return value.replace(/\/+$/u, "");
 }
 
 /**

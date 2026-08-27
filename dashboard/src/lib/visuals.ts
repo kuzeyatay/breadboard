@@ -5,9 +5,10 @@
 // The LLM only ever produces JSON specs (validated by ./visual-spec); the
 // interactive rendering happens inside Quartz via trusted components.
 
-import fs from 'fs';
-import path from 'path';
+import type { Dirent } from 'node:fs';
 import type OpenAI from 'openai';
+import { externalRuntimeFilesystem as fs } from './external-runtime-filesystem.ts';
+import { externalRuntimePath as path } from './external-runtime-path.ts';
 import { withCouncil } from './council';
 import {
   buildVisualBlock,
@@ -129,7 +130,7 @@ export function pruneVisualArtifacts(
     // specs. Preserve every version for a live visual (rollback depends on
     // them), but remove the complete directory once no current page references
     // that visual so stale modules cannot remain active artifacts.
-    let directories: fs.Dirent[] = [];
+    let directories: Dirent[] = [];
     try {
       directories = fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
     } catch {
@@ -485,7 +486,7 @@ export function listGardenMarkdownFiles(contentPath: string, gardenSlug: string)
   const root = path.join(contentPath, gardenSlug);
   const files: string[] = [];
   const walk = (dir: string) => {
-    let entries: fs.Dirent[] = [];
+    let entries: Dirent[] = [];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {

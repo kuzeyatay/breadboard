@@ -76,6 +76,15 @@ export default function WorkTimerShortcut() {
     return () => window.clearInterval(tick);
   }, [session.endAt]);
 
+  useEffect(
+    () => () => {
+      const audio = audioRef.current;
+      audioRef.current = null;
+      void audio?.close().catch(() => undefined);
+    },
+    [],
+  );
+
   const chime = useCallback(() => {
     // The context was created by the Start click, so playback is allowed here.
     // No context, or a refusal, just means the session ends quietly.
@@ -94,6 +103,14 @@ export default function WorkTimerShortcut() {
         gain.gain.setValueAtTime(0.0001, at);
         gain.gain.exponentialRampToValueAtTime(0.12, at + 0.02);
         gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.5);
+        oscillator.addEventListener(
+          "ended",
+          () => {
+            oscillator.disconnect();
+            gain.disconnect();
+          },
+          { once: true },
+        );
         oscillator.start(at);
         oscillator.stop(at + 0.55);
       }

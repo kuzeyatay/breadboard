@@ -83,7 +83,14 @@ export async function POST(
       proposedLearningMapId: learningMapId,
     }, `confirmation for ${cluster.slug}`);
     if (execution.accepted) {
-      throw new Error("Confirm-only unexpectedly entered a background handoff.");
+      return NextResponse.json(
+        {
+          success: true,
+          accepted: true,
+          jobId: execution.jobId ?? null,
+        },
+        { status: 202 },
+      );
     }
     return NextResponse.json({ success: true, learningMap: execution.value });
   } catch (error) {

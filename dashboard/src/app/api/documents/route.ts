@@ -117,9 +117,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'tags must be an array of strings' }, { status: 400 });
     }
 
-    const { cluster } = await requireOwnedClusterFromSlug(clusterSlug);
+    const { cluster, userId } = await requireOwnedClusterFromSlug(clusterSlug);
 
     const created = await createGardenDocument({
+      userId,
       clusterSlug: cluster.slug,
       title,
       content,

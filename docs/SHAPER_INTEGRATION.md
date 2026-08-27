@@ -25,8 +25,11 @@ Hidden geometry is inferred, so a clean picture with one centered object and a
 plain background produces the most reliable result.
 
 Only one reconstruction runs at a time. This protects consumer GPUs from two
-ShapeR processes competing for VRAM. Progress and cancellation are streamed to
-the same inline agent card used by the chat transcript.
+ShapeR processes competing for VRAM. Each health probe and reconstruction is a
+fresh authenticated Runtime V2 job. The native Runtime owns Python and every
+CUDA descendant, while the dashboard only reconciles fenced progress and the
+private GLB path. Progress, cancellation, restart recovery, and the inline
+agent card keep their existing chat contract.
 
 ## Local setup
 
@@ -36,21 +39,32 @@ The authoritative dependency instructions are in
 the ordinary Breadboard Node environment is not sufficient. The experimental
 single-view path additionally needs the `depth_anything_3` package.
 
-Provision that environment once, then set:
+Provision that environment once, then configure the desktop runtime with:
 
 ```dotenv
 SHAPER_ROOT=C:\path\to\breadboard\ShapeR
 SHAPER_PYTHON=C:\path\to\the\shaper-environment\python.exe
 ```
 
-When unset, Breadboard looks for `ShapeR` at the repository root and a Python
-executable under `ShapeR/.venv`. Agent selection performs a cached health check
-for the clone, bridge, Python dependencies, and CUDA. A missing runtime is shown
-as an unavailable-agent message instead of starting a doomed job.
+Development and packaging may resolve those values from their trusted staged
+roots, but a browser request cannot supply or override them. The packaged
+ShapeR source is read-only. Model downloads, Hugging Face/Torch caches, compiler
+caches, and temporary homes live under the Breadboard data root at
+`runtime-v2/services/formsmith`; attempt inputs and GLB staging remain inside
+the Runtime job's private workspace.
 
-The runtime entry point is [`scripts/shaper-bridge.py`](../scripts/shaper-bridge.py).
-The API accepts only an opaque upload ID; it never accepts a browser-provided
-filesystem path or free-form command.
+Agent selection submits a short Runtime-owned health probe for the checkout,
+bridge, Python dependencies, and CUDA. A missing runtime is shown as an
+unavailable-agent message instead of starting a doomed job. Breadboard does not
+install ShapeR, discover an ambient Python executable, or fall back to a
+dashboard-owned subprocess while serving a request.
+
+The fixed runtime entry points are
+[`dashboard/scripts/runtime-v2-formsmith-worker.mjs`](../dashboard/scripts/runtime-v2-formsmith-worker.mjs)
+and [`scripts/shaper-bridge.py`](../scripts/shaper-bridge.py). The API accepts
+only an opaque, user-scoped upload ID. Runtime seals that image as one bounded
+input blob; neither the API nor the worker protocol accepts a browser-provided
+filesystem path, executable, environment variable, or free-form command.
 
 ## Licensing
 

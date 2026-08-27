@@ -1,8 +1,13 @@
 import type { NextConfig } from "next";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const desktopBuild = process.env.BREADBOARD_DESKTOP_BUILD === "1";
-const bundlerRoot = path.resolve(process.cwd(), "..");
+// Next may evaluate this config after its CLI has moved process.cwd() to the
+// surrounding workspace. Derive the project boundary from the config itself;
+// otherwise Turbopack and PostCSS resolve dashboard packages from the repo
+// root and a failed import can retain an ever-growing compiler graph.
+const bundlerRoot = path.dirname(fileURLToPath(import.meta.url));
 
 // Mutable data, local secrets, and build state must never be traced into a
 // (standalone) build: the desktop package would otherwise ship a snapshot of
@@ -30,26 +35,99 @@ const gardenAssetRouteExcludes = [
 ];
 
 const dataTraceExcludes = [
-  "db/**",
-  "database/**",
-  "artifacts/**",
+  // Top-level project metadata, local state, and ad-hoc operator files are not
+  // standalone program inputs. Keep package.json: Node uses it for module
+  // resolution in the generated standalone tree.
+  ".claudeignore",
+  ".gitignore",
   ".env*",
+  "*.md",
+  "*.log",
+  ".tmp-*",
+  "tmp-*",
+  "*.db",
+  "*.db-shm",
+  "*.db-wal",
+  "*.sqlite",
+  "*.sqlite-shm",
+  "*.sqlite-wal",
+  "*.sqlite3",
+  "*.sqlite3-shm",
+  "*.sqlite3-wal",
+  "*.key",
+  "*.pem",
+  "*.p12",
+  "*.pfx",
+  "*.mp4",
+  "*.mov",
+  "*.mkv",
+  "*.webm",
+  "*.avi",
+  "*.mp3",
+  "*.wav",
+  "*.m4a",
+  "*.ogg",
+  "*.flac",
+  "*.lock",
+  "*.tsbuildinfo",
+  "package-lock.json",
+  "eslint.config.mjs",
+  "next-env.d.ts",
+  "next.config.ts",
+  "postcss.config.mjs",
+  "tsconfig*",
+
+  // Mutable/runtime-owned and build-only trees. Runtime routes reach these
+  // through the opaque filesystem boundary and the desktop supervisor stages
+  // any reviewed program dependency separately.
+  ".claude/**",
+  ".runtime/**",
   ".vercel/**",
-  // Stale build dirs only — the active desktop distDir (.next-desktop) must
-  // stay traceable or the standalone server loses its own chunks.
-  ".next/**",
-  ".next-dev/**",
-  ".next-production/**",
-  ".next-production-final/**",
+  "artifacts/**",
+  "cad-projects/**",
+  "chat-documents/**",
+  "chat-videos/**",
+  "database/**",
+  "db/**",
+  "goal-mode/**",
+  "hyperframes-cli/**",
+  "hyperframes-runs/**",
+  "loopx-goals/**",
+  "openscience-cli/**",
+  "openscience-state/**",
+  "openscience-workspace/**",
+  "openwork-runtime/**",
+  "openwork-state/**",
+  "openwork-workspace/**",
+  "postiz/**",
+  "video-use/**",
+  "undefined/**",
   "tests/**",
   "test-results/**",
   "neumorphic-before/**",
   "neumorphic-after/**",
-  "../quartz/content/**",
-  "../quartz/public/**",
-  "../quartz/.quartz-cache/**",
-  "../.runtime/**",
-  "../.agents/**",
+  "scripts/**",
+
+  // Stale build dirs only. Do not replace these with `.next*/**`: the active
+  // desktop distDir (.next-desktop) must remain traceable for server chunks.
+  ".next/**",
+  ".next-dev/**",
+  ".next-memory-*/**",
+  ".next-production*/**",
+  ".next-stale-*/**",
+
+  // These packages belong only to disposable compiler/renderer workers and
+  // are staged from reviewed closures after Next completes its trace.
+  "**/node_modules/@embedpdf/pdfium",
+  "**/node_modules/@embedpdf/pdfium/**",
+  "**/node_modules/@esbuild",
+  "**/node_modules/@esbuild/**",
+  "**/node_modules/esbuild",
+  "**/node_modules/esbuild/**",
+  "**/node_modules/three",
+  "**/node_modules/three/**",
+  "**/node_modules/typescript",
+  "**/node_modules/typescript/**",
 ];
 
 const nextConfig: NextConfig = {
@@ -64,13 +142,28 @@ const nextConfig: NextConfig = {
     ? { typescript: { tsconfigPath: "tsconfig.desktop.json" } }
     : {}),
   devIndicators: false,
+  // Webpack can retire inactive entries; keeping only the immediately active
+  // route prevents a long desktop browsing session from retaining the whole
+  // application graph. This is deliberately short because the dashboard is a
+  // single-window application, not a many-tab web development workspace.
+  onDemandEntries: {
+    maxInactiveAge: 30_000,
+    pagesBufferLength: 1,
+  },
   experimental: {
     // Next documents this as a low-risk reduction in webpack's peak memory.
-    // webpackBuildWorker is intentionally omitted: this repository has a
-    // custom webpack function, which is the incompatible case Next calls out.
+    // The custom webpack hook below is deterministic and is reloaded inside
+    // every worker, so each server/edge/client compiler can exit and return its
+    // graph before the next compiler starts.
+    webpackBuildWorker: true,
     webpackMemoryOptimizations: true,
     // Do not eagerly retain every route graph in the long-running hot server.
     preloadEntriesOnStart: false,
+    // Next 16 enables Turbopack's persistent development cache by default.
+    // Breadboard Hot is supervised and uses Webpack, but keep direct `next
+    // dev` fallback runs from memory-mapping/restoring multi-hundred-MB SST
+    // compiler snapshots from an earlier session.
+    turbopackFileSystemCacheForDev: false,
   },
   // PDFKit reads its built-in AFM fonts and ICC profile relative to its own
   // package directory at runtime. Keep it external so Next does not relocate
@@ -78,19 +171,11 @@ const nextConfig: NextConfig = {
   // @firecrawl/anydoc loads a platform-specific .node binary through its own
   // index.js, which the bundler cannot follow — keep it external so the require
   // happens at runtime against node_modules.
-  // mem0ai's OSS bundle statically imports better-sqlite3 and bare-requires a
-  // handful of optional NLP packages inside try/catch. Keeping it external
-  // leaves those requires to run against node_modules at runtime, where the
-  // catch can do its job, instead of failing the bundler's static resolution.
   serverExternalPackages: [
-    '@embedpdf/pdfium',
     '@firecrawl/anydoc',
     'better-sqlite3',
-    'esbuild',
-    'mem0ai',
     'pdf-parse',
     'pdfkit',
-    'three',
   ],
   outputFileTracingExcludes: {
     // Never trace mutable data or local secrets into a (standalone) build:
@@ -103,28 +188,30 @@ const nextConfig: NextConfig = {
     '/api/markdown-videos': gardenAssetRouteExcludes,
   },
   outputFileTracingIncludes: {
-    '/*': [
-      'node_modules/@embedpdf/pdfium/**/*',
-      'node_modules/esbuild/**/*',
-      'node_modules/@esbuild/win32-x64/**/*',
-      'node_modules/three/**/*',
-    ],
-    '/api/ingest': [
-      'node_modules/@napi-rs/canvas/**/*',
-      'node_modules/@napi-rs/canvas-win32-x64-msvc/**/*',
-      'node_modules/@firecrawl/anydoc/**/*',
-      'node_modules/@firecrawl/anydoc-win32-x64-msvc/**/*',
-    ],
     '/api/anydoc/status': [
       'node_modules/@firecrawl/anydoc/**/*',
       'node_modules/@firecrawl/anydoc-win32-x64-msvc/**/*',
     ],
+    '/api/pdfjs/\\[\\.\\.\\.path\\]': [
+      'node_modules/pdfjs-dist/legacy/build/pdf.mjs',
+      'node_modules/pdfjs-dist/legacy/build/pdf.mjs.map',
+      'node_modules/pdfjs-dist/legacy/build/pdf.sandbox.mjs',
+      'node_modules/pdfjs-dist/legacy/build/pdf.sandbox.mjs.map',
+      'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs',
+      'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs.map',
+      'node_modules/pdfjs-dist/legacy/web/pdf_viewer.css',
+      'node_modules/pdfjs-dist/legacy/web/pdf_viewer.mjs',
+      'node_modules/pdfjs-dist/legacy/web/pdf_viewer.mjs.map',
+      'node_modules/pdfjs-dist/legacy/web/images/**/*',
+    ],
   },
   outputFileTracingRoot: bundlerRoot,
   turbopack: {
-    // Shared renderer metadata and the linked mem0 package live at repo scope.
-    // Runtime filesystem probes are individually marked as non-assets instead
-    // of narrowing this root and making those real modules unresolvable.
+    // Next 16 requires the standalone tracing root and Turbopack root to be
+    // identical. Keep both at the dashboard boundary: static shared assets are
+    // provisioned beside the installed app and all mutable/service-owned paths
+    // cross the opaque runtime filesystem boundary instead of entering either
+    // the Rust graph or the deployment trace.
     root: bundlerRoot,
     resolveAlias: {
       // Turbopack does not implement Windows absolute-path imports. Aliases are
@@ -147,11 +234,6 @@ const nextConfig: NextConfig = {
       '@genoffice/pptx-render/preset-geometry': './src/vendor/genoffice/pptx-render/src/preset-geometry.ts',
       '@genoffice/pptx-render': './src/vendor/genoffice/pptx-render/src/index.ts',
       '@genoffice/ui': './src/vendor/genoffice/ui/src/index.ts',
-      // `mem0ai` is a local junction. Turbopack follows it before applying
-      // serverExternalPackages and then attempts to bundle optional native
-      // providers. This Node-only bridge leaves the fixed package request to
-      // the runtime; webpack keeps using the explicit external below.
-      'mem0ai/oss': './src/lib/mem0/mem0ai-oss-runtime.ts',
       'pdf-parse': 'pdf-parse/dist/pdf-parse/cjs/index.cjs',
     },
   },
@@ -207,19 +289,6 @@ const nextConfig: NextConfig = {
     // not select the browser export; without an explicit external, webpack
     // follows that alias and tries to parse pdf.js's WASM binary as JavaScript.
     //
-    // mem0ai has a separate junction-related resolution problem:
-    // mem0ai is a `file:` dependency, so node_modules/mem0ai is a junction and
-    // the resolver follows it to <repo>/mem0/mem0-ts — a path with no
-    // node_modules segment, which is exactly what that check looks for. When it
-    // misses, the whole OSS bundle is compiled inline and the ~20 optional
-    // provider SDKs it bare-imports (oracledb, redis, weaviate-client, the AWS
-    // and Google and Azure clients, …) fail to resolve. That is not a warning:
-    // it fails the compilation that instrumentation.ts belongs to, so the server
-    // listens but answers /api/health with a 500 and the desktop supervisor
-    // times out on "Breadboard workspace could not start".
-    //
-    // Matching on the request rather than the resolved path makes it
-    // unconditional. Server compilers only — the browser never imports mem0.
     if (isServer && nextRuntime !== 'edge') {
       const existing = Array.isArray(config.externals)
         ? config.externals
@@ -229,9 +298,7 @@ const nextConfig: NextConfig = {
           { request }: { request?: string },
           callback: (error?: unknown, result?: string) => void,
         ) =>
-          request === 'pdf-parse' ||
-          request === 'mem0ai' ||
-          request?.startsWith('mem0ai/')
+          request === 'pdf-parse'
             ? callback(undefined, `commonjs ${request}`)
             : callback(),
         ...existing,

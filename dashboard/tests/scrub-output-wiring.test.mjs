@@ -11,14 +11,21 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { scrubbed, scrubEnabled, scrubText } from "../src/lib/watermarks/scrub-text.ts";
-import { scrubFileInPlace, scrubbableFile } from "../src/lib/watermarks/scrub-file.ts";
+import {
+  scrubFileInPlace,
+  scrubFileInPlaceViaRuntime,
+  scrubbableFile,
+} from "../src/lib/watermarks/scrub-file.ts";
+import { createWatermarkRuntimeFixture } from "./helpers/watermark-runtime-fixture.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const dashboard = path.join(repoRoot, "dashboard", "src");
+const runtime = createWatermarkRuntimeFixture();
+after(() => runtime.cleanup());
 
 function read(...parts) {
   return fs.readFileSync(path.join(dashboard, ...parts), "utf8");
@@ -59,7 +66,7 @@ test("every imported file is scrubbed, on the staged copy, before it is verified
     const after = store.slice(match.index, match.index + 900);
     assert.match(
       after,
-      /scrubProvenance !== false\) scrubFileInPlace\(temporary\)/,
+      /scrubProvenance !== false\)[\s\S]{0,500}await scrubFileInPlaceViaRuntime\(temporary/,
       "each staged copy must be scrubbed",
     );
     // Before the rename, so the stored bytes are the scrubbed ones.
@@ -152,14 +159,14 @@ test("the switch is inside scrubbed(), not left to each call site to remember", 
 
 // ── the file scrubber ───────────────────────────────────────────────────────
 
-test("a produced PNG loses its generator metadata and stays a PNG", () => {
+test("a produced PNG loses its generator metadata and stays a PNG", async () => {
   const directory = workdir();
   const file = path.join(directory, "shot.png");
   fs.writeFileSync(file, pngWithText("Software", "Made with Firefly generative AI"));
   const before = fs.readFileSync(file);
   assert.ok(before.includes(Buffer.from("Firefly")), "the fixture must carry the metadata");
 
-  const result = scrubFileInPlace(file);
+  const result = await scrubFileInPlaceViaRuntime(file, runtime.execution);
   assert.equal(result.scrubbed, true, `expected a scrub, got ${result.reason}`);
   const after = fs.readFileSync(file);
   assert.equal(after.subarray(0, 8).toString("hex"), "89504e470d0a1a0a", "it must still be a PNG");

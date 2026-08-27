@@ -1,6 +1,8 @@
+import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { readDeliverable } from "@/lib/openscience/run-manager.ts";
+import { readRunDeliverable } from "@/lib/openscience/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -22,12 +24,15 @@ export async function GET(
     if (!requested) {
       return NextResponse.json({ ok: false, error: "path_required" }, { status: 400 });
     }
-    const { bytes, path } = readDeliverable(userId, runId, requested);
-    const filename = path.split("/").pop() ?? "deliverable";
-    return new Response(new Uint8Array(bytes), {
+    const deliverable = await readRunDeliverable(userId, runId, requested);
+    const body = Readable.toWeb(
+      fs.createReadStream(deliverable.absolutePath, { highWaterMark: 1024 * 1024 }),
+    ) as ReadableStream<Uint8Array>;
+    return new Response(body, {
       headers: {
         "content-type": "application/octet-stream",
-        "content-disposition": `attachment; filename="${filename.replace(/["\\]/g, "")}"`,
+        "content-length": String(deliverable.byteSize),
+        "content-disposition": `attachment; filename="${deliverable.filename}"`,
         "cache-control": "no-store",
       },
     });

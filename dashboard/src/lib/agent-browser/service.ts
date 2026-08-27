@@ -1,6 +1,6 @@
 // Authorization + orchestration between the authenticated dashboard API and the
-// in-memory run manager. Enforces agent ownership, validates configuration, and
-// rate-limits run creation. The run manager owns process lifecycle + events.
+// Runtime V2 compatibility adapter. Enforces agent ownership, validates
+// configuration, and rate-limits run creation; Rust owns process lifecycle.
 
 import * as store from "./store.ts";
 import { validateAgentConfiguration } from "./config.ts";
@@ -42,19 +42,27 @@ export interface BrowserProfileState extends BrowserProfileSummary {
  * already using it — three modules, one answer, so the page and the API can
  * never disagree about it.
  */
-export function browserProfileState(): BrowserProfileState {
+export async function browserProfileState(): Promise<BrowserProfileState> {
   const availability = runtimeAvailability();
   return {
     ...browserProfileSummary(),
     runtimeAvailable: availability.available,
     runtimeReason: availability.reason ?? null,
-    runInProgress: hasActiveRun(),
+    runInProgress: await hasActiveRun(),
   };
 }
 
 const buckets = new Map<string, { count: number; resetAt: number }>();
 function rateLimit(key: string, max: number, windowMs: number): void {
   const now = Date.now();
+  if (buckets.size >= 1_024) {
+    for (const [candidate, value] of buckets) {
+      if (now > value.resetAt) buckets.delete(candidate);
+    }
+    if (buckets.size >= 1_024 && !buckets.has(key)) {
+      throw new AgentBrowserServiceError(429, "rate_limited");
+    }
+  }
   const bucket = buckets.get(key);
   if (!bucket || now > bucket.resetAt) {
     buckets.set(key, { count: 1, resetAt: now + windowMs });
@@ -99,7 +107,12 @@ export function updateAgentConfig(
   return store.presentAgent(updated);
 }
 
-export function startRun(userId: number, agentId: string, task: string): StartRunResult {
+export async function startRun(
+  userId: number,
+  agentId: string,
+  task: string,
+  requestId?: string,
+): Promise<StartRunResult> {
   rateLimit(`run:${userId}`, 10, 60_000);
   const agent = requireAgent(userId, agentId);
   if (agent.enabled !== 1) throw new AgentBrowserServiceError(409, "agent_disabled");
@@ -111,6 +124,14 @@ export function startRun(userId: number, agentId: string, task: string): StartRu
   const trimmed = typeof task === "string" ? task.trim() : "";
   if (trimmed.length === 0) throw new AgentBrowserServiceError(400, "empty_task");
   if (trimmed.length > 8_000) throw new AgentBrowserServiceError(400, "task_too_long");
+  if (
+    requestId !== undefined &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      requestId,
+    )
+  ) {
+    throw new AgentBrowserServiceError(400, "invalid_request_id");
+  }
 
   const availability = runtimeAvailability();
   if (!availability.available) throw new AgentBrowserServiceError(503, "runtime_unavailable");
@@ -121,7 +142,13 @@ export function startRun(userId: number, agentId: string, task: string): StartRu
   if (signInWindowOpen()) throw new AgentBrowserServiceError(409, "sign_in_window_open");
 
   try {
-    return managerStartRun({ userId, agentId, task: trimmed, config: parsed.value });
+    return await managerStartRun({
+      userId,
+      agentId,
+      task: trimmed,
+      requestId,
+      config: parsed.value,
+    });
   } catch (error) {
     throw new AgentBrowserServiceError(502, error instanceof Error ? error.message : "runtime_error");
   }

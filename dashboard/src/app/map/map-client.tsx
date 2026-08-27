@@ -73,12 +73,13 @@ export default function MapClient({
   /* State                                                             */
   /* ---------------------------------------------------------------- */
 
-  const loadContext = useCallback(async () => {
+  const loadContext = useCallback(async (signal?: AbortSignal) => {
     const url = new URL("/api/map/context", window.location.origin);
     if (conversationPublicId) url.searchParams.set("conversation", conversationPublicId);
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) return;
+    const response = await fetch(url, { cache: "no-store", signal });
+    if (!response.ok || signal?.aborted) return;
     const payload = (await response.json()) as ContextResponse;
+    if (signal?.aborted) return;
     setSettings({
       enabled: payload.enabled,
       styleUrl: payload.styleUrl,
@@ -94,9 +95,27 @@ export default function MapClient({
   }, [conversationPublicId]);
 
   useEffect(() => {
-    void loadContext();
-    const timer = window.setInterval(() => void loadContext(), POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    let request: AbortController | null = null;
+    const poll = async () => {
+      // A slow map provider must not stack another context request every 2.5s.
+      if (request) return;
+      const controller = new AbortController();
+      request = controller;
+      try {
+        await loadContext(controller.signal);
+      } catch {
+        // The next bounded poll retries; route teardown aborts this one.
+      } finally {
+        if (request === controller) request = null;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+      request?.abort();
+      request = null;
+    };
   }, [loadContext]);
 
   const runOperation = useCallback(
@@ -273,6 +292,8 @@ export default function MapClient({
 
   useEffect(() => {
     return () => {
+      for (const marker of markersRef.current) marker.remove();
+      markersRef.current = [];
       mapRef.current?.remove();
       mapRef.current = null;
     };

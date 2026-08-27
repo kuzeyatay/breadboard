@@ -7,9 +7,9 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const refresh = new URL(request.url).searchParams.get("refresh") === "1";
-    const health = await shapeRHealth({ force: refresh });
+    const health = await shapeRHealth({ userId, force: refresh });
     return NextResponse.json({ ok: true, ...health });
   } catch (error) {
     if (error instanceof RouteError) {

@@ -67,12 +67,9 @@ test("every subsystem launcher defaults CHATMOCK_MODEL to the sentinel", () => {
 });
 
 test("Breadboard enables Hermes tool search for compact provider requests", () => {
-  for (const file of [
-    "../scripts/start-hermes.mjs",
-    "../desktop/src/main/app-lifecycle.ts",
-  ]) {
+  for (const file of ["../scripts/start-hermes.mjs", "../native/runtime-core/src/service_environment.rs"]) {
     const text = source(file);
-    assert.match(text, /"tools:",[\s\S]*?"  tool_search:",[\s\S]*?"    enabled: on"/);
+    assert.match(text, /tools:[\s\S]*?tool_search:[\s\S]*?enabled: on/);
   }
 });
 

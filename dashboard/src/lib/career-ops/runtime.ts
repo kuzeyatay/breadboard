@@ -15,43 +15,23 @@
 // already covers.
 
 import { spawn } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
-import { repositoryRoot } from "../runtime-paths.ts";
+import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimeReadDirectory,
+  externalRuntimeReadUtf8,
+} from "../external-runtime-filesystem.ts";
+import { resolveExecutableScript } from "./commands.ts";
+import type { CareerOpsHealth, OnboardingState } from "./health-contract.ts";
+
+export type { CareerOpsHealth, OnboardingState } from "./health-contract.ts";
 
 export interface CareerOpsRuntime {
   /** Directory of the cloned repository, and the cwd of every command. */
   root: string;
   /** How the clone was found — surfaced in health so setup problems are obvious. */
-  source: "configured" | "repository" | "cwd";
-}
-
-export interface OnboardingState {
-  /** True until the user layer (cv.md, profile.yml, _profile.md) exists. */
-  onboardingNeeded: boolean;
-  /** Which user-layer files are still missing, as career-ops names them. */
-  missing: string[];
-  /** Non-blocking notes doctor wants surfaced (MCP config, CLI detection). */
-  warnings: string[];
-  /** Mode templates doctor copied into place during the probe. */
-  autoCopied: string[];
-}
-
-export interface CareerOpsHealth {
-  available: boolean;
-  /** The clone exists, even when its dependencies are not installed. */
-  cloned: boolean;
-  root: string | null;
-  /** node_modules is present, so the scripts can actually run. */
-  dependenciesInstalled: boolean;
-  /** Playwright's chromium download is present — only portal scanning needs it. */
-  browsersInstalled: boolean;
-  onboarding: OnboardingState | null;
-  /** How many router modes the clone publishes. */
-  modeCount: number;
-  /** Applications currently in data/applications.md, or null when there is none. */
-  trackedApplications: number | null;
-  reason: string | null;
+  source: "configured" | "repository" | "cwd" | "managed";
 }
 
 const DOCTOR_TIMEOUT_MS = 60_000;
@@ -65,16 +45,19 @@ function configured(value: string | undefined): string | null {
 /** A directory is a career-ops clone when its router skill and doctor are there. */
 function isClone(candidate: string): boolean {
   return (
-    fs.existsSync(path.join(candidate, "doctor.mjs")) &&
-    fs.existsSync(path.join(candidate, "modes")) &&
-    fs.existsSync(path.join(candidate, ".agents", "skills", "career-ops", "SKILL.md"))
+    externalRuntimePathExists(path.join(candidate, "doctor.mjs")) &&
+    externalRuntimePathExists(path.join(candidate, "modes")) &&
+    externalRuntimePathExists(path.join(candidate, ".agents", "skills", "career-ops", "SKILL.md"))
   );
 }
 
-export function resolveCareerOpsRoot(
+export function resolveCareerOpsSourceRoot(
   env: NodeJS.ProcessEnv = process.env,
 ): CareerOpsRuntime | null {
-  const candidates: Array<{ root: string; source: CareerOpsRuntime["source"] }> = [];
+  const candidates: Array<{
+    root: string;
+    source: Exclude<CareerOpsRuntime["source"], "managed">;
+  }> = [];
   const explicit = configured(env.CAREER_OPS_ROOT);
   if (env.BREADBOARD_QA_MODE === "1") {
     return explicit && isClone(explicit)
@@ -83,15 +66,31 @@ export function resolveCareerOpsRoot(
   }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({ root: path.join(repositoryRoot(), "career-ops"), source: "repository" });
-  candidates.push({ root: path.resolve(process.cwd(), "career-ops"), source: "cwd" });
-  candidates.push({ root: path.resolve(process.cwd(), "..", "career-ops"), source: "cwd" });
   return candidates.find((candidate) => isClone(candidate.root)) ?? null;
+}
+
+export function careerOpsRuntimeRoot(): string {
+  return path.join(dashboardDataDir(), "runtime-v2", "toolchains", "career-ops");
+}
+
+export function careerOpsBrowserRoot(env: NodeJS.ProcessEnv = process.env): string {
+  return configured(env.PLAYWRIGHT_BROWSERS_PATH) ??
+    path.join(dashboardDataDir(), "runtime-v2", "toolchains", "career-ops-browsers");
+}
+
+export function resolveCareerOpsRoot(
+  env: NodeJS.ProcessEnv = process.env,
+): CareerOpsRuntime | null {
+  const source = resolveCareerOpsSourceRoot(env);
+  if (env.BREADBOARD_QA_MODE === "1") return source;
+  const managed = careerOpsRuntimeRoot();
+  return isClone(managed) ? { root: managed, source: "managed" } : source;
 }
 
 export function dependenciesInstalled(root: string): boolean {
   // js-yaml is imported by doctor.mjs itself, so its absence is what makes the
   // probe crash rather than report. Check it rather than node_modules alone.
-  return fs.existsSync(path.join(root, "node_modules", "js-yaml"));
+  return externalRuntimePathExists(path.join(root, "node_modules", "js-yaml"));
 }
 
 /**
@@ -100,25 +99,12 @@ export function dependenciesInstalled(root: string): boolean {
  * blocker — evaluation, CVs, cover letters and the tracker all work without it.
  */
 export function browsersInstalled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const home = env.USERPROFILE ?? env.HOME ?? "";
-  const configuredPath = configured(env.PLAYWRIGHT_BROWSERS_PATH);
-  const candidates = [
-    configuredPath,
-    process.platform === "win32"
-      ? path.join(home, "AppData", "Local", "ms-playwright")
-      : process.platform === "darwin"
-        ? path.join(home, "Library", "Caches", "ms-playwright")
-        : path.join(home, ".cache", "ms-playwright"),
-  ].filter((candidate): candidate is string => Boolean(candidate));
-  return candidates.some((candidate) => {
-    try {
-      return fs
-        .readdirSync(candidate)
-        .some((entry) => entry.toLowerCase().startsWith("chromium"));
-    } catch {
-      return false;
-    }
-  });
+  try {
+    return externalRuntimeReadDirectory(careerOpsBrowserRoot(env))
+      .some((entry) => entry.toLowerCase().startsWith("chromium"));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -128,13 +114,54 @@ export function browsersInstalled(env: NodeJS.ProcessEnv = process.env): boolean
  * a stream of escape codes.
  */
 export function careerOpsEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const childEnv = { ...env };
+  // The disposable outer worker needs the local ChatMock credential; the
+  // clone's deterministic scripts do not. Never pass control-plane or model
+  // credentials down to tool descendants.
+  delete childEnv.CHATMOCK_API_KEY;
+  delete childEnv.BREADBOARD_SUPERVISOR_CONTROL_TOKEN;
+  delete childEnv.BREADBOARD_HERMES_SESSION_TOKEN;
+  delete childEnv.BREADBOARD_HERMES_TOOL_SECRET;
   return {
-    ...env,
+    ...childEnv,
     ELECTRON_RUN_AS_NODE: "1",
     NO_COLOR: "1",
     FORCE_COLOR: "0",
     CI: "1",
+    PLAYWRIGHT_BROWSERS_PATH: careerOpsBrowserRoot(env),
   };
+}
+
+/**
+ * The doctor is a fixed offline probe, so it receives a much smaller
+ * environment than the agent's general-purpose Career Ops tool commands. In
+ * particular, model credentials, Runtime control capabilities, proxy settings,
+ * and renderer-selected values never reach the doctor child.
+ */
+export function careerOpsDoctorEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = {
+    NODE_ENV: env.NODE_ENV ?? "production",
+    ELECTRON_RUN_AS_NODE: "1",
+    NO_COLOR: "1",
+    FORCE_COLOR: "0",
+    CI: "1",
+    PLAYWRIGHT_BROWSERS_PATH: careerOpsBrowserRoot(env),
+  };
+  for (const name of [
+    "SystemRoot",
+    "WINDIR",
+    "HOME",
+    "USERPROFILE",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
+  ] as const) {
+    const value = env[name];
+    if (value) childEnv[name] = value;
+  }
+  return childEnv;
 }
 
 export interface CommandResult {
@@ -153,16 +180,35 @@ export function runNode(
   root: string,
   args: string[],
   timeoutMs: number,
-  options: { maxOutputChars?: number; onChild?: (kill: () => void) => void } = {},
+  options: {
+    maxOutputChars?: number;
+    onChild?: (kill: () => void) => void;
+    signal?: AbortSignal;
+    env?: NodeJS.ProcessEnv;
+  } = {},
 ): Promise<CommandResult> {
   const limit = options.maxOutputChars ?? 200_000;
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(process.execPath, args, {
-        cwd: root,
+      // parseCommand checks the script when the model proposes it; resolve it
+      // again at the process boundary so a link swap cannot turn that approval
+      // into execution outside the clone. Health probes use this same path.
+      const executable = resolveExecutableScript(args[0] ?? "", root);
+      if (!executable) {
+        resolve({
+          code: null,
+          stdout: "",
+          stderr:
+            "Career Ops refused a script that is missing, linked, or outside its workspace.",
+          timedOut: false,
+        });
+        return;
+      }
+      child = spawn(process.execPath, [executable.absolute, ...args.slice(1)], {
+        cwd: path.dirname(executable.absolute),
         windowsHide: true,
-        env: careerOpsEnv(),
+        env: options.env ?? careerOpsEnv(),
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
@@ -184,6 +230,21 @@ export function runNode(
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let settled = false;
+    const abort = () => {
+      try {
+        child.kill();
+      } catch {
+        // Already gone.
+      }
+    };
+    const finish = (result: CommandResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
+      resolve(result);
+    };
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
@@ -194,19 +255,15 @@ export function runNode(
     });
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill();
-      } catch {
-        // Already gone.
-      }
+      abort();
     }, timeoutMs);
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
     child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({ code: null, stdout, stderr: error.message, timedOut });
+      finish({ code: null, stdout, stderr: error.message, timedOut });
     });
     child.on("exit", (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
+      finish({ code, stdout, stderr, timedOut });
     });
   });
 }
@@ -234,8 +291,7 @@ function parseOnboarding(stdout: string): OnboardingState | null {
 
 export function countModes(root: string): number {
   try {
-    return fs
-      .readdirSync(path.join(root, "modes"))
+    return externalRuntimeReadDirectory(path.join(root, "modes"))
       .filter((entry) => entry.endsWith(".md") && !entry.startsWith("_")).length;
   } catch {
     return 0;
@@ -248,7 +304,7 @@ export function countModes(root: string): number {
  */
 export function countTrackedApplications(root: string): number | null {
   try {
-    const table = fs.readFileSync(path.join(root, "data", "applications.md"), "utf8");
+    const table = externalRuntimeReadUtf8(path.join(root, "data", "applications.md"));
     return table.split(/\r?\n/).filter((line) => /^\s*\|\s*\d+\s*\|/.test(line)).length;
   } catch {
     return null;
@@ -265,7 +321,12 @@ const globalCache = globalThis as typeof globalThis & {
   __breadboardCareerOpsHealthInFlight?: Promise<CareerOpsHealth>;
 };
 
-async function probe(): Promise<CareerOpsHealth> {
+export async function probeCareerOpsHealth(
+  options: { signal?: AbortSignal } = {},
+): Promise<CareerOpsHealth> {
+  if (options.signal?.aborted) {
+    throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  }
   const runtime = resolveCareerOpsRoot();
   if (!runtime) {
     return {
@@ -287,19 +348,25 @@ async function probe(): Promise<CareerOpsHealth> {
     trackedApplications: countTrackedApplications(runtime.root),
     browsersInstalled: browsersInstalled(),
   };
-  if (!dependenciesInstalled(runtime.root)) {
+  if (runtime.source !== "managed" || !dependenciesInstalled(runtime.root)) {
     return {
       ...base,
       available: false,
       dependenciesInstalled: false,
       onboarding: null,
       reason:
-        "career-ops is cloned but its dependencies are not installed. Install them from the Agents tab, or run `npm install` inside career-ops/.",
+        "career-ops is cloned but its managed runtime is not installed. Install it from the Agents tab.",
     };
   }
   // doctor writes the mode templates into place as a side effect of the probe,
   // which is upstream's own idea of what a first run should do.
-  const result = await runNode(runtime.root, ["doctor.mjs", "--json"], DOCTOR_TIMEOUT_MS);
+  const result = await runNode(runtime.root, ["doctor.mjs", "--json"], DOCTOR_TIMEOUT_MS, {
+    signal: options.signal,
+    env: careerOpsDoctorEnv(),
+  });
+  if (options.signal?.aborted) {
+    throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  }
   const onboarding = parseOnboarding(result.stdout);
   if (!onboarding) {
     return {
@@ -334,7 +401,7 @@ export async function health(options: { force?: boolean } = {}): Promise<CareerO
   if (globalCache.__breadboardCareerOpsHealthInFlight) {
     return globalCache.__breadboardCareerOpsHealthInFlight;
   }
-  const request = probe()
+  const request = probeCareerOpsHealth()
     .then((result) => {
       globalCache.__breadboardCareerOpsHealth = { at: Date.now(), health: result };
       return result;

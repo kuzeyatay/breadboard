@@ -7,7 +7,7 @@
 
 import type { HermesSurface } from "../hermes/config.ts";
 import type { CapabilityMode } from "../hermes/capability-policy.ts";
-import { loopxEnabled } from "./runtime.ts";
+import { loopxEnabled } from "./state.ts";
 import { readSnapshot, type LoopxSnapshot } from "./snapshot.ts";
 
 /** A conversation this long is doing sustained work, whatever it is about. */

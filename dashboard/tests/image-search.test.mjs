@@ -25,6 +25,7 @@ import {
   imageSearchMode,
   searchImages,
 } from "../src/lib/hermes/image-search-service.ts";
+import { validateImageSearchRequest } from "../scripts/runtime-v2-image-search-worker.mjs";
 
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(dashboardRoot, "..");
@@ -150,30 +151,52 @@ test("the display contract ships as a system prompt section whenever the tool is
   );
 });
 
-test("without Google credentials the keyless backend is selected, with them Google is", () => {
-  const savedKey = process.env.BREADBOARD_GOOGLE_IMAGES_API_KEY;
-  const savedEngine = process.env.BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID;
+test("the non-secret Runtime configuration marker selects the Google worker", () => {
+  const saved = process.env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED;
   try {
-    process.env.BREADBOARD_GOOGLE_IMAGES_API_KEY = "";
-    process.env.BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID = "";
+    process.env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED = "";
     assert.equal(imageSearchMode(), "keyless", "no keys must mean zero-setup keyless search");
-    // One key alone is a half-configured deployment; it stays keyless rather
-    // than spawning a clone whose env schema would hard-exit.
-    process.env.BREADBOARD_GOOGLE_IMAGES_API_KEY = "k";
-    assert.equal(imageSearchMode(), "keyless");
-    process.env.BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID = "cx";
+    process.env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED = "true";
     assert.equal(imageSearchMode(), "google");
   } finally {
-    if (savedKey === undefined) delete process.env.BREADBOARD_GOOGLE_IMAGES_API_KEY;
-    else process.env.BREADBOARD_GOOGLE_IMAGES_API_KEY = savedKey;
-    if (savedEngine === undefined) delete process.env.BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID;
-    else process.env.BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID = savedEngine;
+    if (saved === undefined) delete process.env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED;
+    else process.env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED = saved;
   }
 });
 
 test("a nonsense query is refused before any process is involved", async () => {
   await assert.rejects(() => searchImages({ query: "   " }), /non-empty query/);
   await assert.rejects(() => searchImages({ query: "cat", count: 40 }), /between 1 and 10/);
+});
+
+test("Google image search is a fenced disposable Runtime job with sealed credentials", () => {
+  const service = fs.readFileSync(
+    path.join(dashboardRoot, "src", "lib", "hermes", "image-search-service.ts"),
+    "utf8",
+  );
+  const runtime = fs.readFileSync(
+    path.join(dashboardRoot, "src", "lib", "hermes", "image-search-runtime-v2.ts"),
+    "utf8",
+  );
+  const worker = fs.readFileSync(
+    path.join(dashboardRoot, "scripts", "runtime-v2-image-search-worker.mjs"),
+    "utf8",
+  );
+  assert.doesNotMatch(service + runtime, /StdioClientTransport|node:child_process|\bspawn\s*\(/u);
+  assert.match(runtime, /jobType:\s*"image-search-google"/u);
+  assert.match(runtime, /cancelRuntimeJob\(authority/u);
+  assert.match(worker, /StdioClientTransport/u);
+  assert.match(worker, /BREADBOARD_GOOGLE_IMAGES_API_KEY/u);
+  assert.doesNotMatch(service + runtime, /BREADBOARD_GOOGLE_IMAGES_API_KEY|SEARCH_ENGINE_ID/u);
+
+  const canonical = { query: "red panda", count: 5, safe: null, startIndex: null };
+  assert.equal(validateImageSearchRequest(canonical), canonical);
+  for (const invalid of [
+    { ...canonical, command: "node" },
+    { ...canonical, count: 50 },
+    { ...canonical, query: " red panda" },
+    { ...canonical, startIndex: 92 },
+  ]) assert.throws(() => validateImageSearchRequest(invalid), /canonical Google image-search request/);
 });
 
 // ── rendering ───────────────────────────────────────────────────────────────

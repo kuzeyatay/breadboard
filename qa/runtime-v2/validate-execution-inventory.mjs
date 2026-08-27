@@ -3,6 +3,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  GBRAIN_NODE_EXECUTABLE_RUNTIME,
+  GBRAIN_NODE_ROOT_COMMAND,
+  unreconciledMigratedCapabilityIds,
+} from "./execution-inventory-validation.mjs";
 
 const qaDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(qaDir, "..", "..");
@@ -441,6 +446,14 @@ const parityRegistry = isObject(inventory.parity_registry) ? inventory.parity_re
 const allCapabilityRefs = new Set(
   entries.flatMap((entry) => (Array.isArray(entry?.capability_ids) ? entry.capability_ids : [])),
 );
+for (const entry of entries) {
+  if (!isObject(entry) || !nonEmptyString(entry.runtime_id)) continue;
+  for (const capabilityId of unreconciledMigratedCapabilityIds(entry, parityById)) {
+    fail(
+      `${entry.runtime_id} is Runtime V2 migrated but capability ${capabilityId} is not reconciled in feature-parity`,
+    );
+  }
+}
 const matchedCapabilityRefs = [...allCapabilityRefs].filter((capabilityId) =>
   parityById.has(capabilityId),
 ).length;
@@ -460,9 +473,17 @@ for (const [field, actual] of [
   }
 }
 
-const localMcp = requireEntry(entriesById, "service:local-mcp-stdio");
+const localMcp = requireEntry(entriesById, "service:local-mcp-broker");
 requireDisposition(localMcp, "on-demand-service", { finite: false, persistent: true });
-if (localMcp?.root_command === null) fail("service:local-mcp-stdio must identify an app-launched command boundary");
+if (localMcp?.root_command === null) fail("service:local-mcp-broker must identify an app-launched command boundary");
+const gbrain = requireEntry(entriesById, "service:gbrain");
+requireDisposition(gbrain, "on-demand-service", { finite: false, persistent: true });
+if (gbrain?.executable_runtime !== GBRAIN_NODE_EXECUTABLE_RUNTIME) {
+  fail("service:gbrain executable_runtime must identify the reviewed bundled Node 24 adapter");
+}
+if (gbrain?.root_command !== GBRAIN_NODE_ROOT_COMMAND) {
+  fail("service:gbrain root_command must match the reviewed Node entrypoint launch exactly");
+}
 const remoteMcp = requireEntry(entriesById, "external:remote-mcp-endpoints");
 requireDisposition(remoteMcp, "external", { finite: false, persistent: true });
 if (remoteMcp?.root_command !== null) {
@@ -482,6 +503,31 @@ if (!/prebuilt/i.test(quartzServer?.target_state ?? "") || !/no.compiler/i.test(
 for (const runtimeId of ["job:quartz-esbuild-compiler", "job:quartz-publish"]) {
   const entry = requireEntry(entriesById, runtimeId);
   requireDisposition(entry, "disposable-job", { finite: true, persistent: false });
+  if (
+    !/^runtime-v2_disposable_job(?:_descendant)?$/u.test(
+      entry?.current_state ?? "",
+    ) || entry?.target_state !== entry?.current_state
+  ) {
+    fail(`${runtimeId} must record its completed Runtime V2 disposable cutover`);
+  }
+}
+const quartzPublish = entriesById.get("job:quartz-publish");
+if (
+  quartzPublish?.current_owner !== "native-runtime-v2" ||
+  !quartzPublish?.dependency_chain?.includes("core:runtime-v2") ||
+  quartzPublish?.flags?.spawns_descendants !== true ||
+  !/owned-tree|owned tree/i.test(quartzPublish?.cancel_behavior ?? "") ||
+  !/staged|stage\/public\/previous/i.test(quartzPublish?.recovery_behavior ?? "")
+) {
+  fail("job:quartz-publish must declare native ownership, descendant containment, cancellation, and staged recovery");
+}
+const quartzCompiler = entriesById.get("job:quartz-esbuild-compiler");
+if (
+  quartzCompiler?.dependency_chain?.length !== 1 ||
+  quartzCompiler.dependency_chain[0] !== "job:quartz-publish" ||
+  !/sealed quartz-publish-node worker/i.test(quartzCompiler?.root_command ?? "")
+) {
+  fail("job:quartz-esbuild-compiler must remain only a contained Quartz worker descendant");
 }
 if (entriesById.has("service:quartz-esbuild")) {
   fail("legacy service:quartz-esbuild must not remain classified as a persistent service");

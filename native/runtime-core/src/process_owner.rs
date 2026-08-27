@@ -1,10 +1,15 @@
 use crate::{
-    paths::PreparedWorkerStart, CurrentGenerationMembership, PathError, RuntimeGenerationScope,
-    RuntimePaths, TrustedFilePin, TrustedLaunchDirectory,
+    paths::PreparedWorkerStart,
+    service_environment::{
+        TrustedServiceEnvironment, TrustedServiceEnvironmentProfile, TrustedWorkerEnvironment,
+    },
+    CurrentGenerationMembership, PathError, RuntimeGenerationScope, RuntimePaths, TrustedFilePin,
+    TrustedLaunchDirectory, WorkerDispatchClaim,
 };
 use breadboard_runtime_protocol::{
-    parse_worker_event, validate_identifier, WorkerEvent, WorkerIdentity,
-    MAX_PROTOCOL_LINE_BYTES as MAX_WORKER_EVENT_LINE_BYTES,
+    parse_worker_event, validate_identifier, ServiceHttpReadiness, WorkerEvent,
+    WorkerExecutionScope, WorkerIdentity, MAX_CONTROL_TOKEN_BYTES,
+    MAX_PROTOCOL_LINE_BYTES as MAX_WORKER_EVENT_LINE_BYTES, MIN_CONTROL_TOKEN_BYTES,
 };
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -13,21 +18,32 @@ use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Write};
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
+#[cfg(test)]
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, ExitStatus};
 #[cfg(windows)]
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
 pub const RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE: u32 = 73;
 pub const MAX_PROCESS_OWNER_PROTOCOL_LINE_BYTES: u64 = 64 * 1024;
 const MAX_TARGET_ARGUMENTS: usize = 4_096;
-const RUNTIME_SUPERVISOR_RELATIVE_PATH: &str = "bin/runtime-supervisor.exe";
-const TRUSTED_WINDOWS_ENVIRONMENT_NAMES: &[&str] = &["SystemRoot"];
 const MAX_BUFFERED_PROCESS_OWNER_EVENTS: usize = 32;
 const MAX_PRIVATE_DIAGNOSTIC_RECORDS: usize = 16;
 const MAX_PRIVATE_DIAGNOSTIC_BYTES: usize = 256 * 1024;
+const MAX_DURABLE_SERVICE_DIAGNOSTIC_BYTES: usize = 512 * 1024;
+const MAX_DURABLE_WORKER_DIAGNOSTIC_BYTES: usize = 256 * 1024;
+const MAX_SUPERVISOR_FAILURE_CODE_BYTES: usize = 64;
+const MAX_SUPERVISOR_FAILURE_MESSAGE_BYTES: usize = 128;
+const MAX_SUPERVISOR_FAILURE_DIAGNOSTIC_BYTES: usize = "failure-code=".len()
+    + MAX_SUPERVISOR_FAILURE_CODE_BYTES
+    + " failure-message=".len()
+    + MAX_SUPERVISOR_FAILURE_MESSAGE_BYTES;
+const UNCLASSIFIED_SUPERVISOR_FAILURE_CODE: &str = "UNCLASSIFIED_SUPERVISOR_FAILURE";
+const UNCLASSIFIED_SUPERVISOR_FAILURE_MESSAGE: &str =
+    "Authoritative process supervision failed with an unclassified code";
 pub const MIN_PROCESS_OWNER_GRACEFUL_SHUTDOWN: Duration = Duration::from_millis(100);
 pub const MAX_PROCESS_OWNER_GRACEFUL_SHUTDOWN: Duration = Duration::from_secs(300);
 const MIN_SUPERVISOR_EXIT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -37,6 +53,22 @@ const MAX_PROCESS_OWNER_EVENT_WAIT: Duration = Duration::from_secs(24 * 60 * 60)
 const FORCED_REAP_TIMEOUT: Duration = Duration::from_secs(1);
 const CHILD_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SUPERVISOR_ACTIVATION_RECORD: &[u8] = b"{\"type\":\"activate\",\"protocolVersion\":1}\n";
+const MEBIBYTE_BYTES: u64 = 1024 * 1024;
+pub(crate) const DEVELOPMENT_SYSTEM_COMMIT_RESERVE_MB: u64 = 4 * 1024;
+const SYSTEM_COMMIT_RESERVE_FLOOR_BYTES: u64 =
+    DEVELOPMENT_SYSTEM_COMMIT_RESERVE_MB * MEBIBYTE_BYTES;
+const SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES: u64 = 1536 * MEBIBYTE_BYTES;
+const SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES: u64 = 8 * 1024 * MEBIBYTE_BYTES;
+const SYSTEM_COMMIT_RESERVE_GUARD_BAND_BYTES: u64 = 256 * MEBIBYTE_BYTES;
+const SYSTEM_COMMIT_DYNAMIC_BURST_MULTIPLIER: u64 = 4;
+const SYSTEM_COMMIT_DYNAMIC_BURST_MAX_BYTES: u64 = 32 * 1024 * MEBIBYTE_BYTES;
+
+fn dynamic_commit_burst_ceiling(configured_hard_limit_bytes: u64) -> u64 {
+    configured_hard_limit_bytes
+        .saturating_mul(SYSTEM_COMMIT_DYNAMIC_BURST_MULTIPLIER)
+        .min(SYSTEM_COMMIT_DYNAMIC_BURST_MAX_BYTES)
+        .max(configured_hard_limit_bytes)
+}
 
 #[derive(Debug, Error)]
 pub enum ProcessOwnerError {
@@ -80,15 +112,48 @@ pub struct ProcessOwnerLimits {
     pub hard_commit_bytes: u64,
     pub graceful_shutdown: Duration,
     pub supervisor_exit_timeout: Duration,
+    // This authority is intentionally crate-private. Only the validated
+    // registry may opt one exact development launch into system-wide commit
+    // guarding;
+    // downstream callers cannot attach it to an arbitrary process tree.
+    pub(crate) system_commit_guard: Option<ProcessOwnerSystemCommitGuard>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProcessOwnerSystemCommitGuard {
+    expected_commit_bytes: u64,
+    trusted_reserve_bytes: u64,
+}
+
+impl ProcessOwnerSystemCommitGuard {
+    pub(crate) fn development(
+        expected_commit_bytes: u64,
+        trusted_reserve_bytes: u64,
+    ) -> Result<Self, ProcessOwnerError> {
+        if expected_commit_bytes == 0 {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "system commit guard expected usage must be nonzero",
+            ));
+        }
+        Ok(Self {
+            expected_commit_bytes,
+            trusted_reserve_bytes: trusted_reserve_bytes.max(SYSTEM_COMMIT_RESERVE_FLOOR_BYTES),
+        })
+    }
+
+    fn expected_commit_bytes(self) -> u64 {
+        self.expected_commit_bytes
+    }
+
+    fn trusted_reserve_bytes(self) -> u64 {
+        self.trusted_reserve_bytes
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum ProcessOwnerPurpose {
     Worker(WorkerIdentity),
-    Service {
-        service_id: String,
-        instance_id: String,
-    },
+    Service { service_id: String, generation: u64 },
 }
 
 enum ProcessAuthorityGeneration {
@@ -163,6 +228,16 @@ impl ProcessTreeResidency {
         }
     }
 
+    pub(crate) fn service_identity(&self) -> Option<(&str, u64)> {
+        match &self.purpose {
+            ProcessOwnerPurpose::Service {
+                service_id,
+                generation,
+            } => Some((service_id, *generation)),
+            ProcessOwnerPurpose::Worker(_) => None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn worker_for_test(scope: RuntimeGenerationScope, identity: WorkerIdentity) -> Self {
         Self {
@@ -177,7 +252,7 @@ impl ProcessTreeResidency {
     pub(crate) fn service_for_test(
         scope: RuntimeGenerationScope,
         service_id: &str,
-        instance_id: &str,
+        generation: u64,
     ) -> Self {
         Self {
             generation: ProcessAuthorityGeneration::Test(scope),
@@ -185,7 +260,7 @@ impl ProcessTreeResidency {
             root_pid: 42,
             purpose: ProcessOwnerPurpose::Service {
                 service_id: service_id.into(),
-                instance_id: instance_id.into(),
+                generation,
             },
         }
     }
@@ -223,14 +298,17 @@ impl ProcessOwnerPurpose {
             }),
             Self::Service {
                 service_id,
-                instance_id,
+                generation,
             } => {
                 validate_identifier("serviceId", service_id).map_err(|_| {
                     ProcessOwnerError::InvalidLaunch("service ownership fence was invalid")
                 })?;
-                validate_identifier("serviceInstanceId", instance_id).map_err(|_| {
-                    ProcessOwnerError::InvalidLaunch("service ownership fence was invalid")
-                })
+                if *generation == 0 {
+                    return Err(ProcessOwnerError::InvalidLaunch(
+                        "service ownership generation was invalid",
+                    ));
+                }
+                Ok(())
             }
         }
     }
@@ -266,22 +344,38 @@ impl ProcessOwnerLimits {
                 "supervisor exit deadline is outside the supported bounds",
             ));
         }
+        if let Some(guard) = self.system_commit_guard {
+            if self.hard_commit_bytes == 0
+                || guard.expected_commit_bytes() >= self.hard_commit_bytes
+                || guard.trusted_reserve_bytes() < SYSTEM_COMMIT_RESERVE_FLOOR_BYTES
+            {
+                return Err(ProcessOwnerError::InvalidLaunch(
+                    "system commit guard is inconsistent with process limits",
+                ));
+            }
+        }
         Ok(self)
     }
 }
 
 /// A complete launch selected by trusted registries and pinned filesystem
 /// authorities. Arguments are caller data, but the supervisor, executable,
-/// optional language entrypoint, and working directory cannot be supplied as
-/// untrusted strings.
+/// optional worker language entrypoint, and working directory cannot be
+/// supplied as untrusted strings. Service argv is already fully resolved and
+/// never receives the worker compatibility entrypoint.
 pub(crate) struct TrustedProcessLaunch {
     purpose: ProcessOwnerPurpose,
     generation_scope: RuntimeGenerationScope,
     supervisor: TrustedFilePin,
     executable: TrustedFilePin,
     entrypoint: Option<TrustedFilePin>,
+    launch_files: Vec<TrustedFilePin>,
     target: TrustedProcessTarget,
-    environment: TrustedEnvironmentPolicy,
+    environment: TrustedProcessEnvironment,
+    service_diagnostic_paths: Option<RuntimePaths>,
+    service_diagnostic_redactions: Vec<String>,
+    worker_diagnostic_paths: Option<RuntimePaths>,
+    worker_diagnostic_redactions: Vec<String>,
     limits: ProcessOwnerLimits,
 }
 
@@ -294,20 +388,26 @@ pub struct WorkerLaunchRequest {
 }
 
 /// Registry-selected service launch material bound to one exact Runtime V2
-/// data-root authority. Downstream callers may supply only a validated service
-/// instance identifier and bounded target arguments; executable identity,
-/// entrypoint, supervisor, limits, and working-directory layout remain closed.
+/// data-root authority. The Registry supplies every file pin, the working
+/// directory, complete argv, and limits. The durable StartTree authority—not
+/// this request—supplies the numeric service generation at launch time.
 pub struct ServiceLaunchRequest {
     inner: Box<ServiceLaunchRequestInner>,
 }
 
 struct ServiceLaunchRequestInner {
     service_id: String,
-    instance_id: String,
+    service_port: u16,
+    readiness: ServiceHttpReadiness,
+    readiness_authorization: Option<String>,
+    generation_scope: RuntimeGenerationScope,
     paths: RuntimePaths,
-    executable_relative: String,
-    entrypoint_relative: Option<String>,
+    supervisor: TrustedFilePin,
+    executable: TrustedFilePin,
+    launch_files: Vec<TrustedFilePin>,
+    working_directory: TrustedLaunchDirectory,
     arguments: Vec<OsString>,
+    environment: TrustedProcessEnvironment,
     limits: ProcessOwnerLimits,
 }
 
@@ -317,6 +417,7 @@ struct WorkerLaunchRequestInner {
     supervisor: TrustedFilePin,
     executable: TrustedFilePin,
     entrypoint: Option<TrustedFilePin>,
+    environment: TrustedWorkerEnvironment,
     limits: ProcessOwnerLimits,
 }
 
@@ -328,6 +429,7 @@ impl fmt::Debug for WorkerLaunchRequest {
             &self.inner.supervisor,
             &self.inner.executable,
             &self.inner.entrypoint,
+            &self.inner.environment,
         );
         formatter
             .debug_struct("WorkerLaunchRequest")
@@ -348,6 +450,7 @@ impl WorkerLaunchRequest {
         supervisor: TrustedFilePin,
         executable: TrustedFilePin,
         entrypoint: Option<TrustedFilePin>,
+        environment: TrustedWorkerEnvironment,
         limits: ProcessOwnerLimits,
     ) -> Self {
         Self {
@@ -357,6 +460,7 @@ impl WorkerLaunchRequest {
                 supervisor,
                 executable,
                 entrypoint,
+                environment,
                 limits,
             }),
         }
@@ -380,36 +484,68 @@ impl fmt::Debug for ServiceLaunchRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let _ = (
             &self.inner.service_id,
-            &self.inner.instance_id,
-            &self.inner.paths,
-            &self.inner.executable_relative,
-            &self.inner.entrypoint_relative,
+            self.inner.service_port,
+            &self.inner.readiness,
+            &self.inner.readiness_authorization,
+            &self.inner.generation_scope,
+            &self.inner.supervisor,
+            &self.inner.executable,
+            &self.inner.launch_files,
+            &self.inner.working_directory,
             &self.inner.arguments,
+            &self.inner.environment,
         );
         formatter
             .debug_struct("ServiceLaunchRequest")
             .field("authority", &"<opaque registry service launch material>")
             .field("argument_count", &self.inner.arguments.len())
+            .field("environment", &"<sealed service environment>")
             .field("limits", &self.inner.limits)
             .finish()
     }
 }
 
 impl ServiceLaunchRequest {
+    // These values are deliberately passed as separate, already-pinned
+    // authorities. Collapsing them into an ordinary public options object
+    // would make the sole trusted Registry construction boundary less clear.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_registry(
         service_id: String,
-        instance_id: String,
+        service_port: u16,
+        readiness: ServiceHttpReadiness,
+        generation_scope: RuntimeGenerationScope,
         paths: RuntimePaths,
-        executable_relative: String,
-        entrypoint_relative: Option<String>,
+        supervisor: TrustedFilePin,
+        executable: TrustedFilePin,
+        launch_files: Vec<TrustedFilePin>,
+        working_directory: TrustedLaunchDirectory,
         arguments: Vec<OsString>,
+        environment: TrustedServiceEnvironment,
         limits: ProcessOwnerLimits,
     ) -> Result<Self, ProcessOwnerError> {
-        let purpose = ProcessOwnerPurpose::Service {
-            service_id: service_id.clone(),
-            instance_id: instance_id.clone(),
-        };
-        purpose.validate()?;
+        validate_identifier("serviceId", &service_id)
+            .map_err(|_| ProcessOwnerError::InvalidLaunch("service ownership fence was invalid"))?;
+        if service_port == 0 {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "service launch port was invalid",
+            ));
+        }
+        if supervisor.authority_kind() != "runtime"
+            || !matches!(executable.authority_kind(), "runtime" | "data")
+        {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "supervisor must be runtime-root and service executable must be runtime-root or data-root authority",
+            ));
+        }
+        if launch_files
+            .iter()
+            .any(|pin| !matches!(pin.authority_kind(), "runtime" | "application" | "data"))
+        {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "service launch files must come from a closed runtime, application, or data-root authority",
+            ));
+        }
         if arguments.len() > MAX_TARGET_ARGUMENTS {
             return Err(ProcessOwnerError::InvalidLaunch(
                 "target argument count exceeded its bound",
@@ -420,21 +556,63 @@ impl ServiceLaunchRequest {
                 "target argument contained NUL",
             ));
         }
+        let readiness_secret_name = match service_id.as_str() {
+            "cliproxy" => Some("CLIPROXY_API_KEY"),
+            "cad" => Some("BREADBOARD_CAD_SECRET"),
+            "colpali" => Some("BREADBOARD_COLPALI_SECRET"),
+            "humanizer" => Some("BREADBOARD_HUMANIZER_SECRET"),
+            _ => None,
+        };
+        let readiness_authorization = if let Some(secret_name) = readiness_secret_name {
+            let value = environment
+                .value(secret_name)
+                .and_then(OsStr::to_str)
+                .filter(|value| {
+                    value.len() >= MIN_CONTROL_TOKEN_BYTES
+                        && value.len() <= MAX_CONTROL_TOKEN_BYTES
+                        && value.bytes().all(|byte| byte.is_ascii_graphic())
+                })
+                .ok_or(ProcessOwnerError::InvalidLaunch(
+                    "authenticated service readiness credential was unavailable",
+                ))?;
+            Some(format!("Bearer {value}"))
+        } else {
+            None
+        };
+        let environment = TrustedProcessEnvironment::service(&service_id, environment)?;
         Ok(Self {
             inner: Box::new(ServiceLaunchRequestInner {
                 service_id,
-                instance_id,
+                service_port,
+                readiness,
+                readiness_authorization,
+                generation_scope,
                 paths,
-                executable_relative,
-                entrypoint_relative,
+                supervisor,
+                executable,
+                launch_files,
+                working_directory,
                 arguments,
+                environment,
                 limits: limits.validate()?,
             }),
         })
     }
 
     pub(crate) fn generation_scope(&self) -> RuntimeGenerationScope {
-        self.inner.paths.runtime_generation_scope()
+        self.inner.generation_scope.clone()
+    }
+
+    pub(crate) fn service_id(&self) -> &str {
+        &self.inner.service_id
+    }
+
+    pub(crate) fn readiness_binding(&self) -> (u16, ServiceHttpReadiness, Option<String>) {
+        (
+            self.inner.service_port,
+            self.inner.readiness.clone(),
+            self.inner.readiness_authorization.clone(),
+        )
     }
 
     #[cfg(test)]
@@ -445,6 +623,16 @@ impl ServiceLaunchRequest {
     #[cfg(test)]
     pub(crate) fn limits_for_test(&self) -> ProcessOwnerLimits {
         self.inner.limits
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arguments_for_test(&self) -> &[OsString] {
+        &self.inner.arguments
+    }
+
+    #[cfg(test)]
+    pub(crate) fn working_directory_for_test(&self) -> &Path {
+        self.inner.working_directory.absolute()
     }
 }
 
@@ -513,18 +701,388 @@ impl WorkerOrServiceArguments<'_> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct TrustedEnvironmentPolicy {
-    _private: (),
+#[cfg(windows)]
+fn worker_entrypoint_argument(
+    entrypoint: Option<&TrustedFilePin>,
+) -> Result<Option<std::path::PathBuf>, ProcessOwnerError> {
+    entrypoint
+        .map(TrustedFilePin::child_argv_path)
+        .transpose()
+        .map_err(ProcessOwnerError::from)
 }
 
-impl TrustedEnvironmentPolicy {
-    fn minimal() -> Self {
-        Self { _private: () }
+enum TrustedProcessEnvironment {
+    Worker(TrustedWorkerEnvironment),
+    Service(TrustedServiceEnvironment),
+}
+
+impl TrustedProcessEnvironment {
+    fn worker(environment: TrustedWorkerEnvironment) -> Self {
+        Self::Worker(environment)
     }
 
-    fn names(self) -> &'static [&'static str] {
-        TRUSTED_WINDOWS_ENVIRONMENT_NAMES
+    fn service(
+        service_id: &str,
+        environment: TrustedServiceEnvironment,
+    ) -> Result<Self, ProcessOwnerError> {
+        if environment.profile().service_id() != service_id
+            || environment.source() != environment.profile().source()
+        {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "service environment profile did not match service identity",
+            ));
+        }
+        Ok(Self::Service(environment))
+    }
+
+    fn validate_purpose(&self, purpose: &ProcessOwnerPurpose) -> Result<(), ProcessOwnerError> {
+        match (purpose, self) {
+            (ProcessOwnerPurpose::Worker(_), Self::Worker(_)) => Ok(()),
+            (ProcessOwnerPurpose::Service { service_id, .. }, Self::Service(environment))
+                if environment.profile().service_id() == service_id
+                    && environment.source() == environment.profile().source() =>
+            {
+                Ok(())
+            }
+            (ProcessOwnerPurpose::Worker(_), Self::Service(_)) => Err(
+                ProcessOwnerError::InvalidLaunch("worker launch carried a service environment"),
+            ),
+            (ProcessOwnerPurpose::Service { .. }, Self::Worker(_)) => Err(
+                ProcessOwnerError::InvalidLaunch("service launch carried the worker environment"),
+            ),
+            (ProcessOwnerPurpose::Service { .. }, Self::Service(_)) => {
+                Err(ProcessOwnerError::InvalidLaunch(
+                    "service environment profile did not match service identity",
+                ))
+            }
+        }
+    }
+
+    fn supervisor_profile_argument(&self) -> &'static str {
+        match self {
+            Self::Worker(environment) => match environment.source() {
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Minimal => "worker",
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Background => {
+                    "background-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::DocumentIngestion => {
+                    "document-ingestion-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::AudioAnalyzer => {
+                    "audio-analyzer-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::ImageSearchGoogle => {
+                    "image-search-google-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::InteractiveVisualizer => {
+                    "interactive-visualizer-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::QuartzPublish => {
+                    "quartz-publish-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::ManagedSetup => {
+                    "managed-setup-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Terminal => {
+                    "terminal-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::CodeIndex => {
+                    "code-index-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::AgentEdits => {
+                    "agent-edits-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterOpencode => {
+                    "outer-opencode-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::TradingAgent => {
+                    "trading-agent-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterCareerOps => {
+                    "outer-career-ops-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::SystemLocation => {
+                    "system-location-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Chatmock => {
+                    "chatmock-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Vimax => {
+                    "vimax-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::VoxDirector => {
+                    "vox-director-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterShorts => {
+                    "outer-shorts-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterOpenGym => {
+                    "outer-open-gym-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::AgentReachSetup => {
+                    "agent-reach-setup-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::GbrainSync => {
+                    "gbrain-sync-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterAgentReach => {
+                    "outer-agent-reach-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::AgentBrowserProfile => {
+                    "agent-browser-profile-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::AgentTars => {
+                    "agent-tars-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterLegal => {
+                    "outer-legal-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Sf3d => {
+                    "sf3d-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterCodex => {
+                    "outer-codex-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterRuflo => {
+                    "outer-ruflo-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterDeepTutor => {
+                    "outer-deep-tutor-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::DeepTutorMaintenance => {
+                    "deep-tutor-maintenance-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterOpenPlanter => {
+                    "outer-openplanter-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Manim => {
+                    "manim-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Premortem => {
+                    "premortem-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::AgentLoop => {
+                    "agent-loop-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Omh => {
+                    "omh-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Factcheck => {
+                    "factcheck-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::WatchMedia => {
+                    "watch-media-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Loopx => {
+                    "loopx-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Resource2Skill => {
+                    "resource2skill-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterMatraix => {
+                    "outer-matraix-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Formsmith => {
+                    "formsmith-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Hyperframes => {
+                    "hyperframes-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OpenMontage => {
+                    "openmontage-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterBoltSlides => {
+                    "outer-bolt-slides-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Subsai => {
+                    "subsai-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::SpeechMedia => {
+                    "speech-media-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::GeneratedVisualBrowser => {
+                    "generated-visual-browser-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::ScriberrGarden => {
+                    "scriberr-garden-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::Watermark => {
+                    "watermark-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterHardwareBlueprint => {
+                    "outer-hardware-blueprint-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::GetDoc => {
+                    "get-doc-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::GetDocDownload => {
+                    "get-doc-download-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::MeetingNotes => {
+                    "meeting-notes-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterInboxZero => {
+                    "outer-inbox-zero-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterSocialsManager => {
+                    "outer-socials-manager-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterMaxResearch => {
+                    "outer-max-research-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterWardrobe => {
+                    "outer-wardrobe-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterParametricCad => {
+                    "outer-parametric-cad-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterStockAnalyst => {
+                    "outer-stock-analyst-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterVibeTrading => {
+                    "outer-vibe-trading-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterDeerFlow => {
+                    "outer-deer-flow-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterMoneyPrinter => {
+                    "outer-money-printer-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterVideoUse => {
+                    "outer-video-use-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterDeepResearch => {
+                    "outer-deep-research-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterOpenscience => {
+                    "outer-openscience-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterOpenwork => {
+                    "outer-openwork-worker"
+                }
+            },
+            Self::Service(environment) => {
+                supervisor_service_environment_profile_argument(environment.profile())
+            }
+        }
+    }
+
+    fn is_live_system_commit_reserve_victim(&self) -> bool {
+        matches!(
+            self,
+            Self::Service(environment)
+                if environment.profile() == TrustedServiceEnvironmentProfile::Dashboard
+        )
+    }
+
+    fn service_diagnostic_redactions(&self) -> Vec<String> {
+        let Self::Service(environment) = self else {
+            return Vec::new();
+        };
+        diagnostic_redactions(environment.pairs())
+    }
+
+    fn worker_diagnostic_redactions(&self) -> Vec<String> {
+        let Self::Worker(environment) = self else {
+            return Vec::new();
+        };
+        diagnostic_redactions(environment.pairs())
+    }
+
+    #[cfg(windows)]
+    fn child_environment(&self) -> Result<Vec<(OsString, OsString)>, ProcessOwnerError> {
+        match self {
+            Self::Worker(environment) => Ok(environment
+                .pairs()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect()),
+            Self::Service(environment) => Ok(environment
+                .pairs()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect()),
+        }
+    }
+}
+
+fn diagnostic_redactions<'a>(pairs: impl Iterator<Item = (&'a OsStr, &'a OsStr)>) -> Vec<String> {
+    let mut values = pairs
+        .filter_map(|(name, value)| {
+            let name = name.to_string_lossy().to_ascii_uppercase();
+            let sensitive = [
+                "TOKEN",
+                "SECRET",
+                "PASSWORD",
+                "API_KEY",
+                "INVITE_CODE",
+                "CREDENTIAL",
+            ]
+            .iter()
+            .any(|marker| name.contains(marker));
+            if !sensitive {
+                return None;
+            }
+            let value = value.to_string_lossy().into_owned();
+            (value.len() >= 4).then_some(value)
+        })
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
+}
+
+const fn supervisor_service_environment_profile_argument(
+    profile: TrustedServiceEnvironmentProfile,
+) -> &'static str {
+    match profile {
+        TrustedServiceEnvironmentProfile::Chatmock => "chatmock",
+        TrustedServiceEnvironmentProfile::Comfyui => "comfyui",
+        TrustedServiceEnvironmentProfile::Dashboard => "dashboard",
+        TrustedServiceEnvironmentProfile::Gbrain => "gbrain",
+        TrustedServiceEnvironmentProfile::Hermes => "hermes",
+        TrustedServiceEnvironmentProfile::TelegramGateway => "telegram-gateway",
+        TrustedServiceEnvironmentProfile::WhatsappGateway => "whatsapp-gateway",
+        TrustedServiceEnvironmentProfile::Openwork => "openwork",
+        TrustedServiceEnvironmentProfile::Openscience => "openscience",
+        TrustedServiceEnvironmentProfile::MoneyPrinter => "money-printer",
+        TrustedServiceEnvironmentProfile::Wardrobe => "wardrobe",
+        TrustedServiceEnvironmentProfile::Penecho => "penecho",
+        TrustedServiceEnvironmentProfile::VlmOcr => "vlm-ocr",
+        TrustedServiceEnvironmentProfile::Recall => "recall",
+        TrustedServiceEnvironmentProfile::Mem0SemanticEngine => "mem0-semantic-engine",
+        TrustedServiceEnvironmentProfile::LocalMcpBroker => "local-mcp-broker",
+        TrustedServiceEnvironmentProfile::PostizCoordinator => "postiz-coordinator",
+        TrustedServiceEnvironmentProfile::InboxZeroStack => "inbox-zero-stack",
+        TrustedServiceEnvironmentProfile::SpotifyPlayback => "spotify-playback",
+        TrustedServiceEnvironmentProfile::Cliproxy => "cliproxy",
+        TrustedServiceEnvironmentProfile::Quartz => "quartz",
+        TrustedServiceEnvironmentProfile::UiTars => "ui-tars",
+        TrustedServiceEnvironmentProfile::Cad => "cad",
+        TrustedServiceEnvironmentProfile::Colpali => "colpali",
+        TrustedServiceEnvironmentProfile::Humanizer => "humanizer",
+        TrustedServiceEnvironmentProfile::Voicebox => "voicebox",
+        TrustedServiceEnvironmentProfile::Scriberr => "scriberr",
+        TrustedServiceEnvironmentProfile::DeepResearch => "deep-research",
+        TrustedServiceEnvironmentProfile::DeerFlow => "deer-flow",
+        TrustedServiceEnvironmentProfile::VibeTrading => "vibe-trading",
+        TrustedServiceEnvironmentProfile::StockAnalyst => "stock-analyst",
+        TrustedServiceEnvironmentProfile::SolidworksMcp => "solidworks-mcp",
+    }
+}
+
+impl fmt::Debug for TrustedProcessEnvironment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Worker(environment) => formatter
+                .debug_struct("TrustedProcessEnvironment::Worker")
+                .field("source", &environment.source())
+                .field("values", &"<redacted>")
+                .finish(),
+            Self::Service(environment) => formatter
+                .debug_struct("TrustedProcessEnvironment::Service")
+                .field("profile", &environment.profile())
+                .field("values", &"<redacted>")
+                .finish(),
+        }
     }
 }
 
@@ -541,57 +1099,77 @@ impl fmt::Debug for TrustedProcessLaunch {
             )
             .field("working_directory", &"<redacted pinned directory>")
             .field("argument_count", &self.target.argument_count())
-            .field("environment", &"<fixed trusted policy>")
+            .field("environment", &self.environment)
             .field("limits", &self.limits)
             .finish()
     }
 }
 
 impl TrustedProcessLaunch {
-    fn from_validated_claimed_worker(
-        identity: WorkerIdentity,
-        generation_scope: RuntimeGenerationScope,
-        supervisor: TrustedFilePin,
-        executable: TrustedFilePin,
-        entrypoint: Option<TrustedFilePin>,
-        start: PreparedWorkerStart,
-        limits: ProcessOwnerLimits,
-    ) -> Self {
-        Self {
-            purpose: ProcessOwnerPurpose::Worker(identity),
-            generation_scope,
-            supervisor,
-            executable,
-            entrypoint,
-            target: TrustedProcessTarget::Worker(Box::new(start)),
-            environment: TrustedEnvironmentPolicy::minimal(),
-            limits,
-        }
-    }
-
     fn revalidate_pins(&self) -> Result<(), ProcessOwnerError> {
+        self.environment.validate_purpose(&self.purpose)?;
         self.supervisor.revalidate()?;
         self.executable.revalidate()?;
         if let Some(entrypoint) = &self.entrypoint {
             entrypoint.revalidate()?;
         }
+        for launch_file in &self.launch_files {
+            launch_file.revalidate()?;
+        }
         self.target.revalidate()?;
         Ok(())
     }
 
+    fn persist_service_diagnostic(
+        &self,
+        stream: &str,
+        data: &str,
+    ) -> Result<(), ProcessOwnerError> {
+        let Some(paths) = &self.service_diagnostic_paths else {
+            return Ok(());
+        };
+        let ProcessOwnerPurpose::Service {
+            service_id,
+            generation,
+        } = &self.purpose
+        else {
+            return Err(ProcessOwnerError::InvalidState(
+                "worker launch carried a service diagnostic log",
+            ));
+        };
+        let sanitized = redact_service_diagnostic(data, &self.service_diagnostic_redactions);
+        let record =
+            format!("[service={service_id} generation={generation} stream={stream}] {sanitized}");
+        paths.append_bounded_service_log(
+            service_id,
+            record.as_bytes(),
+            MAX_DURABLE_SERVICE_DIAGNOSTIC_BYTES,
+        )?;
+        Ok(())
+    }
+
+    fn persist_worker_diagnostic(&self, stream: &str, data: &str) -> Result<(), ProcessOwnerError> {
+        let Some(paths) = &self.worker_diagnostic_paths else {
+            return Ok(());
+        };
+        let ProcessOwnerPurpose::Worker(identity) = &self.purpose else {
+            return Err(ProcessOwnerError::InvalidState(
+                "service launch carried a worker diagnostic log",
+            ));
+        };
+        let sanitized = redact_service_diagnostic(data, &self.worker_diagnostic_redactions);
+        let record = worker_diagnostic_record(identity, stream, &sanitized);
+        paths.append_bounded_worker_log(
+            identity,
+            record.as_bytes(),
+            MAX_DURABLE_WORKER_DIAGNOSTIC_BYTES,
+        )?;
+        Ok(())
+    }
+
     #[cfg(windows)]
-    fn child_environment(&self) -> Result<Vec<(String, OsString)>, ProcessOwnerError> {
-        let mut values = Vec::with_capacity(self.environment.names().len());
-        for &name in self.environment.names() {
-            let value = std::env::var_os(name).ok_or(ProcessOwnerError::MissingEnvironment)?;
-            values.push((name.to_string(), value));
-        }
-        values.sort_by(|left, right| {
-            left.0
-                .to_ascii_lowercase()
-                .cmp(&right.0.to_ascii_lowercase())
-        });
-        Ok(values)
+    fn child_environment(&self) -> Result<Vec<(OsString, OsString)>, ProcessOwnerError> {
+        self.environment.child_environment()
     }
 
     pub(crate) fn generation_scope(&self) -> &RuntimeGenerationScope {
@@ -599,15 +1177,58 @@ impl TrustedProcessLaunch {
     }
 }
 
-fn prepare_service_launch(
+fn redact_service_diagnostic(data: &str, secrets: &[String]) -> String {
+    let mut sanitized = data.to_owned();
+    for secret in secrets {
+        sanitized = sanitized.replace(secret, "[REDACTED]");
+    }
+    sanitized
+}
+
+fn worker_diagnostic_record(identity: &WorkerIdentity, stream: &str, data: &str) -> String {
+    format!(
+        "[job={} attempt={} worker={} stream={stream}] {data}",
+        identity.job_id, identity.attempt, identity.worker_instance_id
+    )
+}
+
+pub(crate) fn prepare_claimed_service_launch(
+    service_id: &str,
+    generation: u64,
     request: ServiceLaunchRequest,
 ) -> Result<TrustedProcessLaunch, (ServiceLaunchRequest, ProcessOwnerError)> {
     let pre_file_validation = (|| {
-        ProcessOwnerPurpose::Service {
-            service_id: request.inner.service_id.clone(),
-            instance_id: request.inner.instance_id.clone(),
+        let purpose = ProcessOwnerPurpose::Service {
+            service_id: service_id.into(),
+            generation,
+        };
+        purpose.validate()?;
+        if request.inner.service_id != service_id {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "service registry material did not match the durable service identity",
+            ));
         }
-        .validate()?;
+        request.inner.environment.validate_purpose(&purpose)?;
+        if request.inner.supervisor.authority_kind() != "runtime"
+            || !matches!(
+                request.inner.executable.authority_kind(),
+                "runtime" | "data"
+            )
+        {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "supervisor must be runtime-root and service executable must be runtime-root or data-root authority",
+            ));
+        }
+        if request
+            .inner
+            .launch_files
+            .iter()
+            .any(|pin| !matches!(pin.authority_kind(), "runtime" | "application" | "data"))
+        {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "service launch files must come from a closed runtime, application, or data-root authority",
+            ));
+        }
         if request.inner.arguments.len() > MAX_TARGET_ARGUMENTS {
             return Err(ProcessOwnerError::InvalidLaunch(
                 "target argument count exceeded its bound",
@@ -630,86 +1251,88 @@ fn prepare_service_launch(
         return Err((request, error));
     }
 
-    let generation_scope = request.generation_scope();
-    let pinned = (|| {
-        let supervisor = request.inner.paths.pin_runtime_file_for_launch(
-            &request
-                .inner
-                .paths
-                .resolve_runtime(RUNTIME_SUPERVISOR_RELATIVE_PATH)?,
-        )?;
-        let executable = request.inner.paths.pin_runtime_file_for_launch(
-            &request
-                .inner
-                .paths
-                .resolve_runtime(&request.inner.executable_relative)?,
-        )?;
-        let entrypoint = request
-            .inner
-            .entrypoint_relative
-            .as_deref()
-            .map(|relative| {
-                request
-                    .inner
-                    .paths
-                    .pin_app_file_for_launch(&request.inner.paths.resolve_app(relative)?)
-            })
-            .transpose()?;
-        Ok::<_, PathError>((supervisor, executable, entrypoint))
+    let pin_validation = (|| {
+        request.inner.supervisor.revalidate()?;
+        request.inner.executable.revalidate()?;
+        for launch_file in &request.inner.launch_files {
+            launch_file.revalidate()?;
+        }
+        request.inner.working_directory.revalidate()?;
+        Ok::<_, PathError>(())
     })();
-    let (supervisor, executable, entrypoint) = match pinned {
-        Ok(pinned) => pinned,
-        Err(error) => return Err((request, ProcessOwnerError::Path(error))),
-    };
-    let working_relative = format!(
-        "runtime/services/{}/{}",
-        request.inner.service_id, request.inner.instance_id
-    );
-    let working_directory = match request
-        .inner
-        .paths
-        .prepare_launch_directory(&working_relative)
-    {
-        Ok(working_directory) => working_directory,
-        Err(error) => return Err((request, ProcessOwnerError::Path(error))),
-    };
+    if let Err(error) = pin_validation {
+        return Err((request, ProcessOwnerError::Path(error)));
+    }
     let ServiceLaunchRequest { inner } = request;
     let ServiceLaunchRequestInner {
-        service_id,
-        instance_id,
-        paths: _,
-        executable_relative: _,
-        entrypoint_relative: _,
+        service_id: request_service_id,
+        service_port: _,
+        readiness: _,
+        readiness_authorization: _,
+        generation_scope,
+        paths,
+        supervisor,
+        executable,
+        launch_files,
+        working_directory,
         arguments,
+        environment,
         limits,
     } = *inner;
+    debug_assert_eq!(request_service_id, service_id);
+    let service_diagnostic_redactions = environment.service_diagnostic_redactions();
     Ok(TrustedProcessLaunch {
         purpose: ProcessOwnerPurpose::Service {
-            service_id,
-            instance_id,
+            service_id: request_service_id,
+            generation,
         },
         generation_scope,
         supervisor,
         executable,
-        entrypoint,
+        entrypoint: None,
+        launch_files,
         target: TrustedProcessTarget::Service {
             working_directory: Box::new(working_directory),
             arguments,
         },
-        environment: TrustedEnvironmentPolicy::minimal(),
+        environment,
+        service_diagnostic_paths: Some(paths),
+        service_diagnostic_redactions,
+        worker_diagnostic_paths: None,
+        worker_diagnostic_redactions: Vec::new(),
         limits,
     })
 }
 
 pub(crate) fn prepare_claimed_worker_launch(
-    identity: &WorkerIdentity,
+    claim: &WorkerDispatchClaim,
     request: WorkerLaunchRequest,
 ) -> Result<TrustedProcessLaunch, (WorkerLaunchRequest, ProcessOwnerError)> {
+    let identity = claim.identity();
+    let job = claim.job();
+    let execution_scope = match WorkerExecutionScope::new(
+        job.user_id,
+        job.garden_id.clone(),
+        job.conversation_id.clone(),
+    ) {
+        Ok(scope) => scope,
+        Err(_) => {
+            return Err((
+                request,
+                ProcessOwnerError::InvalidLaunch("durable worker execution scope was invalid"),
+            ));
+        }
+    };
     let generation_scope = request.generation_scope();
     let pre_file_validation = (|| {
         identity
             .validate()
             .map_err(|_| ProcessOwnerError::InvalidLaunch("worker ownership fence was invalid"))?;
+        if job.identity().as_ref() != Some(identity) {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "durable worker record did not match its dispatch fence",
+            ));
+        }
         if request.inner.supervisor.authority_kind() != "runtime"
             || request.inner.executable.authority_kind() != "runtime"
         {
@@ -744,15 +1367,20 @@ pub(crate) fn prepare_claimed_worker_launch(
     if let Err(error) = pin_validation {
         return Err((request, error));
     }
-    let start = match request.inner.paths.prepare_worker_start(identity) {
+    let start = match request.inner.paths.prepare_worker_start(
+        identity,
+        &execution_scope,
+        &claim.worker_input_blobs(),
+    ) {
         Ok(start) => start,
         Err(error) => return Err((request, ProcessOwnerError::Path(error))),
     };
-    if &start.manifest().identity != identity {
+    if &start.manifest().identity != identity || start.manifest().execution_scope != execution_scope
+    {
         return Err((
             request,
             ProcessOwnerError::InvalidLaunch(
-                "worker start authority did not match the durable dispatch claim",
+                "worker start authority did not match the durable dispatch claim and scope",
             ),
         ));
     }
@@ -762,21 +1390,30 @@ pub(crate) fn prepare_claimed_worker_launch(
     let WorkerLaunchRequest { inner } = request;
     let WorkerLaunchRequestInner {
         worker_kind: _,
-        paths: _,
+        paths,
         supervisor,
         executable,
         entrypoint,
+        environment,
         limits,
     } = *inner;
-    Ok(TrustedProcessLaunch::from_validated_claimed_worker(
-        identity.clone(),
+    let environment = TrustedProcessEnvironment::worker(environment);
+    let worker_diagnostic_redactions = environment.worker_diagnostic_redactions();
+    Ok(TrustedProcessLaunch {
+        purpose: ProcessOwnerPurpose::Worker(identity.clone()),
         generation_scope,
         supervisor,
         executable,
         entrypoint,
-        start,
+        launch_files: Vec::new(),
+        target: TrustedProcessTarget::Worker(Box::new(start)),
+        environment,
+        service_diagnostic_paths: None,
+        service_diagnostic_redactions: Vec::new(),
+        worker_diagnostic_paths: Some(paths),
+        worker_diagnostic_redactions,
         limits,
-    ))
+    })
 }
 
 fn contains_nul(value: &OsStr) -> bool {
@@ -949,6 +1586,174 @@ fn private_diagnostic_data(value: &Value) -> Result<&str, ProcessOwnerError> {
         ))
 }
 
+fn safe_malformed_protocol_message(untrusted_message: &str) -> &'static str {
+    match untrusted_message {
+        "system commit guard values are invalid" => {
+            "Supervisor system-commit guard options were inconsistent"
+        }
+        "inherited environment variable is outside the selected profile" => {
+            "Supervisor environment profile rejected a requested variable"
+        }
+        "duplicate inherited environment variable name" => {
+            "Supervisor environment profile received a duplicate variable"
+        }
+        "invalid inherited environment variable name" => {
+            "Supervisor environment profile received an invalid variable name"
+        }
+        "soft limit must be lower than hard limit" => {
+            "Supervisor process-tree commit limits were inconsistent"
+        }
+        "--expected-commit-bytes may be specified only once"
+        | "--system-commit-reserve-bytes may be specified only once"
+        | "--environment-profile may be specified only once"
+        | "--cwd may be specified only once" => {
+            "Supervisor launch protocol repeated a singleton option"
+        }
+        "--expected-commit-bytes and --system-commit-reserve-bytes must be supplied together" => {
+            "Supervisor system-commit guard options were incomplete"
+        }
+        "missing target command" | "target command must not be empty" => {
+            "Supervisor launch protocol omitted its target"
+        }
+        "target command and arguments must not contain NUL" => {
+            "Supervisor launch target contained invalid data"
+        }
+        "target working directory is invalid" | "target working directory must be absolute" => {
+            "Supervisor launch working directory was invalid"
+        }
+        "hard limit cannot be represented on this platform" => {
+            "Supervisor process-tree commit limit was not representable"
+        }
+        "unknown environment profile" => {
+            "Supervisor launch selected an unknown environment profile"
+        }
+        message if message.starts_with("missing value for ") => {
+            "Supervisor launch protocol omitted an option value"
+        }
+        message if message.starts_with("invalid value for ") => {
+            "Supervisor launch protocol supplied an invalid numeric value"
+        }
+        message if message.starts_with("unknown option ") => {
+            "Supervisor launch protocol supplied an unknown option"
+        }
+        message if message.starts_with("target has more than ") => {
+            "Supervisor launch target exceeded its argument bound"
+        }
+        message if message.starts_with("target command line exceeds the Windows ") => {
+            "Supervisor launch target exceeded the Windows command-line bound"
+        }
+        _ => "Supervisor launch protocol was invalid",
+    }
+}
+
+fn safe_supervisor_failure(code: &str, untrusted_message: &str) -> ProcessSupervisorFailure {
+    let (code, message) = match code {
+        "MALFORMED_PROTOCOL" => (
+            "MALFORMED_PROTOCOL",
+            safe_malformed_protocol_message(untrusted_message),
+        ),
+        "UNSUPPORTED_PLATFORM" => (
+            "UNSUPPORTED_PLATFORM",
+            "Authoritative process supervision is unsupported on this platform",
+        ),
+        "ACTIVATION_READ_FAILED" => (
+            "ACTIVATION_READ_FAILED",
+            "Supervisor activation could not be read",
+        ),
+        "ACTIVATION_REQUIRED" => (
+            "ACTIVATION_REQUIRED",
+            "Supervisor activation was not received",
+        ),
+        "ACTIVATION_TOO_LARGE" => (
+            "ACTIVATION_TOO_LARGE",
+            "Supervisor activation exceeded its protocol bound",
+        ),
+        "MALFORMED_ACTIVATION" => ("MALFORMED_ACTIVATION", "Supervisor activation was invalid"),
+        "CONTROL_THREAD_FAILED" => (
+            "CONTROL_THREAD_FAILED",
+            "Supervisor control input could not be started",
+        ),
+        "SPAWN_FAILED" => ("SPAWN_FAILED", "Service process could not be created"),
+        "JOB_ASSIGN_FAILED" => (
+            "JOB_ASSIGN_FAILED",
+            "Service process containment could not be established",
+        ),
+        "PROTOCOL_WRITE_FAILED" => ("PROTOCOL_WRITE_FAILED", "Supervisor event delivery failed"),
+        "PROTOCOL_QUEUE_FULL" => (
+            "PROTOCOL_QUEUE_FULL",
+            "Supervisor event queue exhausted its bound",
+        ),
+        "PROTOCOL_EVENT_TOO_LARGE" => (
+            "PROTOCOL_EVENT_TOO_LARGE",
+            "Supervisor event exceeded its protocol bound",
+        ),
+        "PIPE_FAILED" => ("PIPE_FAILED", "Service process stream setup failed"),
+        "STREAM_FORWARD_CANCEL_FAILED" => (
+            "STREAM_FORWARD_CANCEL_FAILED",
+            "Service stream forwarding could not be cancelled",
+        ),
+        "STREAM_FORWARD_FAILED" => ("STREAM_FORWARD_FAILED", "Service stream forwarding failed"),
+        "STREAM_FORWARD_TIMEOUT" => (
+            "STREAM_FORWARD_TIMEOUT",
+            "Service stream forwarding did not stop in time",
+        ),
+        "JOB_TERMINATE_FAILED" => (
+            "JOB_TERMINATE_FAILED",
+            "Service process tree could not be terminated",
+        ),
+        "JOB_CONFIG_FAILED" => (
+            "JOB_CONFIG_FAILED",
+            "Service process containment could not be configured",
+        ),
+        "JOB_NOTIFICATION_FAILED" => (
+            "JOB_NOTIFICATION_FAILED",
+            "Service process containment notification failed",
+        ),
+        "JOB_ACCOUNTING_FAILED" => ("JOB_ACCOUNTING_FAILED", "Service process accounting failed"),
+        "ROOT_TERMINATE_FAILED" => (
+            "ROOT_TERMINATE_FAILED",
+            "Service root process could not be terminated",
+        ),
+        "JOB_CLEANUP_FAILED" => (
+            "JOB_CLEANUP_FAILED",
+            "Service process containment cleanup failed",
+        ),
+        "JOB_CREATE_FAILED" => (
+            "JOB_CREATE_FAILED",
+            "Service process containment could not be created",
+        ),
+        "RESUME_FAILED" => (
+            "RESUME_FAILED",
+            "Service process could not be resumed after containment",
+        ),
+        "WAIT_FAILED" => ("WAIT_FAILED", "Service process exit wait failed"),
+        "EXIT_QUERY_FAILED" => (
+            "EXIT_QUERY_FAILED",
+            "Service process exit status could not be read",
+        ),
+        _ => (
+            UNCLASSIFIED_SUPERVISOR_FAILURE_CODE,
+            UNCLASSIFIED_SUPERVISOR_FAILURE_MESSAGE,
+        ),
+    };
+    debug_assert!(code.len() <= MAX_SUPERVISOR_FAILURE_CODE_BYTES);
+    debug_assert!(message.len() <= MAX_SUPERVISOR_FAILURE_MESSAGE_BYTES);
+    ProcessSupervisorFailure {
+        code: code.to_owned(),
+        message: message.to_owned(),
+    }
+}
+
+fn supervisor_failure_diagnostic(failure: &ProcessSupervisorFailure) -> String {
+    let diagnostic = format!(
+        "failure-code={} failure-message={}",
+        failure.code(),
+        failure.message()
+    );
+    debug_assert!(diagnostic.len() <= MAX_SUPERVISOR_FAILURE_DIAGNOSTIC_BYTES);
+    diagnostic
+}
+
 fn is_worker_stdout_loss_event(kind: &str, stream: Option<&str>, worker: bool) -> bool {
     worker && stream == Some("stdout") && matches!(kind, "stream-truncated" | "stream-pressure")
 }
@@ -960,9 +1765,36 @@ fn is_known_supervisor_lifecycle_kind(kind: &str) -> bool {
             | "soft-limit"
             | "hard-limit"
             | "stop-escalated"
+            | "listener-ownership"
             | "stream-pressure"
             | "stream-truncated"
     )
+}
+
+fn defer_lifecycle_event(
+    deferred: &mut VecDeque<Value>,
+    value: Value,
+) -> Result<(), ProcessOwnerError> {
+    // Memory records are periodic samples, not lifecycle authority. Preserve
+    // the newest sample while an ownership inspection is in flight so a slow
+    // readiness window cannot grow an unbounded replay queue. Every distinct
+    // limit/stop/stream event remains ordered and lossless.
+    if value.get("type").and_then(Value::as_str) == Some("memory") {
+        if let Some(index) = deferred
+            .iter()
+            .rposition(|candidate| candidate.get("type").and_then(Value::as_str) == Some("memory"))
+        {
+            deferred[index] = value;
+            return Ok(());
+        }
+    }
+    if deferred.len() >= MAX_BUFFERED_PROCESS_OWNER_EVENTS {
+        return Err(ProcessOwnerError::Protocol(
+            "deferred supervisor lifecycle events exceeded their bound",
+        ));
+    }
+    deferred.push_back(value);
+    Ok(())
 }
 
 fn send_supervisor_read(sender: &SyncSender<SupervisorRead>, read: SupervisorRead) -> bool {
@@ -1028,6 +1860,7 @@ pub struct RunningProcessOwner {
     private_diagnostics: PrivateDiagnosticBuffer,
     worker_events: Option<WorkerEventStream>,
     worker_protocol_fault: Option<WorkerProtocolFault>,
+    deferred_lifecycle: VecDeque<Value>,
     pending_terminal: Option<ProcessOwnerTerminal>,
     observed_terminal: Option<ProcessOwnerTerminal>,
     supervisor_protocol_poisoned: bool,
@@ -1041,6 +1874,22 @@ pub struct RunningProcessOwner {
     started_boundary_accepted: bool,
     terminal_seen: bool,
     stop_requested: bool,
+    listener_inspection_sequence: u64,
+    pending_listener_inspection: Option<PendingListenerInspection>,
+    completed_listener_inspection: Option<CompletedListenerInspection>,
+    listener_inspection_wait_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingListenerInspection {
+    request_id: u64,
+    port: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompletedListenerInspection {
+    request: PendingListenerInspection,
+    ownership: LoopbackListenerOwnership,
 }
 
 pub(crate) enum ProcessSpawnAttempt {
@@ -1117,89 +1966,6 @@ impl Drop for ProcessCreationUncertain {
     }
 }
 
-#[must_use = "every service launch outcome owns process or retry authority and must be handled"]
-pub enum ServiceLaunchOutcome {
-    Running(Box<RunningProcessOwner>),
-    NotCreated(ServiceLaunchNotCreated),
-    Uncertain(ServiceLaunchUncertain),
-}
-
-impl fmt::Debug for ServiceLaunchOutcome {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Running(_) => formatter.write_str("ServiceLaunchOutcome::Running(<opaque>)"),
-            Self::NotCreated(_) => {
-                formatter.write_str("ServiceLaunchOutcome::NotCreated(<opaque>)")
-            }
-            Self::Uncertain(_) => formatter.write_str("ServiceLaunchOutcome::Uncertain(<opaque>)"),
-        }
-    }
-}
-
-#[must_use = "a no-process-created service launch may be retried"]
-pub struct ServiceLaunchNotCreated {
-    retry: ServiceLaunchRetryMaterial,
-    error: ProcessOwnerError,
-}
-
-enum ServiceLaunchRetryMaterial {
-    Request(ServiceLaunchRequest),
-    Prepared(Box<TrustedProcessLaunch>),
-}
-
-impl fmt::Debug for ServiceLaunchNotCreated {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = &self.retry;
-        formatter
-            .debug_struct("ServiceLaunchNotCreated")
-            .field("authority", &"<opaque no-process-created authority>")
-            .field("error", &self.error)
-            .finish()
-    }
-}
-
-impl ServiceLaunchNotCreated {
-    pub fn error(&self) -> &ProcessOwnerError {
-        &self.error
-    }
-
-    pub fn retry(self, generation: &CurrentGenerationMembership) -> ServiceLaunchOutcome {
-        match self.retry {
-            ServiceLaunchRetryMaterial::Request(request) => {
-                RunningProcessOwner::spawn_service(generation, request)
-            }
-            ServiceLaunchRetryMaterial::Prepared(launch) => {
-                RunningProcessOwner::spawn_prepared_service(generation, *launch)
-            }
-        }
-    }
-}
-
-#[must_use = "an uncertain service launch must remain owned through runtime shutdown"]
-pub struct ServiceLaunchUncertain {
-    owner: Box<ProcessCreationUncertain>,
-}
-
-impl fmt::Debug for ServiceLaunchUncertain {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = &self.owner;
-        formatter.write_str("ServiceLaunchUncertain(<opaque live cleanup authority>)")
-    }
-}
-
-impl ServiceLaunchUncertain {
-    pub fn error(&self) -> &ProcessOwnerError {
-        self.owner.error()
-    }
-
-    /// Requests bounded emergency termination without consuming the child
-    /// handle or implying that zero residents were proved. The caller must
-    /// retain this object while it closes admission and shuts the runtime down.
-    pub fn request_runtime_shutdown(&mut self) {
-        self.owner.request_emergency_termination();
-    }
-}
-
 impl fmt::Debug for RunningProcessOwner {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1208,9 +1974,18 @@ impl fmt::Debug for RunningProcessOwner {
             .field("root_pid", &self.root_pid)
             .field("terminal_seen", &self.terminal_seen)
             .field("stop_requested", &self.stop_requested)
+            .field(
+                "listener_inspection_pending",
+                &self.pending_listener_inspection.is_some(),
+            )
+            .field(
+                "listener_inspection_completed",
+                &self.completed_listener_inspection.is_some(),
+            )
             .field("private_diagnostic_count", &self.private_diagnostics.len())
             .field("typed_worker_event_stream", &self.worker_events.is_some())
             .field("worker_protocol_fault", &self.worker_protocol_fault)
+            .field("deferred_lifecycle_count", &self.deferred_lifecycle.len())
             .field(
                 "supervisor_protocol_poisoned",
                 &self.supervisor_protocol_poisoned,
@@ -1225,59 +2000,27 @@ impl fmt::Debug for RunningProcessOwner {
 }
 
 impl RunningProcessOwner {
-    /// Starts only service-purpose launches. Worker launches must consume the
-    /// exact durable `WorkerDispatchClaim` through `WorkerDispatchClaim::launch`;
-    /// accepting a raw worker purpose here would recreate the stale
-    /// no-process-proof race that the claim-owned launch boundary prevents.
-    pub fn spawn_service(
-        generation: &CurrentGenerationMembership,
-        request: ServiceLaunchRequest,
-    ) -> ServiceLaunchOutcome {
-        if !generation.matches_scope(&request.generation_scope()) {
-            return ServiceLaunchOutcome::NotCreated(ServiceLaunchNotCreated {
-                retry: ServiceLaunchRetryMaterial::Request(request),
-                error: ProcessOwnerError::GenerationScopeMismatch,
-            });
-        }
-        match prepare_service_launch(request) {
-            Ok(launch) => Self::spawn_prepared_service(generation, launch),
-            Err((request, error)) => ServiceLaunchOutcome::NotCreated(ServiceLaunchNotCreated {
-                retry: ServiceLaunchRetryMaterial::Request(request),
-                error,
-            }),
-        }
-    }
-
-    fn spawn_prepared_service(
+    /// Raw service spawning is crate-private. Production callers must consume
+    /// an acknowledged durable StartTree authority through `service_process`.
+    pub(crate) fn spawn_claimed_service(
         generation: &CurrentGenerationMembership,
         launch: TrustedProcessLaunch,
-    ) -> ServiceLaunchOutcome {
+    ) -> ProcessSpawnAttempt {
         if !matches!(&launch.purpose, ProcessOwnerPurpose::Service { .. }) {
-            return ServiceLaunchOutcome::NotCreated(ServiceLaunchNotCreated {
-                retry: ServiceLaunchRetryMaterial::Prepared(Box::new(launch)),
+            return ProcessSpawnAttempt::NotCreated {
+                launch: Box::new(launch),
                 error: ProcessOwnerError::InvalidLaunch(
                     "service launch did not carry service purpose",
                 ),
-            });
+            };
         }
         if !generation.matches_scope(launch.generation_scope()) {
-            return ServiceLaunchOutcome::NotCreated(ServiceLaunchNotCreated {
-                retry: ServiceLaunchRetryMaterial::Prepared(Box::new(launch)),
+            return ProcessSpawnAttempt::NotCreated {
+                launch: Box::new(launch),
                 error: ProcessOwnerError::GenerationScopeMismatch,
-            });
+            };
         }
-        match Self::spawn_classified(generation, launch) {
-            ProcessSpawnAttempt::Running(owner) => ServiceLaunchOutcome::Running(owner),
-            ProcessSpawnAttempt::NotCreated { launch, error } => {
-                ServiceLaunchOutcome::NotCreated(ServiceLaunchNotCreated {
-                    retry: ServiceLaunchRetryMaterial::Prepared(launch),
-                    error,
-                })
-            }
-            ProcessSpawnAttempt::Uncertain(owner) => {
-                ServiceLaunchOutcome::Uncertain(ServiceLaunchUncertain { owner })
-            }
-        }
+        Self::spawn_classified(generation, launch)
     }
 
     pub(crate) fn spawn_claimed_worker(
@@ -1312,6 +2055,12 @@ impl RunningProcessOwner {
                 error,
             };
         }
+        if let Err(error) = launch.persist_service_diagnostic("lifecycle", "launch-start") {
+            return ProcessSpawnAttempt::NotCreated {
+                launch: Box::new(launch),
+                error,
+            };
+        }
         let environment = match launch.child_environment() {
             Ok(environment) => environment,
             Err(error) => {
@@ -1321,10 +2070,33 @@ impl RunningProcessOwner {
                 }
             }
         };
+        let entrypoint_argument = match worker_entrypoint_argument(launch.entrypoint.as_ref()) {
+            Ok(entrypoint) => entrypoint,
+            Err(error) => {
+                return ProcessSpawnAttempt::NotCreated {
+                    launch: Box::new(launch),
+                    error,
+                }
+            }
+        };
+        let working_directory_argument =
+            match launch.target.working_directory().child_process_path() {
+                Ok(directory) => directory,
+                Err(error) => {
+                    return ProcessSpawnAttempt::NotCreated {
+                        launch: Box::new(launch),
+                        error: ProcessOwnerError::Path(error),
+                    }
+                }
+            };
         let mut command = Command::new(launch.supervisor.absolute());
         command
             .env_clear()
-            .envs(environment)
+            .envs(
+                environment
+                    .iter()
+                    .map(|(name, value)| (name.as_os_str(), value.as_os_str())),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1335,13 +2107,27 @@ impl RunningProcessOwner {
             .arg("--graceful-timeout-ms")
             .arg(launch.limits.graceful_shutdown.as_millis().to_string())
             .arg("--cwd")
-            .arg(launch.target.working_directory().absolute());
-        for &name in launch.environment.names() {
+            .arg(&working_directory_argument)
+            .arg("--environment-profile")
+            .arg(launch.environment.supervisor_profile_argument());
+        if let Some(guard) = launch.limits.system_commit_guard {
+            command
+                .arg("--expected-commit-bytes")
+                .arg(guard.expected_commit_bytes().to_string())
+                .arg("--system-commit-reserve-bytes")
+                .arg(guard.trusted_reserve_bytes().to_string());
+        }
+        for (name, _) in &environment {
             command.arg("--inherit-env").arg(name);
         }
         command.arg("--").arg(launch.executable.absolute());
-        if let Some(entrypoint) = &launch.entrypoint {
-            command.arg(entrypoint.absolute());
+        // Only workers retain the compatibility entrypoint convention. A
+        // service profile supplies its complete argv, so prepending any
+        // entrypoint here would silently change the manifest-selected command.
+        if matches!(&launch.target, TrustedProcessTarget::Worker(_)) {
+            if let Some(entrypoint) = &entrypoint_argument {
+                command.arg(entrypoint);
+            }
         }
         launch.target.arguments().apply_to(&mut command);
 
@@ -1433,6 +2219,7 @@ impl RunningProcessOwner {
             private_diagnostics: PrivateDiagnosticBuffer::new(),
             worker_events,
             worker_protocol_fault: None,
+            deferred_lifecycle: VecDeque::new(),
             pending_terminal: None,
             observed_terminal: None,
             supervisor_protocol_poisoned: false,
@@ -1446,6 +2233,10 @@ impl RunningProcessOwner {
             started_boundary_accepted: false,
             terminal_seen: false,
             stop_requested: false,
+            listener_inspection_sequence: 0,
+            pending_listener_inspection: None,
+            completed_listener_inspection: None,
+            listener_inspection_wait_active: false,
         }))
     }
 
@@ -1470,6 +2261,13 @@ impl RunningProcessOwner {
 
     pub fn root_pid(&self) -> Option<u32> {
         self.root_pid
+    }
+
+    pub(crate) fn supervisor_has_exited(&mut self) -> Result<bool, ProcessOwnerError> {
+        self.child
+            .try_wait()
+            .map(|status| status.is_some())
+            .map_err(ProcessOwnerError::Control)
     }
 
     /// Takes the one residency authority minted by this live owner after its
@@ -1497,6 +2295,154 @@ impl RunningProcessOwner {
             .and_then(|_| self.control.flush())
             .map_err(ProcessOwnerError::Control)?;
         self.stop_requested = true;
+        Ok(())
+    }
+
+    /// Asks the exact pinned supervisor which still owns this service's
+    /// private Job Object to correlate the loopback listener with the Job's
+    /// current resident PID list. An HTTP response alone is not readiness
+    /// authority: an unrelated local process may already occupy the reserved
+    /// port. The request/response sequence is bound to this live owner, and a
+    /// timeout retains the exact outstanding request rather than advancing to
+    /// an id whose response could be confused with delayed protocol data.
+    pub(crate) fn inspect_loopback_listener_ownership(
+        &mut self,
+        port: u16,
+        timeout: Duration,
+    ) -> Result<LoopbackListenerOwnership, ProcessOwnerError> {
+        if !matches!(&self.launch.purpose, ProcessOwnerPurpose::Service { .. }) {
+            return Err(ProcessOwnerError::InvalidState(
+                "listener ownership inspection requires a service process",
+            ));
+        }
+        if self.root_pid.is_none() || !self.started_boundary_accepted {
+            return Err(ProcessOwnerError::InvalidState(
+                "listener ownership inspection requires the accepted started boundary",
+            ));
+        }
+        if self.terminal_seen || self.stop_requested {
+            return Err(ProcessOwnerError::InvalidState(
+                "listener ownership inspection is unavailable after stop or exit",
+            ));
+        }
+        if port == 0 {
+            return Err(ProcessOwnerError::InvalidState(
+                "listener ownership inspection received an invalid port",
+            ));
+        }
+        let deadline = bounded_event_deadline(timeout)?;
+        if let Some(completed) = self.completed_listener_inspection.take() {
+            if completed.request.port == port {
+                return Ok(completed.ownership);
+            }
+            self.completed_listener_inspection = Some(completed);
+            return Err(ProcessOwnerError::InvalidState(
+                "a different listener ownership result remains unconsumed",
+            ));
+        }
+
+        let inspection = match self.pending_listener_inspection {
+            Some(inspection) if inspection.port == port => inspection,
+            Some(_) => {
+                return Err(ProcessOwnerError::InvalidState(
+                    "a different listener ownership inspection remains outstanding",
+                ))
+            }
+            None => {
+                let request_id = self.listener_inspection_sequence.checked_add(1).ok_or(
+                    ProcessOwnerError::InvalidState(
+                        "listener ownership inspection sequence was exhausted",
+                    ),
+                )?;
+                let inspection = PendingListenerInspection { request_id, port };
+                // Record the request before writing it. A short/failed control
+                // write is ambiguous: retrying with a new request id could
+                // leave a delayed valid response queued ahead of the new one.
+                // Retaining this exact request therefore fails closed and also
+                // prevents readiness retries from filling the control queue.
+                self.listener_inspection_sequence = request_id;
+                self.pending_listener_inspection = Some(inspection);
+                let record = format!(
+                    "{{\"type\":\"inspect-loopback-listener\",\"requestId\":{request_id},\"port\":{port}}}\n"
+                );
+                self.control
+                    .write_all(record.as_bytes())
+                    .and_then(|_| self.control.flush())
+                    .map_err(ProcessOwnerError::Control)?;
+                inspection
+            }
+        };
+
+        let mut deferred = std::mem::take(&mut self.deferred_lifecycle);
+        loop {
+            self.listener_inspection_wait_active = true;
+            let event_result = self.read_event_until(deadline);
+            self.listener_inspection_wait_active = false;
+            let event = match event_result {
+                Ok(event) => event,
+                Err(error) => {
+                    self.restore_deferred_lifecycle(deferred)?;
+                    return Err(error);
+                }
+            };
+            match event {
+                ProcessOwnerEvent::Lifecycle(value)
+                    if value.get("type").and_then(Value::as_str) == Some("listener-ownership") =>
+                {
+                    let result =
+                        parse_listener_ownership(&value, inspection.request_id, inspection.port);
+                    // The response record has been consumed even when its
+                    // shape is invalid. Only a timeout keeps the exact request
+                    // outstanding for the next readiness poll.
+                    self.pending_listener_inspection = None;
+                    self.restore_deferred_lifecycle(deferred)?;
+                    if matches!(result, Err(ProcessOwnerError::Protocol(_))) {
+                        self.supervisor_protocol_poisoned = true;
+                    }
+                    return result;
+                }
+                ProcessOwnerEvent::Lifecycle(value) => {
+                    if let Err(error) = defer_lifecycle_event(&mut deferred, value) {
+                        self.deferred_lifecycle = deferred;
+                        self.supervisor_protocol_poisoned = true;
+                        return Err(error);
+                    }
+                }
+                ProcessOwnerEvent::Terminal(terminal) => {
+                    // Preserve the exact terminal record for the ordinary
+                    // service-exit path; this inspection is not allowed to
+                    // consume zero-resident authority.
+                    self.restore_deferred_lifecycle(deferred)?;
+                    self.pending_listener_inspection = None;
+                    self.pending_terminal = Some(terminal);
+                    self.observed_terminal = None;
+                    return Ok(LoopbackListenerOwnership::ProcessExited);
+                }
+                ProcessOwnerEvent::Worker(_) | ProcessOwnerEvent::WorkerProtocolFault(_) => {
+                    self.restore_deferred_lifecycle(deferred)?;
+                    self.supervisor_protocol_poisoned = true;
+                    return Err(ProcessOwnerError::Protocol(
+                        "service listener inspection observed a worker event",
+                    ));
+                }
+            }
+        }
+    }
+
+    fn restore_deferred_lifecycle(
+        &mut self,
+        mut deferred: VecDeque<Value>,
+    ) -> Result<(), ProcessOwnerError> {
+        if deferred.len().saturating_add(self.deferred_lifecycle.len())
+            > MAX_BUFFERED_PROCESS_OWNER_EVENTS
+        {
+            self.supervisor_protocol_poisoned = true;
+            return Err(ProcessOwnerError::Protocol(
+                "deferred supervisor lifecycle events exceeded their bound",
+            ));
+        }
+        deferred.append(&mut self.deferred_lifecycle);
+        self.deferred_lifecycle = deferred;
         Ok(())
     }
 
@@ -1535,6 +2481,9 @@ impl RunningProcessOwner {
         &mut self,
         deadline: Instant,
     ) -> Result<ProcessOwnerEvent, ProcessOwnerError> {
+        if let Some(value) = self.deferred_lifecycle.pop_front() {
+            return Ok(ProcessOwnerEvent::Lifecycle(value));
+        }
         if let Some(terminal) = self.pending_terminal.take() {
             self.observed_terminal = Some(terminal.clone());
             self.terminal_seen = true;
@@ -1583,6 +2532,14 @@ impl RunningProcessOwner {
             }
             if is_private_diagnostic_kind(kind) {
                 let data = private_diagnostic_data(&value)?;
+                self.launch.persist_service_diagnostic(kind, data)?;
+                if kind == "stderr" {
+                    // Worker diagnostics are supporting evidence, not process
+                    // authority. A logging I/O failure must not turn a healthy
+                    // worker into a failed job; the same bytes remain in the
+                    // bounded private buffer for the live owner's lifetime.
+                    let _ = self.launch.persist_worker_diagnostic(kind, data);
+                }
                 let worker_fault = if kind == "stdout" {
                     self.worker_events
                         .as_mut()
@@ -1621,6 +2578,29 @@ impl RunningProcessOwner {
                 }
                 continue;
             }
+            if kind == "listener-ownership" && !self.listener_inspection_wait_active {
+                let request =
+                    self.pending_listener_inspection
+                        .ok_or(ProcessOwnerError::Protocol(
+                            "supervisor emitted listener ownership without an outstanding request",
+                        ))?;
+                let ownership = parse_listener_ownership(&value, request.request_id, request.port)?;
+                self.pending_listener_inspection = None;
+                if self
+                    .completed_listener_inspection
+                    .replace(CompletedListenerInspection { request, ownership })
+                    .is_some()
+                {
+                    return Err(ProcessOwnerError::Protocol(
+                        "supervisor emitted more than one listener ownership result",
+                    ));
+                }
+                // Listener evidence is an internal authority exchange, not an
+                // observable lifecycle event. Preserve it for the next
+                // readiness probe and continue to the caller's requested
+                // lifecycle or terminal record.
+                continue;
+            }
             return match kind {
                 "started" => {
                     let pid = bounded_pid(value.get("pid"))?;
@@ -1645,6 +2625,12 @@ impl RunningProcessOwner {
                 }
                 "exit" => {
                     let terminal = ProcessOwnerTerminal::parse(&value, self.root_pid)?;
+                    terminal.validate_system_commit_guard_for_limits(
+                        self.launch.limits,
+                        self.launch
+                            .environment
+                            .is_live_system_commit_reserve_victim(),
+                    )?;
                     terminal.validate_zero_resident_release()?;
                     if let Some(fault) = self
                         .worker_events
@@ -1662,9 +2648,15 @@ impl RunningProcessOwner {
                 "error" => {
                     if self.root_pid.is_some() || value.get("rootPid").is_some() {
                         let terminal = ProcessOwnerTerminal::parse(&value, self.root_pid)?;
+                        terminal.validate_system_commit_guard_for_limits(
+                            self.launch.limits,
+                            self.launch
+                                .environment
+                                .is_live_system_commit_reserve_victim(),
+                        )?;
                         terminal.validate_zero_resident_release()?;
                         if self.root_pid.is_none() {
-                            self.root_pid = Some(terminal.root_pid);
+                            self.root_pid = terminal.root_pid;
                         }
                         if let Some(fault) = self
                             .worker_events
@@ -1673,19 +2665,51 @@ impl RunningProcessOwner {
                         {
                             self.worker_protocol_fault = Some(fault);
                             self.pending_terminal = Some(terminal);
+                            self.persist_supervisor_failure_diagnostic(
+                                self.pending_terminal
+                                    .as_ref()
+                                    .expect("retained terminal must remain available"),
+                            );
                             return Ok(ProcessOwnerEvent::WorkerProtocolFault(fault));
                         }
                         self.observed_terminal = Some(terminal.clone());
                         self.terminal_seen = true;
+                        self.persist_supervisor_failure_diagnostic(&terminal);
                         Ok(ProcessOwnerEvent::Terminal(terminal))
                     } else {
+                        // The pinned supervisor emits this deliberately smaller
+                        // record only when it failed before CreateProcessW
+                        // returned a target. Every post-create failure is
+                        // routed through its cleanup epilogue and carries a
+                        // rootPid plus complete tree-exit accounting. Preserve
+                        // the minimal record as terminal authority instead of
+                        // converting it to an error that can never be confirmed.
+                        let terminal = ProcessOwnerTerminal::parse_pre_start_failure(&value)?;
+                        terminal.validate_system_commit_guard_for_limits(
+                            self.launch.limits,
+                            self.launch
+                                .environment
+                                .is_live_system_commit_reserve_victim(),
+                        )?;
+                        terminal.validate_zero_resident_release()?;
+                        if let Some(fault) = self
+                            .worker_events
+                            .as_mut()
+                            .and_then(WorkerEventStream::finish_record_boundary)
+                        {
+                            self.worker_protocol_fault = Some(fault);
+                            self.pending_terminal = Some(terminal);
+                            self.persist_supervisor_failure_diagnostic(
+                                self.pending_terminal
+                                    .as_ref()
+                                    .expect("retained terminal must remain available"),
+                            );
+                            return Ok(ProcessOwnerEvent::WorkerProtocolFault(fault));
+                        }
+                        self.observed_terminal = Some(terminal.clone());
                         self.terminal_seen = true;
-                        let code = value
-                            .get("code")
-                            .and_then(Value::as_str)
-                            .unwrap_or("RUNTIME_PROCESS_OWNER_ERROR")
-                            .to_string();
-                        Err(ProcessOwnerError::SupervisorRejected { code })
+                        self.persist_supervisor_failure_diagnostic(&terminal);
+                        Ok(ProcessOwnerEvent::Terminal(terminal))
                     }
                 }
                 kind if is_known_supervisor_lifecycle_kind(kind) => {
@@ -1696,6 +2720,22 @@ impl RunningProcessOwner {
                 )),
             };
         }
+    }
+
+    fn persist_supervisor_failure_diagnostic(&self, terminal: &ProcessOwnerTerminal) {
+        let Some(failure) = terminal.failure() else {
+            return;
+        };
+        // This log is private, bounded supporting evidence; it is never part of
+        // process-tree authority. Once a terminal record has been retained, a
+        // diagnostic I/O failure must not consume that record or prevent the
+        // caller from confirming zero residency.
+        let _ = self
+            .launch
+            .persist_service_diagnostic("supervisor", &supervisor_failure_diagnostic(failure));
+        let _ = self
+            .launch
+            .persist_worker_diagnostic("supervisor", &supervisor_failure_diagnostic(failure));
     }
 
     pub fn wait_for_terminal<F>(
@@ -1755,7 +2795,7 @@ impl RunningProcessOwner {
             self.supervisor_protocol_poisoned = true;
             return Err(error);
         }
-        if Some(terminal.root_pid) != self.root_pid {
+        if terminal.root_pid != self.root_pid {
             self.supervisor_protocol_poisoned = true;
             return Err(ProcessOwnerError::Protocol(
                 "observed terminal receipt no longer matched the started process",
@@ -1790,6 +2830,7 @@ impl RunningProcessOwner {
                 peak_private_commit_bytes: terminal.peak_job_commit_bytes,
                 complete: terminal.peak_accounting_complete,
             },
+            system_commit_guard: terminal.system_commit_guard,
             supervisor_error_count: terminal.supervisor_error_count,
             cleanup_error_count: terminal.cleanup_error_count,
             worker_protocol_fault: self.worker_protocol_fault,
@@ -1855,7 +2896,10 @@ impl Drop for RunningProcessOwner {
 }
 
 fn bounded_event_deadline(timeout: Duration) -> Result<Instant, ProcessOwnerError> {
-    if timeout.is_zero() || timeout > MAX_PROCESS_OWNER_EVENT_WAIT {
+    // A zero timeout is the controller's explicit non-blocking poll. It must
+    // still consume an event that the supervisor reader has already queued;
+    // only waits beyond the hard upper bound are invalid.
+    if timeout > MAX_PROCESS_OWNER_EVENT_WAIT {
         return Err(ProcessOwnerError::InvalidEventWait);
     }
     Instant::now()
@@ -1884,7 +2928,11 @@ fn recv_supervisor_read_until(
 ) -> Result<SupervisorRead, ProcessOwnerError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        return Err(ProcessOwnerError::EventWaitTimeout);
+        return match receiver.try_recv() {
+            Ok(read) => Ok(read),
+            Err(TryRecvError::Empty) => Err(ProcessOwnerError::EventWaitTimeout),
+            Err(TryRecvError::Disconnected) => Err(ProcessOwnerError::MissingTerminalReceipt),
+        };
     }
     match receiver.recv_timeout(remaining) {
         Ok(read) => Ok(read),
@@ -1949,11 +2997,21 @@ fn wait_for_child_exit(
     }
 }
 
-fn verify_supervisor_exit(status: ExitStatus, terminal_code: u32) -> Result<(), ProcessOwnerError> {
+fn verify_supervisor_exit(
+    status: ExitStatus,
+    expected_terminal_code: Option<u32>,
+) -> Result<(), ProcessOwnerError> {
     let Some(status_code) = status.code() else {
         return Err(ProcessOwnerError::ExitStatusMismatch);
     };
-    if status_code as u32 != terminal_code {
+    let status_code = status_code as u32;
+    // Rich post-create terminal receipts carry the exact expected helper exit
+    // code. A minimal pre-start failure intentionally cannot: malformed
+    // supervisor options exit 64, while Windows setup/CreateProcess failures
+    // exit 1. In that case the trusted error record and subsequent pipe EOF
+    // prove the pre-tree failure, while a successful helper exit would still
+    // contradict the record and fail closed.
+    if expected_terminal_code.map_or(status_code == 0, |expected| status_code != expected) {
         return Err(ProcessOwnerError::ExitStatusMismatch);
     }
     Ok(())
@@ -1968,6 +3026,57 @@ fn bounded_pid(value: Option<&Value>) -> Result<u32, ProcessOwnerError> {
             "supervisor record contained an invalid process id",
         ))?;
     Ok(pid)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopbackListenerOwnership {
+    Owned(u32),
+    Unowned(u32),
+    Absent,
+    Unavailable,
+    ProcessExited,
+}
+
+fn parse_listener_ownership(
+    value: &Value,
+    expected_request_id: u64,
+    expected_port: u16,
+) -> Result<LoopbackListenerOwnership, ProcessOwnerError> {
+    let object = value.as_object().ok_or(ProcessOwnerError::Protocol(
+        "listener ownership record was not an object",
+    ))?;
+    const FIELDS: [&str; 5] = ["type", "requestId", "port", "status", "ownerPid"];
+    if object.len() != FIELDS.len() || FIELDS.iter().any(|field| !object.contains_key(*field)) {
+        return Err(ProcessOwnerError::Protocol(
+            "listener ownership record had an invalid shape",
+        ));
+    }
+    if object.get("type").and_then(Value::as_str) != Some("listener-ownership")
+        || object.get("requestId").and_then(Value::as_u64) != Some(expected_request_id)
+        || object
+            .get("port")
+            .and_then(Value::as_u64)
+            .and_then(|port| u16::try_from(port).ok())
+            != Some(expected_port)
+    {
+        return Err(ProcessOwnerError::Protocol(
+            "listener ownership record did not match its request",
+        ));
+    }
+
+    let owner_pid = match object.get("ownerPid") {
+        Some(Value::Null) => None,
+        value => Some(bounded_pid(value)?),
+    };
+    match (object.get("status").and_then(Value::as_str), owner_pid) {
+        (Some("owned"), Some(owner_pid)) => Ok(LoopbackListenerOwnership::Owned(owner_pid)),
+        (Some("unowned"), Some(owner_pid)) => Ok(LoopbackListenerOwnership::Unowned(owner_pid)),
+        (Some("absent"), None) => Ok(LoopbackListenerOwnership::Absent),
+        (Some("unavailable"), None) => Ok(LoopbackListenerOwnership::Unavailable),
+        _ => Err(ProcessOwnerError::Protocol(
+            "listener ownership record had an invalid status",
+        )),
+    }
 }
 
 /// A worker event parsed from the exact live owner's bounded stdout stream and
@@ -2059,10 +3168,47 @@ fn classify_process_exit(
 /// An opaque parsed terminal record. It is not itself tree-exit authority:
 /// `RunningProcessOwner::confirm_exit` must additionally observe the pinned
 /// supervisor process exit and pass its internal one-mint guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessSystemCommitGuardTerminationReason {
+    ExpectedCommitDoesNotFit,
+    EffectiveJobLimit,
+    SystemCommitReserve,
+    SystemCommitObservationUnavailable,
+}
+
+/// Closed numeric evidence emitted by the pinned supervisor for a guarded
+/// development process tree. It contains no paths, commands, environment
+/// data, or free-form diagnostic text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessSystemCommitGuardEvidence {
+    pub architecture_reserve_floor_bytes: u64,
+    pub launch_derived_reserve_bytes: u64,
+    pub trusted_reserve_bytes: u64,
+    pub launch_effective_reserve_bytes: u64,
+    pub guard_band_bytes: u64,
+    pub expected_commit_bytes: u64,
+    pub configured_hard_limit_bytes: u64,
+    pub effective_hard_limit_bytes: u64,
+    pub launch_system_commit_bytes: u64,
+    pub launch_system_commit_limit_bytes: u64,
+    pub launch_free_commit_bytes: u64,
+    pub pre_resume_system_commit_bytes: Option<u64>,
+    pub pre_resume_system_commit_limit_bytes: Option<u64>,
+    pub pre_resume_free_commit_bytes: Option<u64>,
+    pub pre_resume_effective_hard_limit_bytes: Option<u64>,
+    pub minimum_observed_free_commit_bytes: u64,
+    pub maximum_observed_derived_reserve_bytes: u64,
+    pub maximum_observed_effective_reserve_bytes: u64,
+    pub termination_reason: Option<ProcessSystemCommitGuardTerminationReason>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProcessOwnerTerminal {
-    code: u32,
-    root_pid: u32,
+    /// Rich post-create receipts carry the supervisor's exact exit code.
+    /// Minimal pre-start failures omit it because the helper uses distinct
+    /// nonzero exits for option rejection and Windows setup/spawn failure.
+    code: Option<u32>,
+    root_pid: Option<u32>,
     target_exit_code: Option<u32>,
     resource_exhausted: bool,
     failure: Option<ProcessSupervisorFailure>,
@@ -2070,6 +3216,7 @@ pub struct ProcessOwnerTerminal {
     zero_resident_confirmed: bool,
     peak_job_commit_bytes: Option<u64>,
     peak_accounting_complete: bool,
+    system_commit_guard: Option<ProcessSystemCommitGuardEvidence>,
     supervisor_error_count: usize,
     cleanup_error_count: usize,
 }
@@ -2085,10 +3232,221 @@ impl fmt::Debug for ProcessOwnerTerminal {
             .field("stop_outcome", &self.stop_outcome)
             .field("zero_resident_confirmed", &self.zero_resident_confirmed)
             .field("peak_accounting_complete", &self.peak_accounting_complete)
+            .field("system_commit_guard", &self.system_commit_guard)
             .field("supervisor_error_count", &self.supervisor_error_count)
             .field("cleanup_error_count", &self.cleanup_error_count)
             .finish()
     }
+}
+
+fn parse_system_commit_guard_evidence(
+    value: Option<&Value>,
+) -> Result<Option<ProcessSystemCommitGuardEvidence>, ProcessOwnerError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let object = value.as_object().ok_or(ProcessOwnerError::Protocol(
+        "system commit guard receipt was not an object",
+    ))?;
+    const FIELDS: &[&str] = &[
+        "architectureReserveFloorBytes",
+        "launchDerivedReserveBytes",
+        "trustedReserveBytes",
+        "launchEffectiveReserveBytes",
+        "guardBandBytes",
+        "expectedCommitBytes",
+        "configuredHardLimitBytes",
+        "effectiveHardLimitBytes",
+        "launchSystemCommitBytes",
+        "launchSystemCommitLimitBytes",
+        "launchFreeCommitBytes",
+        "preResumeSystemCommitBytes",
+        "preResumeSystemCommitLimitBytes",
+        "preResumeFreeCommitBytes",
+        "preResumeEffectiveHardLimitBytes",
+        "minimumObservedFreeCommitBytes",
+        "maximumObservedDerivedReserveBytes",
+        "maximumObservedEffectiveReserveBytes",
+        "terminationReason",
+    ];
+    if object.len() != FIELDS.len() || FIELDS.iter().any(|field| !object.contains_key(*field)) {
+        return Err(ProcessOwnerError::Protocol(
+            "system commit guard receipt had an invalid shape",
+        ));
+    }
+    let number = |field: &'static str| {
+        object
+            .get(field)
+            .and_then(Value::as_u64)
+            .ok_or(ProcessOwnerError::Protocol(
+                "system commit guard receipt contained an invalid number",
+            ))
+    };
+    let optional_number = |field: &'static str| match object.get(field) {
+        Some(Value::Null) => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or(ProcessOwnerError::Protocol(
+            "system commit guard receipt contained an invalid optional number",
+        )),
+        None => Err(ProcessOwnerError::Protocol(
+            "system commit guard receipt omitted an optional number",
+        )),
+    };
+    let termination_reason = match object.get("terminationReason") {
+        Some(Value::Null) => None,
+        Some(Value::String(reason)) => Some(match reason.as_str() {
+            "expected-commit-does-not-fit" => {
+                ProcessSystemCommitGuardTerminationReason::ExpectedCommitDoesNotFit
+            }
+            "effective-job-limit" => ProcessSystemCommitGuardTerminationReason::EffectiveJobLimit,
+            "system-commit-reserve" => {
+                ProcessSystemCommitGuardTerminationReason::SystemCommitReserve
+            }
+            "system-commit-observation-unavailable" => {
+                ProcessSystemCommitGuardTerminationReason::SystemCommitObservationUnavailable
+            }
+            _ => {
+                return Err(ProcessOwnerError::Protocol(
+                    "system commit guard receipt contained an invalid termination reason",
+                ))
+            }
+        }),
+        _ => {
+            return Err(ProcessOwnerError::Protocol(
+                "system commit guard receipt omitted its termination reason",
+            ))
+        }
+    };
+    let evidence = ProcessSystemCommitGuardEvidence {
+        architecture_reserve_floor_bytes: number("architectureReserveFloorBytes")?,
+        launch_derived_reserve_bytes: number("launchDerivedReserveBytes")?,
+        trusted_reserve_bytes: number("trustedReserveBytes")?,
+        launch_effective_reserve_bytes: number("launchEffectiveReserveBytes")?,
+        guard_band_bytes: number("guardBandBytes")?,
+        expected_commit_bytes: number("expectedCommitBytes")?,
+        configured_hard_limit_bytes: number("configuredHardLimitBytes")?,
+        effective_hard_limit_bytes: number("effectiveHardLimitBytes")?,
+        launch_system_commit_bytes: number("launchSystemCommitBytes")?,
+        launch_system_commit_limit_bytes: number("launchSystemCommitLimitBytes")?,
+        launch_free_commit_bytes: number("launchFreeCommitBytes")?,
+        pre_resume_system_commit_bytes: optional_number("preResumeSystemCommitBytes")?,
+        pre_resume_system_commit_limit_bytes: optional_number("preResumeSystemCommitLimitBytes")?,
+        pre_resume_free_commit_bytes: optional_number("preResumeFreeCommitBytes")?,
+        pre_resume_effective_hard_limit_bytes: optional_number("preResumeEffectiveHardLimitBytes")?,
+        minimum_observed_free_commit_bytes: number("minimumObservedFreeCommitBytes")?,
+        maximum_observed_derived_reserve_bytes: number("maximumObservedDerivedReserveBytes")?,
+        maximum_observed_effective_reserve_bytes: number("maximumObservedEffectiveReserveBytes")?,
+        termination_reason,
+    };
+    let expected_derived = (evidence.launch_system_commit_limit_bytes / 10).clamp(
+        SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES,
+        SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES,
+    );
+    let expected_launch_reserve = SYSTEM_COMMIT_RESERVE_FLOOR_BYTES
+        .max(expected_derived)
+        .max(evidence.trusted_reserve_bytes);
+    let expected_launch_free = evidence
+        .launch_system_commit_limit_bytes
+        .saturating_sub(evidence.launch_system_commit_bytes);
+    let launch_effective_hard =
+        evidence
+            .configured_hard_limit_bytes
+            .min(expected_launch_free.saturating_sub(
+                expected_launch_reserve.saturating_add(SYSTEM_COMMIT_RESERVE_GUARD_BAND_BYTES),
+            ));
+    let pre_resume = match (
+        evidence.pre_resume_system_commit_bytes,
+        evidence.pre_resume_system_commit_limit_bytes,
+        evidence.pre_resume_free_commit_bytes,
+        evidence.pre_resume_effective_hard_limit_bytes,
+    ) {
+        (None, None, None, None) => None,
+        (Some(commit), Some(limit), Some(free), applied_limit) => {
+            let derived = (limit / 10).clamp(
+                SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES,
+                SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES,
+            );
+            let maximum_derived = expected_derived.max(derived);
+            let effective_reserve = SYSTEM_COMMIT_RESERVE_FLOOR_BYTES
+                .max(evidence.trusted_reserve_bytes)
+                .max(maximum_derived);
+            let candidate_limit = launch_effective_hard.min(free.saturating_sub(
+                effective_reserve.saturating_add(SYSTEM_COMMIT_RESERVE_GUARD_BAND_BYTES),
+            ));
+            if free != limit.saturating_sub(commit)
+                || applied_limit.is_some_and(|applied| {
+                    free <= effective_reserve.saturating_add(SYSTEM_COMMIT_RESERVE_GUARD_BAND_BYTES)
+                        || candidate_limit <= evidence.expected_commit_bytes
+                        || applied != candidate_limit
+                })
+            {
+                return Err(ProcessOwnerError::Protocol(
+                    "system commit guard receipt had inconsistent pre-resume evidence",
+                ));
+            }
+            Some((free, maximum_derived, candidate_limit, applied_limit))
+        }
+        _ => {
+            return Err(ProcessOwnerError::Protocol(
+                "system commit guard receipt had an incomplete pre-resume sample",
+            ))
+        }
+    };
+    let initial_effective_hard = pre_resume
+        .and_then(|(_, _, _, applied_limit)| applied_limit)
+        .unwrap_or(launch_effective_hard);
+    let minimum_sampled_free = pre_resume.map_or(expected_launch_free, |(free, _, _, _)| {
+        expected_launch_free.min(free)
+    });
+    let minimum_sampled_derived = pre_resume.map_or(expected_derived, |(_, derived, _, _)| derived);
+    let expected_maximum_reserve = SYSTEM_COMMIT_RESERVE_FLOOR_BYTES
+        .max(evidence.trusted_reserve_bytes)
+        .max(evidence.maximum_observed_derived_reserve_bytes);
+    let expected_denial_was_possible = launch_effective_hard <= evidence.expected_commit_bytes
+        || pre_resume.is_some_and(|(_, _, candidate_limit, _)| {
+            candidate_limit <= evidence.expected_commit_bytes
+        });
+    let reserve_threshold = evidence
+        .maximum_observed_effective_reserve_bytes
+        .saturating_add(evidence.guard_band_bytes);
+    if evidence.architecture_reserve_floor_bytes != SYSTEM_COMMIT_RESERVE_FLOOR_BYTES
+        || evidence.guard_band_bytes != SYSTEM_COMMIT_RESERVE_GUARD_BAND_BYTES
+        || evidence.launch_derived_reserve_bytes != expected_derived
+        || evidence.launch_effective_reserve_bytes != expected_launch_reserve
+        || evidence.launch_free_commit_bytes != expected_launch_free
+        // Before resume, the cap can only be the exact launch/pre-resume
+        // result. Once resume succeeds, every guarded development supervisor
+        // may tighten the live Job Object as external Windows commit is
+        // consumed. One pinned supervisor at a time may hold the shared
+        // dynamic-burst lease and expand above the manifest ceiling, within
+        // the closed multiplier/absolute bound below. Zero is never a valid
+        // guarded live limit.
+        || if evidence.pre_resume_effective_hard_limit_bytes.is_some() {
+            evidence.effective_hard_limit_bytes == 0
+                || evidence.effective_hard_limit_bytes
+                    > dynamic_commit_burst_ceiling(evidence.configured_hard_limit_bytes)
+        } else {
+            evidence.effective_hard_limit_bytes != initial_effective_hard
+        }
+        || evidence.minimum_observed_free_commit_bytes > minimum_sampled_free
+        || evidence.maximum_observed_derived_reserve_bytes < minimum_sampled_derived
+        || evidence.maximum_observed_derived_reserve_bytes > SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES
+        || evidence.maximum_observed_effective_reserve_bytes != expected_maximum_reserve
+        || evidence.expected_commit_bytes == 0
+        || evidence.configured_hard_limit_bytes <= evidence.expected_commit_bytes
+        || matches!(
+            evidence.termination_reason,
+            Some(ProcessSystemCommitGuardTerminationReason::ExpectedCommitDoesNotFit)
+        ) && !expected_denial_was_possible
+        || matches!(
+            evidence.termination_reason,
+            Some(ProcessSystemCommitGuardTerminationReason::SystemCommitReserve)
+        ) && evidence.minimum_observed_free_commit_bytes > reserve_threshold
+    {
+        return Err(ProcessOwnerError::Protocol(
+            "system commit guard receipt was internally inconsistent",
+        ));
+    }
+    Ok(Some(evidence))
 }
 
 impl ProcessOwnerTerminal {
@@ -2099,15 +3457,18 @@ impl ProcessOwnerTerminal {
             .ok_or(ProcessOwnerError::Protocol(
                 "terminal receipt contained no event type",
             ))?;
+        let mut post_create_resource_denial = false;
         let (code, failure) = match kind {
             "exit" => (
-                value
-                    .get("code")
-                    .and_then(Value::as_u64)
-                    .and_then(|value| u32::try_from(value).ok())
-                    .ok_or(ProcessOwnerError::Protocol(
-                        "terminal receipt contained an invalid exit code",
-                    ))?,
+                Some(
+                    value
+                        .get("code")
+                        .and_then(Value::as_u64)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or(ProcessOwnerError::Protocol(
+                            "terminal receipt contained an invalid exit code",
+                        ))?,
+                ),
                 None,
             ),
             "error" => {
@@ -2132,13 +3493,15 @@ impl ProcessOwnerTerminal {
                     .ok_or(ProcessOwnerError::Protocol(
                         "failure receipt contained an invalid failure message",
                     ))?;
-                (
-                    code,
-                    Some(ProcessSupervisorFailure {
-                        code: failure_code.to_string(),
-                        message: message.to_string(),
-                    }),
-                )
+                if failure_code == "BREADBOARD_RESOURCE_EXHAUSTED" {
+                    post_create_resource_denial = true;
+                    (Some(code), None)
+                } else {
+                    (
+                        Some(code),
+                        Some(safe_supervisor_failure(failure_code, message)),
+                    )
+                }
             }
             _ => {
                 return Err(ProcessOwnerError::Protocol(
@@ -2146,8 +3509,8 @@ impl ProcessOwnerTerminal {
                 ))
             }
         };
-        let root_pid = bounded_pid(value.get("rootPid"))?;
-        if expected_root_pid.is_some_and(|expected| expected != root_pid)
+        let root_pid = Some(bounded_pid(value.get("rootPid"))?);
+        if expected_root_pid.is_some_and(|expected| Some(expected) != root_pid)
             || (expected_root_pid.is_none() && kind != "error")
         {
             return Err(ProcessOwnerError::Protocol(
@@ -2171,6 +3534,15 @@ impl ProcessOwnerTerminal {
             .ok_or(ProcessOwnerError::Protocol(
                 "terminal receipt omitted resource classification",
             ))?;
+        if post_create_resource_denial
+            && (!resource_exhausted
+                || code != Some(RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE)
+                || expected_root_pid.is_some())
+        {
+            return Err(ProcessOwnerError::Protocol(
+                "post-create resource denial receipt was invalid",
+            ));
+        }
         let stop_outcome = match value.get("stopOutcome") {
             None | Some(Value::Null) => None,
             Some(Value::String(outcome)) => Some(match outcome.as_str() {
@@ -2203,6 +3575,18 @@ impl ProcessOwnerTerminal {
             .ok_or(ProcessOwnerError::Protocol(
                 "terminal receipt omitted accounting completeness",
             ))?;
+        let system_commit_guard =
+            parse_system_commit_guard_evidence(value.get("systemCommitGuard"))?;
+        if post_create_resource_denial
+            && (target_exit_code != Some(RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE)
+                || system_commit_guard
+                    .and_then(|guard| guard.termination_reason)
+                    .is_none())
+        {
+            return Err(ProcessOwnerError::Protocol(
+                "post-create resource denial omitted exact guard evidence",
+            ));
+        }
         let supervisor_error_count = match value.get("supervisorErrors") {
             None => 0,
             Some(Value::Array(errors)) => errors.len(),
@@ -2236,8 +3620,115 @@ impl ProcessOwnerTerminal {
             zero_resident_confirmed,
             peak_job_commit_bytes,
             peak_accounting_complete,
+            system_commit_guard,
             supervisor_error_count,
             cleanup_error_count,
+        })
+    }
+
+    /// Parses the supervisor's exact three-field error record emitted only
+    /// before a target process exists. The pinned helper has one post-create
+    /// cleanup epilogue and every error after CreateProcessW succeeds carries
+    /// `rootPid` plus complete accounting, so accepting any additional or
+    /// missing field here would make a truncated post-create record ambiguous.
+    fn parse_pre_start_failure(value: &Value) -> Result<Self, ProcessOwnerError> {
+        let object = value.as_object().ok_or(ProcessOwnerError::Protocol(
+            "pre-start failure receipt was not an object",
+        ))?;
+        let legacy_shape = object.len() == 3
+            && object.contains_key("type")
+            && object.contains_key("code")
+            && object.contains_key("message");
+        let resource_shape = object.len() == 7
+            && [
+                "type",
+                "code",
+                "message",
+                "supervisorExitCode",
+                "resourceExhausted",
+                "treeExitConfirmed",
+                "systemCommitGuard",
+            ]
+            .iter()
+            .all(|field| object.contains_key(*field));
+        if !legacy_shape && !resource_shape {
+            return Err(ProcessOwnerError::Protocol(
+                "pre-start failure receipt had an invalid shape",
+            ));
+        }
+        if object.get("type").and_then(Value::as_str) != Some("error") {
+            return Err(ProcessOwnerError::Protocol(
+                "pre-start failure receipt had an invalid event type",
+            ));
+        }
+        if resource_shape {
+            if object.get("code").and_then(Value::as_str) != Some("BREADBOARD_RESOURCE_EXHAUSTED")
+                || object
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+                || object.get("supervisorExitCode").and_then(Value::as_u64)
+                    != Some(RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE as u64)
+                || object.get("resourceExhausted").and_then(Value::as_bool) != Some(true)
+                || object.get("treeExitConfirmed").and_then(Value::as_bool) != Some(true)
+            {
+                return Err(ProcessOwnerError::Protocol(
+                    "pre-start resource exhaustion receipt was invalid",
+                ));
+            }
+            let system_commit_guard =
+                parse_system_commit_guard_evidence(object.get("systemCommitGuard"))?;
+            if system_commit_guard.is_none() {
+                return Err(ProcessOwnerError::Protocol(
+                    "pre-start resource exhaustion omitted system commit evidence",
+                ));
+            }
+            return Ok(Self {
+                code: Some(RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE),
+                root_pid: None,
+                target_exit_code: None,
+                resource_exhausted: true,
+                failure: None,
+                stop_outcome: None,
+                zero_resident_confirmed: true,
+                peak_job_commit_bytes: None,
+                peak_accounting_complete: false,
+                system_commit_guard,
+                supervisor_error_count: 0,
+                cleanup_error_count: 0,
+            });
+        }
+        let failure_code = object
+            .get("code")
+            .and_then(Value::as_str)
+            .filter(|code| !code.is_empty() && code.len() <= 256)
+            .ok_or(ProcessOwnerError::Protocol(
+                "pre-start failure receipt contained an invalid failure code",
+            ))?;
+        let message = object
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.is_empty())
+            .ok_or(ProcessOwnerError::Protocol(
+                "pre-start failure receipt contained an invalid failure message",
+            ))?;
+        Ok(Self {
+            code: None,
+            root_pid: None,
+            target_exit_code: None,
+            resource_exhausted: false,
+            failure: Some(safe_supervisor_failure(failure_code, message)),
+            stop_outcome: None,
+            // The minimal schema itself is emitted only on the helper's
+            // pre-CreateProcess return path. The parent still must observe the
+            // exact helper exit and protocol EOF in `confirm_exit` before this
+            // becomes a ProcessTreeExit.
+            zero_resident_confirmed: true,
+            peak_job_commit_bytes: None,
+            peak_accounting_complete: false,
+            system_commit_guard: None,
+            supervisor_error_count: 0,
+            cleanup_error_count: 0,
         })
     }
 
@@ -2247,26 +3738,74 @@ impl ProcessOwnerTerminal {
     /// Final accounting and ancillary cleanup health are intentionally carried
     /// forward to the stricter completion-authority gate below; neither can
     /// invalidate an exact zero-resident proof and strand a reservation.
+    fn validate_system_commit_guard_for_limits(
+        &self,
+        limits: ProcessOwnerLimits,
+        _legacy_live_system_commit_reserve_victim: bool,
+    ) -> Result<(), ProcessOwnerError> {
+        match (limits.system_commit_guard, self.system_commit_guard) {
+            (None, None) => Ok(()),
+            (None, Some(_)) => Err(ProcessOwnerError::Protocol(
+                "unguarded launch emitted system commit authority",
+            )),
+            (Some(_), None) if self.root_pid.is_none() && !self.resource_exhausted => Ok(()),
+            (Some(_), None) => Err(ProcessOwnerError::Protocol(
+                "guarded launch omitted system commit authority",
+            )),
+            (Some(config), Some(evidence)) => {
+                let reserve_threshold = evidence
+                    .maximum_observed_effective_reserve_bytes
+                    .saturating_add(evidence.guard_band_bytes);
+                let crossed_live_reserve = evidence.pre_resume_effective_hard_limit_bytes.is_some()
+                    && evidence.minimum_observed_free_commit_bytes <= reserve_threshold;
+                let claimed_live_reserve_termination =
+                    matches!(
+                        evidence.termination_reason,
+                        Some(ProcessSystemCommitGuardTerminationReason::SystemCommitReserve)
+                    ) && evidence.pre_resume_effective_hard_limit_bytes.is_some();
+                let had_dynamic_burst =
+                    evidence.effective_hard_limit_bytes > evidence.configured_hard_limit_bytes;
+                // Pre-resume reserve denial remains valid for every guarded
+                // development launch. After resume, only a tree whose closed
+                // evidence proves it had borrowed beyond the manifest cap may
+                // claim the shared-reserve victim classification. Other trees
+                // are tightened in place rather than joining a kill-all wave.
+                if evidence.expected_commit_bytes != config.expected_commit_bytes()
+                    || evidence.trusted_reserve_bytes != config.trusted_reserve_bytes()
+                    || evidence.configured_hard_limit_bytes != limits.hard_commit_bytes
+                    || evidence.termination_reason.is_some() != self.resource_exhausted
+                    || claimed_live_reserve_termination
+                        && (!crossed_live_reserve || !had_dynamic_burst)
+                {
+                    return Err(ProcessOwnerError::Protocol(
+                        "system commit guard receipt did not match its trusted launch",
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn validate_zero_resident_release(&self) -> Result<(), ProcessOwnerError> {
         if !self.zero_resident_confirmed {
             return Err(ProcessOwnerError::Protocol(
                 "zero resident processes were not proven",
             ));
         }
-        if self.failure.is_some() && (self.resource_exhausted || self.code != 1) {
+        if self.failure.is_some()
+            && (self.resource_exhausted || self.code.is_some_and(|code| code != 1))
+        {
             return Err(ProcessOwnerError::Protocol(
                 "supervisor failure receipt had an invalid classification",
             ));
         }
-        if self.failure.is_none()
-            && !self.resource_exhausted
-            && self.target_exit_code != Some(self.code)
+        if self.failure.is_none() && !self.resource_exhausted && self.target_exit_code != self.code
         {
             return Err(ProcessOwnerError::Protocol(
                 "supervisor exit code did not match the ordinary target exit",
             ));
         }
-        if self.resource_exhausted && self.code != RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE {
+        if self.resource_exhausted && self.code != Some(RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE) {
             return Err(ProcessOwnerError::Protocol(
                 "resource exhaustion had the wrong terminal exit code",
             ));
@@ -2281,12 +3820,30 @@ impl ProcessOwnerTerminal {
     pub fn failure(&self) -> Option<&ProcessSupervisorFailure> {
         self.failure.as_ref()
     }
+
+    /// Closed terminal classification before the retained owner mints its
+    /// zero-resident tree-exit authority. Service lifecycle recovery uses this
+    /// only to distinguish an ordinary target exit from shutdown, resource
+    /// enforcement, and supervisor faults; it grants no process authority.
+    pub fn classification(&self) -> ProcessExitClassification {
+        classify_process_exit(self, None)
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProcessSupervisorFailure {
     code: String,
     message: String,
+}
+
+impl fmt::Debug for ProcessSupervisorFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProcessSupervisorFailure")
+            .field("code", &self.code)
+            .field("message", &"<redacted canonical supervisor message>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2326,13 +3883,14 @@ pub struct ProcessTreeExit {
     generation: Option<ProcessAuthorityGeneration>,
     started_boundary_accepted: bool,
     supervisor_pid: u32,
-    root_pid: u32,
+    root_pid: Option<u32>,
     purpose: ProcessOwnerPurpose,
     root_exit_code: Option<u32>,
     classification: ProcessExitClassification,
     failure: Option<ProcessSupervisorFailure>,
     stop_outcome: Option<ProcessStopOutcome>,
     accounting: ProcessTreeAccounting,
+    system_commit_guard: Option<ProcessSystemCommitGuardEvidence>,
     supervisor_error_count: usize,
     cleanup_error_count: usize,
     worker_protocol_fault: Option<WorkerProtocolFault>,
@@ -2348,6 +3906,7 @@ impl fmt::Debug for ProcessTreeExit {
             .field("failure", &self.failure)
             .field("stop_outcome", &self.stop_outcome)
             .field("accounting", &self.accounting)
+            .field("system_commit_guard", &self.system_commit_guard)
             .field("supervisor_error_count", &self.supervisor_error_count)
             .field("cleanup_error_count", &self.cleanup_error_count)
             .field("worker_protocol_fault", &self.worker_protocol_fault)
@@ -2365,6 +3924,7 @@ impl ProcessTreeExit {
         self,
     ) -> Result<AuthoritativeProcessOwner, Box<ProcessTreeExit>> {
         if !self.started_boundary_accepted
+            || self.root_pid.is_none()
             || self.classification != ProcessExitClassification::TargetExit
             || self.root_exit_code != Some(0)
             || !self.accounting.complete
@@ -2377,7 +3937,9 @@ impl ProcessTreeExit {
         Ok(AuthoritativeProcessOwner {
             generation: self.generation,
             supervisor_pid: self.supervisor_pid,
-            root_pid: self.root_pid,
+            root_pid: self
+                .root_pid
+                .expect("accepted started boundary requires a root process id"),
             purpose: self.purpose,
             accounting: self.accounting,
             private: (),
@@ -2404,6 +3966,10 @@ impl ProcessTreeExit {
         self.accounting
     }
 
+    pub fn system_commit_guard(&self) -> Option<ProcessSystemCommitGuardEvidence> {
+        self.system_commit_guard
+    }
+
     pub fn worker_protocol_fault(&self) -> Option<WorkerProtocolFault> {
         self.worker_protocol_fault
     }
@@ -2412,6 +3978,16 @@ impl ProcessTreeExit {
         match &self.purpose {
             ProcessOwnerPurpose::Worker(identity) => Some(identity),
             ProcessOwnerPurpose::Service { .. } => None,
+        }
+    }
+
+    pub(crate) fn service_identity(&self) -> Option<(&str, u64)> {
+        match &self.purpose {
+            ProcessOwnerPurpose::Service {
+                service_id,
+                generation,
+            } => Some((service_id, *generation)),
+            ProcessOwnerPurpose::Worker(_) => None,
         }
     }
 
@@ -2435,15 +4011,15 @@ impl ProcessTreeExit {
             generation: Some(ProcessAuthorityGeneration::Test(scope)),
             started_boundary_accepted: false,
             supervisor_pid: 7,
-            root_pid: 42,
+            root_pid: None,
             purpose: ProcessOwnerPurpose::Worker(identity),
             root_exit_code: (classification == ProcessExitClassification::TargetExit).then_some(1),
             classification,
             failure: (classification == ProcessExitClassification::SupervisorFailure).then(|| {
-                ProcessSupervisorFailure {
-                    code: "TEST_SUPERVISION_FAILED".into(),
-                    message: "test-only supervisor failure before started".into(),
-                }
+                safe_supervisor_failure(
+                    "WAIT_FAILED",
+                    "test-only supervisor failure before started",
+                )
             }),
             stop_outcome: (classification == ProcessExitClassification::Stopped)
                 .then_some(ProcessStopOutcome::Forced),
@@ -2451,6 +4027,7 @@ impl ProcessTreeExit {
                 peak_private_commit_bytes: Some(0),
                 complete: true,
             },
+            system_commit_guard: None,
             supervisor_error_count: 0,
             cleanup_error_count: 0,
             worker_protocol_fault: (classification
@@ -2470,6 +4047,7 @@ impl ProcessTreeExit {
             ProcessExitClassification::TargetExit,
         );
         receipt.started_boundary_accepted = true;
+        receipt.root_pid = Some(42);
         receipt
     }
 
@@ -2477,32 +4055,59 @@ impl ProcessTreeExit {
     pub(crate) fn service_release_for_test_in_scope(
         scope: RuntimeGenerationScope,
         service_id: &str,
-        instance_id: &str,
+        generation: u64,
     ) -> Self {
         Self {
             generation: Some(ProcessAuthorityGeneration::Test(scope)),
             started_boundary_accepted: false,
             supervisor_pid: 7,
-            root_pid: 42,
+            root_pid: Some(42),
             purpose: ProcessOwnerPurpose::Service {
                 service_id: service_id.into(),
-                instance_id: instance_id.into(),
+                generation,
             },
             root_exit_code: None,
             classification: ProcessExitClassification::SupervisorFailure,
-            failure: Some(ProcessSupervisorFailure {
-                code: "TEST_SUPERVISION_FAILED".into(),
-                message: "test-only service supervisor failure".into(),
-            }),
+            failure: Some(safe_supervisor_failure(
+                "WAIT_FAILED",
+                "test-only service supervisor failure",
+            )),
             stop_outcome: None,
             accounting: ProcessTreeAccounting {
                 peak_private_commit_bytes: Some(0),
                 complete: true,
             },
+            system_commit_guard: None,
             supervisor_error_count: 0,
             cleanup_error_count: 0,
             worker_protocol_fault: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn service_release_after_started_for_test_in_scope(
+        scope: RuntimeGenerationScope,
+        service_id: &str,
+        generation: u64,
+    ) -> Self {
+        let mut receipt = Self::service_release_for_test_in_scope(scope, service_id, generation);
+        receipt.started_boundary_accepted = true;
+        receipt
+    }
+
+    #[cfg(test)]
+    pub(crate) fn service_stopped_after_started_for_test_in_scope(
+        scope: RuntimeGenerationScope,
+        service_id: &str,
+        generation: u64,
+    ) -> Self {
+        let mut receipt = Self::service_release_for_test_in_scope(scope, service_id, generation);
+        receipt.started_boundary_accepted = true;
+        receipt.classification = ProcessExitClassification::Stopped;
+        receipt.failure = None;
+        receipt.stop_outcome = Some(ProcessStopOutcome::Forced);
+        receipt.accounting.complete = true;
+        receipt
     }
 }
 
@@ -2570,13 +4175,14 @@ impl AuthoritativeProcessOwner {
             generation: self.generation,
             started_boundary_accepted: true,
             supervisor_pid: self.supervisor_pid,
-            root_pid: self.root_pid,
+            root_pid: Some(self.root_pid),
             purpose: self.purpose,
             root_exit_code: Some(0),
             classification: ProcessExitClassification::TargetExit,
             failure: None,
             stop_outcome: None,
             accounting: self.accounting,
+            system_commit_guard: None,
             supervisor_error_count: 0,
             cleanup_error_count: 0,
             worker_protocol_fault: None,
@@ -2625,7 +4231,7 @@ mod tests {
     fn failure_terminal(overrides: Value) -> Value {
         let mut value = serde_json::json!({
             "type": "error",
-            "code": "SUPERVISION_FAILED",
+            "code": "WAIT_FAILED",
             "message": "authoritative supervision failed after spawn",
             "supervisorExitCode": 1,
             "rootPid": 42,
@@ -2643,6 +4249,94 @@ mod tests {
         value
     }
 
+    fn pre_start_failure(overrides: Value) -> Value {
+        let mut value = serde_json::json!({
+            "type": "error",
+            "code": "SPAWN_FAILED",
+            "message": "CreateProcessW failed"
+        });
+        if let (Some(target), Some(overrides)) = (value.as_object_mut(), overrides.as_object()) {
+            target.extend(overrides.clone());
+        }
+        value
+    }
+
+    fn system_commit_guard_evidence(
+        launch_free_mb: u64,
+        minimum_free_mb: u64,
+        termination_reason: Option<&str>,
+    ) -> Value {
+        let pre_resume_free_mb =
+            (termination_reason != Some("expected-commit-does-not-fit")).then_some(launch_free_mb);
+        system_commit_guard_evidence_with_pre_resume(
+            launch_free_mb,
+            pre_resume_free_mb,
+            minimum_free_mb,
+            termination_reason,
+        )
+    }
+
+    fn system_commit_guard_evidence_with_pre_resume(
+        launch_free_mb: u64,
+        pre_resume_free_mb: Option<u64>,
+        minimum_free_mb: u64,
+        termination_reason: Option<&str>,
+    ) -> Value {
+        let commit_limit_mb = 40_000;
+        let derived_reserve_mb = 4_000;
+        let effective_reserve_mb = 4_096;
+        let launch_effective_hard_mb =
+            8_192u64.min(launch_free_mb.saturating_sub(effective_reserve_mb + 256));
+        let pre_resume_candidate_mb = pre_resume_free_mb.map(|free| {
+            launch_effective_hard_mb.min(free.saturating_sub(effective_reserve_mb + 256))
+        });
+        let pre_resume_effective_hard_mb = pre_resume_candidate_mb.filter(|candidate| {
+            pre_resume_free_mb.is_some_and(|free| free > effective_reserve_mb + 256)
+                && *candidate > 3_072
+        });
+        let effective_hard_mb = pre_resume_effective_hard_mb.unwrap_or(launch_effective_hard_mb);
+        serde_json::json!({
+            "architectureReserveFloorBytes": 4_096 * MEBIBYTE_BYTES,
+            "launchDerivedReserveBytes": derived_reserve_mb * MEBIBYTE_BYTES,
+            "trustedReserveBytes": 4_096 * MEBIBYTE_BYTES,
+            "launchEffectiveReserveBytes": effective_reserve_mb * MEBIBYTE_BYTES,
+            "guardBandBytes": 256 * MEBIBYTE_BYTES,
+            "expectedCommitBytes": 3_072 * MEBIBYTE_BYTES,
+            "configuredHardLimitBytes": 8_192 * MEBIBYTE_BYTES,
+            "effectiveHardLimitBytes": effective_hard_mb * MEBIBYTE_BYTES,
+            "launchSystemCommitBytes": (commit_limit_mb - launch_free_mb) * MEBIBYTE_BYTES,
+            "launchSystemCommitLimitBytes": commit_limit_mb * MEBIBYTE_BYTES,
+            "launchFreeCommitBytes": launch_free_mb * MEBIBYTE_BYTES,
+            "preResumeSystemCommitBytes": pre_resume_free_mb
+                .map(|free| (commit_limit_mb - free) * MEBIBYTE_BYTES),
+            "preResumeSystemCommitLimitBytes": pre_resume_free_mb
+                .map(|_| commit_limit_mb * MEBIBYTE_BYTES),
+            "preResumeFreeCommitBytes": pre_resume_free_mb.map(|free| free * MEBIBYTE_BYTES),
+            "preResumeEffectiveHardLimitBytes": pre_resume_effective_hard_mb
+                .map(|limit| limit * MEBIBYTE_BYTES),
+            "minimumObservedFreeCommitBytes": minimum_free_mb * MEBIBYTE_BYTES,
+            "maximumObservedDerivedReserveBytes": derived_reserve_mb * MEBIBYTE_BYTES,
+            "maximumObservedEffectiveReserveBytes": effective_reserve_mb * MEBIBYTE_BYTES,
+            "terminationReason": termination_reason,
+        })
+    }
+
+    fn hot_dashboard_limits() -> ProcessOwnerLimits {
+        ProcessOwnerLimits {
+            soft_commit_bytes: 6_144 * MEBIBYTE_BYTES,
+            hard_commit_bytes: 8_192 * MEBIBYTE_BYTES,
+            graceful_shutdown: Duration::from_secs(15),
+            supervisor_exit_timeout: Duration::from_secs(10),
+            system_commit_guard: Some(
+                ProcessOwnerSystemCommitGuard::development(
+                    3_072 * MEBIBYTE_BYTES,
+                    4_096 * MEBIBYTE_BYTES,
+                )
+                .unwrap(),
+            ),
+        }
+    }
+
     fn exit_receipt(
         classification: ProcessExitClassification,
         root_exit_code: Option<u32>,
@@ -2651,7 +4345,7 @@ mod tests {
             generation: None,
             started_boundary_accepted: true,
             supervisor_pid: 7,
-            root_pid: 42,
+            root_pid: Some(42),
             purpose: ProcessOwnerPurpose::Worker(WorkerIdentity {
                 job_id: "job_1".into(),
                 attempt: 1,
@@ -2659,18 +4353,15 @@ mod tests {
             }),
             root_exit_code,
             classification,
-            failure: (classification == ProcessExitClassification::SupervisorFailure).then(|| {
-                ProcessSupervisorFailure {
-                    code: "SUPERVISION_FAILED".into(),
-                    message: "supervision failed".into(),
-                }
-            }),
+            failure: (classification == ProcessExitClassification::SupervisorFailure)
+                .then(|| safe_supervisor_failure("WAIT_FAILED", "supervision failed")),
             stop_outcome: (classification == ProcessExitClassification::Stopped)
                 .then_some(ProcessStopOutcome::Forced),
             accounting: ProcessTreeAccounting {
                 peak_private_commit_bytes: Some(1024),
                 complete: true,
             },
+            system_commit_guard: None,
             supervisor_error_count: 0,
             cleanup_error_count: 0,
             worker_protocol_fault: (classification
@@ -2680,8 +4371,78 @@ mod tests {
     }
 
     #[test]
-    fn launch_environment_policy_is_closed_and_minimal() {
-        assert_eq!(TrustedEnvironmentPolicy::minimal().names(), &["SystemRoot"]);
+    fn worker_and_service_supervisor_environment_profiles_are_closed() {
+        let worker =
+            TrustedProcessEnvironment::worker(TrustedWorkerEnvironment::minimal_for_test());
+        assert_eq!(worker.supervisor_profile_argument(), "worker");
+
+        assert_eq!(
+            supervisor_service_environment_profile_argument(
+                TrustedServiceEnvironmentProfile::Chatmock
+            ),
+            "chatmock"
+        );
+        assert_eq!(
+            supervisor_service_environment_profile_argument(
+                TrustedServiceEnvironmentProfile::Comfyui
+            ),
+            "comfyui"
+        );
+        assert_eq!(
+            supervisor_service_environment_profile_argument(
+                TrustedServiceEnvironmentProfile::Dashboard
+            ),
+            "dashboard"
+        );
+        assert_eq!(
+            supervisor_service_environment_profile_argument(
+                TrustedServiceEnvironmentProfile::Gbrain
+            ),
+            "gbrain"
+        );
+        assert_eq!(
+            supervisor_service_environment_profile_argument(
+                TrustedServiceEnvironmentProfile::TelegramGateway
+            ),
+            "telegram-gateway"
+        );
+        assert_eq!(
+            supervisor_service_environment_profile_argument(
+                TrustedServiceEnvironmentProfile::WhatsappGateway
+            ),
+            "whatsapp-gateway"
+        );
+        assert_eq!(
+            supervisor_service_environment_profile_argument(
+                TrustedServiceEnvironmentProfile::Hermes
+            ),
+            "hermes"
+        );
+        assert!(!format!("{worker:?}").contains('='));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn worker_entrypoint_argv_uses_normal_path_without_replacing_its_pin() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("data");
+        let app = directory.path().join("app");
+        let runtime = directory.path().join("runtime-root");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(app.join("workers")).unwrap();
+        std::fs::create_dir_all(&runtime).unwrap();
+        let entrypoint = app.join("workers/entrypoint.mjs");
+        std::fs::write(&entrypoint, b"trusted worker entrypoint").unwrap();
+        let paths = RuntimePaths::new(&data, &app, &runtime).unwrap();
+        let resolved = paths.resolve_app("workers/entrypoint.mjs").unwrap();
+        let pin = paths.pin_app_file_for_launch(&resolved).unwrap();
+        let canonical = pin.absolute().to_path_buf();
+
+        let argument = worker_entrypoint_argument(Some(&pin)).unwrap().unwrap();
+        assert!(!argument.to_string_lossy().starts_with(r"\\?\"));
+        assert_eq!(std::fs::canonicalize(&argument).unwrap(), canonical);
+        pin.revalidate().unwrap();
+        assert_eq!(pin.absolute(), canonical);
     }
 
     #[test]
@@ -2718,13 +4479,19 @@ mod tests {
         assert!(worker.validate().is_ok());
         assert!(ProcessOwnerPurpose::Service {
             service_id: "hermes".into(),
-            instance_id: "service_1".into(),
+            generation: 1,
         }
         .validate()
         .is_ok());
         assert!(ProcessOwnerPurpose::Service {
             service_id: "../hermes".into(),
-            instance_id: "service_1".into(),
+            generation: 1,
+        }
+        .validate()
+        .is_err());
+        assert!(ProcessOwnerPurpose::Service {
+            service_id: "hermes".into(),
+            generation: 0,
         }
         .validate()
         .is_err());
@@ -2870,14 +4637,240 @@ mod tests {
 
     #[test]
     fn complete_post_spawn_failure_is_release_evidence_not_completion_authority() {
-        let failure =
-            ProcessOwnerTerminal::parse(&failure_terminal(serde_json::json!({})), None).unwrap();
+        let raw = "C:\\private\\service.exe --secret session-token-0123456789";
+        let failure = ProcessOwnerTerminal::parse(
+            &failure_terminal(serde_json::json!({ "message": raw })),
+            None,
+        )
+        .unwrap();
         assert!(failure.validate_zero_resident_release().is_ok());
-        assert_eq!(failure.root_pid, 42);
-        assert_eq!(failure.failure().unwrap().code(), "SUPERVISION_FAILED");
+        assert_eq!(failure.root_pid, Some(42));
+        assert_eq!(failure.failure().unwrap().code(), "WAIT_FAILED");
+        assert_eq!(
+            failure.failure().unwrap().message(),
+            "Service process exit wait failed"
+        );
+        assert!(!format!("{failure:?}").contains(raw));
 
         let receipt = exit_receipt(ProcessExitClassification::SupervisorFailure, None);
         assert!(receipt.into_completion_authority().is_err());
+    }
+
+    #[test]
+    fn exact_pre_start_failure_is_release_evidence_without_started_authority() {
+        let raw = "C:\\private\\service.exe --secret session-token-0123456789";
+        let failure = ProcessOwnerTerminal::parse_pre_start_failure(&pre_start_failure(
+            serde_json::json!({ "message": raw }),
+        ))
+        .unwrap();
+        assert!(failure.validate_zero_resident_release().is_ok());
+        assert_eq!(failure.root_pid, None);
+        assert_eq!(failure.code, None);
+        assert_eq!(failure.failure().unwrap().code(), "SPAWN_FAILED");
+        assert_eq!(
+            failure.failure().unwrap().message(),
+            "Service process could not be created"
+        );
+        assert!(!format!("{failure:?}").contains(raw));
+        assert_eq!(
+            classify_process_exit(&failure, None),
+            ProcessExitClassification::SupervisorFailure
+        );
+
+        let mut receipt = exit_receipt(ProcessExitClassification::SupervisorFailure, None);
+        receipt.started_boundary_accepted = false;
+        receipt.root_pid = None;
+        receipt.accounting = ProcessTreeAccounting {
+            peak_private_commit_bytes: None,
+            complete: false,
+        };
+        assert!(receipt.into_completion_authority().is_err());
+    }
+
+    #[test]
+    fn pre_start_failure_parser_rejects_ambiguous_or_malformed_records() {
+        assert!(
+            ProcessOwnerTerminal::parse_pre_start_failure(&pre_start_failure(
+                serde_json::json!({ "rootPid": 42 })
+            ))
+            .is_err()
+        );
+        assert!(
+            ProcessOwnerTerminal::parse_pre_start_failure(&pre_start_failure(
+                serde_json::json!({ "message": null })
+            ))
+            .is_err()
+        );
+        assert!(
+            ProcessOwnerTerminal::parse_pre_start_failure(&pre_start_failure(
+                serde_json::json!({ "type": "exit" })
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn guarded_terminal_receipt_is_typed_and_bound_to_the_trusted_hot_launch() {
+        let limits = hot_dashboard_limits();
+        let receipt = ProcessOwnerTerminal::parse(
+            &terminal(serde_json::json!({
+                "systemCommitGuard": system_commit_guard_evidence(13_000, 13_000, None),
+            })),
+            Some(42),
+        )
+        .unwrap();
+        receipt
+            .validate_system_commit_guard_for_limits(limits, true)
+            .unwrap();
+        let evidence = receipt.system_commit_guard.unwrap();
+        assert_eq!(evidence.configured_hard_limit_bytes, 8_192 * MEBIBYTE_BYTES);
+        assert_eq!(evidence.effective_hard_limit_bytes, 8_192 * MEBIBYTE_BYTES);
+        assert_eq!(evidence.expected_commit_bytes, 3_072 * MEBIBYTE_BYTES);
+
+        let mut tampered = system_commit_guard_evidence(13_000, 13_000, None);
+        tampered["expectedCommitBytes"] = serde_json::json!(3_071 * MEBIBYTE_BYTES);
+        let tampered = ProcessOwnerTerminal::parse(
+            &terminal(serde_json::json!({ "systemCommitGuard": tampered })),
+            Some(42),
+        )
+        .unwrap();
+        assert!(tampered
+            .validate_system_commit_guard_for_limits(limits, true)
+            .is_err());
+
+        let mut rebalanced = system_commit_guard_evidence(10_000, 10_000, None);
+        rebalanced["effectiveHardLimitBytes"] = serde_json::json!(8_192 * MEBIBYTE_BYTES);
+        let rebalanced = ProcessOwnerTerminal::parse(
+            &terminal(serde_json::json!({ "systemCommitGuard": rebalanced })),
+            Some(42),
+        )
+        .unwrap();
+        rebalanced
+            .validate_system_commit_guard_for_limits(limits, true)
+            .unwrap();
+        assert_eq!(
+            rebalanced
+                .system_commit_guard
+                .unwrap()
+                .effective_hard_limit_bytes,
+            8_192 * MEBIBYTE_BYTES,
+        );
+
+        let mut borrowed = system_commit_guard_evidence(13_000, 13_000, None);
+        borrowed["effectiveHardLimitBytes"] = serde_json::json!(12_000 * MEBIBYTE_BYTES);
+        let borrowed = ProcessOwnerTerminal::parse(
+            &terminal(serde_json::json!({ "systemCommitGuard": borrowed })),
+            Some(42),
+        )
+        .unwrap();
+        borrowed
+            .validate_system_commit_guard_for_limits(limits, false)
+            .unwrap();
+
+        for invalid_effective_limit in [0, 32_769 * MEBIBYTE_BYTES] {
+            let mut invalid = system_commit_guard_evidence(10_000, 10_000, None);
+            invalid["effectiveHardLimitBytes"] = serde_json::json!(invalid_effective_limit);
+            assert!(ProcessOwnerTerminal::parse(
+                &terminal(serde_json::json!({ "systemCommitGuard": invalid })),
+                Some(42),
+            )
+            .is_err());
+        }
+
+        let crossed_live_reserve = ProcessOwnerTerminal::parse(
+            &terminal(serde_json::json!({
+                "systemCommitGuard": system_commit_guard_evidence(13_000, 4_352, None),
+            })),
+            Some(42),
+        )
+        .unwrap();
+        crossed_live_reserve
+            .validate_system_commit_guard_for_limits(limits, true)
+            .unwrap();
+        crossed_live_reserve
+            .validate_system_commit_guard_for_limits(limits, false)
+            .unwrap();
+    }
+
+    #[test]
+    fn guard_denial_and_live_reserve_trip_are_nonretryable_resource_exhaustion_receipts() {
+        let limits = hot_dashboard_limits();
+        let pre_start = serde_json::json!({
+            "type": "error",
+            "code": "BREADBOARD_RESOURCE_EXHAUSTED",
+            "message": "Guarded development process expected commit does not fit below the system reserve",
+            "supervisorExitCode": RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE,
+            "resourceExhausted": true,
+            "treeExitConfirmed": true,
+            "systemCommitGuard": system_commit_guard_evidence(
+                7_424,
+                7_424,
+                Some("expected-commit-does-not-fit"),
+            ),
+        });
+        let denial = ProcessOwnerTerminal::parse_pre_start_failure(&pre_start).unwrap();
+        denial
+            .validate_system_commit_guard_for_limits(limits, true)
+            .unwrap();
+        denial.validate_zero_resident_release().unwrap();
+        assert_eq!(
+            classify_process_exit(&denial, None),
+            ProcessExitClassification::ResourceExhausted
+        );
+
+        let post_create_pre_resume = failure_terminal(serde_json::json!({
+            "code": "BREADBOARD_RESOURCE_EXHAUSTED",
+            "message": "Guarded development process system commit reserve denied the suspended target before resume",
+            "supervisorExitCode": RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE,
+            "targetExitCode": RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE,
+            "resourceExhausted": true,
+            "systemCommitGuard": system_commit_guard_evidence_with_pre_resume(
+                13_000,
+                Some(7_424),
+                7_424,
+                Some("expected-commit-does-not-fit"),
+            ),
+        }));
+        let pre_resume_denial = ProcessOwnerTerminal::parse(&post_create_pre_resume, None).unwrap();
+        pre_resume_denial
+            .validate_system_commit_guard_for_limits(limits, true)
+            .unwrap();
+        pre_resume_denial.validate_zero_resident_release().unwrap();
+        assert_eq!(pre_resume_denial.root_pid, Some(42));
+        assert_eq!(
+            pre_resume_denial.code,
+            Some(RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE)
+        );
+        assert!(pre_resume_denial.failure().is_none());
+        assert_eq!(
+            classify_process_exit(&pre_resume_denial, None),
+            ProcessExitClassification::ResourceExhausted
+        );
+        assert!(ProcessOwnerTerminal::parse(&post_create_pre_resume, Some(42)).is_err());
+
+        let mut live_trip_guard =
+            system_commit_guard_evidence(13_000, 4_352, Some("system-commit-reserve"));
+        live_trip_guard["effectiveHardLimitBytes"] = serde_json::json!(9_000 * MEBIBYTE_BYTES);
+        let live_trip = ProcessOwnerTerminal::parse(
+            &terminal(serde_json::json!({
+                "code": RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE,
+                "targetExitCode": RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE,
+                "resourceExhausted": true,
+                "systemCommitGuard": live_trip_guard,
+            })),
+            Some(42),
+        )
+        .unwrap();
+        live_trip
+            .validate_system_commit_guard_for_limits(limits, true)
+            .unwrap();
+        live_trip
+            .validate_system_commit_guard_for_limits(limits, false)
+            .unwrap();
+        assert_eq!(
+            classify_process_exit(&live_trip, None),
+            ProcessExitClassification::ResourceExhausted
+        );
     }
 
     #[test]
@@ -2954,6 +4947,45 @@ mod tests {
     }
 
     #[test]
+    fn parsed_terminal_classification_separates_restartable_target_exit() {
+        let ordinary =
+            ProcessOwnerTerminal::parse(&terminal(serde_json::json!({})), Some(42)).unwrap();
+        assert_eq!(
+            ordinary.classification(),
+            ProcessExitClassification::TargetExit
+        );
+
+        let stopped = ProcessOwnerTerminal::parse(
+            &terminal(serde_json::json!({ "stopOutcome": "forced-after-grace" })),
+            Some(42),
+        )
+        .unwrap();
+        assert_eq!(stopped.classification(), ProcessExitClassification::Stopped);
+
+        let exhausted = ProcessOwnerTerminal::parse(
+            &terminal(serde_json::json!({
+                "code": RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE,
+                "targetExitCode": RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE,
+                "resourceExhausted": true
+            })),
+            Some(42),
+        )
+        .unwrap();
+        assert_eq!(
+            exhausted.classification(),
+            ProcessExitClassification::ResourceExhausted
+        );
+
+        let supervisor_failure =
+            ProcessOwnerTerminal::parse(&failure_terminal(serde_json::json!({})), Some(42))
+                .unwrap();
+        assert_eq!(
+            supervisor_failure.classification(),
+            ProcessExitClassification::SupervisorFailure
+        );
+    }
+
+    #[test]
     fn raw_target_output_is_kept_only_in_the_bounded_private_buffer() {
         assert!(is_private_diagnostic_kind("stdout"));
         assert!(is_private_diagnostic_kind("stderr"));
@@ -2968,6 +5000,115 @@ mod tests {
         }
         assert_eq!(diagnostics.len(), MAX_PRIVATE_DIAGNOSTIC_RECORDS);
         assert!(diagnostics.bytes <= MAX_PRIVATE_DIAGNOSTIC_BYTES);
+    }
+
+    #[test]
+    fn supervisor_failure_diagnostics_are_closed_bounded_and_drop_untrusted_detail() {
+        let raw = "C:\\private\\service.exe --token session-token-0123456789 PATH=secret";
+        let failure = safe_supervisor_failure("SPAWN_FAILED", raw);
+        assert_eq!(failure.code(), "SPAWN_FAILED");
+        assert_eq!(failure.message(), "Service process could not be created");
+        assert!(failure.code().len() <= MAX_SUPERVISOR_FAILURE_CODE_BYTES);
+        assert!(failure.message().len() <= MAX_SUPERVISOR_FAILURE_MESSAGE_BYTES);
+
+        let diagnostic = supervisor_failure_diagnostic(&failure);
+        assert!(diagnostic.len() <= MAX_SUPERVISOR_FAILURE_DIAGNOSTIC_BYTES);
+        assert!(diagnostic.contains("failure-code=SPAWN_FAILED"));
+
+        let malformed = safe_supervisor_failure(
+            "MALFORMED_PROTOCOL",
+            "inherited environment variable is outside the selected profile",
+        );
+        assert_eq!(
+            malformed.message(),
+            "Supervisor environment profile rejected a requested variable"
+        );
+        let unknown_malformed = safe_supervisor_failure("MALFORMED_PROTOCOL", raw);
+        assert_eq!(
+            unknown_malformed.message(),
+            "Supervisor launch protocol was invalid"
+        );
+        assert!(diagnostic.contains("failure-message=Service process could not be created"));
+        for private in [
+            "C:\\private\\service.exe",
+            "--token",
+            "session-token-0123456789",
+            "PATH=secret",
+        ] {
+            assert!(!diagnostic.contains(private));
+            assert!(!failure.message().contains(private));
+            assert!(!format!("{failure:?}").contains(private));
+        }
+        assert!(!format!("{failure:?}").contains(failure.message()));
+
+        for unsafe_code in [
+            "",
+            "spawn-failed",
+            "SPAWN FAILED",
+            "C:\\private\\service.exe",
+            "SESSION_TOKEN_0123456789",
+            "A_REALLY_LONG_SUPERVISOR_FAILURE_CODE_THAT_EXCEEDS_THE_EXPLICIT_SIXTY_FOUR_BYTE_BOUND",
+        ] {
+            let failure = safe_supervisor_failure(unsafe_code, raw);
+            assert_eq!(failure.code(), UNCLASSIFIED_SUPERVISOR_FAILURE_CODE);
+            assert_eq!(failure.message(), UNCLASSIFIED_SUPERVISOR_FAILURE_MESSAGE);
+            let diagnostic = supervisor_failure_diagnostic(&failure);
+            if !unsafe_code.is_empty() {
+                assert!(!diagnostic.contains(unsafe_code));
+            }
+            assert!(!diagnostic.contains(raw));
+        }
+    }
+
+    #[test]
+    fn durable_service_diagnostics_redact_every_sealed_secret_value() {
+        let secrets = vec![
+            "session-token-0123456789".to_owned(),
+            "api-key-abcdefghijk".to_owned(),
+        ];
+        let sanitized = redact_service_diagnostic(
+            "failed session-token-0123456789 then api-key-abcdefghijk",
+            &secrets,
+        );
+        assert_eq!(sanitized, "failed [REDACTED] then [REDACTED]");
+        assert!(!sanitized.contains("session-token"));
+        assert!(!sanitized.contains("api-key"));
+    }
+
+    #[test]
+    fn durable_worker_diagnostic_is_fenced_and_redacts_sealed_environment_values() {
+        let pairs = [
+            (
+                OsStr::new("GBRAIN_ADAPTER_SECRET"),
+                OsStr::new("worker-secret-0123456789"),
+            ),
+            (
+                OsStr::new("CHATMOCK_API_KEY"),
+                OsStr::new("local-key-abcdef"),
+            ),
+            (OsStr::new("PATH"), OsStr::new("C:\\not-secret")),
+        ];
+        let redactions = diagnostic_redactions(pairs.into_iter());
+        assert_eq!(redactions.len(), 2);
+        assert!(!redactions.iter().any(|value| value.contains("not-secret")));
+
+        let identity = WorkerIdentity {
+            job_id: "job_upload_1".into(),
+            attempt: 2,
+            worker_instance_id: "worker_ingest_1".into(),
+        };
+        let sanitized = redact_service_diagnostic(
+            "ingest failed with worker-secret-0123456789 via local-key-abcdef",
+            &redactions,
+        );
+        let record = worker_diagnostic_record(&identity, "stderr", &sanitized);
+        assert!(
+            record.starts_with("[job=job_upload_1 attempt=2 worker=worker_ingest_1 stream=stderr]")
+        );
+        assert_eq!(record.matches("[REDACTED]").count(), 2);
+        assert!(!record.contains("worker-secret-0123456789"));
+        assert!(!record.contains("local-key-abcdef"));
+        assert!(record.len() < MAX_DURABLE_WORKER_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -3156,6 +5297,7 @@ mod tests {
             "soft-limit",
             "hard-limit",
             "stop-escalated",
+            "listener-ownership",
             "stream-pressure",
             "stream-truncated",
         ] {
@@ -3163,6 +5305,98 @@ mod tests {
         }
         for kind in ["unknown", "started", "exit", "error", "stdout", "stderr"] {
             assert!(!is_known_supervisor_lifecycle_kind(kind), "{kind}");
+        }
+    }
+
+    #[test]
+    fn deferred_lifecycle_replay_is_bounded_and_coalesces_memory_samples() {
+        let mut deferred = VecDeque::new();
+        for sample in 0..128 {
+            defer_lifecycle_event(
+                &mut deferred,
+                serde_json::json!({ "type": "memory", "sample": sample }),
+            )
+            .unwrap();
+        }
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred.front().unwrap()["sample"], 127);
+
+        deferred.clear();
+        for sequence in 0..MAX_BUFFERED_PROCESS_OWNER_EVENTS {
+            defer_lifecycle_event(
+                &mut deferred,
+                serde_json::json!({ "type": "soft-limit", "sequence": sequence }),
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            defer_lifecycle_event(&mut deferred, serde_json::json!({ "type": "hard-limit" })),
+            Err(ProcessOwnerError::Protocol(_))
+        ));
+        assert_eq!(deferred.len(), MAX_BUFFERED_PROCESS_OWNER_EVENTS);
+    }
+
+    #[test]
+    fn listener_ownership_evidence_is_strict_and_request_bound() {
+        let owned = serde_json::json!({
+            "type": "listener-ownership",
+            "requestId": 7,
+            "port": 3210,
+            "status": "owned",
+            "ownerPid": 42,
+        });
+        assert_eq!(
+            parse_listener_ownership(&owned, 7, 3210).unwrap(),
+            LoopbackListenerOwnership::Owned(42)
+        );
+
+        let absent = serde_json::json!({
+            "type": "listener-ownership",
+            "requestId": 8,
+            "port": 3210,
+            "status": "absent",
+            "ownerPid": null,
+        });
+        assert_eq!(
+            parse_listener_ownership(&absent, 8, 3210).unwrap(),
+            LoopbackListenerOwnership::Absent
+        );
+
+        for malformed in [
+            serde_json::json!({
+                "type": "listener-ownership",
+                "requestId": 9,
+                "port": 3210,
+                "status": "owned",
+                "ownerPid": 42,
+            }),
+            serde_json::json!({
+                "type": "listener-ownership",
+                "requestId": 7,
+                "port": 3211,
+                "status": "owned",
+                "ownerPid": 42,
+            }),
+            serde_json::json!({
+                "type": "listener-ownership",
+                "requestId": 7,
+                "port": 3210,
+                "status": "owned",
+                "ownerPid": null,
+            }),
+            serde_json::json!({
+                "type": "listener-ownership",
+                "requestId": 7,
+                "port": 3210,
+                "status": "absent",
+                "ownerPid": null,
+                "extra": true,
+            }),
+        ] {
+            assert!(matches!(
+                parse_listener_ownership(&malformed, 7, 3210),
+                Err(ProcessOwnerError::Protocol(_))
+            ));
         }
     }
 
@@ -3191,11 +5425,29 @@ mod tests {
 
     #[test]
     fn event_wait_deadlines_are_explicitly_bounded() {
-        assert!(bounded_event_deadline(Duration::ZERO).is_err());
+        assert!(bounded_event_deadline(Duration::ZERO).is_ok());
         assert!(bounded_event_deadline(MAX_PROCESS_OWNER_EVENT_WAIT).is_ok());
         assert!(
             bounded_event_deadline(MAX_PROCESS_OWNER_EVENT_WAIT + Duration::from_secs(1)).is_err()
         );
+    }
+
+    #[test]
+    fn zero_event_wait_is_a_real_nonblocking_poll() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender.send(SupervisorRead::End).unwrap();
+        let queued_deadline = bounded_event_deadline(Duration::ZERO).unwrap();
+        assert!(matches!(
+            recv_supervisor_read_until(&receiver, queued_deadline),
+            Ok(SupervisorRead::End)
+        ));
+
+        let empty_deadline = bounded_event_deadline(Duration::ZERO).unwrap();
+        assert!(matches!(
+            recv_supervisor_read_until(&receiver, empty_deadline),
+            Err(ProcessOwnerError::EventWaitTimeout)
+        ));
+        drop(sender);
     }
 
     #[test]
@@ -3205,6 +5457,7 @@ mod tests {
             hard_commit_bytes: 0,
             graceful_shutdown: MIN_PROCESS_OWNER_GRACEFUL_SHUTDOWN,
             supervisor_exit_timeout: MIN_SUPERVISOR_EXIT_TIMEOUT,
+            system_commit_guard: None,
         }
         .validate()
         .unwrap();

@@ -14,10 +14,9 @@ export async function GET(
   try {
     const userId = await requireUserId();
     const { agentId, runId, screenshotId } = await params;
-    // Ownership of the agent is enforced; runId is an unguessable random id and
-    // screenshotId is digits-only (traversal-safe).
+    // Both the durable run correlation and the agent are bound to this user.
     service.requireAgent(userId, agentId);
-    const png = await getScreenshot(runId, screenshotId);
+    const png = await getScreenshot(userId, agentId, runId, screenshotId);
     if (!png) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
     return new NextResponse(new Uint8Array(png), {
       status: 200,

@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -36,8 +36,11 @@ import {
   watermarkWorkspaceFor,
 } from "../src/lib/watermarks/agent-query.ts";
 import { selectAttachment } from "../src/lib/watermarks/attachments.ts";
+import { createWatermarkRuntimeFixture } from "./helpers/watermark-runtime-fixture.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const runtime = createWatermarkRuntimeFixture();
+after(() => runtime.cleanup());
 
 function makeWorkspace() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "watermark-tools-test-")));
@@ -245,21 +248,21 @@ test("the workspace falls back to a per-conversation directory", () => {
 test("inline text: inspect names the codepoints, clean removes them", async () => {
   const workspace = makeWorkspace();
 
-  const inspected = await inspectSource(workspace, { text: MARKED_TEXT }, []);
+  const inspected = await inspectSource(workspace, { text: MARKED_TEXT }, [], runtime.execution);
   assert.equal(inspected.marksFound, true);
   assert.equal(inspected.sourceKind, "text");
   assert.equal(inspected.report.suspicious_total, 2);
   const labels = inspected.report.hits.map((hit) => hit.codepoint).sort();
   assert.deepEqual(labels, ["U+200B", "U+2060"]);
 
-  const cleaned = await cleanSource(workspace, { text: MARKED_TEXT }, []);
+  const cleaned = await cleanSource(workspace, { text: MARKED_TEXT }, [], runtime.execution);
   assert.equal(cleaned.changed, true);
   assert.equal(cleaned.cleanedText, "Helloworld, thisis a draft.\n");
   assert.equal(cleaned.report.removed_count, 2);
 
   // Cleaning is idempotent, and a clean input is reported as unchanged rather
   // than as a second round of removals.
-  const again = await inspectSource(workspace, { text: cleaned.cleanedText }, []);
+  const again = await inspectSource(workspace, { text: cleaned.cleanedText }, [], runtime.execution);
   assert.equal(again.marksFound, false);
 });
 
@@ -268,7 +271,7 @@ test("inline text keeps its line endings", async () => {
   // The scripts' stdout path rewrites \n to \r\n on Windows, so the cleaner
   // routes through a file. This is the assertion that catches a regression to
   // stdout: prose the user pastes back must not silently change line endings.
-  const cleaned = await cleanSource(workspace, { text: "one​\ntwo\nthree\n" }, []);
+  const cleaned = await cleanSource(workspace, { text: "one​\ntwo\nthree\n" }, [], runtime.execution);
   assert.equal(cleaned.cleanedText, "one\ntwo\nthree\n");
   assert.ok(!cleaned.cleanedText.includes("\r"), "line endings must survive unchanged");
 });
@@ -278,7 +281,7 @@ test("a workspace file is cleaned to a new copy, leaving the original intact", a
   const original = path.join(workspace, "draft.md");
   fs.writeFileSync(original, MARKED_TEXT);
 
-  const cleaned = await cleanSource(workspace, { file: "draft.md" }, []);
+  const cleaned = await cleanSource(workspace, { file: "draft.md" }, [], runtime.execution);
   assert.equal(cleaned.outputFile, "draft.cleaned.md");
   assert.equal(cleaned.changed, true);
   assert.equal(cleaned.artifactKind, undefined, "markdown has no file-artifact kind");
@@ -290,7 +293,7 @@ test("the cleaned copy may not overwrite its own source", async () => {
   const workspace = makeWorkspace();
   fs.writeFileSync(path.join(workspace, "draft.md"), MARKED_TEXT);
   await assert.rejects(
-    cleanSource(workspace, { file: "draft.md", output: "draft.md" }, []),
+    cleanSource(workspace, { file: "draft.md", output: "draft.md" }, [], runtime.execution),
     (error) => error instanceof WatermarkError && error.code === "watermarks_output_conflict",
   );
 });
@@ -298,7 +301,7 @@ test("the cleaned copy may not overwrite its own source", async () => {
 test("a missing file says so instead of failing inside Python", async () => {
   const workspace = makeWorkspace();
   await assert.rejects(
-    inspectSource(workspace, { file: "nope.md" }, []),
+    inspectSource(workspace, { file: "nope.md" }, [], runtime.execution),
     (error) => error instanceof WatermarkError && error.code === "watermarks_file_not_found",
   );
 });
@@ -310,10 +313,10 @@ test("a PNG's metadata is inspected and stripped, and it exports as an image art
   const png = path.join(workspace, "shot.png");
   fs.writeFileSync(png, buildPngWithTextChunk("Software", "Made with Firefly generative AI"));
 
-  const inspected = await inspectSource(workspace, { file: "shot.png" }, []);
+  const inspected = await inspectSource(workspace, { file: "shot.png" }, [], runtime.execution);
   assert.equal(inspected.report.kind, "image");
 
-  const cleaned = await cleanSource(workspace, { file: "shot.png" }, []);
+  const cleaned = await cleanSource(workspace, { file: "shot.png" }, [], runtime.execution);
   assert.equal(cleaned.outputFile, "shot.cleaned.png");
   assert.equal(cleaned.artifactKind, "image", "a cleaned PNG must be deliverable as an artifact");
   assert.equal(cleaned.artifactFilename, "shot.cleaned.png");
@@ -329,7 +332,7 @@ test("the audit sweeps the workspace and skips its own staging directory", async
   fs.mkdirSync(path.join(workspace, ".watermarks"));
   fs.writeFileSync(path.join(workspace, ".watermarks", "scratch.md"), MARKED_TEXT);
 
-  const audited = await auditWorkspace(workspace, {});
+  const audited = await auditWorkspace(workspace, {}, runtime.execution);
   assert.equal(audited.directory, ".");
   const serialized = JSON.stringify(audited.report);
   assert.match(serialized, /marked\.md/, "the audit must reach real workspace files");
@@ -339,7 +342,7 @@ test("the audit sweeps the workspace and skips its own staging directory", async
 test("the audit refuses a directory outside the workspace", async () => {
   const workspace = makeWorkspace();
   await assert.rejects(
-    auditWorkspace(workspace, { directory: ".." }),
+    auditWorkspace(workspace, { directory: ".." }, runtime.execution),
     (error) => error instanceof WatermarkError && error.code === "watermarks_path_outside_workspace",
   );
 });

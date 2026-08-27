@@ -15,10 +15,7 @@ import {
   summarizeConversationMessages,
   type CreateConversationInput,
 } from "@/lib/conversations/store.ts";
-import {
-  authorizeGardenAccess,
-  resolveConversationRuntime,
-} from "@/lib/hermes/session-service.ts";
+import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { HERMES_SURFACES, type HermesSurface } from "@/lib/hermes/config.ts";
 import { presentHermesSessionSummary } from "@/lib/hermes/session-presentation.ts";
 import { parseChatAttachments } from "@/lib/chat-attachments-request.ts";
@@ -149,12 +146,10 @@ export async function POST(request: Request) {
           turn: initialTurn,
         }).conversation
       : createConversation(conversationInput);
-    const runtime = await resolveConversationRuntime({
-      conversation,
-      surface,
-      activeGardenSlug: garden?.slug ?? null,
-      activePageSlug: pageSlug,
-    });
+    // A conversation is the durable owner; creating it must not depend on
+    // enough Windows commit being available to cold-start Hermes. The ordinary
+    // turn flow resolves the runtime only when the browser opens its event
+    // stream, and a failed start remains a retryable reserved turn.
     return NextResponse.json({
       initialTurnReserved: initialTurn !== null,
       session: {
@@ -163,7 +158,7 @@ export async function POST(request: Request) {
         agentName: "breadboard-assistant",
         gardenId: garden?.slug ?? null,
         pageSlug,
-        activeDirectory: runtime.activeDirectory,
+        activeDirectory: null,
         filesystemMode: "restricted",
         capabilityMode: "knowledge",
         messages: [],

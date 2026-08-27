@@ -16,26 +16,20 @@
 // on globalThis, like the run map, because in dev each route bundle gets its own
 // instance of this module — and a run refuses to start while the window is open.
 
-import { spawn } from "node:child_process";
-import { hideBackgroundBrowser } from "./hide-window.ts";
 import {
-  installedOpenCliExtension,
-  openCliExtensionArgs,
-} from "./opencli-extension.ts";
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
   rmSync,
-  statSync,
   unlinkSync,
-  writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import Database from "better-sqlite3";
+import {
+  externalRuntimeCopyFile,
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
 
 export class BrowserProfileError extends Error {
   readonly status: number;
@@ -56,7 +50,7 @@ export class BrowserProfileError extends Error {
  */
 export function resolveBrowserExecutable(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = env.AGENT_BROWSER_EXECUTABLE_PATH?.trim();
-  if (explicit && existsSync(explicit)) return explicit;
+  if (explicit && externalRuntimePathExists(explicit)) return explicit;
   const candidates =
     process.platform === "win32"
       ? [
@@ -71,7 +65,7 @@ export function resolveBrowserExecutable(env: NodeJS.ProcessEnv = process.env): 
             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
           ]
         : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/microsoft-edge"];
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+  return candidates.find((candidate) => externalRuntimePathExists(candidate)) ?? null;
 }
 
 /** What to call that binary in a sentence a person reads. */
@@ -105,7 +99,7 @@ export function agentBrowserProfileDir(env: NodeJS.ProcessEnv = process.env): st
  */
 export function activeProfileDir(env: NodeJS.ProcessEnv = process.env): string | null {
   const dir = agentBrowserProfileDir(env);
-  return existsSync(dir) ? dir : null;
+  return externalRuntimePathExists(dir) ? dir : null;
 }
 
 /** An absolute path with the home directory collapsed, for display only. */
@@ -123,7 +117,7 @@ function profileLastUsedAt(dir: string): string | null {
   let newest = 0;
   for (const mark of [path.join(dir, "Default", "Preferences"), dir]) {
     try {
-      newest = Math.max(newest, statSync(mark).mtimeMs);
+      newest = Math.max(newest, externalRuntimeStat(mark).mtimeMs);
     } catch {
       /* not written yet */
     }
@@ -159,17 +153,17 @@ export function profileSites(dir: string, limit = 12): string[] {
   const source = [
     path.join(dir, "Default", "Network", "Cookies"),
     path.join(dir, "Default", "Cookies"),
-  ].find(existsSync);
+  ].find((candidate) => externalRuntimePathExists(candidate));
   if (!source) return [];
 
   cookieSnapshotCounter += 1;
   const snapshot = path.join(os.tmpdir(), `breadboard-cookies-${process.pid}-${cookieSnapshotCounter}`);
   const copies = [snapshot];
   try {
-    copyFileSync(source, snapshot);
+    externalRuntimeCopyFile(source, snapshot);
     for (const suffix of ["-wal", "-shm"]) {
-      if (existsSync(source + suffix)) {
-        copyFileSync(source + suffix, snapshot + suffix);
+      if (externalRuntimePathExists(source + suffix)) {
+        externalRuntimeCopyFile(source + suffix, snapshot + suffix);
         copies.push(snapshot + suffix);
       }
     }
@@ -209,6 +203,11 @@ export interface SignInWindow {
   pid: number;
   startedAt: string;
   executable: string;
+  /** Runtime fence for the person-visible sign-in browser. */
+  jobId?: string;
+  attempt?: number;
+  workerInstanceId?: string;
+  userId?: number;
   /**
    * Opened for the agents rather than for a person, with no window at all.
    *
@@ -240,7 +239,7 @@ export interface SignInWindow {
 // click, the service refusing a run — may be a different module instance or a
 // different worker than the one that launched it, and all three have to agree
 // about whether the browser is holding the profile.
-function markerPath(env: NodeJS.ProcessEnv): string {
+export function browserProfileMarkerPath(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(path.dirname(agentBrowserProfileDir(env)), "agent-browser-signin.json");
 }
 
@@ -258,9 +257,9 @@ function isAlive(pid: number): boolean {
   }
 }
 
-function forgetWindow(env: NodeJS.ProcessEnv): void {
+export function forgetSignInWindow(env: NodeJS.ProcessEnv = process.env): void {
   try {
-    unlinkSync(markerPath(env));
+    unlinkSync(browserProfileMarkerPath(env));
   } catch {
     /* nothing recorded */
   }
@@ -270,18 +269,31 @@ function forgetWindow(env: NodeJS.ProcessEnv): void {
 export function signInWindow(env: NodeJS.ProcessEnv = process.env): SignInWindow | null {
   let record: unknown;
   try {
-    record = JSON.parse(readFileSync(markerPath(env), "utf8"));
+    record = JSON.parse(externalRuntimeReadUtf8(browserProfileMarkerPath(env)));
   } catch {
     return null;
   }
   const marker = record as Partial<SignInWindow>;
   if (typeof marker?.pid !== "number" || typeof marker.startedAt !== "string") {
-    forgetWindow(env);
+    forgetSignInWindow(env);
     return null;
   }
   const age = Date.now() - Date.parse(marker.startedAt);
   if (!Number.isFinite(age) || age > MARKER_MAX_AGE_MS || !isAlive(marker.pid)) {
-    forgetWindow(env);
+    forgetSignInWindow(env);
+    return null;
+  }
+  const hasRuntimeFence = marker.jobId !== undefined || marker.attempt !== undefined ||
+    marker.workerInstanceId !== undefined || marker.userId !== undefined;
+  if (
+    hasRuntimeFence &&
+    (typeof marker.jobId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(marker.jobId) ||
+      !Number.isSafeInteger(marker.attempt) || Number(marker.attempt) < 1 ||
+      typeof marker.workerInstanceId !== "string" ||
+      !/^[A-Za-z0-9_-]{1,128}$/u.test(marker.workerInstanceId) ||
+      !Number.isSafeInteger(marker.userId) || Number(marker.userId) < 1)
+  ) {
+    forgetSignInWindow(env);
     return null;
   }
   return {
@@ -289,6 +301,14 @@ export function signInWindow(env: NodeJS.ProcessEnv = process.env): SignInWindow
     startedAt: marker.startedAt,
     background: marker.background === true,
     executable: typeof marker.executable === "string" ? marker.executable : "",
+    ...(hasRuntimeFence
+      ? {
+          jobId: marker.jobId,
+          attempt: marker.attempt,
+          workerInstanceId: marker.workerInstanceId,
+          userId: marker.userId,
+        }
+      : {}),
   };
 }
 
@@ -296,7 +316,7 @@ export function signInWindowOpen(env: NodeJS.ProcessEnv = process.env): boolean 
   return signInWindow(env) !== null;
 }
 
-function normalizeStartUrl(url: unknown): string | null {
+export function normalizeBrowserProfileStartUrl(url: unknown): string | null {
   if (typeof url !== "string") return null;
   const trimmed = url.trim();
   if (!trimmed) return null;
@@ -316,137 +336,6 @@ function normalizeStartUrl(url: unknown): string | null {
   return parsed.href;
 }
 
-/**
- * Open the agents' browser on the shared profile so a person can sign in.
- * Idempotent: if the window is already up, that window is handed back rather
- * than a second process that would only forward its arguments and exit.
- */
-export function openSignInWindow(
-  url?: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-  options: { background?: boolean } = {},
-): SignInWindow {
-  // Bad input is rejected before anything is looked up or launched.
-  const startUrl = normalizeStartUrl(url);
-  const existing = signInWindow(env);
-  if (existing) return existing;
-
-  const executable = resolveBrowserExecutable(env);
-  if (!executable) throw new BrowserProfileError(503, "browser_not_found");
-  const dir = agentBrowserProfileDir(env);
-  try {
-    mkdirSync(dir, { recursive: true });
-  } catch {
-    throw new BrowserProfileError(500, "profile_not_writable");
-  }
-
-  // OpenCLI's extension, if it has been fetched. Loaded here rather than
-  // installed into the profile because a command-line extension lives for the
-  // life of the window: it is present in the browser Breadboard drives and
-  // exists nowhere else, which is the containment this capability needs.
-  // Absent is a normal state — the window still opens, and the six
-  // login-backed Agent Reach channels stay closed as they were before.
-  const extension = installedOpenCliExtension(env);
-
-  const child = spawn(
-    executable,
-    [
-      `--user-data-dir=${dir}`,
-      // A profile Breadboard owns should never nag about being new or about
-      // which browser the machine defaults to.
-      "--no-first-run",
-      "--no-default-browser-check",
-      ...(extension ? openCliExtensionArgs(extension.path) : []),
-      // A real window, hidden a fraction of a second later by the watcher
-      // below. `--no-startup-window` was tried and is worse than it looks:
-      // with no window Chromium has nothing holding it open and exits while
-      // idle, so the bridge is gone before the first command arrives. The
-      // window is what keeps the process alive; hiding it is what keeps it out
-      // of the way.
-      ...(startUrl ? [startUrl] : []),
-    ],
-    // Detached and unreferenced: this window outlives the request that opened
-    // it, and belongs to the person, not to the server.
-    { detached: true, stdio: "ignore", windowsHide: false },
-  );
-  child.unref();
-  if (typeof child.pid !== "number") throw new BrowserProfileError(502, "browser_launch_failed");
-
-  const state: SignInWindow = {
-    pid: child.pid,
-    startedAt: new Date().toISOString(),
-    executable,
-    ...(options.background ? { background: true } : {}),
-  };
-  if (options.background) {
-    // The window the launch just created, and every later one OpenCLI opens
-    // when it needs a tab, hidden for as long as the browser lives. A person's
-    // own sign-in window is never background, so it is never touched.
-    hideBackgroundBrowser(env);
-  }
-  try {
-    writeFileSync(markerPath(env), JSON.stringify(state), "utf8");
-  } catch {
-    // Unrecorded, the window would be invisible to the run guard: close it
-    // again rather than leave a browser holding a profile nothing knows about.
-    try {
-      process.kill(child.pid);
-    } catch {
-      /* already gone */
-    }
-    throw new BrowserProfileError(500, "profile_not_writable");
-  }
-  return state;
-}
-
-/**
- * Ask the window to close. Deliberately graceful — no /F, no SIGKILL — so
- * Chromium shuts down the way it does from its own close button and flushes
- * cookies and local storage to the profile. The tracked pid is NOT cleared
- * here: liveness decides when the window is really gone, so a shutdown the
- * browser refuses (an unsaved-changes prompt, say) is not reported as done.
- */
-export function closeSignInWindow(env: NodeJS.ProcessEnv = process.env): boolean {
-  const current = signInWindow(env);
-  if (!current) return false;
-  try {
-    if (process.platform === "win32") {
-      // No /F (that would drop cookies Chromium has not committed yet) and no
-      // /T: the tree walk hits the GPU and renderer children, which have no
-      // message loop to receive a close, and taskkill then refuses the parent
-      // for having survivors. Addressed to the browser process alone this is a
-      // WM_CLOSE on its window, which is exactly the close button, and its
-      // children go down with it.
-      spawn("taskkill", ["/PID", String(current.pid)], {
-        stdio: "ignore",
-        windowsHide: true,
-      }).unref();
-    } else {
-      process.kill(current.pid, "SIGTERM");
-    }
-  } catch {
-    /* already gone — liveness will notice */
-  }
-  return true;
-}
-
-/**
- * Wait, briefly, for a closing window to actually exit. A page that refuses to
- * unload can outlast this, and then the card simply keeps saying the window is
- * open — which is the truth, and the person can close it in the browser.
- */
-export async function awaitWindowClosed(
-  timeoutMs = 8_000,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!signInWindowOpen(env)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  return !signInWindowOpen(env);
-}
-
 /** Delete the profile: every cookie, session, and saved password inside it. */
 export function resetProfile(env: NodeJS.ProcessEnv = process.env): void {
   if (signInWindowOpen(env)) throw new BrowserProfileError(409, "sign_in_window_open");
@@ -457,7 +346,7 @@ export function resetProfile(env: NodeJS.ProcessEnv = process.env): void {
   if (resolved === path.parse(resolved).root || resolved === path.resolve(os.homedir())) {
     throw new BrowserProfileError(400, "unsafe_profile_directory");
   }
-  if (!existsSync(resolved)) return;
+  if (!externalRuntimePathExists(resolved)) return;
   try {
     rmSync(resolved, { recursive: true, force: true });
   } catch {
@@ -484,7 +373,7 @@ export interface BrowserProfileSummary {
 export function browserProfileSummary(env: NodeJS.ProcessEnv = process.env): BrowserProfileSummary {
   const executable = resolveBrowserExecutable(env);
   const dir = agentBrowserProfileDir(env);
-  const signedIn = existsSync(dir);
+  const signedIn = externalRuntimePathExists(dir);
   const window = signInWindow(env);
   return {
     browserFound: Boolean(executable),
@@ -500,52 +389,4 @@ export function browserProfileSummary(env: NodeJS.ProcessEnv = process.env): Bro
     windowOpen: Boolean(window),
     windowStartedAt: window?.startedAt ?? null,
   };
-}
-
-// ---- the background bridge window --------------------------------------------
-
-/**
- * Make sure some browser is running on the profile, opening an invisible one if
- * not, and say whether we opened it.
- *
- * OpenCLI drives a browser; it does not start one. Before this, the six
- * login-backed Agent Reach channels worked only while somebody happened to have
- * the sign-in window open, which is not a thing anyone would think to do.
- *
- * A window already open is always reused, visible or not. Two processes cannot
- * share one `--user-data-dir`, and a person signing in is doing something more
- * important than a run is.
- */
-export function ensureBridgeWindow(env: NodeJS.ProcessEnv = process.env): {
-  window: SignInWindow | null;
-  opened: boolean;
-} {
-  const existing = signInWindow(env);
-  if (existing) return { window: existing, opened: false };
-  // Nothing to bridge to without the extension: the browser would come up and
-  // the daemon would never hear from it.
-  if (!installedOpenCliExtension(env)) return { window: null, opened: false };
-  try {
-    return {
-      window: openSignInWindow("https://example.com/", env, { background: true }),
-      opened: true,
-    };
-  } catch {
-    // A run that cannot get a browser still runs; those channels stay closed,
-    // which is exactly where they were before any of this.
-    return { window: null, opened: false };
-  }
-}
-
-/**
- * Close a window this process opened for a run.
- *
- * Only ever closes a background one. A person's sign-in window is theirs, and a
- * run that happened to borrow it must not take it away when it finishes.
- * Cookies live in the profile directory, so closing costs no logins.
- */
-export function closeBridgeWindow(env: NodeJS.ProcessEnv = process.env): void {
-  const current = signInWindow(env);
-  if (!current?.background) return;
-  closeSignInWindow(env);
 }

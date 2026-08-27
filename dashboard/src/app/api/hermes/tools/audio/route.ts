@@ -14,7 +14,10 @@ import {
   runtimeExternalSessionId,
 } from "@/lib/hermes/runtime-store.ts";
 import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
-import { listRecentConversationMessages } from "@/lib/conversations/store.ts";
+import {
+  getConversationById,
+  listRecentConversationMessages,
+} from "@/lib/conversations/store.ts";
 import { AUDIO_ANALYSIS_SKILL } from "@/lib/hermes/audio-intent.ts";
 import {
   analyzableTracks,
@@ -36,6 +39,7 @@ const TOOLS = new Set(["audio_analyze", "audio_compare"]);
 
 /** HTTP status by cause, so the model is told what kind of problem it hit. */
 function statusForCode(code: string): number {
+  if (code === "BREADBOARD_RESOURCE_EXHAUSTED") return 503;
   if (code === "audio_analyzer_unavailable") return 503;
   if (code === "audio_analyzer_timeout") return 504;
   if (
@@ -145,6 +149,19 @@ export async function POST(request: Request) {
           "ogg, m4a or aac file.",
       );
     }
+    const conversation = getConversationById(session.conversation_id);
+    if (!conversation) {
+      throw new ApiError(
+        403,
+        "audio_conversation_missing",
+        "The audio-analysis conversation is unavailable.",
+      );
+    }
+    const scope = {
+      userId: session.user_id,
+      gardenId: session.garden_id,
+      conversationId: conversation.public_id,
+    };
 
     if (action === "audio_compare") {
       const against = typeof args.against === "string" ? args.against.slice(0, 240) : undefined;
@@ -173,6 +190,7 @@ export async function POST(request: Request) {
       const result = await runAudioComparison({
         pathA: first.path!,
         pathB: second.path!,
+        scope,
         signal: request.signal,
       });
       return NextResponse.json({
@@ -202,6 +220,7 @@ export async function POST(request: Request) {
     const result = await runAudioAnalysis({
       path: track.path!,
       options,
+      scope,
       signal: request.signal,
     });
     recordAuditEvent({

@@ -12,7 +12,7 @@ import {
   BOLT_SLIDES_AGENT_ID,
   parseBoltSlidesRequest,
 } from "@/lib/bolt-slides/identity.ts";
-import { startRun } from "@/lib/bolt-slides/run-manager.ts";
+import { startRun } from "@/lib/bolt-slides/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -63,7 +63,7 @@ export async function POST(request: Request) {
     const reasoningEffort =
       rawEffort === "max" ? "xhigh" : EFFORTS.has(rawEffort) ? rawEffort : undefined;
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
       brief,
       request: parsed,

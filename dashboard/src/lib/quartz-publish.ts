@@ -1,32 +1,75 @@
-import fs from "fs";
-import os from "os";
-import path from "path";
-import { spawn } from "child_process";
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
+
+import {
+  inspectRuntimeJob,
+  readRuntimeJobOutput,
+  submitRuntimeJob,
+  type RuntimeJobAuthority,
+  type RuntimeJobSnapshot,
+} from "./supervisor-control.ts";
 
 const DISABLED_ENV_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
 const DEFAULT_BUILD_CONCURRENCY = 1;
 const DEFAULT_BUILD_TIMEOUT_MS = 15 * 60 * 1000;
-const DEFAULT_LOCK_POLL_MS = 100;
-const DEFAULT_LOCK_STALE_MS = 30_000;
-const LOCK_DIRECTORY_NAME = ".breadboard-quartz-publish.lock";
-const LOCK_OWNER_FILE_NAME = "owner.json";
+const MIN_BUILD_TIMEOUT_MS = 10_000;
+const MAX_BUILD_TIMEOUT_MS = 60 * 60 * 1000;
+const MAX_BUILD_CONCURRENCY = 16;
+const MAX_REASON_BYTES = 512;
+const MAX_REASONS_PER_JOB = 32;
+const MAX_PENDING_REASONS = 32;
+const COALESCED_REASON = "additional coalesced garden mutations";
+const TERMINAL_STATES = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "resource_exhausted",
+  "interrupted",
+  "uncertain",
+]);
+const BUILD_ENVIRONMENT_NAMES = [
+  "BREADBOARD_DASHBOARD_URL",
+  "CI",
+  "DASHBOARD_URL",
+  "NEXT_PUBLIC_DASHBOARD_URL",
+  "NEXT_PUBLIC_PENECHO_URL",
+  "NEXT_PUBLIC_QUARTZ_URL",
+  "PENECHO_URL",
+  "QUARTZ_BASE_URL",
+  "QUARTZ_CUSTOM_OG_IMAGES",
+  "SECOND_BRAIN_ASSET_VERSION",
+  "SHOW_LEGACY_SUBTOPIC_PAGES",
+  "TERM",
+] as const;
 
-interface QuartzPublishLockOwner {
-  version: 1;
-  token: string;
-  pid: number;
-  hostname: string;
-  acquiredAt: string;
-  heartbeatAt: string;
+interface QuartzBuildResult {
+  readonly published: true;
+  readonly durationMs: number;
+  readonly reasonCount: number;
 }
 
-interface QuartzPublishLease {
-  release: () => void;
+interface SealedRuntimeV2QuartzPublishExecutor {
+  (input: {
+    readonly reasons: readonly string[];
+    readonly concurrency: number;
+    readonly timeoutMs: number;
+    readonly buildEnvironment: Readonly<Record<string, string>>;
+  }): Promise<QuartzBuildResult>;
 }
 
-const pendingReasons = new Set<string>();
+interface QuartzPublishOptions {
+  readonly requireSuccess?: boolean;
+  /** Authenticated actor. Scope remains deliberately user-global. */
+  readonly userId?: number;
+}
+
+interface PendingPublication {
+  readonly reasons: string[];
+  readonly userId: number | null;
+}
+
+const pendingReasons = new Map<string, number | null>();
 let activePublish: Promise<void> | null = null;
+let sealedWorkerExecutor: SealedRuntimeV2QuartzPublishExecutor | null = null;
 
 function envValue(rawValue: string | undefined): string {
   return rawValue?.trim().toLowerCase() ?? "";
@@ -48,381 +91,215 @@ function publishMode(): "await" | "background" {
     : "await";
 }
 
-function quartzRootPath(): string | null {
-  const contentPath = process.env.QUARTZ_CONTENT_PATH?.trim();
-  if (!contentPath) return null;
+function boundedUtf8(value: string, maximumBytes: number): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.byteLength <= maximumBytes) return value;
+  return bytes
+    .subarray(0, maximumBytes)
+    .toString("utf8")
+    .replace(/\uFFFD+$/u, "");
+}
 
-  const quartzRoot = path.dirname(path.resolve(contentPath));
-  const cliPath = path.join(quartzRoot, "quartz", "bootstrap-cli.mjs");
-  const packageJsonPath = path.join(quartzRoot, "package.json");
-
-  if (!fs.existsSync(cliPath) || !fs.existsSync(packageJsonPath)) return null;
-  return fs.realpathSync.native(quartzRoot);
+function normalizeReason(reason: string): string {
+  const trimmed = String(reason).trim() || "Breadboard content update";
+  return boundedUtf8(trimmed.replace(/\p{Cc}/gu, " "), MAX_REASON_BYTES).trim();
 }
 
 function quartzBuildConcurrency(): number {
-  const parsed = Number.parseInt(
-    process.env.QUARTZ_BUILD_CONCURRENCY ?? "",
-    10,
-  );
-  if (Number.isFinite(parsed) && parsed >= 1) return Math.floor(parsed);
+  const parsed = Number.parseInt(process.env.QUARTZ_BUILD_CONCURRENCY ?? "", 10);
+  if (Number.isFinite(parsed) && parsed >= 1) {
+    return Math.min(MAX_BUILD_CONCURRENCY, Math.floor(parsed));
+  }
   return DEFAULT_BUILD_CONCURRENCY;
 }
 
 function quartzBuildTimeoutMs(): number {
   const parsed = Number.parseInt(process.env.QUARTZ_BUILD_TIMEOUT_MS ?? "", 10);
-  if (Number.isFinite(parsed) && parsed >= 10_000) return parsed;
+  if (Number.isFinite(parsed) && parsed >= MIN_BUILD_TIMEOUT_MS) {
+    return Math.min(MAX_BUILD_TIMEOUT_MS, Math.floor(parsed));
+  }
   return DEFAULT_BUILD_TIMEOUT_MS;
 }
 
-function positiveIntegerEnvironmentValue(
-  name: string,
-  minimum: number,
-  fallback: number,
-): number {
-  const parsed = Number.parseInt(process.env[name] ?? "", 10);
-  if (Number.isFinite(parsed) && parsed >= minimum) return Math.floor(parsed);
-  return fallback;
+function quartzBuildEnvironment(): Readonly<Record<string, string>> {
+  const environment: Record<string, string> = {};
+  for (const name of BUILD_ENVIRONMENT_NAMES) {
+    const value = process.env[name];
+    if (typeof value === "string" && value.length > 0) environment[name] = value;
+  }
+  return environment;
 }
 
-function quartzPublishLockPollMs(): number {
-  return positiveIntegerEnvironmentValue(
-    "QUARTZ_PUBLISH_LOCK_POLL_MS",
-    10,
-    DEFAULT_LOCK_POLL_MS,
+function assertUserId(userId: number | undefined): number {
+  if (!Number.isSafeInteger(userId) || (userId as number) < 1) {
+    throw new TypeError(
+      "Quartz publication from Next requires an authenticated positive user ID.",
+    );
+  }
+  return userId as number;
+}
+
+function isQuartzPublishJob(job: RuntimeJobSnapshot): boolean {
+  return (
+    job.jobType === "quartz-publish" &&
+    job.workerKind === "quartz-publish-node" &&
+    job.resourceClass === "large-generation" &&
+    job.gardenId === null &&
+    job.conversationId === null
   );
 }
 
-function quartzPublishLockStaleMs(): number {
-  return positiveIntegerEnvironmentValue(
-    "QUARTZ_PUBLISH_LOCK_STALE_MS",
-    1_000,
-    DEFAULT_LOCK_STALE_MS,
-  );
-}
-
-function quartzPublishLockWaitMs(): number {
-  return positiveIntegerEnvironmentValue(
-    "QUARTZ_PUBLISH_LOCK_TIMEOUT_MS",
-    10_000,
-    quartzBuildTimeoutMs() + quartzPublishLockStaleMs() + 60_000,
-  );
-}
-
-function normalizeReason(reason: string): string {
-  const trimmed = reason.trim();
-  return trimmed || "Breadboard content update";
-}
-
-function consumePendingReasons(): string[] {
-  const reasons = [...pendingReasons];
-  pendingReasons.clear();
-  return reasons;
-}
-
-function readQuartzPublishLockOwner(
-  lockDirectory: string,
-): QuartzPublishLockOwner | null {
-  try {
-    const parsed = JSON.parse(
-      fs.readFileSync(path.join(lockDirectory, LOCK_OWNER_FILE_NAME), "utf8"),
-    ) as Partial<QuartzPublishLockOwner>;
-    if (
-      parsed.version !== 1 ||
-      typeof parsed.token !== "string" ||
-      typeof parsed.pid !== "number" ||
-      typeof parsed.hostname !== "string" ||
-      typeof parsed.acquiredAt !== "string" ||
-      typeof parsed.heartbeatAt !== "string"
-    ) {
-      return null;
-    }
-    return parsed as QuartzPublishLockOwner;
-  } catch {
-    return null;
-  }
-}
-
-function processIsAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-function lockHeartbeatAgeMs(lockDirectory: string): number {
-  try {
-    return Date.now() - fs.statSync(
-      path.join(lockDirectory, LOCK_OWNER_FILE_NAME),
-    ).mtimeMs;
-  } catch {
-    try {
-      return Date.now() - fs.statSync(lockDirectory).mtimeMs;
-    } catch {
-      return Number.POSITIVE_INFINITY;
-    }
-  }
-}
-
-function staleLockIdentity(
-  lockDirectory: string,
-  owner: QuartzPublishLockOwner | null,
-): string {
-  if (owner?.token) return owner.token.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
-  try {
-    return `orphan-${Math.floor(fs.statSync(lockDirectory).mtimeMs)}`;
-  } catch {
-    return `orphan-${randomUUID()}`;
-  }
-}
-
-function retireStaleQuartzPublishLock(
-  lockDirectory: string,
-  staleAfterMs: number,
-): boolean {
-  const owner = readQuartzPublishLockOwner(lockDirectory);
+function validateQuartzResult(
+  job: RuntimeJobSnapshot,
+  content: unknown,
+  expectedReasonCount: number,
+): QuartzBuildResult {
   if (
-    owner?.hostname === os.hostname() &&
-    processIsAlive(owner.pid)
+    content === null ||
+    typeof content !== "object" ||
+    Array.isArray(content)
   ) {
-    return false;
+    throw new Error("Runtime returned an invalid Quartz publication result.");
   }
-  if (owner && lockHeartbeatAgeMs(lockDirectory) <= staleAfterMs) return false;
-  if (!owner && lockHeartbeatAgeMs(lockDirectory) <= staleAfterMs) return false;
-
-  // The token-derived destination is intentionally retained as a tombstone.
-  // If two waiters observed the same stale owner, only one can perform this
-  // rename; the other cannot accidentally rename the first waiter's new lock.
-  const retiredDirectory = `${lockDirectory}.stale-${staleLockIdentity(
-    lockDirectory,
-    owner,
-  )}`;
-  try {
-    fs.renameSync(lockDirectory, retiredDirectory);
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "EEXIST" || code === "ENOTEMPTY") {
-      return false;
-    }
-    throw error;
+  const envelope = content as Record<string, unknown>;
+  const identity = envelope.identity;
+  const result = envelope.result;
+  if (
+    Object.keys(envelope).sort().join(",") !==
+      "completionSequence,identity,protocolVersion,result" ||
+    envelope.protocolVersion !== 1 ||
+    !Number.isSafeInteger(envelope.completionSequence) ||
+    envelope.completionSequence !== job.lastWorkerSequence ||
+    typeof identity !== "object" ||
+    identity === null ||
+    Array.isArray(identity) ||
+    Object.keys(identity).sort().join(",") !==
+      "attempt,jobId,workerInstanceId" ||
+    (identity as Record<string, unknown>).jobId !== job.jobId ||
+    (identity as Record<string, unknown>).attempt !== job.attempt ||
+    (identity as Record<string, unknown>).workerInstanceId !==
+      job.workerInstanceId ||
+    typeof result !== "object" ||
+    result === null ||
+    Array.isArray(result) ||
+    Object.keys(result).sort().join(",") !==
+      "durationMs,published,reasonCount" ||
+    (result as Record<string, unknown>).published !== true ||
+    !Number.isSafeInteger((result as Record<string, unknown>).durationMs) ||
+    ((result as Record<string, unknown>).durationMs as number) < 0 ||
+    !Number.isSafeInteger((result as Record<string, unknown>).reasonCount) ||
+    (result as Record<string, unknown>).reasonCount !== expectedReasonCount
+  ) {
+    throw new Error("Runtime returned an invalid Quartz publication result.");
   }
+  return result as unknown as QuartzBuildResult;
 }
 
-function sleep(milliseconds: number): Promise<void> {
+function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function acquireQuartzPublishLease(
-  quartzRoot: string,
-): Promise<QuartzPublishLease> {
-  const lockDirectory = path.join(quartzRoot, LOCK_DIRECTORY_NAME);
-  const staleAfterMs = quartzPublishLockStaleMs();
-  const deadline = Date.now() + quartzPublishLockWaitMs();
-  let loggedWait = false;
-
-  while (true) {
-    const token = randomUUID();
-    const timestamp = new Date().toISOString();
-    const owner: QuartzPublishLockOwner = {
-      version: 1,
-      token,
-      pid: process.pid,
-      hostname: os.hostname(),
-      acquiredAt: timestamp,
-      heartbeatAt: timestamp,
-    };
-
-    try {
-      fs.mkdirSync(lockDirectory);
-      try {
-        fs.writeFileSync(
-          path.join(lockDirectory, LOCK_OWNER_FILE_NAME),
-          `${JSON.stringify(owner)}\n`,
-          { encoding: "utf8", flag: "wx" },
-        );
-      } catch (error) {
-        fs.rmSync(lockDirectory, { recursive: true, force: true });
-        throw error;
-      }
-
-      let released = false;
-      const ownerPath = path.join(lockDirectory, LOCK_OWNER_FILE_NAME);
-      const heartbeatIntervalMs = Math.max(
-        1_000,
-        Math.min(5_000, Math.floor(staleAfterMs / 3)),
-      );
-      const heartbeat = setInterval(() => {
-        if (released) return;
-        const currentOwner = readQuartzPublishLockOwner(lockDirectory);
-        if (currentOwner?.token !== token) return;
-        try {
-          const now = new Date();
-          fs.utimesSync(ownerPath, now, now);
-        } catch {
-          // A failed heartbeat makes the lock eligible for conservative stale
-          // recovery. Release is fenced by the token below.
-        }
-      }, heartbeatIntervalMs);
-      heartbeat.unref();
-
-      return {
-        release: () => {
-          if (released) return;
-          released = true;
-          clearInterval(heartbeat);
-          if (readQuartzPublishLockOwner(lockDirectory)?.token !== token) return;
-
-          const releasedDirectory = `${lockDirectory}.released-${token}`;
-          try {
-            fs.renameSync(lockDirectory, releasedDirectory);
-            if (
-              readQuartzPublishLockOwner(releasedDirectory)?.token !== token
-            ) {
-              if (!fs.existsSync(lockDirectory)) {
-                fs.renameSync(releasedDirectory, lockDirectory);
-              }
-              return;
-            }
-            fs.rmSync(releasedDirectory, { recursive: true, force: true });
-          } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
-            if (code !== "ENOENT") {
-              console.warn(
-                `[quartz] Could not release publication lock: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              );
-            }
-          }
-        },
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-
-    if (retireStaleQuartzPublishLock(lockDirectory, staleAfterMs)) continue;
-    if (Date.now() >= deadline) {
-      const owner = readQuartzPublishLockOwner(lockDirectory);
-      const ownerLabel = owner
-        ? `process ${owner.pid} on ${owner.hostname}`
-        : "an unknown process";
-      throw new Error(
-        `Timed out waiting for the Quartz publication lock held by ${ownerLabel}.`,
-      );
-    }
-    if (!loggedWait) {
-      console.info("[quartz] Waiting for another process to finish publishing");
-      loggedWait = true;
-    }
-    await sleep(quartzPublishLockPollMs());
+async function waitForQuartzPublication(
+  authority: RuntimeJobAuthority,
+  initialJob: RuntimeJobSnapshot,
+  timeoutMs: number,
+  expectedReasonCount: number,
+): Promise<QuartzBuildResult> {
+  if (!isQuartzPublishJob(initialJob)) {
+    throw new Error("Runtime returned a job outside the Quartz publication contract.");
   }
+  const deadline = Date.now() + timeoutMs + 5 * 60_000;
+  let job = initialJob;
+  while (!TERMINAL_STATES.has(job.state)) {
+    if (Date.now() >= deadline) {
+      throw new Error("Timed out waiting for Runtime V2 Quartz publication.");
+    }
+    await delay(250);
+    job = await inspectRuntimeJob(authority, job.jobId);
+    if (!isQuartzPublishJob(job)) {
+      throw new Error("Runtime returned a job outside the Quartz publication contract.");
+    }
+  }
+  if (job.state !== "succeeded") {
+    throw new Error(job.failureMessage ?? `Quartz publication ended as ${job.state}.`);
+  }
+  const output = await readRuntimeJobOutput(authority, job.jobId, "result");
+  return validateQuartzResult(job, output.content, expectedReasonCount);
 }
 
-async function runQuartzBuild(reasons: string[]): Promise<void> {
-  const quartzRoot = quartzRootPath();
-  if (!quartzRoot) {
-    throw new Error(
-      "Quartz auto-publish is enabled, but QUARTZ_CONTENT_PATH does not resolve to a Quartz checkout.",
-    );
+async function submitQuartzPublication(
+  userId: number,
+  reasons: readonly string[],
+): Promise<QuartzBuildResult> {
+  const authority: RuntimeJobAuthority = {
+    userId,
+    gardenId: null,
+    conversationId: null,
+  };
+  const timeoutMs = quartzBuildTimeoutMs();
+  const job = await submitRuntimeJob(authority, {
+    jobType: "quartz-publish",
+    idempotencyKey: `quartz-publish-${randomUUID()}`,
+    requestPayload: {
+      operation: "publish",
+      reasons,
+      concurrency: quartzBuildConcurrency(),
+      timeoutMs,
+      buildEnvironment: quartzBuildEnvironment(),
+    },
+  });
+  return waitForQuartzPublication(authority, job, timeoutMs, reasons.length);
+}
+
+function consumePendingPublication(): PendingPublication | null {
+  const entries = [...pendingReasons.entries()].slice(0, MAX_REASONS_PER_JOB);
+  if (entries.length === 0) return null;
+  for (const [reason] of entries) pendingReasons.delete(reason);
+  return {
+    reasons: entries.map(([reason]) => reason),
+    userId: entries.find(([, userId]) => userId !== null)?.[1] ?? null,
+  };
+}
+
+async function runQuartzPublication(publication: PendingPublication): Promise<void> {
+  const input = {
+    reasons: publication.reasons,
+    concurrency: quartzBuildConcurrency(),
+    timeoutMs: quartzBuildTimeoutMs(),
+    buildEnvironment: quartzBuildEnvironment(),
+  };
+  if (sealedWorkerExecutor) {
+    await sealedWorkerExecutor(input);
+    return;
   }
-
-  const lease = await acquireQuartzPublishLease(quartzRoot);
-  try {
-    const cliPath = path.join(quartzRoot, "quartz", "bootstrap-cli.mjs");
-    const args = [
-      cliPath,
-      "build",
-      `--concurrency=${quartzBuildConcurrency()}`,
-    ];
-    const reasonLabel = [...new Set(reasons.map(normalizeReason))].join(", ");
-    const startedAt = Date.now();
-
-    console.info(`[quartz] Publishing static garden (${reasonLabel})`);
-
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(process.execPath, args, {
-        cwd: quartzRoot,
-        env: process.env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-      }, quartzBuildTimeoutMs());
-
-      child.stdout.on("data", (chunk) => {
-        stdout = `${stdout}${chunk.toString()}`.slice(-8_000);
-      });
-
-      child.stderr.on("data", (chunk) => {
-        stderr = `${stderr}${chunk.toString()}`.slice(-8_000);
-      });
-
-      child.on("error", (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-
-      child.on("close", (code) => {
-        clearTimeout(timeout);
-
-        if (timedOut) {
-          reject(
-            new Error(
-              `Quartz build timed out after ${quartzBuildTimeoutMs()} ms.`,
-            ),
-          );
-          return;
-        }
-
-        if (code === 0) {
-          const durationMs = Date.now() - startedAt;
-          console.info(
-            `[quartz] Publish complete in ${(durationMs / 1000).toFixed(1)}s`,
-          );
-          resolve();
-          return;
-        }
-
-        const details = (stderr || stdout).trim();
-        reject(
-          new Error(
-            details
-              ? `Quartz build exited with code ${code}: ${details}`
-              : `Quartz build exited with code ${code}.`,
-          ),
-        );
-      });
-    });
-  } finally {
-    lease.release();
-  }
+  await submitQuartzPublication(
+    assertUserId(publication.userId ?? undefined),
+    publication.reasons,
+  );
 }
 
 async function drainQuartzPublishQueue(): Promise<void> {
   try {
-    while (pendingReasons.size > 0) {
-      await runQuartzBuild(consumePendingReasons());
+    let publication = consumePendingPublication();
+    while (publication) {
+      await runQuartzPublication(publication);
+      publication = consumePendingPublication();
     }
   } finally {
     activePublish = null;
   }
 }
 
-function queueQuartzPublish(reason: string): Promise<void> {
-  pendingReasons.add(normalizeReason(reason));
-  if (!activePublish) {
-    activePublish = drainQuartzPublishQueue();
+function queueQuartzPublish(reason: string, userId: number | null): Promise<void> {
+  const normalized = normalizeReason(reason);
+  if (!pendingReasons.has(normalized)) {
+    if (pendingReasons.size < MAX_PENDING_REASONS - 1) {
+      pendingReasons.set(normalized, userId);
+    } else if (!pendingReasons.has(COALESCED_REASON)) {
+      pendingReasons.set(COALESCED_REASON, userId);
+    }
   }
+  if (!activePublish) activePublish = drainQuartzPublishQueue();
   return activePublish;
 }
 
@@ -433,13 +310,27 @@ function logPublishError(reason: string, error: unknown): void {
   );
 }
 
+/**
+ * Installed only by a pinned Runtime V2 worker after its independent
+ * `start.json` attestation succeeds. Next has no direct compiler implementation.
+ */
+export function installSealedRuntimeV2QuartzPublishExecutor(
+  executor: SealedRuntimeV2QuartzPublishExecutor,
+): void {
+  if (typeof executor !== "function" || sealedWorkerExecutor) {
+    throw new Error("The sealed Runtime V2 Quartz executor cannot be installed.");
+  }
+  sealedWorkerExecutor = executor;
+}
+
 export async function publishQuartzAfterMutation(
   reason: string,
-  options: { requireSuccess?: boolean } = {},
+  options: QuartzPublishOptions = {},
 ): Promise<void> {
   if (!shouldAutoPublish()) return;
 
-  const publishPromise = queueQuartzPublish(reason);
+  const userId = sealedWorkerExecutor ? null : assertUserId(options.userId);
+  const publishPromise = queueQuartzPublish(reason, userId);
 
   if (options.requireSuccess) {
     try {

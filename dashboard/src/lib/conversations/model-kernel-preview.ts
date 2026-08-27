@@ -16,12 +16,11 @@
 // so a failure here costs the preview and never the attachment.
 
 import {
-  MODEL_ATTACHMENT_FORMATS,
   modelPreviewStrategy,
   type ModelAttachmentFormat,
   type ModelAttachmentSummary,
 } from "../model-attachments.ts";
-import { cadServiceConvert, cadServiceListening } from "../cad/service.ts";
+import { cadServiceConvert } from "../cad/service.ts";
 import { writeModelBlob, type StoredModelBlob } from "./model-blob-store.ts";
 
 /** Beyond this the kernel is unlikely to finish, or to produce a drawable mesh. */
@@ -53,7 +52,8 @@ function round(value: number): number {
 }
 
 /**
- * Mesh an attached boundary-representation file, if the CAD service is up.
+ * Mesh an attached boundary-representation file. The conversion operation
+ * transparently cold-starts the managed CAD service through Runtime V2.
  *
  * Never throws: every outcome is a preview or a sentence explaining why there
  * isn't one.
@@ -64,21 +64,6 @@ export async function buildKernelPreview(
 ): Promise<KernelPreviewResult> {
   if (modelPreviewStrategy(format) !== "kernel") {
     return { ok: false, failure: { note: "" } };
-  }
-
-  // A TCP probe first: a conversion that cannot possibly happen should not cost
-  // the user three minutes of upload spinner to find out.
-  if (!(await cadServiceListening())) {
-    return {
-      ok: false,
-      failure: {
-        note:
-          `${MODEL_ATTACHMENT_FORMATS[format].label} files are converted for viewing by Breadboard's ` +
-          "local CAD service, which is not running. The file is stored and downloadable; start the " +
-          "CAD service (`npm run dev:cad`, or the desktop app, which supervises it) and attach it " +
-          "again to get a 3D preview.",
-      },
-    };
   }
 
   try {

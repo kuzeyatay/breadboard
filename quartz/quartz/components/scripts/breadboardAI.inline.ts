@@ -42,6 +42,12 @@ const ASSISTANT_MODEL_STORAGE_KEY = "breadboard:assistant-model"
 const ASSISTANT_EFFORT_STORAGE_KEY = "breadboard:assistant-reasoning-effort"
 
 function setupPanel(root: HTMLElement) {
+  // The embedding dashboard owns that view's sole Assistant. Keep this root
+  // fail-closed there; it is the visible entry point only on a directly opened
+  // published Quartz page.
+  if (window.parent !== window) return
+  root.hidden = false
+
   const dashboard = root.dataset.dashboard || "http://localhost:3000"
   const gardenId = root.dataset.garden || ""
   const pageSlug = root.dataset.page || ""

@@ -5,33 +5,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertWindowsCommitHeadroom } from "../../desktop/scripts/commit-preflight.mjs";
+import { parseQaRunnerOptions } from "./run-qa-options.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const forwarded = [];
-const env = { ...process.env };
-let skipDesktopBuild = false;
-let dashboardMode = process.env.BREADBOARD_QA_DASHBOARD_MODE === "hot"
-  ? "hot"
-  : "standalone";
-
-for (const argument of process.argv.slice(2)) {
-  if (argument === "--headed") {
-    env.BREADBOARD_QA_HEADED = "1";
-  } else if (argument === "--trace") {
-    env.BREADBOARD_QA_TRACE = "1";
-  } else if (argument === "--no-trace") {
-    env.BREADBOARD_QA_NO_TRACE = "1";
-  } else if (argument === "--preserve-runtime") {
-    env.BREADBOARD_QA_PRESERVE_RUNTIME = "1";
-  } else if (argument === "--skip-desktop-build") {
-    skipDesktopBuild = true;
-  } else if (argument === "--hot-dashboard") {
-    dashboardMode = "hot";
-  } else {
-    forwarded.push(argument);
-  }
+let options;
+try {
+  options = parseQaRunnerOptions({
+    argv: process.argv.slice(2),
+    baseEnv: process.env,
+    repoRoot,
+  });
+} catch (error) {
+  process.stderr.write(`[qa] ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(2);
 }
-env.BREADBOARD_QA_DASHBOARD_MODE = dashboardMode;
+const { forwarded, env, skipDesktopBuild, dashboardMode } = options;
 
 if (!skipDesktopBuild) {
   const npmCliCandidates = [

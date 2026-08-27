@@ -32,9 +32,12 @@ test("the /hooks route reuses the dashboard terminal shell and opens the Hooks p
   assert.match(hooksPage, /<DashboardPageShell initialTerminalPanel="hooks" \/>/);
   assert.match(dashboardShell, /initialTerminalPanel\?: TerminalPanel \| null/);
   assert.match(dashboardClient, /initialPanel=\{initialTerminalPanel\}/);
-  assert.match(terminal, /useState<TerminalPanel \| null>\(initialPanel\)/);
-  assert.match(terminal, /if \(initialPanel\)[\s\S]{0,360}setHeight\(/);
-  assert.match(terminal, /sidePanel === "hooks" \? \([\s\S]{0,180}<HooksPanel \/>/);
+  assert.match(
+    terminal,
+    /const \[sidePanel, setSidePanel\] = useState<TerminalPanel \| null>\(\s*initialPanel,?\s*\)/,
+  );
+  assert.match(terminal, /if \(initialPanel \|\| wasOpen\)[\s\S]{0,520}setHeight\(/);
+  assert.match(terminal, /sidePanel === "hooks" \? \([\s\S]{0,240}<HooksPanel \/>/);
 });
 
 test("the Hooks empty state matches the requested copy and offers a primary action", () => {

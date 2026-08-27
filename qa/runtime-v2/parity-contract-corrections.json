@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "correctionCount": 5,
+  "corrections": [
+    {
+      "capabilityId": "surface:temporary-chat",
+      "reasonCode": "FROZEN_BASELINE_OVERGENERALIZED_TEMPORARY_CHAT_DURABILITY",
+      "oldContract": {
+        "baselineContractSha256": "4b5775ca9655015f4465084d27c7ea1d5ba6e769fa4052dccc44047666d1a3a4",
+        "sourceSha256": "7537c5f028c5c50169b71235c311af389de342138ffd67b6748f17b1ad112d3d",
+        "sourceRefs": [
+          "dashboard/src/app/api/hermes/sessions/route.ts:138",
+          "dashboard/src/lib/conversations/memory.ts:25"
+        ],
+        "followUpContextBehavior": "Same conversation preserves exact transcript, selected branch, source and artifact context.",
+        "restartBehavior": "Durable conversation/run rows are resumed or terminally reconciled on restart.",
+        "recoveryBehavior": "Refresh reconnects by session/run id and bounded event cursor."
+      },
+      "correctedSemantics": {
+        "followUpContextBehavior": "The live temporary conversation preserves its own exact transcript and selected context for a real second turn until the user leaves temporary mode or reloads.",
+        "restartBehavior": "Temporary conversations are intentionally excluded from history, browser restore pointers, drafts, titles, search and restart recovery.",
+        "recoveryBehavior": "Not applicable."
+      },
+      "authoritativeSourceRefs": [
+        "dashboard/src/app/api/hermes/sessions/route.ts:138",
+        "dashboard/src/app/components/hermes/dashboard-agent-terminal.tsx:1029",
+        "dashboard/src/app/components/hermes/use-agent-session.ts:1262",
+        "dashboard/src/lib/conversations/memory.ts:187",
+        "dashboard/src/lib/conversations/store.ts:272",
+        "dashboard/tests/temporary-chat.test.mjs:122"
+      ],
+      "correctionSha256": "302d69cfa4676cc215b90dc23e0d919887d79b9723ed0f4987660c6418c114dc"
+    },
+    {
+      "capabilityId": "skill:first-party:diagram-design",
+      "reasonCode": "FROZEN_BASELINE_MISTOOK_INLINE_SVG_FOR_A_SECOND_ARTIFACT",
+      "oldContract": {
+        "baselineContractSha256": "5b3c65da97600a9e5b6490638c6bff2e29667cded6b21ca6d3fe8b0d30949fb0",
+        "sourceSha256": "bc9a812d11734b2a37904bf533fd43ebef8c46b9548f758c4ec8cd53a9c17844",
+        "sourceRefs": [
+          "dashboard/src/lib/hermes/commands.ts:182",
+          "dashboard/src/lib/hermes/diagram-intent.ts:23",
+          "dashboard/src/lib/hermes/skills.ts:539",
+          "hermes-skills/prebuilt/diagram-design/SKILL.md:2"
+        ],
+        "artifactTypes": [
+          "diagram",
+          "svg"
+        ]
+      },
+      "correctedSemantics": {
+        "artifactTypes": [
+          "html"
+        ]
+      },
+      "authoritativeSourceRefs": [
+        "hermes-skills/prebuilt/diagram-design/SKILL.md:20",
+        "hermes-skills/prebuilt/diagram-design/SKILL.md:27"
+      ],
+      "correctionSha256": "118497a5612862ac136b198449243d139dd2806769b743ec7d9fb811c8dc99cb"
+    },
+    {
+      "capabilityId": "skill:first-party:resource2skill",
+      "reasonCode": "FROZEN_BASELINE_MISTOOK_RUNTIME_DOMAIN_OUTPUTS_FOR_HERMES_ARTIFACTS",
+      "oldContract": {
+        "baselineContractSha256": "674bfa7579e3240d523196b233fa1ab5b109e60f08a14f6679c03a6bda43ad49",
+        "sourceSha256": "f1ad3241210b32eddf688d52995849736ccab2703ca7d6dbb3d7faacfc4cb11b",
+        "sourceRefs": [
+          "dashboard/src/lib/hermes/commands.ts:182",
+          "dashboard/src/lib/hermes/skills.ts:539",
+          "hermes-skills/prebuilt/resource2skill/SKILL.md:2"
+        ],
+        "artifactTypes": [
+          "markdown",
+          "skill-package"
+        ]
+      },
+      "correctedSemantics": {
+        "artifactTypes": []
+      },
+      "authoritativeSourceRefs": [
+        "hermes-skills/prebuilt/resource2skill/SKILL.md:15",
+        "hermes-skills/prebuilt/resource2skill/SKILL.md:24",
+        "hermes-skills/prebuilt/resource2skill/SKILL.md:28",
+        "hermes-skills/prebuilt/resource2skill/SKILL.md:30",
+        "hermes-skills/prebuilt/resource2skill/SKILL.md:37"
+      ],
+      "correctionSha256": "cd16f3ec98f0419a90b95b1553f0a45afe595397d8574d834372d8504a0943b2"
+    },
+    {
+      "capabilityId": "workflow:research",
+      "reasonCode": "FROZEN_BASELINE_MISTOOK_TYPED_RESEARCH_STATE_FOR_HERMES_ARTIFACTS",
+      "oldContract": {
+        "baselineContractSha256": "57c5b70e1b8d308ba04c2c6f23d7f044362183fdf58e3276e7c87ee7f7b16570",
+        "sourceSha256": "537b3bc942b1d455e915e0719631f825c66d1d2d65377732ae927bc71655f430",
+        "sourceRefs": [
+          "dashboard/src/app/api/hermes/tools/research/route.ts:67",
+          "dashboard/src/lib/research/store.ts:7",
+          "dashboard/src/lib/research/types.ts:1"
+        ],
+        "artifactTypes": [
+          "markdown",
+          "data"
+        ]
+      },
+      "correctedSemantics": {
+        "artifactTypes": []
+      },
+      "authoritativeSourceRefs": [
+        "dashboard/src/app/api/hermes/tools/research/route.ts:115",
+        "dashboard/src/app/api/hermes/tools/research/route.ts:144",
+        "dashboard/src/lib/research/types.ts:406"
+      ],
+      "correctionSha256": "00bcdd006e3eefd8a9d88d3f7ecbe8ad152f54b97e1cc6f45c59bada7c33aaf3"
+    },
+    {
+      "capabilityId": "workflow:watch-video",
+      "reasonCode": "FROZEN_BASELINE_MISTOOK_WATCH_INPUT_AND_RESULT_FIELDS_FOR_HERMES_ARTIFACTS",
+      "oldContract": {
+        "baselineContractSha256": "485e7793a7589fa5f350c8ba38f9b1662bf610345a4ad06d823313ee9c0d1051",
+        "sourceSha256": "c47b674d82f353815ee955d0ada20fcb73aee8bc34a42d703530e219af83be44",
+        "sourceRefs": [
+          "dashboard/src/app/api/hermes/tools/watch/route.ts:28",
+          "dashboard/src/lib/hermes/watch-intent.ts:68"
+        ],
+        "artifactTypes": [
+          "image",
+          "video",
+          "markdown"
+        ]
+      },
+      "correctedSemantics": {
+        "artifactTypes": []
+      },
+      "authoritativeSourceRefs": [
+        "dashboard/src/lib/hermes/watch-service.ts:61",
+        "dashboard/src/app/api/hermes/tools/watch/route.ts:105"
+      ],
+      "correctionSha256": "7f7cd2e42eb07035ff40c3da5c988a6882167bf26238e4d65346cd8aad86a3f5"
+    }
+  ]
+}

@@ -115,9 +115,9 @@ function failed(
 async function driveRun(input: {
   participant: MaxResearchParticipant;
   start: () => { runId: string } | Promise<{ runId: string }>;
-  isTerminal: (runId: string) => boolean;
-  collect: (runId: string) => ParticipantResult;
-  abort: (runId: string) => void;
+  isTerminal: (runId: string) => boolean | Promise<boolean>;
+  collect: (runId: string) => ParticipantResult | Promise<ParticipantResult>;
+  abort: (runId: string) => void | Promise<void>;
   signal?: AbortSignal;
   pollMs?: number;
   timeoutMs?: number;
@@ -131,13 +131,13 @@ async function driveRun(input: {
 
   const pollMs = input.pollMs ?? 4_000;
   const deadline = Date.now() + (input.timeoutMs ?? PARTICIPANT_TIMEOUT_MS);
-  while (!input.isTerminal(runId)) {
+  while (!(await input.isTerminal(runId))) {
     if (input.signal?.aborted) {
-      input.abort(runId);
+      await Promise.resolve(input.abort(runId)).catch(() => undefined);
       return { participant: input.participant, status: "aborted", output: "", runId };
     }
     if (Date.now() > deadline) {
-      input.abort(runId);
+      await input.abort(runId);
       // Keep whatever it had reached. A participant cut off at the budget has
       // usually done real work — Agent Reach runs up to sixteen steps and holds
       // its answer-so-far — and discarding it means the orchestration paid for
@@ -145,7 +145,7 @@ async function driveRun(input: {
       // partial rather than completed, so nothing reads it as a finished pass.
       let partial = "";
       try {
-        partial = input.collect(runId).output;
+        partial = (await input.collect(runId)).output;
       } catch {
         // A runtime that has already dropped the run has nothing to give back.
       }
@@ -163,7 +163,7 @@ async function driveRun(input: {
   }
 
   try {
-    return withRealFindings(input.collect(runId));
+    return withRealFindings(await input.collect(runId));
   } catch (error) {
     return failed(input.participant, error, runId);
   }
@@ -304,10 +304,10 @@ function openscienceRuntime(): ParticipantRuntime {
       }
     },
     async run(brief, context) {
-      let module: typeof import("../openscience/run-manager.ts");
+      let runManager: typeof import("../openscience/run-manager.ts");
       let apiKey: string;
       try {
-        module = await import("../openscience/run-manager.ts");
+        runManager = await import("../openscience/run-manager.ts");
         apiKey = (await import("../agent-browser/provider.ts")).chatmockApiKeyValue();
       } catch (error) {
         return failed("openscience", error);
@@ -324,7 +324,7 @@ function openscienceRuntime(): ParticipantRuntime {
         driveRun({
         participant: "openscience",
         start: () => {
-          const summary = module.startRun({
+          const summary = runManager.startRun({
             userId: context.userId,
             task: brief.brief,
             model: context.model,
@@ -336,15 +336,15 @@ function openscienceRuntime(): ParticipantRuntime {
               ? { conversationContext: context.conversationContext }
               : {}),
           });
-          module.onTerminal(context.userId, summary.runId, (result) => {
+          runManager.onTerminal(context.userId, summary.runId, (result) => {
             terminal = result;
           });
           return summary;
         },
-        isTerminal: (runId) => module.isTerminal(context.userId, runId),
-        abort: (runId) => void module.abortRun?.(context.userId, runId),
-        collect: (runId) => {
-          const events = module.getEventsSince(context.userId, runId, 0);
+        isTerminal: (runId) => runManager.isTerminal(context.userId, runId),
+        abort: (runId) => void runManager.abortRun?.(context.userId, runId),
+        collect: async (runId) => {
+          const events = runManager.getEventsSince(context.userId, runId, 0);
           const settled = terminal as { outcome: string; content: string } | null;
           const output = (settled?.content ?? "").trim();
           const status =
@@ -399,12 +399,10 @@ function deepResearchRuntime(): ParticipantRuntime {
         };
       }
       try {
-        // `health()` starts the service when it finds it down, then re-checks
-        // once, immediately. A service that is still booting fails that second
-        // check and the participant is dropped — which is exactly what a live
-        // drive recorded: Deep Research reported "not reachable" at 18s, and a
-        // direct probe a few minutes later answered "available" in 67ms,
-        // because the run's own check is what had started it.
+        // `health()` is observational: it never acquires a lease. A service
+        // already starting for another real request gets a short grace window;
+        // a stopped on-demand service is still reported as available because
+        // this participant's actual run will acquire it.
         //
         // Waiting is affordable precisely here. This orchestration is about to
         // spend ten minutes or more, and Deep Research is the participant that
@@ -420,11 +418,9 @@ function deepResearchRuntime(): ParticipantRuntime {
         return {
           available: false,
           reason:
-            state.runtimeState === "disabled"
-              ? "Deep Research is switched off."
-              : state.runtimeState === "misconfigured"
-                ? "The Deep Research service is running but not configured to answer."
-                : "The Deep Research service did not become reachable in time.",
+            state.runtimeState === "misconfigured"
+              ? "The Deep Research service is running but not configured to answer."
+              : "The Deep Research service did not become reachable in time.",
         };
       } catch (error) {
         return {
@@ -564,23 +560,23 @@ function runManagerRuntime(
       }
     },
     async run(brief, context) {
-      let module: Record<string, unknown>;
+      let runManager: Record<string, unknown>;
       try {
-        module = await load();
+        runManager = await load();
       } catch (error) {
         return failed(participant, error);
       }
-      const startRun = module.startRun as
-        | ((input: Record<string, unknown>) => { runId: string })
+      const startRun = runManager.startRun as
+        | ((input: Record<string, unknown>) => { runId: string } | Promise<{ runId: string }>)
         | undefined;
-      const isTerminal = module.isTerminal as
-        | ((userId: number, runId: string) => boolean)
+      const isTerminal = runManager.isTerminal as
+        | ((userId: number, runId: string) => boolean | Promise<boolean>)
         | undefined;
-      const abortRun = module.abortRun as
-        | ((userId: number, runId: string) => unknown)
+      const abortRun = runManager.abortRun as
+        | ((userId: number, runId: string) => unknown | Promise<unknown>)
         | undefined;
-      const getEventsSince = module.getEventsSince as
-        | ((userId: number, runId: string, since?: number) => unknown[])
+      const getEventsSince = runManager.getEventsSince as
+        | ((userId: number, runId: string, since?: number) => unknown[] | Promise<unknown[]>)
         | undefined;
       if (!startRun || !isTerminal || !getEventsSince) {
         return unavailable(participant, "The runtime does not expose a run.");
@@ -600,9 +596,9 @@ function runManagerRuntime(
               : {}),
           }),
         isTerminal: (runId) => isTerminal(context.userId, runId),
-        abort: (runId) => void abortRun?.(context.userId, runId),
-        collect: (runId) => {
-          const events = getEventsSince(context.userId, runId, 0);
+        abort: async (runId) => { await abortRun?.(context.userId, runId); },
+        collect: async (runId) => {
+          const events = await getEventsSince(context.userId, runId, 0);
           const status = terminalStatusFromEvents(events);
           const output = summarizeEvents(events);
           const limitations = collectLimitations(events);
@@ -626,14 +622,14 @@ function runManagerRuntime(
 function getDocRuntime(): ParticipantRuntime {
   return {
     async available() {
-      const { sourceAvailability } = await import("../get-doc/run-manager.ts");
+      const { sourceAvailability } = await import("../get-doc/runtime-run-manager.ts");
       const ready = sourceAvailability();
       return ready.ready.length
         ? { available: true }
         : { available: false, reason: "No document source is configured." };
     },
     async run(brief, context) {
-      const manager = await import("../get-doc/run-manager.ts");
+      const manager = await import("../get-doc/runtime-run-manager.ts");
       return driveRun({
         participant: "get_doc",
         start: () =>
@@ -667,9 +663,9 @@ function getDocRuntime(): ParticipantRuntime {
               .join("\n\n"),
           }),
         isTerminal: (runId) => manager.isTerminal(context.userId, runId),
-        abort: (runId) => void manager.abortRun(context.userId, runId),
-        collect: (runId) => {
-          const events = manager.getEventsSince(context.userId, runId, 0);
+        abort: async (runId) => { await manager.abortRun(context.userId, runId); },
+        collect: async (runId) => {
+          const events = await manager.getEventsSince(context.userId, runId, 0);
           const status = terminalStatusFromEvents(events);
           const output = summarizeEvents(events);
           return {

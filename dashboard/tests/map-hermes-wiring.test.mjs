@@ -242,6 +242,14 @@ test("directions and place recommendations render the native map in chat", () =>
   }
 });
 
+test("map overlays keep literal white text in the light theme", () => {
+  assert.equal(
+    (inlineMap.match(/text-\[#fff\]/g) ?? []).length,
+    5,
+    "semantic text-white resolves to dark ink in the light theme",
+  );
+});
+
 test("autocomplete is debounced and never aimed at public Nominatim", () => {
   const suggestRoute = read("dashboard", "src", "app", "api", "map", "suggest", "route.ts");
   const service = read("dashboard", "src", "lib", "map", "service.ts");
@@ -302,6 +310,14 @@ test("the map page is behind auth and reachable", () => {
   const page = read("dashboard", "src", "app", "map", "page.tsx");
   assert.match(page, /getServerSession/);
   assert.match(page, /redirect\("\/auth\/login\?callbackUrl=\/map"\)/);
-  const navbar = read("dashboard", "src", "app", "components", "navbar.tsx");
-  assert.match(navbar, /href="\/map"/);
+  const inlineMap = read(
+    "dashboard",
+    "src",
+    "app",
+    "components",
+    "hermes",
+    "inline-conversation-map.tsx",
+  );
+  assert.match(inlineMap, /const mapHref = `\/map\?conversation=\$\{encodeURIComponent\(conversationPublicId\)\}`/);
+  assert.match(inlineMap, /href=\{mapHref\}/);
 });

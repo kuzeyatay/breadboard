@@ -14,8 +14,11 @@
 // "actually, put the intro back" is a thing the model can do rather than a thing
 // that needs an undo stack.
 
-import fs from "node:fs";
 import path from "node:path";
+import {
+  externalRuntimeLstat,
+  externalRuntimeReadUtf8,
+} from "../external-runtime-filesystem.ts";
 import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import { describeTransportFailure } from "../model-transport.ts";
 import { humanizeProviderError } from "../provider-error.ts";
@@ -29,6 +32,10 @@ import {
 import type { VideoProbe } from "./media.ts";
 
 const MODEL_TIMEOUT_MS = 180_000;
+const MAX_MODEL_REQUEST_BYTES = 128 * 1024;
+const MAX_MODEL_RESPONSE_BYTES = 512 * 1024;
+const MAX_MODEL_ERROR_BYTES = 16 * 1024;
+const MAX_SKILL_BYTES = 256 * 1024;
 
 const MODEL_TRANSPORT_ATTEMPTS = 2;
 const MODEL_TRANSPORT_RETRY_MS = 1_500;
@@ -105,7 +112,11 @@ export function editingInstructions(root: string): string {
   if (cachedInstructions?.root === root) return cachedInstructions.value;
   let skill = "";
   try {
-    skill = fs.readFileSync(path.join(root, "SKILL.md"), "utf8").replace(/\r\n/g, "\n");
+    const skillPath = path.join(root, "SKILL.md");
+    const metadata = externalRuntimeLstat(skillPath);
+    if (metadata.isFile() && !metadata.isSymbolicLink() && metadata.size <= MAX_SKILL_BYTES) {
+      skill = externalRuntimeReadUtf8(skillPath).replace(/\r\n/g, "\n");
+    }
   } catch {
     skill = "";
   }
@@ -262,7 +273,7 @@ async function providerFailureMessage(response: Response): Promise<string> {
   const fallback = `The model endpoint returned ${response.status}.`;
   let body = "";
   try {
-    body = await response.text();
+    body = await readBoundedResponseText(response, MAX_MODEL_ERROR_BYTES);
   } catch {
     return fallback;
   }
@@ -273,8 +284,34 @@ async function providerFailureMessage(response: Response): Promise<string> {
   } catch {
     detail = body;
   }
-  const humanized = humanizeProviderError(detail).trim();
+  const humanized = humanizeProviderError(detail).trim().slice(0, 2_000);
   return humanized ? `${humanized} (HTTP ${response.status})` : fallback;
+}
+
+async function readBoundedResponseText(
+  response: Response,
+  maximumBytes: number,
+): Promise<string> {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maximumBytes)) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new VideoPlanError("The model returned more planning data than this edit accepts.");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maximumBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new VideoPlanError("The model returned more planning data than this edit accepts.");
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8");
 }
 
 /**
@@ -302,29 +339,47 @@ async function completeOnce(
   const onAbort = () => controller.abort();
   input.signal?.addEventListener("abort", onAbort);
   try {
+    const body = JSON.stringify({
+      model: input.model,
+      messages,
+      ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
+    });
+    if (Buffer.byteLength(body, "utf8") > MAX_MODEL_REQUEST_BYTES) {
+      throw new VideoPlanError("The edit context is too large to plan safely.");
+    }
     const response = await fetch(completionsUrl(input.baseUrl), {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${chatmockApiKeyValue()}`,
       },
-      body: JSON.stringify({
-        model: input.model,
-        messages,
-        ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
-      }),
+      body,
       signal: controller.signal,
     });
     if (!response.ok) throw new VideoPlanError(await providerFailureMessage(response));
-    const data = (await response.json()) as {
+    let data: {
       choices?: Array<{ message?: { content?: string | null } }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
+    try {
+      data = JSON.parse(
+        await readBoundedResponseText(response, MAX_MODEL_RESPONSE_BYTES),
+      ) as typeof data;
+    } catch (error) {
+      if (error instanceof VideoPlanError) throw error;
+      throw new VideoPlanError("The model returned an unreadable edit plan.");
+    }
+    const inputTokens = data.usage?.prompt_tokens;
+    const outputTokens = data.usage?.completion_tokens;
     return {
       content: data.choices?.[0]?.message?.content ?? "",
       usage: {
-        inputTokens: data.usage?.prompt_tokens ?? 0,
-        outputTokens: data.usage?.completion_tokens ?? 0,
+        inputTokens: Number.isSafeInteger(inputTokens) && (inputTokens ?? -1) >= 0
+          ? inputTokens as number
+          : 0,
+        outputTokens: Number.isSafeInteger(outputTokens) && (outputTokens ?? -1) >= 0
+          ? outputTokens as number
+          : 0,
       },
     };
   } catch (error) {

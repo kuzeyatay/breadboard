@@ -13,7 +13,7 @@ import {
   type WhatsAppBridgeSnapshot,
   type WhatsAppInboundMessage,
 } from "./bridge.ts";
-import { whatsAppFeatureEnabled, whatsAppTimings } from "./config.ts";
+import { whatsAppTimings } from "./config.ts";
 
 // The store and the router are imported lazily throughout this module: it is
 // reached from src/instrumentation-node.ts at boot, and `inbound.ts` pulls in the
@@ -28,7 +28,6 @@ type ServiceGlobals = typeof globalThis & {
   __breadboardWhatsAppPoll?: ReturnType<typeof setInterval>;
   __breadboardWhatsAppPolling?: boolean;
   __breadboardWhatsAppChains?: Map<string, Promise<void>>;
-  __breadboardWhatsAppAutostarted?: boolean;
 };
 
 const globals = globalThis as ServiceGlobals;
@@ -157,29 +156,4 @@ export async function stopWhatsAppGateway(): Promise<WhatsAppBridgeSnapshot> {
   const bridge = getWhatsAppBridge();
   await bridge.stopGateway();
   return bridge.snapshot();
-}
-
-/**
- * Reconnect a previously linked device on boot, so messages sent while the app
- * was closed are answered as soon as it opens. Never throws: a failed autostart
- * is reported through the status endpoint, not by breaking server startup.
- */
-export function autostartWhatsAppGateway(): void {
-  if (globals.__breadboardWhatsAppAutostarted) return;
-  globals.__breadboardWhatsAppAutostarted = true;
-  if (!whatsAppFeatureEnabled()) return;
-
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const settings = (await store()).settings();
-        if (!settings.autostart || settings.ownerUserId === null) return;
-        const bridge = getWhatsAppBridge();
-        if (!bridge.snapshot().paired) return;
-        await startWhatsAppGateway();
-      } catch {
-        // Status reports the error; the user can reconnect from the Terminal.
-      }
-    })();
-  }, 8_000).unref?.();
 }

@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
 import {
   BoltSlidesAuthorError,
@@ -7,21 +8,21 @@ import {
   repairDeck,
   type BoltSlidesTarget,
 } from "./author.ts";
-import { applyDeckSource } from "./apply.ts";
-import { buildDeck, type BuildHandle } from "./build.ts";
+import { applyDeckSourceAt } from "./apply.ts";
+import { buildDeckAt, type BuildHandle } from "./build.ts";
 import { describeBoltSlidesDeck, type BoltSlidesRequest } from "./identity.ts";
 import { boltSlidesAvailability } from "./runtime.ts";
 import type { DeckPlan, DeckSource } from "./schemas.ts";
 import {
   closeBoltSlidesArtifactContext,
   openBoltSlidesArtifactContext,
-  saveDeckArtifact,
+  saveRuntimeDeckArtifact,
   type BoltSlidesArtifactContext,
 } from "./artifact.ts";
 import {
-  createWorkspace,
-  deckIsBuilt,
-  scanArtifacts,
+  createRuntimeWorkspace,
+  deckIsBuiltAt,
+  scanArtifactsAt,
   type BoltSlidesArtifact,
 } from "./workspace.ts";
 
@@ -46,6 +47,7 @@ interface RunState {
   brief: string;
   request: BoltSlidesRequest;
   conversationPublicId: string;
+  workspaceRoot: string;
   status: RunStatus;
   sequence: number;
   events: BoltSlidesEvent[];
@@ -57,7 +59,6 @@ interface RunState {
   artifacts: BoltSlidesArtifact[];
   error: string;
   terminalResult?: BoltSlidesTerminalResult;
-  terminalHandler?: (result: BoltSlidesTerminalResult) => void;
 }
 
 const stateGlobal = globalThis as typeof globalThis & {
@@ -66,16 +67,58 @@ const stateGlobal = globalThis as typeof globalThis & {
 const runs = stateGlobal.__breadboardBoltSlidesRuns ?? new Map<string, RunState>();
 stateGlobal.__breadboardBoltSlidesRuns = runs;
 
-/**
- * Long enough to outlast a tab switch during a deck that takes minutes.
- *
- * Dropping a run from this map does not take the deck with it: the workspace
- * stays on disk and the deck route reads ownership from it, so an old link
- * still opens the presentation.
- */
-const RETENTION_MS = 6 * 60 * 60_000;
 /** Two build attempts either side of a repair generation, with room to spare. */
 const RUN_TIMEOUT_MS = 60 * 60_000;
+const RUNTIME_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+const BUILD_ENV_PASSTHROUGH = [
+  "SystemRoot",
+  "WINDIR",
+  "SystemDrive",
+  "PATH",
+  "PATHEXT",
+  "ComSpec",
+  "PROGRAMDATA",
+  "PROGRAMFILES",
+  "PROGRAMFILES(X86)",
+  "LANG",
+  "LC_ALL",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "FONTCONFIG_FILE",
+  "FONTCONFIG_PATH",
+] as const;
+
+function buildEnvironment(run: RunState): NodeJS.ProcessEnv {
+  const home = path.join(run.workspaceRoot, ".runtime-home");
+  const temporary = path.join(run.workspaceRoot, ".runtime-temp");
+  const appData = path.join(home, "AppData", "Roaming");
+  const localAppData = path.join(home, "AppData", "Local");
+  for (const directory of [home, temporary, appData, localAppData]) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+  const environment: NodeJS.ProcessEnv = {
+    NODE_ENV: "production",
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: appData,
+    LOCALAPPDATA: localAppData,
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+    XDG_CACHE_HOME: path.join(home, ".cache"),
+    XDG_DATA_HOME: path.join(home, ".local", "share"),
+    TEMP: temporary,
+    TMP: temporary,
+  };
+  for (const key of BUILD_ENV_PASSTHROUGH) {
+    const value = process.env[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  return environment;
+}
 
 function emit(run: RunState, type: string, payload: Record<string, unknown> = {}): void {
   run.events.push({
@@ -90,13 +133,6 @@ function emit(run: RunState, type: string, payload: Record<string, unknown> = {}
 function publish(run: RunState, result: BoltSlidesTerminalResult): void {
   if (run.terminalResult) return;
   run.terminalResult = result;
-  try {
-    run.terminalHandler?.(result);
-  } catch {
-    // Transcript persistence stays retryable; the run itself is finished.
-  }
-  const timer = setTimeout(() => runs.delete(run.runId), RETENTION_MS);
-  timer.unref?.();
 }
 
 /**
@@ -119,7 +155,7 @@ function requireRun(userId: number, runId: string): RunState {
 }
 
 function refreshArtifacts(run: RunState): void {
-  const next = scanArtifacts(run.runId);
+  const next = scanArtifactsAt(run.workspaceRoot);
   const current = new Map(run.artifacts.map((item) => [item.id, item.modifiedAt]));
   if (
     next.length === run.artifacts.length &&
@@ -220,7 +256,7 @@ async function runPipeline(
   let deck: DeckSource = authored.deck;
   let rebuilt = false;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const written = applyDeckSource(run.runId, deck);
+    const written = applyDeckSourceAt(run.workspaceRoot, deck);
     refreshArtifacts(run);
     emit(run, "deck.authored", {
       files: written.written,
@@ -230,12 +266,16 @@ async function runPipeline(
     if (isAborted(run)) return;
 
     emit(run, "stage.changed", { stage: "building" });
-    const handle = buildDeck(run.runId, (line) => emit(run, "log", { text: line }));
+    const handle = buildDeckAt(
+      run.workspaceRoot,
+      (line) => emit(run, "log", { text: line }),
+      buildEnvironment(run),
+    );
     run.build = handle;
     const result = await handle.promise;
     run.build = null;
     if (isAborted(run)) return;
-    if (result.ok && deckIsBuilt(run.runId)) {
+    if (result.ok && deckIsBuiltAt(run.workspaceRoot)) {
       emit(run, "deck.built", { durationMs: result.durationMs, url: deckUrl(run.runId) });
       finish(run, { plan, summary: deck.summary, rebuilt });
       return;
@@ -276,9 +316,9 @@ function finish(
     });
     if (context) {
       try {
-        const artifact = saveDeckArtifact({
+        const artifact = saveRuntimeDeckArtifact({
           context,
-          runId: run.runId,
+          workspaceRoot: run.workspaceRoot,
           plan: input.plan,
           brief: run.brief,
         });
@@ -313,14 +353,22 @@ function finish(
   publish(run, { outcome: "completed", content });
 }
 
-export function startRun(input: {
+/**
+ * Worker-only entrypoint. The fixed outer-agent adapter supplies every field
+ * from a sealed Runtime manifest; compatibility routes never import this
+ * module and cannot choose a workspace, executable, environment, or job id.
+ */
+export function startRuntimeWorkerRun(input: {
   userId: number;
+  runtimeJobId: string;
   brief: string;
   request: BoltSlidesRequest;
   /** The model the person has selected in chat: it plans and writes the deck. */
   model: string;
   reasoningEffort?: string;
   baseUrl: string;
+  apiKey: string;
+  runtimeWorkspacePath: string;
   /** The chat this was launched from, so the deck's artifact belongs to it. */
   conversationPublicId?: string;
   conversationContext?: string;
@@ -328,14 +376,18 @@ export function startRun(input: {
   const runtime = boltSlidesAvailability();
   if (!runtime.available) throw new Error(runtime.reason ?? "Bolt Slides is unavailable.");
   if (!input.request.brief) throw new Error("empty_brief");
+  if (!RUNTIME_JOB_ID.test(input.runtimeJobId)) throw new Error("invalid_runtime_job_id");
 
-  const runId = `bsrun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId;
+  if (runs.has(runId)) throw new Error("runtime_worker_job_already_started");
+  const workspaceRoot = createRuntimeWorkspace(input.runtimeWorkspacePath);
   const run: RunState = {
     runId,
     userId: input.userId,
     brief: input.brief,
     request: input.request,
     conversationPublicId: input.conversationPublicId ?? "",
+    workspaceRoot,
     status: "queued",
     sequence: 0,
     events: [],
@@ -347,12 +399,6 @@ export function startRun(input: {
     error: "",
   };
   runs.set(runId, run);
-  createWorkspace({
-    runId,
-    userId: input.userId,
-    brief: input.brief.slice(0, 20_000),
-    createdAt: new Date().toISOString(),
-  });
 
   run.status = "running";
   emit(run, "run.queued", { deck: describeBoltSlidesDeck(input.request) });
@@ -372,6 +418,7 @@ export function startRun(input: {
       baseUrl: input.baseUrl,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
+      apiKey: input.apiKey,
       signal: run.authoring.signal,
     },
     input.conversationContext,
@@ -392,30 +439,19 @@ export function startRun(input: {
   return { runId, status: run.status };
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): BoltSlidesEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): BoltSlidesEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
-export function liveArtifacts(userId: number, runId: string): BoltSlidesArtifact[] | null {
-  const run = runs.get(runId);
-  return run?.userId === userId ? run.artifacts : null;
-}
-
-export function setRunTerminalHandler(
-  userId: number,
-  runId: string,
-  handler: (result: BoltSlidesTerminalResult) => void,
-): void {
-  const run = requireRun(userId, runId);
-  run.terminalHandler = handler;
-  if (run.terminalResult) handler(run.terminalResult);
-}
-
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.status = "aborted";

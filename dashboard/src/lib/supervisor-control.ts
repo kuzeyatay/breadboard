@@ -1,33 +1,75 @@
 // Do not let an accidental Client Component import turn this server-side
 // control surface into browser code. Only non-NEXT_PUBLIC environment keys are
 // read below, so the per-launch bearer is never compiled into a client bundle.
+import { runtimeControlTransports } from "./runtime-control-transport.ts";
+
 if (typeof window !== "undefined") {
   throw new Error("Breadboard supervisor control is server-only.");
 }
 
 const CONTROL_TIMEOUT_MS = 4 * 60_000;
+const STATUS_CONTROL_TIMEOUT_MS = 5_000;
+const MAX_MANIFEST_SERVICE_STARTUP_TIMEOUT_MS = 7 * 24 * 60 * 60_000;
+const SERVICE_LEASE_SETTLEMENT_GRACE_MS = 5_000;
+const SERVICE_LEASE_RESPONSE_GRACE_MS = 5_000;
+const SERVICE_LEASE_TRANSPORT_GRACE_MS = 5_000;
+// Runtime V2 manifests bound service readiness to seven days. Mirror the two
+// native grace terms only as a fail-closed response ceiling; the actual timer
+// always comes from the authenticated, service-bound native contract below.
+const MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS =
+  MAX_MANIFEST_SERVICE_STARTUP_TIMEOUT_MS +
+  SERVICE_LEASE_SETTLEMENT_GRACE_MS +
+  SERVICE_LEASE_RESPONSE_GRACE_MS;
 const MAX_CONTROL_RESPONSE_BYTES = 64 * 1024;
 const MAX_JOB_REQUEST_BYTES = 256 * 1024;
+const MAX_JOB_OUTPUT_RESPONSE_BYTES = 1024 * 1024 + 64 * 1024;
+const MAX_JOB_INPUT_UPLOADS = 16;
+const MAX_JOB_INPUT_BYTES = 2 * 1024 * 1024 * 1024;
+const JOB_INPUT_UPLOAD_TIMEOUT_MS = 30 * 60_000;
 const MAX_JOB_EVENT_REPLAY_RECORDS = 256;
 const MAX_RUNTIME_IDENTIFIER_BYTES = 128;
 const MAX_RUNTIME_SCOPE_BYTES = 256;
 const MAX_RUNTIME_IDEMPOTENCY_KEY_BYTES = 256;
 const MAX_RUNTIME_ERROR_BYTES = 8 * 1024;
 const MAX_RUNTIME_JSON_NODES = 100_000;
+const MAX_RUNTIME_COMMIT_LIMIT_MB = 1024 * 1024;
 const MIN_CONTROL_TOKEN_BYTES = 32;
 const MAX_CONTROL_TOKEN_BYTES = 1024;
 const LOOPBACK = new Set(["127.0.0.1", "[::1]"]);
 
 export type SupervisedServiceId =
+  | "chatmock"
+  | "dashboard"
   | "hermes"
   | "quartz"
   | "gbrain"
+  | "comfyui"
   | "ui-tars"
   | "cad"
   | "colpali"
   | "humanizer"
+  | "cliproxy"
   | "voicebox"
-  | "scriberr";
+  | "scriberr"
+  | "openwork"
+  | "openscience"
+  | "money-printer"
+  | "wardrobe"
+  | "postiz-coordinator"
+  | "inbox-zero-stack"
+  | "deep-research"
+  | "deer-flow"
+  | "vibe-trading"
+  | "stock-analyst"
+  | "penecho"
+  | "vlm-ocr"
+  | "mem0-semantic-engine"
+  | "local-mcp-broker"
+  | "telegram-gateway"
+  | "whatsapp-gateway"
+  | "recall"
+  | "spotify-playback"
+  | "solidworks-mcp";
 
 export type SupervisedCapabilityId =
   | "learn-worker"
@@ -231,10 +273,64 @@ export interface RuntimeJobAuthority {
   readonly conversationId: string | null;
 }
 
+type RuntimeJobScopeBinding = Pick<
+  RuntimeJobAuthority,
+  "gardenId" | "conversationId"
+>;
+
 export interface RuntimeJobSubmission {
   readonly jobType: string;
   readonly idempotencyKey: string;
   readonly requestPayload: unknown;
+  readonly inputUploads?: readonly RuntimeJobInputUploadReference[];
+}
+
+export interface RuntimeJobInputUploadReference {
+  readonly uploadId: string;
+}
+
+export interface RuntimeJobInputReservationRequest {
+  readonly gardenId: string | null;
+  readonly conversationId: string | null;
+  readonly displayName: string;
+  readonly mediaType: string | null;
+  readonly declaredSizeBytes: number;
+}
+
+export interface RuntimeJobInputReservation {
+  readonly uploadId: string;
+  readonly expiresAt: number;
+  readonly maximumBytes: number;
+  readonly displayName: string;
+  readonly mediaType: string | null;
+  readonly declaredSizeBytes: number;
+}
+
+export interface RuntimeJobInput {
+  readonly uploadId: string;
+  readonly sizeBytes: number;
+  readonly sha256: string;
+  readonly displayName: string;
+  readonly mediaType: string | null;
+}
+
+export interface RuntimeJobOutput {
+  readonly jobId: string;
+  readonly kind: "checkpoint" | "result";
+  readonly content: unknown;
+}
+
+export interface RuntimeJobIdempotencyCancellationDisposition {
+  readonly jobId: string | null;
+  readonly state: RuntimeJobState | "pending";
+  readonly accepted: boolean;
+}
+
+export interface RuntimeResourceExhaustionEvidence {
+  readonly resource: "windows_commit";
+  readonly requiredHeadroomMb: number;
+  readonly availableHeadroomMb: number;
+  readonly retryable: false;
 }
 
 export interface RuntimeJobSnapshot {
@@ -258,6 +354,7 @@ export interface RuntimeJobSnapshot {
   readonly progressTotal: number;
   readonly failureCode: RuntimePublicFailureCode | null;
   readonly failureMessage: string | null;
+  readonly resourceExhaustion: RuntimeResourceExhaustionEvidence | null;
   readonly cancellationRequested: boolean;
 }
 
@@ -298,7 +395,9 @@ interface RuntimeJobEventPayloadMap {
   readonly "reservation-released": RuntimeEmptyJobEventPayload;
   readonly "cancellation-requested": { readonly state: "cancelling" };
   readonly "completion-confirmed": { readonly state: "succeeded" };
-  readonly "worker-ready": { readonly state: "running" };
+  readonly "worker-ready":
+    | { readonly state: "running" }
+    | { readonly state: "cancelling" };
   readonly "worker-heartbeat": { readonly stage: RuntimePublicStage };
   readonly "worker-progress": {
     readonly stage: RuntimePublicStage;
@@ -308,11 +407,13 @@ interface RuntimeJobEventPayloadMap {
   readonly "worker-checkpoint": { readonly artifactKind: RuntimePublicArtifactKind };
   readonly "worker-artifact": { readonly artifactKind: RuntimePublicArtifactKind };
   readonly "worker-complete": RuntimeEmptyJobEventPayload;
-  readonly "worker-failed": {
-    readonly state: "failed";
-    readonly failureCode: "WORKER_FAILED";
-    readonly failureMessage: typeof SANITIZED_RUNTIME_FAILURE_MESSAGE;
-  };
+  readonly "worker-failed":
+    | {
+        readonly state: "failed";
+        readonly failureCode: "WORKER_FAILED";
+        readonly failureMessage: typeof SANITIZED_RUNTIME_FAILURE_MESSAGE;
+      }
+    | { readonly state: "cancelling" };
   readonly "worker-cancellation-acknowledged": { readonly state: "cancelling" };
   readonly "job-starting": { readonly state: "starting" };
   readonly "job-running": { readonly state: "running" };
@@ -321,7 +422,12 @@ interface RuntimeJobEventPayloadMap {
   readonly "job-cancelled": { readonly state: "cancelled" };
   readonly "job-succeeded": { readonly state: "succeeded" };
   readonly "job-failed": { readonly state: "failed" };
-  readonly "job-resource-exhausted": { readonly state: "resource_exhausted" };
+  readonly "job-resource-exhausted":
+    | { readonly state: "resource_exhausted" }
+    | {
+        readonly state: "resource_exhausted";
+        readonly resourceExhaustion: RuntimeResourceExhaustionEvidence;
+      };
   readonly "job-interrupted": { readonly state: "interrupted" };
   readonly "job-uncertain": { readonly state: "uncertain" };
 }
@@ -413,6 +519,11 @@ export type RuntimeJobControlErrorCode =
   | "INVALID_JOB_REQUEST"
   | "JOB_SCOPE_FORBIDDEN"
   | "JOB_NOT_FOUND"
+  | "JOB_OUTPUT_NOT_READY"
+  | "JOB_INPUT_TOO_LARGE"
+  | "JOB_INPUT_QUOTA_EXCEEDED"
+  | "JOB_CANCELLATION_QUOTA_EXCEEDED"
+  | "JOB_CANCELLED_BEFORE_SUBMISSION"
   | "JOB_CONFLICT"
   | "BREADBOARD_RESOURCE_EXHAUSTED"
   | "RUNTIME_UNAVAILABLE"
@@ -472,6 +583,20 @@ function endpoint(env: NodeJS.ProcessEnv = process.env): Endpoint | null {
   return { origin: url.origin, token };
 }
 
+/** True only when the server received the private desktop Runtime control capability. */
+export function isSupervisorControlConfigured(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return endpoint(env) !== null;
+}
+
+/** Distinguishes the native Runtime owner from the transitional Electron control plane. */
+export function isRuntimeV2ServiceControlConfigured(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return endpoint(env) !== null && env.BREADBOARD_RUNTIME_V2_ACTIVE === "true";
+}
+
 function isResourceResult(value: unknown): value is ResourceExhaustionResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Partial<ResourceExhaustionResult>;
@@ -494,7 +619,10 @@ function isResourceResult(value: unknown): value is ResourceExhaustionResult {
   );
 }
 
-async function readBoundedControlJson(response: Response): Promise<unknown> {
+async function readBoundedControlJson(
+  response: Response,
+  maximumBytes = MAX_CONTROL_RESPONSE_BYTES,
+): Promise<unknown> {
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     if (!/^\d+$/.test(declaredLength)) {
@@ -504,9 +632,9 @@ async function readBoundedControlJson(response: Response): Promise<unknown> {
     if (!Number.isSafeInteger(declaredBytes)) {
       throw new Error("Supervisor returned an invalid Content-Length header.");
     }
-    if (declaredBytes > MAX_CONTROL_RESPONSE_BYTES) {
+    if (declaredBytes > maximumBytes) {
       throw new Error(
-        `Supervisor response exceeds the ${MAX_CONTROL_RESPONSE_BYTES}-byte limit.`,
+        `Supervisor response exceeds the ${maximumBytes}-byte limit.`,
       );
     }
   }
@@ -528,9 +656,9 @@ async function readBoundedControlJson(response: Response): Promise<unknown> {
       }
       if (!value || value.byteLength === 0) continue;
       totalBytes += value.byteLength;
-      if (totalBytes > MAX_CONTROL_RESPONSE_BYTES) {
+      if (totalBytes > maximumBytes) {
         throw new Error(
-          `Supervisor response exceeds the ${MAX_CONTROL_RESPONSE_BYTES}-byte limit.`,
+          `Supervisor response exceeds the ${maximumBytes}-byte limit.`,
         );
       }
       chunks.push(value);
@@ -703,8 +831,40 @@ const RUNTIME_JOB_FIELDS = [
   "progressTotal",
   "failureCode",
   "failureMessage",
+  "resourceExhaustion",
   "cancellationRequested",
 ] as const;
+
+function isRuntimeResourceExhaustionEvidence(
+  value: unknown,
+): value is RuntimeResourceExhaustionEvidence {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      "resource",
+      "requiredHeadroomMb",
+      "availableHeadroomMb",
+      "retryable",
+    ]) &&
+    value.resource === "windows_commit" &&
+    isSafePositiveInteger(value.requiredHeadroomMb) &&
+    value.requiredHeadroomMb <= MAX_RUNTIME_COMMIT_LIMIT_MB &&
+    isSafeNonnegativeInteger(value.availableHeadroomMb) &&
+    value.availableHeadroomMb <= MAX_RUNTIME_COMMIT_LIMIT_MB &&
+    value.retryable === false
+  );
+}
+
+function hasValidRuntimeJobResourceExhaustion(
+  value: Record<string, unknown>,
+): boolean {
+  if (value.resourceExhaustion === null) return true;
+  return (
+    value.state === "resource_exhausted" &&
+    value.failureCode === "BREADBOARD_RESOURCE_EXHAUSTED" &&
+    isRuntimeResourceExhaustionEvidence(value.resourceExhaustion)
+  );
+}
 
 function hasValidRuntimeJobFailure(value: Record<string, unknown>): boolean {
   if (value.failureCode === null && value.failureMessage === null) {
@@ -733,7 +893,7 @@ function hasValidRuntimeJobFailure(value: Record<string, unknown>): boolean {
 
 function parseRuntimeJobSnapshot(
   value: unknown,
-  authority: RuntimeJobAuthority,
+  authority: RuntimeJobScopeBinding,
 ): RuntimeJobSnapshot {
   if (!isRecord(value) || !hasExactKeys(value, RUNTIME_JOB_FIELDS)) {
     throw new Error("Runtime returned an invalid job snapshot.");
@@ -768,6 +928,7 @@ function parseRuntimeJobSnapshot(
     (value.progressTotal === 0 && value.progressCurrent !== 0) ||
     (value.progressTotal > 0 && value.progressCurrent > value.progressTotal) ||
     !hasValidRuntimeJobFailure(value) ||
+    !hasValidRuntimeJobResourceExhaustion(value) ||
     typeof value.cancellationRequested !== "boolean"
   ) {
     throw new Error("Runtime returned an invalid job snapshot.");
@@ -777,7 +938,7 @@ function parseRuntimeJobSnapshot(
 
 function parseRuntimeJobResponse(
   value: unknown,
-  authority: RuntimeJobAuthority,
+  authority: RuntimeJobScopeBinding,
   expected: { jobId?: string; jobType?: string },
 ): RuntimeJobSnapshot {
   if (
@@ -796,6 +957,50 @@ function parseRuntimeJobResponse(
     throw new Error("Runtime returned a job outside the requested binding.");
   }
   return job;
+}
+
+function parseRuntimeJobIdempotencyCancellationDisposition(
+  value: unknown,
+): RuntimeJobIdempotencyCancellationDisposition {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "type",
+      "protocolVersion",
+      "jobId",
+      "state",
+      "accepted",
+    ]) ||
+    value.type !== "runtime-job-idempotency-cancellation" ||
+    value.protocolVersion !== 1 ||
+    (value.state !== "pending" && !RUNTIME_JOB_STATES.has(value.state as RuntimeJobState)) ||
+    typeof value.accepted !== "boolean" ||
+    (value.jobId !== null && !isRuntimeIdentifier(value.jobId))
+  ) {
+    throw new Error("Runtime returned an invalid idempotency cancellation disposition.");
+  }
+  const exact = value.state === "pending"
+    ? value.jobId === null && value.accepted === true
+    : value.state === "cancelling" || value.state === "cancelled"
+      ? value.jobId !== null && value.accepted === true
+      : RUNTIME_JOB_STATES.has(value.state as RuntimeJobState) &&
+        ![
+          "queued",
+          "admitted",
+          "starting",
+          "running",
+          "checkpointing",
+        ].includes(value.state as string) &&
+        value.jobId !== null &&
+        value.accepted === false;
+  if (!exact) {
+    throw new Error("Runtime returned an invalid idempotency cancellation disposition.");
+  }
+  return {
+    jobId: value.jobId as string | null,
+    state: value.state as RuntimeJobState | "pending",
+    accepted: value.accepted,
+  };
 }
 
 const RUNTIME_JOB_EVENT_FIELDS = [
@@ -827,7 +1032,13 @@ type RuntimeJobEventRule =
     }
   | {
       readonly fence: RuntimeJobEventFenceKind;
-      readonly payload: "stage" | "progress" | "artifact" | "failure";
+      readonly payload:
+        | "worker-ready"
+        | "stage"
+        | "progress"
+        | "artifact"
+        | "failure"
+        | "resource-exhaustion";
     };
 
 const RUNTIME_JOB_EVENT_RULES = {
@@ -850,7 +1061,7 @@ const RUNTIME_JOB_EVENT_RULES = {
     payload: "state",
     state: "succeeded",
   },
-  "worker-ready": { fence: "worker", payload: "state", state: "running" },
+  "worker-ready": { fence: "worker", payload: "worker-ready" },
   "worker-heartbeat": { fence: "worker", payload: "stage" },
   "worker-progress": { fence: "worker", payload: "progress" },
   "worker-checkpoint": { fence: "worker", payload: "artifact" },
@@ -899,8 +1110,7 @@ const RUNTIME_JOB_EVENT_RULES = {
   },
   "job-resource-exhausted": {
     fence: "runtime-current",
-    payload: "state",
-    state: "resource_exhausted",
+    payload: "resource-exhaustion",
   },
   "job-interrupted": {
     fence: "runtime-current",
@@ -937,6 +1147,11 @@ function parseRuntimeJobEventPayload<T extends RuntimeJobEventType>(
     case "state":
       valid = hasExactKeys(value, ["state"]) && value.state === rule.state;
       break;
+    case "worker-ready":
+      valid =
+        hasExactKeys(value, ["state"]) &&
+        (value.state === "running" || value.state === "cancelling");
+      break;
     case "stage":
       valid =
         hasExactKeys(value, ["stage"]) &&
@@ -959,10 +1174,19 @@ function parseRuntimeJobEventPayload<T extends RuntimeJobEventType>(
       break;
     case "failure":
       valid =
-        hasExactKeys(value, ["state", "failureCode", "failureMessage"]) &&
-        value.state === "failed" &&
-        value.failureCode === "WORKER_FAILED" &&
-        value.failureMessage === SANITIZED_RUNTIME_FAILURE_MESSAGE;
+        (hasExactKeys(value, ["state", "failureCode", "failureMessage"]) &&
+          value.state === "failed" &&
+          value.failureCode === "WORKER_FAILED" &&
+          value.failureMessage === SANITIZED_RUNTIME_FAILURE_MESSAGE) ||
+        (hasExactKeys(value, ["state"]) && value.state === "cancelling");
+      break;
+    case "resource-exhaustion":
+      valid =
+        (hasExactKeys(value, ["state"]) &&
+          value.state === "resource_exhausted") ||
+        (hasExactKeys(value, ["state", "resourceExhaustion"]) &&
+          value.state === "resource_exhausted" &&
+          isRuntimeResourceExhaustionEvidence(value.resourceExhaustion));
       break;
   }
   if (!valid) {
@@ -1084,6 +1308,11 @@ const RUNTIME_JOB_ERROR_CODES = new Set<RuntimeJobControlErrorCode>([
   "INVALID_JOB_REQUEST",
   "JOB_SCOPE_FORBIDDEN",
   "JOB_NOT_FOUND",
+  "JOB_OUTPUT_NOT_READY",
+  "JOB_INPUT_TOO_LARGE",
+  "JOB_INPUT_QUOTA_EXCEEDED",
+  "JOB_CANCELLATION_QUOTA_EXCEEDED",
+  "JOB_CANCELLED_BEFORE_SUBMISSION",
   "JOB_CONFLICT",
   "BREADBOARD_RESOURCE_EXHAUSTED",
   "RUNTIME_UNAVAILABLE",
@@ -1143,6 +1372,8 @@ async function runtimeJobRequest(
   authority: RuntimeJobAuthority,
   body: string | null,
   env: NodeJS.ProcessEnv,
+  maximumResponseBytes = MAX_CONTROL_RESPONSE_BYTES,
+  timeoutMs = CONTROL_TIMEOUT_MS,
 ): Promise<unknown> {
   const target = endpoint(env);
   if (!target) {
@@ -1156,9 +1387,9 @@ async function runtimeJobRequest(
     });
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CONTROL_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${target.origin}${path}`, {
+    const response = await runtimeControlTransports().job(`${target.origin}${path}`, {
       method,
       headers: {
         accept: "application/json",
@@ -1173,7 +1404,7 @@ async function runtimeJobRequest(
     });
     let value: unknown;
     try {
-      value = await readBoundedControlJson(response);
+      value = await readBoundedControlJson(response, maximumResponseBytes);
     } catch {
       throw new RuntimeJobControlError({
         code: "RUNTIME_INTERNAL_ERROR",
@@ -1205,6 +1436,374 @@ async function runtimeJobRequest(
   }
 }
 
+async function runtimeLearnRecoveryRequest(
+  body: string,
+  env: NodeJS.ProcessEnv,
+): Promise<unknown> {
+  const target = endpoint(env);
+  if (!target) throw runtimeUnavailableError();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONTROL_TIMEOUT_MS);
+  try {
+    const response = await runtimeControlTransports().job(
+      `${target.origin}/v1/internal/jobs/learn-recovery`,
+      {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${target.token}`,
+          "content-type": "application/json",
+        },
+        body,
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal,
+      },
+    );
+    let value: unknown;
+    try {
+      value = await readBoundedControlJson(response);
+    } catch {
+      throw new RuntimeJobControlError({
+        code: "RUNTIME_INTERNAL_ERROR",
+        message: response.ok
+          ? "Runtime returned an invalid Learn recovery response."
+          : `Runtime Learn recovery submission failed (${response.status}).`,
+        status: response.ok ? 502 : response.status,
+        resource: null,
+        requiredHeadroomMb: null,
+        availableHeadroomMb: null,
+      });
+    }
+    if (!response.ok) {
+      const runtimeError = parseRuntimeJobError(value, response.status);
+      if (runtimeError) throw runtimeError;
+      throw new RuntimeJobControlError({
+        code: "RUNTIME_INTERNAL_ERROR",
+        message: `Runtime Learn recovery submission failed (${response.status}).`,
+        status: response.status,
+        resource: null,
+        requiredHeadroomMb: null,
+        availableHeadroomMb: null,
+      });
+    }
+    return value;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+function validateJobInputDisplayName(value: unknown): asserts value is string {
+  if (
+    !isBoundedRuntimeText(value, 512) ||
+    value === "." ||
+    value === ".." ||
+    /[\\/\0]|\p{Cc}/u.test(value)
+  ) {
+    throw new TypeError("Runtime job input display name is invalid.");
+  }
+}
+
+function validateJobInputMediaType(value: unknown): asserts value is string | null {
+  if (value === null) return;
+  if (
+    !isBoundedRuntimeText(value, 256) ||
+    !/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/u.test(value)
+  ) {
+    throw new TypeError("Runtime job input media type is invalid.");
+  }
+}
+
+function validateJobInputSize(value: unknown, label: string): asserts value is number {
+  if (
+    !isSafePositiveInteger(value) ||
+    (value as number) > MAX_JOB_INPUT_BYTES
+  ) {
+    throw new TypeError(`${label} is invalid.`);
+  }
+}
+
+function parseRuntimeJobInputReservation(
+  value: unknown,
+  request: RuntimeJobInputReservationRequest,
+): RuntimeJobInputReservation {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["uploadId", "expiresAt", "maximumBytes"]) ||
+    !isRuntimeIdentifier(value.uploadId) ||
+    !isSafePositiveInteger(value.expiresAt) ||
+    value.expiresAt <= Date.now() ||
+    !isSafePositiveInteger(value.maximumBytes) ||
+    value.maximumBytes > MAX_JOB_INPUT_BYTES ||
+    value.maximumBytes < request.declaredSizeBytes
+  ) {
+    throw new Error("Runtime returned an invalid job input reservation.");
+  }
+  return {
+    uploadId: value.uploadId,
+    expiresAt: value.expiresAt,
+    maximumBytes: value.maximumBytes,
+    displayName: request.displayName,
+    mediaType: request.mediaType,
+    declaredSizeBytes: request.declaredSizeBytes,
+  };
+}
+
+function parseRuntimeJobInput(
+  value: unknown,
+  reservation: RuntimeJobInputReservation,
+): RuntimeJobInput {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "type",
+      "protocolVersion",
+      "uploadId",
+      "state",
+      "sizeBytes",
+      "sha256",
+    ]) ||
+    value.type !== "runtime-job-input" ||
+    value.protocolVersion !== 1 ||
+    value.uploadId !== reservation.uploadId ||
+    value.state !== "sealed" ||
+    value.sizeBytes !== reservation.declaredSizeBytes ||
+    !isSafePositiveInteger(value.sizeBytes) ||
+    typeof value.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.sha256)
+  ) {
+    throw new Error("Runtime returned an invalid sealed job input.");
+  }
+  return {
+    uploadId: reservation.uploadId,
+    sizeBytes: value.sizeBytes,
+    sha256: value.sha256,
+    displayName: reservation.displayName,
+    mediaType: reservation.mediaType,
+  };
+}
+
+function parseRuntimeJobOutput(
+  value: unknown,
+  expectedJobId: string,
+  expectedKind: "checkpoint" | "result",
+): RuntimeJobOutput {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["type", "protocolVersion", "jobId", "kind", "content"]) ||
+    value.type !== "runtime-job-output" ||
+    value.protocolVersion !== 1 ||
+    value.jobId !== expectedJobId ||
+    value.kind !== expectedKind
+  ) {
+    throw new Error("Runtime returned an invalid job output response.");
+  }
+  assertRuntimeJsonValue(value.content);
+  return {
+    jobId: expectedJobId,
+    kind: expectedKind,
+    content: value.content,
+  };
+}
+
+function runtimeUnavailableError(): RuntimeJobControlError {
+  return new RuntimeJobControlError({
+    code: "RUNTIME_UNAVAILABLE",
+    message: "Runtime job control is unavailable.",
+    status: 503,
+    resource: null,
+    requiredHeadroomMb: null,
+    availableHeadroomMb: null,
+  });
+}
+
+export async function reserveRuntimeJobInput(
+  authority: RuntimeJobAuthority,
+  request: RuntimeJobInputReservationRequest,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RuntimeJobInputReservation> {
+  validateRuntimeJobAuthority(authority);
+  if (
+    request.gardenId !== authority.gardenId ||
+    request.conversationId !== authority.conversationId
+  ) {
+    throw new TypeError("Runtime job input reservation scope is invalid.");
+  }
+  validateJobInputDisplayName(request.displayName);
+  validateJobInputMediaType(request.mediaType);
+  validateJobInputSize(request.declaredSizeBytes, "Runtime job input size");
+  const body = JSON.stringify(request);
+  const value = await runtimeJobRequest(
+    "/v1/job-inputs",
+    "POST",
+    authority,
+    body,
+    env,
+  );
+  return parseRuntimeJobInputReservation(value, request);
+}
+
+export async function uploadRuntimeJobInput(
+  authority: RuntimeJobAuthority,
+  reservation: RuntimeJobInputReservation,
+  body: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RuntimeJobInput> {
+  validateRuntimeJobAuthority(authority);
+  if (!isRuntimeIdentifier(reservation.uploadId)) {
+    throw new TypeError("Runtime job input upload ID is invalid.");
+  }
+  validateJobInputSize(reservation.declaredSizeBytes, "Runtime job input size");
+  if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+  const target = endpoint(env);
+  if (!target) throw runtimeUnavailableError();
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => controller.abort(), JOB_INPUT_UPLOAD_TIMEOUT_MS);
+  try {
+    const response = await runtimeControlTransports().job(
+      `${target.origin}/v1/job-inputs/${reservation.uploadId}`,
+      {
+        method: "PUT",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${target.token}`,
+          ...runtimeJobAuthorityHeaders(authority),
+          "content-type": "application/octet-stream",
+          "content-length": String(reservation.declaredSizeBytes),
+        },
+        body,
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal,
+        duplex: "half",
+      } as RequestInit & { duplex: "half" },
+    );
+    let value: unknown;
+    try {
+      value = await readBoundedControlJson(response);
+    } catch {
+      throw new RuntimeJobControlError({
+        code: "RUNTIME_INTERNAL_ERROR",
+        message: response.ok
+          ? "Runtime returned an invalid input upload response."
+          : `Runtime job input upload failed (${response.status}).`,
+        status: response.ok ? 502 : response.status,
+        resource: null,
+        requiredHeadroomMb: null,
+        availableHeadroomMb: null,
+      });
+    }
+    if (!response.ok) {
+      const runtimeError = parseRuntimeJobError(value, response.status);
+      if (runtimeError) throw runtimeError;
+      throw new RuntimeJobControlError({
+        code: "RUNTIME_INTERNAL_ERROR",
+        message: `Runtime job input upload failed (${response.status}).`,
+        status: response.status,
+        resource: null,
+        requiredHeadroomMb: null,
+        availableHeadroomMb: null,
+      });
+    }
+    return parseRuntimeJobInput(value, reservation);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+export async function abandonRuntimeJobInput(
+  authority: RuntimeJobAuthority,
+  uploadId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  validateRuntimeJobAuthority(authority);
+  if (!isRuntimeIdentifier(uploadId)) {
+    throw new TypeError("Runtime job input upload ID is invalid.");
+  }
+  const target = endpoint(env);
+  if (!target) throw runtimeUnavailableError();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONTROL_TIMEOUT_MS);
+  try {
+    const response = await runtimeControlTransports().job(
+      `${target.origin}/v1/job-inputs/${uploadId}/abandon`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${target.token}`,
+          ...runtimeJobAuthorityHeaders(authority),
+        },
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal,
+      },
+    );
+    let value: unknown;
+    try {
+      value = await readBoundedControlJson(response);
+    } catch {
+      throw new RuntimeJobControlError({
+        code: "RUNTIME_INTERNAL_ERROR",
+        message: response.ok
+          ? "Runtime returned an invalid input abandonment response."
+          : `Runtime job input abandonment failed (${response.status}).`,
+        status: response.ok ? 502 : response.status,
+        resource: null,
+        requiredHeadroomMb: null,
+        availableHeadroomMb: null,
+      });
+    }
+    if (!response.ok) {
+      const runtimeError = parseRuntimeJobError(value, response.status);
+      if (runtimeError) throw runtimeError;
+      throw new RuntimeJobControlError({
+        code: "RUNTIME_INTERNAL_ERROR",
+        message: `Runtime job input abandonment failed (${response.status}).`,
+        status: response.status,
+        resource: null,
+        requiredHeadroomMb: null,
+        availableHeadroomMb: null,
+      });
+    }
+    if (!isRecord(value) || !hasExactKeys(value, ["ok"]) || value.ok !== true) {
+      throw new RuntimeJobControlError({
+        code: "RUNTIME_INTERNAL_ERROR",
+        message: "Runtime returned an invalid input abandonment response.",
+        status: 502,
+        resource: null,
+        requiredHeadroomMb: null,
+        availableHeadroomMb: null,
+      });
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function readRuntimeJobOutput(
+  authority: RuntimeJobAuthority,
+  jobId: string,
+  kind: "checkpoint" | "result",
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RuntimeJobOutput> {
+  validateRuntimeJobAuthority(authority);
+  if (!isRuntimeIdentifier(jobId)) throw new TypeError("Runtime job ID is invalid.");
+  const value = await runtimeJobRequest(
+    `/v1/jobs/${jobId}/${kind}`,
+    "GET",
+    authority,
+    null,
+    env,
+    MAX_JOB_OUTPUT_RESPONSE_BYTES,
+  );
+  return parseRuntimeJobOutput(value, jobId, kind);
+}
+
 export async function submitRuntimeJob(
   authority: RuntimeJobAuthority,
   submission: RuntimeJobSubmission,
@@ -1224,6 +1823,22 @@ export async function submitRuntimeJob(
     throw new TypeError("Runtime job idempotency key is invalid.");
   }
   assertRuntimeJsonValue(submission.requestPayload);
+  const inputUploads = submission.inputUploads ?? [];
+  if (inputUploads.length > MAX_JOB_INPUT_UPLOADS) {
+    throw new TypeError("Runtime job submission has too many input uploads.");
+  }
+  const seenUploadIds = new Set<string>();
+  for (const input of inputUploads) {
+    if (
+      !isRecord(input) ||
+      !hasExactKeys(input, ["uploadId"]) ||
+      !isRuntimeIdentifier(input.uploadId) ||
+      seenUploadIds.has(input.uploadId)
+    ) {
+      throw new TypeError("Runtime job input upload reference is invalid.");
+    }
+    seenUploadIds.add(input.uploadId);
+  }
   let body: string | undefined;
   try {
     body = JSON.stringify({
@@ -1231,6 +1846,7 @@ export async function submitRuntimeJob(
       gardenId: authority.gardenId,
       conversationId: authority.conversationId,
       idempotencyKey: submission.idempotencyKey,
+      ...(inputUploads.length === 0 ? {} : { inputUploads }),
       requestPayload: submission.requestPayload,
     });
   } catch {
@@ -1248,6 +1864,30 @@ export async function submitRuntimeJob(
   return parseRuntimeJobResponse(value, authority, { jobType: submission.jobType });
 }
 
+export async function submitRuntimeLearnRecoveryJob(
+  idempotencyKey: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RuntimeJobSnapshot> {
+  const match = /^learn-recovery-v2:(\d{1,16})$/.exec(idempotencyKey);
+  if (
+    !match ||
+    !isBoundedRuntimeText(idempotencyKey, MAX_RUNTIME_IDEMPOTENCY_KEY_BYTES) ||
+    !Number.isSafeInteger(Number(match[1]))
+  ) {
+    throw new TypeError("Runtime Learn recovery idempotency key is invalid.");
+  }
+  const body = JSON.stringify({ idempotencyKey });
+  if (new TextEncoder().encode(body).byteLength > 1024) {
+    throw new TypeError("Runtime Learn recovery request exceeds its bounded body limit.");
+  }
+  const value = await runtimeLearnRecoveryRequest(body, env);
+  return parseRuntimeJobResponse(
+    value,
+    { gardenId: null, conversationId: null },
+    { jobType: "learn" },
+  );
+}
+
 export async function inspectRuntimeJob(
   authority: RuntimeJobAuthority,
   jobId: string,
@@ -1257,6 +1897,75 @@ export async function inspectRuntimeJob(
   if (!isRuntimeIdentifier(jobId)) throw new TypeError("Runtime job ID is invalid.");
   const value = await runtimeJobRequest(`/v1/jobs/${jobId}`, "GET", authority, null, env);
   return parseRuntimeJobResponse(value, authority, { jobId });
+}
+
+/**
+ * Read-only status projection must finish before the renderer's next poll.
+ * Mutation paths retain the longer control window; this bounded variant keeps
+ * an unavailable runtime from accumulating minutes of overlapping requests.
+ */
+export async function inspectRuntimeJobForStatus(
+  authority: RuntimeJobAuthority,
+  jobId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RuntimeJobSnapshot> {
+  validateRuntimeJobAuthority(authority);
+  if (!isRuntimeIdentifier(jobId)) throw new TypeError("Runtime job ID is invalid.");
+  const value = await runtimeJobRequest(
+    `/v1/jobs/${jobId}`,
+    "GET",
+    authority,
+    null,
+    env,
+    MAX_CONTROL_RESPONSE_BYTES,
+    STATUS_CONTROL_TIMEOUT_MS,
+  );
+  return parseRuntimeJobResponse(value, authority, { jobId });
+}
+
+export async function lookupRuntimeJobByIdempotencyKey(
+  authority: RuntimeJobAuthority,
+  idempotencyKey: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RuntimeJobSnapshot> {
+  validateRuntimeJobAuthority(authority);
+  if (
+    !isBoundedRuntimeText(idempotencyKey, MAX_RUNTIME_IDEMPOTENCY_KEY_BYTES) ||
+    /\p{Cc}/u.test(idempotencyKey)
+  ) {
+    throw new TypeError("Runtime job idempotency key is invalid.");
+  }
+  const body = JSON.stringify({ idempotencyKey });
+  const value = await runtimeJobRequest(
+    "/v1/jobs/lookup",
+    "POST",
+    authority,
+    body,
+    env,
+  );
+  return parseRuntimeJobResponse(value, authority, {});
+}
+
+export async function cancelRuntimeJobByIdempotencyKey(
+  authority: RuntimeJobAuthority,
+  idempotencyKey: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RuntimeJobIdempotencyCancellationDisposition> {
+  validateRuntimeJobAuthority(authority);
+  if (
+    !isBoundedRuntimeText(idempotencyKey, MAX_RUNTIME_IDEMPOTENCY_KEY_BYTES) ||
+    /\p{Cc}/u.test(idempotencyKey)
+  ) {
+    throw new TypeError("Runtime job idempotency key is invalid.");
+  }
+  const value = await runtimeJobRequest(
+    "/v1/jobs/cancel-by-idempotency",
+    "POST",
+    authority,
+    JSON.stringify({ idempotencyKey }),
+    env,
+  );
+  return parseRuntimeJobIdempotencyCancellationDisposition(value);
 }
 
 export async function replayRuntimeJobEvents(
@@ -1286,6 +1995,35 @@ export async function replayRuntimeJobEvents(
   return parseRuntimeJobEventsResponse(value, authority, jobId, after, limit);
 }
 
+export async function replayRuntimeJobEventsForStatus(
+  authority: RuntimeJobAuthority,
+  jobId: string,
+  after: number,
+  limit = 100,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RuntimeJobEventReplay> {
+  validateRuntimeJobAuthority(authority);
+  if (!isRuntimeIdentifier(jobId)) throw new TypeError("Runtime job ID is invalid.");
+  if (!isSafeNonnegativeInteger(after)) {
+    throw new TypeError("Runtime event cursor must be a nonnegative safe integer.");
+  }
+  if (!isSafePositiveInteger(limit) || limit > MAX_JOB_EVENT_REPLAY_RECORDS) {
+    throw new TypeError(
+      `Runtime event replay limit must be between 1 and ${MAX_JOB_EVENT_REPLAY_RECORDS}.`,
+    );
+  }
+  const value = await runtimeJobRequest(
+    `/v1/jobs/${jobId}/events?after=${after}&limit=${limit}`,
+    "GET",
+    authority,
+    null,
+    env,
+    MAX_CONTROL_RESPONSE_BYTES,
+    STATUS_CONTROL_TIMEOUT_MS,
+  );
+  return parseRuntimeJobEventsResponse(value, authority, jobId, after, limit);
+}
+
 export async function cancelRuntimeJob(
   authority: RuntimeJobAuthority,
   jobId: string,
@@ -1307,15 +2045,16 @@ async function control<T>(
   path: string,
   body: Record<string, unknown>,
   env: NodeJS.ProcessEnv,
+  timeoutMs = CONTROL_TIMEOUT_MS,
 ): Promise<T | null> {
   const target = endpoint(env);
   // Bare dashboard development has no Electron lifecycle owner. Preserve that
   // supported workflow; services launched by `npm run dev` remain external.
   if (!target) return null;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CONTROL_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${target.origin}${path}`, {
+    const response = await runtimeControlTransports().service(`${target.origin}${path}`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${target.token}`,
@@ -1343,6 +2082,56 @@ async function control<T>(
 }
 
 /**
+ * Reads only immutable, route-bound lease timing metadata. The native owner
+ * derives this value from its validated service manifest; this preflight does
+ * not acquire a lease, poll health, or start a process.
+ */
+async function serviceLeaseControlTimeoutMs(
+  serviceId: SupervisedServiceId,
+  env: NodeJS.ProcessEnv,
+): Promise<number | null> {
+  const target = endpoint(env);
+  if (!target) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STATUS_CONTROL_TIMEOUT_MS);
+  try {
+    const response = await runtimeControlTransports().service(
+      `${target.origin}/v1/services/${serviceId}/lease-contract`,
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${target.token}`,
+        },
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal,
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Supervisor lease contract request failed (${response.status}).`);
+    }
+    const value = await readBoundedControlJson(response);
+    if (
+      !isRecord(value) ||
+      !hasExactKeys(value, ["protocolVersion", "serviceId", "acquireTimeoutMs"]) ||
+      value.protocolVersion !== 1 ||
+      value.serviceId !== serviceId ||
+      !Number.isSafeInteger(value.acquireTimeoutMs) ||
+      (value.acquireTimeoutMs as number) <=
+        SERVICE_LEASE_SETTLEMENT_GRACE_MS + SERVICE_LEASE_RESPONSE_GRACE_MS ||
+      (value.acquireTimeoutMs as number) > MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS
+    ) {
+      throw new Error("Supervisor returned an invalid service lease contract.");
+    }
+    return (value.acquireTimeoutMs as number) + SERVICE_LEASE_TRANSPORT_GRACE_MS;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+/**
  * Reads lifecycle state without acquiring a lease or starting a process.
  *
  * The legacy Electron control plane and Runtime V2 intentionally share this
@@ -1350,10 +2139,17 @@ async function control<T>(
  * supported bare-dashboard development mode has no lifecycle owner; it never
  * means that a configured desktop service is healthy.
  */
-export async function readSupervisedServiceSnapshot(
-  serviceId: SupervisedServiceId,
+export async function readSupervisedServiceSnapshots(
+  serviceIds: readonly SupervisedServiceId[],
   env: NodeJS.ProcessEnv = process.env,
-): Promise<SupervisedServiceSnapshot | null> {
+): Promise<readonly SupervisedServiceSnapshot[] | null> {
+  if (
+    serviceIds.length === 0 ||
+    serviceIds.length > 256 ||
+    new Set(serviceIds).size !== serviceIds.length
+  ) {
+    throw new TypeError("Supervisor service status selection is invalid.");
+  }
   const target = endpoint(env);
   if (!target) return null;
   const controller = new AbortController();
@@ -1362,7 +2158,7 @@ export async function readSupervisedServiceSnapshot(
     Math.min(CONTROL_TIMEOUT_MS, 5_000),
   );
   try {
-    const response = await fetch(`${target.origin}/v1/status`, {
+    const response = await runtimeControlTransports().service(`${target.origin}/v1/status`, {
       method: "GET",
       headers: {
         accept: "application/json",
@@ -1383,30 +2179,46 @@ export async function readSupervisedServiceSnapshot(
     if (!Array.isArray(services) || services.length > 256) {
       throw new Error("Supervisor returned an invalid service list.");
     }
-    const matches = services.filter(
+    const candidates = services.filter(
       (candidate): candidate is { id: string; state: string } =>
         Boolean(candidate) &&
         typeof candidate === "object" &&
         !Array.isArray(candidate) &&
-        (candidate as { id?: unknown }).id === serviceId &&
+        typeof (candidate as { id?: unknown }).id === "string" &&
         typeof (candidate as { state?: unknown }).state === "string",
     );
-    if (
-      matches.length !== 1 ||
-      !SUPERVISED_SERVICE_STATES.has(
-        matches[0]!.state as SupervisedServiceLifecycleState,
-      )
-    ) {
-      throw new Error("Supervisor omitted or duplicated the requested service state.");
-    }
-    return {
-      id: serviceId,
-      state: matches[0]!.state as SupervisedServiceLifecycleState,
-    };
+    const snapshots = serviceIds.map((serviceId) => {
+      const matches = candidates.filter(({ id }) => id === serviceId);
+      if (
+        matches.length !== 1 ||
+        !SUPERVISED_SERVICE_STATES.has(
+          matches[0]!.state as SupervisedServiceLifecycleState,
+        )
+      ) {
+        throw new Error("Supervisor omitted or duplicated a requested service state.");
+      }
+      return {
+        id: serviceId,
+        state: matches[0]!.state as SupervisedServiceLifecycleState,
+      };
+    });
+    return Object.freeze(snapshots);
   } finally {
     clearTimeout(timer);
     controller.abort();
   }
+}
+
+export async function readSupervisedServiceSnapshot(
+  serviceId: SupervisedServiceId,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<SupervisedServiceSnapshot | null> {
+  const snapshots = await readSupervisedServiceSnapshots([serviceId], env);
+  if (!snapshots) return null;
+  if (snapshots.length !== 1) {
+    throw new Error("Supervisor returned an invalid single-service status response.");
+  }
+  return snapshots[0]!;
 }
 
 export async function acquireServiceLease(
@@ -1414,10 +2226,12 @@ export async function acquireServiceLease(
   reason: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<SupervisorLease | null> {
+  const timeoutMs = await serviceLeaseControlTimeoutMs(serviceId, env);
   const result = await control<{ leaseId?: unknown; serviceId?: unknown }>(
     `/v1/services/${serviceId}/lease`,
     { reason },
     env,
+    timeoutMs ?? CONTROL_TIMEOUT_MS,
   );
   if (!result) return null;
   if (typeof result.leaseId !== "string" || result.serviceId !== serviceId) {
@@ -1462,6 +2276,31 @@ export async function releaseSupervisorLease(
     ownerPid === undefined ? {} : { afterOwnerPidExit: ownerPid },
     env,
   ).catch(() => null);
+}
+
+/**
+ * Evidence and shutdown gates must know whether Runtime acknowledged the
+ * release. Ordinary product cleanup remains best-effort above; this narrow
+ * variant fails closed and never turns an unavailable control plane into a
+ * successful cancellation receipt.
+ */
+export async function releaseSupervisorLeaseStrict(
+  lease: SupervisorLease | string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  const id = typeof lease === "string" ? lease : lease.id;
+  if (!id) throw new TypeError("Supervisor lease id is required.");
+  const result = await control<{ released?: unknown }>(
+    `/v1/leases/${encodeURIComponent(id)}/release`,
+    {},
+    env,
+  );
+  if (!result || typeof result.released !== "boolean") {
+    throw new Error("Supervisor did not acknowledge the exact service lease release.");
+  }
+  // `false` is the idempotent tombstone response: Runtime no longer holds the
+  // exact lease, even when the first successful release response was lost.
+  return result.released;
 }
 
 export async function withServiceLease<T>(

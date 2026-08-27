@@ -6,10 +6,10 @@
  * an export route that honoured "readable" would quietly route around it.
  */
 
-import fs from "node:fs";
 import AdmZip from "adm-zip";
 
 import db from "../db.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { gardenDirectory } from "../garden-directory.ts";
 import {
   folderLabel,

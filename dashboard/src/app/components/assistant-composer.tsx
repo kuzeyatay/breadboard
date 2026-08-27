@@ -2112,7 +2112,7 @@ export default function AssistantComposer({
                   onClick={closeIntelligence}
                   aria-label="Close intelligence menu"
                 />
-                <div className="neu-popover absolute bottom-full right-0 z-40 mb-2 flex max-h-[min(40rem,calc(100vh-6rem))] w-64 flex-col rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-2 text-sm">
+                <div className="neu-popover absolute bottom-full left-0 z-40 mb-2 flex max-h-[min(40rem,calc(100vh-6rem))] w-64 flex-col rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-2 text-sm">
                   <div className="min-h-0 flex-1 overflow-y-auto">
                     <div className="px-2.5 pb-1.5 pt-1 text-sm text-[var(--ink-muted)]">Intelligence</div>
                     {effortOptions.map((option) => (

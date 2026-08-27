@@ -1,6 +1,6 @@
-import fs from "fs";
-import path from "path";
 import db from "@/lib/db";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { scanClusterKnowledge } from "@/lib/knowledge";
 import { organizationClusterClause } from "@/lib/organizations/store";
 

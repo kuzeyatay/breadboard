@@ -163,7 +163,7 @@ export interface PublishedVideo {
  * is a path the run had no business producing and the import is refused rather
  * than followed.
  */
-export function publishTaskVideo(input: {
+export async function publishTaskVideo(input: {
   context: MoneyPrinterArtifactContext;
   tasksRoot: string;
   /** Absolute path to the cut, inside `tasksRoot`. */
@@ -173,13 +173,13 @@ export function publishTaskVideo(input: {
   index: number;
   total: number;
   metadata: Record<string, unknown>;
-}): { ok: true; video: PublishedVideo } | { ok: false; reason: string } {
+}): Promise<{ ok: true; video: PublishedVideo } | { ok: false; reason: string }> {
   const title =
     input.total > 1
       ? `${input.subject} — cut ${input.index + 1}`.slice(0, 240)
       : input.subject.slice(0, 240) || "Short video";
   try {
-    const artifact: ArtifactRow = createImportedArtifact({
+    const artifact: ArtifactRow = await createImportedArtifact({
       userId: input.context.userId,
       runtimeSessionId: input.context.runtimeSessionId,
       hermesSessionId: input.context.hermesSessionId,

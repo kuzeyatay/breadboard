@@ -18,7 +18,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { repositoryRoot } from "../runtime-paths.ts";
 import { resolveFfmpeg } from "../vimax/video.ts";
-import { resolveFfprobe } from "../video-use/runtime.ts";
 
 export interface VoxDirectorRuntime {
   /** Directory of the cloned repository. */
@@ -27,33 +26,32 @@ export interface VoxDirectorRuntime {
   source: "configured" | "repository" | "cwd";
 }
 
-const WHICH_CACHE_MS = 5 * 60_000;
-const cachedWhich = new Map<string, { at: number; value: string | null }>();
-
 function configured(value: string | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? path.resolve(trimmed) : null;
 }
 
-function whichSync(command: string): string | null {
-  const hit = cachedWhich.get(command);
-  if (hit && Date.now() - hit.at < WHICH_CACHE_MS) return hit.value;
-  let value: string | null = null;
-  try {
-    const probe = spawnSync(process.platform === "win32" ? "where" : "which", [command], {
-      encoding: "utf8",
-      windowsHide: true,
-    });
-    const first = (probe.stdout ?? "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean);
-    value = first && fs.existsSync(first) ? first : null;
-  } catch {
-    value = null;
+function executableName(base: string): string {
+  return process.platform === "win32" ? `${base}.exe` : base;
+}
+
+/** Fixed ffprobe resolution for this profile; importing Video Use's dashboard
+ * health module here would pull its Runtime client back into worker helpers. */
+export function resolveVoxFfprobe(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit =
+    configured(env.BREADBOARD_RUNTIME_V2_VOX_FFPROBE_PATH) ||
+    configured(env.BREADBOARD_RUNTIME_V2_MEDIA_FFPROBE_PATH) ||
+    configured(env.VIDEO_USE_FFPROBE_PATH) ||
+    configured(env.HYPERFRAMES_FFPROBE_PATH);
+  if (explicit && fs.existsSync(explicit)) return explicit;
+  const root = repositoryRoot();
+  for (const candidate of [
+    path.join(root, "desktop", "resources", "bin", executableName("ffprobe")),
+    path.join(root, "agent-reach", ".tools", "bin", executableName("ffprobe")),
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
   }
-  cachedWhich.set(command, { at: Date.now(), value });
-  return value;
+  return null;
 }
 
 /**
@@ -91,8 +89,8 @@ export function referenceFile(root: string, name: string): string {
 
 /**
  * The Python that runs the driver. A virtualenv inside the clone wins when one
- * exists, otherwise any interpreter on PATH will do: the local path needs only
- * the standard library plus Pillow.
+ * exists. Installed Runtime profiles always mint an explicit interpreter;
+ * discovery by `where`/`which` is deliberately outside the worker contract.
  */
 export function resolvePython(
   root: string | null,
@@ -106,12 +104,6 @@ export function resolvePython(
         ? path.join(root, ".venv", "Scripts", "python.exe")
         : path.join(root, ".venv", "bin", "python");
     if (fs.existsSync(venv)) return venv;
-  }
-  for (const command of process.platform === "win32"
-    ? ["python", "python3", "py"]
-    : ["python3", "python"]) {
-    const found = whichSync(command);
-    if (found) return found;
   }
   return null;
 }
@@ -130,29 +122,30 @@ export function driverScript(): string {
  * defaulting to cp1252 raises UnicodeEncodeError and kills a render that was
  * otherwise fine.
  */
-export function voxDirectorEnv(
-  extra: Record<string, string> = {},
-  env: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
+export function voxDirectorEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const ffmpeg = resolveFfmpeg(env);
-  const ffprobe = resolveFfprobe(env);
+  const ffprobe = resolveVoxFfprobe(env);
   const binDirectories = [
     ffmpeg ? path.dirname(ffmpeg) : "",
     ffprobe ? path.dirname(ffprobe) : "",
   ].filter(Boolean);
-  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-  const existing = env[pathKey] ?? "";
-  return {
-    ...env,
-    [pathKey]: [...new Set(binDirectories)].concat(existing || []).join(path.delimiter),
+  const answer: NodeJS.ProcessEnv = {
+    NODE_ENV: env.NODE_ENV ?? "production",
+    PATH: [...new Set(binDirectories)].join(path.delimiter),
     PYTHONUTF8: "1",
     PYTHONIOENCODING: "utf-8",
+    PYTHONNOUSERSITE: "1",
+    PYTHONDONTWRITEBYTECODE: "1",
     // Upstream's stage scripts read this to pick a media backend. Nothing in
     // the local path uses a provider at all, and saying so keeps a future
     // upstream default from silently reaching for Atlas Cloud.
     VOX_PROVIDER: "none",
-    ...extra,
   };
+  for (const name of ["SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOME"]) {
+    const value = env[name]?.trim();
+    if (value && !/[\u0000\r\n]/u.test(value)) answer[name] = value;
+  }
+  return answer;
 }
 
 export interface DriverResult {
@@ -180,9 +173,17 @@ export function runVoxDriver(input: {
   cwd: string;
   timeoutMs: number;
   signal?: AbortSignal;
-  env?: NodeJS.ProcessEnv;
   onLine?: (line: string) => void;
 }): Promise<DriverResult> {
+  if (input.signal?.aborted) {
+    return Promise.resolve({
+      ok: false,
+      code: null,
+      stdout: "",
+      stderr: "The render was cancelled.",
+      timedOut: false,
+    });
+  }
   return new Promise((resolve) => {
     let settled = false;
     let timedOut = false;
@@ -192,7 +193,7 @@ export function runVoxDriver(input: {
       {
         cwd: input.cwd,
         windowsHide: true,
-        env: input.env ?? voxDirectorEnv(),
+        env: voxDirectorEnv(),
         stdio: ["ignore", "pipe", "pipe"],
         // Its own process group, so an abort can take the ffmpeg the driver
         // pipes frames into rather than leaving an encoder on the output file.
@@ -256,7 +257,12 @@ export function runVoxDriver(input: {
 export function killTree(pid: number | undefined): void {
   if (!pid) return;
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
+    const windowsRoot = process.env.SystemRoot?.trim() || process.env.WINDIR?.trim() || "C:\\Windows";
+    const taskkill = path.join(windowsRoot, "System32", "taskkill.exe");
+    spawnSync(taskkill, ["/pid", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      env: voxDirectorEnv(),
+    });
     return;
   }
   try {
@@ -314,7 +320,12 @@ export function voxHealthLevel(input: {
  * `spawnSync` would stop the whole event loop — including the endpoint that
  * aborts a run — for the duration.
  */
-export function probePillow(python: string, timeoutMs = 20_000): Promise<boolean> {
+export function probePillow(
+  python: string,
+  timeoutMs = 20_000,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
   return new Promise((resolve) => {
     let settled = false;
     const done = (value: boolean) => {
@@ -323,7 +334,16 @@ export function probePillow(python: string, timeoutMs = 20_000): Promise<boolean
       resolve(value);
     };
     try {
-      const child = spawn(python, ["-c", "import PIL"], { windowsHide: true, stdio: "ignore" });
+      const child = spawn(python, ["-c", "import PIL"], {
+        windowsHide: true,
+        stdio: "ignore",
+        env: voxDirectorEnv(),
+      });
+      const onAbort = () => {
+        killTree(child.pid);
+        done(false);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
       const timer = setTimeout(() => {
         killTree(child.pid);
         done(false);
@@ -331,10 +351,12 @@ export function probePillow(python: string, timeoutMs = 20_000): Promise<boolean
       timer.unref?.();
       child.on("error", () => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         done(false);
       });
       child.on("close", (code) => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         done(code === 0);
       });
     } catch {

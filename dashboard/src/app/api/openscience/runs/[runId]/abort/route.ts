@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { abortRun } from "@/lib/openscience/run-manager.ts";
+import { abortRun } from "@/lib/openscience/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -12,10 +12,7 @@ export async function POST(
   try {
     const userId = await requireUserId();
     const { runId } = await params;
-    // Stopping asks the runtime to abort its session first, so it stops
-    // spending tokens rather than merely being ignored.
-    await abortRun(userId, runId);
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: await abortRun(userId, runId) });
   } catch (error) {
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });

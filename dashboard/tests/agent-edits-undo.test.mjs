@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
 
-const snapshot = await import("../src/lib/agent-edits/snapshot.ts");
+const snapshot = await import("../scripts/runtime-v2-agent-edits-executor.mjs");
 
 const repo = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-agent-edits-"));
 const git = (...args) =>
@@ -42,8 +42,8 @@ test("a coding agent run is bracketed by snapshots of any repository", () => {
   git("add", "tracked.ts");
   const stagedBefore = git("diff", "--cached", "--name-only").trim();
 
-  const before = snapshot.captureSnapshot(repo);
-  assert.ok(snapshot.isSnapshotId(before));
+  const before = snapshot.captureAgentEditsSnapshot(repo);
+  assert.ok(snapshot.isAgentEditsSnapshotId(before));
   const capturedPaths = git("ls-tree", "-r", "--name-only", before)
     .split("\n")
     .filter(Boolean);
@@ -68,24 +68,20 @@ test("a coding agent run is bracketed by snapshots of any repository", () => {
       windowsHide: true,
     },
   );
-  const migrated = snapshot.captureSnapshot(repo);
-  assert.ok(snapshot.isSnapshotId(migrated));
+  const migrated = snapshot.captureAgentEditsSnapshot(repo);
+  assert.ok(snapshot.isAgentEditsSnapshotId(migrated));
   assert.doesNotMatch(
     git("ls-tree", "-r", "--name-only", migrated),
     /^ignored\//m,
   );
-  snapshot.rememberRunSnapshot("run-1", repo, before);
-
   // The agent edits, adds, and deletes.
   write("tracked.ts", "export const kept = 1;\nexport const wip = 2;\nexport const agent = 3;\n");
   write("src/added-by-agent.ts", "export const added = true;\n");
   fs.rmSync(path.join(repo, "deleted-by-agent.ts"));
 
-  const ref = snapshot.finalizeRunSnapshot("run-1", repo);
-  assert.ok(ref);
-  assert.equal(ref.before, before);
-  // Finalizing twice must return the same bracket, never a fresh snapshot.
-  assert.deepEqual(snapshot.finalizeRunSnapshot("run-1", repo), ref);
+  const after = snapshot.captureAgentEditsSnapshot(repo);
+  assert.ok(snapshot.isAgentEditsSnapshotId(after));
+  const ref = { before, after };
 
   const summary = snapshot.summarizeAgentEdits(repo, ref);
   assert.equal(summary.filesChanged, 3);
@@ -108,12 +104,12 @@ test("a coding agent run is bracketed by snapshots of any repository", () => {
 });
 
 test("undo restores the pre-run tree and keeps later edits", () => {
-  const before = snapshot.captureSnapshot(repo);
-  snapshot.rememberRunSnapshot("run-2", repo, before);
+  const before = snapshot.captureAgentEditsSnapshot(repo);
   write("a.ts", "agent wrote this\n");
   write("b.ts", "agent wrote this too\n");
-  const ref = snapshot.finalizeRunSnapshot("run-2", repo);
-  assert.ok(ref);
+  const after = snapshot.captureAgentEditsSnapshot(repo);
+  assert.ok(after);
+  const ref = { before, after };
 
   // The user keeps working on one of the files after the run finished.
   write("b.ts", "and then I edited it myself\n");
@@ -136,13 +132,13 @@ test("undo restores the pre-run tree and keeps later edits", () => {
 });
 
 test("undo brings back what the agent modified or deleted", () => {
-  const before = snapshot.captureSnapshot(repo);
-  snapshot.rememberRunSnapshot("run-3", repo, before);
+  const before = snapshot.captureAgentEditsSnapshot(repo);
   const original = fs.readFileSync(path.join(repo, "tracked.ts"), "utf8");
   write("tracked.ts", "agent rewrote the whole file\n");
   fs.rmSync(path.join(repo, "untracked-note.md"));
-  const ref = snapshot.finalizeRunSnapshot("run-3", repo);
-  assert.ok(ref);
+  const after = snapshot.captureAgentEditsSnapshot(repo);
+  assert.ok(after);
+  const ref = { before, after };
 
   const result = snapshot.undoAgentEdits(repo, ref);
   assert.equal(result.skipped.length, 0);
@@ -157,27 +153,30 @@ test("undo brings back what the agent modified or deleted", () => {
 test("a repository without git degrades to no undo instead of failing", () => {
   const plain = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-agent-edits-plain-"));
   try {
-    assert.equal(snapshot.captureSnapshot(plain), null);
-    assert.equal(snapshot.finalizeRunSnapshot("run-missing", plain), null);
+    assert.equal(snapshot.captureAgentEditsSnapshot(plain), null);
   } finally {
     fs.rmSync(plain, { recursive: true, force: true });
   }
 });
 
-test("every coding agent brackets its run and offers the same undo card", () => {
+test("every coding agent brackets its disposable Runtime run and offers the same undo card", () => {
   const source = (relativePath) =>
     fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
-  // Each launch snapshots the connected repository before the agent can write.
+  // Next only submits; the disposable worker snapshots before it starts the
+  // coding toolchain and withholds terminal delivery until the after snapshot.
   for (const route of ["codex", "opencode", "ruflo"]) {
     const launch = source(`../src/app/api/${route}/runs/route.ts`);
-    assert.match(launch, /captureSnapshot\(repository\.path\)/);
-    assert.match(launch, /rememberRunSnapshot\(run\.runId, repository\.path, snapshotBefore\)/);
+    assert.doesNotMatch(launch, /agent-edits\/snapshot|captureSnapshot|node:child_process/);
+    assert.match(launch, /await startRun\(/);
   }
-  // A Codex task that finishes with no tab open still stores its bracket.
+  const adapters = source("../scripts/runtime-v2-outer-agent-adapters.mjs");
+  assert.match(adapters, /captureAgentEditsSnapshot\(request\.repositoryPath\)/);
+  assert.match(adapters, /withSnapshotReceipt/);
+  assert.match(adapters, /terminalIndex >= 0/);
   assert.match(
     source("../src/app/api/codex/runs/route.ts"),
-    /edits: finalizeRunSnapshot\(run\.runId, repository\.path\)/,
+    /edits: agentEditsFromRunEvents\(runEvents\)/,
   );
 
   // Both coding cards close the bracket and render the shared card. The render
@@ -186,18 +185,18 @@ test("every coding agent brackets its run and offers the same undo card", () => 
   // the edits.
   for (const card of ["inline-opencode-run", "inline-ruflo-run"]) {
     const widget = source(`../src/app/components/hermes/${card}.tsx`);
-    assert.match(widget, /action: "finalize", gardenSlug, runId/);
+    assert.match(widget, /action: "finalize"/);
+    assert.match(widget, /agentKind:/);
     assert.match(widget, /edits \?\? persistedEdits/);
     assert.match(widget, /<AgentEditsCard/);
   }
 
-  // The Codex run manager closes the bracket the moment the run ends — like
-  // OpenCode and Ruflo — so edits the user makes afterwards never leak into
-  // the run's own diff.
-  assert.match(
-    source("../src/lib/codex/run-manager.ts"),
-    /finalizeRunSnapshot\(run\.runId, run\.repositoryPath\)/,
-  );
+  for (const agent of ["codex", "opencode", "ruflo"]) {
+    assert.doesNotMatch(
+      source(`../src/lib/${agent}/run-manager.ts`),
+      /agent-edits\/snapshot|finalizeRunSnapshot/,
+    );
+  }
 
   // The card is repository-agnostic: it only ever names a Garden.
   const editsCard = source("../src/app/components/hermes/agent-edits-card.tsx");
@@ -206,53 +205,47 @@ test("every coding agent brackets its run and offers the same undo card", () => 
   assert.match(editsCard, /action: "undo"/);
   assert.match(editsCard, /Show \{countLabel\(hidden\)\} more/);
 
-  // The endpoint recomputes from the snapshots and never trusts a client path.
+  // The endpoint authenticates and submits; only the fixed Runtime worker can
+  // import the Git executor or recompute/undo from snapshot refs.
   const api = source("../src/app/api/agent-edits/route.ts");
   assert.match(api, /resolveConnectedRepository\(userId, gardenSlug\.trim\(\)\)\.path/);
-  assert.match(api, /summary\.files\.some\(\(file\) => file\.path === filePath\)/);
+  assert.match(api, /runAgentEditsOperation/);
+  assert.match(api, /streamAgentEditsArtifact/);
+  assert.doesNotMatch(api, /node:child_process|summarizeAgentEdits|undoAgentEdits/);
   assert.match(api, /isSnapshotId\(before\) \|\| !isSnapshotId\(after\)/);
+  assert.match(
+    source("../scripts/runtime-v2-agent-edits-worker.mjs"),
+    /name: "runtime-v2-agent-edits-worker"/,
+  );
 });
 
 test("every coding agent closes its bracket when the run ends, tab or no tab", () => {
   const source = (relativePath) =>
     fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
-  // All three finalize from the run manager itself, on every terminal event
-  // including an abort — the browser is not required to be watching.
+  const adapters = source("../scripts/runtime-v2-outer-agent-adapters.mjs");
   for (const agent of ["opencode", "ruflo", "codex"]) {
     const manager = source(`../src/lib/${agent}/run-manager.ts`);
-    assert.match(
-      manager,
-      /const TERMINAL_EVENTS = new Set\(\["run\.completed", "run\.failed", "run\.aborted"\]\)/,
-    );
-    assert.match(
-      manager,
-      /if \(TERMINAL_EVENTS\.has\(type\)\) \{\s*\n?\s*finalizeRunSnapshot\(run\.runId, run\.repositoryPath\);/,
-    );
+    assert.doesNotMatch(manager, /finalizeRunSnapshot/);
     assert.match(manager, /emit\(run, "run\.aborted"/);
   }
-  // Codex closes it a second time from the terminal handler that stores the
-  // turn. Finalizing is idempotent, so the earlier close is the one that counts.
-  assert.match(
-    source("../src/app/api/codex/runs/route.ts"),
-    /setRunTerminalHandler\([\s\S]*?finalizeRunSnapshot\(run\.runId, repository\.path\)/,
-  );
+  assert.match(adapters, /const snapshots = codingRunSnapshot/);
+  assert.match(adapters, /payload: \{ \.\.\.event\.payload, edits \}/);
+  assert.match(adapters, /status: "aborted", edits: snapshots\.finish\(\)/);
 });
 
 test("a finished run's bracket is closed once, at the moment it finished", () => {
-  const before = snapshot.captureSnapshot(repo);
-  snapshot.rememberRunSnapshot("run-4", repo, before);
+  const before = snapshot.captureAgentEditsSnapshot(repo);
   write("agent-output.ts", "what the agent wrote\n");
 
-  // The run manager closes the bracket the moment the run ends...
-  const atRunEnd = snapshot.finalizeRunSnapshot("run-4", repo);
-  assert.ok(atRunEnd);
+  // The disposable worker takes the after snapshot before publishing terminal.
+  const after = snapshot.captureAgentEditsSnapshot(repo);
+  assert.ok(after);
+  const atRunEnd = { before, after };
 
   // ...so work done afterwards can never be attributed to the run, even when a
   // browser reconnects much later and asks for the same bracket.
   write("my-own-work.ts", "written by me, after the run\n");
-  const onReconnect = snapshot.finalizeRunSnapshot("run-4", repo);
-  assert.deepEqual(onReconnect, atRunEnd);
   const summary = snapshot.summarizeAgentEdits(repo, atRunEnd);
   assert.deepEqual(
     summary.files.map((file) => file.path),
@@ -274,18 +267,18 @@ test("a live database cluster is never part of a run's bracket", () => {
   git("add", "-A");
   git("commit", "-m", "commit a live cluster");
 
-  const before = snapshot.captureSnapshot(repo);
-  assert.ok(snapshot.isSnapshotId(before));
+  const before = snapshot.captureAgentEditsSnapshot(repo);
+  assert.ok(snapshot.isAgentEditsSnapshotId(before));
   assert.doesNotMatch(git("ls-tree", "-r", "--name-only", before), /^data\/pg\//m);
-  snapshot.rememberRunSnapshot("run-5", repo, before);
 
   // A heartbeat and a checkpoint land mid-run. Neither is the agent's work.
   write("data/pg/.engine-lock/lock", '{"refreshed_at":2}\n');
   write("data/pg/base/1/2608", "a checkpointed page\n");
   write("real-agent-edit.ts", "what the agent actually wrote\n");
 
-  const ref = snapshot.finalizeRunSnapshot("run-5", repo);
-  assert.ok(ref);
+  const after = snapshot.captureAgentEditsSnapshot(repo);
+  assert.ok(after);
+  const ref = { before, after };
   assert.deepEqual(
     snapshot.summarizeAgentEdits(repo, ref).files.map((file) => file.path),
     ["real-agent-edit.ts"],

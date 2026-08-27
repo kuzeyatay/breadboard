@@ -16,6 +16,7 @@ import {
   normalizeChatTokenUsage,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
+import { closeAgentRunStream, resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 import {
   normalizeResearchBudget,
   normalizeResearchEvidenceSnapshot,
@@ -239,6 +240,7 @@ export default function InlineDeepResearchRun({
         );
         setStatus(outcome);
         eventSourceRef.current?.close();
+        eventSourceRef.current = null;
         if (!reportedTerminalRef.current) {
           reportedTerminalRef.current = true;
           const content =
@@ -290,30 +292,23 @@ export default function InlineDeepResearchRun({
     STREAMED_EVENT_TYPES.forEach((type) =>
       eventSource.addEventListener(type, handle as EventListener),
     );
-    // A reopened transcript still shows this card, but the run it points at may
-    // be gone (the service holds runs in memory and expires them). EventSource
-    // would silently retry forever and look like a stuck run, so ask the route
-    // once what actually happened and say so.
+    // EventSource reports both an orderly terminal EOF and a dropped transport
+    // as `error`. The shared resolver single-flights that probe and replays only
+    // a missed terminal frame; replaying the whole journal here duplicated
+    // evidence and progress every time Chromium raised another error.
     eventSource.onerror = () => {
-      void (async () => {
-        try {
-          const response = await fetch(`${base}/events?since=0`);
-          if (response.ok) {
-            const data = (await response.json().catch(() => null)) as {
-              events?: RunEvent[];
-            } | null;
-            // The fallback is also a real event read. A terminal frame can land
-            // here while EventSource is reconnecting, so consume it instead of
-            // leaving the transcript marked as running.
-            for (const event of data?.events ?? []) applyEvent(event);
-            return;
+      resolveAgentRunStreamError({
+        source: eventSource,
+        base,
+        replayEnding: applyEvent,
+        onUnavailable: (reason) => {
+          if (eventSourceRef.current === eventSource) {
+            eventSourceRef.current = null;
           }
-          const data = (await response.json().catch(() => ({}))) as { error?: string };
-          eventSource.close();
           const message =
-            data.error === "run_not_found"
+            reason === "run_not_found"
               ? "This run is no longer available — the research service restarted or the run expired."
-              : ERROR_TEXT[data.error ?? ""] ?? "The research service is not reachable.";
+              : "The research service is not reachable.";
           failureRef.current = message;
           setStatus("failed");
           setFailure(message);
@@ -331,15 +326,15 @@ export default function InlineDeepResearchRun({
               ...(usageRef.current ? { usage: usageRef.current } : {}),
             });
           }
-        } catch {
-          /* offline: leave the stream retrying */
-        }
-      })();
+        },
+      });
     };
     eventSourceRef.current = eventSource;
     return () => {
-      eventSource.close();
-      eventSourceRef.current = null;
+      closeAgentRunStream(eventSource);
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
     };
   }, [base, applyEvent, persistedContent, persistedOutcome]);
 

@@ -95,7 +95,8 @@ export function describeError(error: unknown): { status: number; body: Record<st
       return { status, body: { error: error.message.slice(0, 200) } };
     }
   }
-  const message = error instanceof Error ? error.message : "Internal server error";
-  // Avoid echoing internal paths/URLs in unexpected errors.
-  return { status: 500, body: { error: "Internal server error", detail: message.slice(0, 200) } };
+  // Unexpected messages and stacks may contain private paths, loopback URLs,
+  // or bearer tokens. They belong in a sanitized server diagnostic, never in
+  // a browser response.
+  return { status: 500, body: { error: "Internal server error" } };
 }

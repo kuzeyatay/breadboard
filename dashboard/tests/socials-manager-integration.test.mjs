@@ -142,7 +142,7 @@ test("a persistent checkbox per network decides where every post is written", ()
 
   // Ticking works with the stack down: it is a drafting choice, not a connection.
   assert.ok(
-    route.indexOf('action === "networks"') < route.indexOf("const settings = await liveSettings()"),
+    route.indexOf('action === "networks"') < route.indexOf("const settings = await liveSettings(userId)"),
     "the network choice must be answered before the stack is consulted",
   );
 });
@@ -267,7 +267,10 @@ test("both chat surfaces launch the run and render it inline", () => {
 
   // Terminal: launcher, routing, and the conversation the artifacts hang off.
   assert.match(terminal, /fetch\("\/api\/socials-manager\/runs"/);
-  assert.match(terminal, /const conversationPublicId = await session\.ensureConversation\(\)/);
+  assert.match(
+    terminal,
+    /const conversationPublicId =\s*\n\s*await session\.ensureConversation\(clientMessageId\)/,
+  );
   assert.match(terminal, /conversationPublicId,/);
   assert.match(terminal, /taskFromSocialsManagerCommand\(text\)/);
 
@@ -451,30 +454,29 @@ test("the inline Socials Manager card restores every durable post after chat rem
   assert.match(card, /post\.calendarEventId/);
   assert.match(card, /post\.remoteId/);
   assert.match(card, /Restoring saved posts…/);
-  assert.match(session, /ensureConversation: \(\) => Promise<string>/);
-  assert.match(terminal, /const conversationPublicId = await session\.ensureConversation\(\)/);
+  assert.match(session, /ensureConversation: \(clientMessageId\?: string\) => Promise<string>/);
+  assert.match(
+    terminal,
+    /const conversationPublicId =\s*\n\s*await session\.ensureConversation\(clientMessageId\)/,
+  );
   assert.match(terminal, /conversationPublicId,/);
 });
 
-test("desktop owns publishing-stack lifecycle and nothing starts it on boot", () => {
-  const instrumentation = source("src/instrumentation-node.ts");
+test("Runtime V2 owns publishing-stack lifecycle and Electron has no fallback", () => {
+  const activation = source("src/lib/socials-manager/activation.ts");
   const definitions = desktopSource("src/main/service-definitions.ts");
   const launcher = fs.readFileSync(
     new URL("../../scripts/start-postiz-supervisor.mjs", import.meta.url),
     "utf8",
   );
 
-  assert.doesNotMatch(instrumentation, /autostartPostizStack|postiz\/autostart/);
-  assert.match(definitions, /id: "postiz"/);
-  // Background, because the *coordinator* must be listening to receive an
-  // activation request. What it owns — Docker, Compose, the containers — is
-  // what stays stopped.
-  assert.match(definitions, /required: false,[\s\S]*startupPolicy: "background"/);
-  assert.match(definitions, /SOCIALS_MANAGER_SUPPRESS_DOCKER_UI: "true"/);
-  assert.match(definitions, /dependsOn: \["chatmock", "quartz"\]/);
+  assert.doesNotMatch(definitions, /id: "postiz"/);
+  assert.doesNotMatch(definitions, /start-postiz-supervisor/);
+  assert.match(activation, /acquireServiceLease\("postiz-coordinator"/);
+  assert.doesNotMatch(activation, /(?:spawn|execFile|fork)\s*\(/);
 
-  // The coordinator opens its socket and stops. No stack start, no Docker
-  // probe, no bootstrap anywhere on the path from `main()` to `listen`.
+  // The Runtime-owned coordinator opens its socket and stops. No stack start,
+  // Docker probe, or bootstrap occurs on the path from `main()` to `listen`.
   assert.match(launcher, /server\.listen\(healthPort, host/);
   const beforeListen = launcher.slice(
     launcher.indexOf("async function main()"),
@@ -482,8 +484,6 @@ test("desktop owns publishing-stack lifecycle and nothing starts it on boot", ()
   );
   assert.doesNotMatch(beforeListen, /startStack|ensureDockerRunning|waitForReady\(/);
   assert.doesNotMatch(beforeListen, /ensureApiKey|listIntegrations/);
-  // Readiness is coordinator liveness, and it is stated as such.
-  assert.match(definitions, /expectBodyIncludes: '"ok":true'/);
 });
 
 test("the inline card is styled with the shared neumorphic material", () => {
@@ -492,12 +492,13 @@ test("the inline card is styled with the shared neumorphic material", () => {
   for (const className of [
     "bb-agent-run-card",
     "bb-agent-run-header",
-    "bb-agent-run-icon",
-    "bb-agent-run-pill",
+    "bb-agent-run-title",
+    "bb-agent-run-label",
+    "bb-agent-run-led",
+    "bb-agent-run-action",
     "bb-agent-run-inset",
     "bb-agent-run-panel",
-    "neu-button",
-    "neu-inset",
+    "bb-agent-run-output",
   ]) {
     assert.ok(card.includes(className), `${className} is missing from the card`);
   }

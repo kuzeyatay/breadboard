@@ -1,4 +1,4 @@
-// In-memory run manager for the Legal Agent.
+// Worker-local run manager for the Legal Agent.
 //
 // Breadboard does not drive the tool loop here: Harvey LAB's harness owns it,
 // and reimplementing a loop that already exists would only guarantee the two
@@ -10,10 +10,7 @@
 // cursor. What survives is the composed answer, saved with the chat turn, and
 // the deliverables, saved as artifacts of the conversation that asked for them.
 
-import { randomUUID } from "node:crypto";
 import { type ChildProcess, spawn } from "node:child_process";
-import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
-import type { ChatAttachment } from "../chat-attachments.ts";
 import {
   closeLegalArtifactContext,
   openLegalArtifactContext,
@@ -30,12 +27,16 @@ import {
 } from "./runtime.ts";
 import type { LegalSettings } from "./settings.ts";
 import {
-  prepareWorkspace,
+  prepareRuntimeWorkspace,
   readOutputFile,
   removeWorkspace,
   type LegalWorkspace,
 } from "./workspace.ts";
 import { contextSection } from "../conversations/agent-context.ts";
+import type {
+  LegalRuntimeAttachmentManifest,
+  LegalRuntimeContentManifest,
+} from "./runtime-inputs.ts";
 
 export interface LegalEvent {
   sequenceNumber: number;
@@ -44,7 +45,7 @@ export interface LegalEvent {
   at: string;
 }
 
-type RunStatus = "queued" | "running" | "completed" | "failed" | "aborted";
+export type RunStatus = "queued" | "running" | "completed" | "failed" | "aborted";
 
 interface DeliverableRow {
   path: string;
@@ -83,6 +84,42 @@ const MAX_ARTIFACT_BYTES = 32 * 1024 * 1024;
 // outlast a tab switch so a returning card can still download from it.
 const RETENTION_MS = 60 * 60 * 1000;
 const RUN_TIMEOUT_MS = 120 * 60 * 1000;
+const LEGAL_CHILD_ENV_KEYS = [
+  "SystemRoot",
+  "WINDIR",
+  "COMSPEC",
+  "PATH",
+  "PATHEXT",
+  "TEMP",
+  "TMP",
+  "USERPROFILE",
+  "HOME",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMFILES",
+  "PROGRAMFILES(X86)",
+  "ProgramW6432",
+  "LANG",
+  "LC_ALL",
+  "LEGAL_AGENT_BASH",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+] as const;
+
+/** Keep Runtime control credentials out of the Python and shell descendants. */
+function legalWorkerChildEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const child: NodeJS.ProcessEnv = { NODE_ENV: env.NODE_ENV ?? "production" };
+  for (const key of LEGAL_CHILD_ENV_KEYS) {
+    const value = env[key];
+    if (value !== undefined) child[key] = value;
+  }
+  return child;
+}
 
 function emit(run: RunState, type: string, payload: Record<string, unknown> = {}): void {
   run.sequence += 1;
@@ -138,11 +175,11 @@ export function composeAnswer(
   return parts.join("\n\n").slice(0, MAX_ANSWER_CHARS);
 }
 
-export interface StartRunInput {
+export interface LegalRuntimeWorkerRunInput {
   userId: number;
-  request: LegalRequest;
+  runtimeJobId: string;
+  request: Omit<LegalRequest, "task">;
   settings: LegalSettings;
-  attachments: readonly ChatAttachment[];
   /** The chat's model, used unless the request pins its own. */
   model: string;
   /** The chat's reasoning effort, used when the request follows the chat. */
@@ -150,21 +187,17 @@ export interface StartRunInput {
   /** ChatMock's OpenAI-compatible base URL, already resolved for this request. */
   baseUrl: string;
   conversationPublicId: string;
-  /**
-   * Durable memory about the user, already selected and rendered by
-   * `conversations/agent-memory-context.ts`. Empty when nothing qualified.
-   * It reaches the harness as a system-prompt section, never as the assignment.
-   */
-  memoryContext: string;
-  /**
-   * The chat this assignment was given in. Travels with `memoryContext` as
-   * harness background rather than as part of the brief, which is what keeps
-   * an earlier message from reading as a second instruction.
-   */
-  conversationContext?: string;
+  apiKey: string;
+  runtimeWorkspacePath: string;
+  runtimeInputPaths: readonly string[];
+  runtimeContent: LegalRuntimeContentManifest;
+  runtimeAttachments: readonly LegalRuntimeAttachmentManifest[];
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
+/** Fixed worker-local entrypoint. Next routes use `runtime-run-manager.ts`. */
+export function startRuntimeWorkerRun(
+  input: LegalRuntimeWorkerRunInput,
+): { runId: string; status: RunStatus } {
   const runtime = resolveLegalRoot();
   if (!runtime) throw new Error("The harvey-labs clone was not found next to the dashboard.");
   const python = venvPython(runtime.root);
@@ -176,17 +209,23 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   const bridge = bridgeScriptPath();
   if (!bridge) throw new Error("Breadboard's legal bridge script is missing.");
 
-  const runId = `legal_${randomUUID().replaceAll("-", "")}`;
-  const workspace = prepareWorkspace({
-    runId,
-    userId: input.userId,
-    attachments: input.attachments,
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId)) {
+    throw new Error("The Legal Agent Runtime identity is invalid.");
+  }
+  const runId = input.runtimeJobId;
+  const prepared = prepareRuntimeWorkspace({
+    runtimeWorkspacePath: input.runtimeWorkspacePath,
+    inputPaths: input.runtimeInputPaths,
+    content: input.runtimeContent,
+    attachments: input.runtimeAttachments,
   });
+  const workspace = prepared.workspace;
+  const request: LegalRequest = { task: prepared.task, ...input.request };
   const artifactContext = input.conversationPublicId
     ? openLegalArtifactContext({
         userId: input.userId,
         conversationPublicId: input.conversationPublicId,
-        task: input.request.task,
+        task: request.task,
         agentRunId: runId,
       })
     : null;
@@ -194,7 +233,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   const run: RunState = {
     runId,
     userId: input.userId,
-    request: input.request,
+    request,
     workspace,
     artifactContext,
     artifactProblems: artifactContext
@@ -216,7 +255,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   for (const problem of workspace.skipped) run.artifactProblems.push(problem);
 
   try {
-    drive(run, input, { python, bridge, root: runtime.root });
+    drive(run, { ...input, prepared }, { python, bridge, root: runtime.root });
   } catch (error) {
     run.status = "failed";
     emit(run, "run.failed", {
@@ -231,7 +270,9 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
 
 function drive(
   run: RunState,
-  input: StartRunInput,
+  input: LegalRuntimeWorkerRunInput & {
+    prepared: ReturnType<typeof prepareRuntimeWorkspace>;
+  },
   paths: { python: string; bridge: string; root: string },
 ): void {
   const job = {
@@ -245,7 +286,7 @@ function drive(
     // as a flag wins for this run only.
     reasoningEffort: run.request.effort || input.reasoningEffort || "",
     baseUrl: input.baseUrl.replace(/\/$/, ""),
-    apiKey: chatmockApiKeyValue(),
+    apiKey: input.apiKey,
     maxTurns: run.request.maxTurns,
     shellTimeout: input.settings.shellTimeout,
     skills: run.request.skills,
@@ -253,7 +294,7 @@ function drive(
     // Background about the user, if any survived selection, and the chat the
     // assignment was given in. The bridge renders this as its own
     // system-prompt section so it can never read as the brief.
-    userContext: [input.memoryContext, contextSection(input.conversationContext)]
+    userContext: [input.prepared.memoryContext, contextSection(input.prepared.conversationContext)]
       .filter((section) => section.trim())
       .join("\n\n"),
     // What was staged, so the assignment can name each original, say what is
@@ -272,7 +313,7 @@ function drive(
     cwd: paths.root,
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
-    env: legalEnv({ HARVEY_LABS_ROOT: paths.root }),
+    env: legalEnv({ HARVEY_LABS_ROOT: paths.root }, legalWorkerChildEnvironment()),
   });
   run.child = child;
   run.status = "running";
@@ -299,6 +340,7 @@ function drive(
 
   let stdoutBuffer = "";
   let stderrTail = "";
+  let eventQueue = Promise.resolve();
   child.stdout?.setEncoding("utf8");
   child.stderr?.setEncoding("utf8");
   child.stdout?.on("data", (chunk: string) => {
@@ -307,7 +349,17 @@ function drive(
     while (newline >= 0) {
       const line = stdoutBuffer.slice(0, newline).trim();
       stdoutBuffer = stdoutBuffer.slice(newline + 1);
-      if (line) handleBridgeLine(run, line);
+      if (line) {
+        eventQueue = eventQueue
+          .then(() => handleBridgeLine(run, line))
+          .catch((error) => {
+            if (!["completed", "failed", "aborted"].includes(run.status)) {
+              finish(run, "failed", {
+                error: error instanceof Error ? error.message : "A worker event could not be stored.",
+              });
+            }
+          });
+      }
       newline = stdoutBuffer.indexOf("\n");
     }
     // A single event should never be this long; if it is, the stream is not
@@ -324,9 +376,10 @@ function drive(
     finish(run, "failed", { error: `The assignment could not start: ${error.message}` });
   });
 
-  child.on("exit", (code) => {
+  child.on("exit", async (code) => {
     clearTimeout(timer);
     run.child = null;
+    await eventQueue;
     if (["completed", "failed", "aborted"].includes(run.status)) return;
     if (run.aborted) return;
     // The bridge reports its own failures as events; reaching here means it
@@ -352,7 +405,7 @@ function drive(
 }
 
 /** Translate one bridge event into the run's own event stream. */
-function handleBridgeLine(run: RunState, line: string): void {
+async function handleBridgeLine(run: RunState, line: string): Promise<void> {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(line) as Record<string, unknown>;
@@ -409,7 +462,7 @@ function handleBridgeLine(run: RunState, line: string): void {
   if (type === "completed") {
     run.answer = text(event.answer);
     const files = Array.isArray(event.files) ? event.files : [];
-    storeDeliverables(run, files);
+    await storeDeliverables(run, files);
     finish(run, "completed", {
       summary: composeAnswer(run.answer, run.deliverables, run.artifactProblems),
       files: run.deliverables,
@@ -431,7 +484,7 @@ function handleBridgeLine(run: RunState, line: string): void {
 }
 
 /** Move every produced file into the artifact store, then announce the set. */
-function storeDeliverables(run: RunState, files: unknown[]): void {
+async function storeDeliverables(run: RunState, files: unknown[]): Promise<void> {
   for (const entry of files) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
@@ -451,7 +504,7 @@ function storeDeliverables(run: RunState, files: unknown[]): void {
       run.artifactProblems.push(`${relativePath} could not be read back.`);
       continue;
     }
-    const stored = saveLegalArtifact({
+    const stored = await saveLegalArtifact({
       context: run.artifactContext,
       path: relativePath,
       bytes: buffer,
@@ -491,16 +544,20 @@ function scheduleCleanup(run: RunState): void {
   timer.unref?.();
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): LegalEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): LegalEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
 /** Read one deliverable back for the card's download link. */
-export function readDeliverable(
+export function readRuntimeWorkerDeliverable(
   userId: number,
   runId: string,
   relativePath: string,
@@ -513,7 +570,7 @@ export function readDeliverable(
   return { buffer, filename: relativePath.split("/").filter(Boolean).pop() ?? "deliverable" };
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;

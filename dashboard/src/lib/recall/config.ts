@@ -70,9 +70,14 @@ function stringFromEnv(value: string | undefined): string | null {
  * a scheme is treated as http, because the engine only ever serves plain HTTP
  * on the loopback interface.
  */
-export function normalizeBaseUrl(value: string | undefined, fallback: string): string {
+export function normalizeBaseUrl(
+  value: string | undefined,
+  fallback: string,
+): string {
   const trimmed = (value ?? "").trim() || fallback;
-  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  const candidate = /^https?:\/\//i.test(trimmed)
+    ? trimmed
+    : `http://${trimmed}`;
   try {
     return new URL(candidate).toString().replace(/\/+$/, "");
   } catch {
@@ -88,22 +93,36 @@ export const RECALL_DEFAULT_BASE_URL = "http://127.0.0.1:3030";
 
 export function loadRecallConfig(env: RecallEnv = process.env): RecallConfig {
   const home =
-    stringFromEnv(env.RECALL_HOME) ?? path.join(os.homedir(), ".breadboard", "recall");
+    stringFromEnv(env.RECALL_HOME) ??
+    path.join(os.homedir(), ".breadboard", "recall");
 
   return {
     enabled: boolFromEnv(env.RECALL_ENABLED, true),
     baseUrl: normalizeBaseUrl(env.RECALL_BASE_URL, RECALL_DEFAULT_BASE_URL),
-    apiKey: stringFromEnv(env.RECALL_API_KEY) ?? stringFromEnv(env.SCREENPIPE_LOCAL_API_KEY),
+    apiKey:
+      stringFromEnv(env.RECALL_API_KEY) ??
+      stringFromEnv(env.SCREENPIPE_LOCAL_API_KEY),
     cliPackage: RECALL_CLI_PACKAGE,
     cliVersion: stringFromEnv(env.RECALL_CLI_VERSION) ?? RECALL_CLI_VERSION,
     home,
     dataDir: stringFromEnv(env.RECALL_DATA_DIR) ?? path.join(home, "data"),
-    requestTimeoutMs: intFromEnv(env.RECALL_REQUEST_TIMEOUT_MS, 20_000, { min: 1_000 }),
-    healthTimeoutMs: intFromEnv(env.RECALL_HEALTH_TIMEOUT_MS, 2_500, { min: 250 }),
-    installTimeoutMs: intFromEnv(env.RECALL_INSTALL_TIMEOUT_MS, 1_800_000, { min: 60_000 }),
-    shutdownGraceMs: intFromEnv(env.RECALL_SHUTDOWN_GRACE_MS, 8_000, { min: 500 }),
+    requestTimeoutMs: intFromEnv(env.RECALL_REQUEST_TIMEOUT_MS, 20_000, {
+      min: 1_000,
+    }),
+    healthTimeoutMs: intFromEnv(env.RECALL_HEALTH_TIMEOUT_MS, 2_500, {
+      min: 250,
+    }),
+    installTimeoutMs: intFromEnv(env.RECALL_INSTALL_TIMEOUT_MS, 1_800_000, {
+      min: 60_000,
+    }),
+    shutdownGraceMs: intFromEnv(env.RECALL_SHUTDOWN_GRACE_MS, 8_000, {
+      min: 500,
+    }),
     maxResults: intFromEnv(env.RECALL_MAX_RESULTS, 20, { min: 1, max: 50 }),
-    maxResultChars: intFromEnv(env.RECALL_MAX_RESULT_CHARS, 1_200, { min: 100, max: 20_000 }),
+    maxResultChars: intFromEnv(env.RECALL_MAX_RESULT_CHARS, 1_200, {
+      min: 100,
+      max: 20_000,
+    }),
   };
 }
 
@@ -119,31 +138,12 @@ export function resetRecallConfigCache(): void {
   cachedConfig = null;
 }
 
-/** Where the installer puts the CLI, and where the launcher looks for it. */
+/** Where the disposable installer puts the pinned CLI. */
 export function recallCliRoot(config: RecallConfig): string {
   return path.join(config.home, "cli");
-}
-
-/**
- * Resolved path of the installed CLI executable. npm puts a `.cmd` shim in
- * `node_modules/.bin` on Windows and a symlink elsewhere; both are spawnable.
- */
-export function recallCliBinary(config: RecallConfig): string {
-  const bin = path.join(recallCliRoot(config), "node_modules", ".bin");
-  return path.join(bin, process.platform === "win32" ? "screenpipe.cmd" : "screenpipe");
 }
 
 /** Heartbeat file the installer writes so the UI can tell slow from dead. */
 export function recallInstallStatusPath(config: RecallConfig): string {
   return path.join(config.home, "install-status.json");
-}
-
-/** Where a Breadboard-launched engine records its pid. */
-export function recallProcessStatePath(config: RecallConfig): string {
-  return path.join(config.home, "engine.json");
-}
-
-/** Rolling log of the Breadboard-launched engine, for the tab's error detail. */
-export function recallEngineLogPath(config: RecallConfig): string {
-  return path.join(config.home, "engine.log");
 }

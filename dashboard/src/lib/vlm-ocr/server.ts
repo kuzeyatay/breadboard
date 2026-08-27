@@ -1,23 +1,16 @@
-// Lifecycle for the local HunyuanOCR llama-server.
+// Process-free adapter for the HunyuanOCR llama-server.
 //
-// llama.cpp's `llama-server` speaks the OpenAI wire format, so once it is up
-// the OCR client is just an HTTP call. The only interesting part is getting it
-// up: we probe first, and only spawn when nothing is already listening — that
-// way a server the user started by hand (or the desktop supervisor) is reused
-// instead of being duplicated.
-//
-// The first spawn downloads ~1.3 GB of GGUF weights through llama.cpp's own
-// Hugging Face fetcher, which is why the startup budget is minutes, not
-// seconds, and why progress is reported while waiting.
-
-import { spawn, type ChildProcess } from "child_process";
-import fs from "fs";
+// Runtime V2 owns the local model process and holds its service lease for the
+// complete ingestion attempt. This module deliberately does only two things:
+// build the trusted launch arguments consumed by the native service profile,
+// and probe the already-owned endpoint from the disposable ingestion worker.
 
 import {
   vlmOcrServerHost,
   vlmOcrServerIsLocal,
   vlmOcrServerPort,
   type VlmOcrConfig,
+  type VlmOcrEnv,
 } from "./config.ts";
 import { VlmOcrDisabledError, VlmOcrUnavailableError } from "./errors.ts";
 
@@ -31,14 +24,17 @@ export interface VlmOcrProbe {
 export interface VlmOcrStatus extends VlmOcrProbe {
   enabled: boolean;
   baseUrl: string;
-  /** True when this process spawned the server and it is still alive. */
+  /** True when the endpoint is owned by the Rust Runtime V2 service registry. */
   managed: boolean;
+  /** True when a real operation may cold-start the Runtime-owned service. */
   autoStart: boolean;
   /** Which weights the server is (or would be) started with. */
   source: string;
 }
 
 const PROBE_TIMEOUT_MS = 2_500;
+const RUNTIME_READY_GRACE_MS = 30_000;
+const RUNTIME_READY_POLL_MS = 500;
 
 async function fetchWithTimeout(
   url: string,
@@ -99,6 +95,7 @@ export function vlmOcrWeightsSource(config: VlmOcrConfig): string {
   return config.hfRepo;
 }
 
+/** Trusted argv used by the native `vlm-ocr` service profile. */
 export function buildVlmOcrServerArgs(config: VlmOcrConfig): string[] {
   const args: string[] = [
     "--host",
@@ -130,217 +127,85 @@ export function buildVlmOcrServerArgs(config: VlmOcrConfig): string[] {
   return args;
 }
 
-interface ManagedServer {
-  child: ChildProcess;
-  startedAt: number;
-  /** Tail of stderr, kept so a crash can be explained. */
-  log: string[];
+/**
+ * This marker is synthesized by the trusted native environment profile. An
+ * API request cannot opt into local process ownership or choose an endpoint.
+ */
+export function vlmOcrRuntimeManaged(env: VlmOcrEnv = process.env): boolean {
+  return env.VLM_OCR_RUNTIME_MANAGED?.trim() === "1";
 }
 
-let managed: ManagedServer | null = null;
-let starting: Promise<void> | null = null;
-let exitHookInstalled = false;
-
-function recordLog(server: ManagedServer, chunk: Buffer): void {
-  const text = chunk.toString("utf8");
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    server.log.push(trimmed);
-    if (server.log.length > 40) server.log.shift();
+function externalEndpointHint(config: VlmOcrConfig): string {
+  if (!vlmOcrServerIsLocal(config)) {
+    return "Check the configured external OCR endpoint and credentials, then retry.";
   }
-}
-
-function installExitHook(): void {
-  if (exitHookInstalled) return;
-  exitHookInstalled = true;
-  const stop = () => stopVlmOcrServer();
-  process.once("exit", stop);
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
-}
-
-/** Kill a server this process started. No-op for an externally run one. */
-export function stopVlmOcrServer(): void {
-  if (!managed) return;
-  try {
-    managed.child.kill();
-  } catch {
-    // Already gone.
-  }
-  managed = null;
-}
-
-export function isVlmOcrServerManaged(): boolean {
-  return Boolean(managed && managed.child.exitCode === null);
-}
-
-function missingBinaryHint(config: VlmOcrConfig): string {
   return (
-    `Install llama.cpp so that \`${config.serverBinary}\` is on PATH ` +
-    "(or point VLM_OCR_SERVER_BINARY at it), then retry. " +
-    `You can also start it yourself with: ${config.serverBinary} -hf ${config.hfRepo} ` +
+    `Start one with: ${config.serverBinary} -hf ${config.hfRepo} ` +
     `--port ${vlmOcrServerPort(config)} --jinja`
   );
 }
 
-function spawnServer(config: VlmOcrConfig): ManagedServer {
-  const child = spawn(config.serverBinary, buildVlmOcrServerArgs(config), {
-    shell: false,
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  const server: ManagedServer = { child, startedAt: Date.now(), log: [] };
-  child.stdout?.on("data", (chunk: Buffer) => recordLog(server, chunk));
-  child.stderr?.on("data", (chunk: Buffer) => recordLog(server, chunk));
-  child.on("exit", () => {
-    if (managed === server) managed = null;
-  });
-  return server;
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 /**
- * Make sure an OCR server is answering, spawning one if needed and allowed.
- * Concurrent callers share a single start attempt.
+ * Confirm that the endpoint already assigned to this disposable worker is
+ * ready. The Rust dispatcher acquires the conditional `vlm-ocr` dependency
+ * before launching a managed worker, so this grace loop only covers a narrow
+ * readiness race. It never starts, kills, or supervises a process.
  */
 export async function ensureVlmOcrServer(
   config: VlmOcrConfig,
   onProgress?: (step: string) => void,
+  env: VlmOcrEnv = process.env,
 ): Promise<void> {
   if (!config.enabled) throw new VlmOcrDisabledError();
 
   const first = await probeVlmOcrServer(config);
   if (first.ok) return;
 
-  if (starting) {
-    await starting;
-    const afterShared = await probeVlmOcrServer(config);
-    if (afterShared.ok) return;
-  }
-
-  if (!config.autoStart) {
+  if (!vlmOcrRuntimeManaged(env)) {
     throw new VlmOcrUnavailableError(
       `No OCR model server is answering at ${config.baseUrl}.`,
-      `Start one with: ${config.serverBinary} -hf ${config.hfRepo} --port ${vlmOcrServerPort(config)} --jinja`,
+      externalEndpointHint(config),
     );
   }
 
-  if (!vlmOcrServerIsLocal(config)) {
-    throw new VlmOcrUnavailableError(
-      `No OCR model server is answering at ${config.baseUrl}.`,
-      "That address is not on this machine, so it cannot be started from here.",
-    );
-  }
-
-  if (config.modelPath && !fs.existsSync(config.modelPath)) {
-    throw new VlmOcrUnavailableError(
-      `The GGUF at ${config.modelPath} does not exist.`,
-      "Fix VLM_OCR_MODEL_PATH, or clear it to download the weights from Hugging Face instead.",
-    );
-  }
-  if (config.mmprojPath && !fs.existsSync(config.mmprojPath)) {
-    throw new VlmOcrUnavailableError(
-      `The vision projector at ${config.mmprojPath} does not exist.`,
-      "Fix VLM_OCR_MMPROJ_PATH, or clear it to download the weights from Hugging Face instead.",
-    );
-  }
-
-  starting = (async () => {
-    onProgress?.("Starting the local OCR model server…");
-    let server: ManagedServer;
-    try {
-      server = spawnServer(config);
-    } catch {
-      throw new VlmOcrUnavailableError(
-        `Could not run \`${config.serverBinary}\`.`,
-        missingBinaryHint(config),
-      );
+  onProgress?.("Waiting for the local OCR model server…");
+  const waitMs = Math.min(config.startupTimeoutMs, RUNTIME_READY_GRACE_MS);
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    await delay(Math.min(RUNTIME_READY_POLL_MS, deadline - Date.now()));
+    const probe = await probeVlmOcrServer(config);
+    if (probe.ok) {
+      onProgress?.("Local OCR model server is ready.");
+      return;
     }
-    managed = server;
-    installExitHook();
-
-    const spawnFailure = await new Promise<Error | null>((resolve) => {
-      const onError = (error: NodeJS.ErrnoException) => resolve(error);
-      server.child.once("error", onError);
-      setTimeout(() => {
-        server.child.off("error", onError);
-        resolve(null);
-      }, 250).unref();
-    });
-    if (spawnFailure) {
-      managed = null;
-      const notFound =
-        (spawnFailure as NodeJS.ErrnoException).code === "ENOENT";
-      throw new VlmOcrUnavailableError(
-        notFound
-          ? `\`${config.serverBinary}\` was not found.`
-          : `Could not run \`${config.serverBinary}\`: ${spawnFailure.message}`,
-        missingBinaryHint(config),
-      );
-    }
-
-    const deadline = Date.now() + config.startupTimeoutMs;
-    let announcedDownload = false;
-    while (Date.now() < deadline) {
-      if (server.child.exitCode !== null) {
-        const tail = server.log.slice(-6).join(" | ") || "no output";
-        managed = null;
-        throw new VlmOcrUnavailableError(
-          `The OCR model server exited during startup (code ${server.child.exitCode}).`,
-          `Last output: ${tail}`,
-        );
-      }
-
-      const probe = await probeVlmOcrServer(config);
-      if (probe.ok) {
-        onProgress?.("Local OCR model server is ready.");
-        return;
-      }
-
-      if (!announcedDownload && Date.now() - server.startedAt > 8_000) {
-        announcedDownload = true;
-        onProgress?.(
-          `Loading ${vlmOcrWeightsSource(config)} (first run downloads the weights)…`,
-        );
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-    }
-
-    const tail = server.log.slice(-6).join(" | ") || "no output";
-    stopVlmOcrServer();
-    throw new VlmOcrUnavailableError(
-      `The OCR model server did not become ready within ${Math.round(config.startupTimeoutMs / 1000)}s.`,
-      `Last output: ${tail}`,
-    );
-  })();
-
-  try {
-    await starting;
-  } finally {
-    starting = null;
   }
+
+  throw new VlmOcrUnavailableError(
+    `The Runtime-owned OCR model server is not answering at ${config.baseUrl}.`,
+    "Breadboard could not keep the OCR model service ready for this ingestion attempt.",
+  );
 }
 
-/** Status for the upload UI: can this option be offered right now? */
-export async function vlmOcrStatus(config: VlmOcrConfig): Promise<VlmOcrStatus> {
+/** Status for the upload UI. This is observational and never acquires a lease. */
+export async function vlmOcrStatus(
+  config: VlmOcrConfig,
+  env: VlmOcrEnv = process.env,
+): Promise<VlmOcrStatus> {
   const probe = config.enabled
     ? await probeVlmOcrServer(config)
     : { ok: false, models: [], detail: "disabled" };
+  const managed = config.enabled && vlmOcrRuntimeManaged(env);
 
   return {
     ...probe,
     enabled: config.enabled,
     baseUrl: config.baseUrl,
-    managed: isVlmOcrServerManaged(),
-    autoStart: config.autoStart,
+    managed,
+    autoStart: managed,
     source: vlmOcrWeightsSource(config),
   };
-}
-
-/** Test hook: forget any server this module thinks it owns. */
-export function resetVlmOcrServerState(): void {
-  managed = null;
-  starting = null;
 }

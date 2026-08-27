@@ -14,10 +14,11 @@
  * promoted atomically (see learn-atomic-promotion.ts).
  */
 
-import fs from "node:fs";
+import type { Stats } from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import crypto from "node:crypto";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import {
   isTransientFileOpenError,
   withTransientFileOpenRetry,
@@ -350,7 +351,7 @@ function sourceAnchorLedgerPath(gardenDir: string): string {
 }
 
 function readRequiredRegularFile(absolutePath: string, label: string): Buffer {
-  let stat: fs.Stats;
+  let stat: Stats;
   try {
     stat = fs.lstatSync(absolutePath);
   } catch (error) {

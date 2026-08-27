@@ -44,7 +44,7 @@ export async function saveArtifactPdfBytes(
   try {
     const staged = path.join(workspace, path.basename(artifact.filename));
     fs.writeFileSync(staged, bytes);
-    return importArtifactVersion({
+    return await importArtifactVersion({
       artifact,
       authorizedRoot: workspace,
       filePath: staged,

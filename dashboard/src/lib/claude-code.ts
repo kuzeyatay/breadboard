@@ -1,12 +1,9 @@
-import { execFile } from "node:child_process";
 import crypto from "node:crypto";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { promisify } from "node:util";
+import {
+  ClaudeAccountJobError,
+  runClaudeAccountJob,
+} from "./runtime-v2/claude-account-job.ts";
 
-const execFileAsync = promisify(execFile);
-const STATUS_TIMEOUT_MS = 20_000;
 const LOGIN_STATE_TTL_MS = 15 * 60_000;
 
 /**
@@ -54,39 +51,20 @@ interface ClaudeAuthStatusPayload {
 }
 
 const globalState = globalThis as typeof globalThis & {
-  __breadboardClaudeLoginStates?: Map<string, number>;
+  __breadboardClaudeLoginStates?: Map<string, { userId: number; expiresAt: number }>;
 };
 
-function loginStates(): Map<string, number> {
-  globalState.__breadboardClaudeLoginStates ??= new Map<string, number>();
+function loginStates(): Map<string, { userId: number; expiresAt: number }> {
+  globalState.__breadboardClaudeLoginStates ??= new Map<
+    string,
+    { userId: number; expiresAt: number }
+  >();
   const states = globalState.__breadboardClaudeLoginStates;
   const now = Date.now();
-  for (const [state, expiresAt] of states) {
-    if (expiresAt <= now) states.delete(state);
+  for (const [state, record] of states) {
+    if (record.expiresAt <= now) states.delete(state);
   }
   return states;
-}
-
-function claudeCommand(): string {
-  // The override is mainly useful to packaged apps whose inherited PATH is
-  // narrower than an interactive shell's. The credential remains Claude
-  // Code-owned regardless of where its executable lives.
-  const configured = process.env.CLAUDE_CLI_PATH?.trim();
-  if (configured) return configured;
-
-  // Desktop apps do not always inherit the login shell's PATH. Check the
-  // official installer's common locations before falling back to PATH lookup.
-  const executable = process.platform === "win32" ? "claude.exe" : "claude";
-  const candidates = [
-    path.join(os.homedir(), ".local", "bin", executable),
-    ...(process.platform === "darwin"
-      ? ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
-      : []),
-    ...(process.platform === "win32" && process.env.LOCALAPPDATA
-      ? [path.join(process.env.LOCALAPPDATA, "Programs", "claude", executable)]
-      : []),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? "claude";
 }
 
 function text(value: unknown): string | null {
@@ -109,50 +87,25 @@ export function parseClaudeCodeStatus(value: unknown): ClaudeCodeStatus {
   };
 }
 
-function commandError(error: unknown): { missing: boolean; message: string } {
-  const value = error as {
-    code?: unknown;
-    stdout?: unknown;
-    stderr?: unknown;
-    message?: unknown;
-  };
-  const missing = value?.code === "ENOENT";
-  const detail = [value?.stderr, value?.stdout, value?.message]
-    .find((candidate) => typeof candidate === "string" && candidate.trim());
-  return {
-    missing,
-    message:
-      typeof detail === "string" && detail.trim()
-        ? detail.trim()
-        : missing
-          ? "Claude Code is not installed."
-          : "Claude Code is not signed in.",
-  };
-}
-
 /** Read authentication through Claude Code itself; never open its credential. */
-export async function readClaudeCodeStatus(): Promise<ClaudeCodeStatus> {
+export async function readClaudeCodeStatus(
+  userId: number,
+  signal?: AbortSignal,
+): Promise<ClaudeCodeStatus> {
+  const result = await runClaudeAccountJob({ userId, operation: "status", signal });
   try {
-    const { stdout } = await execFileAsync(
-      claudeCommand(),
-      ["auth", "status", "--json"],
-      {
-        timeout: STATUS_TIMEOUT_MS,
-        windowsHide: true,
-        maxBuffer: 1024 * 1024,
-      },
-    );
-    return parseClaudeCodeStatus(JSON.parse(stdout));
-  } catch (error) {
-    const failure = commandError(error);
+    const status = parseClaudeCodeStatus(JSON.parse(result.detail));
+    const parsed = JSON.parse(result.detail) as { installed?: unknown; error?: unknown };
     return {
-      installed: !failure.missing,
-      loggedIn: false,
-      authMethod: null,
-      email: null,
-      subscriptionType: null,
-      error: failure.message,
+      ...status,
+      installed: parsed.installed === true,
+      error: status.loggedIn ? null : text(parsed.error) ?? status.error,
     };
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new ClaudeAccountJobError(502, "Runtime returned an invalid Claude Code status.");
+    }
+    throw error;
   }
 }
 
@@ -165,11 +118,11 @@ export async function readClaudeCodeStatus(): Promise<ClaudeCodeStatus> {
  * must be completed with the official `claude auth login` command; once it is,
  * linking is immediate and no token is copied into Breadboard or CLIProxyAPI.
  */
-export async function linkClaudeCodeLogin(): Promise<{
+export async function linkClaudeCodeLogin(userId: number, signal?: AbortSignal): Promise<{
   state: string;
   complete: true;
 }> {
-  const status = await readClaudeCodeStatus();
+  const status = await readClaudeCodeStatus(userId, signal);
   if (!status.installed) {
     throw new Error(
       "Claude Code is not installed. Install the official Claude Code CLI, run `claude auth login`, then refresh Breadboard.",
@@ -182,7 +135,7 @@ export async function linkClaudeCodeLogin(): Promise<{
   }
 
   const state = `${CLAUDE_LOGIN_STATE_PREFIX}${crypto.randomUUID()}`;
-  loginStates().set(state, Date.now() + LOGIN_STATE_TTL_MS);
+  loginStates().set(state, { userId, expiresAt: Date.now() + LOGIN_STATE_TTL_MS });
   return { state, complete: true };
 }
 
@@ -190,22 +143,19 @@ export function isClaudeCodeLoginState(state: string): boolean {
   return state.startsWith(CLAUDE_LOGIN_STATE_PREFIX);
 }
 
-export async function isClaudeCodeLoginComplete(state: string): Promise<boolean> {
-  if (!loginStates().has(state)) return false;
-  return (await readClaudeCodeStatus()).loggedIn;
+export async function isClaudeCodeLoginComplete(
+  userId: number,
+  state: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (loginStates().get(state)?.userId !== userId) return false;
+  return (await readClaudeCodeStatus(userId, signal)).loggedIn;
 }
 
 /** Sign out through the owner of the credential rather than deleting files. */
-export async function logoutClaudeCode(): Promise<void> {
-  try {
-    await execFileAsync(claudeCommand(), ["auth", "logout"], {
-      timeout: STATUS_TIMEOUT_MS,
-      windowsHide: true,
-      maxBuffer: 1024 * 1024,
-    });
-  } catch (error) {
-    throw new Error(commandError(error).message);
-  }
+export async function logoutClaudeCode(userId: number, signal?: AbortSignal): Promise<void> {
+  const result = await runClaudeAccountJob({ userId, operation: "logout", signal });
+  if (!result.ok) throw new ClaudeAccountJobError(502, result.message);
 }
 
 export function isClaudeCodeModel(model: string): boolean {

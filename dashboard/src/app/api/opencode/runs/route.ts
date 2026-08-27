@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth.ts";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
 import { resolveConnectedRepository } from "@/lib/opencode/repository.ts";
-import { graftRunContext } from "@/lib/code-index/garden.ts";
-import { startRun } from "@/lib/opencode/run-manager.ts";
 import {
-  captureSnapshot,
-  rememberRunSnapshot,
-} from "@/lib/agent-edits/snapshot.ts";
+  graftEnabledForGarden,
+  prepareGraftIndex,
+} from "@/lib/code-index/garden.ts";
+import { startRun } from "@/lib/opencode/run-manager.ts";
 import { resolveCommandMessage } from "@/lib/hermes/commands.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
 import { normalizeChatMessageAttachments } from "@/lib/chat-attachments.ts";
@@ -73,10 +71,17 @@ export async function POST(request: Request) {
       (invocation) => invocation.kind === "skill",
     );
     const { baseURL } = resolveChatmockBaseUrl(request);
-    // Snapshot before the agent can write anything, so the run stays undoable.
-    const snapshotBefore = captureSnapshot(repository.path);
-    const run = startRun({
+    const graftEnabled = graftEnabledForGarden(userId, repository.gardenSlug);
+    if (graftEnabled) {
+      await prepareGraftIndex(userId, repository.path);
+    }
+    const clientMessageId =
+      typeof body.clientMessageId === "string" ? body.clientMessageId.trim() : "";
+    const run = await startRun({
       userId,
+      requestId: /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(clientMessageId)
+        ? clientMessageId
+        : undefined,
       task,
       // The chat this was typed into, so a task that refers back to it resolves
       // instead of reaching OpenCode as a bare fragment.
@@ -97,14 +102,12 @@ export async function POST(request: Request) {
         ? requestedEffort
         : "high",
       baseUrl: baseURL,
-      apiKey: chatmockApiKeyValue(),
       repositoryPath: repository.path,
       repositoryName: repository.name,
       gardenSlug: repository.gardenSlug,
       attachments,
-      graft: graftRunContext(userId, repository),
+      graftEnabled,
     });
-    rememberRunSnapshot(run.runId, repository.path, snapshotBefore);
     return NextResponse.json(
       {
         ok: true,

@@ -18,6 +18,15 @@ interface BoardReference {
 
 const LOCAL_HOST = /^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i
 const DEFAULT_PENECHO_PORT = "8092"
+const VIEW_HEARTBEAT_MS = 20_000
+
+interface ServerResolution {
+  url: string | null
+  error: string
+  leaseAcknowledged: boolean
+}
+
+const activeBoardCleanups = new Set<() => void>()
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -84,32 +93,76 @@ function readBoard(code: HTMLElement): BoardReference | null {
  * the dashboard is down, so the board is framed anyway and the server itself
  * gets to say whether it is there.
  */
-async function resolveServer(fallback: string): Promise<{ url: string | null; error: string }> {
+async function resolveServer(fallback: string, viewId: string): Promise<ServerResolution> {
   const dashboard = dashboardBaseUrl()
-  if (!dashboard) return { url: fallback || null, error: "" }
+  if (!dashboard) return { url: fallback || null, error: "", leaseAcknowledged: false }
   try {
     const response = await fetch(`${dashboard}/api/penecho/status`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ viewId }),
+      cache: "no-store",
     })
     const body = (await response.json().catch(() => ({}))) as {
       running?: boolean
       baseUrl?: string
       available?: boolean
       error?: string
+      viewId?: string
     }
-    if (response.ok && body.running) return { url: body.baseUrl || fallback, error: "" }
+    if (response.ok && body.running) {
+      return {
+        url: body.baseUrl || fallback,
+        error: "",
+        // An older dashboard can still serve the board, but only Runtime V2
+        // acknowledges the opaque view hold that should be renewed/released.
+        leaseAcknowledged: body.viewId === viewId,
+      }
+    }
     return {
       url: null,
       error:
         body.available === false
           ? "The whiteboard server is not installed next to this dashboard."
           : body.error || "The whiteboard server could not be started.",
+      leaseAcknowledged: false,
     }
   } catch {
-    return { url: fallback || null, error: "" }
+    return { url: fallback || null, error: "", leaseAcknowledged: false }
   }
+}
+
+async function renewViewLease(viewId: string): Promise<boolean> {
+  const dashboard = dashboardBaseUrl()
+  if (!dashboard) return false
+  try {
+    const response = await fetch(`${dashboard}/api/penecho/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ viewId }),
+      cache: "no-store",
+    })
+    if (!response.ok) return false
+    const body = (await response.json().catch(() => ({}))) as {
+      running?: boolean
+      viewId?: string
+    }
+    return body.running === true && body.viewId === viewId
+  } catch {
+    return false
+  }
+}
+
+function releaseViewLease(viewId: string): void {
+  const dashboard = dashboardBaseUrl()
+  if (!dashboard) return
+  void fetch(`${dashboard}/api/penecho/status`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ viewId }),
+    cache: "no-store",
+    keepalive: true,
+  }).catch(() => undefined)
 }
 
 function boardUrl(server: string, board: BoardReference): string {
@@ -120,10 +173,11 @@ function boardUrl(server: string, board: BoardReference): string {
   return url.toString()
 }
 
-function buildCard(board: BoardReference): HTMLElement {
+function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: () => void } {
   const card = element("section", "penecho-board")
   card.dataset.boardId = board.id
   card.style.setProperty("--penecho-board-height", `${board.height}px`)
+  const viewId = crypto.randomUUID()
 
   const header = element("header", "penecho-board-header")
   const heading = element("div", "penecho-board-heading")
@@ -148,28 +202,75 @@ function buildCard(board: BoardReference): HTMLElement {
   card.appendChild(surface)
 
   let frame: HTMLIFrameElement | null = null
+  let disposed = false
+  let leaseAcknowledged = false
+  let heartbeat: number | null = null
+  let heartbeatRequest: Promise<void> | null = null
+  let mountPromise: Promise<void> | null = null
   const setMessage = (message: string, retryable: boolean) => {
     placeholder.querySelector(".penecho-board-placeholder-text")!.textContent = message
     retry.hidden = !retryable
   }
 
-  const mount = async () => {
-    if (frame) return
-    retry.hidden = true
-    setMessage("Opening the board…", false)
-    const { url, error } = await resolveServer(board.server)
-    if (!url) {
-      setMessage(error || "The whiteboard server is not running.", true)
-      return
-    }
-    frame = element("iframe", "penecho-board-frame") as HTMLIFrameElement
-    frame.title = board.title
-    frame.src = boardUrl(url, board)
-    frame.allow = "clipboard-read; clipboard-write"
-    surface.appendChild(frame)
-    card.classList.add("penecho-board--mounted")
+  const startHeartbeat = () => {
+    if (heartbeat !== null || disposed) return
+    heartbeat = window.setInterval(() => {
+      if (disposed || heartbeatRequest) return
+      heartbeatRequest = renewViewLease(viewId)
+        .then((renewed) => {
+          if (renewed) leaseAcknowledged = true
+        })
+        .finally(() => {
+          heartbeatRequest = null
+        })
+    }, VIEW_HEARTBEAT_MS)
   }
-  retry.addEventListener("click", () => void mount())
+
+  const mount = (): Promise<void> => {
+    if (frame || disposed) return Promise.resolve()
+    if (mountPromise) return mountPromise
+    mountPromise = (async () => {
+      retry.hidden = true
+      setMessage("Opening the board…", false)
+      const resolution = await resolveServer(board.server, viewId)
+      if (resolution.leaseAcknowledged) {
+        if (disposed) {
+          releaseViewLease(viewId)
+          return
+        }
+        leaseAcknowledged = true
+        startHeartbeat()
+      }
+      if (disposed) return
+      if (!resolution.url) {
+        setMessage(resolution.error || "The whiteboard server is not running.", true)
+        return
+      }
+
+      let source: string
+      try {
+        source = boardUrl(resolution.url, board)
+      } catch {
+        if (leaseAcknowledged) {
+          leaseAcknowledged = false
+          releaseViewLease(viewId)
+        }
+        setMessage("The whiteboard server address is invalid.", true)
+        return
+      }
+      frame = element("iframe", "penecho-board-frame") as HTMLIFrameElement
+      frame.title = board.title
+      frame.src = source
+      frame.allow = "clipboard-read; clipboard-write"
+      surface.appendChild(frame)
+      card.classList.add("penecho-board--mounted")
+    })().finally(() => {
+      mountPromise = null
+    })
+    return mountPromise
+  }
+  const onRetry = () => void mount()
+  retry.addEventListener("click", onRetry)
 
   // Expanding is a state of the card, not a different card: the frame stays put
   // and only its box changes, because moving an iframe in the document reloads
@@ -193,15 +294,18 @@ function buildCard(board: BoardReference): HTMLElement {
     if (expanded) void mount()
   }
   const toggle = () => setExpanded(!card.classList.contains("penecho-board--expanded"))
-  expand.addEventListener("click", (event) => {
+  const onExpand = (event: MouseEvent) => {
     event.stopPropagation()
     toggle()
-  })
+  }
+  expand.addEventListener("click", onExpand)
   // The board itself is drawn on, so only its title bar is a click target.
   header.addEventListener("click", toggle)
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && card.classList.contains("penecho-board--expanded")) setExpanded(false)
-  })
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && card.classList.contains("penecho-board--expanded"))
+      setExpanded(false)
+  }
+  document.addEventListener("keydown", onKeyDown)
 
   // A board is a canvas application; mounting every one on a long note at once
   // would cost more than the page is worth. Mount the ones that are looked at.
@@ -215,7 +319,30 @@ function buildCard(board: BoardReference): HTMLElement {
   )
   observer.observe(card)
 
-  return card
+  const dispose = () => {
+    if (disposed) return
+    disposed = true
+    observer.disconnect()
+    retry.removeEventListener("click", onRetry)
+    expand.removeEventListener("click", onExpand)
+    header.removeEventListener("click", toggle)
+    document.removeEventListener("keydown", onKeyDown)
+    if (heartbeat !== null) window.clearInterval(heartbeat)
+    heartbeat = null
+    spacer?.remove()
+    spacer = null
+    card.classList.remove("penecho-board--expanded")
+    document.documentElement.classList.remove("penecho-board-open")
+    frame?.remove()
+    frame = null
+    if (leaseAcknowledged) {
+      leaseAcknowledged = false
+      releaseViewLease(viewId)
+    }
+    activeBoardCleanups.delete(dispose)
+  }
+
+  return { card, dispose }
 }
 
 function buildFallback(): HTMLElement {
@@ -228,13 +355,27 @@ function buildFallback(): HTMLElement {
   return fallback
 }
 
+function disposeActiveBoards(): void {
+  for (const dispose of [...activeBoardCleanups]) dispose()
+  activeBoardCleanups.clear()
+}
+
+window.addEventListener("pagehide", disposeActiveBoards)
+
 document.addEventListener("nav", () => {
+  disposeActiveBoards()
   const nodes = document.querySelectorAll("code.penecho-board-block") as NodeListOf<HTMLElement>
   for (const code of nodes) {
     const host = (code.closest("pre") as HTMLElement | null) ?? code
     if (host.dataset.penechoBound === "true") continue
     host.dataset.penechoBound = "true"
     const board = readBoard(code)
-    host.replaceWith(board ? buildCard(board) : buildFallback())
+    if (!board) {
+      host.replaceWith(buildFallback())
+      continue
+    }
+    const built = buildPenechoCard(board)
+    activeBoardCleanups.add(built.dispose)
+    host.replaceWith(built.card)
   }
 })

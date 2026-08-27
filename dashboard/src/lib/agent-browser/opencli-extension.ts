@@ -29,9 +29,13 @@
 // only accounts are the ones somebody deliberately signed into for the agents.
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+} from "../external-runtime-filesystem.ts";
 
 /** The release this code was written against and tested on. */
 export const OPENCLI_EXTENSION_VERSION = "1.0.22";
@@ -76,9 +80,9 @@ export function installedOpenCliExtension(
 ): { path: string; version: string } | null {
   const dir = openCliExtensionDir(env, version);
   const manifest = path.join(dir, "manifest.json");
-  if (!existsSync(manifest)) return null;
+  if (!externalRuntimePathExists(manifest)) return null;
   try {
-    const parsed = JSON.parse(readFileSync(manifest, "utf8")) as { version?: unknown };
+    const parsed = JSON.parse(externalRuntimeReadUtf8(manifest)) as { version?: unknown };
     const version = typeof parsed.version === "string" ? parsed.version : null;
     if (!version) return null;
     return { path: dir, version };
@@ -179,10 +183,10 @@ export async function ensureOpenCliExtension(options?: {
     // hash matches but whose contents are not this extension should not be
     // handed to a browser.
     const manifestPath = path.join(unpacked, "manifest.json");
-    if (!existsSync(manifestPath)) {
+    if (!externalRuntimePathExists(manifestPath)) {
       return { status: "unavailable", reason: "archive contained no manifest.json" };
     }
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    const manifest = JSON.parse(externalRuntimeReadUtf8(manifestPath)) as {
       name?: unknown;
       version?: unknown;
     };

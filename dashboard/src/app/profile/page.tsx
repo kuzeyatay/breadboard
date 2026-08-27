@@ -71,7 +71,7 @@ export default async function ProfilePage({
     <ProfileClient
       stats={stats}
       initialShortcuts={getNavbarShortcuts(userId)}
-      browserProfile={browserProfileState()}
+      browserProfile={await browserProfileState()}
       contacts={contacts.listContacts(userId, { limit: 200 })}
       contactTotal={contacts.countContacts(userId)}
       syncedCalendars={calendars}

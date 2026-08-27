@@ -5,7 +5,7 @@
 // that is acceptable on one send path and not the other is a bug waiting for
 // whichever path was forgotten.
 
-import { ApiError, requireString } from "./hermes/route-helpers.ts";
+import { ApiError, requireString } from "./hermes/route-core.ts";
 import type { ChatAttachment } from "./chat-attachments.ts";
 import {
   isModelAttachmentFormat,

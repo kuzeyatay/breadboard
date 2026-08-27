@@ -12,6 +12,7 @@ import {
   type QuartzAssistantSelectionRequest,
   type QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
+import { useQuartzViewLease } from '../use-quartz-view-lease';
 
 interface Props {
   clusterSlug: string;
@@ -133,6 +134,7 @@ export default function GardenClient({
   trackPublicView = false,
 }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const quartzLease = useQuartzViewLease();
   const [activeCluster, setActiveCluster] = useState(clusterSlug);
   const [activeMarkdown, setActiveMarkdown] = useState<ActiveMarkdown | null>(() =>
     note ? { cluster: clusterSlug, slug: note, loading: true } : null,
@@ -635,9 +637,11 @@ export default function GardenClient({
       <iframe
         ref={iframeRef}
         src={
-          note
-            ? quartzUrl(clusterSlug, ...note.split('/').filter(Boolean))
-            : quartzUrl(clusterSlug)
+          quartzLease.ready
+            ? note
+              ? quartzUrl(clusterSlug, ...note.split('/').filter(Boolean))
+              : quartzUrl(clusterSlug)
+            : undefined
         }
         className="h-full min-w-0 flex-1 border-0 bg-gray-950"
         title={`${clusterName} garden`}

@@ -191,7 +191,7 @@ export async function POST(request: Request) {
         prompt,
       });
       const title = text(args.title, 240) ?? generatedImageTitle(prompt);
-      const artifact = importArtifactImage({
+      const artifact = await importArtifactImage({
         context: {
           userId: session.user_id,
           conversationPublicId: requiredText(
@@ -261,7 +261,7 @@ export async function POST(request: Request) {
         sourceHermesTool: action,
       };
       let artifact = action === "artifact_import"
-        ? createImportedArtifact({
+        ? await createImportedArtifact({
             ...shared,
             authorizedRoot:
               session.active_directory ??
@@ -315,7 +315,12 @@ export async function POST(request: Request) {
         });
       }
       if (action === "artifact_create" && args.render === true) {
-        artifact = await renderArtifact({ artifact, runId: run.id, assistantMessageId: assistantMessage?.id ?? null });
+        artifact = await renderArtifact({
+          artifact,
+          runId: run.id,
+          assistantMessageId: assistantMessage?.id ?? null,
+          signal: request.signal,
+        });
       }
       result = { artifact: presentArtifact(artifact) };
     } else {
@@ -328,7 +333,7 @@ export async function POST(request: Request) {
       if (action === "artifact_read") {
         const presented = presentArtifact(artifact);
         result = artifactEditorMode(presented)
-          ? await loadArtifactEditor(artifact)
+          ? await loadArtifactEditor(artifact, { signal: request.signal })
           : { artifact: presented, content: readArtifactSource(artifact) };
       } else if (action === "artifact_update" || action === "artifact_append" || action === "artifact_fork") {
         const provenance = validateMcpProvenance(session.user_id, args.provenance, selectedMcpServers);
@@ -344,7 +349,7 @@ export async function POST(request: Request) {
               expectedVersion: artifact.current_version,
               content: typeof args.content === "string" ? args.content : undefined,
               patches: Array.isArray(args.patches) ? args.patches as ArtifactEditorPatch[] : undefined,
-            })
+            }, { signal: request.signal })
           : updateArtifactContent({
               artifact,
               content: content(args.content),
@@ -379,6 +384,7 @@ export async function POST(request: Request) {
           artifact,
           runId: run.id,
           assistantMessageId: assistantMessage?.id ?? null,
+          signal: request.signal,
         });
         result = { artifact: presentArtifact(rendered) };
       }

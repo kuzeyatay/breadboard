@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     if (!conversationPublicId) {
       return NextResponse.json({ ok: false, error: "conversation_required" }, { status: 400 });
     }
-    const health = await shapeRHealth();
+    const health = await shapeRHealth({ userId });
     if (!health.available) {
       return NextResponse.json(
         { ok: false, error: health.reason ?? "ShapeR is not ready." },

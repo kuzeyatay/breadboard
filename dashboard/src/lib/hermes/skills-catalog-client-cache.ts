@@ -3,10 +3,21 @@
 import type { HermesSurface } from "@/lib/hermes/config.ts";
 
 export const SKILLS_CATALOG_CACHE_TTL_MS = 5 * 60_000;
+export const SKILLS_CATALOG_CACHE_MAX_ENTRIES = 32;
 
 const responses = new Map<string, { expiresAt: number; value: unknown }>();
 const requests = new Map<string, Promise<unknown>>();
 let cacheGeneration = 0;
+
+function cacheResponse(url: string, value: unknown, expiresAt: number): void {
+  responses.delete(url);
+  responses.set(url, { expiresAt, value });
+  while (responses.size > SKILLS_CATALOG_CACHE_MAX_ENTRIES) {
+    const oldest = responses.keys().next().value;
+    if (typeof oldest !== "string") break;
+    responses.delete(oldest);
+  }
+}
 
 export function skillsCatalogUrl({
   surface,
@@ -43,7 +54,11 @@ export function skillsCatalogUrl({
 
 export function peekCachedSkillsCatalog<T>(url: string): T | null {
   const cached = responses.get(url);
-  if (!cached || cached.expiresAt <= Date.now()) return null;
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    responses.delete(url);
+    return null;
+  }
   return cached.value as T;
 }
 
@@ -72,7 +87,7 @@ export async function loadCachedSkillsCatalog<T>(
         throw new Error(message);
       }
       if (requestGeneration === cacheGeneration) {
-        responses.set(url, { expiresAt: Date.now() + maxAgeMs, value });
+        cacheResponse(url, value, Date.now() + maxAgeMs);
       }
       return value as T;
     })

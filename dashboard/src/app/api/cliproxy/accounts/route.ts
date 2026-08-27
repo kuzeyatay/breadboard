@@ -4,11 +4,16 @@ import {
   CliproxyUnavailableError,
   deleteAccount,
 } from "@/lib/cliproxy/management";
+import { withCliproxyLease } from "@/lib/cliproxy/runtime-lease";
+import { CLAUDE_CODE_ACCOUNT_FILE } from "@/lib/claude-code";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 import { requireUserId, routeErrorResponse, RouteError } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
 function failure(error: unknown): NextResponse {
+  const runtimeResponse = runtimeAuthorityErrorResponse(error);
+  if (runtimeResponse) return runtimeResponse;
   if (error instanceof RouteError) return routeErrorResponse(error);
   if (error instanceof CliproxyUnavailableError) {
     return NextResponse.json({ error: error.message }, { status: 503 });
@@ -29,12 +34,20 @@ function failure(error: unknown): NextResponse {
  */
 export async function DELETE(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
 
     const file = new URL(request.url).searchParams.get("file");
     if (!file?.trim()) throw new RouteError(400, "A credential file is required.");
 
-    await deleteAccount(file.trim());
+    const name = file.trim();
+    if (name === CLAUDE_CODE_ACCOUNT_FILE) {
+      await deleteAccount(userId, name, request.signal);
+    } else {
+      await withCliproxyLease(
+        "subscription-sign-out",
+        () => deleteAccount(userId, name, request.signal),
+      );
+    }
     return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return failure(error);

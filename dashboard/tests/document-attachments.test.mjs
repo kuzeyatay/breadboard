@@ -614,19 +614,17 @@ test("both viewer pages read only the caller's own blob", () => {
   assert.match(documentPage, /redirect\(/);
 });
 
-test("every surface that names an attachment links it through the same helper", () => {
-  // Two transcripts draw chips and one lists names. A surface that builds
-  // its own URL is a surface that drifts when this one moves.
-  const surfaces = [
-    "src/app/components/chat-message-attachments.tsx",
-    "src/app/garden/garden-assistant.tsx",
-  ];
-  for (const relative of surfaces) {
-    const surface = fs.readFileSync(path.join(dashboard, relative), "utf8");
-    assert.match(
-      surface,
-      /chatAttachmentHref\(/,
-      `${relative} must open an attached document through chatAttachmentHref`,
-    );
-  }
+test("every surface that names an attachment uses the shared linked renderer", () => {
+  const renderer = fs.readFileSync(
+    path.join(dashboard, "src/app/components/chat-message-attachments.tsx"),
+    "utf8",
+  );
+  assert.match(renderer, /chatAttachmentHref\(/);
+
+  const gardenAssistant = fs.readFileSync(
+    path.join(dashboard, "src/app/garden/garden-assistant.tsx"),
+    "utf8",
+  );
+  assert.match(gardenAssistant, /import ChatMessageAttachments/);
+  assert.match(gardenAssistant, /<ChatMessageAttachments[\s\S]*?attachments=\{message\.attachments\}/);
 });

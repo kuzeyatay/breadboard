@@ -9,14 +9,13 @@ import "server-only";
 // what keeps a voice that was never finished cloning from failing one way in
 // the transcript and another way in the menu.
 
-import { spawn } from "node:child_process";
-import fsp from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-
 import { RouteError } from "@/lib/server-auth";
+import {
+  encodeSpeechMp3ViaRuntime,
+  SpeechMediaRuntimeError,
+  type SpeechMediaRuntimeScope,
+} from "../runtime-v2/speech-media-job.ts";
 import { getSpeechSettings } from "./settings.ts";
-import { resolveFfmpeg } from "../vimax/video.ts";
 import { voiceboxFetch, voiceboxJson, voiceboxResponseError } from "./voicebox-client.ts";
 
 interface VoiceProfile {
@@ -68,10 +67,12 @@ export async function synthesizeSpeech({
 
   const profile = await voiceboxJson<VoiceProfile>(
     `/profiles/${encodeURIComponent(settings.profileId)}`,
+    { signal },
   );
   if (profile.voice_type === "cloned") {
     const samples = await voiceboxJson<unknown[]>(
       `/profiles/${encodeURIComponent(settings.profileId)}/samples`,
+      { signal },
     );
     if (samples.length === 0) {
       throw new RouteError(
@@ -111,31 +112,6 @@ export async function synthesizeSpeech({
   return response;
 }
 
-function runFfmpeg(
-  ffmpeg: string,
-  args: string[],
-  signal?: AbortSignal,
-): Promise<{ code: number; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
-    const abort = () => child.kill();
-    signal?.addEventListener("abort", abort, { once: true });
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      // Only the tail matters: it is where ffmpeg puts the actual complaint.
-      stderr = `${stderr}${chunk.toString()}`.slice(-4_000);
-    });
-    child.on("error", (error) => {
-      signal?.removeEventListener("abort", abort);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      signal?.removeEventListener("abort", abort);
-      resolve({ code: code ?? 1, stderr });
-    });
-  });
-}
-
 /**
  * Re-encode synthesized audio as an MP3.
  *
@@ -144,50 +120,23 @@ function runFfmpeg(
  * saved file outlives the tab it was made in. MP3 is the format that every
  * phone, player and messaging app opens without being asked twice.
  *
- * Both ends go through a temporary file rather than a pipe. ffmpeg would
- * happily stream this one, but a file is what lets a failed encode be reported
- * as an empty output instead of a half-written download.
+ * Runtime streams the WAV into a sealed input and stages the MP3 as one bounded
+ * private output. A failed encode therefore cannot become a half-written
+ * download, and ffmpeg never becomes a child of the dashboard server.
  */
-export async function speechAsMp3(audio: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
-  const ffmpeg = resolveFfmpeg();
-  if (!ffmpeg) {
-    throw new RouteError(
-      503,
-      "No ffmpeg was found, so the spoken response could not be encoded as an .mp3 file.",
-    );
-  }
+export async function speechAsMp3(
+  scope: SpeechMediaRuntimeScope,
+  audio: Uint8Array,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   if (audio.byteLength === 0) throw new RouteError(502, "Voicebox returned no audio to save.");
-
-  const directory = await fsp.mkdtemp(path.join(os.tmpdir(), "breadboard-dictation-"));
-  const input = path.join(directory, "speech.wav");
-  const output = path.join(directory, "speech.mp3");
   try {
-    await fsp.writeFile(input, audio);
-    const { code, stderr } = await runFfmpeg(
-      ffmpeg,
-      [
-        "-nostdin", "-y", "-loglevel", "error",
-        "-i", input,
-        "-vn",
-        "-c:a", "libmp3lame",
-        // One voice, no music. Asking for more than this buys nothing: LAME
-        // clamps the rate anyway at the sample rates a speech engine produces.
-        "-b:a", "128k",
-        output,
-      ],
-      signal,
-    );
-    const encoded = await fsp.readFile(output).catch(() => null);
-    if (code !== 0 || !encoded?.byteLength) {
-      throw new RouteError(
-        502,
-        stderr.trim()
-          ? `The spoken response could not be saved as an .mp3 file: ${stderr.trim().split("\n").pop()}`
-          : "The spoken response could not be saved as an .mp3 file.",
-      );
+    return await encodeSpeechMp3ViaRuntime(scope, audio, { signal });
+  } catch (error) {
+    if (signal?.aborted) throw new RouteError(499, "The speech download was cancelled.");
+    if (error instanceof SpeechMediaRuntimeError) {
+      throw new RouteError(error.status, error.message);
     }
-    return new Uint8Array(encoded);
-  } finally {
-    await fsp.rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
   }
 }

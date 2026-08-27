@@ -1,4 +1,4 @@
-// In-memory run manager for the DeerFlow agent.
+// Worker-local run manager for the DeerFlow agent.
 //
 // Unlike the ChatMock-driven agents, Breadboard does not run a tool loop here.
 // The cloned harness owns a complete super agent — its own LangGraph lead agent,
@@ -8,10 +8,11 @@
 // thread per run, and translates the Gateway's SSE stream into the same event
 // shape every other agent's inline card reads.
 //
-// Runs are ephemeral; what they produce is not. Events live here and the SSE
-// route replays them, but threads, checkpoints, memory and the files a run
-// writes stay in DeerFlow's own state directory, which is the entire point of
-// the tool.
+// Runs are ephemeral inside one fresh Runtime V2 worker; what they produce is
+// not. The worker translates the endpoint stream into a sealed durable
+// projection, while Rust owns this worker and the DeerFlow Gateway dependency.
+// This module is never imported by a Next route and receives neither provider
+// secrets nor supervisor authority.
 //
 // One translation rule is load-bearing. Only assistant and tool messages are
 // read off the `messages-tuple` stream. DeerFlow injects recalled memory and
@@ -22,7 +23,6 @@
 // allowlist.
 
 import { randomUUID } from "node:crypto";
-import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import {
   closeDeerFlowArtifactContext,
   openDeerFlowArtifactContext,
@@ -30,8 +30,11 @@ import {
   type DeerFlowArtifactContext,
 } from "./artifact.ts";
 import { deerFlowRunLabel } from "./identity.ts";
-import { invalidateHealth } from "./runtime.ts";
-import { ensureService, serviceLog, type DeerFlowService } from "./service.ts";
+import {
+  preparedService,
+  serviceLog,
+  type DeerFlowWorkerService,
+} from "./runtime-worker-service.ts";
 import { runContext, type DeerFlowSettings } from "./settings.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
 
@@ -186,8 +189,11 @@ export function describeArguments(value: unknown): string {
  */
 function pushAnswer(run: RunState, delta: string): void {
   if (!delta) return;
-  if (run.answer.length < MAX_ANSWER_CHARS) run.answer += delta;
-  run.pending += delta;
+  const remaining = Math.max(0, MAX_ANSWER_CHARS - run.answer.length);
+  const accepted = remaining ? delta.slice(0, remaining) : "";
+  if (!accepted) return;
+  run.answer += accepted;
+  run.pending += accepted;
   if (run.flushTimer) return;
   const timer = setTimeout(() => {
     run.flushTimer = null;
@@ -262,11 +268,13 @@ async function finalState(
 
 export interface StartRunInput {
   userId: number;
+  /** The fenced Runtime job identity; also the only public run identity. */
+  runtimeJobId: string;
+  /** Observed by the trusted facade before Runtime admitted the dependency. */
+  runtimeColdStart: boolean;
   task: string;
   model: string;
   reasoningEffort: string;
-  /** ChatMock's OpenAI-compatible base URL, already resolved for this request. */
-  baseUrl: string;
   settings: DeerFlowSettings;
   /** The chat the run was launched from, captured now rather than looked up later. */
   conversationPublicId: string;
@@ -274,8 +282,15 @@ export interface StartRunInput {
   conversationContext?: string;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
-  const runId = `dfrun_${randomUUID().replaceAll("-", "")}`;
+export function startRuntimeWorkerRun(
+  input: StartRunInput,
+): { runId: string; status: RunStatus } {
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId)) {
+    throw new Error("DeerFlow Runtime identity is invalid.");
+  }
+  const runId = input.runtimeJobId;
+  if (runs.has(runId)) throw new Error("DeerFlow Runtime identity was reused.");
+  const service = preparedService();
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -311,12 +326,13 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   const timer = setTimeout(() => {
     if (isTerminalStatus(run.status)) return;
     run.aborted = true;
-    void cancelUpstream(run);
-    finish(run, "failed", { error: "The DeerFlow run ran past its time limit and was stopped." });
+    void cancelUpstream(run).finally(() => {
+      finish(run, "failed", { error: "The DeerFlow run ran past its time limit and was stopped." });
+    });
   }, RUN_TIMEOUT_MS);
   timer.unref?.();
 
-  void drive(run, input)
+  void drive(run, input, service)
     .catch((error: unknown) => {
       if (run.aborted) return;
       finish(run, "failed", {
@@ -324,12 +340,18 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
         detail: serviceLog(),
       });
     })
-    .finally(() => clearTimeout(timer));
+    .finally(() => {
+      clearTimeout(timer);
+    });
 
   return { runId, status: "queued" };
 }
 
-async function drive(run: RunState, input: StartRunInput): Promise<void> {
+async function drive(
+  run: RunState,
+  input: StartRunInput,
+  service: DeerFlowWorkerService,
+): Promise<void> {
   run.status = "running";
   emit(run, "run.started", {
     task: run.task,
@@ -338,18 +360,10 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   });
 
   emit(run, "service.starting", {});
-  const service: DeerFlowService = await ensureService({
-    baseUrl: input.baseUrl,
-    apiKey: chatmockApiKeyValue(),
-    model: input.model,
-    settings: input.settings,
-  });
   if (run.aborted) return;
   emit(run, "service.ready", {
-    // A Gateway that was already up is the normal case after the first run, and
-    // it is the single most useful thing to know when a run feels slow.
     startedAt: service.startedAt,
-    coldStart: Date.now() - service.startedAt < 10_000,
+    coldStart: input.runtimeColdStart,
   });
 
   // One thread per run. DeerFlow's thread ids allow only `[A-Za-z0-9_-]`, and a
@@ -426,7 +440,11 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
  * from the last event this reader saw. The loop stops when the Gateway sends
  * `end`, or when the run is no longer active on its side.
  */
-async function streamRun(run: RunState, service: DeerFlowService, body: string): Promise<void> {
+async function streamRun(
+  run: RunState,
+  service: DeerFlowWorkerService,
+  body: string,
+): Promise<void> {
   let lastEventId = "";
   for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt += 1) {
     if (run.aborted || isTerminalStatus(run.status)) return;
@@ -442,10 +460,8 @@ async function streamRun(run: RunState, service: DeerFlowService, body: string):
         signal: AbortSignal.any([run.streaming.signal, AbortSignal.timeout(RUN_TIMEOUT_MS)]),
       });
       if (!response.ok || !response.body) {
-        const detail = await response.text().catch(() => "");
-        throw new Error(
-          `DeerFlow refused the request (${response.status}). ${detail.slice(0, 300)}`.trim(),
-        );
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`DeerFlow refused the request (${response.status}).`);
       }
       // Every run-creating route reports its own address here; it is what a
       // rejoin and a cancel are addressed to.
@@ -723,10 +739,31 @@ async function fetchArtifactBytes(
     new URL(`/api/threads/${encodeURIComponent(threadId)}/artifacts/${relative}?download=true`, service.url),
     { signal: AbortSignal.timeout(ARTIFACT_READ_TIMEOUT_MS) },
   );
-  if (!response.ok) throw new Error("artifact_not_found");
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length > ARTIFACT_MAX_BYTES) throw new Error("artifact_too_large");
-  return buffer;
+  if (!response.ok || !response.body) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error("artifact_not_found");
+  }
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > ARTIFACT_MAX_BYTES)) {
+    await response.body.cancel().catch(() => undefined);
+    throw new Error("artifact_too_large");
+  }
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > ARTIFACT_MAX_BYTES) throw new Error("artifact_too_large");
+      chunks.push(Buffer.from(value));
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  }
+  return Buffer.concat(chunks, total);
 }
 
 /**
@@ -758,7 +795,7 @@ async function keepArtifacts(run: RunState, paths: readonly string[]): Promise<v
     }
     try {
       const bytes = await fetchArtifactBytes(run.thread, run.thread.threadId, virtualPath);
-      const saved = saveDeerFlowArtifact({
+      const saved = await saveDeerFlowArtifact({
         context: run.artifactContext,
         path: virtualPath,
         bytes,
@@ -792,9 +829,6 @@ function finish(run: RunState, status: RunStatus, payload: Record<string, unknow
   );
   closeDeerFlowArtifactContext(run.artifactContext, status as "completed" | "failed" | "aborted");
   run.artifactContext = null;
-  // A finished run may have started or lost the Gateway; the settings panel
-  // reads that from health.
-  invalidateHealth();
   const timer = setTimeout(() => runs.delete(run.runId), RETENTION_MS);
   timer.unref?.();
 }
@@ -813,45 +847,35 @@ async function cancelUpstream(run: RunState): Promise<void> {
 
 // ---- read/control API -------------------------------------------------------
 
-export function getEventsSince(userId: number, runId: string, since = 0): DeerFlowEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): DeerFlowEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return isTerminalStatus(requireRun(userId, runId).status);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (isTerminalStatus(run.status)) return false;
   run.aborted = true;
-  void cancelUpstream(run);
-  finish(run, "aborted", {
-    // Whatever landed before the stop is still worth keeping.
-    summary: run.answer.trim() || "DeerFlow stopped before it answered.",
-    toolCalls: run.toolCallCount,
-    artifacts: run.artifacts,
+  // Begin the scoped upstream interrupt before closing the stream. The generic
+  // worker adapter deliberately does not await domain abort hooks; keeping this
+  // promise live lets Node deliver the interrupt while Rust begins its bounded
+  // process-tree cancellation grace period.
+  const cancellation = cancelUpstream(run);
+  run.streaming.abort(new DOMException("DeerFlow was stopped", "AbortError"));
+  void cancellation.finally(() => {
+    finish(run, "aborted", {
+      // Whatever landed before the stop is still worth keeping.
+      summary: run.answer.trim() || "DeerFlow stopped before it answered.",
+      toolCalls: run.toolCallCount,
+      artifacts: run.artifacts,
+    });
   });
   return true;
-}
-
-/**
- * One file a run produced, read straight from the Gateway.
- *
- * The durable copy is the Breadboard artifact this run already stored; this is
- * the live fallback for a file the store would not take, so the person can
- * still get at it while the run is remembered.
- */
-export async function readRunArtifact(
-  userId: number,
-  runId: string,
-  artifactId: string,
-): Promise<{ bytes: Buffer; path: string }> {
-  const run = requireRun(userId, runId);
-  const artifact = run.artifacts.find((entry) => entry.id === artifactId);
-  if (!artifact || !run.thread) throw new Error("artifact_not_found");
-  return {
-    bytes: await fetchArtifactBytes(run.thread, run.thread.threadId, artifact.path),
-    path: artifact.path,
-  };
 }

@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { auditFinalGardenState, buildFinalGardenState } from "./final-garden-state.ts";
 import {
   auditGardenForFinalization,

@@ -6,8 +6,10 @@ import {
   slugify,
 } from "./knowledge.ts";
 import { publishQuartzAfterMutation } from "./quartz-publish.ts";
+import { withGardenMutationLease } from "./garden-mutation-lease.ts";
 
 export interface CreateGardenDocumentInput {
+  userId: number;
   clusterSlug: string;
   title: string;
   content: string;
@@ -62,47 +64,60 @@ export async function createGardenDocument(
   ) {
     throw new Error("Invalid folder path");
   }
-  fs.mkdirSync(targetDir, { recursive: true });
+  const created = await withGardenMutationLease(
+    clusterDir,
+    "create-document",
+    () => {
+      fs.mkdirSync(targetDir, { recursive: true });
 
-  const baseSlug = slugify(title) || "note";
-  let suffix = Date.now();
-  let slug = `${baseSlug}-${suffix}`;
-  while (fs.existsSync(path.join(targetDir, `${slug}.md`))) {
-    suffix += 1;
-    slug = `${baseSlug}-${suffix}`;
-  }
+      const baseSlug = slugify(title) || "note";
+      let suffix = Date.now();
+      let slug = `${baseSlug}-${suffix}`;
+      while (fs.existsSync(path.join(targetDir, `${slug}.md`))) {
+        suffix += 1;
+        slug = `${baseSlug}-${suffix}`;
+      }
 
-  const body = input.content.trim() || `## ${title}\n\n`;
-  const tags = normalizeTopicTags(
-    (input.tags ?? []).map((tag) => tag.trim()).filter(Boolean),
-    body,
-    5,
-    `${title}\n${body}`,
+      const body = input.content.trim() || `## ${title}\n\n`;
+      const tags = normalizeTopicTags(
+        (input.tags ?? []).map((tag) => tag.trim()).filter(Boolean),
+        body,
+        5,
+        `${title}\n${body}`,
+      );
+      const semanticHintsLine = tags.length
+        ? `semanticHints: [${tags.map((tag) => JSON.stringify(tag)).join(", ")}]\n`
+        : "";
+      const frontmatter = [
+        "---",
+        `title: ${JSON.stringify(title)}`,
+        `date: ${JSON.stringify(new Date().toISOString())}`,
+        'source: "user-note"',
+        'knowledge_type: "user-note"',
+        semanticHintsLine.trimEnd(),
+        "---",
+        "",
+      ]
+        .filter((line, index, lines) => line || index === lines.length - 1)
+        .join("\n");
+
+      fs.writeFileSync(
+        path.join(targetDir, `${slug}.md`),
+        `${frontmatter}\n${body}`,
+        "utf8",
+      );
+      refreshClusterIndex(contentPath, clusterSlug);
+      return {
+        slug,
+        folder,
+        relPath: `${folder ? `${folder}/` : ""}${slug}.md`,
+        tags,
+      };
+    },
   );
-  const semanticHintsLine = tags.length
-    ? `semanticHints: [${tags.map((tag) => JSON.stringify(tag)).join(", ")}]\n`
-    : "";
-  const frontmatter = [
-    "---",
-    `title: ${JSON.stringify(title)}`,
-    `date: ${JSON.stringify(new Date().toISOString())}`,
-    'source: "user-note"',
-    'knowledge_type: "user-note"',
-    semanticHintsLine.trimEnd(),
-    "---",
-    "",
-  ].filter((line, index, lines) => line || index === lines.length - 1).join("\n");
-
-  fs.writeFileSync(path.join(targetDir, `${slug}.md`), `${frontmatter}\n${body}`, "utf8");
-  refreshClusterIndex(contentPath, clusterSlug);
   await publishQuartzAfterMutation(
-    `create document ${clusterSlug}/${folder ? `${folder}/` : ""}${slug}`,
+    `create document ${clusterSlug}/${created.relPath.replace(/\.md$/i, "")}`,
+    { userId: input.userId },
   );
-
-  return {
-    slug,
-    folder,
-    relPath: `${folder ? `${folder}/` : ""}${slug}.md`,
-    tags,
-  };
+  return created;
 }

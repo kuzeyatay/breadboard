@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -70,6 +72,7 @@ test("multipart ingestion streams a large upload to a private staging file", asy
 
     const first = await parsed.file.readBuffer();
     const second = await parsed.file.readBuffer();
+    assert.equal(parsed.file.sha256, createHash("sha256").update(first).digest("hex"));
     assert.equal(first, second, "random-access parsers share one cached Buffer");
     assert.equal(first.byteLength, size);
     await parsed.cleanup();
@@ -80,6 +83,82 @@ test("multipart ingestion streams a large upload to a private staging file", asy
     }
     process.env.BREADBOARD_DATA_DIR = previous;
     fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test("configured Runtime V2 ingestion streams Busboy file bytes straight into one reservation", async () => {
+  const size = 5 * 1024 * 1024 + 7;
+  const observed = { uploaded: Buffer.alloc(0), uploadChunks: 0, abandoned: 0 };
+  const server = http.createServer(async (request, response) => {
+    if (request.url === "/v1/job-inputs" && request.method === "POST") {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const reservation = JSON.parse(body);
+      assert.equal(reservation.gardenId, "stream-test");
+      assert.equal(reservation.declaredSizeBytes, size);
+      response.writeHead(201, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        uploadId: "upload_stream_1",
+        expiresAt: Date.now() + 60_000,
+        maximumBytes: 2 * 1024 * 1024 * 1024,
+      }));
+      return;
+    }
+    if (request.url === "/v1/job-inputs/upload_stream_1" && request.method === "PUT") {
+      const chunks = [];
+      for await (const chunk of request) {
+        observed.uploadChunks += 1;
+        chunks.push(Buffer.from(chunk));
+      }
+      observed.uploaded = Buffer.concat(chunks);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        type: "runtime-job-input",
+        protocolVersion: 1,
+        uploadId: "upload_stream_1",
+        state: "sealed",
+        sizeBytes: observed.uploaded.byteLength,
+        sha256: createHash("sha256").update(observed.uploaded).digest("hex"),
+      }));
+      return;
+    }
+    if (request.url === "/v1/job-inputs/upload_stream_1/abandon") {
+      observed.abandoned += 1;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const previous = {
+    url: process.env.BREADBOARD_SUPERVISOR_CONTROL_URL,
+    token: process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN,
+  };
+  process.env.BREADBOARD_SUPERVISOR_CONTROL_URL = `http://127.0.0.1:${address.port}`;
+  process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN = "0123456789abcdef0123456789abcdef";
+  const source = multipartRequest({ boundary: "breadboard-runtime-stream", size });
+  let parsed;
+  try {
+    parsed = await parseIngestUpload(source.request, {
+      authority: { userId: 42, gardenId: "stream-test", conversationId: null },
+      declaredSizeBytes: size,
+    });
+    assert.equal(parsed.file.size, size);
+    assert.equal(observed.uploaded.byteLength, size);
+    assert.ok(observed.uploadChunks > 1);
+    assert.equal(source.pulls() > 50, true);
+    await parsed.cleanup();
+    assert.equal(observed.abandoned, 1);
+  } finally {
+    await parsed?.cleanup();
+    if (previous.url === undefined) delete process.env.BREADBOARD_SUPERVISOR_CONTROL_URL;
+    else process.env.BREADBOARD_SUPERVISOR_CONTROL_URL = previous.url;
+    if (previous.token === undefined) delete process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN;
+    else process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN = previous.token;
+    await new Promise((resolve) => server.close(resolve));
   }
 });
 

@@ -74,6 +74,8 @@ test("describeError hides internal detail message for unexpected errors", () => 
   const res = describeError(new Error("boom at /secret/path"));
   assert.equal(res.status, 500);
   assert.equal(res.body.error, "Internal server error");
+  assert.equal("detail" in res.body, false);
+  assert.ok(!JSON.stringify(res.body).includes("/secret/path"));
 });
 
 test("describeError preserves the status of a RouteError-shaped error (401 not 500)", () => {

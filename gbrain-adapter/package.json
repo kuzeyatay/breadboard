@@ -5,8 +5,11 @@
   "version": "0.1.0",
   "description": "First-party Breadboard sidecar around the vendored GBrain retrieval engine. Loopback-only, secret-gated, garden-scoped.",
   "scripts": {
-    "start": "bun run src/server.ts",
-    "test": "bun test"
+    "start": "node --no-warnings --experimental-transform-types ./src/node-entrypoint.mjs",
+    "start:node": "node --no-warnings --experimental-transform-types ./src/node-entrypoint.mjs",
+    "start:bun": "bun run src/server.ts",
+    "test": "bun test",
+    "test:node": "node --test ./test/node-loader.test.mjs && node --no-warnings --experimental-transform-types --experimental-loader ./src/node-loader.mjs --test ./test/node-server.test.mjs && node --test ./test/node-entrypoint.test.mjs && node --no-warnings --experimental-transform-types --experimental-loader ./src/node-loader.mjs --test ./test/node-real-backend.node-test.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.2.17"

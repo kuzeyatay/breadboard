@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
 import { getSpeechSettings } from "@/lib/speech/settings";
-import { voiceboxJson, voiceboxStartupStatus } from "@/lib/speech/voicebox-client";
+import {
+  voiceboxObservationJson,
+  voiceboxStartupStatus,
+} from "@/lib/speech/voicebox-client";
 
 export const dynamic = "force-dynamic";
 
@@ -21,12 +24,12 @@ export async function GET() {
     const userId = await requireUserId();
     const settings = getSpeechSettings(userId);
     try {
-      const health = await voiceboxJson<VoiceboxHealth>("/health");
+      const health = await voiceboxObservationJson<VoiceboxHealth>("/health");
       const [profiles, models, kokoro, qwen] = await Promise.all([
-        voiceboxJson<unknown[]>("/profiles"),
-        voiceboxJson<{ models: unknown[] }>("/models/status").catch(() => ({ models: [] })),
-        voiceboxJson<{ voices: unknown[] }>("/profiles/presets/kokoro").catch(() => ({ voices: [] })),
-        voiceboxJson<{ voices: unknown[] }>("/profiles/presets/qwen_custom_voice").catch(() => ({ voices: [] })),
+        voiceboxObservationJson<unknown[]>("/profiles"),
+        voiceboxObservationJson<{ models: unknown[] }>("/models/status").catch(() => ({ models: [] })),
+        voiceboxObservationJson<{ voices: unknown[] }>("/profiles/presets/kokoro").catch(() => ({ voices: [] })),
+        voiceboxObservationJson<{ voices: unknown[] }>("/profiles/presets/qwen_custom_voice").catch(() => ({ voices: [] })),
       ]);
       return NextResponse.json({
         available: true,

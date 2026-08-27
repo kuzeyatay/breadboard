@@ -39,6 +39,7 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
   return (
     <div
       class="breadboard-ai"
+      hidden
       data-dashboard={dashboardUrl()}
       data-garden={gardenId}
       data-page={slug}

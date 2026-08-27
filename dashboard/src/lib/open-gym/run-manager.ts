@@ -1,5 +1,7 @@
+// The full catalogue/tool loop runs only inside a fresh Runtime V2 worker.
+// Public controls at the bottom are durable Next compatibility facades.
+
 import { randomUUID } from "node:crypto";
-import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
 import {
   loadOpenGymCatalog,
@@ -162,7 +164,11 @@ Persistent openGym context already loaded for this user (treat it as background,
 ${persistentContext}`;
 }
 
-async function complete(input: StartRunInput, run: RunState, messages: ChatMessage[]) {
+async function complete(
+  input: OpenGymRuntimeWorkerRunInput,
+  run: RunState,
+  messages: ChatMessage[],
+) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   run.controller.signal.addEventListener("abort", abort, { once: true });
@@ -172,7 +178,7 @@ async function complete(input: StartRunInput, run: RunState, messages: ChatMessa
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${chatmockApiKeyValue()}`,
+        authorization: `Bearer ${input.apiKey}`,
       },
       body: JSON.stringify({
         model: input.model,
@@ -282,6 +288,7 @@ function programTitle(answer: string): string {
 
 export interface StartRunInput {
   userId: number;
+  requestId?: string;
   task: string;
   model: string;
   reasoningEffort: string;
@@ -291,8 +298,16 @@ export interface StartRunInput {
   maxSteps?: number;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
-  const runId = `ogrun_${randomUUID().replaceAll("-", "")}`;
+export interface OpenGymRuntimeWorkerRunInput extends StartRunInput {
+  runtimeJobId?: string;
+  apiKey: string;
+}
+
+/** Fixed worker-local entrypoint. Next routes must call durable `startRun`. */
+export function startRuntimeWorkerRun(
+  input: OpenGymRuntimeWorkerRunInput,
+): { runId: string; status: RunStatus } {
+  const runId = input.runtimeJobId ?? `ogrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -317,7 +332,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   return { runId, status: "queued" };
 }
 
-async function drive(run: RunState, input: StartRunInput): Promise<void> {
+async function drive(run: RunState, input: OpenGymRuntimeWorkerRunInput): Promise<void> {
   run.status = "running";
   emit(run, "run.started", { task: run.task, model: input.model });
   const catalog = await loadOpenGymCatalog();
@@ -430,15 +445,19 @@ function scheduleCleanup(run: RunState): void {
   timer.unref?.();
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): OpenGymEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): OpenGymEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;
@@ -449,4 +468,45 @@ export function abortRun(userId: number, runId: string): boolean {
   void recordOpenGymRun({ userId, runId, task: run.task, outcome: "aborted" });
   scheduleCleanup(run);
   return true;
+}
+
+/** Public durable facade. Runtime V2 owns the catalogue and model turn memory. */
+export async function startRun(
+  input: StartRunInput,
+): Promise<{ runId: string; status: RunStatus }> {
+  const { startOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return startOuterAgentRun({
+    kind: "open-gym",
+    userId: input.userId,
+    requestId: input.requestId,
+    requestPayload: {
+      task: input.task,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      baseUrl: input.baseUrl,
+      conversationContext: input.conversationContext ?? "",
+      conversationPublicId: input.conversationPublicId ?? null,
+      maxSteps: input.maxSteps ?? 16,
+    },
+  }) as Promise<{ runId: string; status: RunStatus }>;
+}
+
+export async function getEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): Promise<OpenGymEvent[]> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  const view = await readOuterAgentRunView("open-gym", userId, runId, since);
+  return view.events as OpenGymEvent[];
+}
+
+export async function isTerminal(userId: number, runId: string): Promise<boolean> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  return (await readOuterAgentRunView("open-gym", userId, runId, 0)).terminal;
+}
+
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
+  const { abortOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return abortOuterAgentRun("open-gym", userId, runId);
 }

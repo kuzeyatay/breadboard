@@ -152,6 +152,10 @@ export interface VideoTranscriptionJob {
   errorCode: string | null;
   errorMessage: string | null;
   cancelRequested: boolean;
+  /** Native Runtime identity; never exposed to the browser. */
+  runtimeJobId: string | null;
+  runtimeIdempotencyKey: string | null;
+  runtimeGeneration: number;
   heartbeatAt: string | null;
   createdAt: string;
   updatedAt: string;

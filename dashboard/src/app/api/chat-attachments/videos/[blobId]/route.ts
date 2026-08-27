@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import { Readable } from "node:stream";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId } from "@/lib/server-auth";
 import { ApiError, apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
 import { isVideoBlobId, videoFormatMimeType } from "@/lib/video-attachments.ts";

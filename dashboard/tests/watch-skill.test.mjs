@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 import { listFirstPartySkills } from "../src/lib/hermes/skills.ts";
 import {
-  resolveWatchRuntime,
   resolveWatchSource,
   runWatch,
   validateWatchOptions,
@@ -117,122 +114,285 @@ test("Watch confines local files and rejects private-network URLs", () => {
   }
 });
 
-test("Watch runtime resolves from the checked-in prebuilt skill", () => {
-  const skillRoot = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "../../hermes-skills/prebuilt/watch",
-  );
-  const runtime = resolveWatchRuntime({
-    BREADBOARD_WATCH_ROOT: skillRoot,
-    BREADBOARD_WATCH_PYTHON: process.execPath,
-  });
-  assert.ok(runtime);
-  assert.equal(runtime.pythonExecutable, process.execPath);
-  assert.equal(path.basename(runtime.scriptPath), "watch.py");
-
-  const pathRuntime = resolveWatchRuntime({
-    BREADBOARD_WATCH_ROOT: skillRoot,
-    BREADBOARD_WATCH_PYTHON: "python.exe",
-  });
-  assert.equal(pathRuntime?.pythonExecutable, "python.exe");
-});
-
-test("Watch runs a product-owned runtime and returns only contained frame paths", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-run-"));
+test("Watch seals a local workspace video into an authenticated Runtime job", async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-workspace-"));
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-runtime-"));
+  const jobId = "job_watch_test";
+  const workerInstanceId = "worker_watch_test";
+  const output = path.join(dataRoot, "runtime", "jobs", jobId, "attempts", "1",
+    workerInstanceId, "workspace", "watch-output");
+  const frames = path.join(output, "frames");
+  fs.mkdirSync(frames, { recursive: true });
+  const frame = path.join(frames, "frame_0001.jpg");
+  fs.writeFileSync(frame, "jpeg");
+  const report = [
+    "# watch: video report",
+    `- \`${frame}\` (t=00:01, reason=selected)`,
+    "## Transcript",
+    "",
+    "[00:00] hello",
+  ].join("\n");
+  const reportPath = path.join(output, "report.md");
+  fs.writeFileSync(reportPath, `${report}\n`);
+  const relative = (value) => path.relative(dataRoot, value).split(path.sep).join("/");
+  const snapshot = {
+    jobId,
+    jobType: "watch-run",
+    workerKind: "watch-media-node",
+    resourceClass: "media-processing",
+    state: "succeeded",
+    stage: "completed",
+    attempt: 1,
+    workerInstanceId,
+    lastWorkerSequence: 4,
+    gardenId: null,
+    conversationId: "conversation-watch",
+  };
+  let submitted;
+  let uploadedBytes;
+  const control = {
+    configured: () => true,
+    reserve: async (_authority, request) => ({
+      uploadId: "upload_watch_test",
+      expiresAt: Date.now() + 60_000,
+      maximumBytes: request.declaredSizeBytes,
+      ...request,
+    }),
+    upload: async (_authority, reservation, body) => {
+      uploadedBytes = Buffer.from(await new Response(body).arrayBuffer());
+      return {
+        uploadId: reservation.uploadId,
+        sizeBytes: reservation.declaredSizeBytes,
+        sha256: "a".repeat(64),
+        displayName: reservation.displayName,
+        mediaType: reservation.mediaType,
+      };
+    },
+    abandon: async () => undefined,
+    submit: async (_authority, value) => {
+      submitted = value;
+      return snapshot;
+    },
+    inspect: async () => snapshot,
+    cancel: async () => ({ ...snapshot, state: "cancelled" }),
+    readOutput: async () => ({
+      jobId,
+      kind: "result",
+      content: {
+        protocolVersion: 1,
+        identity: { jobId, attempt: 1, workerInstanceId },
+        completionSequence: 4,
+        result: {
+          ok: true,
+          operation: "watch-run",
+          reportRelativePath: relative(reportPath),
+          reportSizeBytes: fs.statSync(reportPath).size,
+          workDirectoryRelativePath: relative(output),
+          frameCount: 1,
+          analyzedFrameCount: 0,
+          chatmockAnalysis: null,
+          chatmockWarning: "ChatMock is not configured, so the runtime returned raw transcript and frame evidence only.",
+          durationMs: 25,
+          stderr: "",
+        },
+      },
+    }),
+  };
   try {
-    const clip = path.join(root, "clip.mp4");
-    const runner = path.join(root, "fake-watch.cjs");
+    const clip = path.join(workspace, "clip.mp4");
     fs.writeFileSync(clip, "video");
-    fs.writeFileSync(
-      runner,
-      [
-        'const fs = require("node:fs");',
-        'const path = require("node:path");',
-        'const index = process.argv.indexOf("--out-dir");',
-        'const out = process.argv[index + 1];',
-        'const frames = path.join(out, "frames");',
-        'fs.mkdirSync(frames, { recursive: true });',
-        'const frame = path.join(frames, "frame_0001.jpg");',
-        'fs.writeFileSync(frame, "jpeg");',
-        'console.log("# watch: video report");',
-        'console.log("- `" + frame + "` (t=00:01, reason=selected)");',
-        'console.log("## Transcript\\n\\n[00:00] hello");',
-      ].join("\n"),
-    );
     const result = await runWatch({
+      userId: 7,
+      conversationId: "conversation-watch",
       args: { source: clip, question: "What happens?", detail: "efficient", noWhisper: true },
-      workspaceRoot: root,
-      runtime: { pythonExecutable: process.execPath, scriptPath: runner },
-      env: { NODE_ENV: "test" },
+      workspaceRoot: workspace,
+      env: { BREADBOARD_DATA_DIR: dataRoot },
+      control,
       timeoutMs: 10_000,
     });
+    assert.equal(uploadedBytes.toString("utf8"), "video");
+    assert.equal(submitted.jobType, "watch-run");
+    assert.equal(submitted.inputUploads[0].uploadId, "upload_watch_test");
+    assert.equal(submitted.requestPayload.sourceKind, "local");
+    assert.equal(submitted.requestPayload.source, fs.realpathSync.native(clip));
     assert.match(result.report, /watch: video report/);
-    assert.equal(result.framePaths.length, 1);
-    assert.equal(result.framePaths[0].timestamp, "00:01");
-    assert.ok(result.framePaths[0].path.startsWith(result.workDirectory));
-    assert.equal(result.analyzedFrameCount, 0);
+    assert.deepEqual(result.framePaths, [{ path: frame, timestamp: "00:01" }]);
+    assert.equal(result.workDirectory, output);
     assert.match(result.chatmockWarning ?? "", /ChatMock is not configured/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test("Watch has no Next-owned process or ChatMock frame fallback after cutover", () => {
+  const service = source("src/lib/hermes/watch-service.ts");
+  const worker = source("scripts/runtime-v2-watch-worker.mjs");
+  const executor = source("scripts/runtime-v2-watch-executor.mjs");
+  assert.doesNotMatch(service, /node:child_process|\bspawn\s*\(/);
+  assert.doesNotMatch(service, /CHATMOCK_BASE_URL|input_image|readFileSync\(frame/);
+  assert.match(service, /reserveRuntimeJobInput/);
+  assert.match(worker, /canonicalRuntimeInputAsync/);
+  assert.match(executor, /input_image/);
+});
+
+test("Watch cancellation propagates to the exact active Runtime job", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-cancel-"));
+  const controller = new AbortController();
+  let cancelledJob = null;
+  const running = {
+    jobId: "job_watch_cancel",
+    jobType: "watch-run",
+    workerKind: "watch-media-node",
+    resourceClass: "media-processing",
+    state: "running",
+    stage: "processing",
+    attempt: 1,
+    workerInstanceId: "worker_watch_cancel",
+    lastWorkerSequence: 2,
+    gardenId: null,
+    conversationId: "conversation-watch",
+  };
+  const control = {
+    configured: () => true,
+    reserve: async () => { throw new Error("remote Watch must not reserve an input"); },
+    upload: async () => { throw new Error("remote Watch must not upload an input"); },
+    abandon: async () => undefined,
+    submit: async () => running,
+    inspect: async () => running,
+    readOutput: async () => { throw new Error("cancelled Watch must not read output"); },
+    cancel: async (_authority, jobId) => {
+      cancelledJob = jobId;
+      return { ...running, state: "cancelled" };
+    },
+  };
+  const timer = setTimeout(() => controller.abort(new DOMException("cancel", "AbortError")), 25);
+  try {
+    await assert.rejects(runWatch({
+      userId: 7,
+      conversationId: "conversation-watch",
+      args: {
+        source: "https://example.com/video.mp4",
+        question: "What happens?",
+      },
+      workspaceRoot: root,
+      signal: controller.signal,
+      env: { BREADBOARD_DATA_DIR: root },
+      control,
+      timeoutMs: 10_000,
+    }), (error) => error instanceof WatchServiceError && error.code === "watch_cancelled");
+    assert.equal(cancelledJob, "job_watch_cancel");
+  } finally {
+    clearTimeout(timer);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Watch rejects result paths outside the completed worker identity fence", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-fence-"));
+  const jobId = "job_watch_fence";
+  const workerInstanceId = "worker_watch_fence";
+  const output = path.join(root, "runtime", "jobs", jobId, "attempts", "1",
+    workerInstanceId, "workspace", "watch-output");
+  fs.mkdirSync(output, { recursive: true });
+  const escapedReport = path.join(root, "outside", "escaped.md");
+  fs.mkdirSync(path.dirname(escapedReport), { recursive: true });
+  fs.writeFileSync(escapedReport, "# escaped\n");
+  const relative = (value) => path.relative(root, value).split(path.sep).join("/");
+  const snapshot = {
+    jobId,
+    jobType: "watch-run",
+    workerKind: "watch-media-node",
+    resourceClass: "media-processing",
+    state: "succeeded",
+    stage: "completed",
+    attempt: 1,
+    workerInstanceId,
+    lastWorkerSequence: 4,
+    gardenId: null,
+    conversationId: "conversation-watch",
+  };
+  const control = {
+    configured: () => true,
+    reserve: async () => { throw new Error("remote Watch must not reserve an input"); },
+    upload: async () => { throw new Error("remote Watch must not upload an input"); },
+    abandon: async () => undefined,
+    submit: async () => snapshot,
+    inspect: async () => snapshot,
+    cancel: async () => ({ ...snapshot, state: "cancelled" }),
+    readOutput: async () => ({
+      jobId,
+      kind: "result",
+      content: {
+        protocolVersion: 1,
+        identity: { jobId, attempt: 1, workerInstanceId },
+        completionSequence: 4,
+        result: {
+          ok: true,
+          operation: "watch-run",
+          reportRelativePath: relative(escapedReport),
+          reportSizeBytes: fs.statSync(escapedReport).size,
+          workDirectoryRelativePath: relative(output),
+          frameCount: 0,
+          analyzedFrameCount: 0,
+          chatmockAnalysis: null,
+          chatmockWarning: null,
+          durationMs: 1,
+          stderr: "",
+        },
+      },
+    }),
+  };
+  try {
+    await assert.rejects(runWatch({
+      userId: 7,
+      conversationId: "conversation-watch",
+      args: { source: "https://example.com/video.mp4", question: "What happens?" },
+      workspaceRoot: root,
+      env: { BREADBOARD_DATA_DIR: root },
+      control,
+      timeoutMs: 10_000,
+    }), (error) => error instanceof WatchServiceError &&
+      error.code === "watch_processing_failed" && /outside/i.test(error.message));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("Watch sends bounded frame evidence through the local ChatMock Responses API", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-chatmock-"));
-  let requestBody;
-  let requestUrl;
-  const server = createServer((request, response) => {
-    requestUrl = request.url;
-    const chunks = [];
-    request.on("data", (chunk) => chunks.push(chunk));
-    request.on("end", () => {
-      requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ output_text: "At 00:01 the interface changes." }));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+test("Watch cancels an uncertain submission by its one-time idempotency fence", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-uncertain-"));
+  let submittedKey = null;
+  let cancelledKey = null;
+  const control = {
+    configured: () => true,
+    reserve: async () => { throw new Error("remote Watch must not reserve an input"); },
+    upload: async () => { throw new Error("remote Watch must not upload an input"); },
+    abandon: async () => undefined,
+    submit: async (_authority, submission) => {
+      submittedKey = submission.idempotencyKey;
+      throw new Error("connection closed after admission");
+    },
+    inspect: async () => { throw new Error("unreachable"); },
+    readOutput: async () => { throw new Error("unreachable"); },
+    cancel: async () => { throw new Error("job identity was not returned"); },
+    cancelByIdempotencyKey: async (_authority, key) => {
+      cancelledKey = key;
+      return { jobId: "job_watch_uncertain", state: "cancelled", accepted: true };
+    },
+  };
   try {
-    const clip = path.join(root, "clip.mp4");
-    const runner = path.join(root, "fake-watch.cjs");
-    fs.writeFileSync(clip, "video");
-    fs.writeFileSync(
-      runner,
-      [
-        'const fs = require("node:fs");',
-        'const path = require("node:path");',
-        'const out = process.argv[process.argv.indexOf("--out-dir") + 1];',
-        'const frames = path.join(out, "frames");',
-        'fs.mkdirSync(frames, { recursive: true });',
-        'const frame = path.join(frames, "frame_0001.jpg");',
-        'fs.writeFileSync(frame, "jpeg");',
-        'console.log("# watch: video report");',
-        'console.log("- `" + frame + "` (t=00:01, reason=selected)");',
-        'console.log("## Transcript\\n\\n[00:00] hello");',
-      ].join("\n"),
-    );
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const result = await runWatch({
-      args: { source: clip, question: "What changed?", detail: "efficient" },
+    await assert.rejects(runWatch({
+      userId: 7,
+      conversationId: "conversation-watch",
+      args: { source: "https://example.com/video.mp4", question: "What happens?" },
       workspaceRoot: root,
-      runtime: { pythonExecutable: process.execPath, scriptPath: runner },
-      env: {
-        NODE_ENV: "test",
-        CHATMOCK_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
-        CHATMOCK_API_KEY: "local",
-        CHATMOCK_MODEL: "default",
-      },
+      env: { BREADBOARD_DATA_DIR: root },
+      control,
       timeoutMs: 10_000,
-    });
-    assert.equal(requestUrl, "/v1/responses");
-    assert.equal(requestBody.model, "default");
-    const content = requestBody.input[0].content;
-    assert.ok(content.some((part) => part.type === "input_image"));
-    assert.match(result.chatmockAnalysis ?? "", /interface changes/);
-    assert.equal(result.analyzedFrameCount, 1);
+    }), (error) => error instanceof WatchServiceError && error.code === "watch_processing_failed");
+    assert.match(submittedKey, /^watch-run-v2:/);
+    assert.equal(cancelledKey, submittedKey);
   } finally {
-    await new Promise((resolve) => server.close(resolve));
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

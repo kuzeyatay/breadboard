@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { abortRun } from "@/lib/wardrobe/run-manager.ts";
+import { abortRun } from "@/lib/wardrobe/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,13 +15,17 @@ export async function POST(
     // Stopping ends the driving loop between garments. Anything already filed
     // stays filed — the wardrobe is on disk, not in the run — and the stopped
     // summary says so rather than implying a rollback.
-    abortRun(userId, runId);
+    await abortRun(userId, runId);
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof RouteError) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+      return NextResponse.json(
+        { ok: false, error: error.message },
+        { status: error.status },
+      );
     }
-    const status = error instanceof Error && error.message === "run_not_found" ? 404 : 500;
+    const status =
+      error instanceof Error && error.message === "run_not_found" ? 404 : 500;
     return NextResponse.json(
       { ok: false, error: status === 404 ? "run_not_found" : "internal_error" },
       { status },

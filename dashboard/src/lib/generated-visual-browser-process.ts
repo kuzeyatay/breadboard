@@ -1,17 +1,79 @@
-import { spawnSync } from "node:child_process";
-import {
-  MessageChannel,
-  receiveMessageOnPort,
-  Worker,
-} from "node:worker_threads";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import fs from "node:fs";
+import type { Readable } from "node:stream";
 
-const GENERATED_VISUAL_BROWSER_CLEANUP_GRACE_MS = 5_000;
-const GENERATED_VISUAL_BROWSER_WORKER_START_TIMEOUT_MS = 5_000;
+import {
+  confirmNaturalBrowserClose,
+  ownedBrowserWrapperInvocation,
+  PROCESS_SNAPSHOT_TIMEOUT_MS,
+  terminateOwnedBrowserTree,
+  TREE_CLOSE_TIMEOUT_MS,
+  TREE_KILLER_TIMEOUT_MS,
+  TREE_QUIESCENCE_TIMEOUT_MS,
+  trustedWindowsPowerShell,
+  trustedWindowsTreeKiller,
+  windowsProcessSnapshot,
+} from "../../scripts/runtime-v2-interactive-visualizer-executor.mjs";
+
+type BrowserChild = ChildProcessByStdio<null, Readable, Readable>;
+
+const GENERATED_VISUAL_BROWSER_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+const GENERATED_VISUAL_BROWSER_MARKER_OVERLAP_CHARS = 16;
+const GENERATED_VISUAL_BROWSER_SCHEDULER_ALLOWANCE_MS = 1_000;
+
+/** Maximum wall time for one attempt: the longer of the operation deadline or
+ * its in-flight initial ownership snapshot, then one final snapshot, bounded
+ * tree termination, two-scan lineage quiescence, root-close proof, and a small
+ * scheduler allowance. */
+export function generatedVisualBrowserAttemptDurationBoundMs(
+  operationTimeoutMs: number,
+): number {
+  const boundedOperationTimeout = Number.isFinite(operationTimeoutMs)
+    ? Math.max(0, Math.ceil(operationTimeoutMs))
+    : 0;
+  return Math.max(boundedOperationTimeout, PROCESS_SNAPSHOT_TIMEOUT_MS) +
+    PROCESS_SNAPSHOT_TIMEOUT_MS +
+    TREE_KILLER_TIMEOUT_MS +
+    TREE_QUIESCENCE_TIMEOUT_MS +
+    TREE_CLOSE_TIMEOUT_MS +
+    GENERATED_VISUAL_BROWSER_SCHEDULER_ALLOWANCE_MS;
+}
 
 export type GeneratedVisualBrowserCompletion =
   | "process_exit"
   | "observed_dom"
-  | "observed_capture";
+  | "observed_capture"
+  | "spawn_error"
+  | "deadline"
+  | "cancelled"
+  | "output_overflow";
+
+export type GeneratedVisualBrowserCleanupMethod =
+  | "none"
+  | "natural-exit"
+  | "natural-exit-lineage"
+  | "natural-exit-unconfirmed"
+  | "taskkill-tree"
+  | "lineage-quiescence"
+  | "natural-exit-race"
+  | "process-group"
+  | "process-group-sigkill"
+  | "process-kill";
+
+const GENERATED_VISUAL_BROWSER_CLEANUP_METHODS = new Set<
+  GeneratedVisualBrowserCleanupMethod
+>([
+  "none",
+  "natural-exit",
+  "natural-exit-lineage",
+  "natural-exit-unconfirmed",
+  "taskkill-tree",
+  "lineage-quiescence",
+  "natural-exit-race",
+  "process-group",
+  "process-group-sigkill",
+  "process-kill",
+]);
 
 export interface GeneratedVisualObservedBrowserResult {
   status: number | null;
@@ -23,7 +85,7 @@ export interface GeneratedVisualObservedBrowserResult {
   timedOut: boolean;
   completion?: GeneratedVisualBrowserCompletion;
   browserExitedNaturally: boolean;
-  cleanupMethod: "natural-exit" | "taskkill-tree" | "process-group-sigkill" | "process-kill";
+  cleanupMethod: GeneratedVisualBrowserCleanupMethod;
   cleanupConfirmed: boolean;
 }
 
@@ -31,163 +93,42 @@ export interface GeneratedVisualObservedBrowserInput {
   executable: string;
   args: string[];
   timeoutMs: number;
+  signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
+  /** Test-only observer for deterministic terminal-race assertions. */
+  onTerminalLatched?: (completion: GeneratedVisualBrowserCompletion) => void;
+  /** Test-only natural-close proof seam for parser/cleanup integration. */
+  naturalCloseProof?: typeof confirmNaturalBrowserClose;
 }
 
-/**
- * The generated-visual API is intentionally synchronous, but `spawnSync` can
- * only observe browser-process exit. Edge occasionally finishes both headless
- * outputs and then stalls during teardown, which turns a completed capture into
- * an ETIMEDOUT. A worker lets us observe the two actual completion receipts
- * (the serialized DOM and Edge's exact screenshot byte count), terminate the
- * now-disposable process tree, and still return synchronously to the caller.
- */
-const GENERATED_VISUAL_BROWSER_WORKER_SOURCE = String.raw`
-"use strict";
-const fs = require("node:fs");
-const { spawn, spawnSync } = require("node:child_process");
-const { workerData } = require("node:worker_threads");
-
-const state = new Int32Array(workerData.state);
-const resultPort = workerData.resultPort;
-const input = workerData.input;
-Atomics.store(state, 2, 1);
-Atomics.notify(state, 2, 1);
-const startedAt = Date.now();
-const maxOutputBytes = 16 * 1024 * 1024;
-const cleanupGraceMs = 2_500;
-let stdout = "";
-let stderr = "";
-let stdoutBytes = 0;
-let stderrBytes = 0;
-let child = null;
-let childClosed = false;
-let exitStatus = null;
-let exitSignal = null;
-let completion;
-let timedOut = false;
-let failure;
-let cleanupStarted = false;
-let cleanupMethod = "process-kill";
-let cleanupRequested = false;
-let cleanupRequestSucceeded = false;
-let cleanupTimer;
-let operationTimer;
-let delivered = false;
-let bodyObserved = false;
-let htmlCloseObserved = false;
-
-function durationMs() {
-  return Math.max(0, Date.now() - startedAt);
-}
-
-function stringifyError(error) {
+function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "unknown error");
 }
 
-function processExists(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error && error.code !== "ESRCH";
+function errorCode(error: unknown, fallback: string): string | number {
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" || typeof code === "number") return code;
   }
+  return fallback;
 }
 
-function terminateTree(pid) {
-  cleanupRequested = true;
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  if (process.platform === "win32") {
-    cleanupMethod = "taskkill-tree";
-    const killed = spawnSync(
-      "taskkill",
-      ["/pid", String(pid), "/T", "/F"],
-      { encoding: "utf8", windowsHide: true, timeout: 2_000 },
-    );
-    return killed.status === 0 || !processExists(pid);
-  }
-  try {
-    cleanupMethod = "process-group-sigkill";
-    process.kill(-pid, "SIGKILL");
-    return true;
-  } catch (groupError) {
-    try {
-      cleanupMethod = "process-kill";
-      process.kill(pid, "SIGKILL");
-      return true;
-    } catch (processError) {
-      return !processExists(pid);
-    }
-  }
+function exactCleanupMethod(
+  method: unknown,
+): GeneratedVisualBrowserCleanupMethod | null {
+  return typeof method === "string" &&
+      GENERATED_VISUAL_BROWSER_CLEANUP_METHODS.has(
+        method as GeneratedVisualBrowserCleanupMethod,
+      )
+    ? method as GeneratedVisualBrowserCleanupMethod
+    : null;
 }
 
-function clearTimers() {
-  if (operationTimer) clearTimeout(operationTimer);
-  if (cleanupTimer) clearTimeout(cleanupTimer);
-}
-
-function deliver(result) {
-  if (delivered) return;
-  delivered = true;
-  clearTimers();
-  try {
-    resultPort.postMessage(result);
-  } finally {
-    Atomics.store(state, 0, 1);
-    Atomics.notify(state, 0, 1);
-    resultPort.close();
-  }
-}
-
-function finishAfterCleanup() {
-  const cleanupConfirmed = childClosed ||
-    (cleanupRequestSucceeded && !processExists(child && child.pid));
-  const observedCompletion = completion === "observed_dom" || completion === "observed_capture";
-  const cleanupFailure = cleanupRequested && !cleanupConfirmed;
-  const error = failure ?? (cleanupFailure
-    ? { code: "ECLEANUP", message: "Browser process tree did not confirm cleanup" }
-    : undefined);
-  const terminalFailure = Boolean(error) || timedOut || cleanupFailure;
-  const successfulObservedCompletion = observedCompletion && !terminalFailure;
-  deliver({
-    status: successfulObservedCompletion
-      ? 0
-      : (terminalFailure ? null : exitStatus),
-    signal: successfulObservedCompletion
-      ? null
-      : (timedOut ? (exitSignal || "SIGTERM") : exitSignal),
-    stdout,
-    stderr,
-    ...(error ? { error } : {}),
-    durationMs: durationMs(),
-    timedOut,
-    ...(completion ? { completion } : {}),
-    browserExitedNaturally: !cleanupRequested && childClosed,
-    cleanupMethod: cleanupRequested ? cleanupMethod : "natural-exit",
-    cleanupConfirmed,
-  });
-}
-
-function beginCleanup() {
-  if (cleanupStarted || delivered) return;
-  cleanupStarted = true;
-  cleanupRequestSucceeded = terminateTree(child && child.pid);
-  if (childClosed || (cleanupRequestSucceeded && !processExists(child && child.pid))) {
-    finishAfterCleanup();
-    return;
-  }
-  cleanupTimer = setTimeout(finishAfterCleanup, cleanupGraceMs);
-}
-
-function completeDomObserved() {
-  return bodyObserved && htmlCloseObserved;
-}
-
-function screenshotReceipt() {
-  const screenshotArg = input.args.find((arg) => arg.startsWith("--screenshot="));
+function screenshotReceipt(args: readonly string[], stderr: string): boolean | undefined {
+  const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
   if (!screenshotArg) return undefined;
   const screenshotPath = screenshotArg.slice("--screenshot=".length);
-  const receipts = Array.from(stderr.matchAll(/(\d+)\s+bytes written to file\b/gi));
+  const receipts = Array.from(stderr.matchAll(/(\d+)\s+bytes written to file\b/giu));
   const receipt = receipts.at(-1);
   if (!receipt) return false;
   const expectedBytes = Number(receipt[1]);
@@ -200,222 +141,343 @@ function screenshotReceipt() {
   }
 }
 
-function observeCompletion() {
-  if (cleanupStarted || delivered || !completeDomObserved()) return;
-  const screenshotComplete = screenshotReceipt();
-  if (screenshotComplete === undefined) {
-    completion = "observed_dom";
-    beginCleanup();
-  } else if (screenshotComplete) {
-    completion = "observed_capture";
-    beginCleanup();
-  }
-}
-
-function appendOutput(channel, chunk) {
-  const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
-  const bytes = Buffer.byteLength(text);
-  if (channel === "stdout") {
-    stdoutBytes += bytes;
-    if (stdoutBytes <= maxOutputBytes) {
-      stdout += text;
-      const inspectionTail = stdout.slice(-4_096).toLowerCase();
-      bodyObserved ||= inspectionTail.includes("<body");
-      htmlCloseObserved ||= inspectionTail.includes("</html>");
-    }
-  } else {
-    stderrBytes += bytes;
-    if (stderrBytes <= maxOutputBytes) stderr += text;
-  }
-  if (stdoutBytes > maxOutputBytes || stderrBytes > maxOutputBytes) {
-    failure = {
-      code: "ENOBUFS",
-      message: "Browser output exceeded the bounded diagnostic buffer",
-    };
-    beginCleanup();
-    return;
-  }
-  observeCompletion();
-}
-
-function failBeforeSpawn(error) {
-  failure = {
-    code: error && error.code ? String(error.code) : "ESPAWN",
-    message: stringifyError(error),
-  };
-  deliver({
-    status: null,
-    signal: null,
-    stdout,
-    stderr,
-    error: failure,
-    durationMs: durationMs(),
-    timedOut: false,
-    browserExitedNaturally: false,
-    cleanupMethod: "process-kill",
-    cleanupConfirmed: true,
-  });
-}
-
-try {
-  child = spawn(input.executable, input.args, {
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
-  Atomics.store(state, 1, child.pid || 0);
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => appendOutput("stdout", chunk));
-  child.stderr.on("data", (chunk) => appendOutput("stderr", chunk));
-  child.once("error", (error) => {
-    if (!cleanupStarted && !delivered) failBeforeSpawn(error);
-  });
-  child.once("close", (status, signal) => {
-    childClosed = true;
-    exitStatus = status;
-    exitSignal = signal;
-    if (cleanupStarted) {
-      finishAfterCleanup();
-      return;
-    }
-    completion = "process_exit";
-    finishAfterCleanup();
-  });
-  operationTimer = setTimeout(() => {
-    if (cleanupStarted || delivered) return;
-    timedOut = true;
-    failure = {
-      code: "ETIMEDOUT",
-      message: "Browser did not produce complete observable output before its deadline",
-    };
-    beginCleanup();
-  }, input.timeoutMs);
-} catch (error) {
-  failBeforeSpawn(error);
-}
-`;
-
-function killSupervisorBrowserProcess(pid: number): void {
-  if (!Number.isInteger(pid) || pid <= 0) return;
-  if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 2_000,
-    });
-    return;
-  }
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // The worker or browser already exited.
-    }
-  }
-}
-
-/** Run one isolated browser command while observing output completion rather
- * than conflating successful capture with graceful browser teardown. */
-export function runObservedGeneratedVisualBrowserProcess(
+/**
+ * Run one isolated browser command and resolve when either the process exits or
+ * its observable DOM/screenshot receipts are complete. The implementation is
+ * asynchronous so a Runtime worker can keep servicing its graceful-stop pipe;
+ * Rust remains the final owner of the worker and every browser descendant.
+ */
+export async function runObservedGeneratedVisualBrowserProcess(
   input: GeneratedVisualObservedBrowserInput,
-): GeneratedVisualObservedBrowserResult {
+): Promise<GeneratedVisualObservedBrowserResult> {
   const startedAt = Date.now();
-  const stateBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3);
-  const state = new Int32Array(stateBuffer);
-  const { port1, port2 } = new MessageChannel();
-  let worker: Worker;
-  try {
-    worker = new Worker(GENERATED_VISUAL_BROWSER_WORKER_SOURCE, {
-      eval: true,
-      workerData: {
-        input,
-        state: stateBuffer,
-        resultPort: port2,
-      },
-      transferList: [port2],
-    });
-    worker.unref();
-    port1.unref();
-  } catch (error) {
-    port1.close();
-    port2.close();
-    return {
-      status: null,
-      signal: null,
-      stdout: "",
-      stderr: "",
-      error: {
-        code: "EWORKER",
-        message: error instanceof Error ? error.message : "Could not start browser supervisor",
-      },
-      durationMs: Math.max(0, Date.now() - startedAt),
-      timedOut: false,
-      browserExitedNaturally: false,
-      cleanupMethod: "process-kill",
-      cleanupConfirmed: true,
-    };
-  }
-
-  Atomics.wait(
-    state,
-    2,
-    0,
-    GENERATED_VISUAL_BROWSER_WORKER_START_TIMEOUT_MS,
-  );
-  if (Atomics.load(state, 2) !== 1) {
-    port1.close();
-    void worker.terminate();
-    return {
-      status: null,
-      signal: null,
-      stdout: "",
-      stderr: "",
-      error: {
-        code: "EWORKERSTARTTIMEOUT",
-        message: "Browser supervisor worker did not start before its deadline",
-      },
-      durationMs: Math.max(0, Date.now() - startedAt),
-      timedOut: false,
-      browserExitedNaturally: false,
-      cleanupMethod: "process-kill",
-      cleanupConfirmed: true,
-    };
-  }
-  Atomics.wait(
-    state,
-    0,
-    0,
-    input.timeoutMs + GENERATED_VISUAL_BROWSER_CLEANUP_GRACE_MS,
-  );
-  const message = receiveMessageOnPort(port1)?.message as
-    | GeneratedVisualObservedBrowserResult
-    | undefined;
-  port1.close();
-  if (Atomics.load(state, 0) !== 1 || !message) {
-    const browserPid = Atomics.load(state, 1);
-    killSupervisorBrowserProcess(browserPid);
-    void worker.terminate();
+  if (input.signal?.aborted) {
     return {
       status: null,
       signal: "SIGTERM",
       stdout: "",
       stderr: "",
-      error: {
-        code: "ESUPERVISORTIMEOUT",
-        message: "Browser supervisor did not finish bounded process-tree cleanup",
-      },
-      durationMs: Math.max(0, Date.now() - startedAt),
-      timedOut: true,
+      error: { code: "ECANCELLED", message: "Browser invocation was cancelled." },
+      durationMs: 0,
+      timedOut: false,
+      completion: "cancelled",
       browserExitedNaturally: false,
-      cleanupMethod: process.platform === "win32"
-        ? "taskkill-tree"
-        : "process-group-sigkill",
-      cleanupConfirmed: false,
+      cleanupMethod: "none",
+      cleanupConfirmed: true,
     };
   }
-  void worker.terminate();
-  return message;
+
+  const platform = process.platform;
+  const accountingEnv = process.env;
+  const taskkill = platform === "win32"
+    ? trustedWindowsTreeKiller(accountingEnv)
+    : null;
+  const powershell = platform === "win32"
+    ? trustedWindowsPowerShell(accountingEnv)
+    : null;
+  if (platform === "win32" && (!taskkill || !powershell)) {
+    return {
+      status: null,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      error: {
+        code: "EPROCESSAUTH",
+        message: "Trusted Windows browser process-tree accounting is unavailable.",
+      },
+      durationMs: Math.max(0, Date.now() - startedAt),
+      timedOut: false,
+      completion: "spawn_error",
+      browserExitedNaturally: false,
+      cleanupMethod: "none",
+      cleanupConfirmed: true,
+    };
+  }
+
+  return await new Promise((resolve) => {
+    let child: BrowserChild;
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let childClosed = false;
+    let exitStatus: number | null = null;
+    let exitSignal: string | null = null;
+    let completion: GeneratedVisualBrowserCompletion | undefined;
+    let timedOut = false;
+    let failure: GeneratedVisualObservedBrowserResult["error"];
+    let cleanupStarted = false;
+    let cleanupConfirmed = false;
+    let cleanupMethod: GeneratedVisualObservedBrowserResult["cleanupMethod"] =
+      "process-kill";
+    let browserExitedNaturally = false;
+    let terminalLatched = false;
+    let settled = false;
+    const timers: { operation?: NodeJS.Timeout } = {};
+    let bodyObserved = false;
+    let htmlCloseObserved = false;
+    let stdoutMarkerTail = "";
+    let initialRowsPromise: Promise<unknown[] | null> = Promise.resolve(null);
+    let resolveChildClose: (() => void) | undefined;
+    const childClosePromise = new Promise<void>((closed) => {
+      resolveChildClose = closed;
+    });
+
+    const clearTimers = () => {
+      if (timers.operation) clearTimeout(timers.operation);
+    };
+    const latchTerminal = (next: GeneratedVisualBrowserCompletion): boolean => {
+      if (terminalLatched || settled) return false;
+      terminalLatched = true;
+      completion = next;
+      clearTimers();
+      try {
+        input.onTerminalLatched?.(next);
+      } catch {
+        // A diagnostic observer cannot alter terminal ownership.
+      }
+      return true;
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      input.signal?.removeEventListener("abort", onAbort);
+      const observed = completion === "observed_dom" ||
+        completion === "observed_capture";
+      const cleanupFailure = !cleanupConfirmed;
+      const error = failure ?? (cleanupFailure
+        ? { code: "ECLEANUP", message: "Browser process tree did not confirm cleanup." }
+        : undefined);
+      const terminalFailure = Boolean(error) || timedOut || cleanupFailure;
+      const successfulObservedCompletion = observed && !terminalFailure;
+      const naturalProcessExit = completion === "process_exit";
+      resolve({
+        status: successfulObservedCompletion
+          ? 0
+          : (naturalProcessExit ? exitStatus : (terminalFailure ? null : exitStatus)),
+        signal: successfulObservedCompletion
+          ? null
+          : (naturalProcessExit
+              ? exitSignal
+              : (timedOut ? (exitSignal || "SIGTERM") : exitSignal)),
+        stdout,
+        stderr,
+        ...(error ? { error } : {}),
+        durationMs: Math.max(0, Date.now() - startedAt),
+        timedOut,
+        ...(completion ? { completion } : {}),
+        browserExitedNaturally,
+        cleanupMethod,
+        cleanupConfirmed,
+      });
+    };
+    const waitForChildClose = async (): Promise<boolean> => {
+      if (childClosed) return true;
+      let closeTimer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          childClosePromise.then(() => true),
+          new Promise<false>((closed) => {
+            closeTimer = setTimeout(
+              () => closed(false),
+              TREE_CLOSE_TIMEOUT_MS,
+            );
+          }),
+        ]);
+      } finally {
+        if (closeTimer) clearTimeout(closeTimer);
+      }
+    };
+    const beginCleanup = () => {
+      if (cleanupStarted || settled) return;
+      cleanupStarted = true;
+      void (async () => {
+        const initialRows = await initialRowsPromise;
+        const termination = await terminateOwnedBrowserTree(
+          child,
+          platform,
+          accountingEnv,
+          taskkill,
+          { powershell, initialRows },
+        );
+        const exactMethod = exactCleanupMethod(termination.method);
+        if (exactMethod === null) {
+          failure ??= {
+            code: "ECLEANUP",
+            message: "Browser process-tree cleanup returned an unknown method.",
+          };
+        } else {
+          cleanupMethod = exactMethod;
+        }
+        const closed = await waitForChildClose();
+        cleanupConfirmed = exactMethod !== null &&
+          termination.confirmed === true && closed;
+        finish();
+      })().catch((error) => {
+        failure ??= {
+          code: errorCode(error, "ECLEANUP"),
+          message: errorText(error),
+        };
+        finish();
+      });
+    };
+    const observeCompletion = () => {
+      if (cleanupStarted || settled || !bodyObserved || !htmlCloseObserved) return;
+      const screenshotComplete = screenshotReceipt(input.args, stderr);
+      let observedCompletion: GeneratedVisualBrowserCompletion;
+      if (screenshotComplete === undefined) observedCompletion = "observed_dom";
+      else if (screenshotComplete) observedCompletion = "observed_capture";
+      else return;
+      if (!latchTerminal(observedCompletion)) return;
+      beginCleanup();
+    };
+    const appendOutput = (channel: "stdout" | "stderr", chunk: Buffer | string) => {
+      const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      const bytes = Buffer.byteLength(text, "utf8");
+      if (channel === "stdout") {
+        stdoutBytes += bytes;
+        const markerWindow = `${stdoutMarkerTail}${text}`.toLowerCase();
+        bodyObserved ||= markerWindow.includes("<body");
+        htmlCloseObserved ||= markerWindow.includes("</html>");
+        stdoutMarkerTail = markerWindow.slice(
+          -GENERATED_VISUAL_BROWSER_MARKER_OVERLAP_CHARS,
+        );
+        if (stdoutBytes <= GENERATED_VISUAL_BROWSER_MAX_OUTPUT_BYTES) {
+          stdout += text;
+        }
+      } else {
+        stderrBytes += bytes;
+        if (stderrBytes <= GENERATED_VISUAL_BROWSER_MAX_OUTPUT_BYTES) stderr += text;
+      }
+      if (
+        stdoutBytes > GENERATED_VISUAL_BROWSER_MAX_OUTPUT_BYTES ||
+        stderrBytes > GENERATED_VISUAL_BROWSER_MAX_OUTPUT_BYTES
+      ) {
+        if (!latchTerminal("output_overflow")) return;
+        failure = {
+          code: "ENOBUFS",
+          message: "Browser output exceeded the bounded diagnostic buffer.",
+        };
+        beginCleanup();
+        return;
+      }
+      observeCompletion();
+    };
+    const onAbort = () => {
+      if (!latchTerminal("cancelled")) return;
+      failure = { code: "ECANCELLED", message: "Browser invocation was cancelled." };
+      if (!cleanupStarted) beginCleanup();
+    };
+
+    try {
+      const wrapper = ownedBrowserWrapperInvocation(input.executable, input.args);
+      if (!wrapper) {
+        resolve({
+          status: null,
+          signal: null,
+          stdout,
+          stderr,
+          error: {
+            code: "EWRAPPER",
+            message: "Browser invocation did not resolve to a direct, owned executable.",
+          },
+          durationMs: Math.max(0, Date.now() - startedAt),
+          timedOut: false,
+          completion: "spawn_error",
+          browserExitedNaturally: false,
+          cleanupMethod: "none",
+          cleanupConfirmed: true,
+        });
+        return;
+      }
+      child = spawn(wrapper.executable, wrapper.args, {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: platform !== "win32",
+        ...(input.env ? { env: input.env } : {}),
+      });
+    } catch (error) {
+      resolve({
+        status: null,
+        signal: null,
+        stdout,
+        stderr,
+        error: { code: errorCode(error, "ESPAWN"), message: errorText(error) },
+        durationMs: Math.max(0, Date.now() - startedAt),
+        timedOut: false,
+        completion: "spawn_error",
+        browserExitedNaturally: false,
+        cleanupMethod: "none",
+        cleanupConfirmed: true,
+      });
+      return;
+    }
+    initialRowsPromise = platform === "win32"
+      ? windowsProcessSnapshot(accountingEnv, powershell)
+      : Promise.resolve(null);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => appendOutput("stdout", chunk));
+    child.stderr.on("data", (chunk) => appendOutput("stderr", chunk));
+    child.once("error", (error) => {
+      if (!latchTerminal("spawn_error")) return;
+      failure = { code: errorCode(error, "ESPAWN"), message: errorText(error) };
+      if (Number.isSafeInteger(child.pid) && Number(child.pid) > 0) {
+        beginCleanup();
+      } else {
+        cleanupMethod = "none";
+        cleanupConfirmed = true;
+        finish();
+      }
+    });
+    child.once("close", (status, signal) => {
+      childClosed = true;
+      resolveChildClose?.();
+      exitStatus = status;
+      exitSignal = signal;
+      if (cleanupStarted || !latchTerminal("process_exit")) return;
+      cleanupStarted = true;
+      browserExitedNaturally = true;
+      void (async () => {
+        const initialRows = await initialRowsPromise;
+        const cleanup = await (input.naturalCloseProof ?? confirmNaturalBrowserClose)(
+          child,
+          platform,
+          accountingEnv,
+          taskkill,
+          { powershell, initialRows },
+        );
+        const exactMethod = exactCleanupMethod(cleanup.method);
+        if (exactMethod === null) {
+          failure ??= {
+            code: "ECLEANUP",
+            message: "Natural browser cleanup returned an unknown method.",
+          };
+        } else {
+          cleanupMethod = exactMethod;
+        }
+        cleanupConfirmed = exactMethod !== null && cleanup.confirmed === true;
+        finish();
+      })().catch((error) => {
+        failure ??= {
+          code: errorCode(error, "ECLEANUP"),
+          message: errorText(error),
+        };
+        finish();
+      });
+    });
+    timers.operation = setTimeout(() => {
+      if (!latchTerminal("deadline")) return;
+      timedOut = true;
+      failure = {
+        code: "ETIMEDOUT",
+        message: "Browser did not produce complete observable output before its deadline.",
+      };
+      beginCleanup();
+    }, input.timeoutMs);
+    timers.operation.unref?.();
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    if (input.signal?.aborted) onAbort();
+  });
 }

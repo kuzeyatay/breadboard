@@ -108,6 +108,17 @@ interface PageHandlers {
   close: () => void;
 }
 
+interface ResponseTextCapture {
+  readonly text: string;
+  readonly complete: boolean;
+  readonly reason:
+    | "complete"
+    | "content_length_unavailable"
+    | "content_length_exceeds_limit"
+    | "body_exceeds_limit"
+    | "body_unavailable";
+}
+
 const DEFAULT_SENSITIVE_NAMES = [
   "authorization",
   "proxyauthorization",
@@ -674,8 +685,8 @@ export class DiagnosticsCollector {
         expected: explicitlyExpected === true,
       };
       if (this.options.captureResponseBodies && isCapturableContentType(contentType)) {
-        const body = await this.readResponseText(response);
-        if (body !== null) data["body"] = redactBody(body, this.redactor);
+        const capture = await this.readResponseText(response);
+        data["body"] = redactBody(capture.text, this.redactor);
       }
       this.record({
         source: "network",
@@ -696,8 +707,26 @@ export class DiagnosticsCollector {
       JSON_CONTENT_TYPE.test(contentType) &&
       isLikelyApiUrl(response.url())
     ) {
-      const body = await this.readResponseText(response);
-      if (body === null || body.trim() === "") return;
+      const capture = await this.readResponseText(response, true);
+      if (!capture.complete) {
+        this.record({
+          source: "network",
+          level: "info",
+          event: "json-response-validation-skipped",
+          message: `${response.request().method()} ${response.url()} was not parsed because diagnostics could not capture the complete body within ${this.options.maxBodyBytes} bytes`,
+          pageId: this.pageId(page),
+          url: response.url(),
+          actionable: false,
+          data: {
+            status,
+            reason: capture.reason,
+            body: redactBody(capture.text, this.redactor),
+          },
+        });
+        return;
+      }
+      const body = capture.text;
+      if (body.trim() === "") return;
       try {
         JSON.parse(body);
       } catch (error) {
@@ -718,16 +747,50 @@ export class DiagnosticsCollector {
     }
   }
 
-  private async readResponseText(response: Response): Promise<string | null> {
+  private async readResponseText(
+    response: Response,
+    requireCompleteWithinLimit = false,
+  ): Promise<ResponseTextCapture> {
     const rawLength = response.headers()["content-length"];
     const contentLength = rawLength === undefined ? Number.NaN : Number(rawLength);
+    if (requireCompleteWithinLimit && !Number.isFinite(contentLength)) {
+      return {
+        text: "[body not read: content length unavailable]",
+        complete: false,
+        reason: "content_length_unavailable",
+      };
+    }
+    if (
+      requireCompleteWithinLimit &&
+      contentLength > this.options.maxBodyBytes
+    ) {
+      return {
+        text: `[body omitted: ${contentLength} bytes exceeds the ${this.options.maxBodyBytes} byte diagnostics limit]\n[truncated]`,
+        complete: false,
+        reason: "content_length_exceeds_limit",
+      };
+    }
     if (Number.isFinite(contentLength) && contentLength > this.options.maxBodyBytes * 4) {
-      return `[body omitted: ${contentLength} bytes]`;
+      return {
+        text: `[body omitted: ${contentLength} bytes]\n[truncated]`,
+        complete: false,
+        reason: "content_length_exceeds_limit",
+      };
     }
     try {
-      return truncateUtf8(await response.text(), this.options.maxBodyBytes);
+      const body = await response.text();
+      const complete = Buffer.byteLength(body, "utf8") <= this.options.maxBodyBytes;
+      return {
+        text: truncateUtf8(body, this.options.maxBodyBytes),
+        complete,
+        reason: complete ? "complete" : "body_exceeds_limit",
+      };
     } catch (error) {
-      return `[body unavailable: ${error instanceof Error ? error.message : String(error)}]`;
+      return {
+        text: `[body unavailable: ${error instanceof Error ? error.message : String(error)}]`,
+        complete: false,
+        reason: "body_unavailable",
+      };
     }
   }
 

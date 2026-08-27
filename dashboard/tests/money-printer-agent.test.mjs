@@ -397,6 +397,8 @@ test("stopping the last run stops the work rather than only looking away", () =>
   const manager = read("src/lib/money-printer/run-manager.ts");
   // The clone cannot cancel a task in flight, so the abort path has to reach the
   // service itself; a card that only stopped polling would leave ffmpeg running.
-  assert.match(manager, /export function abortRun/);
-  assert.match(manager, /stopService\(\)/);
+  assert.match(manager, /export async function abortRun/);
+  assert.match(manager, /stopMoneyPrinterWorkerService\(\{/);
+  assert.doesNotMatch(manager, /stopMoneyPrinterRuntime|withMoneyPrinterServiceLease/);
+  assert.doesNotMatch(manager, /from "\.\/service\.ts"/);
 });

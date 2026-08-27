@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import { NextResponse } from "next/server";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import {
@@ -28,6 +28,7 @@ import {
 } from "@/lib/socials-manager/artifacts.ts";
 import { ComfyUiError } from "@/lib/comfyui/client.ts";
 import { renderComfyUiImage } from "@/lib/comfyui/service.ts";
+import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -162,7 +163,7 @@ async function handleUpload(request: Request, userId: number): Promise<NextRespo
           ? `Add image to artifact ${parent.id}`
           : `Upload image ${file.name}`,
     });
-    const artifact = importArtifactImage({
+    const artifact = await importArtifactImage({
       context,
       buffer: Buffer.from(await file.arrayBuffer()),
       title,
@@ -219,7 +220,7 @@ async function handleComfyUiGeneration(
   try {
     context = openContextOrThrow({ userId, conversationPublicId, brief: prompt });
     const rendered = await renderComfyUiImage({ ...settings, prompt });
-    const artifact = importArtifactImage({
+    const artifact = await importArtifactImage({
       context,
       buffer: rendered.buffer,
       title,
@@ -286,7 +287,7 @@ async function handleGeneration(request: Request, userId: number): Promise<NextR
       prompt,
       sourceImage,
     });
-    const artifact = importArtifactImage({
+    const artifact = await importArtifactImage({
       context,
       buffer: generated.buffer,
       title,
@@ -319,6 +320,12 @@ export async function POST(request: Request) {
       ? await handleUpload(request, userId)
       : await handleGeneration(request, userId);
   } catch (error) {
+    if (error instanceof SupervisorResourceExhaustedError) {
+      return NextResponse.json(
+        { error: error.message, ...error.result },
+        { status: 503 },
+      );
+    }
     if (
       error instanceof ArtifactStoreError ||
       error instanceof ArtifactImageServiceError ||

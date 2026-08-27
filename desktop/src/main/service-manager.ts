@@ -8,7 +8,6 @@ import { killProcessTree } from "./process-tree";
 import type { LogManager } from "./log-manager";
 import {
   ResourceMonitor,
-  defaultMetricsProvider,
   describeBreach,
   type ProcessMetricsProvider,
   type ResourceBreach,
@@ -246,14 +245,19 @@ const RESTART_WINDOW_MS = 10 * 60 * 1000;
 const RESTART_BACKOFF_MS = [1_000, 5_000, 15_000];
 
 /**
- * Typed service supervisor. The Electron main process is the only spawner of
- * Breadboard services; every child is started hidden (no console windows),
- * logged, health-checked, and terminated as a full process tree on shutdown.
+ * Legacy typed service supervisor retained for deterministic migration tests.
+ * Production Electron starts the Rust Runtime V2 owner directly and never
+ * constructs this class. Process metrics therefore require an injected test
+ * provider; there is intentionally no shell-backed default collector.
  */
 export class ServiceManager extends EventEmitter {
   private readonly services = new Map<string, ManagedService>();
   private readonly logs: LogManager;
-  private readonly resources: ResourceMonitor;
+  /**
+   * Legacy-only evaluator. Production process accounting belongs to Runtime
+   * V2; this exists solely when a caller injects a deterministic provider.
+   */
+  private readonly resources: ResourceMonitor | null;
   private readonly governor: MemoryGovernor | null;
   private readonly memoryPolicy: MemoryPolicy | null;
   private readonly capabilities = new Map<string, CapabilityDefinition>();
@@ -280,18 +284,22 @@ export class ServiceManager extends EventEmitter {
       existsSync(options.runtimeSupervisorPath)
         ? options.runtimeSupervisorPath
         : null;
-    this.resources = new ResourceMonitor({
-      provider: options.metricsProvider ?? defaultMetricsProvider(),
-      ...(options.resourceSampleIntervalMs === undefined
-        ? {}
-        : { intervalMs: options.resourceSampleIntervalMs }),
-      onBreach: (breach) => this.handleResourceBreach(breach),
-      onError: (error) => {
-        // Telemetry must never take the supervisor down, and a failed sample
-        // must never be read as "the service is fine" or "the service is huge".
-        this.logs.forService("desktop").write(`[supervisor] memory sampling failed: ${message(error)}`);
-      },
-    });
+    this.resources = options.metricsProvider
+      ? new ResourceMonitor({
+          provider: options.metricsProvider,
+          ...(options.resourceSampleIntervalMs === undefined
+            ? {}
+            : { intervalMs: options.resourceSampleIntervalMs }),
+          onBreach: (breach) => this.handleResourceBreach(breach),
+          onError: (error) => {
+            // An injected provider must never take the legacy supervisor down,
+            // and a failed sample must never be interpreted as a measurement.
+            this.logs
+              .forService("desktop")
+              .write(`[supervisor] memory sampling failed: ${message(error)}`);
+          },
+        })
+      : null;
     this.governor = options.memoryPolicy && options.systemMetrics
       ? new MemoryGovernor({
           policy: options.memoryPolicy,
@@ -320,12 +328,12 @@ export class ServiceManager extends EventEmitter {
 
   /** Test seam: run one resource sampling pass immediately. */
   async sampleResourcesNow(): Promise<void> {
-    await this.resources.tick();
+    await this.resources?.tick();
   }
 
   /** Test seam: which services currently have an active memory monitor. */
   monitoredServiceIds(): string[] {
-    return this.resources.watchedServiceIds();
+    return this.resources?.watchedServiceIds() ?? [];
   }
 
   register(definition: DesktopServiceDefinition): void {
@@ -1221,7 +1229,7 @@ export class ServiceManager extends EventEmitter {
     const budget = managed.definition.resourceBudget;
     const pid = managed.child?.pid;
     if (!budget || typeof pid !== "number" || this.shuttingDown) return;
-    this.resources.watch(managed.definition.id, pid, budget);
+    this.resources?.watch(managed.definition.id, pid, budget);
   }
 
   /**
@@ -1385,7 +1393,7 @@ export class ServiceManager extends EventEmitter {
     managed.child = null;
     // The pid is gone: never keep sampling it, and never let a stale monitor
     // survive into the next incarnation of this service.
-    this.resources.unwatch(id);
+    this.resources?.unwatch(id);
     // Consume the flag here so an unrelated later crash is not misreported as
     // a memory breach; the cumulative count keeps the cap message honest.
     const resourceLimited = managed.resourceLimited;
@@ -1478,7 +1486,7 @@ export class ServiceManager extends EventEmitter {
       clearTimeout(managed.idleTimer);
       managed.idleTimer = null;
     }
-    this.resources.unwatch(id);
+    this.resources?.unwatch(id);
     if (managed.child === null) {
       // Adopted services included: killing a process another launcher owns
       // would take down the stack the user is actually working in.
@@ -1498,7 +1506,7 @@ export class ServiceManager extends EventEmitter {
   async stopAll(): Promise<void> {
     this.shuttingDown = true;
     this.governor?.stop();
-    this.resources.stop();
+    this.resources?.stop();
     // Abort in-flight health waits promptly and prevent exit handlers from
     // scheduling restarts while the admission queue drains.
     for (const managed of this.services.values()) managed.stopRequested = true;
@@ -1536,7 +1544,7 @@ export class ServiceManager extends EventEmitter {
   killAllNow(): void {
     this.shuttingDown = true;
     this.governor?.stop();
-    this.resources.stop();
+    this.resources?.stop();
     for (const managed of this.services.values()) {
       this.closeChangeWatchers(managed);
       const pid = managed.child?.pid;
@@ -1549,7 +1557,7 @@ export class ServiceManager extends EventEmitter {
   private async terminate(managed: ManagedService, immediate: boolean): Promise<void> {
     // Whatever the reason, this pid is going away; stop sampling it first so no
     // monitor outlives the process or follows a recycled pid.
-    this.resources.unwatch(managed.definition.id);
+    this.resources?.unwatch(managed.definition.id);
     const child = managed.child;
     const pid = child?.pid;
     if (!child || typeof pid !== "number") {

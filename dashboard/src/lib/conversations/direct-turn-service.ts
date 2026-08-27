@@ -45,7 +45,7 @@ import {
   reasoningTextFromOutputItem,
 } from "../responses-stream-text.ts";
 import type { HermesSurface } from "../hermes/config.ts";
-import { ApiError } from "../hermes/route-helpers.ts";
+import { ApiError } from "../hermes/route-core.ts";
 import {
   getRuntimeSessionByConversation,
   recordAuditEvent,

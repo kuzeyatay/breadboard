@@ -11,12 +11,14 @@ import {
 import {
   emailStatus,
   pollEmailOnce,
-  startEmailPoller,
-  stopEmailPoller,
 } from "@/lib/email/service";
 import { readSettings, saveSettings } from "@/lib/email/store";
 import { verifyImap } from "@/lib/email/imap";
 import { verifySmtp } from "@/lib/email/smtp";
+import {
+  reconcileRuntimeSchedule,
+  runtimeScheduleEnabled,
+} from "@/lib/runtime-v2/gateway-control";
 
 export const dynamic = "force-dynamic";
 
@@ -26,14 +28,17 @@ export const dynamic = "force-dynamic";
 // — address, hosts, username — and never the secret, which is on disk in
 // Hermes's private directory rather than in the database.
 
-function payload() {
-  return { ...emailStatus(), account: describeAccount() };
+async function payload(userId: number) {
+  return {
+    ...emailStatus(await runtimeScheduleEnabled("email-poll", userId)),
+    account: describeAccount(),
+  };
 }
 
 export async function GET() {
   try {
-    await requireUserId();
-    return NextResponse.json({ ok: true, ...payload() });
+    const userId = await requireUserId();
+    return NextResponse.json({ ok: true, ...(await payload(userId)) });
   } catch (error) {
     return routeErrorResponse(error);
   }
@@ -52,24 +57,28 @@ export async function POST(request: Request) {
           { status: 400 },
         );
       }
-      startEmailPoller();
-      return NextResponse.json({ ok: true, ...payload() });
+      await reconcileRuntimeSchedule("email-poll", "running", userId);
+      return NextResponse.json({ ok: true, ...(await payload(userId)) });
     }
 
     if (action === "stop") {
-      stopEmailPoller();
-      return NextResponse.json({ ok: true, ...payload() });
+      await reconcileRuntimeSchedule("email-poll", "stopped", userId);
+      return NextResponse.json({ ok: true, ...(await payload(userId)) });
     }
 
     if (action === "poll") {
-      return NextResponse.json({ ok: true, result: await pollEmailOnce(), ...payload() });
+      return NextResponse.json({
+        ok: true,
+        result: await pollEmailOnce(),
+        ...(await payload(userId)),
+      });
     }
 
     if (action === "unlink") {
-      stopEmailPoller();
+      await reconcileRuntimeSchedule("email-poll", "stopped", userId);
       clearAccount();
       saveSettings({ address: null, linkedAt: null, autostart: false, lastError: null });
-      return NextResponse.json({ ok: true, ...payload() });
+      return NextResponse.json({ ok: true, ...(await payload(userId)) });
     }
 
     if (action === "allow") {
@@ -80,12 +89,12 @@ export async function POST(request: Request) {
         .filter((entry) => looksLikeAddress(entry))
         .slice(0, 50);
       saveSettings({ allowedSenders: senders });
-      return NextResponse.json({ ok: true, ...payload() });
+      return NextResponse.json({ ok: true, ...(await payload(userId)) });
     }
 
     if (action === "autostart") {
       saveSettings({ autostart: body.enabled === true });
-      return NextResponse.json({ ok: true, ...payload() });
+      return NextResponse.json({ ok: true, ...(await payload(userId)) });
     }
 
     if (action !== "link") {
@@ -150,7 +159,7 @@ export async function POST(request: Request) {
       allowedSenders: readSettings().allowedSenders,
     });
 
-    return NextResponse.json({ ok: true, ...payload() });
+    return NextResponse.json({ ok: true, ...(await payload(userId)) });
   } catch (error) {
     return routeErrorResponse(error);
   }

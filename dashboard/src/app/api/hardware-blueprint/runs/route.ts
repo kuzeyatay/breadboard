@@ -15,7 +15,7 @@ import {
   getEventsSince,
   setRunTerminalHandler,
   startRun,
-} from "@/lib/hardware/run-manager.ts";
+} from "@/lib/hardware/runtime-run-manager.ts";
 import {
   attachExternalAgentRun,
   finishExternalAgentTurn,
@@ -113,7 +113,7 @@ export async function POST(request: Request) {
     // be left executing without a transcript it can publish into.
     const conversation = getConversationForUser(conversationPublicId, userId);
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
       conversationPublicId,
       ...(clientMessageId ? { clientMessageId } : {}),
@@ -159,8 +159,9 @@ export async function POST(request: Request) {
             ...(branchGroupId ? { branchGroupId } : {}),
           });
         }
-        setRunTerminalHandler(userId, run.runId, (result) => {
+        setRunTerminalHandler(userId, run.runId, async (result) => {
           try {
+            const runEvents = await getEventsSince(userId, run.runId, 0);
             finishExternalAgentTurn({
               conversationId: conversation.id,
               clientMessageId,
@@ -169,7 +170,7 @@ export async function POST(request: Request) {
               usage: result.usage,
               state: result.state,
               activity: externalAgentActivityFromRunEvents(
-                getEventsSince(userId, run.runId, 0),
+                runEvents,
               ),
             });
           } catch {
@@ -178,7 +179,7 @@ export async function POST(request: Request) {
         });
         turnPersisted = true;
       } catch (persistenceError) {
-        abortRun(userId, run.runId);
+        await abortRun(userId, run.runId);
         throw persistenceError;
       }
     }

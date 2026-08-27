@@ -91,9 +91,8 @@ test("a repository with no graph yet reports missing rather than serving a stale
   };
   const repository = path.join(os.tmpdir(), "never-indexed-project");
   assert.equal(service.graftIndexExists(repository, env), false);
-  // No CLI installed is its own state, and it must not start a build.
+  // No CLI installed is its own state, and a read never starts a build.
   assert.equal(service.graftIndexState(repository, env), "unavailable");
-  assert.equal(service.ensureGraftIndex(repository, env), "unavailable");
   assert.equal(service.graftRunContextFor(repository, env), null);
 });
 
@@ -197,10 +196,10 @@ test("Codex carries graft as TOML overrides, since it ignores user config", () =
 });
 
 test("every coding agent that resolves a connected repository is wired to graft", () => {
-  for (const route of [
-    "src/app/api/codex/runs/route.ts",
-    "src/app/api/opencode/runs/route.ts",
-    "src/app/api/ruflo/runs/route.ts",
+  for (const [route, seam] of [
+    ["src/app/api/codex/runs/route.ts", "graftEnabled,"],
+    ["src/app/api/opencode/runs/route.ts", "graftEnabled,"],
+    ["src/app/api/ruflo/runs/route.ts", "graftEnabled,"],
   ]) {
     const text = source(route);
     assert.ok(
@@ -208,9 +207,25 @@ test("every coding agent that resolves a connected repository is wired to graft"
       `${route} should be a connected-repository agent`,
     );
     assert.ok(
-      text.includes("graft: graftRunContext(userId, repository)"),
-      `${route} should hand its run the garden's graft context`,
+      text.includes(seam),
+      `${route} should hand its run the garden's graft setting or context`,
     );
+  }
+  const adapters = source("scripts/runtime-v2-outer-agent-adapters.mjs");
+  assert.match(adapters, /graftIndexExists\(request\.repositoryPath\)/);
+  assert.match(adapters, /graftServerFor\(request\.repositoryPath\)/);
+
+  const indexService = source("src/lib/code-index/index-service.ts");
+  assert.doesNotMatch(indexService, /node:child_process|\bspawn\s*\(/);
+  const runtimeBuild = source("src/lib/code-index/runtime-build.ts");
+  assert.match(runtimeBuild, /jobType: "graft-index-build"/);
+  assert.match(runtimeBuild, /workerKind !== "graft-index-node"/);
+  for (const route of [
+    "src/app/api/codex/runs/route.ts",
+    "src/app/api/opencode/runs/route.ts",
+    "src/app/api/ruflo/runs/route.ts",
+  ]) {
+    assert.match(source(route), /await prepareGraftIndex\(userId, repository\.path\)/);
   }
 });
 

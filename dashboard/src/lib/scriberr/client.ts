@@ -48,6 +48,7 @@ const SCRIBERR_STATUSES: ReadonlySet<string> = new Set([
   "completed",
   "failed",
 ]);
+const MAX_SCRIBERR_JSON_BYTES = 16 * 1024 * 1024;
 
 /** Pure normalizer for Scriberr's TranscriptionJob JSON (unit-tested). */
 export function normalizeScriberrJob(raw: unknown): ScriberrJobSnapshot {
@@ -208,7 +209,7 @@ export class ScriberrClient {
         { auth: false },
       );
       const status = statusResponse.ok
-        ? ((await statusResponse.json().catch(() => null)) as
+        ? ((await this.readJsonBounded(statusResponse, "registration-status").catch(() => null)) as
             | { registration_enabled?: unknown }
             | null)
         : null;
@@ -236,7 +237,7 @@ export class ScriberrClient {
         });
       }
     }
-    const data = (await response.json().catch(() => null)) as
+    const data = (await this.readJsonBounded(response, "login").catch(() => null)) as
       | { token?: unknown }
       | null;
     if (!data || typeof data.token !== "string" || !data.token) {
@@ -262,11 +263,13 @@ export class ScriberrClient {
       body,
       timeoutMs,
       auth = true,
+      signal,
     }: {
       json?: unknown;
       body?: BodyInit;
       timeoutMs?: number;
       auth?: boolean;
+      signal?: AbortSignal;
     } = {},
   ): Promise<Response> {
     const headers: Record<string, string> = {};
@@ -282,6 +285,9 @@ export class ScriberrClient {
       () => controller.abort(),
       timeoutMs ?? this.requestTimeoutMs,
     );
+    const abortFromCaller = () => controller.abort(signal?.reason);
+    if (signal?.aborted) abortFromCaller();
+    else signal?.addEventListener("abort", abortFromCaller, { once: true });
     try {
       let response = await this.fetchImpl(this.url(pathname), {
         method,
@@ -312,7 +318,37 @@ export class ScriberrClient {
       });
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abortFromCaller);
     }
+  }
+
+  private async readJsonBounded(response: Response, context: string): Promise<unknown> {
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    if (reader) {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > MAX_SCRIBERR_JSON_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          throw new VideoTranscriptionError("scriberr_rejected", {
+            detail: `${context}: response exceeded the bounded JSON limit`,
+          });
+        }
+        chunks.push(value);
+      }
+    }
+    const text = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8");
+    return text ? (() => {
+      try {
+        return JSON.parse(text) as unknown;
+      } catch {
+        return null;
+      }
+    })() : null;
   }
 
   private async expectJson(response: Response, context: string): Promise<unknown> {
@@ -321,7 +357,7 @@ export class ScriberrClient {
         detail: `${context}: HTTP ${response.status}`,
       });
     }
-    const data = await response.json().catch(() => null);
+    const data = await this.readJsonBounded(response, context);
     if (!response.ok) {
       const message =
         data && typeof data === "object" && typeof (data as { error?: unknown }).error === "string"
@@ -387,12 +423,14 @@ export class ScriberrClient {
     filename,
     title,
     timeoutMs,
+    signal,
   }: {
     filePath: string;
     /** Display filename (sanitized) sent to Scriberr; not a disk path. */
     filename: string;
     title?: string | null;
     timeoutMs?: number;
+    signal?: AbortSignal;
   }): Promise<ScriberrJobSnapshot> {
     if (!fs.existsSync(filePath)) {
       throw new VideoTranscriptionError("media_missing");
@@ -405,6 +443,7 @@ export class ScriberrClient {
     const response = await this.rawRequest("POST", "/api/v1/transcription/upload", {
       body: form,
       timeoutMs: timeoutMs ?? Math.max(this.requestTimeoutMs, 600_000),
+      signal,
     });
     return normalizeScriberrJob(await this.expectJson(response, "upload"));
   }
@@ -424,7 +463,7 @@ export class ScriberrClient {
     });
     if (!response.ok && response.status >= 500) {
       // Scriberr wraps yt-dlp failures in a 500 with an error + stderr details.
-      const data = (await response.json().catch(() => null)) as
+      const data = (await this.readJsonBounded(response, "youtube").catch(() => null)) as
         | { error?: unknown }
         | null;
       const message =

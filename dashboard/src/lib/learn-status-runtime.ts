@@ -4,6 +4,7 @@
  * implementation. Reaching this fallback means that isolation was not wired.
  */
 export async function getLearnStatusSnapshotForRoute(_input: {
+  userId: number;
   gardenId: string;
   contentPath: string;
 }): Promise<Record<string, unknown>> {

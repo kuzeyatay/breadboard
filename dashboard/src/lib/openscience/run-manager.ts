@@ -8,13 +8,14 @@
 // and the files the run left behind.
 //
 // Progress comes from the server's event stream. Only events carrying this
-// run's own `sessionID` are considered — the server is shared across runs, and
-// a second chat's turn would otherwise write its text into this one's answer.
+// run's own `sessionID` are considered — the Runtime-owned service is shared
+// across runs, while this module lives in one fresh disposable worker.
 
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import type { Dirent } from "node:fs";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import {
   abortSession,
   createSession,
@@ -24,8 +25,8 @@ import {
   type Connection,
   type MessageRecord,
 } from "./client.ts";
-import { PROVIDER_ID } from "./config.ts";
-import { ensureService } from "./service.ts";
+import { PROVIDER_ID } from "./contract.ts";
+import { preparedService } from "./runtime-worker-service.ts";
 import { runInstruction, sessionTitle, type PromptOptions } from "./prompt.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
 
@@ -66,6 +67,7 @@ export interface OpenscienceRunSummary {
 interface RunState {
   runId: string;
   userId: number;
+  conversationPublicId?: string;
   task: string;
   /** The chat this run was launched from, rendered once by the route. */
   conversationContext: string;
@@ -83,6 +85,9 @@ interface RunState {
   /** Accumulated assistant text, keyed by the runtime's part id. */
   parts: Map<string, string>;
   partOrder: string[];
+  partCharacters: number;
+  pendingAnswer: string;
+  answerFlushTimer: ReturnType<typeof setTimeout> | null;
   /** Role per message id, so the person's own prompt stays out of the answer. */
   messageRoles: Map<string, string>;
   toolCount: number;
@@ -105,8 +110,13 @@ runtimeGlobal.__breadboardOpenscienceRuns = runs;
 const MAX_EVENTS = 5_000;
 const MAX_ANSWER_CHARS = 200_000;
 const MAX_DELIVERABLES = 60;
+const MAX_TEXT_PARTS = 2_000;
+const MAX_UPSTREAM_FRAME_CHARS = 1024 * 1024;
+const ANSWER_FLUSH_MS = 250;
 /** A turn producing nothing at all for this long has stalled. */
 const STREAM_IDLE_TIMEOUT_MS = 30 * 60_000;
+/** A complete scientific turn can include experiments and long tool calls. */
+const RUN_TIMEOUT_MS = 90 * 60_000;
 /** Runs outlive a plausible tab switch; research turns are long. */
 const RETENTION_MS = 6 * 60 * 60_000;
 
@@ -172,6 +182,34 @@ function answerText(run: RunState): string {
     .slice(0, MAX_ANSWER_CHARS);
 }
 
+function flushAnswer(run: RunState): void {
+  if (run.answerFlushTimer) {
+    clearTimeout(run.answerFlushTimer);
+    run.answerFlushTimer = null;
+  }
+  while (run.pendingAnswer) {
+    const text = run.pendingAnswer.slice(0, 8_000);
+    run.pendingAnswer = run.pendingAnswer.slice(text.length);
+    emit(run, "assistant.delta", { text });
+  }
+}
+
+function queueAnswer(run: RunState, delta: string): void {
+  if (!delta) return;
+  run.pendingAnswer += delta;
+  if (run.pendingAnswer.length >= 8_000) {
+    flushAnswer(run);
+    return;
+  }
+  if (run.answerFlushTimer) return;
+  const timer = setTimeout(() => {
+    run.answerFlushTimer = null;
+    flushAnswer(run);
+  }, ANSWER_FLUSH_MS);
+  timer.unref?.();
+  run.answerFlushTimer = timer;
+}
+
 function publishTerminal(run: RunState, result: OpenscienceTerminalResult): void {
   if (run.terminalResult) return;
   run.terminalResult = result;
@@ -193,14 +231,16 @@ function finish(
   content: string,
 ): void {
   if (reachedTerminal(run)) return;
+  flushAnswer(run);
+  const boundedContent = content.slice(0, MAX_ANSWER_CHARS);
   run.status = outcome;
   emit(run, `run.${outcome}`, {
-    content: content.slice(0, 8_000),
+    content: boundedContent,
     deliverables: run.deliverables.length,
   });
   publishTerminal(run, {
     outcome,
-    content,
+    content: boundedContent,
     ...(run.usage ? { usage: run.usage } : {}),
   });
   scheduleCleanup(run.runId);
@@ -223,7 +263,7 @@ function walkWorkspace(root: string): Map<string, number> {
   const found = new Map<string, number>();
   const visit = (directory: string, depth: number): void => {
     if (depth > 8 || found.size > 5_000) return;
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(directory, { withFileTypes: true });
     } catch {
@@ -385,17 +425,26 @@ async function followSession(
 
           if (part.type === "text" && typeof part.text === "string") {
             const isNewPart = !run.parts.has(id);
-            if (isNewPart) run.partOrder.push(id);
+            if (isNewPart) {
+              if (run.partOrder.length >= MAX_TEXT_PARTS) continue;
+              run.partOrder.push(id);
+            }
             const previous = run.parts.get(id) ?? "";
-            run.parts.set(id, part.text);
-            const delta = part.text.startsWith(previous)
-              ? part.text.slice(previous.length)
-              : part.text;
+            const available = Math.max(
+              0,
+              MAX_ANSWER_CHARS - (run.partCharacters - previous.length),
+            );
+            const next = part.text.slice(0, available);
+            run.parts.set(id, next);
+            run.partCharacters += next.length - previous.length;
+            const delta = next.startsWith(previous)
+              ? next.slice(previous.length)
+              : next;
             // The card appends deltas verbatim, so the blank line `answerText`
             // puts between parts has to be streamed too.
             const separator = isNewPart && run.partOrder.length > 1 ? "\n\n" : "";
             if (delta) {
-              emit(run, "assistant.delta", { text: `${separator}${delta}`.slice(0, 8_000) });
+              queueAnswer(run, `${separator}${delta}`);
             }
             continue;
           }
@@ -474,6 +523,9 @@ async function followSession(
 
         if (event.type === "session.idle") return;
       }
+      if (buffer.length > MAX_UPSTREAM_FRAME_CHARS) {
+        throw new Error("The OpenScience event stream exceeded its frame bound.");
+      }
     }
   } finally {
     clearInterval(timer);
@@ -490,21 +542,32 @@ export interface StartInput {
   task: string;
   model: string;
   reasoningEffort: string;
-  baseUrl: string;
-  apiKey: string;
   options: PromptOptions;
+  /** Durable chat ownership for standalone OpenScience runs. */
+  conversationPublicId?: string;
   /** The chat this was launched from, so a goal can refer back to it. */
   conversationContext?: string;
 }
 
-async function execute(run: RunState, input: StartInput): Promise<void> {
+export interface RuntimeWorkerStartInput extends StartInput {
+  /** Fenced identity supplied by Runtime V2, never selected by a renderer. */
+  runtimeJobId: string;
+  conversationPublicId: string;
+}
+
+async function execute(run: RunState): Promise<void> {
   try {
     emit(run, "service.starting", {});
-    const service = await ensureService({
-      baseUrl: input.baseUrl,
-      apiKey: input.apiKey,
-      model: run.model,
+    const service = await preparedService({
+      userId: run.userId,
+      runId: run.runId,
+      ...(run.conversationPublicId
+        ? { conversationPublicId: run.conversationPublicId }
+        : {}),
     });
+    if (!service.models.includes(run.model)) {
+      throw new Error("The prepared OpenScience service does not declare this model.");
+    }
     run.connection = { baseUrl: service.baseUrl };
     run.workspace = service.workspacePath;
     emit(run, "service.ready", { workspace: service.workspacePath });
@@ -543,6 +606,7 @@ async function execute(run: RunState, input: StartInput): Promise<void> {
     await followSession(run, reader);
     if (reachedTerminal(run)) return;
 
+    flushAnswer(run);
     run.stage = "delivering";
     emit(run, "stage", { stage: run.stage });
 
@@ -592,10 +656,14 @@ async function execute(run: RunState, input: StartInput): Promise<void> {
   }
 }
 
-export function startRun(input: StartInput): OpenscienceRunSummary {
+function startLocalRun(runId: string, input: StartInput): OpenscienceRunSummary {
+  if (runs.has(runId)) throw new Error("The OpenScience Runtime identity was reused.");
   const run: RunState = {
-    runId: randomUUID(),
+    runId,
     userId: input.userId,
+    ...(input.conversationPublicId
+      ? { conversationPublicId: input.conversationPublicId }
+      : {}),
     task: input.task,
     conversationContext: input.conversationContext ?? "",
     model: input.model,
@@ -611,6 +679,9 @@ export function startRun(input: StartInput): OpenscienceRunSummary {
     workspace: "",
     parts: new Map(),
     partOrder: [],
+    partCharacters: 0,
+    pendingAnswer: "",
+    answerFlushTimer: null,
     messageRoles: new Map(),
     toolCount: 0,
     knownFiles: new Set(),
@@ -624,8 +695,38 @@ export function startRun(input: StartInput): OpenscienceRunSummary {
     model: run.model,
     harness: run.options.harness,
   });
-  void execute(run, input);
+  const timer = setTimeout(() => {
+    if (reachedTerminal(run)) return;
+    run.aborted = true;
+    run.abort.abort(new DOMException("OpenScience timed out", "AbortError"));
+    if (run.connection && run.sessionId) {
+      void abortSession(run.connection, run.sessionId);
+    }
+    finish(run, "failed", answerText(run) || "The OpenScience run exceeded its time limit.");
+  }, RUN_TIMEOUT_MS);
+  timer.unref?.();
+  void execute(run).finally(() => clearTimeout(timer));
   return summary(run);
+}
+
+/** Compatibility seam for the already-disposable Max Research coordinator. */
+export function startRun(input: StartInput & Record<string, unknown>): OpenscienceRunSummary {
+  return startLocalRun(`osrun_${randomUUID().replaceAll("-", "")}`, input);
+}
+
+/** Fixed entrypoint used only by the fresh outer-openscience Runtime worker. */
+export function startRuntimeWorkerRun(
+  input: RuntimeWorkerStartInput,
+): OpenscienceRunSummary {
+  if (
+    !Number.isSafeInteger(input.userId) ||
+    input.userId < 1 ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId) ||
+    !/^conv_[A-Za-z0-9_-]{24}$/u.test(input.conversationPublicId)
+  ) {
+    throw new Error("The OpenScience Runtime worker input is invalid.");
+  }
+  return startLocalRun(input.runtimeJobId, input);
 }
 
 export function getRun(userId: number, runId: string): OpenscienceRunSummary {
@@ -646,16 +747,23 @@ export function isTerminal(userId: number, runId: string): boolean {
   return reachedTerminal(run);
 }
 
-export async function abortRun(userId: number, runId: string): Promise<void> {
+export function abortRuntimeWorkerRun(userId: number, runId: string): void {
   const run = requireRun(userId, runId);
   if (isTerminal(userId, runId)) return;
   run.aborted = true;
+  run.abort.abort(new DOMException("OpenScience stopped", "AbortError"));
   if (run.connection && run.sessionId) {
-    await abortSession(run.connection, run.sessionId);
+    void abortSession(run.connection, run.sessionId);
   }
-  run.abort.abort();
   finish(run, "aborted", answerText(run) || "The run was stopped.");
 }
+
+export async function abortRun(userId: number, runId: string): Promise<void> {
+  abortRuntimeWorkerRun(userId, runId);
+}
+
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
 
 /**
  * One of the run's files, read back for download.

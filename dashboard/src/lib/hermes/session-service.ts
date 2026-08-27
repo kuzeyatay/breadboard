@@ -28,13 +28,18 @@ import type {
   RuntimeSession,
 } from "../agent-runtime/contracts.ts";
 import {
+  runtimeStartupResourceFailure,
+  safeRuntimeStartupDiagnostic,
+  type RuntimeStartupStage,
+} from "../agent-runtime/startup-error.ts";
+import {
   agentForSurface,
   readHermesConfig,
   type HermesSurface,
 } from "./config.ts";
 import { issueCapabilityToken } from "./capability-token.ts";
 import { allowedToolsForSurface } from "./tool-scopes.ts";
-import { directoryForWorkspaceKey, writeWorkspaceCapability } from "./workspace.ts";
+import { directoryForWorkspaceKey } from "./workspace.ts";
 import {
   createRuntimeSession,
   getRuntimeSessionByConversation,
@@ -51,7 +56,7 @@ import {
   type RuntimeSessionRow,
   type FilesystemAccessMode,
 } from "./runtime-store.ts";
-import { ApiError } from "./route-helpers.ts";
+import { ApiError } from "./route-core.ts";
 import { listMcpConnections, runtimeMcpConfig } from "./mcp-connections.ts";
 import { composioConnectedIntegrationSlugs } from "../composio/service.ts";
 import {
@@ -82,6 +87,28 @@ interface ClusterRow {
   chat_accessible: number;
 }
 
+function reportRuntimeStartupFailure(
+  runtimeKind: RuntimeKind,
+  stage: RuntimeStartupStage,
+  error: unknown,
+): void {
+  console.error(
+    "[agent-runtime] session creation failed",
+    safeRuntimeStartupDiagnostic({ runtimeKind, stage, error }),
+  );
+}
+
+function runtimeUnavailableError(error: unknown): ApiError {
+  const resourceFailure = runtimeStartupResourceFailure(error);
+  return resourceFailure
+    ? new ApiError(503, resourceFailure.code, resourceFailure.message)
+    : new ApiError(
+        503,
+        "runtime_unavailable",
+        "The agent runtime is unavailable. Try again shortly.",
+      );
+}
+
 async function createWithConfiguredRuntimeFallback(
   input: Parameters<AgentRuntime["createSession"]>[0],
 ): Promise<{
@@ -96,14 +123,11 @@ async function createWithConfiguredRuntimeFallback(
       created: await primary.createSession(input),
       fallbackFrom: null,
     };
-  } catch {
+  } catch (primaryError) {
+    reportRuntimeStartupFailure(primary.kind, "primary_create", primaryError);
     const fallback = getFallbackAgentRuntime();
     if (!fallback || fallback.kind === primary.kind) {
-      throw new ApiError(
-        503,
-        "runtime_unavailable",
-        "The agent runtime is unavailable. Try again shortly.",
-      );
+      throw runtimeUnavailableError(primaryError);
     }
     try {
       return {
@@ -111,12 +135,9 @@ async function createWithConfiguredRuntimeFallback(
         created: await fallback.createSession(input),
         fallbackFrom: primary.kind,
       };
-    } catch {
-      throw new ApiError(
-        503,
-        "runtime_unavailable",
-        "The agent runtime is unavailable. Try again shortly.",
-      );
+    } catch (fallbackError) {
+      reportRuntimeStartupFailure(fallback.kind, "fallback_create", fallbackError);
+      throw runtimeUnavailableError(fallbackError);
     }
   }
 }
@@ -346,19 +367,9 @@ export async function createSessionForSurface(
 
   await loadUnifiedToolRegistryForRuntime(row, created.directory, runtime);
 
-  // Custom tools call back through narrowly scoped Breadboard capabilities.
-  // Garden/Quartz receive content tools; terminal/scout receive only structured
-  // capability-gap and official skill-search callbacks.
-  const config = readHermesConfig();
-  if (runtime.kind === "hermes") {
-    writeWorkspaceCapability(created.runtimeDirectory, {
-      token: mintCapabilityToken(authorized, options.userId ?? 0),
-      dashboardUrl: config.dashboardInternalUrl,
-      surface: options.surface,
-      gardenId: gardenId ?? undefined,
-      pageSlug: options.pageSlug ?? undefined,
-    });
-  }
+  // Custom tools authenticate the runtime process and Breadboard mints their
+  // narrow capability from this server-owned session row on every request.
+  // No capability secret is written into the model-writable workspace.
 
   return authorized;
 }
@@ -542,7 +553,6 @@ export async function resolveConversationRuntime(input: {
   }
   row = canonicalizeRuntimePolicy(row);
   const authorized = authorizedRuntime(row);
-  refreshWorkspaceCapability(authorized);
   return authorized;
 }
 
@@ -799,19 +809,6 @@ function authorizedRuntime(row: RuntimeSessionRow): AuthorizedRuntimeSession {
     row,
     ...runtimeReference(row, readHermesConfig()),
   };
-}
-
-function refreshWorkspaceCapability(session: AuthorizedRuntimeSession): void {
-  if (session.runtimeKind !== "hermes") return;
-  const config = readHermesConfig();
-  const runtimeDirectory = directoryForWorkspaceKey(config, session.workspaceKey);
-  writeWorkspaceCapability(runtimeDirectory, {
-    token: mintCapabilityToken(session, session.row.user_id ?? 0),
-    dashboardUrl: config.dashboardInternalUrl,
-    surface: session.row.surface,
-    gardenId: session.row.garden_id ?? undefined,
-    pageSlug: session.row.page_slug ?? undefined,
-  });
 }
 
 function runtimeReference(

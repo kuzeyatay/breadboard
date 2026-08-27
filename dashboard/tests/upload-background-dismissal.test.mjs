@@ -7,15 +7,12 @@ const workspace = fs.readFileSync(
   "utf8",
 );
 
-test("an active garden upload can be dismissed without being canceled", () => {
+test("an active garden upload can be dismissed without a redundant background button", () => {
   assert.match(
     workspace,
     /function continueUploadInBackground\(\) \{\s*if \(!isUploading\) return;[\s\S]*?setShowUpload\(false\);\s*\}/,
   );
-  assert.match(
-    workspace,
-    /onClick=\{continueUploadInBackground\}[\s\S]*?Close &amp; continue in background/,
-  );
+  assert.doesNotMatch(workspace, /Close &amp; continue in background/);
   assert.doesNotMatch(
     workspace.match(/function continueUploadInBackground\(\)[\s\S]*?\n  \}/)?.[0] ?? "",
     /abort\(/,

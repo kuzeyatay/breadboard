@@ -1,4 +1,4 @@
-// In-memory run manager for the Video Use agent.
+// Worker-local run manager for the Video Use agent.
 //
 // One run is one pass of the clone's pipeline over one video:
 //
@@ -10,11 +10,10 @@
 // is a revision of the stored program rather than a fresh idea, and the render
 // publishes a *version* of an artifact that already exists.
 //
-// Runs are ephemeral and the events live here for the SSE route to replay. The
-// artifact is what is durable — which is deliberate: someone who closes the tab
-// mid-render comes back to a finished video in the archive, not to a lost run.
+// Runs and cancellation controllers live only inside one fresh Runtime V2
+// worker. Rust persists the bounded event projection for dashboard replay; the
+// artifact remains the durable product output.
 
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ArtifactRow } from "../hermes/artifact-store.ts";
@@ -100,6 +99,8 @@ interface RunState {
    * which the run is a guest of and must never remove.
    */
   adoptedArtifactId: string | null;
+  /** Resolves only after the pipeline and failure/abort cleanup have settled. */
+  settled: Promise<void> | null;
 }
 
 const globalRuns = globalThis as typeof globalThis & {
@@ -147,7 +148,15 @@ export interface StartVideoUseRunInput {
   conversationContext?: string;
 }
 
-export function startRun(input: StartVideoUseRunInput): { runId: string; status: RunStatus } {
+export interface RuntimeWorkerStartVideoUseRunInput extends StartVideoUseRunInput {
+  /** Runtime V2's fenced job identity. Never selected by a renderer. */
+  runtimeJobId: string;
+}
+
+function startLocalRun(
+  runId: string,
+  input: StartVideoUseRunInput,
+): { runId: string; status: RunStatus } {
   const health = videoUseHealth();
   if (!health.available) {
     throw new Error(health.reason ?? "Video Use is not ready on this machine.");
@@ -159,7 +168,7 @@ export function startRun(input: StartVideoUseRunInput): { runId: string; status:
       : input.request.source.kind === "url"
         ? (videoSourceFor(input.request.source.url)?.label ?? "video")
         : "video";
-  const runId = `vurun_${randomUUID().replaceAll("-", "")}`;
+  if (runs.has(runId)) throw new Error("Video Use Runtime identity was reused.");
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -173,6 +182,7 @@ export function startRun(input: StartVideoUseRunInput): { runId: string; status:
     context: null,
     createdAt: Date.now(),
     adoptedArtifactId: null,
+    settled: null,
   };
   runs.set(runId, run);
 
@@ -183,13 +193,35 @@ export function startRun(input: StartVideoUseRunInput): { runId: string; status:
     agentRunId: runId,
   });
 
-  void drive(run, input).catch((error) => {
-    finish(run, "failed", {
-      error: error instanceof Error ? error.message : "The edit could not be completed.",
+  run.settled = drive(run, input)
+    .catch(async (error) => {
+      if (run.controller.signal.aborted) {
+        await finish(run, "aborted", {
+          summary: "The edit was stopped before it finished rendering.",
+        });
+        return;
+      }
+      await finish(run, "failed", {
+        error: error instanceof Error ? error.message : "The edit could not be completed.",
+      });
     });
-  });
 
   return { runId, status: "queued" };
+}
+
+/** Fixed disposable-worker entrypoint. Next.js must never call this export. */
+export function startRuntimeWorkerRun(
+  input: RuntimeWorkerStartVideoUseRunInput,
+): { runId: string; status: RunStatus } {
+  if (
+    !Number.isSafeInteger(input.userId) ||
+    input.userId < 1 ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId) ||
+    !/^conv_[A-Za-z0-9_-]{24}$/u.test(input.conversationPublicId)
+  ) {
+    throw new Error("The Video Use Runtime worker input is invalid.");
+  }
+  return startLocalRun(input.runtimeJobId, input);
 }
 
 /**
@@ -288,7 +320,7 @@ async function adoptSource(
     );
   }
 
-  const created = createImportedArtifact({
+  const created = await createImportedArtifact({
     userId: run.context.userId,
     runtimeSessionId: run.context.runtimeSessionId,
     hermesSessionId: run.context.hermesSessionId,
@@ -368,6 +400,11 @@ async function attachSourceToUserTurn(
 async function drive(run: RunState, input: StartVideoUseRunInput): Promise<void> {
   const runtime = resolveVideoUseRoot();
   if (!runtime) throw new Error("The video-use clone was not found next to the dashboard.");
+  const runtimeScope = {
+    userId: run.userId,
+    gardenId: null,
+    conversationId: run.conversationPublicId,
+  };
 
   run.status = "running";
   emit(run, "run.started", { label: run.label, prompt: run.request.prompt });
@@ -394,7 +431,7 @@ async function drive(run: RunState, input: StartVideoUseRunInput): Promise<void>
     ...(sourceAttachment ? { sourceAttachment, sourceAttached } : {}),
   });
 
-  const probe = await probeVideo(session.sourcePath, run.controller.signal);
+  const probe = await probeVideo(session.sourcePath, runtimeScope, run.controller.signal);
   emit(run, "source.probed", {
     durationSeconds: Math.round(probe.durationSeconds * 10) / 10,
     width: probe.width,
@@ -421,6 +458,7 @@ async function drive(run: RunState, input: StartVideoUseRunInput): Promise<void>
     });
     try {
       const transcribed = await transcribeSource({
+        runtimeScope,
         session,
         engine,
         durationSeconds: probe.durationSeconds,
@@ -430,6 +468,7 @@ async function drive(run: RunState, input: StartVideoUseRunInput): Promise<void>
       });
       if (transcribed) {
         packed = await packTranscript({
+          runtimeScope,
           session,
           root: runtime.root,
           signal: run.controller.signal,
@@ -462,7 +501,7 @@ async function drive(run: RunState, input: StartVideoUseRunInput): Promise<void>
     });
     try {
       const windows = probe.hasAudio
-        ? await detectSilences(session.sourcePath, { signal: run.controller.signal })
+        ? await detectSilences(session.sourcePath, runtimeScope, { signal: run.controller.signal })
         : [];
       silenceMap = probe.hasAudio
         ? renderSilenceMap(windows, probe.durationSeconds)
@@ -511,6 +550,7 @@ async function drive(run: RunState, input: StartVideoUseRunInput): Promise<void>
   // --- rendering ---------------------------------------------------------
   emit(run, "stage.updated", { stage: "render", status: "running", label: "Assembling the cut" });
   const rendered = await renderProgram({
+    runtimeScope,
     session,
     root: runtime.root,
     program: planned.program,
@@ -539,7 +579,7 @@ async function drive(run: RunState, input: StartVideoUseRunInput): Promise<void>
     },
   ].slice(-60);
 
-  const stored = publishEditedVideo({
+  const stored = await publishEditedVideo({
     context: run.context,
     artifact,
     workspace: session.root,
@@ -632,7 +672,11 @@ function complete(
   scheduleCleanup(run);
 }
 
-function finish(run: RunState, status: RunStatus, payload: Record<string, unknown>): void {
+async function finish(
+  run: RunState,
+  status: RunStatus,
+  payload: Record<string, unknown>,
+): Promise<void> {
   if (isTerminalStatus(run.status)) return;
   run.status = status;
   closeVideoUseArtifactContext(run.context, status === "aborted" ? "aborted" : "failed");
@@ -641,7 +685,7 @@ function finish(run: RunState, status: RunStatus, payload: Record<string, unknow
     ...payload,
     elapsedSec: (Date.now() - run.createdAt) / 1_000,
   });
-  void discardAdoptedArtifact(run);
+  await discardAdoptedArtifact(run);
   scheduleCleanup(run);
 }
 
@@ -681,21 +725,31 @@ function scheduleCleanup(run: RunState): void {
   timer.unref?.();
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): VideoUseRunEvent[] {
+function getEventsSince(userId: number, runId: string, since = 0): VideoUseRunEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+function isTerminal(userId: number, runId: string): boolean {
   return isTerminalStatus(requireRun(userId, runId).status);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+/** Protocol controls consumed only by the fixed Runtime V2 adapter. */
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
+
+/**
+ * Signal every active nested Runtime/media request, then wait for the pipeline
+ * to unwind and for an adopted source artifact to be removed before the outer
+ * worker acknowledges cancellation.
+ */
+export async function abortRuntimeWorkerRun(
+  userId: number,
+  runId: string,
+): Promise<boolean> {
   const run = requireRun(userId, runId);
   if (isTerminalStatus(run.status)) return false;
-  run.controller.abort();
-  finish(run, "aborted", {
-    summary: "The edit was stopped before it finished rendering.",
-  });
+  run.controller.abort(new DOMException("Video Use stopped", "AbortError"));
+  await run.settled;
   return true;
 }
 
@@ -721,7 +775,10 @@ export async function sourceProbeFor(
   const session = findSession(userId, artifactId);
   if (!session || !fs.existsSync(session.sourcePath)) return null;
   try {
-    return await probeVideo(session.sourcePath);
+    return await probeVideo(
+      session.sourcePath,
+      { userId, gardenId: null, conversationId: null },
+    );
   } catch {
     return null;
   }

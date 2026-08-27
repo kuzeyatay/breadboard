@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { abortRun } from "@/lib/vox-director/run-manager.ts";
+import { abortRun } from "@/lib/vox-director/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

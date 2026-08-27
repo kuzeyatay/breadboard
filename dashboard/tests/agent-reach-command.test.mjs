@@ -233,8 +233,10 @@ test("the run is persisted and restored as a first-class external agent run", ()
 
 test("the run loop reaches ChatMock and nothing else", () => {
   const manager = source("src/lib/agent-reach/run-manager.ts");
+  const workerAdapters = source("scripts/runtime-v2-outer-agent-adapters.mjs");
   assert.match(manager, /chat\/completions/);
-  assert.match(manager, /chatmockApiKeyValue\(\)/);
+  assert.doesNotMatch(manager, /chatmockApiKeyValue|providers\/chatmock/u);
+  assert.match(workerAdapters, /apiKey: trustedSecret\("CHATMOCK_API_KEY"\)/u);
   assert.match(source("src/app/api/agent-reach/runs/route.ts"), /resolveChatmockBaseUrl/);
   // A shell option on the spawn would defeat the whole command policy above.
   assert.doesNotMatch(manager, /^\s*shell:\s*(true|process\.platform)/m);

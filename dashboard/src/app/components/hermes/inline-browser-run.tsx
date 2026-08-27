@@ -17,6 +17,7 @@ import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { useYoloMode } from "@/app/components/use-yolo-mode";
 import { normalizeChatTokenUsage } from "@/lib/chat-token-usage";
+import { appendBoundedAgentRunEvent } from "@/lib/agent-run-history";
 import { agentTarsFailureMessage } from "@/lib/ui-tars/identity.ts";
 import { agentTarsChatResponse, safeAgentTarsMessage } from "@/lib/ui-tars/chat-response.ts";
 import type {
@@ -177,11 +178,7 @@ export default function InlineBrowserRun({
 
   const applyEvent = useCallback((event: RunEvent) => {
     seqRef.current = Math.max(seqRef.current, event.sequenceNumber);
-    setEvents((previous) =>
-      previous.some((item) => item.sequenceNumber === event.sequenceNumber)
-        ? previous
-        : [...previous, event].sort((a, b) => a.sequenceNumber - b.sequenceNumber),
-    );
+    setEvents((previous) => appendBoundedAgentRunEvent(previous, event));
     if (event.type === "run.started") {
       setControlsDesktop(event.payload.operator === "computer");
     }
@@ -210,6 +207,8 @@ export default function InlineBrowserRun({
       !reportedTerminalRef.current &&
       ["run.completed", "run.failed", "run.aborted", "runtime.disconnected"].includes(event.type)
     ) {
+      esRef.current?.close();
+      esRef.current = null;
       reportedTerminalRef.current = true;
       const failedCompletion =
         event.type === "run.completed" &&

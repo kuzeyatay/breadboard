@@ -20,7 +20,7 @@ import {
   readDocument,
   readOpenDocument,
 } from "@/lib/document-structure/index.ts";
-import fs from "node:fs";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -147,6 +147,7 @@ export async function POST(request: Request) {
     // the retrieval path reads the status sidecar and inlines the whole
     // document exactly as it did before ColPali existed.
     enqueueDocumentIndex({
+      userId,
       blobId: stored.blobId,
       blobPath: stored.path,
       format: stored.format,

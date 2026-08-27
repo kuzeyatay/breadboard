@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
-import * as service from "@/lib/ui-tars/service.ts";
+import { runView } from "@/lib/ui-tars/runtime-run-manager.ts";
 import { uiTarsErrorResponse } from "@/lib/ui-tars/route-helpers.ts";
 
 export const dynamic = "force-dynamic";
@@ -11,9 +11,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ agen
   try {
     const userId = await requireUserId();
     const { agentId, runId } = await params;
-    service.requireAgent(userId, agentId);
     const since = Number(new URL(request.url).searchParams.get("since") ?? 0) || 0;
-    const view = await service.runView(userId, runId, since);
+    const view = await runView(userId, agentId, runId, since);
     return NextResponse.json({
       ok: true,
       run: {
@@ -29,7 +28,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ agen
         failureMessage: view.run.failure_message,
       },
       events: view.events,
-      pendingApproval: view.live?.pendingApproval ?? null,
+      pendingApproval: view.pendingApproval,
     });
   } catch (error) {
     return uiTarsErrorResponse(error);

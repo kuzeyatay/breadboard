@@ -22,15 +22,12 @@
 //    the GLOBAL config only (a project's own file is deliberately ignored), so
 //    this file — which Breadboard owns — is the only place it can be set.
 
-import fs from "node:fs";
-import path from "node:path";
-import { configRoot } from "./runtime.ts";
-
-/** The provider id the runtime knows ChatMock by. */
-export const PROVIDER_ID = "chatmock";
-
-/** ChatMock's sentinel for "whatever the background model is set to". */
-export const DEFAULT_MODEL_ID = "default";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { randomUUID } from "node:crypto";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { configRoot } from "./state-paths.ts";
+import { DEFAULT_MODEL_ID, PROVIDER_ID } from "./contract.ts";
+export { DEFAULT_MODEL_ID, PROVIDER_ID } from "./contract.ts";
 
 const REASONING_VARIANTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -115,7 +112,31 @@ export function writeConfig(shape: ConfigShape, env: NodeJS.ProcessEnv = process
     // Nothing written yet.
   }
   if (previous === serialized) return false;
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, serialized, "utf8");
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    fs.writeFileSync(temporary, serialized, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    fs.renameSync(temporary, target);
+  } finally {
+    try {
+      fs.unlinkSync(temporary);
+    } catch (error) {
+      if (
+        !error ||
+        typeof error !== "object" ||
+        !("code" in error) ||
+        (error as { code?: unknown }).code !== "ENOENT"
+      ) {
+        throw error;
+      }
+    }
+  }
   return true;
 }

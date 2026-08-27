@@ -406,9 +406,9 @@ export default function InlineDeerFlowRun({
                     <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--ink-heading)]">
                       {file.name}
                     </span>
-                    {/* A file the artifact store kept is already a card of its
-                        own in this chat; this link is the copy DeerFlow still
-                        holds, which is all there is for one it would not take. */}
+                    {/* The link resolves the durable artifact named by the
+                        sealed run projection, so it survives worker/service
+                        disposal and a dashboard restart. */}
                     <a
                       href={`${base}/artifacts/${encodeURIComponent(file.id)}`}
                       className="bb-agent-run-action shrink-0"

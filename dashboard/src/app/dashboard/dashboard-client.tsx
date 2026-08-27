@@ -61,6 +61,15 @@ import {
   type IngestTokenUsage,
 } from "@/lib/ingest-token-usage";
 import {
+  beginRuntimeIngestRecovery,
+  bindRuntimeIngestResponse,
+  cancelPendingRuntimeIngest,
+  forgetRuntimeIngestRecovery,
+  recoverRuntimeIngest,
+  runtimeIngestRecoveries,
+  runtimeIngestRecoveryRecord,
+} from "@/lib/runtime-v2/ingest-recovery-client";
+import {
   APP_THEME_CHANGE_EVENT,
   applyAppTheme,
   getStoredAppTheme,
@@ -328,6 +337,8 @@ export default function DashboardClient({
   const transferInputRef = useRef<HTMLInputElement>(null);
   const bgFileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
+  const uploadRuntimeJobIdsRef = useRef<Set<string>>(new Set());
+  const uploadRecoveryRequestIdsRef = useRef<Set<string>>(new Set());
   const resizeSessionRef = useRef<ResizeSession | null>(null);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
   // Per-file upload start timestamps (ms) for the live duration markers.
@@ -344,6 +355,45 @@ export default function DashboardClient({
     },
     [],
   );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    for (const stored of runtimeIngestRecoveries()) {
+      if (stored.purpose !== "documents") continue;
+      void (async () => {
+        let record = stored;
+        if (record.cancelRequested) {
+          await cancelPendingRuntimeIngest(record.requestId, {
+            signal: controller.signal,
+          });
+          const current = runtimeIngestRecoveryRecord(record.requestId);
+          if (current && !current.jobId) {
+            return;
+          }
+          if (!current) {
+            router.refresh();
+            return;
+          }
+          record = current;
+        }
+        const outcome = await recoverRuntimeIngest(
+          record,
+          (event) => {
+            if (
+              event.type === "error" &&
+              event.canceled !== true &&
+              typeof event.error === "string"
+            ) {
+              addToast(`${record.filename}: ${event.error}`);
+            }
+          },
+          { signal: controller.signal },
+        );
+        if (outcome?.terminalEvent) router.refresh();
+      })().catch(() => undefined);
+    }
+    return () => controller.abort();
+  }, [addToast, router]);
 
   useEffect(() => {
     const stored = localStorage.getItem("dashboard:bg-image");
@@ -374,29 +424,15 @@ export default function DashboardClient({
   // re-rendered the entire dashboard — every garden card — once per frame. A
   // variable moves the padding without React hearing about it at all.
   useEffect(() => {
-    let dock: Element | null = null;
     const observer = new ResizeObserver(([entry]) => {
       document.documentElement.style.setProperty(
         "--bb-dock-height",
         `${Math.round(entry.contentRect.height)}px`,
       );
     });
-    const observeCurrentDock = () => {
-      const current = document.querySelector("[data-terminal-dock]");
-      if (current === dock) return;
-      if (dock) observer.unobserve(dock);
-      dock = current;
-      if (dock) observer.observe(dock);
-    };
-    observeCurrentDock();
-    // The lightweight terminal bar is replaced by the real, dynamically
-    // compiled dock on first use. Rebind the observer at that one boundary so
-    // open-dock padding continues to follow its dragged height.
-    const mutations = new MutationObserver(observeCurrentDock);
-    const terminalHost = document.querySelector("[data-lazy-terminal-host]");
-    if (terminalHost) mutations.observe(terminalHost, { childList: true });
+    const dock = document.querySelector("[data-terminal-dock]");
+    if (dock) observer.observe(dock);
     return () => {
-      mutations.disconnect();
       observer.disconnect();
       document.documentElement.style.removeProperty("--bb-dock-height");
     };
@@ -1762,8 +1798,25 @@ export default function DashboardClient({
     setIsUploading(false);
   }
 
-  function closeUploadModal() {
+  async function closeUploadModal() {
     if (uploadAbortRef.current) {
+      const requestIds = [...uploadRecoveryRequestIdsRef.current];
+      for (const requestId of requestIds) {
+        void (async () => {
+          try {
+            await cancelPendingRuntimeIngest(requestId);
+            const record = runtimeIngestRecoveryRecord(requestId);
+            if (!record) return;
+            if (!record.jobId) {
+              return;
+            }
+            await recoverRuntimeIngest(record, () => undefined);
+          } finally {
+            uploadRecoveryRequestIdsRef.current.delete(requestId);
+          }
+        })().catch(() => undefined);
+      }
+      uploadRuntimeJobIdsRef.current.clear();
       uploadAbortRef.current.abort();
       uploadAbortRef.current = null;
     }
@@ -1882,8 +1935,8 @@ export default function DashboardClient({
         isHandwriting &&
         HANDWRITING_FILE_RE.test(file.name);
       const formData = new FormData();
-      formData.append("file", file);
       formData.append("clusterSlug", uploadCluster.slug);
+      formData.append("file", file);
       if (uploadLabel.trim())
         formData.append("sourceLabel", uploadLabel.trim());
       formData.append("isHandwriting", String(usesHandwriting));
@@ -1898,16 +1951,70 @@ export default function DashboardClient({
           return next;
         });
 
+      const requestId = crypto.randomUUID();
+      beginRuntimeIngestRecovery({
+        requestId,
+        clusterSlug: uploadCluster.slug,
+        filename: file.name,
+        fileKey: key,
+        startedAt: uploadStartedAtRef.current[key],
+      });
+      uploadRecoveryRequestIdsRef.current.add(requestId);
+      let runtimeJobId: string | null = null;
+      let terminalOutcome = false;
+      const continueRuntimeRecovery = () => {
+        const record = runtimeIngestRecoveryRecord(requestId);
+        if (!record) return;
+        void recoverRuntimeIngest(record, (event) => {
+          if (event.type === "progress" && typeof event.step === "string") {
+            setUploadProgress((prev) => ({ ...prev, [key]: event.step as string }));
+          } else if (event.type === "result") {
+            setUploadStatuses((prev) => ({ ...prev, [key]: "done" }));
+            setUploadErrors((prev) => {
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            });
+          } else if (
+            event.type === "error" &&
+            event.canceled !== true
+          ) {
+            const message =
+              typeof event.error === "string" ? event.error : "Upload failed";
+            setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
+            setUploadErrors((prev) => ({ ...prev, [key]: message }));
+            addToast(`${file.name}: ${message}`);
+          }
+        })
+          .then((outcome) => {
+            if (!outcome?.terminalEvent) return;
+            uploadRecoveryRequestIdsRef.current.delete(requestId);
+            if (runtimeJobId) uploadRuntimeJobIdsRef.current.delete(runtimeJobId);
+            clearProgress();
+            router.refresh();
+          })
+          .catch(() => undefined);
+      };
       try {
         setUploadProgress((prev) => ({ ...prev, [key]: "Uploading file…" }));
         const res = await fetch("/api/ingest", {
           method: "POST",
+          headers: {
+            "X-Breadboard-Ingest-Cluster-Slug": uploadCluster.slug,
+            "X-Breadboard-Ingest-File-Size": String(file.size),
+            "X-Breadboard-Ingest-Request-Id": requestId,
+          },
           body: formData,
           signal: controller.signal,
         });
+        const bound = bindRuntimeIngestResponse(requestId, res);
+        runtimeJobId = bound?.jobId ?? null;
+        if (runtimeJobId) uploadRuntimeJobIdsRef.current.add(runtimeJobId);
 
         // Validation/auth failures come back as a normal JSON error response.
         if (!res.ok || !res.body) {
+          terminalOutcome = true;
+          forgetRuntimeIngestRecovery(requestId);
           const data = await res.json().catch(() => ({}));
           const message =
             typeof data.error === "string" ? data.error : "Upload failed";
@@ -2000,11 +2107,15 @@ export default function DashboardClient({
         setUploadDurations((prev) => ({ ...prev, [key]: elapsed }));
 
         if (streamError) {
+          terminalOutcome = true;
+          forgetRuntimeIngestRecovery(requestId);
           if (controller.signal.aborted) break;
           setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
           setUploadErrors((prev) => ({ ...prev, [key]: streamError! }));
           addToast(`${file.name}: ${streamError}`);
         } else if (result) {
+          terminalOutcome = true;
+          forgetRuntimeIngestRecovery(requestId);
           const data = result as {
             duplicate?: boolean;
             imageCount?: number;
@@ -2046,18 +2157,17 @@ export default function DashboardClient({
           }
         } else {
           if (controller.signal.aborted) break;
-          const message = "Upload ended unexpectedly";
-          setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-          setUploadErrors((prev) => ({ ...prev, [key]: message }));
-          addToast(`${file.name}: ${message}`);
+          continueRuntimeRecovery();
         }
       } catch (err) {
         if ((err as Error).name === "AbortError") break;
-        const message = err instanceof Error ? err.message : "Network error";
-        setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-        setUploadErrors((prev) => ({ ...prev, [key]: message }));
+        continueRuntimeRecovery();
         clearProgress();
-        addToast(`${file.name}: ${message}`);
+      } finally {
+        if (runtimeJobId) uploadRuntimeJobIdsRef.current.delete(runtimeJobId);
+        if (terminalOutcome) {
+          uploadRecoveryRequestIdsRef.current.delete(requestId);
+        }
       }
     }
 
@@ -2941,14 +3051,14 @@ export default function DashboardClient({
                                     href={`/garden/${cluster.slug}`}
                                     className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                   >
-                                    Open garden view
+                                    Explore
                                   </Link>
                                   <Link
                                     data-card-action="true"
                                     href={`/gardens/${cluster.slug}`}
                                     className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                   >
-                                    Open garden dashboard
+                                    Workspace
                                   </Link>
                                 </>
                               ) : (
@@ -2957,7 +3067,7 @@ export default function DashboardClient({
                                   href={`/garden/${cluster.slug}`}
                                   className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                 >
-                                  Open garden view
+                                  Explore
                                 </Link>
                               )}
 

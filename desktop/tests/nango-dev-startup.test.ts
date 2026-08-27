@@ -16,7 +16,7 @@ test("desktop starts Breadboard without a separate connected-app service", () =>
 
   assert.equal(
     packageJson.scripts["dev"],
-    "npm run build && npm run prepare:transcription && node scripts/dev.mjs",
+    "npm run build && npm run prepare:native-runtime && node scripts/prepare-hot-dev-runtimes.mjs && npm run prepare:transcription && node scripts/sync-dev-runtime-manifests.mjs --stage-runtime-bins && node scripts/dev.mjs",
   );
   assert.doesNotMatch(packageJson.scripts["start"] ?? "", /nango|docker/i);
   assert.doesNotMatch(packageJson.scripts["dist:win"] ?? "", /nango|docker/i);

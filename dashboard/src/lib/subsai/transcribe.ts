@@ -7,9 +7,10 @@
 //   subtitles() — an ordinary subtitle file, for when the ask was a file and the
 //                 video should be left alone.
 //
-// Both go through the clone's own CLI rather than importing its Python: the CLI
-// is the documented batch entry point, it owns the model registry and the
-// pysubs2 writing, and driving it means no second definition of either.
+// Both go through the clone's own CLI in a fresh disposable Runtime worker: the
+// CLI is the documented batch entry point, it owns the model registry and the
+// pysubs2 writing, and driving it means no second definition of either. The
+// dashboard only streams the media input and reads the worker's bounded output.
 //
 // `faster-whisper` is the default backend because it is the one that gives
 // word-level timings without a GPU, and because `word_timestamps` turns its
@@ -17,20 +18,20 @@
 // disguise, and the reason the conversion below is a parser rather than a
 // second transcription.
 
-import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import {
-  resolveSubsAiRoot,
-  subsAiEnv,
-  subsAiHealth,
-  venvPython,
-} from "./runtime.ts";
+  externalRuntimeCopyFileAsync,
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8Async,
+} from "../external-runtime-filesystem.ts";
+import type {
+  SubsAiRuntimeOutput,
+  SubsAiRuntimeScope,
+} from "../runtime-v2/subsai-transcription-job.ts";
+import { repositoryRoot, runtimeV2ServiceVenv } from "../runtime-paths.ts";
 import type { SubtitleFormat } from "./identity.ts";
 import { scribeTranscript, type ScribeTranscript } from "../video-use/scribe-shape.ts";
-
-const TRANSCRIBE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 /** The backend Breadboard installs and drives. */
 export const DEFAULT_MODEL = "guillaumekln/faster-whisper";
@@ -47,25 +48,6 @@ export function isWhisperSize(value: unknown): value is WhisperSize {
   return typeof value === "string" && (WHISPER_SIZES as readonly string[]).includes(value);
 }
 
-/**
- * The backend's own defaults are `device: "auto"` and `compute_type: "default"`,
- * and "auto" means CUDA whenever CTranslate2 thinks a GPU might be there — which
- * on a machine without the CUDA runtime fails deep inside the encoder with
- * `cublas64_12.dll is not found`, minutes into a transcription. Pinning the CPU
- * makes the slow path the reliable one; `int8` is what makes it bearable.
- *
- * A GPU box can override this with SUBSAI_DEVICE=cuda.
- */
-function cpuModelConfig(size: WhisperSize | undefined): Record<string, unknown> {
-  const device = process.env.SUBSAI_DEVICE?.trim() || "cpu";
-  return {
-    model_size_or_path: size ?? "base",
-    device,
-    compute_type:
-      process.env.SUBSAI_COMPUTE_TYPE?.trim() || (device === "cpu" ? "int8" : "default"),
-  };
-}
-
 export class SubsAiError extends Error {
   readonly code: string;
 
@@ -79,137 +61,6 @@ export class SubsAiError extends Error {
 export interface TranscribeProgress {
   stage: string;
   detail?: string;
-}
-
-interface RunInput {
-  media: string;
-  destination: string;
-  format: SubtitleFormat;
-  model: string;
-  modelConfig: Record<string, unknown>;
-  suffix?: string;
-  language?: string | null;
-  signal?: AbortSignal;
-  onProgress?: (progress: TranscribeProgress) => void;
-}
-
-function runSubsAi(input: RunInput): Promise<void> {
-  const health = subsAiHealth();
-  if (!health.available || !health.root || !health.python) {
-    throw new SubsAiError(
-      "environment_missing",
-      health.reason ?? "Subtitles are not set up on this machine.",
-    );
-  }
-
-  const args = [
-    "-m", "subsai.cli",
-    input.media,
-    "--model", input.model,
-    "--model-configs", JSON.stringify(input.modelConfig),
-    "--format", input.format,
-    "--destination-folder", input.destination,
-    ...(input.suffix ? ["--output-suffix", input.suffix] : []),
-  ];
-
-  return new Promise((resolve, reject) => {
-    const child = spawn(health.python!, args, {
-      cwd: health.root!,
-      windowsHide: true,
-      env: subsAiEnv({ PYTHONPATH: path.join(health.root!, "src") }),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stderrTail = "";
-    let buffer = "";
-    child.stdout?.setEncoding("utf8");
-    child.stderr?.setEncoding("utf8");
-    const consume = (chunk: string) => {
-      buffer += chunk;
-      let newline = buffer.indexOf("\n");
-      while (newline >= 0) {
-        const line = buffer.slice(0, newline).trim();
-        buffer = buffer.slice(newline + 1);
-        // The first run of a size downloads its weights, which is most of the
-        // wait and worth saying out loud.
-        if (/download/i.test(line)) {
-          input.onProgress?.({ stage: "Downloading the model", detail: line.slice(0, 120) });
-        } else if (/transcrib/i.test(line)) {
-          input.onProgress?.({ stage: "Transcribing" });
-        }
-        newline = buffer.indexOf("\n");
-      }
-      if (buffer.length > 100_000) buffer = "";
-    };
-    child.stdout?.on("data", consume);
-    child.stderr?.on("data", (chunk: string) => {
-      stderrTail = `${stderrTail}${chunk}`.slice(-8_000);
-      consume(chunk);
-    });
-
-    const timer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // Already gone.
-      }
-    }, TRANSCRIBE_TIMEOUT_MS);
-    timer.unref?.();
-    const onAbort = () => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // Already gone.
-      }
-    };
-    input.signal?.addEventListener("abort", onAbort);
-
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      input.signal?.removeEventListener("abort", onAbort);
-      reject(new SubsAiError("spawn_failed", error.message));
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      input.signal?.removeEventListener("abort", onAbort);
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      if (input.signal?.aborted) {
-        reject(new SubsAiError("aborted", "Transcription was stopped."));
-        return;
-      }
-      const detail = stderrTail
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line && !line.startsWith("█") && !/^\s*\d+%/.test(line))
-        .slice(-3)
-        .join(" ");
-      reject(
-        new SubsAiError(
-          "transcribe_failed",
-          detail ? `Subtitles could not be generated: ${detail}` : "Subtitles could not be generated.",
-        ),
-      );
-    });
-  });
-}
-
-/** The file subsai wrote, found by stem rather than guessed at. */
-async function producedFile(
-  destination: string,
-  format: SubtitleFormat,
-): Promise<string> {
-  const entries = await fsp.readdir(destination);
-  const match = entries.find((entry) => entry.toLowerCase().endsWith(`.${format}`));
-  if (!match) {
-    throw new SubsAiError(
-      "no_output",
-      "Transcription finished without writing a subtitle file.",
-    );
-  }
-  return path.join(destination, match);
 }
 
 // ---------------------------------------------------------------------------
@@ -272,16 +123,29 @@ export function scribeTranscriptFromWords(cues: readonly SubtitleCue[]): ScribeT
 // The two entry points
 // ---------------------------------------------------------------------------
 
-async function withScratch<T>(run: (directory: string) => Promise<T>): Promise<T> {
-  const directory = await fsp.mkdtemp(path.join(os.tmpdir(), "subsai-"));
+async function transcribeWithRuntime(input: {
+  scope: SubsAiRuntimeScope;
+  mediaPath: string;
+  mode: "words" | "subtitles";
+  size?: WhisperSize;
+  language?: string | null;
+  format?: SubtitleFormat;
+  signal?: AbortSignal;
+  onProgress?: (progress: TranscribeProgress) => void;
+}): Promise<SubsAiRuntimeOutput> {
+  const runtime = await import("../runtime-v2/subsai-transcription-job.ts");
   try {
-    return await run(directory);
-  } finally {
-    await fsp.rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    return await runtime.transcribeWithSubsAiViaRuntime(input);
+  } catch (error) {
+    if (error instanceof runtime.SubsAiRuntimeError) {
+      throw new SubsAiError(error.code, error.message);
+    }
+    throw error;
   }
 }
 
 export interface TranscribeInput {
+  runtimeScope: SubsAiRuntimeScope;
   media: string;
   size?: WhisperSize;
   language?: string | null;
@@ -297,30 +161,27 @@ export interface TranscribeInput {
 export async function writeWordTranscript(
   input: TranscribeInput & { destination: string },
 ): Promise<boolean> {
-  const cues = await withScratch(async (directory) => {
-    await runSubsAi({
-      media: input.media,
-      destination: directory,
-      format: "srt",
-      model: DEFAULT_MODEL,
-      modelConfig: {
-        ...cpuModelConfig(input.size),
-        word_timestamps: true,
-        ...(input.language ? { language: input.language } : {}),
-      },
-      signal: input.signal,
-      onProgress: input.onProgress,
-    });
-    return parseSrt(await fsp.readFile(await producedFile(directory, "srt"), "utf8"));
+  const output = await transcribeWithRuntime({
+    scope: input.runtimeScope,
+    mediaPath: input.media,
+    mode: "words",
+    size: input.size,
+    language: input.language,
+    signal: input.signal,
+    onProgress: input.onProgress,
   });
-
-  if (!cues.length) return false;
-  const transcript = scribeTranscriptFromWords(cues);
-  await fsp.mkdir(path.dirname(input.destination), { recursive: true });
-  const draft = `${input.destination}.tmp`;
-  await fsp.writeFile(draft, JSON.stringify(transcript, null, 2), "utf8");
-  await fsp.rename(draft, input.destination);
-  return true;
+  try {
+    const cues = parseSrt(await externalRuntimeReadUtf8Async(output.filePath));
+    if (!cues.length) return false;
+    const transcript = scribeTranscriptFromWords(cues);
+    await fsp.mkdir(path.dirname(input.destination), { recursive: true });
+    const draft = `${input.destination}.tmp`;
+    await fsp.writeFile(draft, JSON.stringify(transcript, null, 2), "utf8");
+    await fsp.rename(draft, input.destination);
+    return true;
+  } finally {
+    output.cleanup();
+  }
 }
 
 /**
@@ -331,28 +192,49 @@ export async function writeWordTranscript(
 export async function writeSubtitleFile(
   input: TranscribeInput & { format: SubtitleFormat; destination: string },
 ): Promise<string> {
-  return withScratch(async (directory) => {
-    await runSubsAi({
-      media: input.media,
-      destination: directory,
-      format: input.format,
-      model: DEFAULT_MODEL,
-      modelConfig: {
-        ...cpuModelConfig(input.size),
-        ...(input.language ? { language: input.language } : {}),
-      },
-      signal: input.signal,
-      onProgress: input.onProgress,
-    });
-    const produced = await producedFile(directory, input.format);
-    await fsp.mkdir(path.dirname(input.destination), { recursive: true });
-    await fsp.copyFile(produced, input.destination);
-    return input.destination;
+  const output = await transcribeWithRuntime({
+    scope: input.runtimeScope,
+    mediaPath: input.media,
+    mode: "subtitles",
+    size: input.size,
+    language: input.language,
+    format: input.format,
+    signal: input.signal,
+    onProgress: input.onProgress,
   });
+  try {
+    await fsp.mkdir(path.dirname(input.destination), { recursive: true });
+    await externalRuntimeCopyFileAsync(output.filePath, input.destination);
+    return input.destination;
+  } finally {
+    output.cleanup();
+  }
 }
 
-/** Whether the clone is present at all, for callers that degrade rather than fail. */
+function isClone(candidate: string): boolean {
+  return externalRuntimePathExists(path.join(candidate, "src", "subsai", "cli.py")) &&
+    externalRuntimePathExists(path.join(candidate, "src", "subsai", "configs.py"));
+}
+
+function passiveRoot(): string | null {
+  const explicitValue = process.env.SUBSAI_ROOT?.trim();
+  const explicit = explicitValue ? path.resolve(explicitValue) : null;
+  if (process.env.BREADBOARD_QA_MODE === "1") {
+    return explicit && isClone(explicit) ? explicit : null;
+  }
+  const candidates = [
+    explicit,
+    path.join(repositoryRoot(), "subsai"),
+  ];
+  return candidates.find((candidate): candidate is string => Boolean(candidate && isClone(candidate))) ?? null;
+}
+
+/** File checks only; a Video Use run never launches an executable to select its engine. */
 export function subsAiInstalled(): boolean {
-  const root = resolveSubsAiRoot();
-  return Boolean(root && venvPython(root.root));
+  if (!passiveRoot()) return false;
+  const venv = runtimeV2ServiceVenv("subsai");
+  const python = process.platform === "win32"
+    ? path.join(venv, "Scripts", "python.exe")
+    : path.join(venv, "bin", "python");
+  return externalRuntimePathExists(python);
 }

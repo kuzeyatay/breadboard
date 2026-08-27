@@ -161,10 +161,135 @@ export function computeSnapshotSchemaHash(
  */
 export type PgliteInitFailure = 'bunfs' | 'macos-26-3' | 'corrupt' | 'unknown';
 
-// #2674: non-Error rejections (Emscripten aborts can throw plain objects)
-// used to stringify as "[object Object]" — prefer .message when present.
+const PGLITE_INIT_ERROR_MAX_CHARS = 4096;
+const PGLITE_INIT_ERROR_MAX_DEPTH = 4;
+const PGLITE_INIT_ERROR_MAX_PROPERTIES = 32;
+
+function pgliteInitObjectKind(value: object): string {
+  try {
+    return Object.prototype.toString.call(value).slice(8, -1) || 'Object';
+  } catch {
+    return 'Object';
+  }
+}
+
+function pgliteInitInspectionFailure(error: unknown): string {
+  try {
+    return String(error);
+  } catch {
+    return 'unknown inspection failure';
+  }
+}
+
+function pgliteInitPropertyName(key: PropertyKey): string {
+  return typeof key === 'symbol' ? `[${String(key)}]` : String(key);
+}
+
+/**
+ * Convert an arbitrary Emscripten rejection to a bounded, JSON-safe snapshot.
+ * Property descriptors are inspected instead of reading properties so a
+ * diagnostic cannot invoke a throwing or stateful getter.
+ */
+function snapshotPgliteInitError(
+  value: unknown,
+  depth: number,
+  ancestors: Set<object>,
+): unknown {
+  if (value === undefined) return '[undefined]';
+  if (typeof value === 'bigint') return `${value}n`;
+  if (typeof value === 'symbol') return String(value);
+  if (typeof value === 'function') return `[Function ${value.name || 'anonymous'}]`;
+  if (typeof value === 'number' && !Number.isFinite(value)) return String(value);
+  if (value === null || typeof value !== 'object') return value;
+
+  const kind = pgliteInitObjectKind(value);
+  if (ancestors.has(value)) return `[Circular ${kind}]`;
+  if (depth >= PGLITE_INIT_ERROR_MAX_DEPTH) return `[${kind}]`;
+
+  let descriptors: PropertyDescriptorMap;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch (error) {
+    return `[Uninspectable ${kind}: ${pgliteInitInspectionFailure(error)}]`;
+  }
+
+  const snapshot: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  snapshot.$type = kind;
+  const keys = Reflect.ownKeys(descriptors);
+  ancestors.add(value);
+  try {
+    for (const key of keys.slice(0, PGLITE_INIT_ERROR_MAX_PROPERTIES)) {
+      const descriptor = Object.getOwnPropertyDescriptor(descriptors, key)?.value as
+        | PropertyDescriptor
+        | undefined;
+      if (!descriptor) continue;
+      const name = pgliteInitPropertyName(key);
+      if ('value' in descriptor) {
+        snapshot[name] = snapshotPgliteInitError(descriptor.value, depth + 1, ancestors);
+      } else {
+        const accessors = [descriptor.get ? 'Getter' : '', descriptor.set ? 'Setter' : '']
+          .filter(Boolean)
+          .join('/');
+        snapshot[name] = `[${accessors || 'Accessor'}]`;
+      }
+    }
+  } finally {
+    ancestors.delete(value);
+  }
+  if (keys.length > PGLITE_INIT_ERROR_MAX_PROPERTIES) {
+    snapshot.$truncatedProperties = keys.length - PGLITE_INIT_ERROR_MAX_PROPERTIES;
+  }
+  return snapshot;
+}
+
+function truncatePgliteInitError(message: string): string {
+  if (message.length <= PGLITE_INIT_ERROR_MAX_CHARS) return message;
+  const suffix = '… [truncated]';
+  return `${message.slice(0, PGLITE_INIT_ERROR_MAX_CHARS - suffix.length)}${suffix}`;
+}
+
+// #2674: Emscripten can reject with a plain object rather than an Error.
+// Preserve the familiar Error/message output, but serialize every own field
+// for opaque non-Error objects instead of losing the cause as "[object Object]".
 export function stringifyPgliteInitError(err: unknown): string {
-  return String((err as { message?: unknown })?.message ?? err);
+  if (err === null || (typeof err !== 'object' && typeof err !== 'function')) {
+    return String(err);
+  }
+
+  let isError = false;
+  try {
+    isError = err instanceof Error;
+  } catch {
+    // A hostile Proxy may throw from getPrototypeOf; inspect it below instead.
+  }
+  if (isError) {
+    try {
+      const message = (err as Error).message;
+      if (message) return truncatePgliteInitError(message);
+    } catch {
+      // Fall through to descriptor-based inspection.
+    }
+  }
+
+  const snapshot = snapshotPgliteInitError(err, 0, new Set<object>());
+  let inspected: string;
+  try {
+    inspected = JSON.stringify(snapshot);
+  } catch (error) {
+    inspected = `"[Serialization failed: ${pgliteInitInspectionFailure(error)}]"`;
+  }
+
+  const record = snapshot && typeof snapshot === 'object'
+    ? snapshot as Record<string, unknown>
+    : undefined;
+  const message = typeof record?.message === 'string' ? record.message : '';
+  const ownDetails = record
+    ? Object.keys(record).filter((key) => key !== '$type' && key !== 'message')
+    : [];
+  if (message && ownDetails.length === 0) return truncatePgliteInitError(message);
+
+  const prefix = message ? `${message}; non-Error rejection: ` : 'Non-Error rejection: ';
+  return truncatePgliteInitError(`${prefix}${inspected}`);
 }
 
 export function classifyPgliteInitError(message: string): PgliteInitFailure {

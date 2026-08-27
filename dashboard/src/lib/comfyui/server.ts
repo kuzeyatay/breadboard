@@ -1,37 +1,30 @@
-// Starting the vendored ComfyUI, and being honest when Breadboard cannot.
+// Read-only ComfyUI setup inspection plus the tiny durable handoff record used
+// while Runtime accepts the authenticated installer job.
 //
-// The order this tries things in is the whole design:
-//
-//   1. Something already answers at the configured URL → use it, whatever it
-//      is. A user who runs their own ComfyUI (with their own models, custom
-//      nodes and launch flags) should never have a second one started behind
-//      their back.
-//   2. Otherwise, if the vendored clone has an environment built for it, start
-//      that and wait for it to answer.
-//   3. Otherwise, say what is missing. Setup is a separate, explicit action,
-//      because it downloads gigabytes and nobody should discover that by
-//      clicking "Generate".
-//
-// Server-only: it spawns processes and reads the filesystem.
+// Managed server launch and setup execution do not live here: Runtime V2 is
+// their sole process owner. Explicit external endpoints are HTTP-only and are
+// never spawned by the dashboard.
 
-import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { repositoryRoot } from "../runtime-paths.ts";
-// The setup-status reader is shared with the local speech service; both engines
-// write the same heartbeat-and-pid file for the same reason.
-import { parseStartupStatus, type VoiceboxStartupStatus } from "../speech/startup-status.ts";
+import { isRuntimeV2ServiceControlConfigured } from "../supervisor-control.ts";
+import {
+  parseStartupStatus,
+  SETTLED_STARTUP_PHASES,
+  type VoiceboxStartupStatus,
+} from "../speech/startup-status.ts";
 import { comfyUiPython, type ComfyUiConfig } from "./config.ts";
-import { comfyUiReachable } from "./client.ts";
 
 export type ComfyUiSetupStatus = VoiceboxStartupStatus;
 
-/** A ComfyUI checkout is a checkout when it has the thing we would run. */
+/** A managed ComfyUI source is installed only when Runtime's copied entry exists. */
 export function cloneInstalled(config: ComfyUiConfig): boolean {
   return fs.existsSync(path.join(config.cloneRoot, "main.py"));
 }
 
-/** The interpreter exists and the installer got all the way through. */
+/** The interpreter exists and the authenticated installer completed verification. */
 export function environmentReady(config: ComfyUiConfig): boolean {
   return (
     fs.existsSync(comfyUiPython(config)) &&
@@ -47,139 +40,130 @@ export function readSetupStatus(config: ComfyUiConfig): ComfyUiSetupStatus | nul
   }
 }
 
-function appendLog(config: ComfyUiConfig, line: string): void {
+function samePath(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+/**
+ * The native profile seals one coherent Runtime V2 layout. Checking it here
+ * prevents a malformed environment from turning a setup click into an
+ * arbitrary dashboard filesystem write.
+ */
+function setupStatusAuthority(config: ComfyUiConfig): string {
+  const serviceRoot = path.dirname(config.envDir);
+  const runtimeRoot = path.dirname(path.dirname(serviceRoot));
+  const expectedServiceRoot = path.join(runtimeRoot, "services", "comfyui");
+  const expectedCloneRoot = path.join(runtimeRoot, "toolchains", "comfyui");
+  if (
+    path.basename(config.envDir) !== ".venv" ||
+    path.basename(config.statusFile) !== "startup-status.json" ||
+    !samePath(serviceRoot, expectedServiceRoot) ||
+    !samePath(path.dirname(config.statusFile), expectedServiceRoot) ||
+    !samePath(config.cloneRoot, expectedCloneRoot)
+  ) {
+    throw new Error("Runtime V2 supplied inconsistent managed ComfyUI setup paths.");
+  }
+  fs.mkdirSync(serviceRoot, { recursive: true });
+  const metadata = fs.lstatSync(serviceRoot);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("The managed ComfyUI setup status directory is indirect.");
+  }
+  return serviceRoot;
+}
+
+function setupSourceAvailable(): boolean {
+  const root = path.join(repositoryRoot(), "comfyui");
   try {
-    fs.mkdirSync(path.dirname(config.logFile), { recursive: true });
-    fs.appendFileSync(config.logFile, `${new Date().toISOString()} ${line}\n`);
+    const rootMetadata = fs.lstatSync(root);
+    if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) return false;
+    return ["main.py", "requirements.txt", "folder_paths.py", "server.py"].every((name) => {
+      const metadata = fs.lstatSync(path.join(root, name));
+      return metadata.isFile() && !metadata.isSymbolicLink();
+    });
   } catch {
-    // A log write is never worth failing a render over.
+    return false;
   }
 }
 
-interface Globals {
-  __breadboardComfyUiStart?: Promise<boolean> | null;
-  __breadboardComfyUiSetup?: number | null;
+function writeSetupStatus(config: ComfyUiConfig, phase: string, message: string): void {
+  const serviceRoot = setupStatusAuthority(config);
+  const existing = fs.lstatSync(config.statusFile, { throwIfNoEntry: false });
+  if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+    throw new Error("The managed ComfyUI setup status path is indirect.");
+  }
+  const now = new Date().toISOString();
+  const payload = `${JSON.stringify({
+    phase,
+    message: message.slice(0, 8_000),
+    startedAt: now,
+    updatedAt: now,
+    pid: process.pid,
+    step: 0,
+    totalSteps: 4,
+    detail: null,
+    progress: null,
+  })}\n`;
+  const temporary = path.join(
+    serviceRoot,
+    `.startup-status-${process.pid}-${randomUUID()}.tmp`,
+  );
+  fs.writeFileSync(temporary, payload, { flag: "wx", mode: 0o600 });
+  try {
+    try {
+      fs.renameSync(temporary, config.statusFile);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (!existing || !["EACCES", "EBUSY", "EEXIST", "EPERM"].includes(code)) {
+        throw error;
+      }
+      fs.rmSync(config.statusFile, { force: true });
+      fs.renameSync(temporary, config.statusFile);
+    }
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
 
-const globals = globalThis as unknown as Globals;
-
 /**
- * Kick off the environment install, unless one is already running.
- *
- * Detached on purpose: this outlives the request that asked for it, and a
- * dashboard restart mid-download must not orphan a half-installed environment
- * with nothing reporting on it. The status file is the only channel back.
+ * Reserve the existing status channel immediately before the route submits the
+ * authenticated Runtime job. This never launches work itself.
  */
 export function beginSetup(config: ComfyUiConfig): { started: boolean; reason?: string } {
   if (!config.managed) {
     return { started: false, reason: "Breadboard is not allowed to manage this ComfyUI." };
   }
-  if (!cloneInstalled(config)) {
-    return { started: false, reason: `No ComfyUI checkout at ${config.cloneRoot}.` };
+  if (!isRuntimeV2ServiceControlConfigured()) {
+    return {
+      started: false,
+      reason: "ComfyUI setup requires the Breadboard Runtime service owner.",
+    };
+  }
+  if (!setupSourceAvailable()) {
+    return { started: false, reason: "The ComfyUI source is missing from this install." };
   }
   const status = readSetupStatus(config);
-  if (status && !status.stalled && !["error", "installed", "ready", "stopped", "interrupted"].includes(status.phase)) {
+  if (status && !status.stalled && !SETTLED_STARTUP_PHASES.has(status.phase)) {
     return { started: false, reason: "Setup is already running." };
   }
-
-  const script = path.join(repositoryRoot(), "scripts", "setup-comfyui.mjs");
-  if (!fs.existsSync(script)) {
-    return { started: false, reason: "The ComfyUI setup script is missing from this install." };
-  }
-
   try {
-    fs.mkdirSync(path.dirname(config.logFile), { recursive: true });
-    const output = fs.openSync(config.logFile, "a");
-    const child = spawn(process.execPath, [script], {
-      cwd: repositoryRoot(),
-      detached: true,
-      windowsHide: true,
-      stdio: ["ignore", output, output],
-      env: {
-        ...process.env,
-        COMFYUI_ROOT: config.cloneRoot,
-        COMFYUI_ENV_DIR: config.envDir,
-        COMFYUI_STATUS_PATH: config.statusFile,
-      },
-    });
-    child.unref();
-    globals.__breadboardComfyUiSetup = child.pid ?? null;
+    writeSetupStatus(config, "queued", "Waiting for Runtime to start ComfyUI setup.");
     return { started: true };
   } catch (error) {
     return {
       started: false,
-      reason: error instanceof Error ? error.message : "The setup process could not be started.",
+      reason: error instanceof Error ? error.message : "Setup could not be queued.",
     };
   }
 }
 
-async function waitForServer(config: ComfyUiConfig): Promise<boolean> {
-  const deadline = Date.now() + config.startTimeoutMs;
-  while (Date.now() < deadline) {
-    if (await comfyUiReachable(config.baseUrl)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+/** Keep the polling UI truthful when Runtime rejects the submitted job. */
+export function recordSetupSubmissionFailure(config: ComfyUiConfig, error: unknown): void {
+  const detail = error instanceof Error ? error.message : "Runtime rejected ComfyUI setup.";
+  try {
+    writeSetupStatus(config, "error", `ComfyUI setup could not start: ${detail}`);
+  } catch {
+    // The route still returns the authoritative Runtime error.
   }
-  return false;
-}
-
-function launch(config: ComfyUiConfig): void {
-  const output = fs.openSync(config.logFile, "a");
-  const child = spawn(
-    comfyUiPython(config),
-    [
-      "-s",
-      "main.py",
-      "--port",
-      String(config.port),
-      "--listen",
-      "127.0.0.1",
-      // Breadboard is the only client here; a browser tab opening itself on a
-      // background render would be a genuine surprise.
-      "--disable-auto-launch",
-      "--dont-print-server",
-    ],
-    {
-      cwd: config.cloneRoot,
-      detached: true,
-      windowsHide: true,
-      stdio: ["ignore", output, output],
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
-    },
-  );
-  child.unref();
-  appendLog(config, `[breadboard] started ComfyUI (pid ${child.pid ?? "unknown"})`);
-}
-
-/**
- * Make sure a ComfyUI is answering, starting the vendored one if that is the
- * only way and it is allowed.
- *
- * The in-flight promise is kept on a global because two studios asking at once
- * is normal, and two ComfyUI servers fighting over one port is not.
- */
-export async function ensureComfyUiRunning(config: ComfyUiConfig): Promise<boolean> {
-  if (await comfyUiReachable(config.baseUrl)) return true;
-  if (!config.managed || !cloneInstalled(config) || !environmentReady(config)) return false;
-  if (globals.__breadboardComfyUiStart) return globals.__breadboardComfyUiStart;
-
-  const attempt = (async () => {
-    try {
-      fs.mkdirSync(path.dirname(config.logFile), { recursive: true });
-      launch(config);
-      return await waitForServer(config);
-    } catch (error) {
-      appendLog(
-        config,
-        `[breadboard] could not start ComfyUI: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return false;
-    } finally {
-      globals.__breadboardComfyUiStart = null;
-    }
-  })();
-
-  globals.__breadboardComfyUiStart = attempt;
-  return attempt;
 }

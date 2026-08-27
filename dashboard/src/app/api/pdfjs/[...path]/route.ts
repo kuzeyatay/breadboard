@@ -1,6 +1,7 @@
-import fs from "fs";
-import path from "path";
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { NextResponse } from "next/server";
+
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

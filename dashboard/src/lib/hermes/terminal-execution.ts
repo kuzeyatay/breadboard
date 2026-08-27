@@ -1,8 +1,18 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { repositoryRoot } from "../runtime-paths.ts";
+import {
+  RuntimeJobControlError,
+  cancelRuntimeJob,
+  inspectRuntimeJob,
+  readRuntimeJobOutput,
+  submitRuntimeJob,
+  type RuntimeJobAuthority,
+  type RuntimeJobOutput,
+  type RuntimeJobSnapshot,
+  type RuntimeJobSubmission,
+} from "../supervisor-control.ts";
 import {
   canonicalizePath,
   isWithinRoot,
@@ -88,29 +98,58 @@ export function resolveMaxRuntimeMs(requestedMs?: unknown): number {
   return Math.min(Math.max(Math.round(requested), MIN_RUNTIME_MS), ceiling);
 }
 
+const TERMINAL_JOB_STATES = new Set<RuntimeJobSnapshot["state"]>([
+  "cancelled",
+  "succeeded",
+  "failed",
+  "resource_exhausted",
+  "interrupted",
+  "uncertain",
+]);
+
+export interface TerminalRuntimeControl {
+  submit(
+    authority: RuntimeJobAuthority,
+    submission: RuntimeJobSubmission,
+  ): Promise<RuntimeJobSnapshot>;
+  inspect(
+    authority: RuntimeJobAuthority,
+    jobId: string,
+  ): Promise<RuntimeJobSnapshot>;
+  readOutput(
+    authority: RuntimeJobAuthority,
+    jobId: string,
+    kind: RuntimeJobOutput["kind"],
+  ): Promise<RuntimeJobOutput>;
+  cancel(
+    authority: RuntimeJobAuthority,
+    jobId: string,
+  ): Promise<RuntimeJobSnapshot>;
+}
+
+const DEFAULT_RUNTIME_CONTROL: TerminalRuntimeControl = {
+  submit: submitRuntimeJob,
+  inspect: inspectRuntimeJob,
+  readOutput: readRuntimeJobOutput,
+  cancel: cancelRuntimeJob,
+};
+
 interface RunningCommand {
   id: string;
   command: string;
-  child: ChildProcess;
-  runtimeSessionId: number | null;
+  runtimeSessionId: number;
+  authority: RuntimeJobAuthority;
+  control: TerminalRuntimeControl;
   startedAt: number;
-  /** Wall-clock this command is held to, kept for an honest timeout report. */
   maxRuntimeMs: number;
-  stdout: Buffer<ArrayBufferLike>;
-  stderr: Buffer<ArrayBufferLike>;
-  truncated: boolean;
-  timedOut: boolean;
-  closed: boolean;
-  exitCode: number | null;
-  waiters: Set<() => void>;
-  ceilingTimer: NodeJS.Timeout | null;
+  latest: RuntimeJobSnapshot;
   abandonTimer: NodeJS.Timeout | null;
   collectTimer: NodeJS.Timeout | null;
 }
 
 /** Commands still collectable by id, whether running or recently finished. */
 const commandsById = new Map<string, RunningCommand>();
-/** The one command each runtime session currently owns. */
+/** The one Runtime-owned command each runtime session currently owns. */
 const activeCommands = new Map<number, RunningCommand>();
 
 /**
@@ -144,63 +183,8 @@ function windowsShell(): string {
   return "powershell.exe";
 }
 
-function filteredEnvironment(): NodeJS.ProcessEnv {
-  const allowed = new Set([
-    "APPDATA",
-    "COMSPEC",
-    "HOME",
-    "HOMEDRIVE",
-    "HOMEPATH",
-    "LANG",
-    "LOCALAPPDATA",
-    "NODE",
-    "NODE_ENV",
-    "NUMBER_OF_PROCESSORS",
-    "OS",
-    "PATH",
-    "PATHEXT",
-    "PROGRAMDATA",
-    "PROGRAMFILES",
-    "PROGRAMFILES(X86)",
-    "SYSTEMDRIVE",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "WINDIR",
-  ]);
-  return Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([name, value]) => allowed.has(name.toUpperCase()) && value !== undefined,
-    ),
-  ) as NodeJS.ProcessEnv;
-}
-
-async function terminateProcessTree(child: ChildProcess): Promise<void> {
-  const pid = child.pid;
-  if (!pid || child.exitCode !== null) return;
-  if (process.platform === "win32") {
-    await new Promise<void>((resolve) => {
-      const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
-        windowsHide: true,
-        stdio: "ignore",
-      });
-      killer.once("error", () => resolve());
-      killer.once("close", () => resolve());
-    });
-    return;
-  }
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch {
-    child.kill("SIGTERM");
-  }
-}
-
 function clearTimers(record: RunningCommand): void {
-  if (record.ceilingTimer) clearTimeout(record.ceilingTimer);
   if (record.abandonTimer) clearTimeout(record.abandonTimer);
-  record.ceilingTimer = null;
   record.abandonTimer = null;
 }
 
@@ -209,20 +193,60 @@ function forget(record: RunningCommand): void {
   if (record.collectTimer) clearTimeout(record.collectTimer);
   record.collectTimer = null;
   commandsById.delete(record.id);
-  if (
-    record.runtimeSessionId !== null &&
-    activeCommands.get(record.runtimeSessionId) === record
-  ) {
+  if (activeCommands.get(record.runtimeSessionId) === record) {
     activeCommands.delete(record.runtimeSessionId);
   }
+}
+
+function sameAuthority(
+  left: RuntimeJobAuthority,
+  right: RuntimeJobAuthority,
+): boolean {
+  return left.userId === right.userId &&
+    left.gardenId === right.gardenId &&
+    left.conversationId === right.conversationId;
+}
+
+function validRuntimeAuthority(
+  value: RuntimeJobAuthority | undefined,
+): value is RuntimeJobAuthority {
+  return Boolean(
+    value &&
+      Number.isSafeInteger(value.userId) &&
+      value.userId > 0 &&
+      typeof value.conversationId === "string" &&
+      value.conversationId.trim() === value.conversationId &&
+      value.conversationId.length > 0 &&
+      Buffer.byteLength(value.conversationId, "utf8") <= 256 &&
+      (value.gardenId === null ||
+        (typeof value.gardenId === "string" &&
+          value.gardenId.trim() === value.gardenId &&
+          value.gardenId.length > 0 &&
+          Buffer.byteLength(value.gardenId, "utf8") <= 256)),
+  );
+}
+
+function isTerminalJob(
+  job: RuntimeJobSnapshot,
+  authority: RuntimeJobAuthority,
+): boolean {
+  return job.jobType === "terminal-command" &&
+    job.workerKind === "terminal-command-node" &&
+    job.resourceClass === "document-processing" &&
+    job.gardenId === authority.gardenId &&
+    job.conversationId === authority.conversationId;
 }
 
 export async function cancelAuthorizedTerminalCommand(
   runtimeSessionId: number,
 ): Promise<boolean> {
   const record = activeCommands.get(runtimeSessionId);
-  if (!record || record.closed) return false;
-  await terminateProcessTree(record.child);
+  if (!record || TERMINAL_JOB_STATES.has(record.latest.state)) return false;
+  const job = await record.control.cancel(record.authority, record.id);
+  if (!isTerminalJob(job, record.authority) || job.jobId !== record.id) {
+    throw new Error("Runtime returned a Terminal job outside its authority.");
+  }
+  record.latest = job;
   return true;
 }
 
@@ -509,120 +533,197 @@ export interface TerminalCommandResult {
   maxRuntimeMs: number;
 }
 
-function snapshot(record: RunningCommand): TerminalCommandResult {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index]);
+}
+
+function validateProjectedResult(
+  value: unknown,
+  record: RunningCommand,
+  running: boolean,
+): TerminalCommandResult {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, [
+      "command",
+      "cwd",
+      "exitCode",
+      "stdout",
+      "stderr",
+      "timedOut",
+      "truncated",
+      "running",
+      "commandId",
+      "elapsedMs",
+      "maxRuntimeMs",
+    ]) ||
+    value.command !== record.command ||
+    value.cwd !== "." ||
+    (value.exitCode !== null && !Number.isSafeInteger(value.exitCode)) ||
+    typeof value.stdout !== "string" ||
+    Buffer.byteLength(value.stdout, "utf8") > MAX_OUTPUT_BYTES ||
+    typeof value.stderr !== "string" ||
+    Buffer.byteLength(value.stderr, "utf8") > MAX_OUTPUT_BYTES ||
+    typeof value.timedOut !== "boolean" ||
+    typeof value.truncated !== "boolean" ||
+    value.running !== running ||
+    value.commandId !== (running ? record.id : null) ||
+    typeof value.elapsedMs !== "number" ||
+    !Number.isSafeInteger(value.elapsedMs) ||
+    value.elapsedMs < 0 ||
+    value.maxRuntimeMs !== record.maxRuntimeMs ||
+    (running && value.exitCode !== null)
+  ) throw new Error("Runtime returned an invalid Terminal command result.");
+  return value as unknown as TerminalCommandResult;
+}
+
+function validateFence(
+  value: unknown,
+  record: RunningCommand,
+): value is Record<string, unknown> {
+  return isRecord(value) &&
+    exactKeys(value, ["jobId", "attempt", "workerInstanceId"]) &&
+    value.jobId === record.latest.jobId &&
+    value.attempt === record.latest.attempt &&
+    value.workerInstanceId === record.latest.workerInstanceId;
+}
+
+function checkpointResult(
+  output: RuntimeJobOutput,
+  record: RunningCommand,
+): TerminalCommandResult {
+  const content = output.content;
+  if (
+    output.jobId !== record.id ||
+    output.kind !== "checkpoint" ||
+    !isRecord(content) ||
+    !exactKeys(content, ["protocolVersion", "identity", "snapshot"]) ||
+    content.protocolVersion !== 1 ||
+    !validateFence(content.identity, record)
+  ) throw new Error("Runtime returned an unfenced Terminal checkpoint.");
+  return validateProjectedResult(content.snapshot, record, true);
+}
+
+function completedResult(
+  output: RuntimeJobOutput,
+  record: RunningCommand,
+): TerminalCommandResult {
+  const content = output.content;
+  if (
+    output.jobId !== record.id ||
+    output.kind !== "result" ||
+    !isRecord(content) ||
+    !exactKeys(content, [
+      "protocolVersion",
+      "identity",
+      "completionSequence",
+      "result",
+    ]) ||
+    content.protocolVersion !== 1 ||
+    content.completionSequence !== record.latest.lastWorkerSequence ||
+    !validateFence(content.identity, record)
+  ) throw new Error("Runtime returned an unfenced Terminal result.");
+  return validateProjectedResult(content.result, record, false);
+}
+
+function emptyRunningResult(record: RunningCommand): TerminalCommandResult {
   return {
     command: record.command,
     cwd: ".",
-    exitCode: record.closed ? record.exitCode : null,
-    stdout: record.stdout.toString("utf8"),
-    stderr: record.stderr.toString("utf8"),
-    timedOut: record.timedOut,
-    truncated: record.truncated,
-    running: !record.closed,
-    commandId: record.closed ? null : record.id,
-    elapsedMs: Date.now() - record.startedAt,
+    exitCode: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    truncated: false,
+    running: true,
+    commandId: record.id,
+    elapsedMs: Math.max(0, Date.now() - record.startedAt),
     maxRuntimeMs: record.maxRuntimeMs,
   };
 }
 
-function startCommand(
-  command: string,
-  workspaceRoot: string,
-  options: { runtimeSessionId?: number; maxRuntimeMs?: number },
-): RunningCommand {
-  const executable = resolveCommandShell();
-  const args = process.platform === "win32"
-    ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
-    : ["-lc", command];
-  const child = spawn(executable, args, {
-    cwd: workspaceRoot,
-    windowsHide: true,
-    detached: process.platform !== "win32",
-    env: filteredEnvironment(),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const ceiling = resolveMaxRuntimeMs(options.maxRuntimeMs);
-  const record: RunningCommand = {
-    id: randomUUID(),
-    command,
-    child,
-    runtimeSessionId: options.runtimeSessionId ?? null,
-    startedAt: Date.now(),
-    maxRuntimeMs: ceiling,
-    stdout: Buffer.alloc(0),
-    stderr: Buffer.alloc(0),
-    truncated: false,
+function unsuccessfulResult(record: RunningCommand): TerminalCommandResult {
+  const state = record.latest.state;
+  const message = state === "cancelled"
+    ? "The Terminal command was cancelled."
+    : state === "resource_exhausted"
+      ? "Windows memory pressure prevented the Terminal command from starting."
+      : state === "uncertain"
+        ? "The Terminal command ended with an uncertain result and was not retried."
+        : state === "interrupted"
+          ? "The Terminal command was interrupted."
+          : "The Runtime could not complete the Terminal command.";
+  return {
+    command: record.command,
+    cwd: ".",
+    exitCode: -1,
+    stdout: "",
+    stderr: message,
     timedOut: false,
-    closed: false,
-    exitCode: null,
-    waiters: new Set(),
-    ceilingTimer: null,
-    abandonTimer: null,
-    collectTimer: null,
+    truncated: false,
+    running: false,
+    commandId: null,
+    elapsedMs: Math.max(0, Date.now() - record.startedAt),
+    maxRuntimeMs: record.maxRuntimeMs,
   };
+}
 
-  const append = (
-    current: Buffer<ArrayBufferLike>,
-    chunk: Buffer<ArrayBufferLike>,
-  ): Buffer<ArrayBufferLike> => {
-    if (current.length >= MAX_OUTPUT_BYTES) {
-      record.truncated = true;
-      return current;
+function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(finish, milliseconds);
+    const onAbort = () => finish();
+    function finish() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
     }
-    const remaining = MAX_OUTPUT_BYTES - current.length;
-    if (chunk.length > remaining) record.truncated = true;
-    return Buffer.concat([current, chunk.subarray(0, remaining)]);
-  };
-  child.stdout.on("data", (chunk: Buffer<ArrayBufferLike>) => {
-    record.stdout = append(record.stdout, chunk);
+    timer.unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
-  child.stderr.on("data", (chunk: Buffer<ArrayBufferLike>) => {
-    record.stderr = append(record.stderr, chunk);
-  });
+}
 
-  const settle = (exitCode: number | null) => {
-    if (record.closed) return;
-    record.exitCode = exitCode;
-    record.closed = true;
-    clearTimers(record);
-    for (const wake of [...record.waiters]) wake();
-    record.waiters.clear();
-    // Keep the finished output collectable: a slice may have already returned
-    // "still running" before the process exited, and the next collection must
-    // still find the result rather than a missing handle.
-    record.collectTimer = setTimeout(
-      () => forget(record),
-      COLLECTABLE_AFTER_EXIT_MS,
-    );
-    record.collectTimer.unref?.();
-  };
-  child.once("error", (error) => {
-    record.stderr = append(record.stderr, Buffer.from(String(error.message)));
-    settle(-1);
-  });
-  child.once("close", (exitCode) => settle(exitCode));
-
-  record.ceilingTimer = setTimeout(() => {
-    record.timedOut = true;
-    void terminateProcessTree(child);
-  }, ceiling);
-  record.ceilingTimer.unref?.();
-
-  commandsById.set(record.id, record);
-  if (options.runtimeSessionId !== undefined) {
-    const previous = activeCommands.get(options.runtimeSessionId);
-    if (previous && !previous.closed) void terminateProcessTree(previous.child);
-    activeCommands.set(options.runtimeSessionId, record);
+async function refresh(record: RunningCommand): Promise<void> {
+  const job = await record.control.inspect(record.authority, record.id);
+  if (!isTerminalJob(job, record.authority) || job.jobId !== record.id) {
+    throw new Error("Runtime returned a Terminal job outside its authority.");
   }
-  return record;
+  record.latest = job;
+}
+
+function armAbandonment(record: RunningCommand): void {
+  if (TERMINAL_JOB_STATES.has(record.latest.state) || record.abandonTimer) return;
+  record.abandonTimer = setTimeout(() => {
+    record.abandonTimer = null;
+    void record.control.cancel(record.authority, record.id)
+      .then((job) => {
+        if (isTerminalJob(job, record.authority) && job.jobId === record.id) {
+          record.latest = job;
+        }
+      })
+      .finally(() => {
+        record.collectTimer = setTimeout(
+          () => forget(record),
+          COLLECTABLE_AFTER_EXIT_MS,
+        );
+        record.collectTimer.unref?.();
+      });
+  }, ABANDONED_AFTER_MS);
+  record.abandonTimer.unref?.();
 }
 
 /**
- * Wait for this command to finish, for the slice to expire, or for the caller
- * to go away. Expiry is not a kill: the process keeps running and stays
- * collectable by id.
+ * Wait for Runtime to finish this command or for one compatibility slice to
+ * expire. The shell tree remains owned by Rust between slices.
  */
-function awaitSlice(
+async function awaitSlice(
   record: RunningCommand,
   options: { signal?: AbortSignal },
 ): Promise<void> {
@@ -630,52 +731,74 @@ function awaitSlice(
     clearTimeout(record.abandonTimer);
     record.abandonTimer = null;
   }
-  if (record.closed) return Promise.resolve();
-  return new Promise<void>((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      record.waiters.delete(finish);
-      options.signal?.removeEventListener("abort", onAbort);
-      // A caller that stops collecting must not leave a scan running forever.
-      if (!record.closed && !record.abandonTimer) {
-        record.abandonTimer = setTimeout(
-          () => void terminateProcessTree(record.child),
-          ABANDONED_AFTER_MS,
-        );
-        record.abandonTimer.unref?.();
-      }
-      resolve();
-    };
-    const onAbort = () => {
-      void terminateProcessTree(record.child);
-      finish();
-    };
-    const timer = setTimeout(finish, sliceMs());
-    timer.unref?.();
-    record.waiters.add(finish);
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-  });
+  const deadline = Date.now() + sliceMs();
+  while (!TERMINAL_JOB_STATES.has(record.latest.state)) {
+    if (options.signal?.aborted) {
+      record.latest = await record.control.cancel(record.authority, record.id);
+      break;
+    }
+    if (Date.now() >= deadline) break;
+    await delay(Math.min(250, Math.max(1, deadline - Date.now())), options.signal);
+    if (!options.signal?.aborted) await refresh(record);
+  }
+  if (!TERMINAL_JOB_STATES.has(record.latest.state)) armAbandonment(record);
+}
+
+export interface TerminalCommandRuntimeOptions
+  extends TerminalAuthorizationOptions {
+  runtimeSessionId: number;
+  runtimeAuthority: RuntimeJobAuthority;
+  signal?: AbortSignal;
+  /** Wall-clock this command asked for, clamped by `resolveMaxRuntimeMs`. */
+  maxRuntimeMs?: number;
+  /** Test seam for a protocol-faithful in-memory Runtime; never request data. */
+  runtimeControl?: TerminalRuntimeControl;
 }
 
 export async function runAuthorizedTerminalCommand(
   command: string,
-  options: {
-    runtimeSessionId?: number;
-    signal?: AbortSignal;
-    workspaceRoot?: string;
-    authorizedRoots?: readonly string[];
-    authorizedDeleteTargets?: readonly string[];
-    approvedCommand?: string;
-    /** Wall-clock this command asked for, clamped by `resolveMaxRuntimeMs`. */
-    maxRuntimeMs?: number;
-  } = {},
+  options: TerminalCommandRuntimeOptions,
 ): Promise<TerminalCommandResult> {
+  if (
+    !Number.isSafeInteger(options.runtimeSessionId) ||
+    options.runtimeSessionId < 1 ||
+    !validRuntimeAuthority(options.runtimeAuthority)
+  ) throw new TypeError("Terminal execution requires authenticated Runtime scope.");
   const authorization = authorizeTerminalCommand(command, options);
   if (!authorization.allowed) throw new Error(authorization.reason);
-  const record = startCommand(command, authorization.workspaceRoot, options);
+  const maxRuntimeMs = resolveMaxRuntimeMs(options.maxRuntimeMs);
+  const control = options.runtimeControl ?? DEFAULT_RUNTIME_CONTROL;
+  const previous = activeCommands.get(options.runtimeSessionId);
+  if (previous && !TERMINAL_JOB_STATES.has(previous.latest.state)) {
+    await previous.control.cancel(previous.authority, previous.id);
+    forget(previous);
+  }
+  const initial = await control.submit(options.runtimeAuthority, {
+    jobType: "terminal-command",
+    idempotencyKey: `terminal-command-v2:${randomUUID()}`,
+    requestPayload: {
+      command,
+      workspaceRoot: authorization.workspaceRoot,
+      maxRuntimeMs,
+    },
+  });
+  if (!isTerminalJob(initial, options.runtimeAuthority)) {
+    throw new Error("Runtime returned a job outside the Terminal contract.");
+  }
+  const record: RunningCommand = {
+    id: initial.jobId,
+    command,
+    runtimeSessionId: options.runtimeSessionId,
+    authority: options.runtimeAuthority,
+    control,
+    startedAt: Date.now(),
+    maxRuntimeMs,
+    latest: initial,
+    abandonTimer: null,
+    collectTimer: null,
+  };
+  commandsById.set(record.id, record);
+  activeCommands.set(record.runtimeSessionId, record);
   await awaitSlice(record, options);
   return collect(record);
 }
@@ -686,11 +809,20 @@ export async function runAuthorizedTerminalCommand(
  */
 export async function continueAuthorizedTerminalCommand(
   commandId: unknown,
-  options: { runtimeSessionId: number; signal?: AbortSignal },
+  options: {
+    runtimeSessionId: number;
+    runtimeAuthority: RuntimeJobAuthority;
+    signal?: AbortSignal;
+  },
 ): Promise<TerminalCommandResult> {
   const record =
     typeof commandId === "string" ? commandsById.get(commandId) : undefined;
-  if (!record || record.runtimeSessionId !== options.runtimeSessionId) {
+  if (
+    !record ||
+    record.runtimeSessionId !== options.runtimeSessionId ||
+    !validRuntimeAuthority(options.runtimeAuthority) ||
+    !sameAuthority(record.authority, options.runtimeAuthority)
+  ) {
     throw new Error(
       "That command is no longer running. Start it again if you still need it.",
     );
@@ -699,8 +831,32 @@ export async function continueAuthorizedTerminalCommand(
   return collect(record);
 }
 
-function collect(record: RunningCommand): TerminalCommandResult {
-  const result = snapshot(record);
-  if (record.closed) forget(record);
-  return result;
+async function collect(record: RunningCommand): Promise<TerminalCommandResult> {
+  if (TERMINAL_JOB_STATES.has(record.latest.state)) {
+    try {
+      if (record.latest.state !== "succeeded") return unsuccessfulResult(record);
+      const output = await record.control.readOutput(
+        record.authority,
+        record.id,
+        "result",
+      );
+      return completedResult(output, record);
+    } finally {
+      forget(record);
+    }
+  }
+  try {
+    const output = await record.control.readOutput(
+      record.authority,
+      record.id,
+      "checkpoint",
+    );
+    return checkpointResult(output, record);
+  } catch (error) {
+    if (
+      error instanceof RuntimeJobControlError &&
+      error.code !== "JOB_OUTPUT_NOT_READY"
+    ) throw error;
+    return emptyRunningResult(record);
+  }
 }

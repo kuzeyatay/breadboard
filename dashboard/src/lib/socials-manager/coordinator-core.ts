@@ -1,10 +1,10 @@
 // The one component that owns the Postiz Docker Compose stack.
 //
-// Breadboard starts this coordinator with the app, and it does nothing. It does
-// not look for Docker, it does not run Compose, it does not probe the engine.
-// It holds a state machine and waits. The stack starts when — and only when —
-// an authenticated server-side caller asks for it because a user operation
-// genuinely needs Postiz.
+// Runtime V2 starts this coordinator on demand, and the coordinator itself does
+// nothing until asked. It does not look for Docker, run Compose, or probe the
+// engine at startup. The stack starts when — and only when — an authenticated
+// server-side caller asks for it because a user operation genuinely needs
+// Postiz.
 //
 // That split is the whole point. "Do not block the startup screen" and "do not
 // start until asked" are different requirements, and the previous supervisor
@@ -70,6 +70,13 @@ export interface CoordinatorDeps {
   config: SocialsManagerConfig;
   /** Does the Postiz backend answer right now? Plain HTTP; never touches Docker. */
   reachable: () => Promise<boolean>;
+  /**
+   * A sealed durable receipt proves that this exact Compose project was
+   * Breadboard-started before a coordinator restart. Missing/invalid receipts
+   * fail safe to pre-existing ownership and therefore can never authorize a
+   * stop.
+   */
+  recoverOwnership?: () => Promise<boolean>;
   /** Start the engine if needed, write the override, `compose up -d`. */
   startStack: (reason: ActivationReason) => Promise<StartOutcome>;
   /** `compose down` for exactly this project. Never `-v`. */
@@ -94,6 +101,8 @@ export interface CoordinatorDeps {
   idleTimeoutMs: number;
   /** How long a caller's hold survives without being released. */
   leaseTtlMs?: number;
+  /** Release native admission without changing any preserved Compose state. */
+  releaseAdmission?: () => Promise<void>;
 }
 
 export interface EnsureReadyInput {
@@ -104,6 +113,8 @@ export interface EnsureReadyInput {
   hold?: boolean;
   /** The caller's own next scheduled publish, if it knows of one. */
   nextScheduledAt?: string | null;
+  /** Authenticated caller binding supplied by the control server. */
+  scopeKey?: string;
 }
 
 export interface EnsureReadyResult {
@@ -137,6 +148,7 @@ interface Lease {
   id: string;
   reason: ActivationReason;
   expiresAt: number;
+  scopeKey: string;
 }
 
 /**
@@ -216,7 +228,7 @@ export class PostizCoordinator {
       // Already up: reuse it. No Compose command, no Docker command.
       return this.result({
         waitedMs: this.deps.now() - startedWaiting,
-        ...(input.hold ? { leaseId: this.openLease(reason) } : {}),
+        ...(input.hold ? { leaseId: this.openLease(reason, input.scopeKey) } : {}),
       });
     }
 
@@ -232,7 +244,7 @@ export class PostizCoordinator {
     if (outcome.ready && input.hold) {
       return {
         ...outcome,
-        leaseId: this.openLease(reason),
+        leaseId: this.openLease(reason, input.scopeKey),
         waitedMs: this.deps.now() - startedWaiting,
       };
     }
@@ -263,7 +275,11 @@ export class PostizCoordinator {
       // A stack someone else already started is claimed as pre-existing: it is
       // usable, but Breadboard never stops it on its own.
       if (await this.deps.reachable()) {
-        if (this.ownership === "unknown") this.ownership = "pre-existing";
+        if (this.ownership === "unknown") {
+          this.ownership = await this.deps.recoverOwnership?.()
+            ? "breadboard"
+            : "pre-existing";
+        }
       } else {
         const started = await this.deps.startStack(reason);
         if (!started.ok) {
@@ -343,7 +359,7 @@ export class PostizCoordinator {
   }
 
   /** Pin the stack for the life of one operation. */
-  openLease(reason: ActivationReason): string {
+  openLease(reason: ActivationReason, scopeKey = "legacy"): string {
     this.expireLeases();
     this.leaseCounter += 1;
     const id = `lease-${this.leaseCounter}-${Math.floor(this.deps.now())}`;
@@ -351,14 +367,18 @@ export class PostizCoordinator {
       id,
       reason,
       expiresAt: this.deps.now() + (this.deps.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS),
+      scopeKey,
     });
     this.noteActivity(null);
     return id;
   }
 
-  releaseLease(id: unknown): boolean {
+  releaseLease(id: unknown, scopeKey?: string): boolean {
     this.noteActivity(null);
-    return typeof id === "string" && this.leases.delete(id);
+    if (typeof id !== "string") return false;
+    const lease = this.leases.get(id);
+    if (!lease || (scopeKey !== undefined && lease.scopeKey !== scopeKey)) return false;
+    return this.leases.delete(id);
   }
 
   activeLeases(): number {
@@ -443,12 +463,19 @@ export class PostizCoordinator {
    */
   async close(): Promise<boolean> {
     this.closed = true;
-    if (this.state !== "ready" || this.ownership !== "breadboard") return false;
-    if (this.activeLeases() > 0) return false;
-    if (this.nextScheduledAt !== null && this.nextScheduledAt > this.deps.now()) return false;
-    const pending = await this.deps.pendingWork();
-    if (!pending.known || pending.pending) return false;
-    return this.stop("exit");
+    try {
+      if (this.state !== "ready" || this.ownership !== "breadboard") return false;
+      if (this.activeLeases() > 0) return false;
+      if (this.nextScheduledAt !== null && this.nextScheduledAt > this.deps.now()) return false;
+      const pending = await this.deps.pendingWork();
+      if (!pending.known || pending.pending) return false;
+      return this.stop("exit");
+    } finally {
+      // The Runtime service may exit while deliberately preserving a
+      // pre-existing or scheduled stack. Drop only the native admission hold;
+      // never translate service shutdown into an unconditional Compose down.
+      await this.deps.releaseAdmission?.().catch(() => undefined);
+    }
   }
 
   /** Report whether an engine is up, without starting one. Diagnostics only. */

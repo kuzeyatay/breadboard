@@ -101,8 +101,8 @@ test("per-chat actions are hover-revealed and cover pin, rename and delete", () 
 });
 
 test("automatic titles replace New chat immediately and type into the rail", () => {
-  assert.match(terminal, /title: "New chat", temporary: temporaryChat/);
-  assert.doesNotMatch(terminal, /title: "Assistant conversation", temporary: temporaryChat/);
+  assert.match(terminal, /title:\s*"New chat",\s*temporary:\s*temporaryChat/);
+  assert.doesNotMatch(terminal, /title:\s*"Assistant conversation",\s*temporary:\s*temporaryChat/);
   assert.match(terminal, /let refreshQueued = false;/);
   assert.match(terminal, /if \(force\) refreshQueued = true;/);
 
@@ -249,13 +249,16 @@ test("a failed patch rolls back only the fields it wrote, and only if they are s
   // restore of the snapshot.
   assert.match(
     terminal,
-    /if \(body\.title !== undefined && entry\.title === body\.title\) next\.title = item\.title;/,
+    /if\s*\(body\.title !== undefined &&\s*entry\.title === body\.title\)\s*next\.title = item\.title;/,
   );
   assert.match(
     terminal,
-    /if \(body\.pinned !== undefined && entry\.pinned === body\.pinned\) next\.pinned = item\.pinned;/,
+    /if\s*\(body\.pinned !== undefined &&\s*entry\.pinned === body\.pinned\)\s*next\.pinned = item\.pinned;/,
   );
-  assert.match(terminal, /body\.highlight !== undefined && entry\.highlight === body\.highlight/);
+  assert.match(
+    terminal,
+    /body\.highlight !== undefined &&\s*entry\.highlight === body\.highlight/,
+  );
 });
 
 test("a rename adopts the canonical title the route answers with", () => {
@@ -469,7 +472,8 @@ test("the row's one status spot runs spinner, then dot, then nothing", () => {
   // Breadboard's pale green — the dock handle's color — because this is a
   // "there is something here", not a warning.
   assert.match(historyClient, /export function UnreadChatDot/);
-  assert.match(historyClient, /bg-\[#A9C1B1\]/);
+  assert.match(historyClient, /bg-\[var\(--signal-live\)\]/);
+  assert.match(historyClient, /shadow-\[0_0_0_1px_var\(--signal-live-ring\)\]/);
 
   // Read means on screen: the open chat only counts while the dock shows it.
   assert.match(terminal, /const viewingChatId = bodyMounted \? session\.sessionId : null;/);
@@ -489,12 +493,19 @@ test("the row's one status spot runs spinner, then dot, then nothing", () => {
 test("the dock bar carries the rollup, so a shut terminal still says something landed", () => {
   assert.match(
     terminal,
-    /const unreadCount = sidebarChats\.filter\(\(chat\) => chat\.unread && !chat\.active\)\.length;/,
+    /const unreadCount = sidebarChats\.filter\(\s*\(chat\) => chat\.unread && !chat\.active,\s*\)\.length;/,
   );
   // Open, it sits beside the title with its count, so it cannot be read as a
   // second runtime light; shut, the bar is the button, so the count is spoken
   // through the button's own label.
-  assert.match(terminal, /\{unreadCount > 0 \? \([\s\S]{0,400}<UnreadChatDot label=\{unreadLabel\}/);
+  assert.match(
+    terminal,
+    /<UnreadChatDot[\s\S]{0,220}unreadCount > 0 \? unreadLabel : "Agent runtime is available"/,
+  );
+  assert.match(
+    terminal,
+    /\) : unreadCount > 0 \? \([\s\S]*?bg-\[var\(--signal-live\)\]/,
+  );
   assert.match(terminal, /aria-label=\{isOpen \? undefined : `Open terminal\$\{unreadSuffix\}`\}/);
   assert.match(terminal, /const unreadSuffix = unreadCount > 0 \? ` — \$\{unreadLabel\}` : "";/);
 });
@@ -679,7 +690,7 @@ test("the Terminal's Scheduled panel is where prompt scheduling now happens", ()
 });
 
 test("one panel opens at a time beside the transcript", () => {
-  assert.match(terminal, /const \[sidePanel, setSidePanel\] = useState<TerminalPanel \| null>\(initialPanel\)/);
+  assert.match(terminal, /const \[sidePanel, setSidePanel\] = useState<TerminalPanel \| null>\(\s*initialPanel,\s*\)/);
   assert.match(terminal, /function togglePanel\(panel: TerminalPanel\)/);
   assert.match(terminal, /setSidePanel\(\(current\) => \(current === panel \? null : panel\)\)/);
   assert.match(terminal, /sidePanel === "uploads" \? \(\s*<UploadsPanel/);

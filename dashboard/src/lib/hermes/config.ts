@@ -10,7 +10,7 @@
 // toggled without a rebuild, and so importing this module never throws when
 // Hermes is disabled.
 
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 
 export type HermesSurface =

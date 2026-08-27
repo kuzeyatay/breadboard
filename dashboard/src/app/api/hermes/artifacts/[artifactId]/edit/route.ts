@@ -41,7 +41,10 @@ export async function GET(
 ) {
   try {
     const { artifactId } = await params;
-    return NextResponse.json(await loadArtifactEditor(await editableArtifact(request, artifactId)));
+    return NextResponse.json(await loadArtifactEditor(
+      await editableArtifact(request, artifactId),
+      { signal: request.signal },
+    ));
   } catch (error) {
     if (error instanceof ArtifactStoreError) {
       return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
@@ -67,7 +70,7 @@ export async function PUT(
       expectedVersion,
       content: typeof body.content === "string" ? body.content : undefined,
       patches,
-    });
+    }, { signal: request.signal });
     return NextResponse.json({ artifact: presentArtifact(saved) });
   } catch (error) {
     if (error instanceof ArtifactStoreError) {

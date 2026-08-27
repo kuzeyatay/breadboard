@@ -49,8 +49,10 @@ test("a .cmd shim is wrapped for cmd.exe with our own per-argument quoting", () 
     const spaced = path.join(dir, "Program Files");
     fs.mkdirSync(spaced);
     const shim = path.join(spaced, "npm.cmd");
+    const commandProcessor = path.join(spaced, "cmd.exe");
     fs.writeFileSync(shim, "");
-    const env = { PATH: spaced, PATHEXT: ".EXE;.CMD" };
+    fs.writeFileSync(commandProcessor, "");
+    const env = { PATH: spaced, PATHEXT: ".EXE;.CMD", ComSpec: commandProcessor };
 
     const plan = planSpawn(
       "npm",
@@ -59,6 +61,7 @@ test("a .cmd shim is wrapped for cmd.exe with our own per-argument quoting", () 
       notFound,
     );
     assert.ok(!("error" in plan));
+    assert.equal(plan.command.toLowerCase(), commandProcessor.toLowerCase());
     assert.equal(plan.verbatim, true);
     assert.deepEqual(plan.argv.slice(0, 3), ["/d", "/s", "/c"]);
 
@@ -90,10 +93,39 @@ test("environment expansion is refused on the cmd.exe path", () => {
   }
 });
 
+test("relative PATH entries and indirect executable files are never launch authority", (t) => {
+  const dir = fixtureDir();
+  try {
+    const executable = path.join(dir, "tool.exe");
+    fs.writeFileSync(executable, "");
+    assert.equal(resolveOnPath("tool", { PATH: path.basename(dir), PATHEXT: ".EXE" }), null);
+
+    const indirect = path.join(dir, "indirect.exe");
+    try {
+      fs.symlinkSync(executable, indirect, "file");
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "EPERM") {
+        t.skip("This Windows account cannot create a symlink fixture.");
+        return;
+      }
+      throw error;
+    }
+    assert.equal(resolveOnPath(indirect, { PATH: "", PATHEXT: ".EXE" }), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("setup actions only ever run argv the catalog owns", async () => {
   const setup = await import("../src/lib/agent-reach/setup.ts");
   const source = fs.readFileSync(
     fileURLToPath(new URL("../src/lib/agent-reach/setup.ts", import.meta.url)),
+    "utf8",
+  );
+  const executorSource = fs.readFileSync(
+    fileURLToPath(
+      new URL("../scripts/runtime-v2-agent-reach-setup-executor.mjs", import.meta.url),
+    ),
     "utf8",
   );
   // Neither trust context may reach a shell.
@@ -117,13 +149,15 @@ test("setup actions only ever run argv the catalog owns", async () => {
   assert.deepEqual(catalog.platforms, ["bilibili", "xueqiu"]);
   // Podcast setup must install both the transcoder and Agent Reach's own
   // transcription helper; ffmpeg alone still leaves the channel unusable.
-  assert.match(source, /kind: "bundled_file"/);
-  assert.match(source, /transcribe_xiaoyuzhou\.sh/);
+  assert.match(executorSource, /kind: "bundled-file"/);
+  assert.match(executorSource, /transcribe_xiaoyuzhou\.sh/);
 });
 
 test("archive extraction names the system tar, not whatever PATH finds first", () => {
   const source = fs.readFileSync(
-    fileURLToPath(new URL("../src/lib/agent-reach/setup.ts", import.meta.url)),
+    fileURLToPath(
+      new URL("../scripts/runtime-v2-agent-reach-setup-executor.mjs", import.meta.url),
+    ),
     "utf8",
   );
   // Git Bash puts an MSYS tar on PATH that reads "C:\..." as a remote host and

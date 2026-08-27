@@ -11,7 +11,7 @@
 // Secure cookie that a server-side fetch on plain http would drop.
 
 import type { SocialsManagerConfig, PostizCredentials } from "./config.ts";
-import { readCredentials, writeCredentials, ensureCredentials } from "./stack.ts";
+import { readCredentials, writeCredentials, ensureCredentials } from "./local-state.ts";
 
 const TIMEOUT_MS = 30_000;
 

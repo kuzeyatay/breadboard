@@ -7,12 +7,8 @@
 // in gigabytes and whose usefulness depends on model files Breadboard has no
 // business downloading on someone's behalf.
 //
-// So there are two separate questions here, and they are kept separate:
-//   1. *Is a ComfyUI answering?* — anything at `baseUrl` will do, including an
-//      install the user already runs by hand. Breadboard never insists on the
-//      vendored copy.
-//   2. *May Breadboard start the vendored one?* — only when `managed` is on and
-//      the clone has a Python environment already built for it.
+// Managed local mode is exclusively Runtime V2-owned. External mode is the
+// only path that adopts an independently managed HTTP endpoint.
 
 import path from "node:path";
 import { repositoryRoot } from "../runtime-paths.ts";
@@ -22,15 +18,8 @@ export interface ComfyUiConfig {
   enabled: boolean;
   /** Root of the HTTP API, no trailing slash. */
   baseUrl: string;
-  /** Breadboard may start (and set up) the vendored clone itself. */
+  /** Runtime V2 may start the local service; false means explicit external mode. */
   managed: boolean;
-  /**
-   * Bring the server up with the app rather than on the first render.
-   *
-   * Only ever acts when there is a built environment and nothing else is
-   * answering — see ./autostart.ts. It never installs anything.
-   */
-  autostart: boolean;
   /** The vendored ComfyUI checkout. */
   cloneRoot: string;
   /** Python environment Breadboard builds for the clone. */
@@ -39,9 +28,9 @@ export interface ComfyUiConfig {
   statusFile: string;
   /** Where the launch and setup output is kept, for when it goes wrong. */
   logFile: string;
-  /** Port used when Breadboard starts the server itself. */
+  /** Runtime-reserved managed port, or the development/external default. */
   port: number;
-  /** How long to wait for a server Breadboard just started. */
+  /** Retained configuration contract; native readiness owns managed cold-start timing. */
   startTimeoutMs: number;
   /**
    * How long one picture may take. Generous on purpose: the first render after
@@ -62,19 +51,74 @@ function count(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function requiredRuntimeValue(env: NodeJS.ProcessEnv, name: string): string {
+  const value = env[name]?.trim();
+  if (!value) throw new Error(`Runtime V2 omitted required managed ComfyUI field ${name}.`);
+  return value;
+}
+
 export function resolveComfyUiConfig(env: NodeJS.ProcessEnv = process.env): ComfyUiConfig {
-  const port = count(env.COMFYUI_PORT, DEFAULT_PORT);
-  const baseUrl = (env.COMFYUI_URL?.trim() || `http://127.0.0.1:${port}`).replace(/\/+$/, "");
+  const runtimeV2Active = env.BREADBOARD_RUNTIME_V2_ACTIVE === "true";
+  const managed = flag(env.COMFYUI_MANAGED, true);
+  const runtimeManaged = runtimeV2Active && managed;
+  const port = runtimeManaged
+    ? count(requiredRuntimeValue(env, "COMFYUI_PORT"), 0)
+    : DEFAULT_PORT;
+  const baseUrl = (
+    runtimeManaged
+      ? requiredRuntimeValue(env, "COMFYUI_URL")
+      : managed
+        ? `http://127.0.0.1:${port}`
+        : requiredRuntimeValue(env, "COMFYUI_URL")
+  ).replace(/\/+$/, "");
   const root = repositoryRoot();
-  const runtimeDir = env.COMFYUI_RUNTIME_DIR?.trim() || path.join(root, ".runtime", "comfyui");
+  const cloneRoot = runtimeManaged
+    ? requiredRuntimeValue(env, "COMFYUI_ROOT")
+    : path.join(root, "comfyui");
+  const envDir = runtimeManaged
+    ? requiredRuntimeValue(env, "COMFYUI_ENV_DIR")
+    : path.join(root, ".runtime", "comfyui-venv");
+  const runtimeDir = runtimeManaged
+    ? requiredRuntimeValue(env, "COMFYUI_RUNTIME_DIR")
+    : path.join(root, ".runtime", "comfyui");
+
+  const parsed = new URL(baseUrl);
+  if (runtimeManaged) {
+    if (
+      parsed.protocol !== "http:" ||
+      parsed.hostname !== "127.0.0.1" ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash ||
+      parsed.username ||
+      parsed.password ||
+      Number(parsed.port) !== port ||
+      !path.isAbsolute(cloneRoot) ||
+      !path.isAbsolute(envDir) ||
+      !path.isAbsolute(runtimeDir)
+    ) {
+      throw new Error("Runtime V2 supplied invalid managed ComfyUI launch authority.");
+    }
+  } else if (
+    !managed &&
+    (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      !parsed.hostname ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    )
+  ) {
+    throw new Error("External ComfyUI requires a credential-free HTTP(S) base URL.");
+  }
 
   return {
     enabled: flag(env.COMFYUI_ENABLED, true),
     baseUrl,
-    managed: flag(env.COMFYUI_MANAGED, true),
-    autostart: flag(env.COMFYUI_AUTOSTART, true),
-    cloneRoot: env.COMFYUI_ROOT?.trim() || path.join(root, "comfyui"),
-    envDir: env.COMFYUI_ENV_DIR?.trim() || path.join(root, ".runtime", "comfyui-venv"),
+    managed,
+    cloneRoot,
+    envDir,
     statusFile: path.join(runtimeDir, "startup-status.json"),
     logFile: path.join(runtimeDir, "comfyui.log"),
     port,

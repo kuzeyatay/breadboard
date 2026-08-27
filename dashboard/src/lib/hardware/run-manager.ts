@@ -46,7 +46,8 @@ import {
   openCadArtifactContext,
   publishCadDesign,
 } from "../cad/artifact.ts";
-import { cadServiceListening } from "../cad/service.ts";
+import { ensureCadServiceReady } from "../cad/service.ts";
+import { SupervisorResourceExhaustedError } from "../supervisor-control.ts";
 import { cadDefaults } from "../cad/defaults.ts";
 import { resolveCadEngine } from "../cad/engines.ts";
 import { latestUnbuiltCadProjectForConversation } from "../cad/project-store.ts";
@@ -154,6 +155,8 @@ function requireRun(userId: number, runId: string): RunState {
 
 export interface StartHardwareRunInput {
   userId: number;
+  /** Native Runtime job identity. Present only inside the disposable worker. */
+  runtimeJobId?: string;
   conversationPublicId: string;
   /** Stable id of the chat turn. Replayed POSTs with this id reuse one run. */
   clientMessageId?: string;
@@ -175,7 +178,10 @@ export interface StartHardwareRunInput {
   conversationContext?: string;
 }
 
-export function startRun(input: StartHardwareRunInput): { runId: string; status: RunStatus } {
+/** Fixed Runtime worker entrypoint. Next.js routes must call `startRun`. */
+export function startRuntimeWorkerRun(
+  input: StartHardwareRunInput,
+): { runId: string; status: RunStatus } {
   if (!input.parsed.brief.trim()) throw new Error("empty_brief");
   const requestSignature = JSON.stringify({
     brief: input.brief,
@@ -199,7 +205,7 @@ export function startRun(input: StartHardwareRunInput): { runId: string; status:
     }
     if (existingRunId) launches.delete(launchKey);
   }
-  const runId = `hwrun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId ?? `hwrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -488,15 +494,18 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
     agentSettingsFor(input.userId, "parametric-cad"),
   );
   if (enclosure.wanted) {
-    // Whether anything is listening, not merely whether an address is known.
-    // Being configured is almost always true — the secret is file-backed — so
-    // asking only that let the run spend two minutes of model time designing a
-    // part that could never be built. A TCP connect answers the real question.
-    if (!(await cadServiceListening())) {
-      enclosureNotice =
-        "A physical part was asked for, but the local CAD service is not running, so only the circuit was produced.";
-      emit(run, "enclosure.skipped", { reason: enclosureNotice });
-    } else {
+    let cadReady = false;
+    try {
+      await ensureCadServiceReady();
+      cadReady = true;
+    } catch (error) {
+      enclosureNotice = enclosureFailureNotice(error instanceof Error ? error.message : "");
+      emit(run, "enclosure.skipped", {
+        reason: enclosureNotice,
+        ...(error instanceof SupervisorResourceExhaustedError ? error.result : {}),
+      });
+    }
+    if (cadReady) {
       emit(run, "enclosure.started", { engine: cadEngine.engine, backend: cadEngine.source });
       try {
         const conversation = getConversationForUser(input.conversationPublicId, input.userId);
@@ -717,30 +726,36 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
     elapsedSec: elapsedMs / 1_000,
     usage,
   });
+  const state = hardwareBlueprintRunCardState(final.design, {
+    note: [turn.note, ...modificationNotes].filter(Boolean).join(" ").slice(0, 400),
+    safetyNotice:
+      safety.level === "concept-only"
+        ? `${safety.category} — ${safety.reason}`
+        : "",
+    pins: final.circuit.assignments
+      .filter((assignment) => assignment.purpose !== "power" && assignment.purpose !== "ground")
+      .map((assignment) => ({
+        pin: assignment.controllerPinLabel,
+        purpose: assignment.purpose,
+      })),
+    controllerName: final.circuit.controllerDefinition.name,
+    typicalCurrentMa: final.circuit.currentEstimate.totalTypicalMa,
+    firmwareNotice,
+    enclosureTitle,
+    enclosureNotice,
+    startedAt: run.events.find((event) => event.type === "run.started")?.at,
+    completedAt: run.events.at(-1)?.at,
+  });
+  // The disposable worker is the only process that can derive this state.
+  // Carry it in the sealed projection so transcript persistence never has to
+  // rerun compiler logic in Next.js.
+  const terminalEvent = run.events.at(-1);
+  if (terminalEvent?.type === "run.completed") terminalEvent.payload.state = state;
   publishTerminal(run, {
     outcome: "completed",
     content: summary,
     usage,
-    state: hardwareBlueprintRunCardState(final.design, {
-      note: [turn.note, ...modificationNotes].filter(Boolean).join(" ").slice(0, 400),
-      safetyNotice:
-        safety.level === "concept-only"
-          ? `${safety.category} — ${safety.reason}`
-          : "",
-      pins: final.circuit.assignments
-        .filter((assignment) => assignment.purpose !== "power" && assignment.purpose !== "ground")
-        .map((assignment) => ({
-          pin: assignment.controllerPinLabel,
-          purpose: assignment.purpose,
-        })),
-      controllerName: final.circuit.controllerDefinition.name,
-      typicalCurrentMa: final.circuit.currentEstimate.totalTypicalMa,
-      firmwareNotice,
-      enclosureTitle,
-      enclosureNotice,
-      startedAt: run.events.find((event) => event.type === "run.started")?.at,
-      completedAt: run.events.at(-1)?.at,
-    }),
+    state,
   });
   schedule(run);
 }
@@ -849,7 +864,7 @@ function schedule(run: RunState): void {
 
 // ---- read/control API -------------------------------------------------------
 
-export function getEventsSince(
+export function getRuntimeWorkerEventsSince(
   userId: number,
   runId: string,
   since = 0,
@@ -857,7 +872,7 @@ export function getEventsSince(
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
@@ -865,7 +880,7 @@ export function isTerminal(userId: number, runId: string): boolean {
  * Persist a background result even when its card was unmounted by a chat
  * switch. A very fast run is replayed immediately after the handler attaches.
  */
-export function setRunTerminalHandler(
+export function setRuntimeWorkerTerminalHandler(
   userId: number,
   runId: string,
   handler: (result: HardwareTerminalResult) => void,
@@ -875,7 +890,7 @@ export function setRunTerminalHandler(
   if (run.terminalResult) handler(run.terminalResult);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;

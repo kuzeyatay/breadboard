@@ -32,6 +32,8 @@ process.on("exit", () => {
 const conversation = "conv-live-0001";
 const objective = "Migrate every legacy anchor to the two-phase planner";
 const turn = {
+  userId: 1,
+  gardenId: null,
   conversationPublicId: conversation,
   surface: "dashboard_terminal",
   mode: "knowledge",

@@ -7,8 +7,9 @@
  * are filtered by ownership instead of being deleted wholesale.
  */
 
-import fs from "node:fs";
-import path from "node:path";
+import type { Dirent } from "node:fs";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 export interface LearnFilesystemClearResult {
   /** Garden-relative files or directory roots that were removed. */
@@ -292,7 +293,7 @@ function recordRemovedMarkdown(
 }
 
 function walkMarkdown(directory: string, visitor: (filePath: string) => void): void {
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(directory, { withFileTypes: true });
   } catch {
@@ -323,7 +324,7 @@ function discoverRemovedPages(gardenDir: string): { ownership: RemovedPageOwners
 
   const skipTopLevel = new Set([".breadboard", "assets", "sources", ...learningRoots.map((entry) => entry.toLowerCase())]);
   const walkOutside = (directory: string, depth: number): void => {
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(directory, { withFileTypes: true });
     } catch {
@@ -432,7 +433,7 @@ function collectVisualIndexEvidence(
 function jsonRecordsBelow(directory: string): JsonRecord[] {
   const records: JsonRecord[] = [];
   const walk = (current: string): void => {
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
     } catch {
@@ -458,7 +459,7 @@ function collectVisualArtifactEvidence(
   removed: RemovedPageOwnership,
   evidence: VisualOwnershipEvidence,
 ): void {
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(visualsDir, { withFileTypes: true });
   } catch {
@@ -532,7 +533,7 @@ function pruneVisualArtifacts(
 ): void {
   if (removeIds.size === 0) return;
   const visualsDir = pathInsideGarden(gardenDir, ".breadboard/visuals");
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(visualsDir, { withFileTypes: true });
   } catch {

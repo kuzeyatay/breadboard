@@ -14,7 +14,12 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { OFFICE_TOOLS, OFFICE_WRITE_TOOLS, allowedToolsForSurface } from "../src/lib/hermes/tool-scopes.ts";
+import {
+  DOCUMENT_TOOLS,
+  OFFICE_TOOLS,
+  OFFICE_WRITE_TOOLS,
+  allowedToolsForSurface,
+} from "../src/lib/hermes/tool-scopes.ts";
 import { BROKERED_TOOLS } from "../src/lib/hermes/capability-broker.ts";
 import { listFirstPartySkills } from "../src/lib/hermes/skills.ts";
 import {
@@ -104,7 +109,10 @@ test("the skill resolves ready on the authenticated surfaces, and not on Quartz"
     assert.ok(skill, `office missing on ${surface}`);
     assert.equal(skill.availability, "ready", `office not ready on ${surface}`);
     assert.equal(skill.category, "Featured");
-    assert.deepEqual(skill.capabilityContract?.requiredTools, [...OFFICE_TOOLS]);
+    assert.deepEqual(skill.capabilityContract?.requiredTools, [
+      ...OFFICE_TOOLS,
+      ...DOCUMENT_TOOLS,
+    ]);
   }
   assert.equal(
     listFirstPartySkills("quartz_ai").some(

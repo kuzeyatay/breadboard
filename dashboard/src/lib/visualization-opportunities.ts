@@ -1,6 +1,6 @@
 import crypto from "crypto";
-import fs from "fs";
-import path from "path";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   visualTypeCompatibleWithUnit,
   type LearningUnitContract,

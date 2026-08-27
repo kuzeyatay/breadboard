@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
-import { abortRun, getRun } from "@/lib/max-research/run-manager.ts";
+import { abortRun, getRun } from "@/lib/max-research/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,8 +11,8 @@ export async function POST(
 ) {
   const userId = await requireUserId();
   const { runId } = await params;
-  const stopped = abortRun(userId, runId);
-  const run = getRun(userId, runId);
+  const stopped = await abortRun(userId, runId);
+  const run = await getRun(userId, runId);
   if (!run) {
     return NextResponse.json({ ok: false, error: "run_not_found" }, { status: 404 });
   }

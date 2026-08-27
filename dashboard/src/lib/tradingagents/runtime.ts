@@ -11,9 +11,13 @@
 // and a `git pull` in the clone never conflicts with Breadboard's own file.
 
 import { spawn } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
-import { repositoryRoot } from "../runtime-paths.ts";
+import { repositoryRoot, runtimeV2ServiceVenv } from "../runtime-paths.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
 
 export interface TradingAgentsRuntime {
   /** Directory of the cloned repository — the cwd of every command. */
@@ -54,9 +58,9 @@ function configured(value: string | undefined): string | null {
 /** A directory is a TradingAgents clone when the package and its CLI are there. */
 export function isClone(candidate: string): boolean {
   return (
-    fs.existsSync(path.join(candidate, "tradingagents", "graph", "trading_graph.py")) &&
-    fs.existsSync(path.join(candidate, "tradingagents", "default_config.py")) &&
-    fs.existsSync(path.join(candidate, "pyproject.toml"))
+    externalRuntimePathExists(path.join(candidate, "tradingagents", "graph", "trading_graph.py")) &&
+    externalRuntimePathExists(path.join(candidate, "tradingagents", "default_config.py")) &&
+    externalRuntimePathExists(path.join(candidate, "pyproject.toml"))
   );
 }
 
@@ -72,8 +76,6 @@ export function resolveTradingAgentsRoot(
   }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({ root: path.join(repositoryRoot(), "tradingagents"), source: "repository" });
-  candidates.push({ root: path.resolve(process.cwd(), "tradingagents"), source: "cwd" });
-  candidates.push({ root: path.resolve(process.cwd(), "..", "tradingagents"), source: "cwd" });
   return candidates.find((candidate) => isClone(candidate.root)) ?? null;
 }
 
@@ -81,14 +83,13 @@ export function resolveTradingAgentsRoot(
 export function bridgeScriptPath(): string | null {
   const candidates = [
     path.join(repositoryRoot(), "scripts", "tradingagents-bridge.py"),
-    path.resolve(process.cwd(), "scripts", "tradingagents-bridge.py"),
-    path.resolve(process.cwd(), "..", "scripts", "tradingagents-bridge.py"),
   ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  return candidates.find((candidate) => externalRuntimePathExists(candidate)) ?? null;
 }
 
 export function venvDirectory(root: string): string {
-  return path.join(root, ".venv");
+  void root;
+  return runtimeV2ServiceVenv("tradingagents");
 }
 
 /** The Python inside the clone's virtual environment, if it has been built. */
@@ -97,7 +98,7 @@ export function venvPython(root: string): string | null {
     process.platform === "win32"
       ? path.join(venvDirectory(root), "Scripts", "python.exe")
       : path.join(venvDirectory(root), "bin", "python");
-  return fs.existsSync(candidate) ? candidate : null;
+  return externalRuntimePathExists(candidate) ? candidate : null;
 }
 
 /** Find an executable on PATH, honouring PATHEXT on Windows. */
@@ -105,7 +106,7 @@ export function resolveOnPath(
   executable: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  if (path.isAbsolute(executable)) return fs.existsSync(executable) ? executable : null;
+  if (path.isAbsolute(executable)) return externalRuntimePathExists(executable) ? executable : null;
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   const directories = (env[pathKey] ?? "").split(path.delimiter).filter(Boolean);
   const extensions =
@@ -115,7 +116,7 @@ export function resolveOnPath(
   for (const directory of directories) {
     for (const extension of extensions) {
       const candidate = path.join(directory, `${executable}${extension}`);
-      if (fs.existsSync(candidate)) return candidate;
+      if (externalRuntimePathExists(candidate)) return candidate;
     }
   }
   return null;
@@ -128,7 +129,7 @@ export function resolveOnPath(
  */
 export function findSystemPython(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = configured(env.TRADINGAGENTS_PYTHON);
-  if (explicit && fs.existsSync(explicit)) return explicit;
+  if (explicit && externalRuntimePathExists(explicit)) return explicit;
   for (const name of ["python3", "python"]) {
     const found = resolveOnPath(name, env);
     // The Windows Store alias is a zero-byte reparse point that opens the Store
@@ -140,7 +141,7 @@ export function findSystemPython(env: NodeJS.ProcessEnv = process.env): string |
 
 function safeSize(file: string): number {
   try {
-    return fs.statSync(file).size;
+    return externalRuntimeStat(file).size;
   } catch {
     return 0;
   }
@@ -193,6 +194,7 @@ export function runCommand(
     maxOutputChars?: number;
     onChild?: (kill: () => void) => void;
     onStdout?: (chunk: string) => void;
+    signal?: AbortSignal;
   },
 ): Promise<CommandResult> {
   const limit = options.maxOutputChars ?? 200_000;
@@ -204,6 +206,7 @@ export function runCommand(
         windowsHide: true,
         env: tradingAgentsEnv(options.env ?? {}),
         stdio: ["ignore", "pipe", "pipe"],
+        ...(options.signal ? { signal: options.signal } : {}),
       });
     } catch (error) {
       resolve({
@@ -254,7 +257,7 @@ export function runCommand(
 
 export function cloneVersion(root: string): string | null {
   try {
-    const manifest = fs.readFileSync(path.join(root, "pyproject.toml"), "utf8");
+    const manifest = externalRuntimeReadUtf8(path.join(root, "pyproject.toml"));
     return /^version\s*=\s*"([^"]+)"/m.exec(manifest)?.[1] ?? null;
   } catch {
     return null;
@@ -271,7 +274,7 @@ const globalCache = globalThis as typeof globalThis & {
   __breadboardTradingAgentsHealthInFlight?: Promise<TradingAgentsHealth>;
 };
 
-async function probe(): Promise<TradingAgentsHealth> {
+async function probe(signal?: AbortSignal): Promise<TradingAgentsHealth> {
   const runtime = resolveTradingAgentsRoot();
   const bridgeFound = Boolean(bridgeScriptPath());
   if (!runtime) {
@@ -315,7 +318,7 @@ async function probe(): Promise<TradingAgentsHealth> {
   const probeResult = await runCommand(
     python,
     ["-c", "import tradingagents, langgraph; print('ok')"],
-    { cwd: runtime.root, timeoutMs: PROBE_TIMEOUT_MS },
+    { cwd: runtime.root, timeoutMs: PROBE_TIMEOUT_MS, signal },
   );
   const packageInstalled = probeResult.code === 0 && probeResult.stdout.includes("ok");
 
@@ -356,7 +359,9 @@ async function probe(): Promise<TradingAgentsHealth> {
 }
 
 /** Cached because the probe really starts a Python interpreter. */
-export async function health(options: { force?: boolean } = {}): Promise<TradingAgentsHealth> {
+export async function health(
+  options: { force?: boolean; signal?: AbortSignal } = {},
+): Promise<TradingAgentsHealth> {
   const cached = globalCache.__breadboardTradingAgentsHealth;
   if (!options.force && cached && Date.now() - cached.at < HEALTH_CACHE_MS) {
     return cached.health;
@@ -364,7 +369,7 @@ export async function health(options: { force?: boolean } = {}): Promise<Trading
   if (globalCache.__breadboardTradingAgentsHealthInFlight) {
     return globalCache.__breadboardTradingAgentsHealthInFlight;
   }
-  const request = probe()
+  const request = probe(options.signal)
     .then((result) => {
       globalCache.__breadboardTradingAgentsHealth = { at: Date.now(), health: result };
       return result;

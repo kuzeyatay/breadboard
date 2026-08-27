@@ -1,10 +1,10 @@
 import db from "../db.ts";
 import {
-  ensureGraftIndex,
   graftRunContextFor,
   type GraftIndexState,
   type GraftRunContext,
 } from "./index-service.ts";
+import { ensureGraftIndex } from "./runtime-build.ts";
 
 /**
  * Per-Garden opt-out for the graft code index.
@@ -36,11 +36,13 @@ export function graftEnabledForGarden(
  * proceeds without graft — the setting is off, the CLI is missing, or the graph
  * is still building (this call is what starts that build).
  */
-export function graftRunContext(
+export async function graftRunContext(
   userId: number,
   repository: { path: string; gardenSlug: string },
-): GraftRunContext | null {
+): Promise<GraftRunContext | null> {
   if (!graftEnabledForGarden(userId, repository.gardenSlug)) return null;
+  const state = await ensureGraftIndex(userId, repository.path);
+  if (state !== "ready") return null;
   return graftRunContextFor(repository.path);
 }
 
@@ -48,6 +50,9 @@ export function graftRunContext(
  * Called when a repository is connected to a Garden, so the graph is usually
  * built by the time the first coding agent runs against it.
  */
-export function prepareGraftIndex(repositoryPath: string): GraftIndexState {
-  return ensureGraftIndex(repositoryPath);
+export function prepareGraftIndex(
+  userId: number,
+  repositoryPath: string,
+): Promise<GraftIndexState> {
+  return ensureGraftIndex(userId, repositoryPath);
 }

@@ -12,15 +12,19 @@ import {
   GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
 } from "../src/lib/generated-visual-capabilities.ts";
 import {
-  compileGeneratedVisualization,
   validateGeneratedVisualizationDefinition,
 } from "../src/lib/generated-visuals.ts";
+import { compileGeneratedVisualization } from "../src/lib/generated-visual-compiler.ts";
 
 const workspaceRoot = path.resolve("..");
 const sdkPath = path.join(workspaceRoot, "dashboard/src/lib/visual-sdk.ts");
 const generatorPath = path.join(
   workspaceRoot,
   "dashboard/src/lib/generated-visuals.ts",
+);
+const compilerPath = path.join(
+  workspaceRoot,
+  "dashboard/src/lib/generated-visual-compiler.ts",
 );
 const runtimePath = path.join(
   workspaceRoot,
@@ -398,6 +402,7 @@ function convergenceDefinition() {
 test("Learn generated visuals expose the flat control-first camera contract", () => {
   const sdk = fs.readFileSync(sdkPath, "utf8");
   const generator = fs.readFileSync(generatorPath, "utf8");
+  const compiler = fs.readFileSync(compilerPath, "utf8");
   const runtime = fs.readFileSync(runtimePath, "utf8");
   const wrapper = fs.readFileSync(wrapperPath, "utf8");
   const wrapperStyle = fs.readFileSync(wrapperStylePath, "utf8");
@@ -464,7 +469,7 @@ test("Learn generated visuals expose the flat control-first camera contract", ()
   assert.match(generator, /interaction\?:\"fixed\"\|\"orbit\"/);
   assert.match(generator, /legacy default is projection:/);
   assert.match(
-    generator,
+    compiler,
     /GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,\s*\n\s*VISUAL_SDK_VERSION/,
   );
 });

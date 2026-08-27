@@ -179,6 +179,14 @@ export async function transcribeWithScriberr(input: {
     succeeded = transcript.words.length > 0;
     return succeeded ? transcript : null;
   } finally {
-    if (succeeded) await client.deleteJob(jobId).catch(() => undefined);
+    // Cancellation is ownership transfer, not just a local polling stop. Wait
+    // for Scriberr to accept the kill before the disposable outer worker can
+    // acknowledge its own Runtime cancellation, so no transcription survives
+    // the edit that commissioned it.
+    if (input.signal?.aborted) {
+      await client.killJob(jobId).catch(() => undefined);
+    } else if (succeeded) {
+      await client.deleteJob(jobId).catch(() => undefined);
+    }
   }
 }

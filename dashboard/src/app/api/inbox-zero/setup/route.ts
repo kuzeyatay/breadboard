@@ -12,16 +12,7 @@ import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
-import { resolveInboxZeroConfig } from "@/lib/inbox-zero/config.ts";
-import {
-  containerModelSettings,
-  ensureCredentials,
-  startStack,
-  stopStack,
-  writeCredentials,
-} from "@/lib/inbox-zero/stack.ts";
-import { revokeMintedSessions } from "@/lib/inbox-zero/session.ts";
-import { forgetSession, setupStatus } from "@/lib/inbox-zero/service.ts";
+import { runInboxZeroSetup } from "@/lib/inbox-zero/runtime-service.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -32,84 +23,45 @@ function text(value: unknown): string {
 
 export async function POST(request: Request) {
   try {
-    await requireUserId();
-    const body = (await request.json()) as Record<string, unknown>;
+    const userId = await requireUserId();
+    const raw = await request.text();
+    if (raw.length > 64 * 1024) {
+      return NextResponse.json({ ok: false, error: "payload_too_large" }, { status: 413 });
+    }
+    const body = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>;
     const action = text(body.action);
-    const config = resolveInboxZeroConfig();
 
     if (action === "save_oauth") {
-      const credentials = ensureCredentials(config);
-      // An empty field leaves the stored value alone rather than clearing it:
-      // the panel renders secrets as blank, so submitting the form must not
-      // erase a secret the user never saw.
-      writeCredentials(config, {
-        ...credentials,
-        googleClientId: text(body.googleClientId) || credentials.googleClientId,
-        googleClientSecret: text(body.googleClientSecret) || credentials.googleClientSecret,
-        microsoftClientId: text(body.microsoftClientId) || credentials.microsoftClientId,
-        microsoftClientSecret:
-          text(body.microsoftClientSecret) || credentials.microsoftClientSecret,
-      });
-      // The stack reads these at boot, so a saved client only takes effect on
-      // the next start. Say so rather than letting it look like it did nothing.
-      return NextResponse.json({
-        ok: true,
-        restartRequired: true,
-        setup: await setupStatus(config),
-      });
+      return NextResponse.json(await runInboxZeroSetup({ userId }, {
+        action,
+        googleClientId: text(body.googleClientId),
+        googleClientSecret: text(body.googleClientSecret),
+        microsoftClientId: text(body.microsoftClientId),
+        microsoftClientSecret: text(body.microsoftClientSecret),
+      }));
     }
 
     if (action === "clear_oauth") {
-      const credentials = ensureCredentials(config);
-      writeCredentials(config, {
-        ...credentials,
-        googleClientId: "",
-        googleClientSecret: "",
-        microsoftClientId: "",
-        microsoftClientSecret: "",
-      });
-      return NextResponse.json({ ok: true, setup: await setupStatus(config) });
+      return NextResponse.json(await runInboxZeroSetup({ userId }, { action }));
     }
 
     if (action === "start") {
-      const credentials = ensureCredentials(config);
       const { baseURL } = resolveChatmockBaseUrl(request);
       const model = text(body.model) || "default";
-      const result = await startStack({
-        config,
-        credentials,
-        model: containerModelSettings({
-          chatmockBaseUrl: baseURL,
-          chatmockApiKey: chatmockApiKeyValue(),
-          model,
-        }),
-      });
-      return NextResponse.json({
-        ok: result.started,
-        state: result.status.state,
-        reason: result.status.reason ?? null,
-        log: result.log.slice(-8_000),
-        setup: await setupStatus(config),
-      });
+      return NextResponse.json(await runInboxZeroSetup({ userId }, {
+        action,
+        chatmockBaseUrl: baseURL,
+        chatmockApiKey: chatmockApiKeyValue(),
+        model,
+      }));
     }
 
     if (action === "stop") {
-      forgetSession();
-      const stopped = await stopStack(config);
-      return NextResponse.json({ ok: stopped, setup: await setupStatus(config) });
+      return NextResponse.json(await runInboxZeroSetup({ userId }, { action }));
     }
 
     if (action === "disconnect") {
-      forgetSession();
-      const credentials = ensureCredentials(config);
-      let revoked = 0;
-      try {
-        revoked = await revokeMintedSessions(config, credentials);
-      } catch {
-        // The stack is down, so there is nothing live to revoke. The cached
-        // session is already gone, which is the part that mattered.
-      }
-      return NextResponse.json({ ok: true, revoked, setup: await setupStatus(config) });
+      return NextResponse.json(await runInboxZeroSetup({ userId }, { action }));
     }
 
     return NextResponse.json({ ok: false, error: "unknown_action" }, { status: 400 });

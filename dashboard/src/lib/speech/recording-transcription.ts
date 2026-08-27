@@ -9,7 +9,6 @@ import "server-only";
 // part by part, because the honest answer to "how long will this take" is only
 // knowable once you can see how many parts there are.
 
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -18,10 +17,13 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { RouteError } from "@/lib/server-auth";
-import { resolveFfmpeg } from "../vimax/video.ts";
+import {
+  segmentRecordingViaRuntime,
+  SpeechMediaRuntimeError,
+  type SpeechMediaRuntimeScope,
+} from "../runtime-v2/speech-media-job.ts";
 import {
   MAX_RECORDING_BYTES,
-  RECORDING_SEGMENT_SECONDS,
   isVoiceboxReadable,
   joinTranscriptSegments,
   recordingExtension,
@@ -86,75 +88,6 @@ export async function discardRecording(directory: string): Promise<void> {
   await fsp.rm(directory, { recursive: true, force: true }).catch(() => undefined);
 }
 
-function runFfmpeg(ffmpeg: string, args: string[], signal: AbortSignal): Promise<{ code: number; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
-    const abort = () => child.kill();
-    signal.addEventListener("abort", abort, { once: true });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      // Only the tail matters — it is what ffmpeg puts the actual complaint in.
-      stderr = `${stderr}${chunk.toString()}`.slice(-4_000);
-    });
-    child.on("error", (error) => {
-      signal.removeEventListener("abort", abort);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      signal.removeEventListener("abort", abort);
-      resolve({ code: code ?? 1, stderr });
-    });
-  });
-}
-
-/**
- * Cut the recording's audio into WAV parts Whisper is happy with. Segmenting
- * with `-f segment` needs no duration probe: ffmpeg simply writes as many parts
- * as the recording has, and counting the files afterwards tells us how many.
- */
-async function segmentAudio(
-  input: string,
-  directory: string,
-  signal: AbortSignal,
-): Promise<string[]> {
-  const ffmpeg = resolveFfmpeg();
-  if (!ffmpeg) return [];
-  const partsDirectory = path.join(directory, "parts");
-  await fsp.mkdir(partsDirectory, { recursive: true });
-
-  const { code, stderr } = await runFfmpeg(
-    ffmpeg,
-    [
-      "-nostdin", "-y", "-loglevel", "error",
-      "-i", input,
-      "-vn",
-      "-ac", "1",
-      "-ar", "16000",
-      "-c:a", "pcm_s16le",
-      "-f", "segment",
-      "-segment_time", String(RECORDING_SEGMENT_SECONDS),
-      "-reset_timestamps", "1",
-      path.join(partsDirectory, "part-%04d.wav"),
-    ],
-    signal,
-  );
-
-  const parts = (await fsp.readdir(partsDirectory).catch(() => []))
-    .filter((name) => name.endsWith(".wav"))
-    .sort()
-    .map((name) => path.join(partsDirectory, name));
-
-  if (parts.length === 0) {
-    throw new RouteError(
-      415,
-      stderr.toLowerCase().includes("does not contain any stream") || code !== 0
-        ? "No audio could be read from that file. It may have no sound track, or be a format ffmpeg does not know."
-        : "That recording came out silent.",
-    );
-  }
-  return parts;
-}
-
 /** One part, one Voicebox request — with the same wait-for-the-model dance dictation does. */
 async function transcribePart(
   filePath: string,
@@ -201,6 +134,7 @@ async function transcribePart(
 }
 
 export interface TranscribeRecordingOptions {
+  runtimeScope: SpeechMediaRuntimeScope;
   workspace: RecordingWorkspace;
   filename: string;
   model: string;
@@ -214,6 +148,7 @@ export interface TranscribeRecordingOptions {
  * caller owns the workspace and removes it.
  */
 export async function transcribeStoredRecording({
+  runtimeScope,
   workspace,
   filename,
   model,
@@ -222,36 +157,49 @@ export async function transcribeStoredRecording({
   onEvent,
 }: TranscribeRecordingOptions): Promise<string> {
   onEvent({ stage: "extracting" });
-  let parts = await segmentAudio(workspace.filePath, workspace.directory, signal);
+  let segmented;
+  try {
+    segmented = await segmentRecordingViaRuntime(runtimeScope, workspace.filePath, { signal });
+  } catch (error) {
+    if (signal.aborted) throw new RouteError(499, "The transcription was cancelled.");
+    if (error instanceof SpeechMediaRuntimeError) {
+      throw new RouteError(error.code === "recording_unreadable" ? 415 : error.status, error.message);
+    }
+    throw error;
+  }
+  let parts = [...segmented.parts];
 
-  if (parts.length === 0) {
-    // No ffmpeg on this machine. Voicebox can still read the plain audio
-    // containers by itself, so those go straight through; anything else needs
-    // a converter we do not have, and saying so beats a decoder stack trace.
-    if (!isVoiceboxReadable(filename)) {
-      throw new RouteError(
-        415,
-        "No ffmpeg was found, so the audio could not be pulled out of this file. Upload a .wav, .mp3, .m4a, .ogg, .flac or .opus recording instead.",
+  try {
+    if (!segmented.available) {
+      // No ffmpeg in the sealed media worker. Voicebox can still read plain
+      // audio containers, so those go straight through without conversion.
+      if (!isVoiceboxReadable(filename)) {
+        throw new RouteError(
+          415,
+          "No ffmpeg was found, so the audio could not be pulled out of this file. Upload a .wav, .mp3, .m4a, .ogg, .flac or .opus recording instead.",
+        );
+      }
+      parts = [workspace.filePath];
+    }
+
+    const transcripts: string[] = [];
+    let announcedDownload = false;
+    for (const [index, part] of parts.entries()) {
+      if (signal.aborted) throw new RouteError(499, "The transcription was cancelled.");
+      onEvent({ stage: "transcribing", part: index + 1, parts: parts.length });
+      transcripts.push(
+        await transcribePart(part, model, language, signal, () => {
+          if (announcedDownload) return;
+          announcedDownload = true;
+          onEvent({ stage: "waiting-for-model", model });
+        }),
       );
     }
-    parts = [workspace.filePath];
-  }
 
-  const transcripts: string[] = [];
-  let announcedDownload = false;
-  for (const [index, part] of parts.entries()) {
-    if (signal.aborted) throw new RouteError(499, "The transcription was cancelled.");
-    onEvent({ stage: "transcribing", part: index + 1, parts: parts.length });
-    transcripts.push(
-      await transcribePart(part, model, language, signal, () => {
-        if (announcedDownload) return;
-        announcedDownload = true;
-        onEvent({ stage: "waiting-for-model", model });
-      }),
-    );
+    const text = joinTranscriptSegments(transcripts);
+    if (!text) throw new RouteError(422, "Voicebox did not hear any words in that recording.");
+    return text;
+  } finally {
+    segmented.cleanup();
   }
-
-  const text = joinTranscriptSegments(transcripts);
-  if (!text) throw new RouteError(422, "Voicebox did not hear any words in that recording.");
-  return text;
 }

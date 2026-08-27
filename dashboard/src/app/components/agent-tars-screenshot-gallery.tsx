@@ -50,6 +50,10 @@ export default function AgentTarsScreenshotGallery({
   emptyLabel: string;
 }) {
   const screenshots = useMemo(() => screenshotsFrom(events), [events]);
+  const screenshotIds = useMemo(
+    () => new Set(screenshots.map((screenshot) => screenshot.id)),
+    [screenshots],
+  );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [failedIds, setFailedIds] = useState<Set<string>>(() => new Set());
@@ -64,11 +68,13 @@ export default function AgentTarsScreenshotGallery({
   const markUnavailable = useCallback((screenshotId: string) => {
     setFailedIds((current) => {
       if (current.has(screenshotId)) return current;
-      const next = new Set(current);
+      const next = new Set(
+        [...current].filter((retainedId) => screenshotIds.has(retainedId)),
+      );
       next.add(screenshotId);
       return next;
     });
-  }, []);
+  }, [screenshotIds]);
 
   const retrySelected = useCallback(() => {
     if (!selected) return;

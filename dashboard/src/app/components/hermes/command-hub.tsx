@@ -1067,12 +1067,15 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       showVibeTrading ||
       showStockAnalyst ||
       showDeerFlow ||
+      showMeetingNotes ||
       showShorts ||
       showFormsmith ||
       showDeepResearch ||
+      showDeepTutor ||
       showOpenPlanter ||
       showSocialsManager ||
       showHardwareBlueprint ||
+      showParametricCad ||
       showHyperframes ||
       showResource2Skill ||
       showMatraix ||
@@ -1080,11 +1083,13 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       showOpenMontage ||
       showOpenwork ||
       showOpenscience ||
+      showMaxResearch ||
       showInboxZero ||
       showVimax ||
       showVoxDirector ||
       showMoneyPrinter ||
       showLegal ||
+      showWardrobe ||
       showCodex ||
       showOpenCode ||
       showRuflo ||

@@ -1,12 +1,12 @@
 {
   "name": "breadboard",
   "private": true,
-  "description": "Breadboard \u2014 second-brain knowledge gardens with a Hermes-backed interactive agent runtime.",
+  "description": "Breadboard — second-brain knowledge gardens with a Hermes-backed interactive agent runtime.",
   "engines": {
     "node": "^22.15.0 || >=23.5.0"
   },
   "scripts": {
-    "dev": "node scripts/dev-all.mjs",
+    "dev": "npm run desktop:dev:hot",
     "dev:dashboard": "npm --prefix dashboard run dev",
     "dev:quartz": "node scripts/start-quartz.mjs",
     "dev:chatmock": "node scripts/start-chatmock.mjs",
@@ -34,7 +34,7 @@
     "test:cad": "node scripts/test-cad.mjs",
     "dev:cliproxy": "node scripts/start-cliproxy.mjs",
     "test:dashboard": "npm --prefix dashboard test",
-    "test:gbrain": "bun test ./gbrain-adapter",
+    "test:gbrain": "bun test ./gbrain-adapter && npm --prefix gbrain-adapter run test:node",
     "test:ui-tars": "node --test --experimental-strip-types ui-tars-adapter/test/*.test.ts",
     "test:ui-tars:e2e": "node --test --experimental-strip-types ui-tars-adapter/test/e2e/*.test.ts",
     "dev:ui-tars": "node scripts/start-ui-tars.mjs",
@@ -55,16 +55,42 @@
     "qa:electron:explore": "node qa/electron/run-qa.mjs --project=exploratory",
     "qa:electron:hermes": "node qa/electron/run-qa.mjs --project=hermes",
     "qa:electron:packaged": "node qa/electron/run-qa.mjs --project=packaged --skip-desktop-build",
+    "qa:electron:packaged-parity": "node qa/electron/run-qa.mjs --project=packaged-parity --skip-desktop-build",
     "qa:electron:headed": "node qa/electron/run-qa.mjs --project=critical --headed --preserve-runtime",
     "qa:electron:trace": "node qa/electron/run-qa.mjs --project=critical --trace --preserve-runtime",
+    "qa:electron:runner:test": "node --test qa/electron/run-qa-options.test.mjs",
     "qa:electron:typecheck": "tsc --noEmit -p qa/electron/tsconfig.json",
     "qa:memory:smoke": "node qa/memory/run-memory-qa.mjs --mode=smoke",
     "qa:memory:burn-in": "node qa/memory/run-memory-qa.mjs --mode=burn-in",
     "qa:memory:dashboard": "node qa/memory/run-dashboard-compiler-benchmark.mjs",
-    "qa:runtime-v2:parity": "node qa/runtime-v2/run-parity.mjs",
-    "qa:runtime-v2:inventory": "node qa/runtime-v2/validate-execution-inventory.mjs",
+    "qa:memory:services:validate": "node --test qa/memory/service-evidence-contract.test.mjs && npm --prefix dashboard exec tsc -- --noEmit -p dashboard/tsconfig.packaged-service-evidence.json",
+    "qa:memory:services:smoke": "node qa/memory/run-service-evidence.mjs --suite=smoke",
+    "qa:memory:services:burn": "node qa/memory/run-service-evidence.mjs --suite=burn",
+    "qa:memory:services:cancel": "node qa/memory/run-service-evidence.mjs --suite=cancel",
+    "qa:memory:services:restart": "node qa/memory/run-service-evidence.mjs --suite=restart",
+    "qa:memory:services:all": "node qa/memory/run-service-evidence.mjs --suite=all",
+    "qa:runtime-v2:smoke": "node qa/memory/run-memory-qa.mjs --mode=smoke --launch-workload=true --workload-project=critical --workload-repeat-each=1 --skip-desktop-build=true --duration-ms=900000",
+    "preqa:runtime-v2:burn-in": "npm run qa:runtime-v2:burn-in:validate && npm run qa:memory:services:validate",
+    "qa:runtime-v2:burn-in": "node qa/memory/run-memory-qa.mjs --mode=burn-in --launch-workload=true --workload-project=runtime-v2-burn-in --workload-repeat-each=1 --skip-desktop-build=true --duration-ms=21600000",
+    "qa:runtime-v2:burn-in:validate": "node --test qa/memory/runtime-v2-burn-in-contract.test.mjs qa/memory/runtime-v2-burn-in-source.test.mjs",
+    "qa:runtime-v2:parity": "node qa/runtime-v2/run-parity.mjs && node qa/runtime-v2/validate-service-cutover.mjs && node qa/runtime-v2/validate-process-sources.mjs && node qa/runtime-v2/validate-electron-owner.mjs && node qa/runtime-v2/validate-dev-entrypoints.mjs",
+    "qa:runtime-v2:parity:record": "node qa/runtime-v2/record-parity-evidence.mjs",
+    "qa:runtime-v2:parity:import": "node qa/runtime-v2/import-parity-evidence.mjs",
+    "qa:runtime-v2:parity:import:test": "node --test qa/runtime-v2/package-verifier-receipt.test.mjs qa/runtime-v2/parity-evidence-observation.test.mjs qa/runtime-v2/parity-evidence-contract.test.mjs",
+    "qa:runtime-v2:package:record": "node qa/runtime-v2/record-package-verifier-receipt.mjs",
+    "qa:runtime-v2:package:record:test": "node --test qa/runtime-v2/package-verifier-receipt.test.mjs",
+    "qa:runtime-v2:inventory": "node qa/runtime-v2/validate-execution-inventory.mjs && node qa/runtime-v2/validate-process-sources.mjs",
+    "qa:runtime-v2:services": "node qa/runtime-v2/validate-service-cutover.mjs",
+    "qa:runtime-v2:services:smoke": "node qa/memory/run-service-evidence.mjs --suite=smoke",
+    "qa:runtime-v2:services:burn": "node qa/memory/run-service-evidence.mjs --suite=burn",
+    "qa:runtime-v2:services:cancel": "node qa/memory/run-service-evidence.mjs --suite=cancel",
+    "qa:runtime-v2:services:restart": "node qa/memory/run-service-evidence.mjs --suite=restart",
+    "qa:runtime-v2:services:all": "node qa/memory/run-service-evidence.mjs --suite=all",
+    "qa:runtime-v2:process-sources": "node qa/runtime-v2/validate-process-sources.mjs",
+    "qa:runtime-v2:electron-owner": "node qa/runtime-v2/validate-electron-owner.mjs",
+    "qa:runtime-v2:entrypoints": "node qa/runtime-v2/validate-dev-entrypoints.mjs",
     "qa:runtime-v2:control-contract": "node qa/runtime-v2/validate-runtime-control-contract.mjs",
-    "qa:runtime-v2:manifests": "node qa/runtime-v2/validate-runtime-manifests.mjs",
+    "qa:runtime-v2:manifests": "node --test qa/runtime-v2/validate-runtime-manifests.test.mjs && node qa/runtime-v2/validate-runtime-manifests.mjs",
     "test:scripts": "node --test scripts/*.test.mjs",
     "qa:selftest": "node qa/harness-selftest/run-selftest.mjs",
     "qa:selftest:unit": "node --test qa/harness-selftest/*.test.mjs",
@@ -80,5 +106,26 @@
     "@types/node": "^24.13.3",
     "playwright": "^1.62.1",
     "typescript": "^5.9.3"
-  }
+  },
+  "version": "1.0.0",
+  "main": "pdf.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.62.1",
+    "undici-types": "^7.18.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kuzeyatay/breadboard.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/kuzeyatay/breadboard/issues"
+  },
+  "homepage": "https://github.com/kuzeyatay/breadboard#readme"
 }

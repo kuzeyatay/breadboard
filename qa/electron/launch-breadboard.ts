@@ -5,6 +5,8 @@ import type { ElectronApplication, Page } from "playwright";
 import type { QaRunEnvironment } from "./environment";
 import type { DiagnosticsCollector } from "./diagnostics";
 
+const ELECTRON_CLOSE_TIMEOUT_MS = 90_000;
+
 export interface NativeDialogPlan {
   openPaths?: readonly string[];
   savePath?: string | null;
@@ -281,8 +283,8 @@ async function closeElectronApplication(application: ElectronApplication): Promi
       application.close(),
       new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error("Electron did not shut down within 60 seconds")),
-          60_000,
+          () => reject(new Error("Electron did not shut down within 90 seconds")),
+          ELECTRON_CLOSE_TIMEOUT_MS,
         );
       }),
     ]);

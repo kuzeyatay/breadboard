@@ -1,24 +1,30 @@
-// In-memory run manager for the Career Ops agent. Breadboard drives the loop
-// itself: it calls ChatMock (OpenAI-compatible) with five tools — run one of the
-// clone's scripts, read a mode, read a file, list a directory, write a file —
-// and executes each proposed call against the career-ops workspace.
+// Worker-local run manager for the Career Ops agent. Breadboard drives the loop
+// itself inside one fresh Runtime V2 process: it calls ChatMock
+// (OpenAI-compatible) with five tools — run one of the clone's scripts, read a
+// mode, read a file, list a directory, write a file — and executes each proposed
+// call against the persistent career-ops workspace.
 //
 // Driving the loop here rather than shelling out to an agent CLI is what makes
 // the policy in ./commands.ts enforceable: every command passes through
 // parseCommand before any process is spawned, every write passes through
 // resolveWritablePath, and nothing is ever handed to a shell.
 //
-// Runs are ephemeral; the workspace they act on is not. Events live here and the
-// SSE route replays them, but the tracker, reports and PDFs a run produces stay
-// in the clone, which is the entire point of the tool.
+// Runs are ephemeral; the workspace they act on is not. The public functions at
+// the bottom are a thin Next compatibility facade over Rust's durable ledger.
+// Only startRuntimeWorkerRun and its worker-local controls reach this loop.
 
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
+import {
+  externalRuntimeReadDirectoryEntriesAsync,
+  externalRuntimeReadUtf8Async,
+  externalRuntimeStatAsync,
+} from "../external-runtime-filesystem.ts";
 import {
   availableScripts,
   parseCommand,
+  resolveExistingInsideRoot,
   resolveReadablePath,
   resolveWritablePath,
 } from "./commands.ts";
@@ -51,6 +57,7 @@ interface RunState {
   sequence: number;
   events: CareerOpsEvent[];
   killChild: (() => void) | null;
+  abortController: AbortController;
   aborted: boolean;
   finalText: string;
   /** Workspace-relative paths this run wrote, in order. */
@@ -213,7 +220,9 @@ async function readWorkspaceFile(run: RunState, requested: string): Promise<stri
   const decision = resolveReadablePath(requested, run.root);
   if (!decision.ok) return decision.reason;
   try {
-    const content = await readFile(decision.path.absolute, "utf8");
+    const verified = resolveExistingInsideRoot(decision.path.relative, run.root, "file");
+    if (!verified) throw new Error("not a direct workspace file");
+    const content = await externalRuntimeReadUtf8Async(verified.absolute);
     if (!content.trim()) return "(the file is empty)";
     return content.length > MAX_FILE_CHARS
       ? `${content.slice(0, MAX_FILE_CHARS)}\n\n(truncated at ${MAX_FILE_CHARS} characters)`
@@ -227,16 +236,25 @@ async function listWorkspace(run: RunState, requested: string): Promise<string> 
   const decision = resolveReadablePath(requested || ".", run.root);
   if (!decision.ok) return decision.reason;
   try {
-    const entries = await readdir(decision.path.absolute, { withFileTypes: true });
+    const verified = resolveExistingInsideRoot(decision.path.relative, run.root, "directory");
+    if (!verified) throw new Error("not a direct workspace directory");
+    const entries = await externalRuntimeReadDirectoryEntriesAsync(verified.absolute);
     if (!entries.length) return "(the directory is empty)";
     const rows = await Promise.all(
       entries
         .filter((entry) => entry.name !== "node_modules" && entry.name !== ".git")
         .slice(0, 400)
         .map(async (entry) => {
-          if (entry.isDirectory()) return `${entry.name}/`;
+          const childRelative = decision.path.relative
+            ? `${decision.path.relative}/${entry.name}`
+            : entry.name;
+          const child = resolveExistingInsideRoot(childRelative, run.root);
+          // Listing may name a link, but it must not follow one to learn about
+          // or expose its target. A later read of the name is refused too.
+          if (!child) return `${entry.name} (link unavailable)`;
           try {
-            const info = await stat(path.join(decision.path.absolute, entry.name));
+            const info = await externalRuntimeStatAsync(child.absolute);
+            if (info.isDirectory()) return `${entry.name}/`;
             return `${entry.name}  ${info.size.toLocaleString()} bytes`;
           } catch {
             return entry.name;
@@ -259,7 +277,12 @@ async function writeWorkspaceFile(
   if (content.length > MAX_WRITE_CHARS) return "That file is too large to write in one call.";
   try {
     await mkdir(path.dirname(decision.path.absolute), { recursive: true });
-    await writeFile(decision.path.absolute, content, "utf8");
+    // Recursive mkdir is needed for normal generated output. Validate again
+    // afterwards so a pre-existing or concurrently inserted junction cannot be
+    // used as the final write path.
+    const verified = resolveWritablePath(decision.path.relative, run.root);
+    if (!verified.ok) throw new Error(verified.reason);
+    await writeFile(verified.path.absolute, content, "utf8");
     if (!run.written.includes(decision.path.relative)) run.written.push(decision.path.relative);
     // The setup state can change the moment cv.md or profile.yml appears.
     if (/^(cv\.md|config\/profile\.yml|modes\/_profile\.md)$/.test(decision.path.relative)) {
@@ -317,16 +340,21 @@ async function complete(
   baseUrl: string,
   model: string,
   reasoningEffort: string,
+  apiKey: string,
   messages: ChatMessage[],
+  signal: AbortSignal,
 ): Promise<{ message: ChatMessage; usage: ChatUsage }> {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${chatmockApiKeyValue()}`,
+        authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model,
@@ -355,6 +383,7 @@ async function complete(
     };
   } finally {
     clearTimeout(timer);
+    signal.removeEventListener("abort", abort);
   }
 }
 
@@ -362,6 +391,7 @@ async function complete(
 
 export interface StartRunInput {
   userId: number;
+  requestId?: string;
   task: string;
   model: string;
   reasoningEffort: string;
@@ -371,11 +401,19 @@ export interface StartRunInput {
   conversationContext?: string;
 }
 
-export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
+export interface CareerOpsRuntimeWorkerRunInput extends StartRunInput {
+  runtimeJobId?: string;
+  apiKey: string;
+}
+
+/** Fixed worker-local entrypoint. Next routes must call durable `startRun`. */
+export function startRuntimeWorkerRun(
+  input: CareerOpsRuntimeWorkerRunInput,
+): { runId: string; status: RunStatus } {
   const runtime = resolveCareerOpsRoot();
   if (!runtime) throw new Error("The career-ops clone was not found next to the dashboard.");
 
-  const runId = `corun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId ?? `corun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -385,6 +423,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
     sequence: 0,
     events: [],
     killChild: null,
+    abortController: new AbortController(),
     aborted: false,
     finalText: "",
     written: [],
@@ -402,7 +441,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   return { runId, status: "queued" };
 }
 
-async function drive(run: RunState, input: StartRunInput): Promise<void> {
+async function drive(run: RunState, input: CareerOpsRuntimeWorkerRunInput): Promise<void> {
   const request = parseCareerOpsRequest(run.task);
   emit(run, "run.started", { task: run.task, model: input.model, mode: request.mode });
   run.status = "running";
@@ -469,7 +508,9 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
       input.baseUrl,
       input.model,
       input.reasoningEffort,
+      input.apiKey,
       messages,
+      run.abortController.signal,
     );
     if (run.aborted) return;
 
@@ -626,19 +667,24 @@ function scheduleCleanup(run: RunState): void {
 
 // ---- read/control API -------------------------------------------------------
 
-export function getEventsSince(userId: number, runId: string, since = 0): CareerOpsEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): CareerOpsEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;
   run.status = "aborted";
+  run.abortController.abort();
   try {
     run.killChild?.();
   } catch {
@@ -652,4 +698,44 @@ export function abortRun(userId: number, runId: string): boolean {
   });
   scheduleCleanup(run);
   return true;
+}
+
+/** Public durable facade. Runtime V2, rather than Next.js, owns the tool loop. */
+export async function startRun(
+  input: StartRunInput,
+): Promise<{ runId: string; status: RunStatus }> {
+  const { startOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return startOuterAgentRun({
+    kind: "career-ops",
+    userId: input.userId,
+    requestId: input.requestId,
+    requestPayload: {
+      task: input.task,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      baseUrl: input.baseUrl,
+      maxSteps: input.maxSteps ?? 24,
+      conversationContext: input.conversationContext ?? "",
+    },
+  }) as Promise<{ runId: string; status: RunStatus }>;
+}
+
+export async function getEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): Promise<CareerOpsEvent[]> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  const view = await readOuterAgentRunView("career-ops", userId, runId, since);
+  return view.events as CareerOpsEvent[];
+}
+
+export async function isTerminal(userId: number, runId: string): Promise<boolean> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  return (await readOuterAgentRunView("career-ops", userId, runId, 0)).terminal;
+}
+
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
+  const { abortOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return abortOuterAgentRun("career-ops", userId, runId);
 }

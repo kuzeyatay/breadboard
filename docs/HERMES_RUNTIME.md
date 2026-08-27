@@ -83,6 +83,12 @@ The launcher starts ChatMock, Hermes, optional sidecars, Quartz, and the
 dashboard in dependency order. A focused runtime launch remains available as
 `npm run dev:hermes`.
 
+`npm run dev:dashboard` intentionally starts only the dashboard. Run
+`npm run dev:hermes` separately when using that focused workflow. The
+dashboard's reconnect route probes that explicit process but never starts a
+hidden detached Hermes child; without the desktop Runtime V2 supervisor or the
+explicit developer process, it reports Hermes as unavailable.
+
 ## Verification
 
 The main checks for runtime-name changes are:

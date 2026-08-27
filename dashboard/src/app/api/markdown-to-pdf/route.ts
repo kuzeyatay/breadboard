@@ -1,13 +1,23 @@
-import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/lib/auth-options";
+import { createHash, randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
+import { Readable } from "node:stream";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import { parseMarkdownFrontmatter } from "@/lib/markdown-render/frontmatter";
+import { renderMarkdownPdfDownloadViaRuntime } from "@/lib/office/runtime-v2";
+import { dashboardDataDir } from "@/lib/runtime-paths";
 import {
-  parseFrontmatter,
-  renderMarkdownToPdf,
-  type PdfMarkdownDocument,
-} from "@/lib/markdown-render/pdf";
+  requireReadableCluster,
+  requireUserId,
+  routeErrorResponse,
+} from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+const MAX_PDF_BYTES = 128 * 1024 * 1024;
+
+type PdfMarkdownDocument = { content: string; title: string };
 
 function sanitizeFileName(value: string): string {
   const base = value
@@ -20,10 +30,114 @@ function sanitizeFileName(value: string): string {
   return `${base || "markdown-note"}.pdf`;
 }
 
+function samePath(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function directPdf(filePath: string): Stats | null {
+  try {
+    const metadata = fs.lstatSync(filePath);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size < 5 ||
+      metadata.size > MAX_PDF_BYTES ||
+      !samePath(fs.realpathSync.native(filePath), filePath)
+    ) return null;
+    const descriptor = fs.openSync(filePath, "r");
+    try {
+      const signature = Buffer.alloc(5);
+      if (fs.readSync(descriptor, signature, 0, signature.byteLength, 0) !== signature.byteLength) return null;
+      if (signature.toString("ascii") !== "%PDF-") return null;
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    return metadata;
+  } catch {
+    return null;
+  }
+}
+
+function fsyncDirectory(directory: string): void {
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(directory, "r");
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (process.platform !== "win32" || !["EACCES", "EINVAL", "EPERM"].includes(code ?? "")) {
+      throw error;
+    }
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function durableExportPath(userId: number, requestDigest: string): string {
+  return path.join(
+    dashboardDataDir(),
+    "exports",
+    "markdown-pdf",
+    `user-${userId}`,
+    `${requestDigest}.pdf`,
+  );
+}
+
+function promotePdf(source: string, target: string): Stats {
+  const existing = directPdf(target);
+  if (existing) return existing;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  // A crash can leave an older, invalid file at this exact digest. It has no
+  // recovery authority and must not prevent a newly completed job from being
+  // promoted.
+  fs.rmSync(target, { force: true });
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.copyFileSync(source, temporary, fs.constants.COPYFILE_EXCL);
+    const descriptor = fs.openSync(temporary, "r");
+    try {
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    if (!directPdf(temporary)) throw new Error("Runtime returned an invalid PDF file.");
+    try {
+      fs.renameSync(temporary, target);
+    } catch (error) {
+      const raced = directPdf(target);
+      if (!raced) throw error;
+      fs.rmSync(temporary, { force: true });
+      return raced;
+    }
+    fsyncDirectory(path.dirname(target));
+    const promoted = directPdf(target);
+    if (!promoted) throw new Error("The completed PDF could not be promoted durably.");
+    return promoted;
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function pdfResponse(filePath: string, fileName: string, metadata: Stats): Response {
+  const body = Readable.toWeb(fs.createReadStream(filePath)) as ReadableStream<Uint8Array>;
+  return new Response(body, {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Length": String(metadata.size),
+      "Content-Disposition": `attachment; filename="${fileName}"`,
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
 export async function POST(request: Request): Promise<Response> {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  let userId: number;
+  try {
+    userId = await requireUserId();
+  } catch (error) {
+    return routeErrorResponse(error);
   }
 
   const body = await request.json().catch(() => ({}));
@@ -48,7 +162,7 @@ export async function POST(request: Request): Promise<Response> {
         ),
     )
     .map((document) => {
-      const parsed = parseFrontmatter(document.content);
+      const parsed = parseMarkdownFrontmatter(document.content);
       return {
         content: parsed.body,
         title:
@@ -59,7 +173,7 @@ export async function POST(request: Request): Promise<Response> {
     });
 
   if (documents.length === 0 && rawContent.trim()) {
-    const parsed = parseFrontmatter(rawContent);
+    const parsed = parseMarkdownFrontmatter(rawContent);
     documents.push({
       content: parsed.body,
       title: parsed.title || "Markdown note",
@@ -95,30 +209,38 @@ export async function POST(request: Request): Promise<Response> {
       ? body.fileName.replace(/\.md$/i, "")
       : title;
   const fileName = sanitizeFileName(requestedName || title);
-
-  let pdf: Buffer;
-  try {
-    pdf = await renderMarkdownToPdf(documents, { title, clusterSlug });
-  } catch (error) {
-    return Response.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Could not create the PDF",
-      },
-      { status: 500 },
-    );
+  let gardenId: string | null = null;
+  if (clusterSlug) {
+    try {
+      gardenId = requireReadableCluster(userId, clusterSlug).slug;
+    } catch (error) {
+      return routeErrorResponse(error);
+    }
   }
-  const responseBody = pdf.buffer.slice(
-    pdf.byteOffset,
-    pdf.byteOffset + pdf.byteLength,
-  ) as ArrayBuffer;
+  const requestDigest = createHash("sha256").update(JSON.stringify({
+    protocolVersion: 1,
+    userId,
+    gardenId,
+    title,
+    fileName,
+    documents,
+  }), "utf8").digest("hex");
+  const durablePath = durableExportPath(userId, requestDigest);
+  const recovered = directPdf(durablePath);
+  if (recovered) return pdfResponse(durablePath, fileName, recovered);
 
-  return new Response(responseBody, {
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Length": String(pdf.byteLength),
-      "Content-Disposition": `attachment; filename="${fileName}"`,
-      "Cache-Control": "no-store",
-    },
-  });
+  let staged: Awaited<ReturnType<typeof renderMarkdownPdfDownloadViaRuntime>> | null = null;
+  try {
+    staged = await renderMarkdownPdfDownloadViaRuntime(
+      { userId, gardenId, conversationId: null },
+      { documents, title, filename: fileName },
+      { idempotencySeed: requestDigest, signal: request.signal },
+    );
+    const promoted = promotePdf(staged.filePath, durablePath);
+    return pdfResponse(durablePath, fileName, promoted);
+  } catch (error) {
+    return routeErrorResponse(error);
+  } finally {
+    staged?.cleanup();
+  }
 }

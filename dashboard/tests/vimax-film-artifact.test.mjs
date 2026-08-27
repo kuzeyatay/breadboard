@@ -15,6 +15,10 @@ const source = fs.readFileSync(
   new URL("../src/app/components/vimax/vimax-film-artifact.tsx", import.meta.url),
   "utf8",
 );
+const reclaimingMediaSource = fs.readFileSync(
+  new URL("../src/app/components/reclaiming-media.tsx", import.meta.url),
+  "utf8",
+);
 
 test("a frame's description can never overflow the frame it sits in", () => {
   // The placeholder itself clips, whatever it is given.
@@ -40,9 +44,15 @@ test("the storyboard card clamps its own paragraph and keeps the full text", () 
 
 test("an encoded film is played, and is downloadable", () => {
   assert.match(source, /const film = production\.renderPlan\.video \?\? null/);
-  assert.match(source, /<video/);
-  assert.match(source, /controls/);
+  assert.match(source, /import \{ ReclaimingVideo \} from [^;]+reclaiming-media/);
+  assert.match(
+    source,
+    /<ReclaimingVideo[\s\S]*?src=\{frameUrl\(film\.artifactId, conversationId\)\}[\s\S]*?controls[\s\S]*?\/>/,
+  );
+  assert.match(reclaimingMediaSource, /export function ReclaimingVideo\(/);
+  assert.match(reclaimingMediaSource, /return <video \{\.\.\.props\} ref=\{ref\} src=\{src\} \/>/);
   assert.match(source, /download=\{film\.filename\}/);
+  assert.match(source, /href=\{`\$\{frameUrl\(film\.artifactId, conversationId\)\}&download=1`\}/);
   // The animatic remains for the productions that have no encoded film.
   assert.match(source, /section === "Film" && !film && shot/);
 });

@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import { Readable } from "node:stream";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
 import { artifactFile, getArtifactForUser, ArtifactStoreError } from "@/lib/hermes/artifact-store.ts";

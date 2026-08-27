@@ -14,9 +14,15 @@ import {
   isoToWallClock,
 } from "./api-client.ts";
 import { readPostImage } from "./post-images.ts";
-import { activateStack, releaseActivation, type ActivationOutcome } from "./activation.ts";
+import {
+  activateStack,
+  releaseActivation,
+  withPostizCoordinatorServiceLease,
+  type ActivationOutcome,
+  type PostizControlScope,
+} from "./activation.ts";
 import type { ActivationReason } from "./coordinator-core.ts";
-import { reachable, type StackStatus } from "./stack.ts";
+import { reachable, type StackStatus } from "./local-state.ts";
 import type { SocialsManagerStore } from "./store.ts";
 import type { SocialsManagerPost } from "./types.ts";
 
@@ -39,6 +45,8 @@ export interface PostizAvailability {
 }
 
 export interface OpenSessionInput {
+  /** Exact authenticated operation scope forwarded to the coordinator. */
+  scope: PostizControlScope;
   /** Why Postiz is wanted. A closed category; it is logged, never executed. */
   reason?: ActivationReason;
   /** Pin the stack until `closePostizSession` releases it. */
@@ -53,7 +61,7 @@ export interface OpenSessionInput {
  * local drafting rather than a long stall.
  */
 export async function openPostizSession(
-  input: OpenSessionInput = {},
+  input: OpenSessionInput,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<PostizAvailability> {
   const config = resolveSocialsManagerConfig(env);
@@ -62,48 +70,33 @@ export async function openPostizSession(
     return { session: null, state: "adapter", reason: "Local drafting mode." };
   }
 
-  let outcome: ActivationOutcome | null = null;
-  if (!(await reachable(config))) {
-    // This is the activation seam: the lifecycle owner starts Docker and the
-    // containers, and this caller waits only for the run's own budget. When the
-    // budget runs out the activation keeps going in the coordinator, so the
-    // next run finds it healthy and `syncPendingPosts` pushes today's drafts.
-    outcome = await activateStack(
-      config,
-      {
-        reason: input.reason ?? "run",
-        timeoutMs: config.readyTimeoutMs,
-        ...(input.hold ? { hold: true } : {}),
-        ...(input.nextScheduledAt ? { nextScheduledAt: input.nextScheduledAt } : {}),
-      },
-      env,
-    );
-    if (!outcome.ready) {
-      return {
-        session: null,
-        state: outcome.state === "starting" ? "starting" : "stopped",
-        reason: outcome.reason ?? "Postiz is still starting; drafting locally for now.",
-      };
-    }
-  } else if (input.hold) {
-    // Already up, but this operation still wants a hold so idle shutdown does
-    // not pull the stack out from under it mid-run.
-    outcome = await activateStack(
-      config,
-      {
-        reason: input.reason ?? "run",
-        timeoutMs: config.readyTimeoutMs,
-        hold: true,
-        ...(input.nextScheduledAt ? { nextScheduledAt: input.nextScheduledAt } : {}),
-      },
-      env,
-    );
+  // Every real Postiz session crosses the Runtime service boundary, including
+  // a stack that already answers. That lets a recovered coordinator re-adopt
+  // preserved containers and restore their resident admission lease instead
+  // of letting Next silently use an unaccounted stack.
+  const outcome: ActivationOutcome = await activateStack(
+    config,
+    {
+      scope: input.scope,
+      reason: input.reason ?? "run",
+      timeoutMs: config.readyTimeoutMs,
+      ...(input.hold ? { hold: true } : {}),
+      ...(input.nextScheduledAt ? { nextScheduledAt: input.nextScheduledAt } : {}),
+    },
+    env,
+  );
+  if (!outcome.ready) {
+    return {
+      session: null,
+      state: outcome.state === "starting" ? "starting" : "stopped",
+      reason: outcome.reason ?? "Postiz is still starting; drafting locally for now.",
+    };
   }
   const lease = outcome?.leaseId ? { leaseId: outcome.leaseId } : {};
 
   const apiKey = await ensureApiKey(config);
   if (!apiKey) {
-    await releaseActivation(outcome?.leaseId, env);
+    await releaseActivation(input.scope, outcome?.leaseId, env);
     return {
       session: null,
       state: "unauthenticated",
@@ -116,7 +109,7 @@ export async function openPostizSession(
   try {
     integrations = await client.listIntegrations();
   } catch {
-    await releaseActivation(outcome?.leaseId, env);
+    await releaseActivation(input.scope, outcome?.leaseId, env);
     return {
       session: null,
       state: "unauthenticated",
@@ -132,10 +125,10 @@ export async function openPostizSession(
  * plain `finally`.
  */
 export async function closePostizSession(
-  availability: Pick<PostizAvailability, "leaseId">,
+  availability: Pick<PostizAvailability, "leaseId"> & { scope: PostizControlScope },
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  await releaseActivation(availability.leaseId, env);
+  await releaseActivation(availability.scope, availability.leaseId, env);
 }
 
 /**
@@ -144,20 +137,23 @@ export async function closePostizSession(
  * `syncPendingPosts` picks up anything this skips.
  */
 export async function openPostizSessionIfRunning(
+  scope: Pick<PostizControlScope, "userId">,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<PostizSession | null> {
   const config = resolveSocialsManagerConfig(env);
   if (config.mode !== "stack") return null;
-  if (!(await reachable(config))) return null;
+  return withPostizCoordinatorServiceLease(scope, "already-running-operation", async () => {
+    if (!(await reachable(config))) return null;
 
-  const apiKey = await ensureApiKey(config);
-  if (!apiKey) return null;
-  const client = new PostizApiClient(config, apiKey);
-  try {
-    return { client, integrations: await client.listIntegrations(), config };
-  } catch {
-    return null;
-  }
+    const apiKey = await ensureApiKey(config);
+    if (!apiKey) return null;
+    const client = new PostizApiClient(config, apiKey);
+    try {
+      return { client, integrations: await client.listIntegrations(), config };
+    } catch {
+      return null;
+    }
+  }, env).catch(() => null);
 }
 
 /** The Postiz channel to publish a given network's copy through, if connected. */

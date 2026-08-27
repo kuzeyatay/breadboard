@@ -19,6 +19,8 @@ import {
   logoutClaudeCode,
   readClaudeCodeStatus,
 } from "../claude-code.ts";
+import { RuntimeJobControlError } from "../supervisor-control.ts";
+import { RuntimeAuthorityUnavailableError } from "../runtime-v2/authority-error.ts";
 
 /**
  * Subscription authentication coordinator. Gemini, Kimi and Grok use
@@ -37,10 +39,18 @@ import {
 
 const REQUEST_TIMEOUT_MS = 20_000;
 
+function isClaudeRuntimeAuthorityError(error: unknown): boolean {
+  return (
+    error instanceof RuntimeJobControlError ||
+    error instanceof RuntimeAuthorityUnavailableError ||
+    (error instanceof DOMException && error.name === "AbortError")
+  );
+}
+
 export class CliproxyUnavailableError extends Error {
   constructor(cause?: unknown) {
     super(
-      "The subscription proxy is not running. Start it with `npm run cliproxy` (or restart the app) and try again.",
+      "Breadboard could not start the subscription proxy. Restart the app and try again.",
     );
     this.cause = cause;
   }
@@ -98,13 +108,17 @@ export interface CliproxyLoginStart {
 }
 
 /** Begin an OAuth flow and return what the browser needs to show. */
-export async function startLogin(providerId: string): Promise<CliproxyLoginStart> {
+export async function startLogin(
+  userId: number,
+  providerId: string,
+  signal?: AbortSignal,
+): Promise<CliproxyLoginStart> {
   const spec = cliproxyProvider(providerId);
   if (!spec) throw new CliproxyRequestError(400, "Unknown subscription provider.");
 
   if (spec.id === "claude") {
     try {
-      const linked = await linkClaudeCodeLogin();
+      const linked = await linkClaudeCodeLogin(userId, signal);
       return {
         provider: spec.id,
         // The settings UI requires a safe URL for every redirect flow. Linking
@@ -115,6 +129,7 @@ export async function startLogin(providerId: string): Promise<CliproxyLoginStart
         flow: "redirect",
       };
     } catch (error) {
+      if (isClaudeRuntimeAuthorityError(error)) throw error;
       throw new CliproxyRequestError(
         409,
         error instanceof Error ? error.message : "Claude Code could not be linked.",
@@ -151,10 +166,14 @@ export async function startLogin(providerId: string): Promise<CliproxyLoginStart
 }
 
 /** Poll one in-flight login. Returns true once the credential is stored. */
-export async function isLoginComplete(state: string): Promise<boolean> {
+export async function isLoginComplete(
+  userId: number,
+  state: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
   if (!state.trim()) return false;
   if (isClaudeCodeLoginState(state)) {
-    return isClaudeCodeLoginComplete(state);
+    return isClaudeCodeLoginComplete(userId, state, signal);
   }
   try {
     const payload = (await managementFetch(
@@ -182,13 +201,18 @@ export async function isLoginComplete(state: string): Promise<boolean> {
  * is checked rather than trusted — a name that walks out of that directory is
  * not a credential this panel manages.
  */
-export async function deleteAccount(file: string): Promise<void> {
+export async function deleteAccount(
+  userId: number,
+  file: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const name = file.trim();
   if (name === CLAUDE_CODE_ACCOUNT_FILE) {
     try {
-      await logoutClaudeCode();
+      await logoutClaudeCode(userId, signal);
       return;
     } catch (error) {
+      if (isClaudeRuntimeAuthorityError(error)) throw error;
       throw new CliproxyRequestError(
         502,
         error instanceof Error ? error.message : "Claude Code could not sign out.",
@@ -251,8 +275,8 @@ async function listCliproxyModels(): Promise<string[]> {
  * ids stay stable, while request dispatch now hands those Claude ids to Claude
  * Code itself. Other subscription providers continue through CLIProxyAPI.
  */
-export async function listModels(): Promise<string[]> {
-  const claudeStatusPromise = readClaudeCodeStatus();
+export async function listModels(userId: number, signal?: AbortSignal): Promise<string[]> {
+  const claudeStatusPromise = readClaudeCodeStatus(userId, signal);
   let proxyModels: string[] = [];
   let proxyError: unknown;
   try {
@@ -289,7 +313,7 @@ export interface CliproxyStatus {
 }
 
 /** Everything the settings panel needs in one call. */
-export async function readStatus(): Promise<CliproxyStatus> {
+export async function readStatus(userId: number, signal?: AbortSignal): Promise<CliproxyStatus> {
   // Legacy proxy-owned Claude credentials are deliberately ignored. They are
   // left on disk (never destroy a user's credential implicitly), but Claude's
   // visible account and connected state now come only from Claude Code.
@@ -297,7 +321,7 @@ export async function readStatus(): Promise<CliproxyStatus> {
     (account) => account.provider !== "claude",
   );
   const proxyInstalled = isCliproxyInstalled();
-  const claudeStatusPromise = readClaudeCodeStatus();
+  const claudeStatusPromise = readClaudeCodeStatus(userId, signal);
 
   let proxyModels: string[] = [];
   let proxyRunning = false;

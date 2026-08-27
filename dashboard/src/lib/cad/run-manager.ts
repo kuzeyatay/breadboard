@@ -1,4 +1,4 @@
-// In-memory run manager for the Parametric CAD agent.
+// Worker-local run manager for the Parametric CAD agent.
 //
 // The run is a bounded agent loop, not a fixed pipeline: the model decides
 // which CAD tools to call and in what order, but Breadboard executes them, and
@@ -8,8 +8,9 @@
 //   interpret -> spec -> generate -> execute -> validate -> [repair] -> export
 //   -> artifact
 //
-// Runs are ephemeral: events live here and the SSE route replays them, exactly
-// as the Hardware Blueprint agent does.
+// Runs are ephemeral inside one disposable Runtime V2 worker. The worker seals
+// their event projection into Runtime checkpoints/results; Next.js never
+// imports this implementation graph.
 
 import { randomUUID } from "node:crypto";
 import {
@@ -33,12 +34,13 @@ import {
 } from "./artifact.ts";
 import { designCadPart, MAX_BUILD_ATTEMPTS } from "./design-service.ts";
 import { CadServiceError } from "./errors.ts";
+import { SupervisorResourceExhaustedError } from "../supervisor-control.ts";
 import { CadModelError } from "./model-client.ts";
 import {
   latestCadProjectForConversation,
   latestUnbuiltCadProjectForConversation,
 } from "./project-store.ts";
-import { cadServiceConfigured, cadServiceListening } from "./service.ts";
+import { cadServiceConfigured, ensureCadServiceReady } from "./service.ts";
 import type { ParametricCADArtifact } from "./types.ts";
 import type { ParametricCadRequest } from "./identity.ts";
 import { conversationContextTranscript } from "../conversations/agent-context.ts";
@@ -123,6 +125,8 @@ function requireRun(userId: number, runId: string): RunState {
 
 export interface StartCadRunInput {
   userId: number;
+  /** Native Runtime job identity. Present only inside the disposable worker. */
+  runtimeJobId?: string;
   conversationPublicId: string;
   /** Stable id of the chat turn. Replayed POSTs with this id reuse one run. */
   clientMessageId?: string;
@@ -133,7 +137,10 @@ export interface StartCadRunInput {
   baseUrl: string;
 }
 
-export function startRun(input: StartCadRunInput): { runId: string; status: RunStatus } {
+/** Fixed Runtime worker entrypoint. Next.js routes call the thin facade. */
+export function startRuntimeWorkerRun(
+  input: StartCadRunInput,
+): { runId: string; status: RunStatus } {
   if (!input.parsed.brief.trim()) throw new Error("empty_brief");
   const requestSignature = JSON.stringify({
     brief: input.brief,
@@ -156,7 +163,7 @@ export function startRun(input: StartCadRunInput): { runId: string; status: RunS
     }
     if (existingRunId) launches.delete(launchKey);
   }
-  const runId = `cadrun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId ?? `cadrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -185,6 +192,7 @@ export function startRun(input: StartCadRunInput): { runId: string; status: RunS
     emit(run, "run.failed", {
       error: content,
       ...(error instanceof CadServiceError ? { code: error.code } : {}),
+      ...(error instanceof SupervisorResourceExhaustedError ? error.result : {}),
     });
     publishTerminal(run, {
       outcome: "failed",
@@ -220,10 +228,9 @@ async function drive(run: RunState, input: StartCadRunInput): Promise<void> {
   run.status = "running";
   emit(run, "run.started", { brief: run.brief, model: input.model });
 
-  // Checked before any model time is spent: a design takes minutes, and there
-  // is no point writing one when nothing can build it. A TCP probe, not a
-  // health request — `/health` imports OpenCascade and would add seconds to
-  // every run.
+  // Acquire before any model time is spent. This is an operation, not a status
+  // probe: Runtime may cold-start the service and the health read verifies the
+  // kernel before the agent starts generating a design.
   if (!cadServiceConfigured()) {
     run.status = "failed";
     const content =
@@ -237,22 +244,8 @@ async function drive(run: RunState, input: StartCadRunInput): Promise<void> {
     schedule(run);
     return;
   }
-  const serviceListening = await cadServiceListening();
+  await ensureCadServiceReady();
   if (run.aborted) return;
-  if (!serviceListening) {
-    run.status = "failed";
-    const content =
-      "The local CAD service is not running. Start the whole stack with `npm run dev`, run " +
-      "`npm run dev:cad` alongside the dashboard, or use the desktop app, which supervises it. " +
-      "If this is a first run, provision it once with `npm run setup:cad`.";
-    emit(run, "run.failed", {
-      code: "cad_service_unavailable",
-      error: content,
-    });
-    publishTerminal(run, { outcome: "failed", content });
-    schedule(run);
-    return;
-  }
 
   const conversation = getConversationForUser(input.conversationPublicId, input.userId);
 
@@ -426,6 +419,34 @@ Start a new project; do not modify the design already in this conversation.`
   const usage = { ...sumChatTokenUsage(spent), responseDurationMs: elapsedMs };
   run.usage = usage;
   run.status = "completed";
+  const state = {
+    kind: "parametric-cad",
+    designTitle: manifest.title,
+    designSummary: manifest.designSpec.description,
+    safetyNotice:
+      outcome.safety.level === "engineering-review"
+        ? `${outcome.safety.category} — ${outcome.safety.reason}`
+        : "",
+    findings,
+    assumptions: manifest.assumptions,
+    exports,
+    attemptsUsed: outcome.attemptsUsed,
+    specs: [
+      [
+        "Size",
+        `${manifest.measurements.boundingBox.x.toFixed(1)} × ${manifest.measurements.boundingBox.y.toFixed(1)} × ${manifest.measurements.boundingBox.z.toFixed(1)} mm`,
+      ],
+      ["Bodies", String(manifest.measurements.solidCount)],
+      ...(typeof manifest.measurements.volume === "number"
+        ? [["Volume", `${(manifest.measurements.volume / 1000).toFixed(1)} cm³`]]
+        : []),
+      ["Revision", String(manifest.revision)],
+    ],
+    startedAt: run.events.find((event) => event.type === "run.started")?.at,
+    // Assigned below after the terminal event has been emitted, matching the
+    // historical card timestamp while keeping the sealed result self-contained.
+    completedAt: undefined as string | undefined,
+  };
   emit(run, "run.completed", {
     summary,
     status: manifest.status,
@@ -445,37 +466,14 @@ Start a new project; do not modify the design already in this conversation.`
     exports,
     elapsedSec: elapsedMs / 1_000,
     usage,
+    state,
   });
+  state.completedAt = run.events.at(-1)?.at;
   publishTerminal(run, {
     outcome: "completed",
     content: summary,
     usage,
-    state: {
-      kind: "parametric-cad",
-      designTitle: manifest.title,
-      designSummary: manifest.designSpec.description,
-      safetyNotice:
-        outcome.safety.level === "engineering-review"
-          ? `${outcome.safety.category} — ${outcome.safety.reason}`
-          : "",
-      findings,
-      assumptions: manifest.assumptions,
-      exports,
-      attemptsUsed: outcome.attemptsUsed,
-      specs: [
-        [
-          "Size",
-          `${manifest.measurements.boundingBox.x.toFixed(1)} × ${manifest.measurements.boundingBox.y.toFixed(1)} × ${manifest.measurements.boundingBox.z.toFixed(1)} mm`,
-        ],
-        ["Bodies", String(manifest.measurements.solidCount)],
-        ...(typeof manifest.measurements.volume === "number"
-          ? [["Volume", `${(manifest.measurements.volume / 1000).toFixed(1)} cm³`]]
-          : []),
-        ["Revision", String(manifest.revision)],
-      ],
-      startedAt: run.events.find((event) => event.type === "run.started")?.at,
-      completedAt: run.events.at(-1)?.at,
-    },
+    state,
   });
   schedule(run);
 }
@@ -559,11 +557,15 @@ function schedule(run: RunState): void {
 
 // ---- read/control API -------------------------------------------------------
 
-export function getEventsSince(userId: number, runId: string, since = 0): CadRunEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): CadRunEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
@@ -571,7 +573,7 @@ export function isTerminal(userId: number, runId: string): boolean {
  * Persist a background result even when its card unmounted during a chat
  * switch. A very fast run is replayed immediately after the handler attaches.
  */
-export function setRunTerminalHandler(
+export function setRuntimeWorkerTerminalHandler(
   userId: number,
   runId: string,
   handler: (result: CadTerminalResult) => void,
@@ -581,7 +583,7 @@ export function setRunTerminalHandler(
   if (run.terminalResult) handler(run.terminalResult);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.aborted = true;

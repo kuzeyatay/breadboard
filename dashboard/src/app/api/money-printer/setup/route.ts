@@ -4,9 +4,16 @@ import {
   isFootageCredentialKey,
   setCredential,
 } from "@/lib/money-printer/credentials.ts";
-import { invalidateHealth } from "@/lib/money-printer/runtime.ts";
-import { isSetupAction, runSetupAction, SetupError } from "@/lib/money-printer/setup.ts";
-import { stopService } from "@/lib/money-printer/service.ts";
+import { isSetupAction } from "@/lib/money-printer/setup-contract.ts";
+import {
+  stopMoneyPrinterRuntime,
+} from "@/lib/money-printer/runtime-service.ts";
+import { RuntimeAgentServiceError } from "@/lib/runtime-agent-service.ts";
+import {
+  ManagedSetupExecutionError,
+  runManagedSetupJob,
+} from "@/lib/runtime-v2/managed-setup-job.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,7 +26,7 @@ export const runtime = "nodejs";
  */
 export async function POST(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const text = await request.text();
     if (text.length > 8 * 1024) {
       return NextResponse.json({ ok: false, error: "payload_too_large" }, { status: 413 });
@@ -38,8 +45,7 @@ export async function POST(request: Request) {
       // The running service read the old key set out of config.toml at import,
       // so it has to go before the next run can see the change. The next run
       // rewrites the file and starts a fresh one.
-      await stopService();
-      invalidateHealth();
+      await stopMoneyPrinterRuntime({ userId });
       return NextResponse.json({
         ok: true,
         result: {
@@ -51,7 +57,7 @@ export async function POST(request: Request) {
     }
 
     if (body.action === "stop") {
-      await stopService();
+      await stopMoneyPrinterRuntime({ userId });
       return NextResponse.json({
         ok: true,
         result: { ok: true, message: "The MoneyPrinter service was stopped.", detail: "" },
@@ -62,13 +68,26 @@ export async function POST(request: Request) {
     if (!isSetupAction(action)) {
       return NextResponse.json({ ok: false, error: "unknown_action" }, { status: 400 });
     }
-    const result = await runSetupAction(action);
+    if (action === "reinstall" || action === "remove") {
+      await stopMoneyPrinterRuntime({ userId });
+    }
+    const result = await runManagedSetupJob({
+      userId,
+      serviceId: "money-printer",
+      action,
+      signal: request.signal,
+    });
     return NextResponse.json({ ok: true, result });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
     }
-    if (error instanceof SetupError) {
+    if (error instanceof RuntimeAgentServiceError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+    }
+    if (error instanceof ManagedSetupExecutionError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
     if (error instanceof RouteError) {

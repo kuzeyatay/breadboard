@@ -1,8 +1,9 @@
-import fs from "fs";
-import path from "path";
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { NextResponse } from "next/server";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import db from "@/lib/db";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
+import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
 import {
   requireOwnedClusterFromSlug,
   routeErrorResponse,
@@ -33,25 +34,39 @@ function decodeSlug(value: string): string {
   return current;
 }
 
-function normalizeDocumentSlug(clusterSlug: string, slug: string): string | null {
+function normalizeDocumentSlug(
+  clusterSlug: string,
+  slug: string,
+): string | null {
   const cluster = clusterSlug.trim();
   const cleaned = decodeSlug(slug)
     .replace(/\\/g, "/")
     .replace(/[?#].*$/, "")
     .replace(/\.md$/i, "")
     .trim();
-  let segments = cleaned.split("/").map((s) => s.trim()).filter(Boolean);
+  let segments = cleaned
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const clusterIndex = segments.findIndex((s) => s === cluster);
   if (clusterIndex >= 0) segments = segments.slice(clusterIndex + 1);
-  if (segments[0] === "garden" && segments[1] === cluster) segments = segments.slice(2);
+  if (segments[0] === "garden" && segments[1] === cluster)
+    segments = segments.slice(2);
   const noteSlug = segments.at(-1);
-  if (!noteSlug || noteSlug.toLowerCase() === "index" || noteSlug.toLowerCase() === "_index") {
+  if (
+    !noteSlug ||
+    noteSlug.toLowerCase() === "index" ||
+    noteSlug.toLowerCase() === "_index"
+  ) {
     return null;
   }
   return noteSlug;
 }
 
-function safeClusterDir(contentPath: string, clusterSlug: string): string | null {
+function safeClusterDir(
+  contentPath: string,
+  clusterSlug: string,
+): string | null {
   const root = path.resolve(contentPath);
   const clusterDir = path.resolve(root, clusterSlug.trim());
   if (!clusterDir.startsWith(root + path.sep)) return null;
@@ -71,7 +86,11 @@ function resolveSourcePdfPath(
   if (!normalized.startsWith(prefix)) return null;
 
   const assetName = normalized.slice(prefix.length);
-  if (!assetName || assetName.includes("/") || !assetName.toLowerCase().endsWith(".pdf")) {
+  if (
+    !assetName ||
+    assetName.includes("/") ||
+    !assetName.toLowerCase().endsWith(".pdf")
+  ) {
     return null;
   }
 
@@ -89,7 +108,10 @@ async function getHistoryContext(
   const clusterSlug = searchParams.get("clusterSlug");
 
   if (!clusterSlug) {
-    return NextResponse.json({ error: "clusterSlug is required" }, { status: 400 });
+    return NextResponse.json(
+      { error: "clusterSlug is required" },
+      { status: 400 },
+    );
   }
 
   const { cluster, userId } = await requireOwnedClusterFromSlug(clusterSlug);
@@ -98,12 +120,29 @@ async function getHistoryContext(
     return NextResponse.json({ error: "Invalid path" }, { status: 400 });
   }
 
-  return { clusterId: cluster.id, clusterSlug: cluster.slug, documentSlug, userId };
+  return {
+    clusterId: cluster.id,
+    clusterSlug: cluster.slug,
+    documentSlug,
+    userId,
+  };
 }
 
 function isContext(
-  value: { clusterId: number; clusterSlug: string; documentSlug: string; userId: number } | NextResponse,
-): value is { clusterId: number; clusterSlug: string; documentSlug: string; userId: number } {
+  value:
+    | {
+        clusterId: number;
+        clusterSlug: string;
+        documentSlug: string;
+        userId: number;
+      }
+    | NextResponse,
+): value is {
+  clusterId: number;
+  clusterSlug: string;
+  documentSlug: string;
+  userId: number;
+} {
   return "clusterId" in value;
 }
 
@@ -144,32 +183,48 @@ export async function DELETE(
          ORDER BY id DESC
          LIMIT 1`,
       )
-      .get(context.clusterId, context.documentSlug) as HistoryRecord | undefined;
+      .get(context.clusterId, context.documentSlug) as
+      | HistoryRecord
+      | undefined;
 
     if (!entry) {
-      return NextResponse.json({ error: "No history available" }, { status: 404 });
+      return NextResponse.json(
+        { error: "No history available" },
+        { status: 404 },
+      );
     }
 
     const pdfBytes = Buffer.from(entry.pdf_data);
     const restoredAt = new Date().toISOString();
+    const contentPath = process.env.QUARTZ_CONTENT_PATH;
+    const gardenDir = contentPath
+      ? safeClusterDir(contentPath, context.clusterSlug)
+      : null;
+    const lease = gardenDir
+      ? acquireGardenMutationLease(gardenDir, "restore-source-pdf")
+      : null;
 
-    // Restore to disk — best-effort, never blocks the DB restore
     try {
-      const contentPath = process.env.QUARTZ_CONTENT_PATH;
-      if (contentPath) {
-        const pdfPath = resolveSourcePdfPath(contentPath, context.clusterSlug, entry.source_pdf_path);
-        if (pdfPath) {
-          fs.mkdirSync(path.dirname(pdfPath), { recursive: true });
-          fs.writeFileSync(pdfPath, pdfBytes);
+      // Restore to disk — best-effort, never blocks the DB restore
+      try {
+        if (contentPath) {
+          const pdfPath = resolveSourcePdfPath(
+            contentPath,
+            context.clusterSlug,
+            entry.source_pdf_path,
+          );
+          if (pdfPath) {
+            fs.mkdirSync(path.dirname(pdfPath), { recursive: true });
+            fs.writeFileSync(pdfPath, pdfBytes);
+          }
         }
+      } catch {
+        // Disk sync is best-effort; DB is the source of truth for GET
       }
-    } catch {
-      // Disk sync is best-effort; DB is the source of truth for GET
-    }
 
-    // Restore to current in DB (upsert so it works even if current row was deleted)
-    db.prepare(
-      `INSERT INTO pdf_document_edits
+      // Restore to current in DB (upsert so it works even if current row was deleted)
+      db.prepare(
+        `INSERT INTO pdf_document_edits
          (cluster_id, document_slug, source_pdf_path, pdf_data, byte_length, updated_by_user_id, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(cluster_id, document_slug) DO UPDATE SET
@@ -178,29 +233,35 @@ export async function DELETE(
          byte_length        = excluded.byte_length,
          updated_by_user_id = excluded.updated_by_user_id,
          updated_at         = excluded.updated_at`,
-    ).run(
-      context.clusterId,
-      context.documentSlug,
-      entry.source_pdf_path,
-      pdfBytes,
-      entry.byte_length,
-      context.userId,
-      restoredAt,
-    );
+      ).run(
+        context.clusterId,
+        context.documentSlug,
+        entry.source_pdf_path,
+        pdfBytes,
+        entry.byte_length,
+        context.userId,
+        restoredAt,
+      );
 
-    // Remove this entry from history
-    db.prepare(`DELETE FROM pdf_document_edit_history WHERE id = ?`).run(entry.id);
-    await publishQuartzAfterMutation(
-      `restore source PDF ${context.clusterSlug}/${context.documentSlug}`,
-    );
+      // Remove this entry from history
+      db.prepare(`DELETE FROM pdf_document_edit_history WHERE id = ?`).run(
+        entry.id,
+      );
+      await publishQuartzAfterMutation(
+        `restore source PDF ${context.clusterSlug}/${context.documentSlug}`,
+        { userId: context.userId },
+      );
 
-    return new Response(pdfBytes, {
-      headers: {
-        "Content-Type": "application/pdf",
-        "Cache-Control": "no-store",
-        "Content-Length": String(pdfBytes.length),
-      },
-    });
+      return new Response(pdfBytes, {
+        headers: {
+          "Content-Type": "application/pdf",
+          "Cache-Control": "no-store",
+          "Content-Length": String(pdfBytes.length),
+        },
+      });
+    } finally {
+      lease?.release();
+    }
   } catch (error) {
     return routeErrorResponse(error);
   }

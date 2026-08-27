@@ -2,11 +2,8 @@ import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { CadServiceError } from "@/lib/cad/errors.ts";
 import { cadServiceConfigured, cadServiceHealth } from "@/lib/cad/service.ts";
-import {
-  describeSolidWorksAvailability,
-  solidworksAvailability,
-} from "@/lib/cad/solidworks/availability.ts";
-import { solidworksBridge } from "@/lib/cad/solidworks/bridge.ts";
+import { readSolidWorksRuntimeStatus } from "@/lib/cad/solidworks/runtime-service.ts";
+import { describeSolidWorksAvailability } from "@/lib/cad/solidworks/status.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,12 +13,12 @@ export const runtime = "nodejs";
  *
  * Passive throughout: reading it never starts the CadQuery service, never
  * starts the SolidWorks bridge, and never starts SolidWorks. The SolidWorks
- * half is a filesystem check plus a process listing, so a machine with no
- * SolidWorks on it answers as quickly as one with it.
+ * half reads the native lifecycle projection and process-free installation
+ * markers. It asks the private bridge for detail only when that service is
+ * already healthy; it never acquires a lease or wakes Python/SolidWorks.
  */
 async function backends() {
-  const solidworks = await solidworksAvailability();
-  const bridge = solidworksBridge().status();
+  const { availability: solidworks, bridge } = await readSolidWorksRuntimeStatus();
   return {
     solidworks: {
       available: solidworks.available,

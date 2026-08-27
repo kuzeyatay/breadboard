@@ -17,7 +17,7 @@ pub fn can_transition(from: JobState, to: JobState) -> bool {
         (Queued, Admitted | Cancelling | ResourceExhausted)
             | (
                 Admitted,
-                Starting | Cancelling | ResourceExhausted | Interrupted
+                Starting | Cancelling | Failed | ResourceExhausted | Interrupted
             )
             | (
                 Starting,
@@ -99,6 +99,12 @@ mod tests {
         ));
         assert!(!can_transition(JobState::Queued, JobState::Failed));
         assert!(!can_transition(JobState::Queued, JobState::Interrupted));
+    }
+
+    #[test]
+    fn admitted_dependency_failure_can_terminalize_before_assignment() {
+        assert!(can_transition(JobState::Admitted, JobState::Failed));
+        assert!(!can_transition(JobState::Queued, JobState::Failed));
     }
 
     #[test]

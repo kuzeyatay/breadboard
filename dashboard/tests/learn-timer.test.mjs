@@ -61,6 +61,10 @@ test("Learn timer and skip-review state are persisted and exposed by the panel",
     new URL("../src/lib/learn.ts", import.meta.url),
     "utf8",
   );
+  const projectionSource = fs.readFileSync(
+    new URL("../src/lib/learn-status-projection.ts", import.meta.url),
+    "utf8",
+  );
   const workspaceSource = fs.readFileSync(
     new URL(
       "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
@@ -79,7 +83,11 @@ test("Learn timer and skip-review state are persisted and exposed by the panel",
   assert.match(learnSource, /active_elapsed_ms\s+INTEGER NOT NULL DEFAULT 0/);
   assert.match(learnSource, /timer_started_at\s+TEXT/);
   assert.match(learnSource, /transitionLearnTimer/);
-  assert.match(learnSource, /function learnTimerForWorkflow/);
+  assert.match(projectionSource, /function learnTimerForWorkflow/);
+  assert.match(
+    projectionSource,
+    /const workflowTimer = visibleJob \? learnTimerForWorkflow\(visibleJob\) : null/,
+  );
   assert.match(workspaceSource, /Skip review/);
   assert.match(workspaceSource, /skipManualReview:[\s\S]*?endpoint === "plan" \? false/);
   assert.match(workspaceSource, /formatLearnElapsedTime\(learnElapsedMs\)/);

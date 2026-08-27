@@ -11,11 +11,10 @@
 // browser sent.
 
 import crypto from "node:crypto";
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
 import {
   isAudioAttachmentFormat,
@@ -134,9 +133,9 @@ export async function writeAudioBlob(input: {
     if (written === 0) {
       throw new AudioBlobError(400, "audio_empty", "That audio file is empty.");
     }
-    await fsp.rename(temporaryPath, finalPath);
+    await fs.promises.rename(temporaryPath, finalPath);
   } catch (error) {
-    await fsp.rm(temporaryPath, { force: true }).catch(() => undefined);
+    await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined);
     if (error instanceof AudioBlobError) throw error;
     throw new AudioBlobError(400, "audio_upload_interrupted", "The audio upload was interrupted.");
   }

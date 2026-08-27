@@ -125,12 +125,13 @@ function rejectedAttempt(overrides = {}) {
                 stdoutTail: "secret DOM serialization",
                 detail: "screenshot at /tmp/private/preview.png",
                 cleanupConfirmed: true,
+                transientFailureCode: "EBUSY",
                 completion: "/workspace/forged-completion",
                 cleanupMethod: "\\\\server\\share\\forged-cleanup",
               }],
             }],
           },
-          mountReceipts: [{
+           mountReceipts: [{
             scenario: "mobile light",
             viewport: "375x667",
             theme: "light",
@@ -142,11 +143,22 @@ function rejectedAttempt(overrides = {}) {
               mounted: true,
               stderr: "secret mount stderr",
               stdoutTail: "secret mount DOM",
-              detail: "/home/person/profile",
-              cleanupConfirmed: true,
-            }],
-          }],
-        },
+               detail: "/home/person/profile",
+               cleanupConfirmed: true,
+               completion: "deadline",
+               cleanupMethod: "lineage-quiescence",
+             }],
+           }],
+           profileCleanup: {
+             attempted: 8,
+             removed: 7,
+             retries: 3,
+             rootRemoved: true,
+             confirmed: false,
+             failureCode: "EBUSY",
+             localPath: "C:\\private\\bb-vp-forged",
+           },
+         },
       },
       critic: {
         approved: false,
@@ -213,6 +225,27 @@ test("durable receipts are bounded, allowlisted, atomic, and survive workspace d
     /[A-Za-z]:\\|\\\\server\\|\/(?:home|tmp|root|workspace)\//,
   );
   assert.doesNotMatch(serialized, /forged-completion|forged-cleanup/);
+  assert.equal(
+    persisted.previewMatrixReceipt.cells[0].attempts[0]
+      .transientFailureCode,
+    "EBUSY",
+  );
+  assert.equal(
+    persisted.tests.browser.mountReceipts[0].attempts[0].completion,
+    "deadline",
+  );
+  assert.equal(
+    persisted.tests.browser.mountReceipts[0].attempts[0].cleanupMethod,
+    "lineage-quiescence",
+  );
+  assert.deepEqual(persisted.tests.browser.profileCleanup, {
+    attempted: 8,
+    removed: 7,
+    retries: 3,
+    rootRemoved: true,
+    confirmed: false,
+    failureCode: "EBUSY",
+  });
   assert.doesNotMatch(serialized, /file:\/\//i);
   assert.equal(
     fs.readdirSync(path.dirname(expectedPath)).some((name) => name.endsWith(".tmp")),

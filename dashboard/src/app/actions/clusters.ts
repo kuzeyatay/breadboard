@@ -1,8 +1,8 @@
 "use server";
 
 import db from "@/lib/db";
-import fs from "fs";
-import path from "path";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { revalidatePath } from "next/cache";
 import { countClusterMarkdown, refreshClusterIndex } from "@/lib/knowledge";
 import {
@@ -19,6 +19,7 @@ import type { GraftIndexState } from "@/lib/code-index/index-service";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { requireUserId } from "@/lib/server-auth";
 import { uniqueGardenSlug } from "@/lib/garden-slug";
+import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
 import {
   createFolder,
   deleteFolder,
@@ -353,31 +354,38 @@ export async function createCluster(
     const slug = uniqueClusterSlug(name);
     const cleanFolder = normalizeFolderPath(folder);
     if (cleanFolder) ensureFolderPath(db, userId, cleanFolder);
-
-    db.prepare(
-      "INSERT INTO clusters (user_id, name, slug, description, visibility, border_color, folder) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(
-      userId,
-      name,
-      slug,
-      description,
-      "private",
-      DEFAULT_BORDER_COLOR,
-      cleanFolder || null,
-    );
-
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
-    if (contentPath) {
-      const clusterDir = path.join(contentPath, slug);
-      fs.mkdirSync(clusterDir, { recursive: true });
-      const date = new Date().toISOString().split("T")[0];
-      const indexContent = `---\ntitle: ${name}\ndate: ${date}\ndescription: ${description || ""}\nknowledge_type: "cluster-index"\n---\n`;
-      fs.writeFileSync(path.join(clusterDir, "_index.md"), indexContent);
-      refreshClusterIndex(contentPath, slug);
+    const clusterDir = contentPath ? path.join(contentPath, slug) : null;
+    const lease = clusterDir
+      ? acquireGardenMutationLease(clusterDir, "create-garden")
+      : null;
+
+    try {
+      db.prepare(
+        "INSERT INTO clusters (user_id, name, slug, description, visibility, border_color, folder) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        userId,
+        name,
+        slug,
+        description,
+        "private",
+        DEFAULT_BORDER_COLOR,
+        cleanFolder || null,
+      );
+
+      if (contentPath && clusterDir) {
+        fs.mkdirSync(clusterDir, { recursive: true });
+        const date = new Date().toISOString().split("T")[0];
+        const indexContent = `---\ntitle: ${name}\ndate: ${date}\ndescription: ${description || ""}\nknowledge_type: "cluster-index"\n---\n`;
+        fs.writeFileSync(path.join(clusterDir, "_index.md"), indexContent);
+        refreshClusterIndex(contentPath, slug);
+      }
+    } finally {
+      lease?.release();
     }
 
     refreshPrivateQuartzIndex(userId);
-    await publishQuartzAfterMutation(`create cluster ${slug}`);
+    await publishQuartzAfterMutation(`create cluster ${slug}`, { userId });
     revalidatePath("/dashboard");
     revalidatePath("/garden");
     return slug;
@@ -403,24 +411,35 @@ export async function updateClusterDetails(
       .prepare("SELECT slug FROM clusters WHERE id = ? AND user_id = ?")
       .get(clusterId, userId) as { slug: string } | undefined;
     if (!cluster) throw new Error("Garden not found");
-
-    db.prepare(
-      "UPDATE clusters SET name = ?, description = ? WHERE id = ? AND user_id = ?",
-    ).run(cleanName, cleanDescription, clusterId, userId);
-
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
-    if (contentPath) {
-      const clusterDir = path.join(contentPath, cluster.slug);
-      fs.mkdirSync(clusterDir, { recursive: true });
-      const date = new Date().toISOString().split("T")[0];
-      const indexContent = `---\ntitle: ${JSON.stringify(cleanName)}\ndate: ${date}\ndescription: ${JSON.stringify(cleanDescription)}\nknowledge_type: "cluster-index"\n---\n`;
-      fs.writeFileSync(path.join(clusterDir, "_index.md"), indexContent);
-      refreshClusterIndex(contentPath, cluster.slug);
+    const clusterDir = contentPath
+      ? path.join(contentPath, cluster.slug)
+      : null;
+    const lease = clusterDir
+      ? acquireGardenMutationLease(clusterDir, "update-garden-details")
+      : null;
+
+    try {
+      db.prepare(
+        "UPDATE clusters SET name = ?, description = ? WHERE id = ? AND user_id = ?",
+      ).run(cleanName, cleanDescription, clusterId, userId);
+
+      if (contentPath && clusterDir) {
+        fs.mkdirSync(clusterDir, { recursive: true });
+        const date = new Date().toISOString().split("T")[0];
+        const indexContent = `---\ntitle: ${JSON.stringify(cleanName)}\ndate: ${date}\ndescription: ${JSON.stringify(cleanDescription)}\nknowledge_type: "cluster-index"\n---\n`;
+        fs.writeFileSync(path.join(clusterDir, "_index.md"), indexContent);
+        refreshClusterIndex(contentPath, cluster.slug);
+      }
+    } finally {
+      lease?.release();
     }
 
     refreshPrivateQuartzIndex(userId);
     refreshPublicQuartzIndex();
-    await publishQuartzAfterMutation(`update cluster ${cluster.slug}`);
+    await publishQuartzAfterMutation(`update cluster ${cluster.slug}`, {
+      userId,
+    });
     revalidatePath("/dashboard");
     revalidatePath("/garden");
     revalidatePath(`/gardens/${cluster.slug}`);
@@ -465,14 +484,14 @@ export async function setClusterVisibility(
     refreshPublicQuartzIndex();
     refreshOrganizationQuartzIndex(userId);
     const scope = nextVisibility === "public" ? "publish" : "unpublish";
-    await publishQuartzAfterMutation(`${scope} cluster ${cluster.slug}`);
+    await publishQuartzAfterMutation(`${scope} cluster ${cluster.slug}`, {
+      userId,
+    });
     revalidatePath("/dashboard");
     revalidatePath("/garden");
   } catch (err) {
     throw new Error(
-      err instanceof Error
-        ? err.message
-        : "Failed to update garden visibility",
+      err instanceof Error ? err.message : "Failed to update garden visibility",
     );
   }
 }
@@ -645,7 +664,9 @@ export async function setClusterInstructions(
     const userId = await requireUserId();
     const cleaned = instructions.trim().slice(0, MAX_GARDEN_INSTRUCTIONS);
     const result = db
-      .prepare("UPDATE clusters SET instructions = ? WHERE id = ? AND user_id = ?")
+      .prepare(
+        "UPDATE clusters SET instructions = ? WHERE id = ? AND user_id = ?",
+      )
       .run(cleaned, clusterId, userId);
     if (result.changes !== 1) throw new Error("Garden not found");
     revalidatePath("/dashboard");
@@ -670,13 +691,17 @@ export async function setClusterMemoryScope(
     const userId = await requireUserId();
     if (!isGardenMemoryScope(scope)) throw new Error("Unknown memory setting");
     const result = db
-      .prepare("UPDATE clusters SET memory_scope = ? WHERE id = ? AND user_id = ?")
+      .prepare(
+        "UPDATE clusters SET memory_scope = ? WHERE id = ? AND user_id = ?",
+      )
       .run(scope, clusterId, userId);
     if (result.changes !== 1) throw new Error("Garden not found");
     revalidatePath("/dashboard");
   } catch (err) {
     throw new Error(
-      err instanceof Error ? err.message : "Failed to update garden memory setting",
+      err instanceof Error
+        ? err.message
+        : "Failed to update garden memory setting",
     );
   }
 }
@@ -725,18 +750,20 @@ export async function setClusterRepository(
     }
 
     const result = db
-      .prepare(
-        "UPDATE clusters SET repo_path = ? WHERE id = ? AND user_id = ?",
-      )
+      .prepare("UPDATE clusters SET repo_path = ? WHERE id = ? AND user_id = ?")
       .run(resolvedPath, clusterId, userId);
     if (result.changes !== 1) throw new Error("Garden not found");
 
     // Start the code index now rather than on the first coding agent run, so
     // the graph is usually ready by the time somebody asks for a change.
-    const codeIndex = prepareGraftIndex(resolvedPath);
+    const codeIndex = await prepareGraftIndex(userId, resolvedPath);
 
     revalidatePath("/dashboard");
-    return { connected: true, repoName: path.basename(resolvedPath), codeIndex };
+    return {
+      connected: true,
+      repoName: path.basename(resolvedPath),
+      codeIndex,
+    };
   } catch (err) {
     throw new Error(
       err instanceof Error ? err.message : "Failed to connect repository",
@@ -760,12 +787,16 @@ export async function setClusterGraftEnabled(
 
     // Turning it back on for a repository connected while it was off still
     // needs a graph before the next run can use one.
-    if (enabled && row.repo_path) prepareGraftIndex(row.repo_path);
+    if (enabled && row.repo_path) {
+      await prepareGraftIndex(userId, row.repo_path);
+    }
 
     revalidatePath("/dashboard");
   } catch (err) {
     throw new Error(
-      err instanceof Error ? err.message : "Failed to update the code index setting",
+      err instanceof Error
+        ? err.message
+        : "Failed to update the code index setting",
     );
   }
 }
@@ -850,52 +881,68 @@ export async function forkCluster(
     const targetDir = resolveChildPath(contentPath, targetSlug);
     if (!sourceDir || !targetDir) throw new Error("Invalid garden path");
     if (fs.existsSync(targetDir)) throw new Error("Fork target already exists");
-
-    if (fs.existsSync(sourceDir)) {
-      fs.cpSync(sourceDir, targetDir, {
-        recursive: true,
-        errorOnExist: true,
-        force: false,
-      });
-    } else {
-      fs.mkdirSync(targetDir, { recursive: true });
-      const date = new Date().toISOString().split("T")[0];
-      const indexContent = `---\ntitle: ${source.name}\ndate: ${date}\ndescription: ${source.description || ""}\nknowledge_type: "cluster-index"\n---\n`;
-      fs.writeFileSync(path.join(targetDir, "_index.md"), indexContent);
+    const forkLeases: ReturnType<typeof acquireGardenMutationLease>[] = [];
+    try {
+      for (const gardenDir of [sourceDir, targetDir].sort((left, right) =>
+        left.localeCompare(right),
+      )) {
+        forkLeases.push(acquireGardenMutationLease(gardenDir, "fork-garden"));
+      }
+    } catch (error) {
+      for (const lease of forkLeases.reverse()) lease.release();
+      throw error;
     }
 
     try {
-      db.prepare(
-        `INSERT INTO clusters (
-           user_id,
-           name,
-           slug,
-           description,
-           visibility,
-           border_color,
-           card_width,
-           card_height,
-           chat_accessible,
-           fork_allowed
-         )
-         VALUES (?, ?, ?, ?, 'private', ?, ?, ?, 0, 0)`,
-      ).run(
-        userId,
-        source.name,
-        targetSlug,
-        source.description,
-        normalizeBorderColor(source.border_color),
-        normalizeCardWidth(source.card_width),
-        normalizeCardHeight(source.card_height),
-      );
-    } catch (err) {
-      fs.rmSync(targetDir, { recursive: true, force: true });
-      throw err;
+      if (fs.existsSync(sourceDir)) {
+        fs.cpSync(sourceDir, targetDir, {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+        });
+      } else {
+        fs.mkdirSync(targetDir, { recursive: true });
+        const date = new Date().toISOString().split("T")[0];
+        const indexContent = `---\ntitle: ${source.name}\ndate: ${date}\ndescription: ${source.description || ""}\nknowledge_type: "cluster-index"\n---\n`;
+        fs.writeFileSync(path.join(targetDir, "_index.md"), indexContent);
+      }
+
+      try {
+        db.prepare(
+          `INSERT INTO clusters (
+             user_id,
+             name,
+             slug,
+             description,
+             visibility,
+             border_color,
+             card_width,
+             card_height,
+             chat_accessible,
+             fork_allowed
+           )
+           VALUES (?, ?, ?, ?, 'private', ?, ?, ?, 0, 0)`,
+        ).run(
+          userId,
+          source.name,
+          targetSlug,
+          source.description,
+          normalizeBorderColor(source.border_color),
+          normalizeCardWidth(source.card_width),
+          normalizeCardHeight(source.card_height),
+        );
+      } catch (err) {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+        throw err;
+      }
+
+      refreshClusterIndex(contentPath, targetSlug);
+    } finally {
+      for (const lease of forkLeases.reverse()) lease.release();
     }
 
-    refreshClusterIndex(contentPath, targetSlug);
     refreshPrivateQuartzIndex(userId);
-    await publishQuartzAfterMutation(`fork cluster ${targetSlug}`);
+    await publishQuartzAfterMutation(`fork cluster ${targetSlug}`, { userId });
     revalidatePath("/dashboard");
     revalidatePath("/garden");
     revalidatePath(`/gardens/${targetSlug}`);
@@ -917,25 +964,48 @@ export async function deleteCluster(clusterId: number): Promise<void> {
       .get(clusterId, userId) as { slug: string } | undefined;
 
     if (!cluster) return;
-
-    db.prepare("DELETE FROM clusters WHERE id = ? AND user_id = ?").run(
-      clusterId,
-      userId,
-    );
-
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
-    if (contentPath) {
-      removeChildPath(contentPath, cluster.slug);
-      writeDeletedClusterRedirect(contentPath, cluster.slug);
+    const clusterDir = contentPath
+      ? resolveChildPath(contentPath, cluster.slug)
+      : null;
+    const lease = clusterDir
+      ? acquireGardenMutationLease(clusterDir, "delete-garden")
+      : null;
 
+    try {
+      db.prepare("DELETE FROM clusters WHERE id = ? AND user_id = ?").run(
+        clusterId,
+        userId,
+      );
+
+      if (contentPath) {
+        removeChildPath(contentPath, cluster.slug);
+        writeDeletedClusterRedirect(contentPath, cluster.slug);
+      }
+    } finally {
+      lease?.release();
+    }
+
+    if (contentPath) {
       const remaining = db
         .prepare("SELECT slug FROM clusters WHERE user_id = ?")
         .all(userId) as { slug: string }[];
       for (const { slug } of remaining) {
+        const remainingDir = resolveChildPath(contentPath, slug);
+        if (!remainingDir) continue;
+        let remainingLease: ReturnType<
+          typeof acquireGardenMutationLease
+        > | null = null;
         try {
+          remainingLease = acquireGardenMutationLease(
+            remainingDir,
+            "refresh-garden-after-delete",
+          );
           refreshClusterIndex(contentPath, slug);
         } catch {
           /* skip */
+        } finally {
+          remainingLease?.release();
         }
       }
     }
@@ -946,7 +1016,9 @@ export async function deleteCluster(clusterId: number): Promise<void> {
     revalidatePath("/garden");
     refreshPrivateQuartzIndex(userId);
     refreshPublicQuartzIndex();
-    await publishQuartzAfterMutation(`delete cluster ${cluster.slug}`);
+    await publishQuartzAfterMutation(`delete cluster ${cluster.slug}`, {
+      userId,
+    });
     if (contentPath) {
       writeDeletedClusterRedirect(contentPath, cluster.slug);
     }

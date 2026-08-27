@@ -11,7 +11,7 @@
 // child-process module to find out where the binary is.
 
 import path from "node:path";
-import { repositoryRoot } from "../runtime-paths.ts";
+import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
 
 /** The upstream release this integration is pinned to. */
 export const AUDIO_ANALYZER_VERSION = "v1.0.0";
@@ -75,8 +75,11 @@ const EXE = process.platform === "win32" ? ".exe" : "";
 export function readAudioAnalyzerConfig(): AudioAnalyzerConfig {
   const root = repositoryRoot();
   const cloneRoot = envString("AUDIO_ANALYZER_ROOT") ?? path.join(root, "audio-analyzer-rs");
-  const binDirectory =
-    envString("AUDIO_ANALYZER_BIN_DIR") ?? path.join(root, ".runtime", "audio-analyzer", "bin");
+  const runtimeManaged = process.env.BREADBOARD_RUNTIME_V2_ACTIVE === "true" &&
+    envString("BREADBOARD_DATA_DIR") !== null;
+  const binDirectory = runtimeManaged
+    ? path.join(dashboardDataDir(), "runtime-v2", "audio-analyzer", "bin")
+    : envString("AUDIO_ANALYZER_BIN_DIR") ?? path.join(root, ".runtime", "audio-analyzer", "bin");
   return {
     cloneRoot,
     binDirectory,
@@ -84,9 +87,14 @@ export function readAudioAnalyzerConfig(): AudioAnalyzerConfig {
     // The download is preferred over `target/release` because that is what the
     // setup script produces on a machine with no Rust toolchain, which is most
     // of them.
-    serverExecutable:
-      envString("AUDIO_ANALYZER_SERVER") ?? path.join(binDirectory, `mcp-server${EXE}`),
-    cliExecutable: envString("AUDIO_ANALYZER_CLI") ?? path.join(binDirectory, `cli${EXE}`),
+    // Integrated Runtime V2 intentionally ignores legacy executable overrides:
+    // only its sealed data-root profile may select the launched binary.
+    serverExecutable: runtimeManaged
+      ? path.join(binDirectory, `mcp-server${EXE}`)
+      : envString("AUDIO_ANALYZER_SERVER") ?? path.join(binDirectory, `mcp-server${EXE}`),
+    cliExecutable: runtimeManaged
+      ? path.join(binDirectory, `cli${EXE}`)
+      : envString("AUDIO_ANALYZER_CLI") ?? path.join(binDirectory, `cli${EXE}`),
     runTimeoutMs: Number(envString("AUDIO_ANALYZER_TIMEOUT_MS") ?? "") || DEFAULT_RUN_TIMEOUT_MS,
   };
 }

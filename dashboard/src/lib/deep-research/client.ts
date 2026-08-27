@@ -53,6 +53,7 @@ export interface RunSummary {
   };
   result?: string;
   failure?: { code: string; message: string };
+  usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
 }
 
 export interface RunEvent {
@@ -82,6 +83,41 @@ const UNAVAILABLE_HEALTH: ServiceHealth = {
   activeRuns: 0,
 };
 
+const MAX_RUN_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_HEALTH_RESPONSE_BYTES = 1024 * 1024;
+
+async function readBoundedJson(response: Response, maximumBytes: number): Promise<unknown> {
+  const declared = response.headers.get("content-length");
+  if (
+    declared !== null &&
+    (!/^\d+$/u.test(declared) || Number(declared) > maximumBytes)
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new DeepResearchServiceError("response_too_large");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new DeepResearchServiceError("invalid_response");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maximumBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new DeepResearchServiceError("response_too_large");
+    }
+    chunks.push(value);
+  }
+  try {
+    return JSON.parse(
+      Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8"),
+    );
+  } catch {
+    throw new DeepResearchServiceError("invalid_response");
+  }
+}
+
 export class DeepResearchClient {
   private config: DeepResearchConfig;
 
@@ -102,7 +138,7 @@ export class DeepResearchClient {
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal: controller.signal,
       });
-      const data = (await res.json().catch(() => ({ ok: false, error: "invalid_response" }))) as {
+      const data = (await readBoundedJson(res, MAX_RUN_RESPONSE_BYTES)) as {
         ok?: boolean;
         error?: string;
         data?: T;
@@ -135,7 +171,7 @@ export class DeepResearchClient {
         signal: controller.signal,
       });
       if (!res.ok) return UNAVAILABLE_HEALTH;
-      return normalizeHealth(await res.json());
+      return normalizeHealth(await readBoundedJson(res, MAX_HEALTH_RESPONSE_BYTES));
     } catch {
       return UNAVAILABLE_HEALTH;
     } finally {
@@ -144,6 +180,7 @@ export class DeepResearchClient {
   }
 
   createRun(params: {
+    runId: string;
     ownerUserId: number;
     query: string;
     /** Background about the requester; the service keeps it out of summaries. */

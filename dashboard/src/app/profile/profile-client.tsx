@@ -2110,7 +2110,7 @@ export default function ProfileClient({
   }, [router]);
 
   return (
-    <div className="flex min-h-screen flex-col bg-gray-950 text-white">
+    <div className="flex min-h-screen flex-col bg-[var(--paper-bg)] text-white">
       <header className="breadboard-flower-navbar relative flex shrink-0 items-center justify-between gap-4 border-b border-gray-800 px-6 py-3.5">
         <NavbarFlowerWind />
         <div className="relative z-10 flex min-w-0 items-center gap-3">

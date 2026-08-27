@@ -15,6 +15,7 @@ import {
   runAuthorizedTerminalCommand,
 } from "@/lib/hermes/terminal-execution.ts";
 import { createHash } from "node:crypto";
+import { getConversationById } from "@/lib/conversations/store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,7 @@ export async function POST(request: Request) {
     if (
       !session ||
       session.user_id === null ||
+      session.conversation_id === null ||
       session.surface !== "dashboard_terminal" ||
       runtimeExternalSessionId(session) !==
         verified.token.hermesSessionId ||
@@ -39,6 +41,19 @@ export async function POST(request: Request) {
     ) {
       throw new ApiError(403, "terminal_surface_denied", "Only an authenticated dedicated Terminal session may execute commands.");
     }
+    const conversation = getConversationById(session.conversation_id);
+    if (!conversation || conversation.user_id !== session.user_id) {
+      throw new ApiError(
+        403,
+        "terminal_conversation_denied",
+        "The Terminal conversation is unavailable.",
+      );
+    }
+    const runtimeAuthority = {
+      userId: session.user_id,
+      gardenId: session.garden_id,
+      conversationId: conversation.public_id,
+    };
     const run = getActiveRuntimeRun(session.id);
     if (!run) throw new ApiError(409, "terminal_run_required", "A current Terminal run is required.");
     const decision = getActiveCapabilityDecision(session.id);
@@ -61,6 +76,7 @@ export async function POST(request: Request) {
     if (commandId) {
       const continued = await continueAuthorizedTerminalCommand(commandId, {
         runtimeSessionId: session.id,
+        runtimeAuthority,
         signal: request.signal,
       });
       if (!continued.running) {
@@ -127,6 +143,7 @@ export async function POST(request: Request) {
     }
     const result = await runAuthorizedTerminalCommand(command, {
       runtimeSessionId: session.id,
+      runtimeAuthority,
       signal: request.signal,
       ...terminalScope,
       ...(requestedMaxRuntimeMs !== undefined

@@ -61,3 +61,12 @@ export function assertSecret(config: AdapterConfig): void {
     );
   }
 }
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+
+/** Refuse any adapter bind that could expose the capability secret boundary. */
+export function assertLoopbackHost(config: Pick<AdapterConfig, "host">): void {
+  if (!LOOPBACK_HOSTS.has(config.host.trim().toLowerCase())) {
+    throw new Error("GBRAIN_ADAPTER_HOST must be a loopback host.");
+  }
+}

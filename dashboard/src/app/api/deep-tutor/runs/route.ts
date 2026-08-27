@@ -75,8 +75,14 @@ export async function POST(request: Request) {
 
     const garden = gardenSlug ? requireOwnGarden(userId, gardenSlug) : null;
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const requestId =
+      typeof body.clientMessageId === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(body.clientMessageId.trim())
+        ? body.clientMessageId.trim()
+        : undefined;
+    const run = await startRun({
       userId,
+      requestId,
       request: tutorRequest,
       scope: {
         userId,

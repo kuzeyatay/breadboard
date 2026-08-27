@@ -355,7 +355,7 @@ test("the blank temporary chat asks for different things, and says so without a 
 test("toggling temporary chat starts or restores a chat rather than relabelling one", () => {
   assert.match(
     terminal,
-    /const sessionCreateOptions = useMemo\(\s*\(\) => \(\{ title: "New chat", temporary: temporaryChat \}\),/,
+    /const sessionCreateOptions = useMemo\(\s*\(\) => \(\{[\s\S]{0,160}title: "New chat",[\s\S]{0,80}temporary: temporaryChat,[\s\S]{0,100}restoreLastConversation: false/,
   );
   // On: remember where we were, then start a fresh off-record chat.
   assert.match(

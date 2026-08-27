@@ -21,7 +21,7 @@ import type {
   ExternalAgentTerminalOutcome,
 } from "@/lib/conversations/external-agent-runs";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
-import { resolveAgentRunStreamError } from "@/lib/agent-run-stream";
+import { closeAgentRunStream, resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 
 interface RunEvent {
   sequenceNumber: number;
@@ -258,7 +258,7 @@ export default function InlineTradingAgentsRun({
         },
       });
     };
-    return () => source.close();
+    return () => closeAgentRunStream(source);
   }, [applyEvent, base, persistedContent, persistedOutcome]);
 
   useEffect(() => {

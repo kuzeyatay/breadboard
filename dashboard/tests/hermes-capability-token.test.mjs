@@ -28,7 +28,7 @@ test("issues and verifies a well-formed token", () => {
 
 test("rejects a tampered payload", () => {
   const token = issueCapabilityToken(scope);
-  const [body, sig] = token.split(".");
+  const [, sig] = token.split(".");
   const tamperedBody = Buffer.from(
     JSON.stringify({ ...scope, gardenId: "secret-garden", exp: Date.now() + 1000, iat: Date.now() }),
   ).toString("base64url");
@@ -63,7 +63,7 @@ test("tokenAllows enforces tool + garden scope", () => {
   }
 });
 
-test("workspace capability permits only server-derived garden ids", () => {
+test("server-minted capability permits only server-derived garden ids", () => {
   const token = issueCapabilityToken({
     ...scope,
     conversationId: 42,

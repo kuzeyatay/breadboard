@@ -1,20 +1,28 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { credentialStatus, VENDOR_CREDENTIALS } from "@/lib/tradingagents/credentials.ts";
-import { health } from "@/lib/tradingagents/runtime.ts";
 import { SETUP_ACTIONS } from "@/lib/tradingagents/setup.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
+import {
+  PythonAgentProbeError,
+  tradingagentsHealthViaRuntime,
+} from "@/lib/runtime-v2/python-agent-probe-job.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     // The probe really starts a Python interpreter, so the default read uses the
     // cached report; `?refresh=1` is the deliberate slow path taken after a
     // setup step.
     const refresh = new URL(request.url).searchParams.get("refresh") === "1";
-    const snapshot = await health({ force: refresh });
+    const snapshot = await tradingagentsHealthViaRuntime({
+      userId,
+      force: refresh,
+      signal: request.signal,
+    });
     return NextResponse.json({
       ok: true,
       available: snapshot.available,
@@ -37,6 +45,11 @@ export async function GET(request: Request) {
       })),
     });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
+    if (error instanceof PythonAgentProbeError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+    }
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }

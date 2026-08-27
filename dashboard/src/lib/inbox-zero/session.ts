@@ -24,12 +24,18 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { composeCommand, run } from "../socials-manager/docker.ts";
 import { composeArgs } from "./stack.ts";
 import type { InboxZeroConfig, InboxZeroCredentials } from "./config.ts";
+import {
+  SESSION_COOKIE_NAME,
+  type InboxZeroSession,
+  type MailboxIdentity,
+} from "./contract.ts";
 
-/** better-auth's default cookie name; secure prefixes only apply over https. */
-export const SESSION_COOKIE_NAME = "better-auth.session_token";
-
-/** The header the app reads to decide which connected mailbox a call is about. */
-export const EMAIL_ACCOUNT_HEADER = "X-Email-Account-ID";
+export {
+  EMAIL_ACCOUNT_HEADER,
+  SESSION_COOKIE_NAME,
+  type InboxZeroSession,
+  type MailboxIdentity,
+} from "./contract.ts";
 
 /** How long a minted session lives. Long enough to outlast a run, short enough
  *  that an abandoned one expires on its own. */
@@ -37,20 +43,6 @@ export const EMAIL_ACCOUNT_HEADER = "X-Email-Account-ID";
 const FIELD_SEPARATOR = "\u001f";
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60_000;
-
-export interface MailboxIdentity {
-  userId: string;
-  emailAccountId: string;
-  email: string;
-  /** `google` or `microsoft`, as the app records it. */
-  provider: string;
-}
-
-export interface InboxZeroSession {
-  cookie: string;
-  identity: MailboxIdentity;
-  expiresAt: Date;
-}
 
 /**
  * Run one statement inside the stack's Postgres container.

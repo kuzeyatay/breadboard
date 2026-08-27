@@ -6,12 +6,26 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  createGeneratedVisualization,
+  createGeneratedVisualization as createGeneratedVisualizationWithCompiler,
 } from "../src/lib/generated-visuals.ts";
+import { compileGeneratedVisualization } from "../src/lib/generated-visual-compiler.ts";
+import { runGeneratedVisualBrowserTestsLocally } from "../src/lib/generated-visual-browser-tests.ts";
 import {
   generatedVisualCouncilReceiptDirectory,
   stableGeneratedVisualCouncilRecoveryRoot,
 } from "../src/lib/generated-visual-council-receipts.ts";
+
+const localCompilerRunner = async (sourceCode, opportunity) =>
+  compileGeneratedVisualization(sourceCode, opportunity);
+
+function createGeneratedVisualization(input) {
+  return createGeneratedVisualizationWithCompiler({
+    ...input,
+    compilerRunner: input.compilerRunner ?? localCompilerRunner,
+    browserTestRunner:
+      input.browserTestRunner ?? runGeneratedVisualBrowserTestsLocally,
+  });
+}
 
 const MODEL = "gpt-5.6-sol";
 const CRITIC_MODEL = "gpt-5.5";

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -58,6 +59,11 @@ function makeDeps(overrides = {}) {
     runnerKick: () => {
       deps.kicks = (deps.kicks ?? 0) + 1;
     },
+    runnerStart: async (jobId, upload) => {
+      deps.kicks = (deps.kicks ?? 0) + 1;
+      deps.started = { jobId, upload };
+      return store.getJob(jobId);
+    },
     runnerCancel: async (jobId) => {
       store.transition(jobId, "cancelled", { errorCode: "cancelled" });
       return store.getJob(jobId);
@@ -66,7 +72,15 @@ function makeDeps(overrides = {}) {
       store.transition(jobId, "queued", { errorCode: null, errorMessage: null });
       return store.getJob(jobId);
     },
-    inspectYouTube: async (parsed) => ({
+    sealUpload: async ({ file }) => ({
+      uploadId: `upl-${crypto.randomBytes(8).toString("hex")}`,
+      sha256: crypto.createHash("sha256").update(Buffer.from(await file.arrayBuffer())).digest("hex"),
+      sizeBytes: file.size,
+    }),
+    abandonUpload: async (_garden, uploadId) => {
+      deps.abandoned = [...(deps.abandoned ?? []), uploadId];
+    },
+    inspectYouTube: async (_garden, parsed) => ({
       videoId: parsed.videoId,
       canonicalUrl: parsed.canonicalUrl,
       title: "Example Video",
@@ -145,7 +159,7 @@ test("valid YouTube submission returns 202 with a queued job and kicks the runne
   deps.cleanup();
 });
 
-test("valid upload submission stores media in a random temp path and returns 202", async () => {
+test("valid upload submission is sealed by Runtime without a Next temp path", async () => {
   const deps = makeDeps();
   const result = await handleCreateVideoTranscription(
     deps,
@@ -156,9 +170,9 @@ test("valid upload submission stores media in a random temp path and returns 202
   const job = deps.store.getJob(result.body.job.id);
   assert.equal(job.inputKind, "upload");
   assert.equal(job.originalFilename, "My Lecture (v2).mp4");
-  assert.ok(job.mediaTempPath.startsWith(deps.config.tempDir));
-  assert.ok(!job.mediaTempPath.includes("My Lecture"), "temp path never uses the original name");
-  assert.ok(fs.existsSync(job.mediaTempPath));
+  assert.equal(job.mediaTempPath, null);
+  assert.equal(deps.started.jobId, job.id);
+  assert.match(deps.started.upload.uploadId, /^upl-/);
   assert.match(job.mediaSha256, /^[0-9a-f]{64}$/);
   deps.cleanup();
 });

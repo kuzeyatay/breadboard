@@ -125,6 +125,7 @@ const POLL_INTERVAL_MS = 1_800;
 const MAX_INTENT_POLLS = 6;
 const ENGINE_POLL_INTERVAL_MS = 800;
 const MAX_ENGINE_POLLS = 25;
+const ENGINE_VIEW_HEARTBEAT_MS = 20_000;
 let sdkPromise: Promise<SpotifySdk> | null = null;
 
 interface RgbColor {
@@ -377,6 +378,9 @@ export default function InlineSpotifyPlayer({
   const playerRef = useRef<SpotifyPlayer | null>(null);
   const deviceIdRef = useRef<string | null>(null);
   const managedEngineRef = useRef(false);
+  const managedEngineViewIdRef = useRef<string | null>(null);
+  const managedEngineStartRef = useRef<Promise<void> | null>(null);
+  const managedEngineStartAbortRef = useRef<AbortController | null>(null);
   const playingRevisionRef = useRef<string | null>(null);
   const [connection, setConnection] = useState<PlaybackResponse | null>(null);
   const [sdkState, setSdkState] = useState<SdkState | null>(null);
@@ -399,35 +403,175 @@ export default function InlineSpotifyPlayer({
     : null;
   const intentRevision = intent?.revision;
 
-  const startManagedEngine = useCallback(async () => {
-    managedEngineRef.current = true;
-    setManagedEngine(true);
-    setDeviceReady(false);
-    setError(null);
-    for (let attempt = 0; attempt < MAX_ENGINE_POLLS; attempt += 1) {
-      const response = await fetch("/api/hermes/connections/spotify/engine", {
-        cache: "no-store",
-      });
-      const payload = (await response.json()) as PlaybackEngineResponse & {
+  const managedEngineViewId = useCallback(() => {
+    if (!managedEngineViewIdRef.current) {
+      managedEngineViewIdRef.current = crypto.randomUUID();
+    }
+    return managedEngineViewIdRef.current;
+  }, []);
+
+  const startManagedEngine = useCallback((): Promise<void> => {
+    if (managedEngineStartRef.current) return managedEngineStartRef.current;
+    const controller = new AbortController();
+    managedEngineStartAbortRef.current = controller;
+    const operation = (async () => {
+      managedEngineRef.current = true;
+      setManagedEngine(true);
+      setDeviceReady(false);
+      setError(null);
+
+      const initialResponse = await fetch(
+        "/api/hermes/connections/spotify/engine",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ viewId: managedEngineViewId() }),
+          cache: "no-store",
+          signal: controller.signal,
+        },
+      );
+      const initial = (await initialResponse.json()) as PlaybackEngineResponse & {
         error?: string | null;
       };
-      if (!response.ok) {
-        throw new Error(responseMessage(payload, "Breadboard could not start Spotify playback."));
+      if (!initialResponse.ok) {
+        throw new Error(
+          responseMessage(initial, "Breadboard could not start Spotify playback."),
+        );
       }
-      if (payload.ready && payload.deviceId) {
-        deviceIdRef.current = payload.deviceId;
+      if (initial.ready && initial.deviceId) {
+        deviceIdRef.current = initial.deviceId;
         setDeviceReady(true);
         return;
       }
-      if (payload.status === "unavailable") {
-        throw new Error(payload.error || "Breadboard could not start Spotify playback.");
+      if (initial.status === "unavailable") {
+        throw new Error(
+          initial.error || "Breadboard could not start Spotify playback.",
+        );
       }
-      await new Promise((resolve) =>
-        window.setTimeout(resolve, ENGINE_POLL_INTERVAL_MS),
+
+      for (let attempt = 0; attempt < MAX_ENGINE_POLLS; attempt += 1) {
+        const response = await fetch(
+          "/api/hermes/connections/spotify/engine",
+          { cache: "no-store", signal: controller.signal },
+        );
+        const payload = (await response.json()) as PlaybackEngineResponse & {
+          error?: string | null;
+        };
+        if (!response.ok) {
+          throw new Error(
+            responseMessage(
+              payload,
+              "Breadboard could not start Spotify playback.",
+            ),
+          );
+        }
+        if (payload.ready && payload.deviceId) {
+          deviceIdRef.current = payload.deviceId;
+          setDeviceReady(true);
+          return;
+        }
+        if (payload.status === "unavailable") {
+          throw new Error(
+            payload.error || "Breadboard could not start Spotify playback.",
+          );
+        }
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(() => {
+            controller.signal.removeEventListener("abort", onAbort);
+            resolve();
+          }, ENGINE_POLL_INTERVAL_MS);
+          const onAbort = () => {
+            window.clearTimeout(timer);
+            reject(new DOMException("Spotify player start cancelled", "AbortError"));
+          };
+          controller.signal.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+      throw new Error(
+        "Breadboard's protected-audio player did not become ready.",
       );
-    }
-    throw new Error("Breadboard's protected-audio player did not become ready.");
+    })();
+    managedEngineStartRef.current = operation;
+    void operation
+      .finally(() => {
+        if (managedEngineStartRef.current === operation) {
+          managedEngineStartRef.current = null;
+        }
+        if (managedEngineStartAbortRef.current === controller) {
+          managedEngineStartAbortRef.current = null;
+        }
+      })
+      .catch(() => undefined);
+    return operation;
+  }, [managedEngineViewId]);
+
+  useEffect(() => {
+    return () => {
+      managedEngineStartAbortRef.current?.abort();
+      const viewId = managedEngineViewIdRef.current;
+      if (!viewId) return;
+      void fetch("/api/hermes/connections/spotify/engine", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ viewId }),
+        cache: "no-store",
+        keepalive: true,
+      }).catch(() => undefined);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!managedEngine || !deviceReady) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const renew = async () => {
+      try {
+        const response = await fetch(
+          "/api/hermes/connections/spotify/engine",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ viewId: managedEngineViewId() }),
+            cache: "no-store",
+          },
+        );
+        const payload = (await response.json()) as PlaybackEngineResponse &
+          Record<string, unknown>;
+        if (!cancelled && !response.ok) {
+          setError(
+            responseMessage(
+              payload,
+              "Breadboard could not keep Spotify playback ready.",
+            ),
+          );
+        } else if (!cancelled && payload.ready && payload.deviceId) {
+          deviceIdRef.current = payload.deviceId;
+        } else if (!cancelled && payload.status === "unavailable") {
+          setError(
+            payload.error || "Breadboard could not keep Spotify playback ready.",
+          );
+        }
+      } catch {
+        // The bounded server hold remains valid until a later heartbeat or
+        // expiry; a transient dashboard recycle must not duplicate the browser.
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(
+            () => void renew(),
+            ENGINE_VIEW_HEARTBEAT_MS,
+          );
+        }
+      }
+    };
+    timer = window.setTimeout(
+      () => void renew(),
+      ENGINE_VIEW_HEARTBEAT_MS,
+    );
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [deviceReady, managedEngine, managedEngineViewId]);
 
   useEffect(() => {
     playingRevisionRef.current = null;

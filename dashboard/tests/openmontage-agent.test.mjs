@@ -11,6 +11,9 @@ const identity = await import("../src/lib/openmontage/identity.ts");
 const runtime = await import("../src/lib/openmontage/runtime.ts");
 const prompt = await import("../src/lib/openmontage/prompt.ts");
 const workspace = await import("../src/lib/openmontage/workspace.ts");
+const { resolveOpenMontageArtifactPath } = await import(
+  "../src/lib/openmontage/runtime-run-manager.ts"
+);
 
 // The workspace module resolves its root from the environment, so every test
 // that touches disk gets its own directory and none of them can see a real run.
@@ -228,6 +231,80 @@ test("an artifact id cannot address a file outside the production", async () => 
   });
 });
 
+test("Runtime production receipts fence the exact attempt, project path, and size", () => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-openmontage-receipt-"));
+  const job = {
+    jobId: "job_openmontage_artifact_1",
+    attempt: 1,
+    workerInstanceId: "worker_openmontage_artifact_1",
+  };
+  const relativePath = "production-test/renders/final.mp4";
+  const artifactPath = path.join(
+    dataRoot,
+    "runtime",
+    "jobs",
+    job.jobId,
+    "attempts",
+    "1",
+    job.workerInstanceId,
+    "workspace",
+    "projects",
+    ...relativePath.split("/"),
+  );
+  fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+  fs.writeFileSync(artifactPath, "film-bytes");
+  const record = {
+    id: Buffer.from(relativePath).toString("base64url"),
+    relativePath,
+    name: "final.mp4",
+    kind: "video",
+    contentType: "video/mp4",
+    size: fs.statSync(artifactPath).size,
+    modifiedAt: fs.statSync(artifactPath).mtime.toISOString(),
+  };
+  const event = {
+    sequenceNumber: 8,
+    type: "run.completed",
+    payload: { artifacts: [record] },
+    at: new Date().toISOString(),
+  };
+  try {
+    const resolved = resolveOpenMontageArtifactPath({
+      dataRoot,
+      job,
+      events: [event],
+      artifactId: record.id,
+    });
+    assert.equal(resolved?.canonicalPath, fs.realpathSync.native(artifactPath));
+
+    fs.appendFileSync(artifactPath, "tamper");
+    assert.equal(resolveOpenMontageArtifactPath({
+      dataRoot,
+      job,
+      events: [event],
+      artifactId: record.id,
+    }), null);
+
+    const traversal = {
+      ...event,
+      payload: { artifacts: [{
+        ...record,
+        id: Buffer.from("../outside.mp4").toString("base64url"),
+        relativePath: "../outside.mp4",
+        name: "outside.mp4",
+      }] },
+    };
+    assert.throws(() => resolveOpenMontageArtifactPath({
+      dataRoot,
+      job,
+      events: [traversal],
+      artifactId: traversal.payload.artifacts[0].id,
+    }), /receipt is invalid/u);
+  } finally {
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
 test("the deliverable is the rendered film, not the clips that went into it", async () => {
   await withWorkspaceRoot(() => {
     seedProduction(RUN_ID, {
@@ -415,7 +492,15 @@ test("a finished production replays instead of reconnecting to a dead stream", (
   const card = source("src/app/components/hermes/inline-openmontage-run.tsx");
   // EventSource retries forever by default; a restored turn must not stream.
   assert.match(card, /if \(replaying\) return;/);
-  assert.match(card, /source\.close\(\)/);
+  assert.match(
+    card,
+    /import \{ closeAgentRunStream, resolveAgentRunStreamError \} from "@\/lib\/agent-run-stream";/,
+  );
+  assert.match(
+    card,
+    /source\.onerror = \(\) => \{\s*resolveAgentRunStreamError\(\{\s*source,\s*base,/,
+  );
+  assert.match(card, /return \(\) => closeAgentRunStream\(source\);/);
   assert.match(card, /persistedContent/);
 });
 

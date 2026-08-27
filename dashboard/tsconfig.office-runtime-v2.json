@@ -1,0 +1,35 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false
+  },
+  "include": [
+    "next-env.d.ts",
+    "src/vendor/genoffice/docs/src/renderer/bidi-js.d.ts",
+    "src/types/svg-to-pdfkit.d.ts",
+    "src/lib/office/contract.ts",
+    "src/lib/office/officecli.ts",
+    "src/lib/office/agent-query.ts",
+    "src/lib/office/runtime-v2.ts",
+    "src/lib/markdown-render/pdf.ts",
+    "src/lib/hermes/artifact-store.ts",
+    "src/lib/hermes/artifact-renderers.ts",
+    "src/lib/hermes/artifact-garden.ts",
+    "src/lib/hermes/artifact-document-editor.ts",
+    "src/lib/colpali/page-images.ts",
+    "src/lib/colpali/indexer.ts",
+    "src/lib/colpali/index-status.ts",
+    "src/lib/document-skills/bridge.ts",
+    "src/lib/document-skills/validate-worker.ts",
+    "src/lib/document-skills/validate.ts",
+    "src/lib/document-skills/builder.ts",
+    "src/lib/document-skills/service.ts",
+    "src/lib/document-skills/store.ts",
+    "src/lib/document-skills/turn.ts",
+    "src/app/api/document-skills/build/route.ts",
+    "src/app/api/markdown-to-pdf/route.ts",
+    "src/app/api/hermes/tools/document/route.ts",
+    "src/app/api/hermes/tools/office/route.ts",
+    "src/app/api/hermes/artifacts/[artifactId]/genoffice/route.ts"
+  ]
+}

@@ -11,7 +11,7 @@
 // Hermes-gateway session the desktop app can never see.
 
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 
 /** Default port for the bridge's loopback HTTP server. */

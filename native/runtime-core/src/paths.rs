@@ -1,8 +1,8 @@
 use crate::generation_guard::RuntimeGenerationScope;
 use breadboard_runtime_protocol::{
-    validate_identifier, validate_relative_path, ValidationError, WorkerIdentity,
-    WorkerStartManifest, MAX_REQUEST_BODY_BYTES, MAX_WORKER_START_MANIFEST_BYTES,
-    WORKER_START_MANIFEST_FILE,
+    validate_identifier, validate_relative_path, ValidationError, WorkerExecutionScope,
+    WorkerIdentity, WorkerInputBlob, WorkerStartManifest, MAX_JOB_INPUT_UPLOAD_BYTES,
+    MAX_REQUEST_BODY_BYTES, MAX_WORKER_START_MANIFEST_BYTES, WORKER_START_MANIFEST_FILE,
 };
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -63,8 +63,12 @@ pub enum PathError {
     BlobDigestMismatch,
     #[error("job input blob staging writer is no longer valid")]
     BlobWriterPoisoned,
+    #[error("trusted job input cleanup metadata did not match the exact file")]
+    BlobCleanupMismatch,
     #[error("trusted filesystem operation failed")]
     Io(#[source] io::Error),
+    #[error("trusted child argv path has no safe normal absolute presentation")]
+    InvalidChildArgvPath,
     #[error("trusted handle identity is unsupported on this platform")]
     UnsupportedPlatform,
 }
@@ -132,6 +136,16 @@ impl ResolvedTrustedPath {
     pub fn absolute(&self) -> &Path {
         &self.absolute
     }
+
+    /// Returns an argv spelling for a trusted path without changing the
+    /// canonical path that backs containment and identity checks. Windows
+    /// language runtimes do not consistently accept the `\\?\` spelling that
+    /// `fs::canonicalize` returns, even though CreateProcessW does. Only typed
+    /// path operands may call this method; ordinary manifest literals must
+    /// retain their exact bytes.
+    pub(crate) fn child_argv_path(&self) -> Result<PathBuf, PathError> {
+        child_argv_path_presentation(&self.absolute)
+    }
 }
 
 /// Pins a verified regular file while a trusted subsystem consumes its path.
@@ -161,8 +175,21 @@ impl TrustedFilePin {
         self.path.absolute()
     }
 
+    /// Presents this still-pinned file as a child argv path. Revalidation and
+    /// file identity continue to use the unchanged canonical path.
+    pub(crate) fn child_argv_path(&self) -> Result<PathBuf, PathError> {
+        self.path.child_argv_path()
+    }
+
     pub fn relative(&self) -> &Path {
         self.path.relative()
+    }
+
+    pub(crate) fn matches_generation_scope(&self, scope: &RuntimeGenerationScope) -> bool {
+        RuntimeGenerationScope::from_trusted_data_root_identity(
+            self.root.identity.volume,
+            self.root.identity.file,
+        ) == *scope
     }
 
     /// Revalidates both the authority root and the exact opened file identity.
@@ -221,26 +248,41 @@ impl TrustedDirectoryPin {
     pub fn revalidate(&self) -> Result<(), PathError> {
         self.root.revalidate()
     }
+
+    /// Reads one bounded regular file beneath this exact pinned directory.
+    /// The relative path is reparse/hard-link checked and the file is read
+    /// through a no-share-write/no-share-delete handle, so configuration is
+    /// consumed as one stable snapshot rather than by reopening a mutable
+    /// pathname during parsing.
+    pub fn read_bounded_file(
+        &self,
+        relative: &str,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, PathError> {
+        let path = resolve_inside(&self.root, relative)?;
+        read_bounded(&self.root, &path, maximum_bytes)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaunchDirectoryAuthority {
     RuntimeData,
+    Application,
 }
 
 /// An opaque process working-directory authority. Unlike
 /// `TrustedDirectoryPin`, this type cannot be created from an arbitrary
 /// absolute directory: only `RuntimePaths` can mint it after proving the
-/// directory is beneath its pinned mutable-data root.
+/// directory is beneath a manifest-selected pinned app or mutable-data root.
 pub struct TrustedLaunchDirectory {
-    data_root: TrustedRoot,
+    authority_root: TrustedRoot,
     directory: TrustedDirectoryPin,
     authority: LaunchDirectoryAuthority,
 }
 
 impl fmt::Debug for TrustedLaunchDirectory {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("TrustedLaunchDirectory(<redacted runtime-data authority>)")
+        formatter.write_str("TrustedLaunchDirectory(<redacted launch authority>)")
     }
 }
 
@@ -249,18 +291,29 @@ impl TrustedLaunchDirectory {
         self.directory.absolute()
     }
 
+    /// Returns the normal absolute spelling presented to a child process.
+    ///
+    /// Windows handle pinning deliberately retains the verbatim `\\?\` path
+    /// for identity and revalidation, but Node-based tools do not consistently
+    /// accept that spelling as their process working directory. This derives a
+    /// presentation-only path from the already-pinned authority; it never
+    /// replaces or weakens the canonical handle-backed identity.
+    pub(crate) fn child_process_path(&self) -> Result<PathBuf, PathError> {
+        child_argv_path_presentation(self.directory.absolute())
+    }
+
     /// Revalidates the minting data root, the exact directory handle identity,
     /// and containment. The private authority tag prevents a configuration
     /// root pin from being relabeled as a launch workspace.
     pub fn revalidate(&self) -> Result<(), PathError> {
         match self.authority {
-            LaunchDirectoryAuthority::RuntimeData => {
-                self.data_root.revalidate()?;
+            LaunchDirectoryAuthority::RuntimeData | LaunchDirectoryAuthority::Application => {
+                self.authority_root.revalidate()?;
                 self.directory.revalidate()?;
-                if !path_is_within(self.directory.absolute(), &self.data_root.canonical) {
-                    return Err(PathError::EscapedRoot("data"));
+                if !path_is_within(self.directory.absolute(), &self.authority_root.canonical) {
+                    return Err(PathError::EscapedRoot(self.authority_root.kind));
                 }
-                self.data_root.revalidate()
+                self.authority_root.revalidate()
             }
         }
     }
@@ -285,6 +338,7 @@ pub(crate) struct PreparedWorkerStart {
     manifest: WorkerStartManifest,
     job_directory: TrustedDirectoryPin,
     input_manifest: TrustedFilePin,
+    input_blobs: Vec<SealedJobInputBlob>,
     launch_directory: TrustedLaunchDirectory,
     workspace_directory: TrustedDirectoryPin,
     start_manifest: TrustedFilePin,
@@ -316,6 +370,9 @@ impl PreparedWorkerStart {
     pub(crate) fn revalidate(&self) -> Result<(), PathError> {
         self.job_directory.revalidate()?;
         self.input_manifest.revalidate()?;
+        for input_blob in &self.input_blobs {
+            input_blob.revalidate()?;
+        }
         self.launch_directory.revalidate()?;
         self.workspace_directory.revalidate()?;
         self.start_manifest.revalidate()?;
@@ -357,7 +414,7 @@ pub struct JobInputBlobStaging {
     destination: ResolvedTrustedPath,
     staging: TemporaryStagingFile,
     declared_size: u64,
-    expected_sha256: [u8; 32],
+    expected_sha256: Option<[u8; 32]>,
     streamed_sha256: Sha256,
     written: u64,
     poisoned: bool,
@@ -479,7 +536,10 @@ impl JobInputBlobStaging {
         if before != after || streamed_sha256 != on_disk_sha256 {
             return Err(PathError::FileChanged);
         }
-        if on_disk_sha256 != self.expected_sha256 {
+        if self
+            .expected_sha256
+            .is_some_and(|expected| on_disk_sha256 != expected)
+        {
             return Err(PathError::BlobDigestMismatch);
         }
 
@@ -553,6 +613,10 @@ impl SealedJobInputBlob {
 
     pub fn sha256(&self) -> &str {
         &self.sha256
+    }
+
+    pub fn relative_path(&self) -> &Path {
+        self.file.relative()
     }
 
     /// Revalidates the pinned directory and file identities and re-hashes the
@@ -643,7 +707,123 @@ impl fmt::Debug for RuntimePaths {
     }
 }
 
+fn worker_diagnostic_log_relative(identity: &WorkerIdentity) -> String {
+    format!(
+        "runtime/jobs/{}/attempts/{}/{}/diagnostics.log",
+        identity.job_id, identity.attempt, identity.worker_instance_id
+    )
+}
+
 impl RuntimePaths {
+    /// Appends one already-sanitized service diagnostic to a bounded
+    /// Runtime-owned log. The entire retained tail is replaced atomically so a
+    /// crash can leave either the previous valid log or the new valid log, but
+    /// never a partially written compatibility artifact.
+    pub(crate) fn append_bounded_service_log(
+        &self,
+        service_id: &str,
+        record: &[u8],
+        maximum_bytes: usize,
+    ) -> Result<(), PathError> {
+        validate_identifier("serviceId", service_id)?;
+        let relative = format!("logs/services/{service_id}.log");
+        self.append_bounded_diagnostic_log(&relative, record, maximum_bytes)
+    }
+
+    /// Appends one already-sanitized worker diagnostic to the exact durable
+    /// attempt log selected by Runtime-owned fencing identity. A caller cannot
+    /// supply a path or collapse two attempts into the same file.
+    pub(crate) fn append_bounded_worker_log(
+        &self,
+        identity: &WorkerIdentity,
+        record: &[u8],
+        maximum_bytes: usize,
+    ) -> Result<(), PathError> {
+        identity.validate()?;
+        let relative = worker_diagnostic_log_relative(identity);
+        self.append_bounded_diagnostic_log(&relative, record, maximum_bytes)
+    }
+
+    fn append_bounded_diagnostic_log(
+        &self,
+        relative: &str,
+        record: &[u8],
+        maximum_bytes: usize,
+    ) -> Result<(), PathError> {
+        if record.is_empty() || maximum_bytes == 0 || record.len() > maximum_bytes {
+            return Err(PathError::OversizedFile { maximum_bytes });
+        }
+        let destination = self.resolve_data(relative)?;
+        let mut retained = match read_bounded(&self.data_root, &destination, maximum_bytes) {
+            Ok(bytes) => bytes,
+            Err(PathError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        if !retained.is_empty() && !retained.ends_with(b"\n") {
+            retained.push(b'\n');
+        }
+        retained.extend_from_slice(record);
+        if !retained.ends_with(b"\n") {
+            retained.push(b'\n');
+        }
+        if retained.len() > maximum_bytes {
+            let overflow = retained.len() - maximum_bytes;
+            let start = retained[overflow..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|relative| overflow + relative + 1)
+                .unwrap_or(overflow);
+            retained.drain(..start);
+        }
+        if retained.is_empty() {
+            retained.push(b'\n');
+        }
+        drop(self.atomic_replace_data_file(relative, &retained, maximum_bytes)?);
+        Ok(())
+    }
+
+    /// Reads the already-redacted bounded diagnostic file for one exact
+    /// manifest service. Control adapters may further project a small tail,
+    /// but they never receive a caller-selected path.
+    pub fn read_bounded_service_log(
+        &self,
+        service_id: &str,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, PathError> {
+        validate_identifier("serviceId", service_id)?;
+        let relative = format!("logs/services/{service_id}.log");
+        self.read_bounded_diagnostic_log(&relative, maximum_bytes)
+    }
+
+    /// Reads the already-redacted diagnostic tail for one exact worker
+    /// attempt. The identity is validated as a closed fence; no path text is
+    /// accepted from a control caller.
+    pub fn read_bounded_worker_log(
+        &self,
+        identity: &WorkerIdentity,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, PathError> {
+        identity.validate()?;
+        let relative = worker_diagnostic_log_relative(identity);
+        self.read_bounded_diagnostic_log(&relative, maximum_bytes)
+    }
+
+    fn read_bounded_diagnostic_log(
+        &self,
+        relative: &str,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, PathError> {
+        if maximum_bytes == 0 {
+            return Err(PathError::OversizedFile { maximum_bytes });
+        }
+        let path = self.resolve_data(relative)?;
+        match read_bounded(&self.data_root, &path, maximum_bytes) {
+            Ok(bytes) => Ok(bytes),
+            Err(PathError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Establishes authority over three existing directory roots. Every root is
     /// canonicalized, opened, and identity-pinned. A merely lexical absolute
     /// path is deliberately not treated as trusted.
@@ -669,6 +849,15 @@ impl RuntimePaths {
 
     pub fn runtime_root(&self) -> &Path {
         &self.runtime_root.canonical
+    }
+
+    /// Reports whether Electron established a mutable data authority distinct
+    /// from the application authority. Compare the pinned directory identities
+    /// rather than caller-provided spellings so aliases cannot opt a service
+    /// into an isolated-development path.
+    pub(crate) fn has_distinct_data_root(&self) -> bool {
+        self.data_root.identity.volume != self.app_root.identity.volume
+            || self.data_root.identity.file != self.app_root.identity.file
     }
 
     /// Mints the opaque generation namespace for this exact pinned mutable
@@ -754,6 +943,18 @@ impl RuntimePaths {
         })
     }
 
+    /// Pins an existing setup-produced executable beneath the mutable data
+    /// root. Relative-path validation, root identity revalidation, reparse and
+    /// symlink rejection, exact opened-path verification, and single-link
+    /// enforcement are identical to immutable launch pins. This does not
+    /// create or update the file and cannot accept an absolute caller path.
+    pub fn pin_data_file_for_launch(
+        &self,
+        path: &ResolvedTrustedPath,
+    ) -> Result<TrustedFilePin, PathError> {
+        self.pin_existing_data_file(path)
+    }
+
     /// Opens one exact data file with read-only sharing, validates and reads it
     /// through that handle, then returns both the bounded bytes and the still-
     /// live pin. The caller must retain the pin through the durable operation
@@ -817,6 +1018,60 @@ impl RuntimePaths {
         })
     }
 
+    /// Atomically replaces one bounded Runtime-owned configuration file below
+    /// the pinned data root. Generated service configuration is mutable across
+    /// launches, unlike immutable submitted job inputs.
+    pub fn atomic_replace_data_file(
+        &self,
+        relative: &str,
+        bytes: &[u8],
+        maximum_bytes: usize,
+    ) -> Result<TrustedFilePin, PathError> {
+        if bytes.is_empty() || bytes.len() > maximum_bytes {
+            return Err(PathError::OversizedFile { maximum_bytes });
+        }
+        let destination = self.resolve_data(relative)?;
+        let parent = destination
+            .relative()
+            .parent()
+            .ok_or(PathError::EscapedRoot("data"))?;
+        let parent = path_text(parent);
+        let parent_pin = self.prepare_data_directory(&parent)?;
+        self.data_root.revalidate()?;
+        parent_pin.revalidate()?;
+        reject_parent_link_components(&self.data_root.canonical, destination.absolute())?;
+
+        match fs::symlink_metadata(destination.absolute()) {
+            Ok(_) => {
+                // Prove the old destination is an ordinary one-link file under
+                // this exact root before granting replacement authority.
+                drop(self.pin_existing_data_file(&destination)?);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(PathError::Io(error)),
+        }
+
+        let mut staging = self.create_temporary_staging_file(&destination)?;
+        staging.file.write_all(bytes).map_err(PathError::Io)?;
+        staging.file.flush().map_err(PathError::Io)?;
+        staging.file.sync_all().map_err(PathError::Io)?;
+        verify_regular_file(&self.data_root, &staging.path, &staging.file, true)?;
+        install_file_replace(staging.path.absolute(), destination.absolute())
+            .map_err(PathError::Io)?;
+        staging.published = true;
+        sync_installed_parent(destination.absolute())?;
+        drop(staging);
+
+        let pinned = self.pin_existing_data_file(&destination)?;
+        let installed = pinned.read_bounded_revalidated(maximum_bytes)?;
+        if installed != bytes {
+            return Err(PathError::FileChanged);
+        }
+        parent_pin.revalidate()?;
+        self.data_root.revalidate()?;
+        Ok(pinned)
+    }
+
     /// Creates the only directory capability accepted by the authoritative
     /// process launcher. The returned value is provenance-sealed to this
     /// `RuntimePaths` data root and cannot be forged from `pin_existing`.
@@ -826,9 +1081,66 @@ impl RuntimePaths {
     ) -> Result<TrustedLaunchDirectory, PathError> {
         let directory = self.prepare_data_directory(relative)?;
         let launch = TrustedLaunchDirectory {
-            data_root: self.data_root.clone(),
+            authority_root: self.data_root.clone(),
             directory,
             authority: LaunchDirectoryAuthority::RuntimeData,
+        };
+        launch.revalidate()?;
+        Ok(launch)
+    }
+
+    /// Pins an immutable, manifest-selected application directory as service
+    /// cwd authority. This remains crate-private so downstream callers cannot
+    /// relabel arbitrary application paths as launch directories; Registry is
+    /// the only intended selector.
+    pub(crate) fn pin_app_launch_directory(
+        &self,
+        relative: &str,
+    ) -> Result<TrustedLaunchDirectory, PathError> {
+        let path = self.resolve_app(relative)?;
+        let directory =
+            pin_existing_directory_inside(&self.app_root, &path, "application launch directory")?;
+        let launch = TrustedLaunchDirectory {
+            authority_root: self.app_root.clone(),
+            directory,
+            authority: LaunchDirectoryAuthority::Application,
+        };
+        launch.revalidate()?;
+        Ok(launch)
+    }
+
+    /// Pins an existing manifest-selected mutable service directory as cwd.
+    /// Unlike per-job `prepare_launch_directory`, this does not create a
+    /// missing toolchain root: installation probes must establish it first.
+    pub(crate) fn pin_data_launch_directory(
+        &self,
+        relative: &str,
+    ) -> Result<TrustedLaunchDirectory, PathError> {
+        let path = self.resolve_data(relative)?;
+        let directory =
+            pin_existing_directory_inside(&self.data_root, &path, "runtime data launch directory")?;
+        let launch = TrustedLaunchDirectory {
+            authority_root: self.data_root.clone(),
+            directory,
+            authority: LaunchDirectoryAuthority::RuntimeData,
+        };
+        launch.revalidate()?;
+        Ok(launch)
+    }
+
+    /// Mints the pinned application root itself as a service cwd. This is a
+    /// separate closed operation because the manifest's `app-root` policy has
+    /// no relative path and must not be represented by an empty or dot path.
+    pub(crate) fn pin_app_root_launch_directory(
+        &self,
+    ) -> Result<TrustedLaunchDirectory, PathError> {
+        self.app_root.revalidate()?;
+        let launch = TrustedLaunchDirectory {
+            authority_root: self.app_root.clone(),
+            directory: TrustedDirectoryPin {
+                root: self.app_root.clone(),
+            },
+            authority: LaunchDirectoryAuthority::Application,
         };
         launch.revalidate()?;
         Ok(launch)
@@ -889,11 +1201,332 @@ impl RuntimePaths {
             destination,
             staging,
             declared_size,
-            expected_sha256,
+            expected_sha256: Some(expected_sha256),
             streamed_sha256: Sha256::new(),
             written: 0,
             poisoned: false,
         })
+    }
+
+    /// Opens the one deterministic pending file for a durable upload ticket.
+    /// The upload id and size come from the runtime ledger; neither a caller
+    /// path nor a caller digest participates. `seal` computes the authoritative
+    /// SHA-256 from the streamed bytes before publishing `payload`.
+    pub(crate) fn begin_runtime_job_input_upload_staging(
+        &self,
+        upload_id: &str,
+        declared_size: u64,
+        maximum_bytes: u64,
+    ) -> Result<JobInputBlobStaging, PathError> {
+        validate_identifier("uploadId", upload_id)?;
+        if declared_size == 0
+            || maximum_bytes == 0
+            || declared_size > maximum_bytes
+            || maximum_bytes > MAX_JOB_INPUT_UPLOAD_BYTES
+        {
+            return Err(PathError::InvalidBlobSize { maximum_bytes });
+        }
+
+        let upload_root = format!("runtime/uploads/{upload_id}");
+        let upload_directory = self.prepare_data_directory(&upload_root)?;
+        let destination = self.resolve_data(&format!("{upload_root}/payload"))?;
+        let pending = self.resolve_data(&format!("{upload_root}/payload.pending"))?;
+        self.data_root.revalidate()?;
+        upload_directory.revalidate()?;
+        reject_parent_link_components(&self.data_root.canonical, destination.absolute())?;
+        reject_blob_destination(destination.absolute())?;
+        let staging = self.create_exact_temporary_staging_file(&pending)?;
+
+        Ok(JobInputBlobStaging {
+            paths: self.clone(),
+            blob_directory: upload_directory,
+            destination,
+            staging,
+            declared_size,
+            expected_sha256: None,
+            streamed_sha256: Sha256::new(),
+            written: 0,
+            poisoned: false,
+        })
+    }
+
+    /// Publishes a verified sealed upload into the exact job/blob namespace.
+    /// The source is copied through pinned handles into a unique sibling and
+    /// installed without replacement. A byte-identical destination is an
+    /// idempotent replay; any mismatch fails closed before the job is queued.
+    pub(crate) fn stage_adopted_job_input_blob(
+        &self,
+        job_id: &str,
+        blob_id: &str,
+        source: &SealedJobInputBlob,
+    ) -> Result<SealedJobInputBlob, PathError> {
+        validate_identifier("jobId", job_id)?;
+        validate_identifier("blobId", blob_id)?;
+        source.revalidate()?;
+        let blob_root = format!("runtime/jobs/{job_id}/inputs/{blob_id}");
+        let blob_directory = self.prepare_data_directory(&blob_root)?;
+        let destination = self.resolve_data(&format!("{blob_root}/payload"))?;
+        if fs::symlink_metadata(destination.absolute()).is_ok() {
+            return self.pin_exact_sealed_blob(
+                blob_directory,
+                destination,
+                source.size,
+                &source.sha256,
+                "adopted job input blob",
+            );
+        }
+
+        let mut staging = self.create_temporary_staging_file(&destination)?;
+        let mut input = source.file._file.try_clone().map_err(PathError::Io)?;
+        input.seek(SeekFrom::Start(0)).map_err(PathError::Io)?;
+        let source_before =
+            verify_regular_file(&source.file.root, &source.file.path, &input, true)?;
+        let mut digest = Sha256::new();
+        let mut total = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = input.read(&mut buffer).map_err(PathError::Io)?;
+            if read == 0 {
+                break;
+            }
+            total = total
+                .checked_add(read as u64)
+                .ok_or(PathError::FileChanged)?;
+            if total > source.size {
+                return Err(PathError::FileChanged);
+            }
+            staging
+                .file
+                .write_all(&buffer[..read])
+                .map_err(PathError::Io)?;
+            digest.update(&buffer[..read]);
+        }
+        let source_after = verify_regular_file(&source.file.root, &source.file.path, &input, true)?;
+        let copied_sha256 = digest_hex(&digest.finalize().into());
+        if source_before != source_after || total != source.size || copied_sha256 != source.sha256 {
+            return Err(PathError::FileChanged);
+        }
+        staging.file.flush().map_err(PathError::Io)?;
+        staging.file.sync_all().map_err(PathError::Io)?;
+        verify_regular_file(&self.data_root, &staging.path, &staging.file, true)?;
+
+        if let Err(error) = install_file_no_replace(staging.path.absolute(), destination.absolute())
+        {
+            if error.kind() == io::ErrorKind::AlreadyExists
+                || fs::symlink_metadata(destination.absolute()).is_ok()
+            {
+                return self.pin_exact_sealed_blob(
+                    blob_directory,
+                    destination,
+                    source.size,
+                    &source.sha256,
+                    "adopted job input blob",
+                );
+            }
+            return Err(PathError::Io(error));
+        }
+        staging.published = true;
+        sync_installed_parent(destination.absolute())?;
+        drop(staging);
+        self.pin_exact_sealed_blob(
+            blob_directory,
+            destination,
+            source.size,
+            &source.sha256,
+            "adopted job input blob",
+        )
+    }
+
+    pub(crate) fn pin_runtime_job_input_upload(
+        &self,
+        upload_id: &str,
+        size: u64,
+        sha256: &str,
+    ) -> Result<SealedJobInputBlob, PathError> {
+        validate_identifier("uploadId", upload_id)?;
+        let root = format!("runtime/uploads/{upload_id}");
+        let directory = self.prepare_data_directory(&root)?;
+        let path = self.resolve_data(&format!("{root}/payload"))?;
+        self.pin_exact_sealed_blob(directory, path, size, sha256, "job input upload")
+    }
+
+    /// Removes only the exact derived upload files after validating their
+    /// regular-file identity and durable size/digest metadata. Missing files
+    /// are idempotent; a mismatch is retained for explicit reconciliation.
+    pub(crate) fn cleanup_runtime_job_input_upload(
+        &self,
+        upload_id: &str,
+        maximum_size: Option<u64>,
+        expected_sha256: Option<&str>,
+    ) -> Result<bool, PathError> {
+        validate_identifier("uploadId", upload_id)?;
+        if maximum_size.is_some_and(|size| size == 0 || size > MAX_JOB_INPUT_UPLOAD_BYTES) {
+            return Err(PathError::BlobCleanupMismatch);
+        }
+        if let Some(digest) = expected_sha256 {
+            parse_digest_hex(digest)?;
+        }
+        let root = format!("runtime/uploads/{upload_id}");
+        let mut removed = false;
+        for (name, require_exact_size) in [("payload.pending", false), ("payload", true)] {
+            let path = self.resolve_data(&format!("{root}/{name}"))?;
+            removed |= self.remove_verified_blob_file(
+                &path,
+                maximum_size,
+                require_exact_size.then_some(expected_sha256).flatten(),
+                require_exact_size,
+            )?;
+        }
+        let directory = self.resolve_data(&root)?;
+        if fs::remove_dir(directory.absolute()).is_ok() {
+            sync_installed_parent(directory.absolute())?;
+        }
+        Ok(removed)
+    }
+
+    pub(crate) fn cleanup_adopted_job_input_blob(
+        &self,
+        blob: &WorkerInputBlob,
+        job_id: &str,
+    ) -> Result<bool, PathError> {
+        let expected = format!("runtime/jobs/{job_id}/inputs/{}/payload", blob.blob_id);
+        if blob.relative_path != expected {
+            return Err(PathError::BlobCleanupMismatch);
+        }
+        let path = self.resolve_data(&expected)?;
+        let removed = self.remove_verified_blob_file(
+            &path,
+            Some(blob.size_bytes),
+            Some(blob.sha256.as_str()),
+            true,
+        )?;
+        let directory =
+            self.resolve_data(&format!("runtime/jobs/{job_id}/inputs/{}", blob.blob_id))?;
+        let _ = fs::remove_dir(directory.absolute());
+        Ok(removed)
+    }
+
+    fn remove_verified_blob_file(
+        &self,
+        path: &ResolvedTrustedPath,
+        maximum_size: Option<u64>,
+        expected_sha256: Option<&str>,
+        exact_size: bool,
+    ) -> Result<bool, PathError> {
+        validate_authority(&self.data_root, path)?;
+        self.data_root.revalidate()?;
+        let mut file = match open_staging_cleanup_candidate(path.absolute()) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(PathError::Io(error)),
+        };
+        // A never-started reservation has no upload directory at all; opening
+        // first makes that exact absence idempotent. Once a candidate exists,
+        // keep its handle pinned while validating every parent so a link swap
+        // still fails closed before deletion.
+        reject_parent_link_components(&self.data_root.canonical, path.absolute())?;
+        let before = verify_regular_file(&self.data_root, path, &file, true)?;
+        let size = file.metadata().map_err(PathError::Io)?.len();
+        if maximum_size.is_some_and(|expected| {
+            (exact_size && size != expected) || (!exact_size && size > expected)
+        }) {
+            return Err(PathError::BlobCleanupMismatch);
+        }
+        if let Some(expected_sha256) = expected_sha256 {
+            let digest = hash_open_file(&mut file, size)?;
+            if digest_hex(&digest) != expected_sha256 {
+                return Err(PathError::BlobCleanupMismatch);
+            }
+        }
+        let after = verify_regular_file(&self.data_root, path, &file, true)?;
+        if before != after {
+            return Err(PathError::FileChanged);
+        }
+        fs::remove_file(path.absolute()).map_err(PathError::Io)?;
+        drop(file);
+        sync_installed_parent(path.absolute())?;
+        self.data_root.revalidate()?;
+        Ok(true)
+    }
+
+    pub(crate) fn read_bounded_job_result(
+        &self,
+        job_id: &str,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, PathError> {
+        validate_identifier("jobId", job_id)?;
+        let path = self.resolve_data(&format!("runtime/jobs/{job_id}/result.json"))?;
+        read_bounded(&self.data_root, &path, maximum_bytes)
+    }
+
+    pub(crate) fn read_bounded_job_checkpoint(
+        &self,
+        job_id: &str,
+        maximum_bytes: usize,
+    ) -> Result<Option<Vec<u8>>, PathError> {
+        validate_identifier("jobId", job_id)?;
+        let path = self.resolve_data(&format!("runtime/jobs/{job_id}/checkpoint.json"))?;
+        match read_bounded(&self.data_root, &path, maximum_bytes) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(PathError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn pin_worker_input_blob(
+        &self,
+        job_id: &str,
+        blob: &WorkerInputBlob,
+    ) -> Result<SealedJobInputBlob, PathError> {
+        let expected = format!("runtime/jobs/{job_id}/inputs/{}/payload", blob.blob_id);
+        if blob.relative_path != expected {
+            return Err(PathError::InvalidRelative(
+                ValidationError::InvalidRelativePath {
+                    field: "input blob path",
+                },
+            ));
+        }
+        let directory =
+            self.prepare_data_directory(&format!("runtime/jobs/{job_id}/inputs/{}", blob.blob_id))?;
+        let path = self.resolve_data(&expected)?;
+        self.pin_exact_sealed_blob(
+            directory,
+            path,
+            blob.size_bytes,
+            &blob.sha256,
+            "worker input blob",
+        )
+    }
+
+    fn pin_exact_sealed_blob(
+        &self,
+        blob_directory: TrustedDirectoryPin,
+        path: ResolvedTrustedPath,
+        size: u64,
+        sha256: &str,
+        kind: &'static str,
+    ) -> Result<SealedJobInputBlob, PathError> {
+        if size == 0 || size > MAX_JOB_INPUT_UPLOAD_BYTES {
+            return Err(PathError::InvalidBlobSize {
+                maximum_bytes: MAX_JOB_INPUT_UPLOAD_BYTES,
+            });
+        }
+        parse_digest_hex(sha256)?;
+        let file = match self.pin_existing_data_file(&path) {
+            Ok(file) => file,
+            Err(PathError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(PathError::AlreadyStaged(kind));
+            }
+            Err(error) => return Err(error),
+        };
+        let sealed = SealedJobInputBlob {
+            blob_directory,
+            file,
+            size,
+            sha256: sha256.to_owned(),
+        };
+        sealed.revalidate()?;
+        Ok(sealed)
     }
 
     /// Creates a fresh attempt root and private workspace, then atomically
@@ -904,14 +1537,25 @@ impl RuntimePaths {
     pub(crate) fn prepare_worker_start(
         &self,
         identity: &WorkerIdentity,
+        execution_scope: &WorkerExecutionScope,
+        input_blobs: &[WorkerInputBlob],
     ) -> Result<PreparedWorkerStart, PathError> {
-        let manifest = WorkerStartManifest::for_identity(identity.clone())?;
+        let manifest = WorkerStartManifest::for_identity_scope_and_inputs(
+            identity.clone(),
+            execution_scope.clone(),
+            input_blobs.to_vec(),
+        )?;
         let attempt = self.worker_attempt_paths(&manifest)?;
         validate_authority(&self.data_root, &attempt.checkpoint)?;
         validate_authority(&self.data_root, &attempt.result)?;
         let job_directory =
             self.prepare_data_directory(&path_text(attempt.job_directory.relative()))?;
         let input_manifest = self.pin_existing_data_file(&attempt.input_manifest)?;
+        let input_blobs = manifest
+            .input_blobs
+            .iter()
+            .map(|blob| self.pin_worker_input_blob(&identity.job_id, blob))
+            .collect::<Result<Vec<_>, _>>()?;
         let launch_directory =
             self.prepare_launch_directory(&path_text(attempt.launch_directory.relative()))?;
         let workspace_directory =
@@ -931,6 +1575,7 @@ impl RuntimePaths {
             manifest,
             job_directory,
             input_manifest,
+            input_blobs,
             launch_directory,
             workspace_directory,
             start_manifest,
@@ -1176,6 +1821,37 @@ impl RuntimePaths {
         )))
     }
 
+    fn create_exact_temporary_staging_file(
+        &self,
+        path: &ResolvedTrustedPath,
+    ) -> Result<TemporaryStagingFile, PathError> {
+        validate_authority(&self.data_root, path)?;
+        self.data_root.revalidate()?;
+        reject_parent_link_components(&self.data_root.canonical, path.absolute())?;
+        reject_existing_destination(path.absolute(), "job input upload staging file")?;
+        let file = open_new_staging_file(path.absolute()).map_err(PathError::Io)?;
+        let identity = match file_identity(&file) {
+            Ok(identity) => identity,
+            Err(error) => {
+                drop(file);
+                let _ = fs::remove_file(path.absolute());
+                return Err(error);
+            }
+        };
+        let staging = TemporaryStagingFile {
+            path: path.clone(),
+            file,
+            identity,
+            published: false,
+        };
+        let verified = verify_regular_file(&self.data_root, &staging.path, &staging.file, true)?;
+        if verified != staging.identity {
+            return Err(PathError::FileChanged);
+        }
+        self.data_root.revalidate()?;
+        Ok(staging)
+    }
+
     pub(crate) fn job_paths(&self, job_id: &str) -> Result<TrustedJobPaths, PathError> {
         validate_identifier("jobId", job_id)?;
         let root = format!("runtime/jobs/{job_id}");
@@ -1250,6 +1926,36 @@ fn validate_authority(root: &TrustedRoot, path: &ResolvedTrustedPath) -> Result<
         return Err(PathError::WrongAuthority(root.kind));
     }
     Ok(())
+}
+
+fn pin_existing_directory_inside(
+    root: &TrustedRoot,
+    path: &ResolvedTrustedPath,
+    kind: &'static str,
+) -> Result<TrustedDirectoryPin, PathError> {
+    validate_authority(root, path)?;
+    root.revalidate()?;
+    reject_link_components(&root.canonical, path.absolute())?;
+    let directory = open_directory(path.absolute()).map_err(PathError::Io)?;
+    let metadata = directory.metadata().map_err(PathError::Io)?;
+    if !metadata.is_dir() {
+        return Err(PathError::RootNotDirectory(kind));
+    }
+    let actual = opened_final_path(&directory, path.absolute())?;
+    if !path_is_within(&actual, &root.canonical) || !paths_equal(&actual, path.absolute()) {
+        return Err(PathError::EscapedRoot(root.kind));
+    }
+    reject_link_components(&root.canonical, path.absolute())?;
+    root.revalidate()?;
+    let identity = file_identity(&directory)?;
+    Ok(TrustedDirectoryPin {
+        root: TrustedRoot {
+            kind,
+            canonical: path.absolute.clone(),
+            identity,
+            _directory: Arc::new(directory),
+        },
+    })
 }
 
 fn create_directory_chain(
@@ -1693,6 +2399,50 @@ fn install_file_no_replace(_source: &Path, _destination: &Path) -> io::Result<()
 }
 
 #[cfg(windows)]
+fn install_file_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let success = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if success == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn install_file_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn install_file_replace(_source: &Path, _destination: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic replacement is unsupported",
+    ))
+}
+
+#[cfg(windows)]
 fn sync_installed_parent(_destination: &Path) -> Result<(), PathError> {
     // MOVEFILE_WRITE_THROUGH provides the platform's durable move boundary.
     Ok(())
@@ -1821,6 +2571,151 @@ fn path_is_within(candidate: &Path, root: &Path) -> bool {
 }
 
 #[cfg(windows)]
+fn normal_windows_component_is_unambiguous(value: &std::ffi::OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    let units = value.encode_wide().collect::<Vec<_>>();
+    if units.is_empty()
+        || matches!(units.last(), Some(unit) if *unit == u16::from(b'.') || *unit == u16::from(b' '))
+        || units.iter().any(|unit| {
+            *unit == 0
+                || *unit < 32
+                || matches!(
+                    *unit,
+                    value if value == u16::from(b'<')
+                        || value == u16::from(b'>')
+                        || value == u16::from(b':')
+                        || value == u16::from(b'"')
+                        || value == u16::from(b'/')
+                        || value == u16::from(b'\\')
+                        || value == u16::from(b'|')
+                        || value == u16::from(b'?')
+                        || value == u16::from(b'*')
+                )
+        })
+    {
+        return false;
+    }
+
+    let stem = units
+        .split(|unit| *unit == u16::from(b'.'))
+        .next()
+        .unwrap_or_default();
+    let ascii_stem = stem
+        .iter()
+        .map(|unit| {
+            u8::try_from(*unit)
+                .ok()
+                .map(|byte| byte.to_ascii_uppercase())
+        })
+        .collect::<Option<Vec<_>>>();
+    if let Some(stem) = ascii_stem.as_deref() {
+        if matches!(
+            stem,
+            b"CON" | b"PRN" | b"AUX" | b"NUL" | b"CONIN$" | b"CONOUT$" | b"CLOCK$"
+        ) {
+            return false;
+        }
+        if stem.len() == 4
+            && matches!(&stem[..3], b"COM" | b"LPT")
+            && matches!(stem[3], b'1'..=b'9')
+        {
+            return false;
+        }
+    }
+    if stem.len() == 4 && matches!(stem[3], 0x00b9 | 0x00b2 | 0x00b3) {
+        let prefix_matches = |expected: &[u8; 3]| {
+            stem[..3].iter().zip(expected).all(|(unit, byte)| {
+                *unit == u16::from(byte.to_ascii_uppercase())
+                    || *unit == u16::from(byte.to_ascii_lowercase())
+            })
+        };
+        if prefix_matches(b"COM") || prefix_matches(b"LPT") {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(windows)]
+fn child_argv_path_presentation(path: &Path) -> Result<PathBuf, PathError> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Prefix;
+
+    if path.as_os_str().encode_wide().any(|unit| unit == 0) {
+        return Err(PathError::InvalidChildArgvPath);
+    }
+
+    let mut components = path.components();
+    let prefix = match components.next() {
+        Some(Component::Prefix(prefix)) => prefix.kind(),
+        _ => return Err(PathError::InvalidChildArgvPath),
+    };
+    let (mut presented, rebuild) = match prefix {
+        Prefix::Disk(drive) if drive.is_ascii_alphabetic() => (path.to_path_buf(), false),
+        Prefix::UNC(server, share)
+            if normal_windows_component_is_unambiguous(server)
+                && normal_windows_component_is_unambiguous(share) =>
+        {
+            (path.to_path_buf(), false)
+        }
+        Prefix::VerbatimDisk(drive) if drive.is_ascii_alphabetic() => {
+            (PathBuf::from(format!("{}:\\", char::from(drive))), true)
+        }
+        Prefix::VerbatimUNC(server, share)
+            if normal_windows_component_is_unambiguous(server)
+                && normal_windows_component_is_unambiguous(share) =>
+        {
+            let mut value = PathBuf::from(r"\\");
+            value.push(server);
+            value.push(share);
+            (value, true)
+        }
+        // Generic verbatim and device namespaces do not have a safe normal
+        // absolute spelling. Trusted roots established with VOLUME_NAME_DOS
+        // should never produce either form, so fail closed if one appears.
+        Prefix::Verbatim(_)
+        | Prefix::DeviceNS(_)
+        | Prefix::Disk(_)
+        | Prefix::UNC(_, _)
+        | Prefix::VerbatimDisk(_) => return Err(PathError::InvalidChildArgvPath),
+        Prefix::VerbatimUNC(_, _) => return Err(PathError::InvalidChildArgvPath),
+    };
+
+    let mut rooted = false;
+    for component in components {
+        match component {
+            Component::RootDir if !rooted => rooted = true,
+            Component::Normal(value)
+                if rooted && normal_windows_component_is_unambiguous(value) =>
+            {
+                if rebuild {
+                    presented.push(value);
+                }
+            }
+            Component::Prefix(_) | Component::CurDir | Component::ParentDir => {
+                return Err(PathError::InvalidChildArgvPath)
+            }
+            Component::RootDir | Component::Normal(_) => {
+                return Err(PathError::InvalidChildArgvPath)
+            }
+        }
+    }
+    if !rooted || !presented.is_absolute() {
+        return Err(PathError::InvalidChildArgvPath);
+    }
+    Ok(presented)
+}
+
+#[cfg(not(windows))]
+fn child_argv_path_presentation(path: &Path) -> Result<PathBuf, PathError> {
+    if !path.is_absolute() {
+        return Err(PathError::InvalidChildArgvPath);
+    }
+    Ok(path.to_path_buf())
+}
+
+#[cfg(windows)]
 fn path_components(path: &Path) -> Vec<String> {
     path.components()
         .map(|component| component.as_os_str().to_string_lossy().to_lowercase())
@@ -1854,6 +2749,10 @@ mod tests {
         digest_hex(&digest)
     }
 
+    fn unscoped_worker() -> WorkerExecutionScope {
+        WorkerExecutionScope::unscoped()
+    }
+
     #[test]
     fn runtime_paths_reject_traversal_and_absolute_paths() {
         let (_directory, paths) = roots("breadboard-runtime-path-test");
@@ -1863,6 +2762,156 @@ mod tests {
         assert!(paths.resolve_data("../../Windows").is_err());
         assert!(paths.resolve_app("C:/Windows/System32/cmd.exe").is_err());
         assert!(paths.resolve_runtime("../app/worker.mjs").is_err());
+    }
+
+    #[test]
+    fn child_argv_presentation_preserves_canonical_pin_authority() {
+        let (_directory, paths) = roots("breadboard-runtime-child-argv-authority");
+        let entrypoint = paths
+            .app_root()
+            .join("dashboard/scripts/runtime-v2-dashboard.mjs");
+        fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+        fs::write(&entrypoint, b"trusted entrypoint").unwrap();
+
+        let resolved = paths
+            .resolve_app("dashboard/scripts/runtime-v2-dashboard.mjs")
+            .unwrap();
+        let canonical = resolved.absolute().to_path_buf();
+        let resolved_argument = resolved.child_argv_path().unwrap();
+        assert_eq!(resolved.absolute(), canonical);
+        assert_eq!(fs::canonicalize(&resolved_argument).unwrap(), canonical);
+
+        let pin = paths.pin_app_file_for_launch(&resolved).unwrap();
+        let pinned_canonical = pin.absolute().to_path_buf();
+        let pinned_argument = pin.child_argv_path().unwrap();
+        pin.revalidate().unwrap();
+        assert_eq!(pin.absolute(), pinned_canonical);
+        assert_eq!(
+            fs::canonicalize(&pinned_argument).unwrap(),
+            pinned_canonical
+        );
+
+        #[cfg(windows)]
+        {
+            assert_ne!(resolved_argument, canonical);
+            assert_ne!(pinned_argument, pinned_canonical);
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(resolved_argument, canonical);
+            assert_eq!(pinned_argument, pinned_canonical);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_launch_directory_presents_a_normal_child_path_without_replacing_its_pin() {
+        let (_directory, paths) = roots("breadboard-runtime-launch-directory-presentation");
+        let dashboard = paths.app_root().join("dashboard");
+        fs::create_dir_all(&dashboard).unwrap();
+        let directory = paths.pin_app_launch_directory("dashboard").unwrap();
+        let canonical = directory.absolute().to_path_buf();
+
+        let presented = directory.child_process_path().unwrap();
+        assert!(!presented.to_string_lossy().starts_with(r"\\?\"));
+        assert_eq!(fs::canonicalize(&presented).unwrap(), canonical);
+        directory.revalidate().unwrap();
+        assert_eq!(directory.absolute(), canonical);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_child_argv_presentation_is_non_lossy_and_fail_closed() {
+        let verbatim_drive = Path::new(r"\\?\C:\Program Files\Breadboard\日本語\entry.mjs");
+        assert_eq!(
+            child_argv_path_presentation(verbatim_drive).unwrap(),
+            PathBuf::from(r"C:\Program Files\Breadboard\日本語\entry.mjs")
+        );
+        let verbatim_unc = Path::new(r"\\?\UNC\server\share\Breadboard files\entry.mjs");
+        assert_eq!(
+            child_argv_path_presentation(verbatim_unc).unwrap(),
+            PathBuf::from(r"\\server\share\Breadboard files\entry.mjs")
+        );
+
+        for unchanged in [
+            Path::new(r"C:\Breadboard\entry.mjs"),
+            Path::new(r"\\server\share\Breadboard\entry.mjs"),
+        ] {
+            assert_eq!(child_argv_path_presentation(unchanged).unwrap(), unchanged);
+        }
+        let rejected = [
+            PathBuf::from(r"relative\entry.mjs"),
+            PathBuf::from(r"\rooted-without-drive\entry.mjs"),
+            PathBuf::from(r"\\?\GLOBALROOT\Device\HarddiskVolume1\entry.mjs"),
+            PathBuf::from(r"\\.\C:\Breadboard\entry.mjs"),
+            PathBuf::from(r"\\?\1:\Breadboard\entry.mjs"),
+            PathBuf::from(r"\\?\C:relative\entry.mjs"),
+            PathBuf::from(r"\\?\UNC\server"),
+            PathBuf::from(r"\\?\UNC\server.\share\entry.mjs"),
+            PathBuf::from(r"\\?\UNC\server\share.\entry.mjs"),
+            PathBuf::from(r"\\?\C:\Breadboard\one\..\entry.mjs"),
+            PathBuf::from(r"\\?\C:\Breadboard\trailing.\entry.mjs"),
+            PathBuf::from(r"\\?\C:\Breadboard\trailing \entry.mjs"),
+            PathBuf::from(r"\\?\C:\Breadboard\CON\entry.mjs"),
+            PathBuf::from(r"\\?\C:\Breadboard\aux.txt\entry.mjs"),
+            PathBuf::from(r"\\?\C:\Breadboard\COM1\entry.mjs"),
+            PathBuf::from(r"\\?\C:\Breadboard\LPT9.log\entry.mjs"),
+            PathBuf::from(r"\\?\C:\Breadboard\name:stream\entry.mjs"),
+            PathBuf::from("\\\\?\\C:\\Breadboard\\control\u{1}name\\entry.mjs"),
+        ];
+        for rejected in &rejected {
+            assert!(matches!(
+                child_argv_path_presentation(rejected),
+                Err(PathError::InvalidChildArgvPath)
+            ));
+        }
+    }
+
+    #[test]
+    fn data_root_launch_file_is_exactly_pinned_and_rejects_hard_link_aliases() {
+        let (_directory, paths) = roots("breadboard-runtime-data-launch-file");
+        let executable = paths.data_root().join("runtime/comfyui/python.exe");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"test interpreter").unwrap();
+        let resolved = paths.resolve_data("runtime/comfyui/python.exe").unwrap();
+        let pin = paths.pin_data_file_for_launch(&resolved).unwrap();
+        pin.revalidate().unwrap();
+        drop(pin);
+
+        fs::hard_link(
+            &executable,
+            paths.data_root().join("runtime/comfyui/alias.exe"),
+        )
+        .unwrap();
+        assert!(matches!(
+            paths.pin_data_file_for_launch(&resolved),
+            Err(PathError::MultipleHardLinks)
+        ));
+        assert!(paths.resolve_data("../runtime/comfyui/python.exe").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn data_root_launch_file_rejects_windows_reparse_aliases() {
+        use std::os::windows::fs::symlink_file;
+
+        let (_directory, paths) = roots("breadboard-runtime-data-launch-reparse");
+        let target = paths.data_root().join("target.exe");
+        let alias = paths.data_root().join("runtime/comfyui/python.exe");
+        fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        fs::write(&target, b"test interpreter").unwrap();
+        if let Err(error) = symlink_file(&target, &alias) {
+            if error.kind() == io::ErrorKind::PermissionDenied || error.raw_os_error() == Some(1314)
+            {
+                return;
+            }
+            panic!("could not create Windows reparse test fixture: {error}");
+        }
+        let resolved = paths.resolve_data("runtime/comfyui/python.exe").unwrap();
+        assert!(matches!(
+            paths.pin_data_file_for_launch(&resolved),
+            Err(PathError::ReparsePoint)
+        ));
     }
 
     #[test]
@@ -2244,7 +3293,15 @@ mod tests {
             .write_all(b"orphan from a crashed older runtime")
             .unwrap();
 
-        let prepared = paths.prepare_worker_start(&identity).unwrap();
+        let execution_scope = WorkerExecutionScope::new(
+            Some(42),
+            Some("garden-1".into()),
+            Some("conversation-1".into()),
+        )
+        .unwrap();
+        let prepared = paths
+            .prepare_worker_start(&identity, &execution_scope, &[])
+            .unwrap();
         assert_eq!(prepared.start_manifest_argument(), "start.json");
         assert_eq!(
             prepared.launch_directory().absolute(),
@@ -2268,6 +3325,7 @@ mod tests {
             .unwrap();
         let parsed = parse_worker_start_manifest(&encoded).unwrap();
         assert_eq!(&parsed, prepared.manifest());
+        assert_eq!(parsed.execution_scope, execution_scope);
         assert_eq!(
             prepared.manifest().workspace_path,
             "runtime/jobs/job_1/attempts/2/worker_7/workspace"
@@ -2283,10 +3341,20 @@ mod tests {
         prepared.revalidate().unwrap();
         drop(prepared);
 
+        let mismatched_scope = unscoped_worker();
         assert!(matches!(
-            paths.prepare_worker_start(&identity),
+            paths.prepare_worker_start(&identity, &mismatched_scope, &[]),
             Err(PathError::AlreadyStaged("worker start manifest"))
         ));
+        let (encoded, _pin) = paths
+            .read_bounded_data_file_with_pin(&start_path, MAX_WORKER_START_MANIFEST_BYTES)
+            .unwrap();
+        assert_eq!(
+            parse_worker_start_manifest(&encoded)
+                .unwrap()
+                .execution_scope,
+            execution_scope
+        );
     }
 
     #[test]
@@ -2297,7 +3365,9 @@ mod tests {
             attempt: 1,
             worker_instance_id: "worker_1".into(),
         };
-        assert!(paths.prepare_worker_start(&identity).is_err());
+        assert!(paths
+            .prepare_worker_start(&identity, &unscoped_worker(), &[])
+            .is_err());
         assert!(!paths
             .data_root()
             .join("runtime/jobs/job_1/attempts/1/worker_1/start.json")
@@ -2348,6 +3418,30 @@ mod tests {
     }
 
     #[test]
+    fn pinned_configuration_reads_are_bounded_and_cannot_traverse() {
+        let directory = tempfile::Builder::new()
+            .prefix("breadboard-runtime-configuration-read")
+            .tempdir()
+            .unwrap();
+        let config = directory.path().join("config");
+        fs::create_dir(&config).unwrap();
+        fs::write(config.join("desktop-config.json"), br#"{"version":2}"#).unwrap();
+        fs::write(directory.path().join("outside.json"), b"secret").unwrap();
+
+        let pin = TrustedDirectoryPin::pin_existing("configuration", &config).unwrap();
+        assert_eq!(
+            pin.read_bounded_file("desktop-config.json", 13).unwrap(),
+            br#"{"version":2}"#
+        );
+        assert!(matches!(
+            pin.read_bounded_file("desktop-config.json", 12),
+            Err(PathError::OversizedFile { maximum_bytes: 12 })
+        ));
+        assert!(pin.read_bounded_file("../outside.json", 64).is_err());
+        pin.revalidate().unwrap();
+    }
+
+    #[test]
     fn launch_directory_is_minted_only_from_runtime_data_authority() {
         let (_directory, paths) = roots("breadboard-runtime-launch-directory");
         let launch = paths
@@ -2356,6 +3450,38 @@ mod tests {
         assert!(launch.absolute().starts_with(paths.data_root()));
         assert_eq!(launch.authority, LaunchDirectoryAuthority::RuntimeData);
         launch.revalidate().unwrap();
+    }
+
+    #[test]
+    fn service_cwd_is_minted_only_from_an_existing_app_subdirectory() {
+        let (_directory, paths) = roots("breadboard-runtime-app-launch-directory");
+        fs::create_dir_all(paths.app_root().join("dashboard/scripts")).unwrap();
+
+        let launch = paths.pin_app_launch_directory("dashboard").unwrap();
+        assert!(launch.absolute().starts_with(paths.app_root()));
+        assert_eq!(launch.authority, LaunchDirectoryAuthority::Application);
+        launch.revalidate().unwrap();
+
+        assert!(paths.pin_app_launch_directory("../dashboard").is_err());
+        assert!(paths.pin_app_launch_directory("missing").is_err());
+    }
+
+    #[test]
+    fn service_cwd_is_minted_only_from_an_existing_data_subdirectory() {
+        let (_directory, paths) = roots("breadboard-runtime-data-launch-directory");
+        fs::create_dir_all(paths.data_root().join("runtime-v2/toolchains/comfyui")).unwrap();
+
+        let launch = paths
+            .pin_data_launch_directory("runtime-v2/toolchains/comfyui")
+            .unwrap();
+        assert!(launch.absolute().starts_with(paths.data_root()));
+        assert_eq!(launch.authority, LaunchDirectoryAuthority::RuntimeData);
+        launch.revalidate().unwrap();
+
+        assert!(paths.pin_data_launch_directory("../comfyui").is_err());
+        assert!(paths
+            .pin_data_launch_directory("runtime-v2/toolchains/missing")
+            .is_err());
     }
 
     #[cfg(unix)]
@@ -2406,6 +3532,79 @@ mod tests {
         ));
         drop(second);
         drop(second_directory);
+    }
+
+    #[test]
+    fn service_diagnostic_log_is_atomic_bounded_and_keeps_the_newest_records() {
+        let (_directory, paths) = roots("breadboard-runtime-service-log");
+        for sequence in 0..8 {
+            paths
+                .append_bounded_service_log(
+                    "dashboard",
+                    format!("record-{sequence:02}-abcdefghijkl").as_bytes(),
+                    64,
+                )
+                .unwrap();
+        }
+        let path = paths.data_root().join("logs/services/dashboard.log");
+        let bytes = fs::read(path).unwrap();
+        assert!(bytes.len() <= 64);
+        assert!(bytes.ends_with(b"\n"));
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("record-07-abcdefghijkl"));
+        assert!(!text.contains("record-00-abcdefghijkl"));
+        assert!(paths
+            .append_bounded_service_log("../escaped", b"record", 64)
+            .is_err());
+    }
+
+    #[test]
+    fn worker_diagnostic_log_is_attempt_fenced_atomic_and_bounded() {
+        let (_directory, paths) = roots("breadboard-runtime-worker-log");
+        let identity = WorkerIdentity {
+            job_id: "job_upload_1".into(),
+            attempt: 2,
+            worker_instance_id: "worker_ingest_1".into(),
+        };
+        for sequence in 0..8 {
+            paths
+                .append_bounded_worker_log(
+                    &identity,
+                    format!("stderr-{sequence:02}-abcdefghijkl").as_bytes(),
+                    64,
+                )
+                .unwrap();
+        }
+
+        let expected = paths
+            .data_root()
+            .join("runtime/jobs/job_upload_1/attempts/2/worker_ingest_1/diagnostics.log");
+        let bytes = fs::read(&expected).unwrap();
+        assert!(bytes.len() <= 64);
+        assert!(bytes.ends_with(b"\n"));
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("stderr-07-abcdefghijkl"));
+        assert!(!text.contains("stderr-00-abcdefghijkl"));
+        assert_eq!(
+            paths.read_bounded_worker_log(&identity, 64).unwrap(),
+            fs::read(expected).unwrap()
+        );
+
+        let other_attempt = WorkerIdentity {
+            attempt: 3,
+            ..identity.clone()
+        };
+        assert!(paths
+            .read_bounded_worker_log(&other_attempt, 64)
+            .unwrap()
+            .is_empty());
+        let invalid = WorkerIdentity {
+            job_id: "../escaped".into(),
+            ..identity
+        };
+        assert!(paths
+            .append_bounded_worker_log(&invalid, b"record", 64)
+            .is_err());
     }
 
     #[cfg(unix)]
@@ -2486,7 +3685,7 @@ mod tests {
             worker_instance_id: "worker_1".into(),
         };
         assert!(matches!(
-            paths.prepare_worker_start(&identity),
+            paths.prepare_worker_start(&identity, &unscoped_worker(), &[]),
             Err(PathError::ReparsePoint)
         ));
         assert!(!outside_attempts.join("1/worker_1/start.json").exists());

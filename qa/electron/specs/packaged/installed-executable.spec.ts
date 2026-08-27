@@ -15,6 +15,7 @@ import {
   launchBreadboard,
   type BreadboardElectron,
 } from "../../launch-breadboard";
+import { withPackagedChildEnvironment } from "../../packaged-environment";
 
 const PACKAGED_EXE_ENV = "BREADBOARD_QA_PACKAGED_EXE";
 const suppliedExecutable = process.env[PACKAGED_EXE_ENV]?.trim() ?? "";
@@ -38,22 +39,6 @@ const EXPECTED_PRELOAD_API_KEYS = [
   "setStartupSound",
   "setTheme",
 ] as const;
-const PACKAGED_BEHAVIOR_ENVIRONMENT_KEYS = [
-  "BREADBOARD_QA_MODE",
-  "BREADBOARD_QA_SERVICE_PROFILE",
-  "BREADBOARD_QA_RUN_ID",
-  "BREADBOARD_QA_RUN_DIR",
-  "BREADBOARD_QA_ARTIFACTS_DIR",
-  "BREADBOARD_DATA_DIR",
-  "BREADBOARD_REPO_ROOT",
-  "GBRAIN_MODE",
-  "UI_TARS_MODE",
-  "CAD_MODE",
-  "CLIPROXY_MODE",
-  "VIDEO_TRANSCRIPTION_ENABLED",
-  "CI",
-] as const;
-
 test.skip(process.platform !== "win32", "BLOCKED (TEST_ENVIRONMENT): packaged executable QA currently requires Windows.");
 test.skip(suppliedExecutable.length === 0, BLOCKER);
 
@@ -66,19 +51,13 @@ test("explicit installed executable keeps production hardening and exits cleanly
       process.env["BREADBOARD_QA_PRESERVE_RUNTIME"] === "1"
         ? "always"
         : "on-failure",
+    desktopConfigProfile: "production-required",
   });
   // `launchBreadboard({ packaged: true })` ignores electronArgs, so no dev or
   // QA command-line gate is passed. Clear the environment half as well: this
   // probe must exercise the production packaged lifecycle, not QA service
   // filtering, while retaining the isolated paths created above.
-  const packagedEnv = { ...run.env };
-  for (const key of PACKAGED_BEHAVIOR_ENVIRONMENT_KEYS) {
-    delete packagedEnv[key];
-  }
-  const packagedRun: QaRunEnvironment = {
-    ...run,
-    env: packagedEnv,
-  };
+  const packagedRun: QaRunEnvironment = withPackagedChildEnvironment(run);
   const resultsDir = path.join(
     run.paths.repoRoot,
     ".qa-results",
@@ -175,9 +154,10 @@ test("explicit installed executable keeps production hardening and exits cleanly
     ).toBeVisible({ timeout: 10 * 60_000 });
 
     endpoints = readRuntimeEndpoints(run);
-    expect(endpoints.pid).toBe(mainPid);
     ownedProcesses = await captureOwnedWindowsProcessTree([mainPid, outerPid]);
     expect(ownedProcesses.some((process) => process.pid === mainPid)).toBe(true);
+    expect(endpoints.pid).not.toBe(mainPid);
+    expect(ownedProcesses.some((process) => process.pid === endpoints?.pid)).toBe(true);
     ownedListeningPorts = await discoverOwnedListeningPorts(
       endpoints,
       ownedProcesses,
@@ -266,7 +246,9 @@ test("explicit installed executable keeps production hardening and exits cleanly
       const processHandle = app.application.process();
       const exitedBeforeRequestedClose =
         processHandle.exitCode !== null || processHandle.signalCode !== null;
-      const observedExit = observeProcessExit(processHandle, 75_000);
+      // The shared Electron close helper has a 90-second emergency bound.
+      // Keep the packaged observer beyond it so it cannot reject first.
+      const observedExit = observeProcessExit(processHandle, 105_000);
       if (exitedBeforeRequestedClose) {
         teardownErrors.push(
           new Error(

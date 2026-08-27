@@ -14,7 +14,9 @@ const {
   resolveReadablePath,
   resolveWritablePath,
 } = await import("../src/lib/career-ops/commands.ts");
-const { modeFilePath } = await import("../src/lib/career-ops/skill-prompt.ts");
+const { buildSystemPrompt, modeFilePath } = await import(
+  "../src/lib/career-ops/skill-prompt.ts"
+);
 
 const source = (relativePath) =>
   fs.readFileSync(fileURLToPath(new URL(`../${relativePath}`, import.meta.url)), "utf8");
@@ -198,6 +200,132 @@ test("a mode argument cannot walk out of modes/", () => {
   assert.equal(modeFilePath(ROOT, "nonexistent"), null);
 });
 
+test("workspace paths reject symlink and junction traversal without blocking direct files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-career-ops-links-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-career-ops-outside-"));
+  const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
+  try {
+    for (const dir of ["modes", "reports", "output"]) {
+      fs.mkdirSync(path.join(root, dir), { recursive: true });
+    }
+    fs.writeFileSync(path.join(root, "tracker.mjs"), "// direct fixture\n");
+    fs.writeFileSync(path.join(root, "generate-pdf.mjs"), "// direct fixture\n");
+    fs.writeFileSync(path.join(root, "modes", "tracker.md"), "# direct mode\n");
+    fs.writeFileSync(path.join(root, "modes", "_shared.md"), "DIRECT-SHARED-CONTEXT\n");
+    fs.writeFileSync(path.join(outside, "secret.md"), "outside\n");
+    fs.mkdirSync(path.join(outside, "skills", "career-ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(outside, "skills", "career-ops", "SKILL.md"),
+      "OUTSIDE-SKILL-CONTENT\n",
+    );
+
+    fs.symlinkSync(outside, path.join(root, "reports", "outside-link"), directoryLinkType);
+    // Even a link back inside the clone is rejected. Otherwise a lexically
+    // writable path could alias a read-only script or mode file.
+    fs.symlinkSync(root, path.join(root, "reports", "inside-link"), directoryLinkType);
+    fs.symlinkSync(outside, path.join(root, "modes", "linked"), directoryLinkType);
+    fs.symlinkSync(outside, path.join(root, ".agents"), directoryLinkType);
+
+    assert.equal(resolveInsideRoot("reports/direct/new.md", root)?.relative, "reports/direct/new.md");
+    assert.equal(resolveWritablePath("reports/direct/new.md", root).ok, true);
+    assert.equal(resolveReadablePath("modes/tracker.md", root).ok, true);
+    assert.equal(parseCommand("node tracker.mjs", root).ok, true);
+    assert.ok(availableScripts(root).includes("tracker.mjs"));
+
+    assert.equal(resolveInsideRoot("reports/outside-link/secret.md", root), null);
+    assert.equal(resolveReadablePath("reports/outside-link/secret.md", root).ok, false);
+    assert.equal(resolveWritablePath("reports/outside-link/overwrite.md", root).ok, false);
+    assert.equal(
+      parseCommand(
+        "node generate-pdf.mjs cv.html reports/outside-link/generated.pdf",
+        root,
+      ).ok,
+      false,
+    );
+
+    assert.equal(resolveReadablePath("reports/inside-link/tracker.mjs", root).ok, false);
+    assert.equal(resolveWritablePath("reports/inside-link/tracker.mjs", root).ok, false);
+    assert.equal(modeFilePath(root, "linked/secret"), null);
+    const built = buildSystemPrompt({
+      root,
+      mode: null,
+      scripts: ["tracker.mjs"],
+      health: {
+        available: true,
+        cloned: true,
+        root,
+        dependenciesInstalled: true,
+        browsersInstalled: true,
+        onboarding: null,
+        modeCount: 1,
+        trackedApplications: null,
+        reason: null,
+      },
+    });
+    assert.match(built.prompt, /DIRECT-SHARED-CONTEXT/);
+    assert.doesNotMatch(built.prompt, /OUTSIDE-SKILL-CONTENT/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("linked scripts are excluded and a script swap is refused at spawn", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-career-ops-script-link-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-career-ops-script-target-"));
+  const marker = path.join(outside, "executed.txt");
+  try {
+    const directScript = path.join(root, "direct.mjs");
+    fs.writeFileSync(directScript, 'process.stdout.write("direct-ok")\n');
+    const { runNode } = await import("../src/lib/career-ops/runtime.ts");
+    const directResult = await runNode(root, ["direct.mjs"], 2_000);
+    assert.equal(directResult.code, 0);
+    assert.equal(directResult.stdout, "direct-ok");
+
+    const outsideScript = path.join(outside, "outside.mjs");
+    fs.writeFileSync(
+      outsideScript,
+      `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(marker)}, "executed")\n`,
+    );
+    // Hard links need no developer-mode privilege on Windows and are another
+    // name for the outside file, so they exercise the process-boundary check on
+    // every supported test host.
+    fs.linkSync(outsideScript, path.join(root, "hard-linked.mjs"));
+    assert.ok(!availableScripts(root).includes("hard-linked.mjs"));
+    assert.equal(parseCommand("node hard-linked.mjs", root).ok, false);
+
+    try {
+      fs.symlinkSync(outsideScript, path.join(root, "linked.mjs"), "file");
+      assert.ok(!availableScripts(root).includes("linked.mjs"));
+      assert.equal(parseCommand("node linked.mjs", root).ok, false);
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        ["EPERM", "EACCES", "UNKNOWN"].includes(error.code)
+      ) {
+        t.diagnostic("file symlinks are unavailable on this Windows host");
+      } else {
+        throw error;
+      }
+    }
+
+    const swappedScript = path.join(root, "swapped.mjs");
+    fs.writeFileSync(swappedScript, "// accepted before replacement\n");
+    assert.equal(parseCommand("node swapped.mjs", root).ok, true);
+    fs.rmSync(swappedScript);
+    fs.linkSync(outsideScript, swappedScript);
+
+    const swappedResult = await runNode(root, ["swapped.mjs"], 2_000);
+    assert.equal(swappedResult.code, null);
+    assert.match(swappedResult.stderr, /refused.*linked/i);
+    assert.equal(fs.existsSync(marker), false, "the linked target must never execute");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test("ChatMock's inlined reasoning never reaches the transcript", async () => {
   const { splitReasoning } = await import("../src/lib/career-ops/run-manager.ts");
   const split = splitReasoning("<think>weighing the score</think>Global: 4.2/5");
@@ -268,7 +396,7 @@ test("both chat surfaces route the command and render the run", () => {
   );
 });
 
-test("the run manager never spawns anything but Node, and never a shell", () => {
+test("only the disposable Career Ops worker can reach the fixed Node tool runner", () => {
   const manager = source("src/lib/career-ops/run-manager.ts");
   const runtime = source("src/lib/career-ops/runtime.ts");
   // Every command goes through the policy before a process exists.
@@ -276,4 +404,8 @@ test("the run manager never spawns anything but Node, and never a shell", () => 
   assert.ok(!/shell:\s*true/.test(manager), "the run manager must never use a shell");
   assert.ok(!/shell:\s*true/.test(runtime), "the runtime must never use a shell");
   assert.match(runtime, /spawn\(process\.execPath/);
+  assert.match(manager, /startOuterAgentRun/);
+  assert.match(manager, /startRuntimeWorkerRun/);
+  assert.match(manager, /kind: "career-ops"/);
+  assert.match(runtime, /delete childEnv\.CHATMOCK_API_KEY/);
 });

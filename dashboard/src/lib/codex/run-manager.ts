@@ -1,14 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import path from "node:path";
-import {
   spawn,
   spawnSync,
   type ChildProcess,
@@ -17,7 +8,13 @@ import {
 import type { ChatMessageAttachment } from "../chat-attachments.ts";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
 import type { GraftRunContext, GraftServer } from "../code-index/index-service.ts";
-import { finalizeRunSnapshot } from "../agent-edits/snapshot.ts";
+import { repositoryRoot } from "../runtime-paths.ts";
+import {
+  externalRuntimeFilesystem as fs,
+  externalRuntimePathExists,
+  externalRuntimeReadDirectoryEntries,
+} from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 export interface CodexEvent {
   sequenceNumber: number;
@@ -75,7 +72,7 @@ interface Launcher {
 /** Exported for other agents that drive a Codex process of their own. */
 export type CodexLauncher = Launcher;
 
-type CodexImageAttachment = Extract<ChatMessageAttachment, { type: "image" }>;
+export type CodexImageAttachment = Extract<ChatMessageAttachment, { type: "image" }>;
 
 const runtimeGlobal = globalThis as typeof globalThis & {
   __breadboardCodexRuns?: Map<string, RunState>;
@@ -88,6 +85,12 @@ const MAX_STDERR = 32_000;
 const MAX_OUTPUT_PARTS = 200;
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const TERMINAL_RETENTION_MS = 30 * 60 * 1000;
+
+function scheduleCleanup(runId: string): void {
+  const timer = setTimeout(() => runs.delete(runId), TERMINAL_RETENTION_MS);
+  timer.unref?.();
+}
 
 function commandVersion(command: string): string | null {
   const probe = spawnSync(command, ["--version"], {
@@ -137,7 +140,7 @@ export function codexExtensionBinaryCandidates(
   for (const root of [...new Set(roots.map((entry) => path.resolve(entry)))]) {
     let extensionNames: string[];
     try {
-      extensionNames = readdirSync(root, { withFileTypes: true })
+      extensionNames = externalRuntimeReadDirectoryEntries(root)
         .filter(
           (entry) => entry.isDirectory() && /^openai\.chatgpt-/i.test(entry.name),
         )
@@ -150,7 +153,7 @@ export function codexExtensionBinaryCandidates(
     }
     for (const extensionName of extensionNames) {
       const candidate = path.join(root, extensionName, "bin", target, executable);
-      if (existsSync(candidate)) candidates.push(candidate);
+      if (externalRuntimePathExists(candidate)) candidates.push(candidate);
     }
   }
   return candidates;
@@ -160,10 +163,8 @@ function localBinaryCandidates(env: NodeJS.ProcessEnv): string[] {
   const executable = process.platform === "win32" ? "codex.exe" : "codex";
   return [
     env.CODEX_BIN?.trim() ?? "",
-    path.resolve(process.cwd(), "codex", "codex-rs", "target", "release", executable),
-    path.resolve(process.cwd(), "codex", "codex-rs", "target", "debug", executable),
-    path.resolve(process.cwd(), "..", "codex", "codex-rs", "target", "release", executable),
-    path.resolve(process.cwd(), "..", "codex", "codex-rs", "target", "debug", executable),
+    path.join(repositoryRoot(), "codex", "codex-rs", "target", "release", executable),
+    path.join(repositoryRoot(), "codex", "codex-rs", "target", "debug", executable),
     ...codexExtensionBinaryCandidates(env),
   ].filter(Boolean);
 }
@@ -176,7 +177,10 @@ function resolveLauncher(env: NodeJS.ProcessEnv = process.env): Launcher | null 
   for (const candidate of localBinaryCandidates(env)) {
     // A configured bare command may be resolvable through PATH. Concrete
     // paths, including extension bundles, must exist before they are probed.
-    if ((path.isAbsolute(candidate) || /[\\/]/.test(candidate)) && !existsSync(candidate)) {
+    if (
+      (path.isAbsolute(candidate) || /[\\/]/.test(candidate)) &&
+      !externalRuntimePathExists(candidate)
+    ) {
       continue;
     }
     const version = commandVersion(candidate);
@@ -198,10 +202,9 @@ export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): {
     return { available: true, installed: true, version: launcher.version };
   }
   const cloneCandidates = [
-    path.resolve(process.cwd(), "codex", "codex-rs", "Cargo.toml"),
-    path.resolve(process.cwd(), "..", "codex", "codex-rs", "Cargo.toml"),
+    path.join(repositoryRoot(), "codex", "codex-rs", "Cargo.toml"),
   ];
-  const cloned = cloneCandidates.some((candidate) => existsSync(candidate));
+  const cloned = cloneCandidates.some((candidate) => externalRuntimePathExists(candidate));
   return {
     available: false,
     installed: cloned,
@@ -211,18 +214,7 @@ export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): {
   };
 }
 
-/**
- * Closing the undo bracket here, rather than when a browser notices, keeps
- * edits the user makes after the run out of the run's own diff. OpenCode and
- * Ruflo already do this; without it the Codex "after" snapshot was only taken
- * whenever a client got around to asking for it.
- */
-const TERMINAL_EVENTS = new Set(["run.completed", "run.failed", "run.aborted"]);
-
 function emit(run: RunState, type: string, payload: Record<string, unknown> = {}): void {
-  if (TERMINAL_EVENTS.has(type)) {
-    finalizeRunSnapshot(run.runId, run.repositoryPath);
-  }
   run.sequence += 1;
   run.events.push({
     sequenceNumber: run.sequence,
@@ -268,6 +260,7 @@ function publishTerminal(run: RunState, result: CodexTerminalResult): void {
   } catch {
     // The run result remains replayable even when transcript persistence fails.
   }
+  scheduleCleanup(run.runId);
 }
 
 function requireRun(userId: number, runId: string): RunState {
@@ -294,7 +287,7 @@ function materializeImages(
 ): { paths: string[]; cleanup: () => void } {
   if (attachments.length === 0) return { paths: [], cleanup: () => undefined };
   const repositoryRoot = path.resolve(repositoryPath);
-  const temporaryDirectory = mkdtempSync(path.join(repositoryRoot, ".breadboard-codex-"));
+  const temporaryDirectory = fs.mkdtempSync(path.join(repositoryRoot, ".breadboard-codex-"));
   let cleaned = false;
   const cleanup = () => {
     if (cleaned) return;
@@ -302,7 +295,7 @@ function materializeImages(
     const resolved = path.resolve(temporaryDirectory);
     const expectedPrefix = `${repositoryRoot}${path.sep}.breadboard-codex-`;
     if (resolved.startsWith(expectedPrefix)) {
-      rmSync(resolved, { recursive: true, force: true });
+      fs.rmSync(resolved, { recursive: true, force: true });
     }
   };
   try {
@@ -317,7 +310,7 @@ function materializeImages(
       }
       const extension = match[1].toLowerCase() === "jpeg" ? "jpg" : match[1].toLowerCase();
       const filePath = path.join(temporaryDirectory, `screenshot-${index + 1}.${extension}`);
-      writeFileSync(filePath, bytes, { flag: "wx" });
+      fs.writeFileSync(filePath, bytes, { flag: "wx" });
       return filePath;
     });
     return { paths, cleanup };
@@ -438,8 +431,9 @@ export function graftConfigOverrides(server: GraftServer | null): string[] {
   ];
 }
 
-export function startRun(input: {
+export interface CodexRuntimeWorkerRunInput {
   userId: number;
+  runtimeJobId?: string;
   task: string;
   instruction?: string;
   skill?: { id: string; slug: string; contentHash?: string };
@@ -452,12 +446,17 @@ export function startRun(input: {
   gardenSlug: string;
   attachments?: readonly CodexImageAttachment[];
   graft?: GraftRunContext | null;
-}): { runId: string; status: RunStatus } {
+}
+
+/** Fixed Runtime worker entrypoint. Next.js routes must call `startRun`. */
+export function startRuntimeWorkerRun(
+  input: CodexRuntimeWorkerRunInput,
+): { runId: string; status: RunStatus } {
   const launcher = resolveLauncher();
   if (!launcher) {
     throw new Error(runtimeAvailability().reason ?? "Codex is unavailable.");
   }
-  const runId = `cxrun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId ?? `cxrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -490,7 +489,7 @@ export function startRun(input: {
   run.cleanup = materialized.cleanup;
   const graft = input.graft ?? null;
   const codexHome = process.env.CODEX_HOME?.trim() || path.resolve(process.cwd(), ".runtime", "codex-agent");
-  mkdirSync(codexHome, { recursive: true });
+  fs.mkdirSync(codexHome, { recursive: true });
   const effort = ["none", "low", "medium", "high", "xhigh"].includes(input.reasoningEffort)
     ? input.reasoningEffort
     : "high";
@@ -652,11 +651,15 @@ export function startRun(input: {
   return { runId, status: run.status };
 }
 
-export function getEventsSince(userId: number, runId: string, since = 0): CodexEvent[] {
+export function getRuntimeWorkerEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): CodexEvent[] {
   return requireRun(userId, runId).events.filter((event) => event.sequenceNumber > since);
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(requireRun(userId, runId).status);
 }
 
@@ -665,7 +668,7 @@ export function isTerminal(userId: number, runId: string): boolean {
  * recorded. If Codex finished unusually quickly, the stored terminal result is
  * delivered immediately instead of being lost between launch and subscription.
  */
-export function setRunTerminalHandler(
+export function setRuntimeWorkerTerminalHandler(
   userId: number,
   runId: string,
   handler: (result: CodexTerminalResult) => void,
@@ -675,7 +678,7 @@ export function setRunTerminalHandler(
   if (run.terminalResult) handler(run.terminalResult);
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.status = "aborted";
@@ -690,4 +693,111 @@ export function abortRun(userId: number, runId: string): boolean {
   emit(run, "run.aborted", { summary: "Codex task stopped." });
   publishTerminal(run, { outcome: "aborted", content: "Codex task stopped.", usage: run.usage });
   return true;
+}
+
+export interface StartRunInput {
+  userId: number;
+  requestId?: string;
+  task: string;
+  instruction?: string;
+  skill?: { id: string; slug: string; contentHash?: string };
+  model: string;
+  reasoningEffort: string;
+  baseUrl: string;
+  repositoryPath: string;
+  repositoryName: string;
+  gardenSlug: string;
+  attachments?: readonly CodexImageAttachment[];
+  graftEnabled?: boolean;
+}
+
+/** Public durable facade. Runtime V2, rather than Next.js, owns the process tree. */
+export async function startRun(
+  input: StartRunInput,
+): Promise<{ runId: string; status: RunStatus }> {
+  const { startOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return startOuterAgentRun({
+    kind: "codex",
+    userId: input.userId,
+    requestId: input.requestId,
+    requestPayload: {
+      task: input.task,
+      instruction: input.instruction ?? null,
+      skill: input.skill ?? null,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      baseUrl: input.baseUrl,
+      repositoryPath: input.repositoryPath,
+      repositoryName: input.repositoryName,
+      gardenSlug: input.gardenSlug,
+      attachmentCount: input.attachments?.length ?? 0,
+      graftEnabled: input.graftEnabled === true,
+    },
+    images: input.attachments?.map((attachment) => ({ dataUrl: attachment.dataUrl })),
+  }) as Promise<{ runId: string; status: RunStatus }>;
+}
+
+export async function getEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): Promise<CodexEvent[]> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  const view = await readOuterAgentRunView("codex", userId, runId, since);
+  return view.events as CodexEvent[];
+}
+
+export async function isTerminal(userId: number, runId: string): Promise<boolean> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  return (await readOuterAgentRunView("codex", userId, runId, 0)).terminal;
+}
+
+function terminalResultFromEvents(events: readonly CodexEvent[]): CodexTerminalResult {
+  const terminal = events.findLast((event) =>
+    ["run.completed", "run.failed", "run.aborted"].includes(event.type),
+  );
+  const usageEvent = events.findLast((event) => event.type === "agent.usage");
+  const usage = usageEvent?.payload as Partial<ChatTokenUsage> | undefined;
+  const normalizedUsage = usage &&
+      Number.isFinite(usage.inputTokens) &&
+      Number.isFinite(usage.outputTokens) &&
+      Number.isFinite(usage.totalTokens)
+    ? (usage as ChatTokenUsage)
+    : undefined;
+  if (terminal?.type === "run.completed") {
+    return {
+      outcome: "completed",
+      content: text(terminal.payload.summary, 100_000) || "Codex completed the task.",
+      usage: normalizedUsage,
+    };
+  }
+  if (terminal?.type === "run.aborted") {
+    return {
+      outcome: "aborted",
+      content: text(terminal.payload.summary, 100_000) || "Codex task stopped.",
+      usage: normalizedUsage,
+    };
+  }
+  return {
+    outcome: "failed",
+    content: text(terminal?.payload.error, 100_000) || "Codex task failed.",
+    usage: normalizedUsage,
+  };
+}
+
+export function setRunTerminalHandler(
+  userId: number,
+  runId: string,
+  handler: (result: CodexTerminalResult) => void | Promise<void>,
+): void {
+  void import("../runtime-v2/outer-agent-run.ts").then(({ observeOuterAgentRun }) => {
+    observeOuterAgentRun("codex", userId, runId, async (view) => {
+      await handler(terminalResultFromEvents(view.events as CodexEvent[]));
+    });
+  });
+}
+
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
+  const { abortOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return abortOuterAgentRun("codex", userId, runId);
 }

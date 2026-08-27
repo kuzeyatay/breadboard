@@ -6,7 +6,7 @@ import {
   runtimeExternalSessionId,
 } from "./runtime-store.ts";
 import { allowedToolsForSurface } from "./tool-scopes.ts";
-import { ApiError } from "./route-helpers.ts";
+import { ApiError } from "./route-core.ts";
 import type { RuntimeKind } from "../agent-runtime/contracts.ts";
 
 function serviceSecret(runtime: RuntimeKind): string {

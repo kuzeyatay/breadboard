@@ -6,6 +6,7 @@ const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), 'utf8');
 
 const ingestRoute = source('../src/app/api/ingest/route.ts');
+const ingestExecutor = source('../src/lib/runtime-v2/ingest-executor.ts');
 const statusRoute = source('../src/app/api/vlm-ocr/status/route.ts');
 const option = source('../src/app/components/vlm-parse-option.tsx');
 const workspace = source('../src/app/gardens/[clusterSlug]/workspace-client.tsx');
@@ -45,36 +46,41 @@ test('the two page readers are mutually exclusive in both panels', () => {
 });
 
 test('the ingest route reads the flag and routes PDFs and images through the VLM', () => {
-  assert.match(ingestRoute, /formData\.get\("parseWithVlm"\) === "true"/);
-  assert.match(ingestRoute, /formData\.get\("parseMode"\) === "vlm"/);
-  // Only page-based files; anything else is read the normal way, with a note.
+  assert.match(ingestRoute, /upload\.fields\.get\("parseWithVlm"\) === "true"/);
+  assert.match(ingestRoute, /upload\.fields\.get\("parseMode"\) === "vlm"/);
   assert.match(
     ingestRoute,
+    /requestPayload:\s*\{[\s\S]{0,300}parseWithVlm,/,
+    'the authenticated compatibility route seals the choice into the Runtime request',
+  );
+  // Only page-based files; anything else is read the normal way, with a note.
+  assert.match(
+    ingestExecutor,
     /const useVlm = parseWithVlm && \(isImageExt\(ext\) \|\| ext === "pdf"\)/,
   );
-  assert.match(ingestRoute, /parsePagesWithVlm\(\{/);
+  assert.match(ingestExecutor, /parsePagesWithVlm\(\{/);
   // Pages are rendered at the width the VLM config asks for.
-  assert.match(ingestRoute, /desiredWidth: vlmConfig\.pageImageWidth/);
+  assert.match(ingestExecutor, /desiredWidth: vlmConfig\.pageImageWidth/);
 });
 
 test('a VLM-parsed source records how it was read', () => {
-  assert.match(ingestRoute, /extraction_method: "hunyuan-ocr-gguf"/);
-  assert.match(ingestRoute, /parse_mode: "vlm"/);
+  assert.match(ingestExecutor, /extraction_method: "hunyuan-ocr-gguf"/);
+  assert.match(ingestExecutor, /parse_mode: "vlm"/);
 });
 
 test('a missing model server fails the upload loudly instead of saving a stub', () => {
-  assert.match(ingestRoute, /if \(isVlmSetupError\(error\)\) throw error;/);
+  assert.match(ingestExecutor, /if \(isVlmSetupError\(error\)\) throw error;/);
   assert.match(
-    ingestRoute,
-    /error instanceof VlmOcrUnavailableError \|\| error instanceof VlmOcrDisabledError/,
+    ingestExecutor,
+    /error instanceof VlmOcrUnavailableError\s*\|\|\s*error instanceof VlmOcrDisabledError/,
   );
 });
 
 test('the parsed markdown is re-checked after the writer would clean it', () => {
   // writeDocumentKnowledge runs cleanGeneratedText over the markdown, so the
-  // route verifies the post-clean text rather than the pre-clean text.
+  // disposable executor verifies the post-clean text rather than the pre-clean text.
   assert.match(
-    ingestRoute,
+    ingestExecutor,
     /toBreadboardMarkdown\(cleanGeneratedText\(markdown\)\)/,
   );
 });

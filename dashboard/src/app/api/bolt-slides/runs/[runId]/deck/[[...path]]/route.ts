@@ -9,16 +9,9 @@
 // as a path under this route and resolves relatively — which is what lets one
 // build be served from a run-scoped URL without being rebuilt for it.
 
-import { createReadStream, statSync } from "node:fs";
-import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { liveArtifacts } from "@/lib/bolt-slides/run-manager.ts";
-import {
-  BoltSlidesWorkspaceError,
-  requireWorkspaceOwner,
-  resolveDeckFile,
-} from "@/lib/bolt-slides/workspace.ts";
+import { readDeckFile } from "@/lib/bolt-slides/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -30,30 +23,27 @@ export async function GET(
   try {
     const userId = await requireUserId();
     const { runId, path: segments } = await params;
-    if (!liveArtifacts(userId, runId)) requireWorkspaceOwner(userId, runId);
-    const file = resolveDeckFile(runId, (segments ?? []).join("/"));
+    const file = await readDeckFile(userId, runId, (segments ?? []).join("/"));
+    if (!file) {
+      return NextResponse.json({ ok: false, error: "deck_not_found" }, { status: 404 });
+    }
     const headers = new Headers({
       "content-type": file.contentType,
-      "content-length": String(statSync(file.absolutePath).size),
+      "content-length": String(file.size),
       "x-content-type-options": "nosniff",
       // Hashed asset names make a build immutable, but the deck's own page is
       // rewritten by a repair build, so nothing here is cached across a reload.
       "cache-control": "private, max-age=0, must-revalidate",
     });
-    const stream = Readable.toWeb(
-      createReadStream(file.absolutePath),
-    ) as ReadableStream<Uint8Array>;
-    return new Response(stream, { status: 200, headers });
+    return new Response(file.stream, { status: 200, headers });
   } catch (error) {
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
-    if (error instanceof BoltSlidesWorkspaceError) {
-      return NextResponse.json(
-        { ok: false, error: error.code },
-        { status: error.code === "invalid_run_id" ? 400 : 404 },
-      );
-    }
-    return NextResponse.json({ ok: false, error: "internal_error" }, { status: 500 });
+    const status = error instanceof Error && error.message === "run_not_found" ? 404 : 500;
+    return NextResponse.json(
+      { ok: false, error: status === 404 ? "run_not_found" : "internal_error" },
+      { status },
+    );
   }
 }

@@ -7,10 +7,19 @@
 // restart, when the in-memory run state is long gone: ownership is recorded in
 // the workspace itself.
 
-import { spawn } from "node:child_process";
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import path from "node:path";
+import { spawn, type ChildProcess } from "node:child_process";
+import type { Dirent, Stats } from "node:fs";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import {
+  externalRuntimeCopyTree,
+  externalRuntimeFilesystem as fs,
+  externalRuntimeLstat,
+  externalRuntimePathExists,
+  externalRuntimeReadDirectoryEntries,
+  externalRuntimeReadUtf8,
+  externalRuntimeRealpath,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
 import {
   cliCommand,
   hyperframesEnv,
@@ -19,6 +28,8 @@ import {
   type HyperframesLauncher,
   type HyperframesToolchain,
 } from "./runtime.ts";
+
+const fsp = fs.promises;
 
 export interface WorkspaceOwner {
   runId: string;
@@ -108,7 +119,7 @@ export function projectDirectory(runId: string, env: NodeJS.ProcessEnv = process
 
 export function readOwner(runId: string, env: NodeJS.ProcessEnv = process.env): WorkspaceOwner | null {
   try {
-    const raw = fs.readFileSync(path.join(runDirectory(runId, env), "owner.json"), "utf8");
+    const raw = externalRuntimeReadUtf8(path.join(runDirectory(runId, env), "owner.json"));
     const parsed = JSON.parse(raw) as Partial<WorkspaceOwner>;
     if (typeof parsed.userId !== "number" || !Number.isInteger(parsed.userId)) return null;
     return {
@@ -141,15 +152,19 @@ function spawnCli(
   args: readonly string[],
   cwd: string,
   timeoutMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
+  onChild?: (child: ChildProcess | null) => void,
 ): Promise<{ code: number | null; output: string }> {
   return new Promise((resolve) => {
     const { command, args: argv } = cliCommand(launcher, args);
     const child = spawn(command, argv, {
       cwd,
       windowsHide: true,
-      env: hyperframesEnv(toolchain),
+      env: hyperframesEnv(toolchain, env),
       stdio: ["ignore", "pipe", "pipe"],
     });
+    onChild?.(child);
     let output = "";
     const collect = (chunk: string) => {
       output = `${output}${chunk}`.slice(-16_000);
@@ -165,12 +180,25 @@ function spawnCli(
         // Already gone.
       }
     }, timeoutMs);
-    child.on("error", (error) => {
+    const abort = () => {
+      try {
+        child.kill();
+      } catch {
+        // Runtime remains the final process-tree authority.
+      }
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    const settled = () => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      onChild?.(null);
+    };
+    child.on("error", (error) => {
+      settled();
       resolve({ code: null, output: `${output}${error.message}` });
     });
     child.on("exit", (code) => {
-      clearTimeout(timer);
+      settled();
       resolve({ code, output });
     });
   });
@@ -186,11 +214,11 @@ function scaffoldFromClone(projectPath: string): boolean {
   if (!root) return false;
   const template = path.join(root, "packages", "cli", "src", "templates", "blank");
   const index = path.join(template, "index.html");
-  if (!fs.existsSync(index)) return false;
+  if (!externalRuntimePathExists(index)) return false;
   fs.mkdirSync(projectPath, { recursive: true });
-  fs.cpSync(template, projectPath, { recursive: true });
+  externalRuntimeCopyTree(template, projectPath);
   const shared = path.join(root, "packages", "cli", "src", "templates", "_shared");
-  if (fs.existsSync(shared)) fs.cpSync(shared, projectPath, { recursive: true });
+  if (externalRuntimePathExists(shared)) externalRuntimeCopyTree(shared, projectPath);
   fs.writeFileSync(
     path.join(projectPath, "hyperframes.json"),
     `${JSON.stringify({ $schema: "https://hyperframes.dev/schema.json", registry: "hyperframes" }, null, 2)}\n`,
@@ -223,6 +251,7 @@ export async function createWorkspace(input: {
   brief: string;
   launcher: HyperframesLauncher;
   toolchain: HyperframesToolchain;
+  environment?: NodeJS.ProcessEnv;
 }): Promise<CreatedWorkspace> {
   const runPath = runDirectory(input.runId);
   const projectPath = projectDirectory(input.runId);
@@ -245,8 +274,84 @@ export async function createWorkspace(input: {
     ["init", "project", "--example", "blank", "--non-interactive"],
     runPath,
     INIT_TIMEOUT_MS,
+    input.environment,
   );
-  const scaffolded = fs.existsSync(path.join(projectPath, "index.html"));
+  const scaffolded = externalRuntimePathExists(path.join(projectPath, "index.html"));
+  if (init.code === 0 && scaffolded) {
+    pinProjectScripts(projectPath);
+    return {
+      runDirectory: runPath,
+      projectDirectory: projectPath,
+      scaffold: "cli",
+      scaffoldWarning: "",
+    };
+  }
+  if (!scaffoldFromClone(projectPath)) {
+    throw new WorkspaceError(
+      "scaffold_failed",
+      `The HyperFrames project could not be scaffolded. ${init.output.trim().split(/\r?\n/).slice(-1)[0] ?? ""}`.trim(),
+    );
+  }
+  pinProjectScripts(projectPath);
+  return {
+    runDirectory: runPath,
+    projectDirectory: projectPath,
+    scaffold: "clone-template",
+    scaffoldWarning: init.output.trim().split(/\r?\n/).slice(-3).join(" ").slice(0, 400),
+  };
+}
+
+function directRuntimeWorkspace(candidate: string): string {
+  const resolved = path.resolve(candidate);
+  try {
+    const metadata = externalRuntimeLstat(resolved);
+    const canonical = externalRuntimeRealpath(resolved);
+    const normalize = (value: string) => {
+      const normalized = path.normalize(path.resolve(value));
+      return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+    };
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      normalize(canonical) !== normalize(resolved)
+    ) throw new Error("invalid");
+    return resolved;
+  } catch {
+    throw new WorkspaceError(
+      "invalid_runtime_workspace",
+      "The HyperFrames Runtime workspace is invalid.",
+    );
+  }
+}
+
+/** Scaffold inside one fresh Runtime attempt; no durable legacy owner file is needed. */
+export async function createRuntimeWorkspace(input: {
+  runtimeWorkspacePath: string;
+  launcher: HyperframesLauncher;
+  toolchain: HyperframesToolchain;
+  environment: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  onChild?: (child: ChildProcess | null) => void;
+}): Promise<CreatedWorkspace> {
+  const runPath = directRuntimeWorkspace(input.runtimeWorkspacePath);
+  const projectPath = path.join(runPath, "project");
+  if (externalRuntimePathExists(projectPath)) {
+    throw new WorkspaceError(
+      "runtime_workspace_not_fresh",
+      "The HyperFrames Runtime workspace is not fresh.",
+    );
+  }
+  const init = await spawnCli(
+    input.launcher,
+    input.toolchain,
+    ["init", "project", "--example", "blank", "--non-interactive"],
+    runPath,
+    INIT_TIMEOUT_MS,
+    input.environment,
+    input.signal,
+    input.onChild,
+  );
+  const scaffolded = externalRuntimePathExists(path.join(projectPath, "index.html"));
   if (init.code === 0 && scaffolded) {
     pinProjectScripts(projectPath);
     return {
@@ -286,7 +391,7 @@ export function pinProjectScripts(projectPath: string): void {
   const file = path.join(projectPath, "package.json");
   let manifest: Record<string, unknown>;
   try {
-    manifest = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    manifest = JSON.parse(externalRuntimeReadUtf8(file)) as Record<string, unknown>;
   } catch {
     return;
   }
@@ -306,7 +411,7 @@ export function pinProjectScripts(projectPath: string): void {
   fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
-function artifactId(relativePath: string): string {
+export function hyperframesArtifactId(relativePath: string): string {
   return Buffer.from(relativePath, "utf8").toString("base64url");
 }
 
@@ -319,15 +424,16 @@ function relativeFromArtifactId(id: string): string | null {
 
 function walk(root: string, directory: string, collected: HyperframesArtifact[]): void {
   if (collected.length >= MAX_SCAN_ENTRIES) return;
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
-    entries = fs.readdirSync(directory, { withFileTypes: true });
+    entries = externalRuntimeReadDirectoryEntries(directory);
   } catch {
     return;
   }
   for (const entry of entries) {
     if (collected.length >= MAX_SCAN_ENTRIES) return;
     const absolute = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
       if (SKIPPED_DIRECTORIES.has(entry.name)) continue;
       walk(root, absolute, collected);
@@ -337,15 +443,16 @@ function walk(root: string, directory: string, collected: HyperframesArtifact[])
     if (SKIPPED_FILES.has(entry.name.toLowerCase())) continue;
     const descriptor = FILE_KINDS[path.extname(entry.name).toLowerCase()];
     if (!descriptor) continue;
-    let stats: fs.Stats;
+    let stats: Stats;
     try {
-      stats = fs.statSync(absolute);
+      stats = externalRuntimeLstat(absolute);
     } catch {
       continue;
     }
+    if (stats.isSymbolicLink()) continue;
     const relativePath = path.relative(root, absolute).split(path.sep).join("/");
     collected.push({
-      id: artifactId(relativePath),
+      id: hyperframesArtifactId(relativePath),
       relativePath,
       name: entry.name,
       kind: descriptor.kind,
@@ -372,8 +479,27 @@ const KIND_ORDER: Record<HyperframesArtifact["kind"], number> = {
  * too: it is what makes the video editable later.
  */
 export function scanArtifacts(runId: string): HyperframesArtifact[] {
-  const projectPath = projectDirectory(runId);
-  if (!fs.existsSync(projectPath)) return [];
+  return scanHyperframesArtifacts(projectDirectory(runId));
+}
+
+export function scanHyperframesArtifacts(projectDirectoryPath: string): HyperframesArtifact[] {
+  const projectPath = path.resolve(projectDirectoryPath);
+  if (!externalRuntimePathExists(projectPath)) return [];
+  try {
+    const metadata = externalRuntimeLstat(projectPath);
+    const canonical = externalRuntimeRealpath(projectPath);
+    const normalize = (value: string) => {
+      const resolved = path.normalize(path.resolve(value));
+      return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    };
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      normalize(canonical) !== normalize(projectPath)
+    ) return [];
+  } catch {
+    return [];
+  }
   const collected: HyperframesArtifact[] = [];
   walk(projectPath, projectPath, collected);
   return collected.sort((left, right) => {
@@ -409,9 +535,9 @@ export function resolveArtifact(runId: string, id: string): ResolvedArtifact {
     throw new WorkspaceError("artifact_not_found", "That output was not found.");
   }
   const descriptor = FILE_KINDS[path.extname(absolute).toLowerCase()];
-  let stats: fs.Stats;
+  let stats: Stats;
   try {
-    stats = fs.statSync(absolute);
+    stats = externalRuntimeStat(absolute);
   } catch {
     throw new WorkspaceError("artifact_not_found", "That output was not found.");
   }

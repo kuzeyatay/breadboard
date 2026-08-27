@@ -21,7 +21,7 @@ Breadboard authenticated dashboard backend
           +-- Breadboard GBrain adapter client        (dashboard/src/lib/gbrain)
                     |
                     v  (loopback, secret-gated, garden-scoped)
-          GBrain adapter sidecar (gbrain-adapter/, Bun)
+          GBrain adapter sidecar (gbrain-adapter/, Node 24)
                     |
                     v
           VENDORED GBrain engine (gbrain/src, PGLite) via public ops
@@ -130,19 +130,41 @@ GBRAIN_MODE=disabled npm run dev
 generates a shared per-launch secret, polls `/health` with a bounded timeout, and
 surfaces the reason on failure (fatal in `required`, non-fatal in `preferred`).
 
-## Desktop behavior
+## Runtime V2 desktop lifecycle
 
-The Electron supervisor (`desktop/src/main/service-definitions.ts`) registers a
-`gbrain` service only when `gbrainMode !== "disabled"`:
+The checked-in Runtime V2 source registers `gbrain` as a real, on-demand
+service. It is absent at startup. The first retrieval acquires a server-side
+lease; the Rust ledger single-flights concurrent cold requests, starts one
+contained Node tree, waits for `/health` to prove the real `gbrain` backend, and
+then resumes the original request. Query timeout accounting begins only after
+that readiness lease has been acquired. A live lease prevents idle shutdown;
+the final release starts a bounded 10-minute idle TTL, and later retrieval can
+start a new generation.
 
-* runs on the bundled `bun` runtime;
-* loopback-only port (allocated in `app-lifecycle.ts`);
-* per-install secret (`gbrainAdapterSecret` in `desktop-config.json`, redacted
-  from logs);
-* mutable data under `<userData>/Data/gbrain` — never in packaged resources;
-* health-checked, gracefully shut down with the rest of the stack;
-* `required: false` so it never blocks app startup — the dashboard reports a
-  truthful degraded/unavailable state instead.
+Status and availability reads are observational: they do not acquire a lease,
+start the adapter, or remove the GBrain agent/tool surface. Resource-admission
+denials and adapter unavailability cross the existing UI as bounded structured
+errors. The renderer receives neither the service token nor any executable,
+path, or environment authority.
+
+The manifest's `requirement: optional` is failure-isolation policy, not optional
+capability registration: a GBrain launch failure may not prevent unrelated
+Breadboard surfaces from opening, but GBrain remains registered and visible and
+its next real retrieval can acquire a new lease.
+
+The Rust-owned environment preserves the existing per-install adapter secret,
+ChatMock embedding endpoint/model settings, and mutable
+`<userData>/Data/gbrain` store. The adapter and vendored engine are staged as
+immutable app source with frozen production dependencies; PGLite data and model
+caches are never copied into packaged resources.
+
+This is currently an adapter-ready source implementation, not the active
+desktop owner. Until `AppLifecycle` selects `RuntimeProcess` as the sole process
+owner, the existing Electron definition in
+`desktop/src/main/service-definitions.ts` remains the explicit legacy baseline.
+Runtime V2 mode is guarded from selecting that definition as a fallback. The
+central shell cutover must delete it once RuntimeProcess activation and parity
+are proven; it must not remain as a second supervisor.
 
 ## Synchronization
 
@@ -227,8 +249,8 @@ source ids and retrieval internals never appear.
 ## Test commands
 
 ```bash
-# Adapter: fake-backend unit + HTTP boundary + backend selector + embedding config
-# + REAL vendored-engine end-to-end (lexical, vector, graph, synthesis, isolation,
+# Adapter: Bun compatibility suite plus the production Node transport/loader and
+# REAL vendored-engine end-to-end (lexical, vector, graph, synthesis, isolation,
 # durability). Requires `bun install` in gbrain/ first (see note below).
 npm run test:gbrain
 
@@ -236,7 +258,7 @@ npm run test:gbrain
 # skill visibility, sync-worker, and status-badge tests.
 npm run test:dashboard
 
-# Opt-in GBrain e2e over the dashboard boundary (spawns the Bun adapter):
+# Opt-in GBrain e2e over the dashboard boundary (starts the Node adapter):
 cd dashboard && BREADBOARD_TEST_GBRAIN_E2E=1 \
   node --test --experimental-strip-types tests/gbrain-e2e.test.mjs
 
@@ -258,9 +280,11 @@ cd desktop && npm test       # desktop supervisor incl. GBrain service test
 * Vendored GBrain: `gbrain/VERSION` = `0.42.62.0`. Full machine-readable
   provenance is in **`gbrain/UPSTREAM.json`** (declared version, tree checksums,
   local-patch list, and a reproducible comparison procedure).
-* **No modifications** were made to `gbrain/src/` (`git status gbrain/src` is
-  clean; `localPatches: []`). The production backend imports the vendored engine
-  only through its public interfaces.
+* One narrow diagnostic patch is retained in `gbrain/src/core/pglite-engine.ts`
+  so non-Error PGlite initialization failures preserve their own fields instead
+  of becoming `[object Object]`; `gbrain/UPSTREAM.json` records the patch and its
+  focused verification. The production backend still imports the vendored
+  engine only through its public interfaces.
 * The exact upstream commit SHA cannot be independently proven because the source
   is committed inside Breadboard (no submodule/pin). `UPSTREAM.json` records this
   honestly and gives a diff-against-tagged-release verification procedure.

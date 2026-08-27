@@ -1,12 +1,13 @@
 // Resolution of UI-TARS runtime mode + loopback adapter connection settings.
 //
-// UI_TARS_MODE = disabled | optional | required (default: optional).
-//  - disabled: never contact the adapter; agent shown as disabled.
-//  - optional: try the adapter; if unavailable, Breadboard stays fully usable
-//    and the agent shows a diagnostic "unavailable" state.
+// UI_TARS_MODE = optional | required (default: optional).
+//  - optional: startup failure is isolated, but the agent remains registered
+//    and first use still attempts the adapter or reports it unavailable.
 //  - required: dev/dedicated only; callers may surface an actionable error.
+// Legacy `disabled` values normalize to failure-isolated `optional`; a service
+// requirement never permits omitting or hiding the capability.
 
-export type UITarsMode = "disabled" | "optional" | "required";
+export type UITarsMode = "optional" | "required";
 
 export interface UITarsAdapterConfig {
   mode: UITarsMode;
@@ -17,13 +18,12 @@ export interface UITarsAdapterConfig {
 
 export function uiTarsMode(env: NodeJS.ProcessEnv = process.env): UITarsMode {
   const raw = (env.UI_TARS_MODE ?? "optional").toLowerCase();
-  if (raw === "disabled" || raw === "required") return raw;
-  return "optional";
+  return raw === "required" ? "required" : "optional";
 }
 
-/** True when the dashboard should attempt to talk to the adapter at all. */
-export function uiTarsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return uiTarsMode(env) !== "disabled";
+/** UI-TARS remains reachable; `optional` controls startup failure isolation. */
+export function uiTarsEnabled(): boolean {
+  return true;
 }
 
 export function resolveUITarsConfig(env: NodeJS.ProcessEnv = process.env): UITarsAdapterConfig {

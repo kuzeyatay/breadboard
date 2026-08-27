@@ -1,0 +1,10 @@
+{
+  "name": "@breadboard/openscience-runtime",
+  "version": "2.0.22",
+  "private": true,
+  "description": "Immutable package authority for Breadboard's OpenScience Runtime V2 closure.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@synsci/openscience": "2.0.22"
+  }
+}

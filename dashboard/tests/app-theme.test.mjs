@@ -143,22 +143,22 @@ test("the remembered theme initializes before paint and is configurable from the
 
 test("dark mode uses charcoal paper and Breadboard's pastel utility bridge", () => {
   assert.match(globals, /:root\[data-theme="dark"\]\s*\{/);
-  assert.match(globals, /--paper-bg:\s*#18181a/);
-  assert.match(globals, /--paper-surface:\s*#20211f/);
-  assert.match(globals, /--ink:\s*#e6ebe5/);
+  assert.match(globals, /--paper-bg:\s*#0b0c0a/);
+  assert.match(globals, /--paper-surface:\s*#171916/);
+  assert.match(globals, /--ink:\s*#ccd2c9/);
   assert.match(globals, /--botanical:\s*#91b7a1/);
   assert.match(globals, /--botanical-2:\s*#9fb5c4/);
   assert.match(globals, /--botanical-3:\s*#a8c4bb/);
   assert.match(globals, /--danger:\s*#c98282/);
-  assert.match(globals, /--color-gray-950:\s*var\(--bb-color-gray-950, #e6f0e6\)/);
-  assert.match(globals, /--bb-color-gray-950:\s*#18181a/);
+  assert.match(globals, /--color-gray-950:\s*var\(--bb-color-gray-950, #f5f3ee\)/);
+  assert.match(globals, /--bb-color-gray-950:\s*#0b0c0a/);
   assert.match(globals, /--color-amber-400:\s*#c5a963/);
   assert.doesNotMatch(globals, /filter:\s*grayscale\(1\)/);
   assert.doesNotMatch(globals, /Aurora dark|#38bdf8|#a78bfa|#2dd4bf/);
   assert.match(globals, /html\[data-theme="dark"\] \.desktop-title-bar/);
   assert.match(globals, /html\[data-theme="dark"\] \.bb-neu-toolbar/);
-  assert.match(globals, /html\[data-theme="dark"\] \.auth-page-shell/);
-  assert.match(login, /auth-page-shell/);
+  assert.match(login, /bg-\[var\(--paper-surface\)\]/);
+  assert.match(login, /bg-gray-900/);
 });
 
 test("dark navbars use a reduced-motion-aware randomized pastel sky", () => {

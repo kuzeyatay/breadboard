@@ -1,6 +1,7 @@
-import fs from "node:fs";
+import type { PathOrFileDescriptor } from "node:fs";
 import crypto from "node:crypto";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 /**
  * OneDrive and Windows scanners can briefly deny an otherwise valid file open.
@@ -252,10 +253,10 @@ export function withTransientFileOpenRetry<T>(
   }
 }
 
-export function readFileSyncWithRetry(filePath: fs.PathOrFileDescriptor): Buffer;
-export function readFileSyncWithRetry(filePath: fs.PathOrFileDescriptor, encoding: BufferEncoding): string;
+export function readFileSyncWithRetry(filePath: PathOrFileDescriptor): Buffer;
+export function readFileSyncWithRetry(filePath: PathOrFileDescriptor, encoding: BufferEncoding): string;
 export function readFileSyncWithRetry(
-  filePath: fs.PathOrFileDescriptor,
+  filePath: PathOrFileDescriptor,
   encoding?: BufferEncoding,
 ): Buffer | string {
   return withTransientFileOpenRetry(() => (

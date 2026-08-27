@@ -18,8 +18,11 @@
 // this is a prompt fragment, and a prop list that is 95% right is worth far
 // more than a dependency on the compiler.
 
-import fs from "node:fs";
 import path from "node:path";
+import {
+  externalRuntimeReadDirectory,
+  externalRuntimeReadUtf8,
+} from "../external-runtime-filesystem.ts";
 import { resolveBoltSlidesRoot } from "./runtime.ts";
 
 export interface KitComponent {
@@ -149,7 +152,7 @@ function readComponents(
   const absolute = path.join(root, directory);
   let entries: string[];
   try {
-    entries = fs.readdirSync(absolute).filter((name) => name.endsWith(".tsx"));
+    entries = externalRuntimeReadDirectory(absolute).filter((name) => name.endsWith(".tsx"));
   } catch {
     return [];
   }
@@ -157,7 +160,7 @@ function readComponents(
   for (const entry of entries.sort()) {
     const moduleName = entry.replace(/\.tsx$/, "");
     if (only && !only.includes(moduleName)) continue;
-    const source = fs.readFileSync(path.join(absolute, entry), "utf8");
+    const source = externalRuntimeReadUtf8(path.join(absolute, entry));
     const description = leadingComment(source);
     const types = exportedTypes(source);
     for (const signature of signatures(source)) {
@@ -226,7 +229,7 @@ export function kitDigest(): KitDigest | null {
   let tokensRoot = "";
   let tokens: string[] = [];
   try {
-    const css = fs.readFileSync(path.join(root, "src", "styles", "tokens.css"), "utf8");
+    const css = externalRuntimeReadUtf8(path.join(root, "src", "styles", "tokens.css"));
     tokensRoot = rootBlock(css);
     tokens = [...new Set(tokensRoot.match(/--[a-z0-9-]+(?=\s*:)/g) ?? [])];
   } catch {
@@ -235,7 +238,7 @@ export function kitDigest(): KitDigest | null {
   }
   let classes: string[] = [];
   try {
-    const base = fs.readFileSync(path.join(root, "src", "styles", "base.css"), "utf8");
+    const base = externalRuntimeReadUtf8(path.join(root, "src", "styles", "base.css"));
     const defined = new Set(
       (base.match(/^\s*\.[a-zA-Z][-a-zA-Z0-9]*/gm) ?? []).map((value) => value.trim().slice(1)),
     );

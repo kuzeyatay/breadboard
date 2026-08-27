@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import type { GardenIssue } from "./issues.ts";
 import type { LearnRepairScope } from "./repair-scope.ts";
 import type { GardenBuildState } from "./types.ts";

@@ -11,9 +11,15 @@
 // to spawn `.cmd`/`.bat` without `shell: true`, and `shell: true` would put the
 // user's objective through a command-line parser.
 
-import { existsSync, readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import path from "node:path";
+import { repositoryRoot } from "../runtime-paths.ts";
+import {
+  externalRuntimeAccess,
+  externalRuntimeFilesystem as fs,
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 export interface RufloLauncher {
   command: string;
@@ -34,27 +40,41 @@ export interface RufloAvailability {
   executor?: { available: boolean; version?: string };
 }
 
-const PROBE_TIMEOUT_MS = 10_000;
+function isRufloRoot(candidate: string): boolean {
+  if (!externalRuntimePathExists(path.join(candidate, "bin", "cli.js"))) return false;
+  if (externalRuntimePathExists(path.join(candidate, "v3", "@claude-flow", "cli", "package.json"))) {
+    return true;
+  }
+  if (
+    externalRuntimePathExists(path.join(candidate, "runtime-artifact.json")) &&
+    externalRuntimePathExists(path.join(candidate, "node_modules", "@claude-flow", "cli", "package.json")) &&
+    externalRuntimePathExists(path.join(candidate, "node_modules", "@claude-flow", "cli", "dist", "src", "index.js"))
+  ) return true;
+  if (!externalRuntimePathExists(path.join(candidate, "dist", "src", "index.js"))) return false;
+  try {
+    const manifest = JSON.parse(externalRuntimeReadUtf8(path.join(candidate, "package.json"))) as {
+      name?: unknown;
+    };
+    return manifest.name === "@claude-flow/cli";
+  } catch {
+    return false;
+  }
+}
 
 export function resolveRufloRoot(env: NodeJS.ProcessEnv = process.env): string | null {
   const candidates = [
     env.RUFLO_ROOT?.trim(),
-    path.resolve(process.cwd(), "ruflo"),
-    path.resolve(process.cwd(), "..", "ruflo"),
+    path.join(repositoryRoot(), "ruflo"),
   ].filter((candidate): candidate is string => Boolean(candidate));
   return (
-    candidates.find(
-      (candidate) =>
-        existsSync(path.join(candidate, "bin", "cli.js")) &&
-        existsSync(path.join(candidate, "v3", "@claude-flow", "cli", "package.json")),
-    ) ?? null
+    candidates.find((candidate) => isRufloRoot(candidate)) ?? null
   );
 }
 
 export function clonedRufloVersion(root: string): string {
   try {
     const parsed = JSON.parse(
-      readFileSync(path.join(root, "package.json"), "utf8"),
+      externalRuntimeReadUtf8(path.join(root, "package.json")),
     ) as { version?: unknown };
     return typeof parsed.version === "string" && parsed.version.trim()
       ? parsed.version.trim()
@@ -64,10 +84,12 @@ export function clonedRufloVersion(root: string): string {
   }
 }
 
-/** The clone only runs from source once `v3/@claude-flow/cli` has been built. */
+/** A source clone needs its nested dist; the packaged CLI keeps dist at root. */
 function cloneIsBuilt(root: string): boolean {
-  return existsSync(
-    path.join(root, "v3", "@claude-flow", "cli", "dist", "src", "index.js"),
+  return (
+    externalRuntimePathExists(path.join(root, "dist", "src", "index.js")) ||
+    externalRuntimePathExists(path.join(root, "node_modules", "@claude-flow", "cli", "dist", "src", "index.js")) ||
+    externalRuntimePathExists(path.join(root, "v3", "@claude-flow", "cli", "dist", "src", "index.js"))
   );
 }
 
@@ -80,16 +102,51 @@ function bundledNpxCli(): string | null {
     "bin",
     "npx-cli.js",
   );
-  return existsSync(candidate) ? candidate : null;
+  return externalRuntimePathExists(candidate) ? candidate : null;
 }
 
-function probe(command: string, args: readonly string[]): boolean {
-  const result = spawnSync(command, [...args, "--version"], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: PROBE_TIMEOUT_MS,
-  });
-  return !result.error && result.status === 0;
+function regularFile(candidate: string): boolean {
+  try {
+    return externalRuntimeStat(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function executableFile(candidate: string): boolean {
+  try {
+    if (!regularFile(candidate)) return false;
+    if (process.platform !== "win32") externalRuntimeAccess(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function pathValue(env: NodeJS.ProcessEnv, name: "PATH" | "PATHEXT"): string {
+  const key = Object.keys(env).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+  return key ? env[key] ?? "" : "";
+}
+
+function findExecutable(command: string, env: NodeJS.ProcessEnv): string | null {
+  if (path.isAbsolute(command) || /[\\/]/u.test(command)) {
+    const candidate = path.resolve(command);
+    return executableFile(candidate) ? candidate : null;
+  }
+  const hasExtension = Boolean(path.extname(command));
+  const extensions = process.platform === "win32" && !hasExtension
+    ? (pathValue(env, "PATHEXT") || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+    : [""];
+  for (const directory of pathValue(env, "PATH")
+    .split(path.delimiter)
+    .map((entry) => entry.trim().replace(/^"|"$/gu, ""))
+    .filter(Boolean)) {
+    for (const extension of extensions) {
+      const candidate = path.join(directory, `${command}${extension}`);
+      if (executableFile(candidate)) return candidate;
+    }
+  }
+  return null;
 }
 
 export function resolveRufloLauncher(
@@ -102,9 +159,17 @@ export function resolveRufloLauncher(
   const configured = env.RUFLO_BIN?.trim();
   if (configured) {
     const isScript = /\.(?:js|mjs|cjs)$/i.test(configured);
-    const command = isScript ? process.execPath : configured;
-    const args = isScript ? [configured] : [];
-    if (probe(command, args)) return { command, args, source: "configured", version };
+    const resolved = isScript
+      ? (regularFile(path.resolve(configured)) ? path.resolve(configured) : null)
+      : findExecutable(configured, env);
+    if (resolved) {
+      return {
+        command: isScript ? process.execPath : resolved,
+        args: isScript ? [resolved] : [],
+        source: "configured",
+        version,
+      };
+    }
   }
 
   if (cloneIsBuilt(root)) {
@@ -112,13 +177,14 @@ export function resolveRufloLauncher(
     return { command: process.execPath, args: [entry], source: "clone", version };
   }
 
-  // The published package ships a prebuilt `dist/`, so an unbuilt clone still
-  // pins the exact version it was cloned at rather than drifting to @latest.
+  // The published CLI package ships a prebuilt `dist/`, so an unbuilt clone
+  // still pins its exact version rather than drifting to @latest. The bare
+  // `ruflo` package name belongs to a different upstream project.
   const npx = bundledNpxCli();
   if (!npx) return null;
   return {
     command: process.execPath,
-    args: [npx, "--yes", `ruflo@${version}`],
+    args: [npx, "--yes", `@claude-flow/cli@${version}`],
     source: "registry",
     version,
   };
@@ -131,17 +197,49 @@ export function resolveClaudeExecutable(
   const candidates = [configured, "claude"].filter(
     (candidate): candidate is string => Boolean(candidate),
   );
-  return candidates.find((candidate) => probe(candidate, [])) ?? null;
+  for (const candidate of candidates) {
+    const resolved = findExecutable(candidate, env);
+    if (resolved) return resolved;
+  }
+  return null;
 }
 
 function claudeVersion(command: string): string | undefined {
-  const result = spawnSync(command, ["--version"], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: PROBE_TIMEOUT_MS,
-  });
-  if (result.error || result.status !== 0) return undefined;
-  return (result.stdout ?? "").trim().split(/\s+/)[0] || undefined;
+  try {
+    const receipt = JSON.parse(
+      externalRuntimeReadUtf8(path.join(path.dirname(path.resolve(command)), "claude-runtime-artifact.json")),
+    ) as { claudeCode?: { version?: unknown } };
+    const version = receipt.claudeCode?.version;
+    if (
+      typeof version === "string" &&
+      version.trim() &&
+      Buffer.byteLength(version, "utf8") <= 120
+    ) return version.trim();
+  } catch {
+    // Development installs usually expose package.json higher in the tree.
+  }
+  let directory = path.dirname(path.resolve(command));
+  for (let depth = 0; depth < 8; depth += 1) {
+    try {
+      const parsed = JSON.parse(externalRuntimeReadUtf8(path.join(directory, "package.json"))) as {
+        name?: unknown;
+        version?: unknown;
+      };
+      if (
+        typeof parsed.name === "string" &&
+        /claude/iu.test(parsed.name) &&
+        typeof parsed.version === "string" &&
+        parsed.version.trim() &&
+        Buffer.byteLength(parsed.version, "utf8") <= 120
+      ) return parsed.version.trim();
+    } catch {
+      // Static health never executes the CLI merely to discover a version.
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return undefined;
 }
 
 export function runtimeAvailability(
@@ -157,7 +255,7 @@ export function runtimeAvailability(
       available: false,
       installed: true,
       reason:
-        "Ruflo cannot be launched. Build the clone (npm install && npm run build:ts in ruflo/) or make npm available so Breadboard can run the published CLI.",
+        "Ruflo cannot be launched. Build the clone (npm install && npm run build:ts in ruflo/) or make npm available so Breadboard can run the published @claude-flow/cli package.",
     };
   }
   const claude = resolveClaudeExecutable(env);

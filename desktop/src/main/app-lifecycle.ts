@@ -1,49 +1,29 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  Menu,
+  shell,
+} from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { LogManager } from "./log-manager";
-import {
-  ServiceManager,
-  type DesktopServiceDefinition,
-  type ServiceStatus,
-} from "./service-manager";
-import {
-  buildServiceDefinitions,
-  missingRuntimes,
-  resolveRuntimeBinaries,
-  serviceUrls,
-  SCRIBERR_PORT,
-} from "./service-definitions";
 import {
   ensureMutableDirectories,
   resolvePaths,
   repoRootFromModuleDir,
   type ResolvedPaths,
 } from "./path-resolver";
-import { repairWhisperXFfmpeg } from "./whisperx-ffmpeg-repair";
 import {
-  atomicWriteFile,
   loadOrCreatePersistentConfig,
-  mintLaunchSecrets,
   redactSecrets,
-  redactedConfigSummary,
+  redactedPersistentConfigSummary,
   savePersistentConfig,
-  type DesktopRuntimeConfig,
+  type PersistentDesktopConfig,
 } from "./runtime-config";
-import {
-  stopDetachedLearnWorker,
-  stopDetachedLearnWorkerNow,
-} from "./learn-worker-cleanup";
-import { allocatePort, allocatePortOrAdopt, allocateSupervisedPort } from "./ports";
-import { adoptionProbe, isOurServiceRunning, type AdoptionContext } from "./service-adoption";
-import {
-  CLIPROXY_DEFAULT_PORT,
-  cliproxyHome,
-  isCliproxyInstalled,
-  provisionCliproxyBinary,
-  writeCliproxyConfig,
-} from "./cliproxy";
 import {
   detectDevInstallation,
   executeMigration,
@@ -51,41 +31,55 @@ import {
   planMigration,
   MIGRATION_VERSION,
 } from "./migration";
+import { preflightQaDashboardDevelopment } from "./provisioning";
 import {
-  needsQuartzProvisioning,
-  provisionQaDashboardWorkspace,
-  provisionQuartzWorkspace,
-} from "./provisioning";
-import { WindowManager, defaultPreloadPath, defaultStartupHtmlPath } from "./window-manager";
+  WindowManager,
+  defaultPreloadPath,
+  defaultStartupHtmlPath,
+} from "./window-manager";
 import {
   allowThemeLocationFor,
   allowedOriginsFor,
   installGlobalSecurity,
   revokeThemeLocationFor,
+  type AllowedOrigins,
 } from "./security";
 import { IPC_CHANNELS } from "../shared/ipc-contract";
+import {
+  runtimeProductCopy,
+  runtimeProductText,
+} from "../shared/runtime-product-copy";
 import {
   backgroundColorForSurface,
   isWindowSurface,
   titleBarForSurface,
 } from "./window-options";
 import { installGpuDiagnostics } from "./gpu-diagnostics";
-import { claimDevInstance, duplicateStackWarning, releaseDevInstance } from "./dev-instance-lock";
+import {
+  claimDevInstance,
+  duplicateStackWarning,
+  releaseDevInstance,
+  requiresExclusiveHotCheckout,
+} from "./dev-instance-lock";
 import { openMicrophoneSettings } from "./microphone-settings";
-import { stopRecallEngine } from "./recall";
 import { readLastWindowTheme, writeLastWindowTheme } from "./theme-state";
-import { policyFromSnapshot, sanitizedPolicySummary, type MemoryPolicy } from "./memory-policy";
-import { defaultSystemMemorySource } from "./system-memory-source";
-import { SupervisorControlPlane } from "./supervisor-control-plane";
-import { readStartupSoundEnabled, writeStartupSoundEnabled } from "./startup-sound";
-import { prepareQaServiceDefinitions } from "./qa-mode";
+import {
+  readStartupSoundEnabled,
+  writeStartupSoundEnabled,
+} from "./startup-sound";
 import type { QaServiceProfile } from "./startup-options";
-
-// Conservative planning envelope: the dedicated worker is launched with a
-// 4096 MB V8 old-space ceiling, plus 50% for young/code spaces, native buffers,
-// loaded modules, and child-process overhead. This is explicitly not a measured
-// peak or a hard process-tree cap; future calibrated receipts may replace it.
-const LEARN_WORKER_ESTIMATED_COMMIT_MB = 6 * 1024;
+import {
+  RuntimeProcess,
+  type RuntimeReadySnapshot,
+  type RuntimeServiceStatus,
+  type RuntimeStatusSnapshot,
+} from "./runtime-process";
+import { runtimeLaunchMode } from "./runtime-launch-mode";
+import { runtimeInitialStartupTimeoutMs } from "./runtime-startup-timeout";
+import {
+  classifyRuntimeStartup,
+  runtimeStartupFailureReason,
+} from "./runtime-startup-state";
 
 export interface StartupFailure {
   serviceId: string;
@@ -158,33 +152,30 @@ function unhandledRejectionReason(reason: unknown): string {
 }
 
 /**
- * The authoritative application lifecycle: prepares data directories, runs
- * migration/provisioning, supervises services, owns the window, and guarantees
- * child-process cleanup on every exit path.
+ * The Electron application lifecycle prepares user data, owns the windows, and
+ * launches exactly one fixed Runtime V2 root. Rust alone supervises every
+ * service/worker descendant and closes the complete process tree on exit.
  */
 export class AppLifecycle {
   private paths!: ResolvedPaths;
-  private config!: DesktopRuntimeConfig;
+  private persistentConfig!: PersistentDesktopConfig;
   private logs!: LogManager;
-  private services!: ServiceManager;
   private windows!: WindowManager;
-  private memoryPolicy!: MemoryPolicy;
-  private systemMemorySource: ReturnType<typeof defaultSystemMemorySource> | null = null;
-  private controlPlane: SupervisorControlPlane | null = null;
+  private runtime: RuntimeProcess | null = null;
+  private runtimeDashboardUrl: string | null = null;
+  private allowedOrigins!: AllowedOrigins;
+  private runtimeStatusTimer: NodeJS.Timeout | null = null;
+  private runtimeStatusRefreshInFlight = false;
+  private lastRuntimeStatusSignature: string | null = null;
+  private dashboardShown = false;
   private startupState: StartupState = {
     phase: "preparing",
     message: "Preparing Breadboard",
     services: [],
   };
   private quitting = false;
-  private servicesStopped = false;
-  /**
-   * Services found already running at startup, mapped to the port they answered
-   * on. This launch reuses them instead of spawning a second copy. Populated
-   * during port allocation, consumed when the definitions are registered.
-   */
-  private readonly adoptedServicePorts = new Map<string, number>();
-  /** Set only in dev, non-QA mode, where the duplicate-stack guard applies. */
+  private runtimeStopped = false;
+  /** Set only after this process successfully claims a Hot dev checkout. */
   private devInstanceLockRepoRoot: string | null = null;
   private readonly moduleDir: string;
   private readonly forceDev: boolean;
@@ -218,7 +209,7 @@ export class AppLifecycle {
             );
           }
         },
-        killAllNow: () => this.services?.killAllNow(),
+        killAllNow: () => this.runtime?.terminateNow(),
         exit: (code) => process.exit(code),
       },
     );
@@ -250,201 +241,103 @@ export class AppLifecycle {
     });
     ensureMutableDirectories(this.paths);
 
-    const persistent = loadOrCreatePersistentConfig(this.paths.configDir);
-    // Per-launch capability secrets. Minted here, in the process that owns the
-    // lifecycle, and handed only to the two server-side processes that need
-    // them. They are never persisted, never published to endpoints.json, and
-    // never reach a renderer.
-    const launchSecrets = mintLaunchSecrets();
-    const taken = new Set<number>();
-    const adoptionContext: AdoptionContext = { persistent, paths: this.paths };
-    /**
-     * Claim a service's port, reusing the service when it is already there.
-     *
-     * A busy preferred port has two very different causes: an unrelated
-     * process squatting on it (relocate, as always), or this exact service
-     * already running from an earlier launch or a `npm run dev` stack (keep
-     * the port and adopt it, instead of running the same service twice).
-     */
-    const claimPort = async (serviceId: string, preferred: number): Promise<number> => {
-      // QA runs isolated profiles under their own data root and is deliberately
-      // parallel with whatever else is on the machine: adopting a service from
-      // outside the profile would silently destroy that isolation.
-      const identify = this.paths.qaMode
-        ? undefined
-        : (candidate: number) => isOurServiceRunning(serviceId, candidate, adoptionContext);
-      // The dashboard is the one service whose hot compiler can consume
-      // several GiB. Adopting it leaves the ServiceManager without a child PID,
-      // so neither its tree limit nor shutdown applies. Refuse that false
-      // supervision contract; a foreign occupant still relocates as before.
-      if (serviceId === "dashboard" && identify) {
-        return allocateSupervisedPort(serviceId, preferred, taken, identify);
-      }
-      const { port, adopt } = await allocatePortOrAdopt(preferred, taken, identify);
-      if (adopt) this.adoptedServicePorts.set(serviceId, port);
-      return port;
-    };
-    this.config = {
-      persistent,
-      launchSecrets,
-      ports: {
-        dashboard: await claimPort("dashboard", 3000),
-        chatmock: await claimPort("chatmock", 8765),
-        hermes: await claimPort("hermes", 9119),
-        // Postiz's coordinator is authorized by a per-launch token, so a
-        // running one can never answer this launch: it always starts fresh.
-        postiz: await allocatePort(4007, taken),
-        postizSupervisor: await allocatePort(7721, taken),
-        supervisorControl: await allocatePort(7739, taken),
-        quartz: await claimPort("quartz", 8081),
-        quartzWs: await allocatePort(3001, taken),
-        voicebox: await claimPort("voicebox", 17493),
-        // GBrain adapter port is only allocated when GBrain is enabled.
-        ...(persistent.gbrainMode !== "disabled" ? { gbrain: await claimPort("gbrain", 7717) } : {}),
-        // UI-TARS adapter port is only allocated when UI-TARS is not disabled.
-        ...(persistent.uiTarsMode !== "disabled" ? { uiTars: await claimPort("ui-tars", 7719) } : {}),
-        // Parametric CAD service. Allocated only when enabled; the definition
-        // is registered only when its Python environment actually exists.
-        ...(persistent.cadMode !== "disabled" ? { cad: await claimPort("cad", 7731) } : {}),
-        ...(persistent.colpaliMode !== "disabled"
-          ? { colpali: await claimPort("colpali", 7733) }
-          : {}),
-        // Local text humanizer. 7735 is the documented development port, but
-        // it is only a preference: anything already holding it moves this to an
-        // OS-assigned one, and the dashboard is told which.
-        ...(persistent.humanizerMode !== "disabled"
-          ? { humanizer: await claimPort("humanizer", 7735) }
-          : {}),
-        // Subscription proxy port, allocated before the binary is known to
-        // exist: provisioning happens later, and re-allocating afterwards would
-        // mean the port could differ from the one already handed to ChatMock.
-        ...(persistent.cliproxyMode !== "disabled"
-          ? { cliproxy: await claimPort("cliproxy", CLIPROXY_DEFAULT_PORT) }
-          : {}),
-      },
-    };
-
-    // Publish the resolved (non-secret) endpoints so diagnostics and external
-    // checks target this instance instead of guessing well-known ports.
-    atomicWriteFile(
-      path.join(this.paths.runtimeDir, "endpoints.json"),
-      JSON.stringify(
-        { pid: process.pid, startedAt: new Date().toISOString(), urls: serviceUrls(this.config) },
-        null,
-        2,
-      ),
-    );
+    this.persistentConfig = loadOrCreatePersistentConfig(this.paths.configDir);
 
     this.logs = new LogManager({
       logsDir: this.paths.logsDir,
       redact: (line) =>
-        redactSecrets(
-          line,
-          this.config.persistent,
-          Object.values(this.config.launchSecrets ?? {}),
-        ),
+        runtimeProductText(redactSecrets(line, this.persistentConfig)),
     });
     const supervisorLog = this.logs.forService("desktop");
     supervisorLog.write(
-      `[desktop] starting; mode=${this.paths.mode}${this.paths.qaMode ? `; qa-profile=${this.qaServiceProfile}` : ""}; config=${JSON.stringify(redactedConfigSummary(this.config))}`,
+      `[desktop] starting; mode=${this.paths.mode}${this.paths.qaMode ? `; qa-profile=${this.qaServiceProfile}` : ""}; config=${JSON.stringify(redactedPersistentConfigSummary(this.persistentConfig))}`,
     );
 
-    // Dev, non-QA only: QA runs isolated profiles under their own data root and
-    // is deliberately parallel, so it must never be told it is a duplicate.
-    if (this.paths.mode === "dev" && !this.paths.qaMode) {
+    const launchMode = runtimeLaunchMode(this.paths.mode);
+    let hotCheckoutFailure: string | null = null;
+    if (
+      requiresExclusiveHotCheckout({
+        desktopMode: this.paths.mode,
+        launchMode,
+        qaMode: this.paths.qaMode,
+      })
+    ) {
       const repoRoot = repoRootFromModuleDir(this.moduleDir);
-      const claim = claimDevInstance({ repoRoot, owner: "desktop" });
-      if (claim.conflict && claim.existing) {
-        const warning = duplicateStackWarning(claim.existing);
-        supervisorLog.write(`[desktop] WARNING: ${warning}`);
-        console.warn(`[breadboard-desktop] ${warning}`);
-      } else if (claim.staleReplaced) {
-        supervisorLog.write("[desktop] replaced a stale development-instance lock");
+      try {
+        const claim = claimDevInstance({ repoRoot, owner: "desktop" });
+        if (claim.conflict && claim.existing) {
+          hotCheckoutFailure = duplicateStackWarning(claim.existing);
+          supervisorLog.write(
+            `[desktop] Hot checkout launch blocked: ${hotCheckoutFailure}`,
+          );
+        } else {
+          if (claim.staleReplaced) {
+            supervisorLog.write(
+              "[desktop] replaced a stale development-instance lock",
+            );
+          }
+          this.devInstanceLockRepoRoot = repoRoot;
+        }
+      } catch (error) {
+        hotCheckoutFailure =
+          error instanceof Error ? error.message : String(error);
+        supervisorLog.write(
+          `[desktop] Hot checkout launch blocked: ${hotCheckoutFailure}`,
+        );
       }
-      this.devInstanceLockRepoRoot = repoRoot;
     }
 
     installGpuDiagnostics(
       {
         onChildProcessGone: (listener) =>
-          void app.on("child-process-gone", (_event, details) => listener(details)),
+          void app.on("child-process-gone", (_event, details) =>
+            listener(details),
+          ),
         // GPUFeatureStatus is a fixed-key interface, not an index signature.
-        getGPUFeatureStatus: () => ({ ...app.getGPUFeatureStatus() }) as Record<string, unknown>,
+        getGPUFeatureStatus: () =>
+          ({ ...app.getGPUFeatureStatus() }) as Record<string, unknown>,
         getGPUInfo: (mode) => app.getGPUInfo(mode),
       },
       (line) => supervisorLog.write(line),
     );
 
-    this.systemMemorySource = defaultSystemMemorySource();
-    const initialMemory = await this.systemMemorySource.sample();
-    this.memoryPolicy = policyFromSnapshot(initialMemory, process.env);
-    supervisorLog.write(
-      `[governor] memory policy=${JSON.stringify(sanitizedPolicySummary(this.memoryPolicy))}; ` +
-        `commitLimitMb=${Math.round(initialMemory.commitLimitMb)}; ` +
-        `freeCommitMb=${Math.round(initialMemory.commitLimitMb - initialMemory.commitTotalMb)}`,
-    );
-    this.services = new ServiceManager(this.logs, {
-      memoryPolicy: this.memoryPolicy,
-      systemMetrics: this.systemMemorySource,
-      runtimeSupervisorPath: path.join(
-        this.paths.binDir,
-        process.platform === "win32" ? "runtime-supervisor.exe" : "runtime-supervisor",
-      ),
-    });
-    this.services.registerCapability({
-      id: "learn-worker",
-      estimatedColdStartCommitMb: LEARN_WORKER_ESTIMATED_COMMIT_MB,
-      priority: 70,
-      // Learn is an explicit, fenced foreground operation. It may consume the
-      // soft reserve but must leave the critical reserve intact; critical and
-      // emergency machines still reject it.
-      reserveFloor: "critical",
-      concurrencyGroup: "large-generation",
-      maxLeaseMs: 6 * 60 * 60_000,
-    });
-    this.services.registerCapability({
-      id: "document-ingestion",
-      estimatedColdStartCommitMb: Math.min(4096, Math.round(initialMemory.physicalTotalMb * 0.125)),
-      priority: 65,
-      concurrencyGroup: "document-model",
-      maxLeaseMs: 2 * 60 * 60_000,
-    });
-    this.services.registerCapability({
-      id: "artifact-render",
-      estimatedColdStartCommitMb: Math.min(4096, Math.round(initialMemory.physicalTotalMb * 0.125)),
-      priority: 60,
-      concurrencyGroup: "media-processing",
-      maxLeaseMs: 2 * 60 * 60_000,
-    });
-    this.services.registerCapability({
-      id: "browser-agent",
-      estimatedColdStartCommitMb: Math.min(6144, Math.round(initialMemory.physicalTotalMb * 0.19)),
-      priority: 60,
-      concurrencyGroup: "browser-automation",
-      maxLeaseMs: 2 * 60 * 60_000,
-    });
-    this.services.registerCapability({
-      id: "postiz-stack",
-      estimatedColdStartCommitMb: Math.min(8192, Math.round(initialMemory.physicalTotalMb * 0.25)),
-      priority: 55,
-      concurrencyGroup: "docker-stack",
-      maxLeaseMs: 24 * 60 * 60_000,
-    });
-    const urls = serviceUrls(this.config);
+    if (hotCheckoutFailure === null) {
+      this.runtime = new RuntimeProcess({
+        binDir: this.paths.binDir,
+        bootstrap: {
+          mode: launchMode,
+          appRoot: this.paths.appRoot,
+          runtimeRoot: this.paths.runtimeRoot,
+          dataRoot: this.paths.dataRoot,
+          configRoot: this.paths.configDir,
+        },
+        startupTimeoutMs: runtimeInitialStartupTimeoutMs(this.paths.runtimeRoot, launchMode),
+        gracefulShutdownTimeoutMs: 60_000,
+        forcedShutdownTimeoutMs: 10_000,
+        onLog: (source, line) =>
+          supervisorLog.write(`[runtime:${source}] ${line}`),
+        onUnexpectedExit: (exit) => this.handleUnexpectedRuntimeExit(exit),
+      });
+    }
+
     const startupHtmlPath = defaultStartupHtmlPath(this.moduleDir);
-    const recoveryHtmlPath = path.join(path.dirname(startupHtmlPath), "recovery.html");
-    const loadingHtmlPath = path.join(path.dirname(startupHtmlPath), "loading.html");
-    const allowed = allowedOriginsFor([
-      urls.dashboard,
-      urls.quartz,
+    const recoveryHtmlPath = path.join(
+      path.dirname(startupHtmlPath),
+      "recovery.html",
+    );
+    const loadingHtmlPath = path.join(
+      path.dirname(startupHtmlPath),
+      "loading.html",
+    );
+    this.allowedOrigins = allowedOriginsFor([
       pathToFileURL(startupHtmlPath).toString(),
       pathToFileURL(recoveryHtmlPath).toString(),
       pathToFileURL(loadingHtmlPath).toString(),
     ]);
-    installGlobalSecurity(allowed);
+    installGlobalSecurity(this.allowedOrigins);
 
     this.windows = new WindowManager({
-      allowed,
+      allowed: this.allowedOrigins,
       startupHtmlPath,
       recoveryHtmlPath,
       loadingHtmlPath,
@@ -462,6 +355,11 @@ export class AppLifecycle {
     this.installApplicationMenu();
 
     await this.windows.showStartupScreen();
+
+    if (hotCheckoutFailure !== null) {
+      this.failRuntimeStartup(hotCheckoutFailure);
+      return;
+    }
 
     try {
       await this.prepareDataLayer();
@@ -482,7 +380,7 @@ export class AppLifecycle {
       return;
     }
 
-    await this.startServices();
+    await this.startRuntime();
   }
 
   private iconPath(): string | undefined {
@@ -496,26 +394,8 @@ export class AppLifecycle {
   }
 
   private async prepareDataLayer(): Promise<void> {
-    this.writeHermesRuntimeConfig();
-    // Before the dev early-return: dev runs the same supervised proxy, and its
-    // config must be regenerated for this launch's port either way.
-    if (!this.paths.qaMode) {
-      await this.prepareCliproxy();
-    }
     if (this.paths.mode === "dev" && !this.paths.qaMode) return;
-
-    // 1. Refresh the Quartz workspace program files when needed.
-    if (needsQuartzProvisioning(this.paths, app.getVersion())) {
-      this.setStartupState({
-        ...this.startupState,
-        phase: "preparing",
-        message: "Preparing the garden workspace",
-      });
-      provisionQuartzWorkspace(this.paths, app.getVersion(), (message) =>
-        this.logs.forService("desktop").write(`[provision] ${message}`),
-      );
-    }
-    provisionQaDashboardWorkspace(this.paths);
+    preflightQaDashboardDevelopment(this.paths);
 
     // QA data is always fresh/disposable. Never detect or copy a developer
     // checkout into it: doing so would make scenarios non-deterministic and
@@ -523,21 +403,26 @@ export class AppLifecycle {
     if (this.paths.qaMode) return;
 
     // 2. One-time migration from a detected dev checkout (copy, never delete).
-    const persistent = this.config.persistent;
+    const persistent = this.persistentConfig;
     if (persistent.migrationVersion < MIGRATION_VERSION) {
       const candidates = [
         process.env["BREADBOARD_MIGRATE_FROM"] ?? "",
         repoRootFromModuleDir(this.moduleDir),
       ].filter((candidate) => candidate.length > 0);
-      const source = candidates.find((candidate) => detectDevInstallation(candidate));
+      const source = candidates.find((candidate) =>
+        detectDevInstallation(candidate),
+      );
       if (source) {
         const plan = planMigration(source, this.migrationTargets());
-        const pending = plan.items.filter((item) => item.exists && !item.alreadyMigrated);
+        const pending = plan.items.filter(
+          (item) => item.exists && !item.alreadyMigrated,
+        );
         if (pending.length > 0) {
           const choice = await dialog.showMessageBox({
             type: "question",
             title: "Import existing Breadboard data?",
-            message: "An existing Breadboard workspace was found on this computer.",
+            message:
+              "An existing Breadboard workspace was found on this computer.",
             detail:
               `Location: ${source}\n\nThe following will be copied (originals stay untouched):\n` +
               pending.map((item) => `  • ${item.label}`).join("\n"),
@@ -569,138 +454,6 @@ export class AppLifecycle {
     }
   }
 
-  /**
-   * Get the subscription proxy ready to be supervised: download it on first
-   * use, then regenerate its config for this launch's port.
-   *
-   * Every failure here is swallowed. Subscriptions are optional, the download
-   * needs the network, and `buildServiceDefinitions` simply omits the service
-   * when the binary is absent — so the worst case is that the Subscriptions
-   * panel reports it as unavailable while the rest of Breadboard starts
-   * normally. Blocking startup on a GitHub release download would be the wrong
-   * trade for a capability most launches never touch.
-   */
-  private async prepareCliproxy(): Promise<void> {
-    const { cliproxyMode } = this.config.persistent;
-    if (cliproxyMode === "disabled") return;
-    const home = cliproxyHome(this.paths);
-    const log = (message: string) =>
-      this.logs.forService("desktop").write(`[cliproxy] ${message}`);
-
-    if (!isCliproxyInstalled(home)) {
-      this.setStartupState({
-        ...this.startupState,
-        phase: "preparing",
-        message: "Preparing subscription models",
-      });
-      try {
-        await provisionCliproxyBinary(home, log);
-      } catch (error) {
-        log(
-          `not installed: ${error instanceof Error ? error.message : String(error)}. ` +
-            "Subscription models stay unavailable until the next launch.",
-        );
-        return;
-      }
-    }
-
-    try {
-      writeCliproxyConfig(home, this.config.ports.cliproxy ?? CLIPROXY_DEFAULT_PORT);
-    } catch (error) {
-      log(`could not write its config: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  private writeHermesRuntimeConfig(): void {
-    fs.mkdirSync(this.paths.hermesHome, { recursive: true, mode: 0o700 });
-    try {
-      fs.chmodSync(this.paths.hermesHome, 0o700);
-    } catch {
-      // Windows ACLs are inherited from Electron's per-user data directory.
-    }
-    const chatmock = `http://127.0.0.1:${this.config.ports.chatmock}/v1`;
-    const model = process.env["CHATMOCK_MODEL"]?.trim() || "default";
-    const yaml = [
-      "# Generated by Breadboard. Hermes state is disposable and non-canonical.",
-      "model:",
-      `  default: ${JSON.stringify(model)}`,
-      "  provider: custom",
-      `  base_url: ${JSON.stringify(chatmock)}`,
-      // image_input_mode: native (below) governs the attach step, but a second
-      // capability gate runs when the API request is built
-      // (run_agent._prepare_messages_for_non_vision_model), and it treats
-      // unknown vision capability as "no vision" — custom providers are never
-      // in models.dev, so it stripped the just-attached pixels on every turn.
-      // Declaring the capability satisfies that gate; it is honest because
-      // every route ChatMock serves can carry images (Gemini/OpenAI-compat
-      // pass-through, Claude via the CLI Read-file bridge).
-      "  supports_vision: true",
-      "toolsets:",
-      "  - breadboard",
-      "  - web",
-      "web:",
-      "  search_backend: ddgs",
-      // Search without extract is the worst shape research can have: the model
-      // gets titles and snippets it can never open, and answers from them as
-      // though it had read the pages. Every extract backend Hermes ships —
-      // Firecrawl, Tavily, Exa, Parallel — is a paid reader behind an API key,
-      // so with none set `web_extract` failed on every call and the turn quietly
-      // degraded to snippet-quoting. `fetch` is Breadboard's bundled provider
-      // (plugins/web/fetch): it requests the page itself and strips it to text,
-      // with the same SSRF and website-policy gates Firecrawl's loop applies.
-      "  extract_backend: fetch",
-      // Hermes ships a Mixture-of-Agents preset named "default" and, when no
-      // provider is given, a plain model switch to a name matching an enabled
-      // preset pivots the session onto the MoA virtual provider. Breadboard
-      // sends exactly that string: every provider-prefixed model
-      // (`cliproxy/gemini-…`, `anthropic/claude-…`) is addressed through
-      // ChatMock's `default` sentinel, so picking one silently rerouted the turn
-      // to MoA's own reference models — OpenRouter and Codex, neither of which
-      // has credentials here — and the turn died with "HTTP 401: Missing
-      // Authentication header". Breadboard does its own multi-model work inside
-      // ChatMock's council, so MoA is off.
-      //
-      // The per-preset flag is the one that matters: `load_config()` merges
-      // Hermes's defaults, which already define `moa.presets.default`, and
-      // `normalize_moa_config` reads the top-level `enabled` only when no
-      // `presets` map exists. Setting just the top-level flag is a no-op here.
-      "moa:",
-      "  enabled: false",
-      "  presets:",
-      "    default:",
-      "      enabled: false",
-      "memory:",
-      "  memory_enabled: false",
-      "  user_profile_enabled: false",
-      "display:",
-      "  show_reasoning: true",
-      "  busy_input_mode: steer",
-      "  busy_steer_ack_enabled: false",
-      "  memory_notifications: off",
-      // Breadboard exposes dozens of capability-checked plugin tools. Sending
-      // every schema on every turn makes Google's subscription gateway answer
-      // RESOURCE_EXHAUSTED even while the same Gemini account accepts compact
-      // requests. Hermes' built-in progressive-disclosure bridge keeps every
-      // tool available while sending only search/describe/call up front.
-      "tools:",
-      "  tool_search:",
-      "    enabled: on",
-      "agent:",
-      "  coding_context: off",
-      // An attached image must reach the model as pixels. Hermes' "auto" image
-      // routing asks models.dev whether the active model has vision, and every
-      // Breadboard model is addressed as provider `custom` — a name models.dev
-      // has never heard of — so auto always resolved to "text": the image was
-      // replaced by a `vision_analyze` summary, and when that side call failed
-      // the model was told to call `vision_analyze` itself, which no Breadboard
-      // session enables. Attaching natively is also the honest route, since the
-      // summary loses exactly what an image is usually attached for.
-      "  image_input_mode: native",
-      "",
-    ].join("\n");
-    atomicWriteFile(path.join(this.paths.hermesHome, "config.yaml"), yaml);
-  }
-
   private migrationTargets() {
     return {
       databaseDir: this.paths.databaseDir,
@@ -710,218 +463,174 @@ export class AppLifecycle {
     };
   }
 
-  private async startServices(): Promise<void> {
-    const binaries = resolveRuntimeBinaries(this.paths);
-    const missing = missingRuntimes(this.paths, binaries);
-    if (missing.length > 0) {
-      this.setStartupState({
-        phase: "failed",
-        message: "Breadboard installation is incomplete",
-        services: [],
-        failure: {
-          serviceId: "desktop",
-          displayName: "Bundled runtimes",
-          reason:
-            "Missing bundled runtimes: " +
-            missing.map((entry) => `${entry.runtime} (${entry.path})`).join(", ") +
-            ". Reinstall Breadboard.",
-          logTail: [],
-        },
-      });
+  private async startRuntime(): Promise<void> {
+    if (!this.runtime) {
+      this.failRuntimeStartup("Runtime was not initialized.");
       return;
     }
-
-    // Without this, WhisperX decodes silence and every transcript comes back
-    // empty while the job still reports success. Cheap, idempotent, and a no-op
-    // until Scriberr has provisioned its speech environment.
-    const whisperxRepair = repairWhisperXFfmpeg(path.join(this.paths.runtimeDir, "scriberr"));
-    this.logs
-      .forService("desktop")
-      .write(
-        `[whisperx] ffmpeg repair: ${whisperxRepair.reason} (linked ${whisperxRepair.linked})`,
-      );
-
-    const definitions = prepareQaServiceDefinitions(
-      buildServiceDefinitions({
-        paths: this.paths,
-        config: this.config,
-        binaries,
-        memoryPolicy: this.memoryPolicy,
-      }),
-      this.paths,
-      this.qaServiceProfile,
-    );
-    // Scriberr's port is fixed rather than allocated, so nothing in the port
-    // pass could have noticed the sidecar a dev stack (or an earlier launch)
-    // left running on it. Spawning a second one just loses the race to bind.
-    await this.probeFixedPortService("scriberr", SCRIBERR_PORT);
-    for (const definition of definitions) {
-      this.services.register(this.withAdoption(definition));
-    }
-
-    this.controlPlane = new SupervisorControlPlane({
-      port: this.config.ports.supervisorControl ?? 7739,
-      secret: this.config.launchSecrets?.supervisorControlToken ?? "",
-      services: this.services,
-      logs: this.logs,
+    this.setStartupState({
+      phase: "starting",
+      message: "Starting local services",
+      services: [],
     });
-    await this.controlPlane.start();
-
-    this.services.on("state-changed", () => this.publishServiceStates());
-    this.services.on("fatal", (serviceId: string, reason: string) => {
-      const status = this.services.status(serviceId);
-      this.setStartupState({
-        ...this.snapshotServices("failed", `${status.displayName} stopped unexpectedly`),
-        failure: {
-          serviceId,
-          displayName: status.displayName,
-          reason,
-          logTail: this.services.tailLog(serviceId),
-        },
-      });
-      // If we are already showing the dashboard, bring the startup screen back
-      // so the failure is visible and actionable instead of a broken page.
-      void this.windows.showStartupScreen();
-    });
-
-    this.setStartupState(this.snapshotServices("starting", "Starting local services"));
-
     try {
-      await this.services.startAll();
+      const ready = await this.runtime.start();
+      this.runtimeDashboardUrl = ready.dashboardUrl;
+      this.allowDashboardOrigin(ready.dashboardUrl);
+      const status = await this.runtime.status();
+      this.startRuntimeStatusPolling();
+      await this.applyRuntimeSnapshot(status);
     } catch (error) {
-      const startupError = error instanceof Error ? error.message : String(error);
+      const reason = error instanceof Error ? error.message : String(error);
       this.logs
         .forService("desktop")
-        .write(`[desktop] service startup failed: ${startupError}`);
-      const failed = this.services
-        .allStatuses()
-        .find((status) => status.required && status.state === "failed");
-      if (failed) {
-        this.setStartupState({
-          ...this.snapshotServices("failed", `${failed.displayName} could not start`),
-          failure: {
-            serviceId: failed.id,
-            displayName: failed.displayName,
-            reason: failed.lastError ?? "Unknown startup failure",
-            logTail: this.services.tailLog(failed.id),
-          },
-        });
-      } else {
-        // Fail closed even when the rejection happened outside a particular
-        // service (for example the control plane or memory sampler). A startup
-        // exception must never leave the renderer in its indeterminate
-        // "Starting local services" state.
-        this.setStartupState({
-          ...this.snapshotServices("failed", "Local services could not start"),
-          failure: {
-            serviceId: "desktop",
-            displayName: "Breadboard desktop",
-            reason: startupError,
-            logTail: this.services.tailLog("desktop"),
-          },
-        });
-      }
+        .write(`[desktop] Runtime startup failed: ${reason}`);
+      this.failRuntimeStartup(reason);
+    }
+  }
+
+  private allowDashboardOrigin(dashboardUrl: string): void {
+    this.allowedOrigins.origins.add(new URL(dashboardUrl).origin);
+  }
+
+  private runtimeServices(
+    snapshot: RuntimeReadySnapshot | RuntimeStatusSnapshot,
+  ): StartupState["services"] {
+    return snapshot.services.map((status) => ({
+      id: status.id,
+      displayName: status.displayName,
+      required: status.required,
+      state: status.state,
+      lastError: status.lastError,
+      restarts: status.restarts,
+      adopted: false,
+    }));
+  }
+
+  private async applyRuntimeSnapshot(
+    snapshot: RuntimeStatusSnapshot,
+  ): Promise<void> {
+    const signature = JSON.stringify({
+      acceptingWork: snapshot.acceptingWork,
+      services: snapshot.services,
+    });
+    if (signature === this.lastRuntimeStatusSignature) return;
+    const classification = classifyRuntimeStartup(snapshot.services);
+    const services = this.runtimeServices(snapshot);
+    if (classification.failure) {
+      const failed = classification.failure;
+      this.dashboardShown = false;
+      this.setStartupState({
+        phase: "failed",
+        message: classification.message,
+        services,
+        failure: {
+          serviceId: failed.id,
+          displayName: failed.displayName,
+          reason: runtimeStartupFailureReason(failed),
+          logTail: this.logs.forService("desktop").readTail(20),
+        },
+      });
+      await this.windows.showStartupScreen();
+      this.lastRuntimeStatusSignature = signature;
       return;
     }
 
-    this.setStartupState(this.snapshotServices("ready", "Ready"));
-    await this.windows.showDashboard(serviceUrls(this.config).dashboard);
+    if (classification.phase !== "ready" || !snapshot.acceptingWork) {
+      this.setStartupState({
+        phase: "starting",
+        message:
+          classification.phase === "ready"
+            ? "Finishing local service recovery"
+            : classification.message,
+        services,
+      });
+      this.lastRuntimeStatusSignature = signature;
+      return;
+    }
+
+    this.setStartupState({ phase: "ready", message: "Ready", services });
+    const dashboardUrl = this.runtimeDashboardUrl;
+    if (!this.dashboardShown && dashboardUrl) {
+      this.dashboardShown = true;
+      try {
+        await this.windows.showDashboard(dashboardUrl);
+      } catch (error) {
+        this.dashboardShown = false;
+        this.lastRuntimeStatusSignature = null;
+        throw error;
+      }
+    }
+    this.lastRuntimeStatusSignature = signature;
   }
 
-  /**
-   * Note a service whose port is fixed (never allocated) and that is already
-   * answering on it, so registration can adopt it like any other.
-   */
-  private async probeFixedPortService(serviceId: string, port: number): Promise<void> {
-    if (this.paths.qaMode || this.adoptedServicePorts.has(serviceId)) return;
-    const persistent = this.config.persistent;
-    if (await isOurServiceRunning(serviceId, port, { persistent, paths: this.paths })) {
-      this.adoptedServicePorts.set(serviceId, port);
+  private startRuntimeStatusPolling(): void {
+    if (this.runtimeStatusTimer) return;
+    this.runtimeStatusTimer = setInterval(() => {
+      void this.refreshRuntimeStatus();
+    }, 2_000);
+    this.runtimeStatusTimer.unref?.();
+  }
+
+  private stopRuntimeStatusPolling(): void {
+    if (!this.runtimeStatusTimer) return;
+    clearInterval(this.runtimeStatusTimer);
+    this.runtimeStatusTimer = null;
+  }
+
+  private async refreshRuntimeStatus(): Promise<void> {
+    if (this.runtimeStatusRefreshInFlight || this.quitting) return;
+    const runtime = this.runtime;
+    if (!runtime || runtime.state !== "ready") return;
+    this.runtimeStatusRefreshInFlight = true;
+    try {
+      await this.applyRuntimeSnapshot(await runtime.status());
+    } catch {
+      // A transient control read cannot create a second owner or change the UI
+      // to a false terminal state. Process exit is reported by the fixed-root
+      // adapter's onUnexpectedExit callback.
+    } finally {
+      this.runtimeStatusRefreshInFlight = false;
     }
   }
 
-  /**
-   * Hand the supervisor what it needs to reuse an already-running instance:
-   * the flag, and the check that proves the instance is still ours when the
-   * service is actually started. Definitions we found nothing for are returned
-   * untouched and start normally.
-   */
-  private withAdoption(definition: DesktopServiceDefinition): DesktopServiceDefinition {
-    const port = this.adoptedServicePorts.get(definition.id);
-    if (port === undefined) return definition;
-    const check = adoptionProbe(definition.id, port, {
-      persistent: this.config.persistent,
-      paths: this.paths,
+  private failRuntimeStartup(reason: string): void {
+    this.lastRuntimeStatusSignature = null;
+    const snapshot = this.runtime?.snapshot() ?? null;
+    this.setStartupState({
+      phase: "failed",
+      message: "Breadboard Runtime could not start",
+      services: snapshot ? this.runtimeServices(snapshot) : [],
+      failure: {
+        serviceId: "desktop",
+        displayName: "Breadboard Runtime",
+        reason,
+        logTail: this.logs.forService("desktop").readTail(20),
+      },
     });
-    if (check === null) return definition;
-    this.logs
-      .forService("desktop")
-      .write(
-        `[desktop] ${definition.displayName} is already running on 127.0.0.1:${port}; reusing it instead of starting another`,
-      );
-    return { ...definition, adoptExternal: true, adoptionCheck: check };
   }
 
-  private snapshotServices(
-    phase: StartupState["phase"],
-    message: string,
-  ): StartupState {
-    const phaseMessage = this.describePhase(message);
-    return {
-      phase,
-      message: phaseMessage,
-      services: this.services.allStatuses().map((status: ServiceStatus) => ({
-        id: status.id,
-        displayName: status.displayName,
-        required: status.required,
-        state: status.state,
-        lastError: status.lastError,
-        restarts: status.restarts,
-        adopted: status.adopted,
-      })),
-    };
-  }
-
-  private describePhase(fallback: string): string {
-    const statuses = this.services.allStatuses();
-    const starting = statuses.find((status) => status.state === "starting");
-    if (!starting) return fallback;
-    switch (starting.id) {
-      case "chatmock":
-        return "Starting local AI";
-      case "hermes":
-        return "Starting agent runtime";
-      case "postiz":
-        return "Starting social publishing (first launch can take several minutes)";
-      case "quartz":
-        return "Starting garden";
-      case "humanizer":
-        return "Loading local rewriting model";
-      case "dashboard":
-        return "Starting workspace";
-      default:
-        return fallback;
-    }
-  }
-
-  private publishServiceStates(): void {
-    if (this.startupState.phase === "failed") {
-      // Keep the failure view stable until the user retries.
-      this.startupState = {
-        ...this.startupState,
-        services: this.snapshotServices("failed", this.startupState.message).services,
-      };
-    } else if (this.startupState.phase !== "ready") {
-      this.startupState = this.snapshotServices("starting", "Starting local services");
-    } else {
-      this.startupState = this.snapshotServices("ready", "Ready");
-    }
-    this.windows.sendToRenderer(IPC_CHANNELS.startupState, this.startupState);
+  private handleUnexpectedRuntimeExit(exit: {
+    readonly code: number | null;
+    readonly signal: NodeJS.Signals | null;
+  }): void {
+    if (this.quitting || this.runtimeStopped) return;
+    this.stopRuntimeStatusPolling();
+    this.lastRuntimeStatusSignature = null;
+    const reason = exit.signal
+      ? `Runtime stopped with signal ${exit.signal}.`
+      : `Runtime stopped with exit code ${exit.code ?? "unknown"}.`;
+    this.logs?.forService("desktop").write(`[desktop] ${reason}`);
+    if (!this.windows) return;
+    this.failRuntimeStartup(reason);
+    this.dashboardShown = false;
+    void this.windows.showStartupScreen();
   }
 
   private setStartupState(state: StartupState): void {
-    this.startupState = state;
-    this.windows.sendToRenderer(IPC_CHANNELS.startupState, state);
+    const productState = runtimeProductCopy(state);
+    this.startupState = productState;
+    this.windows.sendToRenderer(IPC_CHANNELS.startupState, productState);
   }
 
   private registerIpcHandlers(): void {
@@ -930,42 +639,37 @@ export class AppLifecycle {
       electron: process.versions.electron ?? "unknown",
     }));
     ipcMain.handle(IPC_CHANNELS.getStartupState, () => this.startupState);
-    ipcMain.handle(IPC_CHANNELS.retryService, async (_event, serviceId: unknown) => {
-      if (typeof serviceId !== "string") return false;
-      const known = this.services
-        .allStatuses()
-        .some((status) => status.id === serviceId && status.state === "failed");
-      if (!known && serviceId !== "desktop") return false;
-      this.setStartupState(this.snapshotServices("starting", "Retrying"));
-      try {
-        if (serviceId === "desktop") {
-          await this.prepareDataLayer();
-          await this.startServices();
-          return true;
+    ipcMain.handle(
+      IPC_CHANNELS.retryService,
+      async (_event, serviceId: unknown) => {
+        const runtime = this.runtime;
+        const snapshot = runtime?.snapshot();
+        if (typeof serviceId !== "string" || !runtime || !snapshot)
+          return false;
+        const known = snapshot.services.some(
+          (status) =>
+            status.id === serviceId &&
+            ["failed", "resource-blocked", "installation-unavailable"].includes(
+              status.state,
+            ),
+        );
+        if (!known) return false;
+        this.lastRuntimeStatusSignature = null;
+        this.setStartupState({
+          phase: "starting",
+          message: "Retrying",
+          services: this.runtimeServices(snapshot),
+        });
+        try {
+          const result = await runtime.retryService(serviceId);
+          await this.applyRuntimeSnapshot(await runtime.status());
+          return result.accepted;
+        } catch {
+          await this.refreshRuntimeStatus();
+          return false;
         }
-        const ok = await this.services.startService(serviceId);
-        if (ok) {
-          // Resume the normal startup path for anything still pending.
-          await this.services.startAll();
-          this.setStartupState(this.snapshotServices("ready", "Ready"));
-          await this.windows.showDashboard(serviceUrls(this.config).dashboard);
-        } else {
-          const status = this.services.status(serviceId);
-          this.setStartupState({
-            ...this.snapshotServices("failed", `${status.displayName} could not start`),
-            failure: {
-              serviceId,
-              displayName: status.displayName,
-              reason: status.lastError ?? "Unknown startup failure",
-              logTail: this.services.tailLog(serviceId),
-            },
-          });
-        }
-        return ok;
-      } catch {
-        return false;
-      }
-    });
+      },
+    );
     ipcMain.handle(IPC_CHANNELS.openLogs, async () => {
       await shell.openPath(this.logs.directory);
     });
@@ -974,11 +678,14 @@ export class AppLifecycle {
         app: app.getVersion(),
         electron: process.versions.electron,
         mode: this.paths.mode,
-        config: redactedConfigSummary(this.config),
-        services: this.services.allStatuses(),
+        config: redactedPersistentConfigSummary(this.persistentConfig),
+        runtime: this.runtime?.snapshot() ?? null,
+        services: this.runtime?.snapshot()?.services ?? [],
         failure: this.startupState.failure ?? null,
       };
-      clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+      clipboard.writeText(
+        JSON.stringify(runtimeProductCopy(diagnostics), null, 2),
+      );
     });
     ipcMain.handle(IPC_CHANNELS.quit, () => {
       app.quit();
@@ -1060,7 +767,9 @@ export class AppLifecycle {
         const reason = error instanceof Error ? error.message : String(error);
         this.logs
           .forService("desktop")
-          .write(`[desktop] could not persist the startup sound preference: ${reason}`);
+          .write(
+            `[desktop] could not persist the startup sound preference: ${reason}`,
+          );
         // The switch puts itself back on a false: a preference that silently
         // failed to save would come back on at the next launch anyway.
         return false;
@@ -1109,7 +818,9 @@ export class AppLifecycle {
             },
           },
           ...(this.paths.mode === "dev"
-            ? ([{ role: "toggleDevTools" }] as Electron.MenuItemConstructorOptions[])
+            ? ([
+                { role: "toggleDevTools" },
+              ] as Electron.MenuItemConstructorOptions[])
             : []),
         ],
       },
@@ -1127,7 +838,7 @@ export class AppLifecycle {
                 type: "info",
                 title: "Breadboard invite code",
                 message: "Use this invite code to create your local account:",
-                detail: this.config.persistent.initialInviteCode,
+                detail: this.persistentConfig.initialInviteCode,
               });
             },
           },
@@ -1138,7 +849,7 @@ export class AppLifecycle {
                 JSON.stringify(
                   {
                     app: app.getVersion(),
-                    services: this.services.allStatuses(),
+                    services: this.runtime?.snapshot()?.services ?? [],
                   },
                   null,
                   2,
@@ -1154,12 +865,12 @@ export class AppLifecycle {
 
   private registerExitGuards(): void {
     app.on("before-quit", (event) => {
-      if (this.servicesStopped) return;
+      if (this.runtimeStopped) return;
       event.preventDefault();
       if (this.quitting) return;
       this.quitting = true;
-      void this.shutdownServices().then(() => {
-        this.servicesStopped = true;
+      void this.shutdownRuntime().then(() => {
+        this.runtimeStopped = true;
         app.quit();
       });
     });
@@ -1175,8 +886,13 @@ export class AppLifecycle {
       // and create a fresh shell around the same dashboard in that case.
       this.logs
         ?.forService("desktop")
-        .write("[desktop] all windows disappeared unexpectedly; reopening the dashboard");
-      void this.windows.showDashboard(serviceUrls(this.config).dashboard).catch((error) => {
+        .write(
+          "[desktop] all windows disappeared unexpectedly; reopening the dashboard",
+        );
+      const reopen = this.runtimeDashboardUrl
+        ? this.windows.showDashboard(this.runtimeDashboardUrl)
+        : this.windows.showStartupScreen();
+      void reopen.catch((error) => {
         this.logs
           ?.forService("desktop")
           .write(
@@ -1186,102 +902,47 @@ export class AppLifecycle {
     });
     process.on("uncaughtException", (error) => {
       try {
-        this.logs?.forService("desktop").write(`[desktop] uncaught exception: ${error.stack ?? error.message}`);
-      } catch {
-        // Logging must not block emergency cleanup.
-      }
-      this.services?.killAllNow();
-      if (this.paths) stopDetachedLearnWorkerNow(this.paths.runtimeDir);
-      process.exit(1);
-    });
-    process.on("exit", () => {
-      // Last-resort synchronous path: ask the OS to reap known children.
-      if (!this.servicesStopped) this.services?.killAllNow();
-      if (!this.servicesStopped && this.paths) {
-        stopDetachedLearnWorkerNow(this.paths.runtimeDir);
-      }
-    });
-  }
-
-  /**
-   * Ask the Postiz coordinator whether it may bring its Compose project down.
-   *
-   * Bounded and best-effort: a coordinator that is absent, unreachable, slow or
-   * unconfigured must never delay Breadboard's own shutdown.
-   */
-  private async releasePostizStack(): Promise<void> {
-    const token = this.config?.launchSecrets?.postizCoordinatorToken;
-    const port = this.config?.ports.postizSupervisor;
-    if (!token || !port) return;
-    const log = this.logs?.forService("desktop");
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 25_000);
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/shutdown`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        signal: controller.signal,
-      });
-      if (!response.ok) return;
-      const body = (await response.json()) as { stopped?: boolean };
-      log?.write(
-        body.stopped
-          ? "[desktop] Postiz stack stopped on exit"
-          : "[desktop] Postiz stack left running on exit",
-      );
-    } catch {
-      // A coordinator that never started, or one already gone, is the common
-      // case and is not worth a log line on every quit.
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  private async shutdownServices(): Promise<void> {
-    try {
-      this.logs?.forService("desktop").write("[desktop] shutting down services");
-      // Recall's capture engine is started by the dashboard, not the supervisor
-      // (see main/recall.ts), so stopping it is not covered by stopAll(). It
-      // goes first: a screen recorder must never outlive Breadboard.
-      try {
-        if (await stopRecallEngine(this.paths)) {
-          this.logs?.forService("desktop").write("[desktop] recall capture engine stopped");
-        }
-      } catch (error) {
         this.logs
           ?.forService("desktop")
           .write(
-            `[desktop] recall shutdown error: ${error instanceof Error ? error.message : String(error)}`,
+            `[desktop] uncaught exception: ${error.stack ?? error.message}`,
           );
+      } catch {
+        // Logging must not block emergency cleanup.
       }
-      const learnWorkerPid = await stopDetachedLearnWorker(this.paths.runtimeDir);
-      if (learnWorkerPid !== null) {
+      if (this.runtime) this.runtime.terminateNow();
+      process.exit(1);
+    });
+    process.on("exit", () => {
+      // Last-resort synchronous path: signal only the fixed Runtime V2 root.
+      if (!this.runtimeStopped) this.runtime?.terminateNow();
+    });
+  }
+
+  private async shutdownRuntime(): Promise<void> {
+    this.stopRuntimeStatusPolling();
+    try {
+      this.logs
+        ?.forService("desktop")
+        .write("[desktop] shutting down Runtime");
+      const stopped = this.runtime ? await this.runtime.stop() : undefined;
+      if (stopped && !stopped.exited) {
         this.logs
           ?.forService("desktop")
-          .write(`[desktop] detached Learn worker tree stopped pid=${learnWorkerPid}`);
+          .write("[desktop] Runtime exit was not confirmed");
       }
-      // Give the Postiz coordinator its exit decision before the supervisor
-      // terminates it. On Windows a service is ended with TerminateProcess, so
-      // an in-process SIGTERM handler would never run and a stack Breadboard
-      // started would be left behind on every quit. The coordinator still
-      // refuses for a pre-existing stack, an active hold, or pending
-      // scheduled publishing — this only asks the question.
-      await this.releasePostizStack();
-      await this.services?.stopAll();
-      await this.controlPlane?.stop();
-      this.controlPlane = null;
-      this.systemMemorySource?.stop?.();
-      this.systemMemorySource = null;
       if (this.devInstanceLockRepoRoot !== null) {
         releaseDevInstance(this.devInstanceLockRepoRoot);
         this.devInstanceLockRepoRoot = null;
       }
-      this.logs?.forService("desktop").write("[desktop] all services stopped");
+      this.logs?.forService("desktop").write("[desktop] Runtime stopped");
     } catch (error) {
       this.logs
         ?.forService("desktop")
-        .write(`[desktop] shutdown error: ${error instanceof Error ? error.message : String(error)}`);
-      this.services?.killAllNow();
+        .write(
+          `[desktop] shutdown error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      this.runtime?.terminateNow();
     } finally {
       this.logs?.closeAll();
     }

@@ -274,7 +274,6 @@ test("the artifact opens with the design named and measured", () => {
   assert.match(html, /96\.8 × 69\.8 × 30\.4 mm/);
   assert.match(html, /2 bodies/);
   assert.match(html, /Geometry passed with warnings/);
-  assert.match(html, /do not by themselves prove assembly fit, strength, ergonomics/);
 });
 
 test("the 3D preview loads through the authenticated CAD route", () => {

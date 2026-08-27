@@ -40,6 +40,100 @@ import type {
 } from "../types.ts";
 
 const RRF_K = 60;
+const WINDOWS_BUN_PGLITE_EINVAL_RETRY_DELAY_MS = 150;
+
+interface FreshPgliteRecoveryOptions {
+  pgDir: string;
+  platform?: NodeJS.Platform;
+  bunVersion?: string;
+  delay?: (milliseconds: number) => Promise<void>;
+  readDirectory?: (directory: string) => string[];
+}
+
+function isDirectoryEmpty(
+  directory: string,
+  readDirectory: (directory: string) => string[],
+): boolean {
+  try {
+    return readDirectory(directory).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function isWindowsBunPgliteEinval(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Original error: Non-Error rejection:") &&
+    message.includes('"name":"ErrnoError"') &&
+    /"errno":28(?:[,}])/u.test(message)
+  );
+}
+
+function windowsBunPgliteEinvalMessage(): Error {
+  return new Error(
+    "PGLite rejected a fresh Windows/Bun store with EINVAL (errno 28) after one bounded retry. " +
+      "The store was left unchanged; this is a runtime filesystem initialization failure, " +
+      "not evidence of lock contention, database corruption, or disk exhaustion.",
+  );
+}
+
+/**
+ * Recover one known intermittent Windows/Bun PGLite cold-start failure.
+ *
+ * The retry is deliberately narrower than the service restart policy: it is
+ * allowed only for Emscripten EINVAL on a persistent store that was empty
+ * before the first attempt and remains empty before the second. No files are
+ * removed, no existing store is retried, and the second attempt is final.
+ */
+export async function connectFreshPgliteWithWindowsRecovery<T>(
+  connect: () => Promise<T>,
+  options: FreshPgliteRecoveryOptions,
+): Promise<T> {
+  const platform = options.platform ?? process.platform;
+  const bunVersion =
+    options.bunVersion ??
+    (process.versions as Readonly<Record<string, string | undefined>>).bun;
+  const readDirectory = options.readDirectory ?? fs.readdirSync;
+  const delay =
+    options.delay ??
+    ((milliseconds: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, milliseconds);
+      }));
+  const eligibleFreshStore =
+    options.pgDir !== ":memory:" &&
+    platform === "win32" &&
+    Boolean(bunVersion) &&
+    isDirectoryEmpty(options.pgDir, readDirectory);
+
+  try {
+    return await connect();
+  } catch (error) {
+    if (
+      !eligibleFreshStore ||
+      !isWindowsBunPgliteEinval(error) ||
+      !isDirectoryEmpty(options.pgDir, readDirectory)
+    ) {
+      throw error;
+    }
+
+    await delay(WINDOWS_BUN_PGLITE_EINVAL_RETRY_DELAY_MS);
+    if (!isDirectoryEmpty(options.pgDir, readDirectory)) throw error;
+
+    try {
+      return await connect();
+    } catch (retryError) {
+      if (
+        isWindowsBunPgliteEinval(retryError) &&
+        isDirectoryEmpty(options.pgDir, readDirectory)
+      ) {
+        throw windowsBunPgliteEinvalMessage();
+      }
+      throw retryError;
+    }
+  }
+}
 
 interface EngineSearchRow {
   slug: string;
@@ -80,8 +174,17 @@ export class GBrainEngineBackend implements RetrievalBackend {
       fs.mkdirSync(this.options.pgDir, { recursive: true });
     }
     const config = { engine: "pglite" as const, database_path: this.options.pgDir === ":memory:" ? undefined : this.options.pgDir };
-    this.engine = await createEngine(config as never);
-    await this.engine.connect(config as never);
+    this.engine = await connectFreshPgliteWithWindowsRecovery(
+      async () => {
+        // Each attempt owns a new engine. PGLiteEngine.connect() releases its
+        // lock when create() rejects, so the one recovery attempt cannot reuse
+        // partially initialized process state.
+        const engine = await createEngine(config as never);
+        await engine.connect(config as never);
+        return engine;
+      },
+      { pgDir: this.options.pgDir },
+    );
     await this.engine.initSchema();
   }
 
@@ -102,12 +205,12 @@ export class GBrainEngineBackend implements RetrievalBackend {
       executeRaw<T>(sql: string, params?: unknown[]): Promise<T[]>;
     };
     const one = async (sql: string): Promise<number> => {
-      try {
-        const rows = await engine.executeRaw<{ c: number | string }>(sql);
-        return Number(rows[0]?.c ?? 0);
-      } catch {
-        return 0;
+      const rows = await engine.executeRaw<{ c: number | string }>(sql);
+      const count = Number(rows[0]?.c);
+      if (!Number.isSafeInteger(count) || count < 0) {
+        throw new Error("gbrain_stats_invalid_count");
       }
+      return count;
     };
     return {
       sources: await one("SELECT count(*)::int AS c FROM sources"),

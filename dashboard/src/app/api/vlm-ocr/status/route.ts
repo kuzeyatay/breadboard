@@ -7,6 +7,7 @@ import { NextResponse } from "next/server";
 import { getVlmOcrConfig } from "@/lib/vlm-ocr/config";
 import { vlmOcrStatus } from "@/lib/vlm-ocr/server";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
+import { readSupervisedServiceSnapshot } from "@/lib/supervisor-control";
 
 export const dynamic = "force-dynamic";
 
@@ -15,15 +16,23 @@ export async function GET() {
     await requireUserId();
     const config = getVlmOcrConfig();
     const status = await vlmOcrStatus(config);
+    const service = status.managed
+      ? await readSupervisedServiceSnapshot("vlm-ocr")
+      : null;
+    const runtimeCanColdStart =
+      status.managed &&
+      service !== null &&
+      service.state !== "installation-unavailable";
 
     return NextResponse.json({
       enabled: status.enabled,
-      // The option stays selectable when auto-start is on: the server is
-      // started on demand by the first upload that needs it.
-      available: status.enabled && (status.ok || status.autoStart),
+      // A stopped Runtime-owned service remains selectable. Only the real
+      // ingestion job may acquire its lease and cold-start it.
+      available: status.enabled && (status.ok || runtimeCanColdStart),
       running: status.ok,
       managed: status.managed,
-      autoStart: status.autoStart,
+      autoStart: status.autoStart && runtimeCanColdStart,
+      serviceState: service?.state ?? (status.ok ? "ready" : null),
       baseUrl: status.baseUrl,
       source: status.source,
       models: status.models,

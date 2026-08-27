@@ -34,9 +34,21 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ChatAttachment } from "../chat-attachments.ts";
 import { describeDocumentSummary } from "../document-attachments.ts";
+import { normalizeDocumentSummary } from "../document-attachments.ts";
 import { resolveDocumentAttachment } from "../document-attachments-server.ts";
+import { documentContextText, readDocument } from "../document-structure/index.ts";
 import { readDocumentFigure } from "../conversations/document-blob-store.ts";
 import { stateRoot } from "./runtime.ts";
+import {
+  copyLegalBundleSegment,
+  readLegalBundleText,
+  readLegalRuntimeBundle,
+  type LegalBundleSegment,
+} from "./runtime-attachment-bundle.ts";
+import type {
+  LegalRuntimeAttachmentManifest,
+  LegalRuntimeContentManifest,
+} from "./runtime-inputs.ts";
 
 export interface StagedDocument {
   /** The file the agent reads and may rewrite, relative to `documents/`. */
@@ -220,6 +232,203 @@ export function prepareWorkspace(input: {
   }
 
   return { root, workspaceDir, documentsDir, outputDir, documents, staged, skipped };
+}
+
+export interface PreparedRuntimeLegalWorkspace {
+  readonly workspace: LegalWorkspace;
+  readonly task: string;
+  readonly memoryContext: string;
+  readonly conversationContext: string;
+}
+
+function oneBundleSegment(
+  segments: readonly LegalBundleSegment[],
+  kind: LegalBundleSegment["kind"],
+): LegalBundleSegment | undefined {
+  const matches = segments.filter(
+    (segment) => segment.kind === kind && segment.attachmentIndex === null,
+  );
+  if (matches.length > 1) throw new Error("The sealed Legal Agent bundle repeated content.");
+  return matches[0];
+}
+
+/**
+ * Worker-only staging from Runtime-verified input paths. The renderer controls
+ * neither a path nor a filename on disk: request entries carry fixed ordinals,
+ * and every target is rebuilt under the private job workspace.
+ */
+export function prepareRuntimeWorkspace(input: {
+  readonly runtimeWorkspacePath: string;
+  readonly inputPaths: readonly string[];
+  readonly content: LegalRuntimeContentManifest;
+  readonly attachments: readonly LegalRuntimeAttachmentManifest[];
+}): PreparedRuntimeLegalWorkspace {
+  const workspaceDir = fs.realpathSync.native(path.resolve(input.runtimeWorkspacePath));
+  const workspaceMetadata = fs.lstatSync(workspaceDir);
+  if (!workspaceMetadata.isDirectory() || workspaceMetadata.isSymbolicLink()) {
+    throw new Error("The Legal Agent private Runtime workspace is unavailable.");
+  }
+  const expectedInputs = 1 + input.attachments.filter((entry) => entry.kind !== "skipped").length;
+  if (input.inputPaths.length !== expectedInputs || !input.inputPaths[0]) {
+    throw new Error("The Legal Agent received the wrong sealed input set.");
+  }
+  const bundle = readLegalRuntimeBundle(input.inputPaths[0]);
+  const taskSegment = oneBundleSegment(bundle.segments, "task");
+  const memorySegment = oneBundleSegment(bundle.segments, "memory");
+  const conversationSegment = oneBundleSegment(bundle.segments, "conversation");
+  if (
+    !taskSegment ||
+    taskSegment.sizeBytes !== input.content.taskBytes ||
+    (memorySegment?.sizeBytes ?? 0) !== input.content.memoryBytes ||
+    (conversationSegment?.sizeBytes ?? 0) !== input.content.conversationBytes
+  ) {
+    throw new Error("The Legal Agent content manifest does not match its sealed bundle.");
+  }
+
+  const declaredDocumentSegments = new Set<string>();
+  for (let index = 0; index < input.attachments.length; index += 1) {
+    const attachment = input.attachments[index]!;
+    if (attachment.kind !== "document") continue;
+    if (attachment.hasExtractedText) declaredDocumentSegments.add(`${index}:text:`);
+    for (const name of attachment.figures) declaredDocumentSegments.add(`${index}:figure:${name}`);
+  }
+  const actualDocumentSegments = new Set(
+    bundle.segments
+      .filter((segment) =>
+        segment.kind === "document-text" || segment.kind === "document-figure")
+      .map((segment) =>
+        `${segment.attachmentIndex}:${segment.kind === "document-text" ? "text" : "figure"}:${segment.name ?? ""}`),
+  );
+  if (
+    actualDocumentSegments.size !== declaredDocumentSegments.size ||
+    [...actualDocumentSegments].some((key) => !declaredDocumentSegments.has(key))
+  ) {
+    throw new Error("The Legal Agent document sidecar manifest is inconsistent.");
+  }
+
+  const documentsDir = path.join(workspaceDir, "documents");
+  const outputDir = path.join(workspaceDir, "output");
+  fs.mkdirSync(documentsDir, { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
+  const documents: string[] = [];
+  const staged: StagedDocument[] = [];
+  const skipped: string[] = [];
+  const taken = new Set<string>();
+
+  for (let attachmentIndex = 0; attachmentIndex < input.attachments.length; attachmentIndex += 1) {
+    const attachment = input.attachments[attachmentIndex]!;
+    if (attachment.kind === "skipped") {
+      skipped.push(
+        attachment.reason === "unreadable-document"
+          ? `${attachment.name} could not be read back from storage.`
+          : attachment.reason === "oversized-image"
+            ? `${attachment.name} is too large to work on.`
+            : `${attachment.name} is not a document the Legal Agent can read.`,
+      );
+      continue;
+    }
+    try {
+      const source = input.inputPaths[attachment.inputIndex];
+      if (!source) throw new Error("sealed input unavailable");
+      if (attachment.kind === "document") {
+        const filename = uniqueIn(documentsDir, safeName(attachment.name), taken);
+        const target = path.join(documentsDir, filename);
+        fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+        documents.push(filename);
+        const stem = filename.slice(0, filename.length - path.extname(filename).length);
+        let extractedName: string | null = null;
+        const extractedSegment = bundle.segments.find((segment) =>
+          segment.kind === "document-text" && segment.attachmentIndex === attachmentIndex);
+        if (extractedSegment) {
+          extractedName = uniqueIn(documentsDir, `${stem}.extracted.md`, taken);
+          copyLegalBundleSegment(bundle, extractedSegment, path.join(documentsDir, extractedName));
+          documents.push(extractedName);
+        } else {
+          const structure = readDocument(attachment.format, fs.readFileSync(target));
+          const extracted = documentContextText({
+            filename: attachment.name,
+            summary: normalizeDocumentSummary(structure.summary),
+            markdown: structure.markdown,
+            warnings: structure.warnings,
+          });
+          if (extracted.trim()) {
+            extractedName = uniqueIn(documentsDir, `${stem}.extracted.md`, taken);
+            fs.writeFileSync(path.join(documentsDir, extractedName), extracted, {
+              encoding: "utf8",
+              flag: "wx",
+            });
+            documents.push(extractedName);
+          }
+        }
+
+        const figureFilenames: string[] = [];
+        if (attachment.figures.length) {
+          const figuresDir = path.join(documentsDir, `${stem}.figures`);
+          fs.mkdirSync(figuresDir, { recursive: true });
+          for (const name of attachment.figures) {
+            const segment = bundle.segments.find((candidate) =>
+              candidate.kind === "document-figure" &&
+              candidate.attachmentIndex === attachmentIndex &&
+              candidate.name === name);
+            if (!segment) throw new Error("sealed figure unavailable");
+            copyLegalBundleSegment(bundle, segment, path.join(figuresDir, name));
+            figureFilenames.push(`${stem}.figures/${name}`);
+          }
+        }
+        staged.push({
+          filename,
+          extractedFilename: extractedName,
+          figureFilenames,
+          description: attachment.description,
+          editable: attachment.editable,
+        });
+        continue;
+      }
+
+      if (attachment.kind === "text") {
+        const filename = uniqueIn(documentsDir, extractedFilename(attachment.name), taken);
+        fs.copyFileSync(source, path.join(documentsDir, filename), fs.constants.COPYFILE_EXCL);
+        documents.push(filename);
+        staged.push({
+          filename,
+          extractedFilename: null,
+          figureFilenames: [],
+          description: "",
+          editable: false,
+        });
+        continue;
+      }
+
+      const filename = uniqueIn(documentsDir, safeName(attachment.name), taken);
+      fs.copyFileSync(source, path.join(documentsDir, filename), fs.constants.COPYFILE_EXCL);
+      documents.push(filename);
+    } catch (error) {
+      skipped.push(
+        `${attachment.name} could not be prepared: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
+      );
+    }
+  }
+
+  return {
+    workspace: {
+      root: workspaceDir,
+      workspaceDir,
+      documentsDir,
+      outputDir,
+      documents,
+      staged,
+      skipped,
+    },
+    task: readLegalBundleText(bundle, taskSegment, 4 * 1024 * 1024),
+    memoryContext: readLegalBundleText(bundle, memorySegment, 16 * 1024 * 1024),
+    conversationContext: readLegalBundleText(
+      bundle,
+      conversationSegment,
+      16 * 1024 * 1024,
+    ),
+  };
 }
 
 /** Read one produced file, refusing anything that escapes the output directory. */

@@ -273,11 +273,11 @@ export async function createGarden(
   }
 
   const readerHref = await requiredHref(
-    card.getByRole("link", { name: "Open garden view", exact: true }),
+    card.getByRole("link", { name: "Explore", exact: true }),
     `reader link for ${name}`,
   );
   const workspaceHref = await requiredHref(
-    card.getByRole("link", { name: "Open garden dashboard", exact: true }),
+    card.getByRole("link", { name: "Workspace", exact: true }),
     `workspace link for ${name}`,
   );
   const match = new URL(workspaceHref, page.url()).pathname.match(/^\/gardens\/([^/]+)$/);
@@ -303,7 +303,7 @@ export async function openGardenWorkspace(
   const targetPath = new URL(garden.workspaceHref, page.url()).pathname;
   if (new URL(page.url()).pathname === "/dashboard") {
     const workspaceLink = gardenCard(page, garden.name).getByRole("link", {
-      name: "Open garden dashboard",
+      name: "Workspace",
       exact: true,
     });
     await expect(workspaceLink).toBeVisible({ timeout: timeoutMs });
@@ -357,13 +357,21 @@ export async function uploadDocuments(
     name: /^Upload \d+ files?$/,
   });
   await expect(uploadButton).toBeEnabled();
-  await Promise.all([
+  const uploadTerminalState = Promise.race([
     page.getByText("Upload complete", { exact: true }).waitFor({
       state: "visible",
       timeout: timeoutMs,
-    }),
-    uploadButton.click(),
+    }).then(() => "complete" as const),
+    modal.getByText("Failed", { exact: true }).first().waitFor({
+      state: "visible",
+      timeout: timeoutMs,
+    }).then(() => "failed" as const),
   ]);
+  await uploadButton.click();
+  if ((await uploadTerminalState) === "failed") {
+    const diagnostic = (await modal.innerText()).replace(/\s+/gu, " ").trim();
+    throw new Error(`Document upload failed: ${diagnostic}`);
+  }
 
   await expect(modal.getByRole("button", { name: "Close", exact: true })).toBeVisible({
     timeout: timeoutMs,
@@ -464,7 +472,7 @@ export async function assertTerminalOpen(
 ): Promise<void> {
   await expect(terminalCloseSurface(page)).toBeVisible({ timeout: timeoutMs });
   await expect(
-    page.getByPlaceholder(/Ask anything across your gardens/),
+    page.getByPlaceholder("Ask anything.", { exact: true }),
   ).toBeVisible({ timeout: timeoutMs });
   await expect(
     page.getByRole("button", { name: "Toggle the sidebar", exact: true }),
@@ -478,7 +486,9 @@ export async function assertTerminalClosed(
   await expect(
     page.getByRole("button", { name: "Open terminal", exact: true }),
   ).toBeVisible({ timeout: timeoutMs });
-  await expect(page.getByPlaceholder(/Ask anything across your gardens/)).toBeHidden();
+  await expect(
+    page.getByPlaceholder("Ask anything.", { exact: true }),
+  ).toBeHidden();
 }
 
 export async function assertGardenWorkspace(

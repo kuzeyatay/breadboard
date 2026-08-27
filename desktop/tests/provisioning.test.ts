@@ -7,8 +7,8 @@ import { resolvePaths, type ResolvedPaths } from "../src/main/path-resolver";
 import {
   currentWorkspaceVersion,
   needsQuartzProvisioning,
+  preflightQaDashboardDevelopment,
   provisionQuartzWorkspace,
-  provisionQaDashboardWorkspace,
   writeScriberrComposeOverride,
 } from "../src/main/provisioning";
 
@@ -163,7 +163,7 @@ test("QA dev provisions an isolated workspace while linking only dependencies", 
   assert.equal(fs.readFileSync(note, "utf8"), "# isolated");
 });
 
-test("QA dev gives Next an isolated workspace with copied source", () => {
+test("QA dev preflights the real hot source without projecting it into user data", () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "bb-qa-dashboard-repo-"));
   const moduleDir = path.join(repo, "desktop", "dist", "main");
   const dashboard = path.join(repo, "dashboard");
@@ -191,25 +191,21 @@ test("QA dev gives Next an isolated workspace with copied source", () => {
     moduleDir,
   });
 
-  provisionQaDashboardWorkspace(paths);
-  assert.notEqual(
-    fs.realpathSync(path.join(paths.dashboardServerDir, "src")),
-    fs.realpathSync(path.join(dashboard, "src")),
-  );
+  preflightQaDashboardDevelopment(paths);
+  assert.equal(fs.realpathSync(paths.dashboardServerDir), fs.realpathSync(dashboard));
   assert.equal(
-    fs.readFileSync(path.join(paths.dashboardServerDir, "src", "page.tsx"), "utf8"),
+    fs.readFileSync(path.join(dashboard, "src", "page.tsx"), "utf8"),
     "export default 1",
   );
-  assert.equal(
-    fs.readFileSync(path.join(paths.dashboardServerDir, "tsconfig.json"), "utf8"),
-    "{\"include\":[]}",
-  );
-  assert.ok(!fs.existsSync(path.join(paths.dashboardServerDir, ".env.local")));
-  fs.writeFileSync(path.join(paths.dashboardServerDir, "tsconfig.json"), "qa-only");
   assert.equal(fs.readFileSync(path.join(dashboard, "tsconfig.json"), "utf8"), "{\"include\":[]}");
+  assert.equal(fs.readFileSync(path.join(dashboard, ".env.local"), "utf8"), "REAL_SECRET=never-copy");
+  assert.ok(
+    !fs.existsSync(path.join(paths.dataRoot, "dashboard-workspace")),
+    "preflight must not create an unused compiler projection",
+  );
 });
 
-test("QA dashboard provisioning fails closed before linking dependencies when native SWC is missing", () => {
+test("QA dashboard preflight fails closed when native SWC is missing", () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "bb-qa-dashboard-no-swc-repo-"));
   const moduleDir = path.join(repo, "desktop", "dist", "main");
   const dashboard = path.join(repo, "dashboard");
@@ -228,12 +224,12 @@ test("QA dashboard provisioning fails closed before linking dependencies when na
   });
 
   assert.throws(
-    () => provisionQaDashboardWorkspace(paths),
+    () => preflightQaDashboardDevelopment(paths),
     /native Next\.js SWC dependency is unavailable/i,
   );
   assert.ok(
-    !fs.existsSync(path.join(paths.dashboardServerDir, "node_modules")),
-    "dependency link must not be created after a failed preflight",
+    !fs.existsSync(path.join(paths.dataRoot, "dashboard-workspace")),
+    "failed preflight must not create a compiler projection",
   );
 });
 

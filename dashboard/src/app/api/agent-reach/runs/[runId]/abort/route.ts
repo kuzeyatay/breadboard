@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { abortRun } from "@/lib/agent-reach/run-manager.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -12,8 +13,10 @@ export async function POST(
   try {
     const userId = await requireUserId();
     const { runId } = await params;
-    return NextResponse.json({ ok: abortRun(userId, runId) });
+    return NextResponse.json({ ok: await abortRun(userId, runId) });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }

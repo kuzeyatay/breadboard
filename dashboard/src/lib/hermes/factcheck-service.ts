@@ -370,6 +370,74 @@ function outputFileName(input: {
   return `${input.command}-${slug}-${digest}.${input.extension}`;
 }
 
+function samePath(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function pathWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function prepareOutputDirectory(workspaceDirectory: string): string {
+  const outputDirectory = path.join(workspaceDirectory, OUTPUT_SUBDIRECTORY);
+  try {
+    const canonicalWorkspace = fs.realpathSync.native(workspaceDirectory);
+    fs.mkdirSync(outputDirectory, { recursive: true });
+    const metadata = fs.lstatSync(outputDirectory);
+    const canonicalOutput = fs.realpathSync.native(outputDirectory);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !samePath(canonicalOutput, outputDirectory) ||
+      !pathWithin(canonicalWorkspace, canonicalOutput)
+    ) throw new Error("indirect Factcheck output directory");
+    return outputDirectory;
+  } catch {
+    throw new FactcheckServiceError(
+      "factcheck_workspace_unavailable",
+      "The fact-check tool could not prepare this conversation's workspace.",
+    );
+  }
+}
+
+function writeOutput(outputAbsolute: string, contents: Buffer): void {
+  const outputDirectory = path.dirname(outputAbsolute);
+  const pending = path.join(
+    outputDirectory,
+    `.${path.basename(outputAbsolute)}.pending-${process.pid}-${crypto.randomUUID()}`,
+  );
+  let descriptor: number | undefined;
+  try {
+    const parent = fs.lstatSync(outputDirectory);
+    if (
+      !parent.isDirectory() ||
+      parent.isSymbolicLink() ||
+      !samePath(fs.realpathSync.native(outputDirectory), outputDirectory)
+    ) throw new Error("indirect Factcheck output directory");
+    descriptor = fs.openSync(pending, "wx", 0o600);
+    fs.writeFileSync(descriptor, contents);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(pending, outputAbsolute);
+  } catch {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    try {
+      fs.rmSync(pending, { force: true });
+    } catch {
+      // The original workspace error is the actionable failure.
+    }
+    throw new FactcheckServiceError(
+      "factcheck_workspace_unavailable",
+      "The fact-check tool could not write its output into this conversation's workspace.",
+    );
+  }
+}
+
 function childEnvironment(runtime: FactcheckRuntime): NodeJS.ProcessEnv {
   // Fetching is a network job and uv resolves dependencies over the network,
   // so unlike the offline Premortem callback this environment keeps PATH and
@@ -393,7 +461,16 @@ function childEnvironment(runtime: FactcheckRuntime): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     NODE_ENV: process.env.NODE_ENV ?? "production",
   };
-  for (const key of [...keys, "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "UV_CACHE_DIR"]) {
+  for (const key of [
+    ...keys,
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "UV_CACHE_DIR",
+    "UV_PYTHON",
+    "UV_PYTHON_DOWNLOADS",
+  ]) {
     if (process.env[key]) env[key] = process.env[key];
   }
   env.PYTHONIOENCODING = "utf-8";
@@ -445,15 +522,7 @@ export async function runFactcheck(input: {
     workspaceDirectory,
     cloneRoot: runtime.cloneRoot,
   });
-  const outputDirectory = path.join(workspaceDirectory, OUTPUT_SUBDIRECTORY);
-  try {
-    fs.mkdirSync(outputDirectory, { recursive: true });
-  } catch {
-    throw new FactcheckServiceError(
-      "factcheck_workspace_unavailable",
-      "The fact-check tool could not prepare this conversation's workspace.",
-    );
-  }
+  const outputDirectory = prepareOutputDirectory(workspaceDirectory);
   if (validated.kind === "reference") {
     let contents: Buffer;
     try {
@@ -471,7 +540,7 @@ export async function runFactcheck(input: {
       );
     }
     const referenceName = `reference-${validated.subject}`;
-    fs.writeFileSync(path.join(outputDirectory, referenceName), contents);
+    writeOutput(path.join(outputDirectory, referenceName), contents);
     return {
       command: validated.command,
       arguments: validated.scriptArguments,
@@ -531,7 +600,7 @@ export async function runFactcheck(input: {
       }
       const stdout = Buffer.concat(stdoutChunks);
       try {
-        fs.writeFileSync(outputAbsolute, stdout);
+        writeOutput(outputAbsolute, stdout);
       } catch {
         reject(
           new FactcheckServiceError(

@@ -69,6 +69,28 @@ test("the bridge keeps secrets in the environment and isolates domain outputs", 
   assert.match(manager, /CHATMOCK_API_KEY: input\.apiKey/);
 });
 
+test("Resource2Skill execution crosses the durable Runtime boundary", () => {
+  const route = source("src/app/api/resource2skill/runs/route.ts");
+  const events = source("src/app/api/resource2skill/runs/[runId]/events/route.ts");
+  const abort = source("src/app/api/resource2skill/runs/[runId]/abort/route.ts");
+  const facade = source("src/lib/resource2skill/runtime-run-manager.ts");
+  const workerManager = source("src/lib/resource2skill/run-manager.ts");
+  assert.match(route, /resource2skill\/runtime-run-manager/);
+  assert.match(route, /await startRun\(/);
+  assert.doesNotMatch(route, /node:child_process|spawn\(/);
+  assert.match(events, /outerAgentEventsResponse/);
+  assert.doesNotMatch(events, /setInterval\(/);
+  assert.match(abort, /await abortRun\(/);
+  assert.match(facade, /startOuterAgentRun/);
+  assert.match(facade, /inspectOuterAgentRun/);
+  assert.match(workerManager, /startRuntimeWorkerRun/);
+  assert.match(workerManager, /runtimeWorkspacePath/);
+  assert.match(
+    source("scripts/runtime-v2-resource2skill-worker.mjs"),
+    /runRuntimeV2OuterAgentWorker\("resource2skill"\)/,
+  );
+});
+
 test("Resource2Skill is registered and rendered on both chat surfaces", async () => {
   const { runtimeAgentByToken } = await import("../src/lib/hermes/capability-combinations.ts");
   assert.equal(runtimeAgentByToken("agents:resource2skill")?.name, "Resource2Skill");

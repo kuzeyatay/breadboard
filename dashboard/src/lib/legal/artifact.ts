@@ -185,12 +185,12 @@ function safeFilename(name: string): string {
  * Store one deliverable. Never throws: a file the store refuses is reported to
  * the run so it can say so, and must not cost the answer.
  */
-export function saveLegalArtifact(input: {
+export async function saveLegalArtifact(input: {
   context: LegalArtifactContext;
   /** The path relative to the run's output directory, kept as provenance. */
   path: string;
   bytes: Buffer;
-}): { ok: true; artifact: ArtifactRow } | { ok: false; reason: string } {
+}): Promise<{ ok: true; artifact: ArtifactRow } | { ok: false; reason: string }> {
   const filename = safeFilename(input.path.split("/").filter(Boolean).pop() ?? "deliverable");
   const extension = path.extname(filename).toLowerCase();
   const title = filename.slice(0, 240);
@@ -236,7 +236,7 @@ export function saveLegalArtifact(input: {
     try {
       const staged = path.join(stagingRoot, filename);
       fs.writeFileSync(staged, input.bytes, { flag: "wx" });
-      const artifact = createImportedArtifact({
+      const artifact = await createImportedArtifact({
         ...shared,
         toolCallId: null,
         kind: binaryKind,

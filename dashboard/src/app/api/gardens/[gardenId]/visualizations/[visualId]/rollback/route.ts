@@ -1,7 +1,7 @@
-import fs from 'fs';
-import path from 'path';
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
+import { externalRuntimeFilesystem as fs } from '@/lib/external-runtime-filesystem';
 import { resolveClusterNoteFile } from '@/lib/knowledge';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
@@ -55,7 +55,7 @@ export async function POST(
   const headers = corsHeaders(request);
   try {
     const { gardenId, visualId } = await params;
-    const { cluster } = await requireOwnedClusterFromSlug(gardenId);
+    const { cluster, userId } = await requireOwnedClusterFromSlug(gardenId);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
       return NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500, headers });
@@ -183,7 +183,10 @@ export async function POST(
           { status: 409, headers },
         );
       }
-      await publishQuartzAfterMutation(`rollback generated visual ${visualId} in ${cluster.slug}`);
+      await publishQuartzAfterMutation(
+        `rollback generated visual ${visualId} in ${cluster.slug}`,
+        { userId },
+      );
       return NextResponse.json({ success: true, visual: restored }, { headers });
     } finally {
       disposeDetachedGardenMutation(mutation);

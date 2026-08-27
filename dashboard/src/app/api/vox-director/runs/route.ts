@@ -6,7 +6,7 @@ import { parseVoxDirectorRequest, VOX_DIRECTOR_AGENT_ID } from "@/lib/vox-direct
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { voxDirectorCheckpoint, voxDirectorDefaults } from "@/lib/agent-settings/defaults.ts";
 import { getSpeechSettings } from "@/lib/speech/settings.ts";
-import { startRun } from "@/lib/vox-director/run-manager.ts";
+import { startRun } from "@/lib/vox-director/runtime-run-manager.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 

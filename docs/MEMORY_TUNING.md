@@ -40,6 +40,18 @@ Dashboard defaults use the smaller applicable physical-memory, usable-commit,
 and absolute ceiling. The full formulas and ordering checks live in
 `desktop/src/main/memory-policy.ts` and are covered by injected-snapshot tests.
 
+Runtime V2 applies a separate native admission boundary. Packaged operation and
+acceptance retain more than 8192 MB of free Windows commit. Lean and Hot
+development use `max(4096 MB, clamp(10% of commit limit, 1536 MB, 8192 MB)) +
+256 MB`, then add the requested worker or service's cold-start estimate. The
+same development reserve is enforced after launch by the native supervisor's
+live Job Object ceiling. Worker and non-dashboard service ceilings may only
+tighten after launch; the dashboard is the sole profile allowed to expand as
+system headroom returns and the sole tree sacrificed when the shared reserve is
+crossed. Other trees still obey their manifest hard limits, but they do not all
+terminate from the same global pressure sample. Finite workers still exit after
+one job.
+
 ## Postiz container limits
 
 Defaults in MB are: Postiz 1536, Postiz PostgreSQL 512, Redis 256, Spotlight
@@ -82,6 +94,7 @@ Breadboard's own admission and Compose limits remain active without it.
 ## Commands
 
 ```powershell
+npm run dev                # normal integrated hot Electron + Runtime V2; no standalone prebuild
 npm run desktop:dev:lean   # build and run the standalone dashboard
 npm run desktop:dev:hot    # Next development server for active UI/API work
 npm run qa:memory:smoke    # safe short GetPerformanceInfo baseline

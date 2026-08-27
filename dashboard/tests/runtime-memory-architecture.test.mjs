@@ -7,16 +7,17 @@ import { fileURLToPath } from "node:url";
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => fs.readFileSync(path.join(dashboardRoot, relative), "utf8");
 
-test("Next instrumentation keeps scheduler imports in a child coordinator", () => {
+test("Next instrumentation owns no scheduler or gateway process", () => {
   const entry = read("src/instrumentation.ts");
   const runtime = read("src/instrumentation-runtime.ts");
-  const background = read("src/instrumentation-node.ts");
+  const background = read("scripts/runtime-v2-background-executor.mjs");
   assert.match(entry, /import\("\.\/instrumentation-runtime\.ts"\)/);
   assert.doesNotMatch(entry, /instrumentation-node/);
   assert.match(runtime, /startRuntimeMemorySampling\(\)/);
-  assert.match(runtime, /startBackgroundCoordinator\(\)/);
-  assert.match(background, /startScheduledChatScheduler\(\)/);
-  assert.match(background, /autostartWhatsAppGateway\(\)/);
+  assert.doesNotMatch(runtime, /startBackgroundCoordinator|child_process|setInterval|setTimeout/);
+  assert.match(background, /case "scheduled-chats"/);
+  assert.match(background, /operation === "gateway-reconcile"/);
+  assert.equal(fs.existsSync(path.join(dashboardRoot, "src/instrumentation-node.ts")), false);
 });
 
 test("runtime diagnostics are bounded and token gated", () => {
@@ -30,11 +31,14 @@ test("runtime diagnostics are bounded and token gated", () => {
   assert.match(route, /Cache-Control.*no-store/);
 });
 
-test("the Terminal is a real user-triggered compilation boundary", () => {
+test("the Terminal loads as part of the dashboard startup sequence", () => {
   const dashboard = read("src/app/dashboard/dashboard-client.tsx");
   const lazyTerminal = read("src/app/components/hermes/lazy-dashboard-agent-terminal.tsx");
   assert.match(dashboard, /LazyDashboardAgentTerminal/);
-  assert.match(lazyTerminal, /dynamic\(\(\) => import\("\.\/dashboard-agent-terminal"\)/);
-  assert.match(lazyTerminal, /onClick=\{\(\) => setEnabled\(true\)\}/);
-  assert.match(lazyTerminal, /sessionStorage\.getItem\(OPEN_STATE_KEY\)/);
+  assert.match(lazyTerminal, /import DashboardAgentTerminal from "\.\/dashboard-agent-terminal"/);
+  assert.match(lazyTerminal, /<DashboardAgentTerminal \{\.\.\.props\} \/>/);
+  assert.doesNotMatch(
+    lazyTerminal,
+    /next\/dynamic|loading:|Loading Terminal|setEnabled|onClick|sessionStorage\.getItem/,
+  );
 });

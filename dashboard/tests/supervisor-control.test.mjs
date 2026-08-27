@@ -5,33 +5,110 @@ import test from "node:test";
 import {
   SupervisorResourceExhaustedError,
   RuntimeJobControlError,
+  abandonRuntimeJobInput,
   acquireServiceLease,
   cancelRuntimeJob,
+  cancelRuntimeJobByIdempotencyKey,
   inspectRuntimeJob,
+  inspectRuntimeJobForStatus,
+  lookupRuntimeJobByIdempotencyKey,
+  readRuntimeJobOutput,
   readSupervisedServiceSnapshot,
   replayRuntimeJobEvents,
+  replayRuntimeJobEventsForStatus,
   releaseSupervisorLease,
+  reserveRuntimeJobInput,
+  submitRuntimeLearnRecoveryJob,
   submitRuntimeJob,
+  uploadRuntimeJobInput,
   withCapabilityLease,
   withServiceLease,
 } from "../src/lib/supervisor-control.ts";
 
-async function controlHarness(handler) {
+test("read-only Runtime status requests use the short control deadline", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const deadlines = [];
+  globalThis.fetch = async (_url, options) =>
+    await new Promise((_resolve, reject) => {
+      const signal = options?.signal;
+      const rejectAborted = () =>
+        reject(new DOMException("status deadline elapsed", "AbortError"));
+      if (signal?.aborted) rejectAborted();
+      else signal?.addEventListener("abort", rejectAborted, { once: true });
+    });
+  globalThis.setTimeout = (callback, delay) => {
+    deadlines.push(delay);
+    queueMicrotask(callback);
+    return 1;
+  };
+  globalThis.clearTimeout = () => {};
+  const env = {
+    BREADBOARD_SUPERVISOR_CONTROL_URL: "http://127.0.0.1:1",
+    BREADBOARD_SUPERVISOR_CONTROL_TOKEN:
+      "0123456789abcdef0123456789abcdef",
+  };
+  const authority = { userId: 42, gardenId: "garden-1", conversationId: null };
+  try {
+    await assert.rejects(
+      inspectRuntimeJobForStatus(authority, "job_1", env),
+      (error) => error?.name === "AbortError",
+    );
+    await assert.rejects(
+      replayRuntimeJobEventsForStatus(authority, "job_1", 0, 100, env),
+      (error) => error?.name === "AbortError",
+    );
+    await assert.rejects(
+      inspectRuntimeJob(authority, "job_1", env),
+      (error) => error?.name === "AbortError",
+    );
+    assert.deepEqual(deadlines, [5_000, 5_000, 4 * 60_000]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+async function controlHarness(handler, options = {}) {
   const requests = [];
   const server = http.createServer(async (request, response) => {
-    let body = "";
-    for await (const chunk of request) body += chunk;
+    const chunks = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const bodyBytes = Buffer.concat(chunks);
+    const contentType = request.headers["content-type"] ?? "";
+    const body = bodyBytes.byteLength === 0
+      ? {}
+      : /^application\/json\b/iu.test(contentType)
+        ? JSON.parse(bodyBytes.toString("utf8"))
+        : bodyBytes;
     requests.push({
       url: request.url,
       authorization: request.headers.authorization,
       userId: request.headers["x-breadboard-user-id"],
       gardenId: request.headers["x-breadboard-garden-id"],
       conversationId: request.headers["x-breadboard-conversation-id"],
-      body: body ? JSON.parse(body) : {},
+      contentLength: request.headers["content-length"],
+      contentType,
+      body,
     });
-    const result = await handler(request, requests.at(-1));
+    const contractMatch = /^\/v1\/services\/([^/]+)\/lease-contract$/u.exec(
+      request.url ?? "",
+    );
+    const result = contractMatch && request.method === "GET"
+      ? options.serviceLeaseContract
+        ? await options.serviceLeaseContract(request, requests.at(-1))
+        : {
+            body: {
+              protocolVersion: 1,
+              serviceId: contractMatch[1],
+              acquireTimeoutMs: 250_000,
+            },
+          }
+      : await handler(request, requests.at(-1));
     response.writeHead(result.status ?? 200, { "content-type": "application/json" });
-    response.end(JSON.stringify(result.body));
+    response.end(result.body === undefined ? undefined : JSON.stringify(result.body));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -68,6 +145,7 @@ function runtimeJobSnapshot(overrides = {}) {
     progressTotal: 0,
     failureCode: null,
     failureMessage: null,
+    resourceExhaustion: null,
     cancellationRequested: false,
     ...overrides,
   };
@@ -113,6 +191,12 @@ const WORKER_FENCE = {
   workerInstanceId: "worker_1",
   workerSequence: 1,
 };
+const RUNTIME_RESOURCE_EXHAUSTION = {
+  resource: "windows_commit",
+  requiredHeadroomMb: 8192,
+  availableHeadroomMb: 4096,
+  retryable: false,
+};
 
 const RUNTIME_JOB_EVENT_MATRIX = [
   ["queued", { state: "queued" }, RUNTIME_ZERO_FENCE],
@@ -123,6 +207,7 @@ const RUNTIME_JOB_EVENT_MATRIX = [
   ["cancellation-requested", { state: "cancelling" }, RUNTIME_ZERO_FENCE],
   ["completion-confirmed", { state: "succeeded" }, RUNTIME_ATTEMPT_FENCE],
   ["worker-ready", { state: "running" }, WORKER_FENCE],
+  ["worker-ready", { state: "cancelling" }, WORKER_FENCE],
   ["worker-heartbeat", { stage: "working" }, WORKER_FENCE],
   [
     "worker-progress",
@@ -141,6 +226,7 @@ const RUNTIME_JOB_EVENT_MATRIX = [
     },
     WORKER_FENCE,
   ],
+  ["worker-failed", { state: "cancelling" }, WORKER_FENCE],
   [
     "worker-cancellation-acknowledged",
     { state: "cancelling" },
@@ -154,6 +240,14 @@ const RUNTIME_JOB_EVENT_MATRIX = [
   ["job-succeeded", { state: "succeeded" }, RUNTIME_ATTEMPT_FENCE],
   ["job-failed", { state: "failed" }, RUNTIME_ATTEMPT_FENCE],
   ["job-resource-exhausted", { state: "resource_exhausted" }, RUNTIME_ZERO_FENCE],
+  [
+    "job-resource-exhausted",
+    {
+      state: "resource_exhausted",
+      resourceExhaustion: RUNTIME_RESOURCE_EXHAUSTION,
+    },
+    RUNTIME_ZERO_FENCE,
+  ],
   ["job-interrupted", { state: "interrupted" }, RUNTIME_ZERO_FENCE],
   ["job-uncertain", { state: "uncertain" }, RUNTIME_ATTEMPT_FENCE],
 ];
@@ -181,6 +275,7 @@ test("a service lease stays active for the operation and releases on cancellatio
     );
     assert.equal(active, false);
     assert.deepEqual(harness.requests.map((request) => request.url), [
+      "/v1/services/hermes/lease-contract",
       "/v1/services/hermes/lease",
       "/v1/leases/11111111-1111-1111-1111-111111111111/release",
     ]);
@@ -188,6 +283,116 @@ test("a service lease stays active for the operation and releases on cancellatio
     assert.ok(harness.requests.every((request) => !request.url.includes("0123456789abcdef0123456789abcdef")));
   } finally {
     await harness.close();
+  }
+});
+
+test("Voicebox acquire uses its manifest-derived cold-start deadline", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const deadlines = [];
+  const calls = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), method: init?.method, aborted: init?.signal?.aborted });
+    if (String(input).endsWith("/v1/services/voicebox/lease-contract")) {
+      return Response.json({
+        protocolVersion: 1,
+        serviceId: "voicebox",
+        acquireTimeoutMs: 1_810_000,
+      });
+    }
+    return Response.json({
+      ok: true,
+      leaseId: "voicebox-cold-lease",
+      serviceId: "voicebox",
+    });
+  };
+  globalThis.setTimeout = (_callback, delay) => {
+    deadlines.push(delay);
+    return 1;
+  };
+  globalThis.clearTimeout = () => {};
+  const env = {
+    BREADBOARD_SUPERVISOR_CONTROL_URL: "http://127.0.0.1:43121",
+    BREADBOARD_SUPERVISOR_CONTROL_TOKEN: "0123456789abcdef0123456789abcdef",
+  };
+  try {
+    const lease = await acquireServiceLease("voicebox", "first-transcription", env);
+    assert.equal(lease?.id, "voicebox-cold-lease");
+    assert.deepEqual(deadlines, [5_000, 1_815_000]);
+    assert.deepEqual(calls, [
+      {
+        url: "http://127.0.0.1:43121/v1/services/voicebox/lease-contract",
+        method: "GET",
+        aborted: false,
+      },
+      {
+        url: "http://127.0.0.1:43121/v1/services/voicebox/lease",
+        method: "POST",
+        aborted: false,
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("service acquire fails closed before POST on a malformed deadline contract", async () => {
+  const harness = await controlHarness(
+    async () => {
+      throw new Error("acquire POST must not run after a malformed contract");
+    },
+    {
+      serviceLeaseContract: async () => ({
+        body: {
+          protocolVersion: 1,
+          serviceId: "voicebox",
+          acquireTimeoutMs: 1_810_000,
+          startupTimeoutMs: 1_800_000,
+        },
+      }),
+    },
+  );
+  try {
+    await assert.rejects(
+      acquireServiceLease("voicebox", "closed-contract", harness.env),
+      /invalid service lease contract/u,
+    );
+    assert.equal(harness.requests.length, 1);
+    assert.equal(harness.requests[0].url, "/v1/services/voicebox/lease-contract");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("service acquire rejects deadlines at or below the native grace floor", async () => {
+  for (const acquireTimeoutMs of [1, 10_000]) {
+    const harness = await controlHarness(
+      async () => {
+        throw new Error("acquire POST must not run below the native deadline floor");
+      },
+      {
+        serviceLeaseContract: async () => ({
+          body: {
+            protocolVersion: 1,
+            serviceId: "voicebox",
+            acquireTimeoutMs,
+          },
+        }),
+      },
+    );
+    try {
+      await assert.rejects(
+        acquireServiceLease("voicebox", "closed-deadline-floor", harness.env),
+        /invalid service lease contract/u,
+      );
+      assert.equal(harness.requests.length, 1);
+      assert.equal(harness.requests[0].url, "/v1/services/voicebox/lease-contract");
+    } finally {
+      await harness.close();
+    }
   }
 });
 
@@ -225,7 +430,7 @@ test("commit admission denial remains structured and is never retried", async ()
         return true;
       },
     );
-    assert.equal(harness.requests.length, 1);
+    assert.equal(harness.requests.length, 2);
   } finally {
     await harness.close();
   }
@@ -348,7 +553,7 @@ test("authenticated control responses are rejected above the byte ceiling", asyn
       acquireServiceLease("hermes", "bounded-response", harness.env),
       /65536-byte limit/,
     );
-    assert.equal(harness.requests.length, 1);
+    assert.equal(harness.requests.length, 2);
   } finally {
     await harness.close();
   }
@@ -444,6 +649,552 @@ test("Runtime V2 submission carries server-derived scope and accepts only the ex
     assert.equal(job.jobId, "job_1");
     assert.equal(job.state, "queued");
     assert.equal(harness.requests.length, 1);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 idempotency lookup carries authority only in trusted headers", async () => {
+  const authority = {
+    userId: 42,
+    gardenId: "garden-1",
+    conversationId: null,
+  };
+  const harness = await controlHarness(async (request, observed) => {
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/v1/jobs/lookup");
+    assert.equal(observed.userId, "42");
+    assert.equal(observed.gardenId, "garden-1");
+    assert.equal(observed.conversationId, undefined);
+    assert.deepEqual(observed.body, { idempotencyKey: "ingest-request_1" });
+    assert.equal("gardenId" in observed.body, false);
+    assert.equal("userId" in observed.body, false);
+    return {
+      body: {
+        type: "runtime-job",
+        protocolVersion: 1,
+        job: runtimeJobSnapshot({
+          jobType: "document-ingestion",
+          workerKind: "document-ingestion-node",
+          resourceClass: "document-processing",
+          conversationId: null,
+        }),
+      },
+    };
+  });
+  try {
+    const job = await lookupRuntimeJobByIdempotencyKey(
+      authority,
+      "ingest-request_1",
+      harness.env,
+    );
+    assert.equal(job.jobId, "job_1");
+    assert.equal(harness.requests.length, 1);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 idempotency cancellation sends the exact scoped request and accepts only terminal dispositions", async () => {
+  const authority = {
+    userId: 42,
+    gardenId: "garden-1",
+    conversationId: "conversation-1",
+  };
+  const dispositions = [
+    { jobId: null, state: "pending", accepted: true },
+    { jobId: "job_1", state: "cancelling", accepted: true },
+    { jobId: "job_1", state: "cancelled", accepted: true },
+    { jobId: "job_1", state: "succeeded", accepted: false },
+    { jobId: "job_1", state: "failed", accepted: false },
+    { jobId: "job_1", state: "resource_exhausted", accepted: false },
+    { jobId: "job_1", state: "interrupted", accepted: false },
+    { jobId: "job_1", state: "uncertain", accepted: false },
+  ];
+  let responseIndex = 0;
+  const harness = await controlHarness(async (request, observed) => {
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/v1/jobs/cancel-by-idempotency");
+    assert.equal(observed.authorization, "Bearer 0123456789abcdef0123456789abcdef");
+    assert.equal(observed.userId, "42");
+    assert.equal(observed.gardenId, "garden-1");
+    assert.equal(observed.conversationId, "conversation-1");
+    assert.match(observed.contentType, /^application\/json\b/iu);
+    assert.deepEqual(observed.body, { idempotencyKey: "ingest-request_1" });
+    return {
+      body: {
+        type: "runtime-job-idempotency-cancellation",
+        protocolVersion: 1,
+        ...dispositions[responseIndex++],
+      },
+    };
+  });
+  try {
+    for (const expected of dispositions) {
+      assert.deepEqual(
+        await cancelRuntimeJobByIdempotencyKey(
+          authority,
+          "ingest-request_1",
+          harness.env,
+        ),
+        expected,
+      );
+    }
+    assert.equal(harness.requests.length, dispositions.length);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 idempotency cancellation rejects active and internally inconsistent dispositions", async () => {
+  const authority = { userId: 42, gardenId: "garden-1", conversationId: null };
+  const invalidDispositions = [
+    ...["queued", "admitted", "starting", "running", "checkpointing"].map(
+      (state) => ({ jobId: "job_1", state, accepted: false }),
+    ),
+    { jobId: "job_1", state: "pending", accepted: true },
+    { jobId: null, state: "pending", accepted: false },
+    { jobId: "job_1", state: "cancelled", accepted: false },
+    { jobId: "job_1", state: "succeeded", accepted: true },
+  ];
+  let responseIndex = 0;
+  const harness = await controlHarness(async () => ({
+    body: {
+      type: "runtime-job-idempotency-cancellation",
+      protocolVersion: 1,
+      ...invalidDispositions[responseIndex++],
+    },
+  }));
+  try {
+    for (let index = 0; index < invalidDispositions.length; index += 1) {
+      await assert.rejects(
+        cancelRuntimeJobByIdempotencyKey(
+          authority,
+          "ingest-request_1",
+          harness.env,
+        ),
+        /invalid idempotency cancellation disposition/,
+      );
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 idempotency cancellation preserves closed quota and collision errors", async () => {
+  const authority = { userId: 42, gardenId: "garden-1", conversationId: null };
+  const errors = [
+    ["quota-key", 429, "JOB_CANCELLATION_QUOTA_EXCEEDED"],
+    ["collision-key", 409, "JOB_CANCELLED_BEFORE_SUBMISSION"],
+  ];
+  let responseIndex = 0;
+  const harness = await controlHarness(async (_request, observed) => {
+    const [key, status, code] = errors[responseIndex++];
+    assert.deepEqual(observed.body, { idempotencyKey: key });
+    return {
+      status,
+      body: {
+        type: "runtime-error",
+        protocolVersion: 1,
+        code,
+        message: "The cancellation request was rejected.",
+        retryable: false,
+        resource: null,
+        requiredHeadroomMb: null,
+        availableHeadroomMb: null,
+      },
+    };
+  });
+  try {
+    for (const [key, status, code] of errors) {
+      await assert.rejects(
+        cancelRuntimeJobByIdempotencyKey(authority, key, harness.env),
+        (error) => {
+          assert.ok(error instanceof RuntimeJobControlError);
+          assert.equal(error.code, code);
+          assert.equal(error.status, status);
+          assert.equal(error.retryable, false);
+          return true;
+        },
+      );
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 Learn recovery uses only the dashboard bearer and fixed internal body", async () => {
+  const harness = await controlHarness(async (request, observed) => {
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/v1/internal/jobs/learn-recovery");
+    assert.equal(observed.authorization, "Bearer 0123456789abcdef0123456789abcdef");
+    assert.equal(observed.userId, undefined);
+    assert.equal(observed.gardenId, undefined);
+    assert.equal(observed.conversationId, undefined);
+    assert.match(observed.contentType, /^application\/json\b/iu);
+    assert.deepEqual(observed.body, { idempotencyKey: "learn-recovery-v2:42" });
+    return {
+      status: 202,
+      body: {
+        type: "runtime-job",
+        protocolVersion: 1,
+        job: runtimeJobSnapshot({ gardenId: null, conversationId: null }),
+      },
+    };
+  });
+  try {
+    const job = await submitRuntimeLearnRecoveryJob(
+      "learn-recovery-v2:42",
+      harness.env,
+    );
+    assert.equal(job.jobId, "job_1");
+    assert.equal(job.jobType, "learn");
+
+    for (const idempotencyKey of [
+      "learn-recovery-v1:42",
+      "learn-recovery-v2:-1",
+      "learn-recovery-v2:42 ",
+      "learn-recovery-v2:9007199254740992",
+      "learn-recovery-v2:12345678901234567",
+    ]) {
+      await assert.rejects(
+        submitRuntimeLearnRecoveryJob(idempotencyKey, harness.env),
+        /Learn recovery idempotency key is invalid/,
+      );
+    }
+    assert.equal(harness.requests.length, 1);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 Learn recovery rejects forged envelopes, scopes, and job types", async () => {
+  const responses = [
+    {
+      type: "runtime-job",
+      protocolVersion: 1,
+      job: runtimeJobSnapshot({ gardenId: null, conversationId: null }),
+      forged: true,
+    },
+    {
+      type: "runtime-job",
+      protocolVersion: 1,
+      job: runtimeJobSnapshot({ gardenId: "garden-1", conversationId: null }),
+    },
+    {
+      type: "runtime-job",
+      protocolVersion: 1,
+      job: runtimeJobSnapshot({
+        jobType: "document-ingestion",
+        workerKind: "document-ingestion-node",
+        resourceClass: "document-processing",
+        gardenId: null,
+        conversationId: null,
+      }),
+    },
+  ];
+  let responseIndex = 0;
+  const harness = await controlHarness(async () => ({
+    status: 202,
+    body: responses[responseIndex++],
+  }));
+  try {
+    for (let index = 0; index < responses.length; index += 1) {
+      await assert.rejects(
+        submitRuntimeLearnRecoveryJob(`learn-recovery-v2:${index + 1}`, harness.env),
+        /invalid job response|invalid job snapshot|outside the requested binding/,
+      );
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 input reservation and raw upload stream bytes outside JSON", async () => {
+  const authority = { userId: 42, gardenId: "garden-1", conversationId: null };
+  const bytes = Buffer.alloc(3 * 1024 * 1024 + 19, 0x61);
+  const harness = await controlHarness(async (request, observed) => {
+    if (request.url === "/v1/job-inputs") {
+      assert.equal(request.method, "POST");
+      assert.deepEqual(observed.body, {
+        gardenId: "garden-1",
+        conversationId: null,
+        displayName: "large.bin",
+        mediaType: "application/octet-stream",
+        declaredSizeBytes: bytes.byteLength,
+      });
+      return {
+        status: 201,
+        body: {
+          uploadId: "upload_1",
+          expiresAt: Date.now() + 60_000,
+          maximumBytes: 2 * 1024 * 1024 * 1024,
+        },
+      };
+    }
+    assert.equal(request.url, "/v1/job-inputs/upload_1");
+    assert.equal(request.method, "PUT");
+    assert.equal(observed.contentType, "application/octet-stream");
+    assert.equal(observed.contentLength, String(bytes.byteLength));
+    assert.ok(Buffer.isBuffer(observed.body));
+    assert.deepEqual(observed.body, bytes);
+    return {
+      body: {
+        type: "runtime-job-input",
+        protocolVersion: 1,
+        uploadId: "upload_1",
+        state: "sealed",
+        sizeBytes: bytes.byteLength,
+        sha256: "a".repeat(64),
+      },
+    };
+  });
+  try {
+    const reservation = await reserveRuntimeJobInput(
+      authority,
+      {
+        gardenId: "garden-1",
+        conversationId: null,
+        displayName: "large.bin",
+        mediaType: "application/octet-stream",
+        declaredSizeBytes: bytes.byteLength,
+      },
+      harness.env,
+    );
+    let offset = 0;
+    let pulls = 0;
+    const body = new ReadableStream({
+      pull(controller) {
+        pulls += 1;
+        if (offset >= bytes.byteLength) {
+          controller.close();
+          return;
+        }
+        const end = Math.min(offset + 64 * 1024, bytes.byteLength);
+        controller.enqueue(bytes.subarray(offset, end));
+        offset = end;
+      },
+    });
+    const sealed = await uploadRuntimeJobInput(
+      authority,
+      reservation,
+      body,
+      undefined,
+      harness.env,
+    );
+    assert.equal(sealed.uploadId, "upload_1");
+    assert.equal(sealed.sizeBytes, bytes.byteLength);
+    assert.ok(pulls > 40, "raw upload should be pulled as bounded stream chunks");
+    assert.equal(harness.requests.length, 2);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 rejects nonpositive or already-expired input reservations", async () => {
+  const authority = { userId: 42, gardenId: "garden-1", conversationId: null };
+  let expiresAt = 0;
+  const harness = await controlHarness(async () => ({
+    status: 201,
+    body: {
+      uploadId: "upload_expired",
+      expiresAt,
+      maximumBytes: 1024,
+    },
+  }));
+  const reserve = () => reserveRuntimeJobInput(
+    authority,
+    {
+      gardenId: "garden-1",
+      conversationId: null,
+      displayName: "expired.bin",
+      mediaType: "application/octet-stream",
+      declaredSizeBytes: 1,
+    },
+    harness.env,
+  );
+  try {
+    await assert.rejects(reserve(), /invalid job input reservation/);
+    expiresAt = Date.now() - 1;
+    await assert.rejects(reserve(), /invalid job input reservation/);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 preserves the bounded upload-too-large classification", async () => {
+  const authority = { userId: 42, gardenId: "garden-1", conversationId: null };
+  const harness = await controlHarness(async () => ({
+    status: 413,
+    body: {
+      type: "runtime-error",
+      protocolVersion: 1,
+      code: "JOB_INPUT_TOO_LARGE",
+      message: "The job input exceeded its bounded upload reservation.",
+      retryable: false,
+      resource: null,
+      requiredHeadroomMb: null,
+      availableHeadroomMb: null,
+    },
+  }));
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1, 2, 3]));
+      controller.close();
+    },
+  });
+  try {
+    await assert.rejects(
+      uploadRuntimeJobInput(
+        authority,
+        {
+          uploadId: "upload_1",
+          expiresAt: Date.now() + 60_000,
+          maximumBytes: 3,
+          displayName: "bounded.bin",
+          mediaType: "application/octet-stream",
+          declaredSizeBytes: 3,
+        },
+        body,
+        undefined,
+        harness.env,
+      ),
+      (error) => {
+        assert.ok(error instanceof RuntimeJobControlError);
+        assert.equal(error.code, "JOB_INPUT_TOO_LARGE");
+        assert.equal(error.status, 413);
+        assert.equal(error.retryable, false);
+        return true;
+      },
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 preserves the closed input-quota classification", async () => {
+  const authority = { userId: 42, gardenId: "garden-1", conversationId: null };
+  const harness = await controlHarness(async () => ({
+    status: 429,
+    body: {
+      type: "runtime-error",
+      protocolVersion: 1,
+      code: "JOB_INPUT_QUOTA_EXCEEDED",
+      message: "The job input reservation quota is exhausted.",
+      retryable: false,
+      resource: null,
+      requiredHeadroomMb: null,
+      availableHeadroomMb: null,
+    },
+  }));
+  try {
+    await assert.rejects(
+      reserveRuntimeJobInput(
+        authority,
+        {
+          gardenId: "garden-1",
+          conversationId: null,
+          displayName: "quota.bin",
+          mediaType: "application/octet-stream",
+          declaredSizeBytes: 1,
+        },
+        harness.env,
+      ),
+      (error) => {
+        assert.ok(error instanceof RuntimeJobControlError);
+        assert.equal(error.code, "JOB_INPUT_QUOTA_EXCEEDED");
+        assert.equal(error.retryable, false);
+        return true;
+      },
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 job submission adopts only opaque upload references", async () => {
+  const authority = { userId: 42, gardenId: "garden-1", conversationId: null };
+  const harness = await controlHarness(async (_request, observed) => {
+    assert.deepEqual(observed.body, {
+      jobType: "document-ingestion",
+      gardenId: "garden-1",
+      conversationId: null,
+      idempotencyKey: "ingest-1",
+      inputUploads: [{ uploadId: "upload_1" }],
+      requestPayload: { generateMap: false },
+    });
+    assert.doesNotMatch(JSON.stringify(observed.body), /sha256|sizeBytes|filePath|bytes/u);
+    return {
+      status: 202,
+      body: {
+        type: "runtime-job",
+        protocolVersion: 1,
+        job: runtimeJobSnapshot({
+          jobType: "document-ingestion",
+          workerKind: "document-ingestion-node",
+          resourceClass: "document-processing",
+          conversationId: null,
+        }),
+      },
+    };
+  });
+  try {
+    const job = await submitRuntimeJob(
+      authority,
+      {
+        jobType: "document-ingestion",
+        idempotencyKey: "ingest-1",
+        inputUploads: [{ uploadId: "upload_1" }],
+        requestPayload: { generateMap: false },
+      },
+      harness.env,
+    );
+    assert.equal(job.jobType, "document-ingestion");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 bounded output retrieval keeps kind and job binding exact", async () => {
+  const authority = { userId: 42, gardenId: "garden-1", conversationId: null };
+  const harness = await controlHarness(async (request) => {
+    assert.equal(request.url, "/v1/jobs/job_1/checkpoint");
+    return {
+      body: {
+        type: "runtime-job-output",
+        protocolVersion: 1,
+        jobId: "job_1",
+        kind: "checkpoint",
+        content: { protocolVersion: 1, step: "Reading…" },
+      },
+    };
+  });
+  try {
+    const output = await readRuntimeJobOutput(
+      authority,
+      "job_1",
+      "checkpoint",
+      harness.env,
+    );
+    assert.equal(output.kind, "checkpoint");
+    assert.equal(output.content.step, "Reading…");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Runtime V2 input abandonment is authenticated and carries no body", async () => {
+  const authority = { userId: 42, gardenId: "garden-1", conversationId: null };
+  const harness = await controlHarness(async (request, observed) => {
+    assert.equal(request.url, "/v1/job-inputs/upload_1/abandon");
+    assert.equal(request.method, "POST");
+    assert.equal(observed.userId, "42");
+    assert.equal(observed.gardenId, "garden-1");
+    assert.deepEqual(observed.body, {});
+    return { status: 200, body: { ok: true } };
+  });
+  try {
+    await abandonRuntimeJobInput(authority, "upload_1", harness.env);
   } finally {
     await harness.close();
   }
@@ -609,7 +1360,7 @@ test("Runtime V2 rejects missing, extra, and wrong event payload fields", async 
       );
 
       if ("state" in payload) {
-        const wrongState = payload.state === "running" ? "failed" : "running";
+        const wrongState = payload.state === "queued" ? "failed" : "queued";
         responseEvent = runtimeJobEvent(
           eventType,
           { ...payload, state: wrongState },
@@ -812,6 +1563,17 @@ test("Runtime V2 snapshots accept only runtime-owned failure classifications", a
       assert.equal(job.failureCode, accepted[1]);
     }
 
+    failure = {
+      state: "resource_exhausted",
+      failureCode: "BREADBOARD_RESOURCE_EXHAUSTED",
+      failureMessage: "Runtime job execution failed.",
+      resourceExhaustion: RUNTIME_RESOURCE_EXHAUSTION,
+    };
+    assert.deepEqual(
+      (await inspectRuntimeJob(authority, "job_1", harness.env)).resourceExhaustion,
+      RUNTIME_RESOURCE_EXHAUSTION,
+    );
+
     for (const rejected of [
       {
         state: "failed",
@@ -832,6 +1594,30 @@ test("Runtime V2 snapshots accept only runtime-owned failure classifications", a
         state: "failed",
         failureCode: "RUNTIME_JOB_FAILED",
         failureMessage: null,
+      },
+      {
+        state: "failed",
+        failureCode: "RUNTIME_JOB_FAILED",
+        failureMessage: "Runtime job execution failed.",
+        resourceExhaustion: RUNTIME_RESOURCE_EXHAUSTION,
+      },
+      {
+        state: "resource_exhausted",
+        failureCode: "BREADBOARD_RESOURCE_EXHAUSTED",
+        failureMessage: "Runtime job execution failed.",
+        resourceExhaustion: {
+          ...RUNTIME_RESOURCE_EXHAUSTION,
+          requiredHeadroomMb: 0,
+        },
+      },
+      {
+        state: "resource_exhausted",
+        failureCode: "BREADBOARD_RESOURCE_EXHAUSTED",
+        failureMessage: "Runtime job execution failed.",
+        resourceExhaustion: {
+          ...RUNTIME_RESOURCE_EXHAUSTION,
+          retryable: true,
+        },
       },
     ]) {
       failure = rejected;

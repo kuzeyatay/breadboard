@@ -42,6 +42,8 @@ export interface OpenworkArtifact {
 }
 
 const REQUEST_TIMEOUT_MS = 60_000;
+const MAX_JSON_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_ERROR_BYTES = 8 * 1024;
 
 export class OpenworkApiError extends Error {
   // Declared and assigned rather than written as a constructor parameter
@@ -61,8 +63,9 @@ async function request<T>(
   method: string,
   pathname: string,
   body?: unknown,
-  timeoutMs = REQUEST_TIMEOUT_MS,
+  options: { timeoutMs?: number; signal?: AbortSignal; maximumBytes?: number } = {},
 ): Promise<T> {
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS);
   const response = await fetch(new URL(pathname, connection.serverUrl), {
     method,
     headers: {
@@ -70,9 +73,35 @@ async function request<T>(
       ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
   });
-  const text = await response.text();
+  const maximumBytes = response.ok
+    ? options.maximumBytes ?? MAX_JSON_RESPONSE_BYTES
+    : MAX_ERROR_BYTES;
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maximumBytes)) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new OpenworkApiError("response exceeded its bound", 502);
+  }
+  const reader = response.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (reader) {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new OpenworkApiError("response exceeded its bound", 502);
+      }
+      chunks.push(value);
+    }
+  }
+  const text = Buffer.concat(
+    chunks.map((chunk) => Buffer.from(chunk)),
+    total,
+  ).toString("utf8");
   if (!response.ok) {
     // The server answers errors as {error, message}; fall back to the body so a
     // proxy's HTML error page is still readable in a chat event.
@@ -85,7 +114,11 @@ async function request<T>(
     }
     throw new OpenworkApiError(detail || `request failed (${response.status})`, response.status);
   }
-  return (text ? JSON.parse(text) : {}) as T;
+  try {
+    return (text ? JSON.parse(text) : {}) as T;
+  } catch {
+    throw new OpenworkApiError("OpenWork returned invalid JSON.", 502);
+  }
 }
 
 /**
@@ -97,6 +130,7 @@ async function request<T>(
 export async function createSession(
   connection: OpenworkConnection,
   input: { title: string; prompt: string; model: string; variant?: string },
+  signal?: AbortSignal,
 ): Promise<OpenworkSession> {
   const body = await request<{ item?: { id?: unknown; title?: unknown }; started?: unknown }>(
     connection,
@@ -109,6 +143,7 @@ export async function createSession(
       modelId: input.model,
       ...(input.variant ? { variant: input.variant } : {}),
     },
+    { signal, maximumBytes: 256 * 1024 },
   );
   const id = body.item?.id;
   if (typeof id !== "string") throw new Error("OpenWork did not return a session.");
@@ -156,11 +191,14 @@ function normalizeMessage(raw: unknown): OpenworkMessage | null {
 export async function listMessages(
   connection: OpenworkConnection,
   sessionId: string,
+  signal?: AbortSignal,
 ): Promise<OpenworkMessage[]> {
   const body = await request<{ items?: unknown[] }>(
     connection,
     "GET",
     `/workspace/${encodeURIComponent(connection.workspaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
+    undefined,
+    { signal, maximumBytes: MAX_JSON_RESPONSE_BYTES },
   );
   return (body.items ?? []).flatMap((item) => normalizeMessage(item) ?? []);
 }
@@ -168,23 +206,27 @@ export async function listMessages(
 export async function abortSession(
   connection: OpenworkConnection,
   sessionId: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   await request(
     connection,
     "POST",
     `/workspace/${encodeURIComponent(connection.workspaceId)}/sessions/${encodeURIComponent(sessionId)}/abort`,
     {},
-    HEALTH_TIMEOUT_MS,
+    { timeoutMs: HEALTH_TIMEOUT_MS, signal, maximumBytes: 64 * 1024 },
   );
 }
 
 export async function listArtifacts(
   connection: OpenworkConnection,
+  signal?: AbortSignal,
 ): Promise<OpenworkArtifact[]> {
   const body = await request<{ items?: OpenworkArtifact[] }>(
     connection,
     "GET",
     `/workspace/${encodeURIComponent(connection.workspaceId)}/artifacts`,
+    undefined,
+    { signal, maximumBytes: MAX_JSON_RESPONSE_BYTES },
   );
   return (body.items ?? []).filter(
     (item): item is OpenworkArtifact =>
@@ -192,10 +234,16 @@ export async function listArtifacts(
   );
 }
 
-export async function readArtifact(
+export async function openArtifact(
   connection: OpenworkConnection,
   artifactId: string,
-): Promise<{ bytes: Buffer; contentType: string }> {
+  options: { signal?: AbortSignal; maximumBytes: number },
+): Promise<{
+  stream: ReadableStream<Uint8Array>;
+  contentType: string;
+  declaredSize: number | null;
+}> {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const response = await fetch(
     new URL(
       `/workspace/${encodeURIComponent(connection.workspaceId)}/artifacts/${encodeURIComponent(artifactId)}`,
@@ -203,15 +251,27 @@ export async function readArtifact(
     ),
     {
       headers: { authorization: `Bearer ${connection.token}` },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
     },
   );
   if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
     throw new OpenworkApiError(`artifact could not be read (${response.status})`, response.status);
   }
+  const declared = response.headers.get("content-length");
+  const declaredSize = declared !== null && /^\d+$/u.test(declared) ? Number(declared) : null;
+  if (
+    !response.body ||
+    (declared !== null && declaredSize === null) ||
+    (declaredSize !== null && declaredSize > options.maximumBytes)
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new OpenworkApiError("artifact exceeded its bound", 502);
+  }
   return {
-    bytes: Buffer.from(await response.arrayBuffer()),
+    stream: response.body,
     contentType: response.headers.get("content-type") ?? "application/octet-stream",
+    declaredSize,
   };
 }
 

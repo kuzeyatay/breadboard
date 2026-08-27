@@ -1,15 +1,16 @@
 declare module "svg-to-pdfkit" {
-  /**
-   * Renders an SVG string into a PDFKit document at the given position.
-   * `svg-to-pdfkit` ships no type declarations, so this minimal shim covers
-   * the call surface used by the markdown-to-pdf route.
-   */
-  function SVGtoPDF(
-    doc: PDFKit.PDFDocument,
+  interface SvgToPdfOptions {
+    width?: number;
+    height?: number;
+    assumePt?: boolean;
+    preserveAspectRatio?: string;
+  }
+
+  export default function svgToPdf(
+    document: PDFKit.PDFDocument,
     svg: string,
-    x?: number,
-    y?: number,
-    options?: Record<string, unknown>,
+    x: number,
+    y: number,
+    options?: SvgToPdfOptions,
   ): void;
-  export default SVGtoPDF;
 }

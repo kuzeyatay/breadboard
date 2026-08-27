@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { describe } from "node:test";
 import { fileURLToPath } from "node:url";
+import { StringDecoder } from "node:string_decoder";
 import vm from "node:vm";
 import * as ts from "typescript";
 
@@ -19,6 +21,7 @@ import {
   learnTimerRunsForStatus,
   transitionLearnTimer,
 } from "../src/lib/learn-timer.ts";
+import { modelAuthoredLearningUnitParseProblems } from "../src/lib/learning-unit-contract.ts";
 import {
   isAmbiguousModelTransportFailure,
   modelTransportFailureEvidence,
@@ -26,14 +29,48 @@ import {
 
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const learnPath = path.join(dashboardRoot, "src", "lib", "learn.ts");
+const learnStatusPath = path.join(
+  dashboardRoot,
+  "src",
+  "lib",
+  "learn-status-projection.ts",
+);
+const sourceVisualsPath = path.join(
+  dashboardRoot,
+  "src",
+  "lib",
+  "source-visuals.ts",
+);
 const gardenFinalizePath = path.join(dashboardRoot, "src", "lib", "garden-finalize.ts");
-const instrumentationPath = path.join(dashboardRoot, "src", "instrumentation-node.ts");
+const nativeServiceEnginePath = path.join(
+  path.dirname(dashboardRoot),
+  "native",
+  "runtime-cli",
+  "src",
+  "service_engine.rs",
+);
 const learnSource = fs.readFileSync(learnPath, "utf8");
+const learnStatusSource = fs.readFileSync(learnStatusPath, "utf8");
+const sourceVisualsSource = fs.readFileSync(sourceVisualsPath, "utf8");
 const gardenFinalizeSource = fs.readFileSync(gardenFinalizePath, "utf8");
-const instrumentationSource = fs.readFileSync(instrumentationPath, "utf8");
+const nativeServiceEngineSource = fs.readFileSync(nativeServiceEnginePath, "utf8");
 const learnAst = ts.createSourceFile(
   learnPath,
   learnSource,
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TS,
+);
+const learnStatusAst = ts.createSourceFile(
+  learnStatusPath,
+  learnStatusSource,
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TS,
+);
+const sourceVisualsAst = ts.createSourceFile(
+  sourceVisualsPath,
+  sourceVisualsSource,
   ts.ScriptTarget.Latest,
   true,
   ts.ScriptKind.TS,
@@ -52,9 +89,64 @@ function sourceOf(node) {
   return node.getText(learnAst);
 }
 
+function namedStatusFunction(name) {
+  const declaration = learnStatusAst.statements.find(
+    (statement) =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+  );
+  assert.ok(declaration, `expected status projection function ${name} to exist`);
+  return declaration;
+}
+
+function statusSourceOf(node) {
+  return node.getText(learnStatusAst);
+}
+
+function namedSourceVisualsFunction(name) {
+  const declaration = sourceVisualsAst.statements.find(
+    (statement) =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+  );
+  assert.ok(declaration, `expected source-visual function ${name} to exist`);
+  return declaration;
+}
+
+function executableSourceVisualsFunction(name, globals = {}) {
+  const declaration = namedSourceVisualsFunction(name).getText(sourceVisualsAst);
+  const executableSource = ts.transpileModule(
+    `${declaration}\nglobalThis.testFunction = ${name};`,
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.None,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText;
+  const sandbox = { ...globals };
+  vm.runInNewContext(executableSource, sandbox);
+  assert.equal(typeof sandbox.testFunction, "function");
+  return sandbox.testFunction;
+}
+
 function executableNamedFunction(name, globals = {}) {
   const executableSource = ts.transpileModule(
     `${sourceOf(namedFunction(name))}\nglobalThis.testFunction = ${name};`,
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.None,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText;
+  const sandbox = { ...globals };
+  vm.runInNewContext(executableSource, sandbox);
+  assert.equal(typeof sandbox.testFunction, "function");
+  return sandbox.testFunction;
+}
+
+function executableStatusNamedFunction(name, globals = {}) {
+  const executableSource = ts.transpileModule(
+    `${statusSourceOf(namedStatusFunction(name))}\nglobalThis.testFunction = ${name};`,
     {
       compilerOptions: {
         module: ts.ModuleKind.None,
@@ -691,7 +783,7 @@ describe("Learn validation, reads, and publication contracts", () => {
     );
   });
 
-  test("status performs one non-migrating knowledge scan and no recovery writes", () => {
+  test("status performs one lightweight read-only scan and no recovery writes", () => {
     const contextFunction = namedFunction("collectLearnSourceContext");
     const contextSource = sourceOf(contextFunction);
     assert.equal(callsNamed(contextFunction, "scanClusterKnowledge").length, 1);
@@ -705,29 +797,21 @@ describe("Learn validation, reads, and publication contracts", () => {
       "document-ingestion learning pages must not make a never-run garden repair-only",
     );
 
-    const cachedContextFunction = namedFunction("collectLearnStatusContext");
-    const cachedContextSource = sourceOf(cachedContextFunction);
-    assert.equal(
-      callsNamed(cachedContextFunction, "collectLearnSourceContext").length,
-      1,
-    );
-    assert.equal(callsNamed(cachedContextFunction, "scanClusterKnowledge").length, 0);
-    assert.match(learnSource, /LEARN_STATUS_CONTEXT_CACHE_TTL_MS = 5_000/);
-    assert.match(
-      cachedContextSource,
-      /cached && cached\.expiresAt > now[\s\S]*?return cached\.context/,
-    );
-
-    const statusFunction = namedFunction("getLearnStatusSnapshot");
-    const statusSource = sourceOf(statusFunction);
-    assert.equal(callsNamed(statusFunction, "collectLearnStatusContext").length, 1);
+    const statusFunction = namedStatusFunction("getLearnStatusSnapshot");
+    const statusSource = statusSourceOf(statusFunction);
+    assert.equal(callsNamed(statusFunction, "scanStatusKnowledge").length, 1);
     assert.equal(callsNamed(statusFunction, "collectLearnSourceContext").length, 0);
     assert.equal(callsNamed(statusFunction, "scanClusterKnowledge").length, 0);
     assert.doesNotMatch(
       statusSource,
       /recoverAbandonedLearnJobs|refreshClusterIndex|rollbackLearnRun|migrateSources/,
     );
-    assert.match(statusSource, /context\.existingTextbookPages\.length > 0/);
+    assert.match(statusSource, /const hasTextbook = context\.hasTextbook/);
+    assert.match(statusSource, /context\.incomplete \|\|/);
+    assert.doesNotMatch(
+      learnStatusSource,
+      /writeFileSync|appendFileSync|mkdirSync|renameSync|setInterval|globalThis/,
+    );
   });
 
   test("rollback re-fences its final destination check with a live heartbeat", () => {
@@ -1014,15 +1098,174 @@ describe("Learn validation, reads, and publication contracts", () => {
     );
   });
 
+  test("status streams the exact canonical trimmed source body digest", () => {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-status-digest-"));
+    const sourcePath = path.join(temporaryRoot, "source.md");
+    const body = " \r\n\tα one\n\n二 two\u00a0three 😀\r\n  ";
+    fs.writeFileSync(sourcePath, body, "utf8");
+    const streamBody = executableStatusNamedFunction("streamTrimmedStatusBody", {
+      Buffer,
+      StringDecoder,
+      createHash,
+      fs,
+      STATUS_STREAM_CHUNK_BYTES: 5,
+      STATUS_PENDING_WHITESPACE_LIMIT: 1024 * 1024,
+    });
+    const chunks = [];
+    const descriptor = fs.openSync(sourcePath, "r");
+    try {
+      const projection = streamBody(
+        descriptor,
+        0,
+        fs.fstatSync(descriptor).size,
+        (value) => chunks.push(value),
+      );
+      const canonical = body.trim();
+      assert.equal(chunks.join(""), canonical);
+      assert.equal(
+        projection.bodyHash,
+        createHash("sha256").update(canonical).digest("hex"),
+      );
+      assert.equal(
+        projection.wordCount,
+        canonical.split(/\s+/).filter(Boolean).length,
+      );
+    } finally {
+      fs.closeSync(descriptor);
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("status rejects non-canonical formula topology receipts", () => {
+    const pageNumberFromAssetUrl = (assetUrl) => {
+      const match = assetUrl.match(
+        /-page-(\d{1,5})(?:-\d+)?\.(?:png|jpe?g|webp)$/i,
+      );
+      return match ? Number.parseInt(match[1], 10) : undefined;
+    };
+    const normalize = executableStatusNamedFunction("normalizeTopologyReceipts", {
+      SHA256: /^[0-9a-f]{64}$/i,
+      STATUS_SOURCE_VISUAL_LIMIT: 16_384,
+      pageNumberFromAssetUrl,
+    });
+    const canonicalNormalize = executableSourceVisualsFunction(
+      "normalizedSourceFormulaTopologyReviewPageReceipts",
+      {
+        isFullPageSnapshotUrl: (assetUrl) =>
+          pageNumberFromAssetUrl(assetUrl) !== undefined,
+        pageNumberFromAssetUrl,
+      },
+    );
+    const project = (fn, value) => {
+      try {
+        return { ok: true, value: JSON.parse(JSON.stringify(fn(value))) };
+      } catch {
+        return { ok: false };
+      }
+    };
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const assertParity = (value) => {
+      assert.deepEqual(
+        project(normalize, clone(value)),
+        project(canonicalNormalize, clone(value)),
+      );
+    };
+    const hash = "a".repeat(64);
+    const receipt = {
+      activeFormulaIds: ["S1.P2.E1"],
+      pageImagePath: "/garden/assets/source-page-002.png",
+      pageNumber: 2,
+      recoveryCacheIntegritySha256: hash,
+      recoveryCacheKey: hash,
+      recoveryProtocol: "v7",
+      sourceId: "source",
+      topologyReviewCacheIntegritySha256: hash,
+      topologyReviewCacheKey: hash,
+    };
+    assert.equal(normalize([receipt]).length, 1);
+    for (const candidate of [
+      [receipt],
+      [{ ...receipt, unsupported: true }],
+      [{ ...receipt, pageNumber: "2" }],
+      [{ ...receipt, activeFormulaIds: ["S1.P3.E1"] }],
+      [{ ...receipt, activeFormulaIds: ["S1.P2.E2", "S1.P2.E1"] }],
+      [receipt, receipt],
+      [{ ...receipt, recoveryCacheKey: "A".repeat(64) }],
+      [{ ...receipt, pageImagePath: "/garden/assets/source-page-000.png" }],
+    ]) {
+      assertParity(candidate);
+    }
+  });
+
+  test("status refuses an oversized formula manifest before reading it", () => {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-status-formula-"));
+    const manifestPath = path.join(temporaryRoot, "source-formula-review-set.json");
+    const descriptor = fs.openSync(manifestPath, "w");
+    try {
+      fs.writeFileSync(descriptor, "{}\n", "utf8");
+      fs.ftruncateSync(descriptor, 9 * 1024 * 1024);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    const readBounded = executableStatusNamedFunction("readBoundedStatusFile", {
+      fs,
+    });
+    try {
+      assert.throws(() => readBounded(manifestPath, 8 * 1024 * 1024));
+      assert.match(
+        statusSourceOf(namedStatusFunction("loadFormulaManifest")),
+        /readBoundedStatusJson[\s\S]*?STATUS_FORMULA_MANIFEST_BYTE_LIMIT/,
+      );
+    } finally {
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("status does not expose a structurally invalid Learning Unit Contract", () => {
+    const statusContractShapeIsBounded = executableStatusNamedFunction(
+      "statusContractShapeIsBounded",
+      {
+        Buffer,
+        STATUS_CONTRACT_NODE_LIMIT: 16_384,
+        STATUS_CONTRACT_CONTAINER_LIMIT: 4_096,
+        STATUS_CONTRACT_DEPTH_LIMIT: 64,
+        STATUS_CONTRACT_STRING_BYTE_LIMIT: 64 * 1024,
+        STATUS_CONTRACT_STRING_TOTAL_BYTE_LIMIT: 8 * 1024 * 1024,
+      },
+    );
+    const isContractBacked = executableStatusNamedFunction(
+      "isContractBackedLearningMap",
+      {
+        SHA256: /^[0-9a-f]{64}$/i,
+        modelAuthoredLearningUnitParseProblems,
+        statusContractShapeIsBounded,
+        planningRecord: (value) =>
+          value && typeof value === "object" && !Array.isArray(value) ? value : {},
+      },
+    );
+    const hash = "a".repeat(64);
+    assert.equal(
+      isContractBacked({
+        sourceArtifactInventoryHash: hash,
+        coveragePlan: {
+          sourceArtifactInventoryHash: hash,
+          learningUnitContracts: [{}],
+        },
+      }),
+      false,
+    );
+    assert.equal(statusContractShapeIsBounded(new Array(4_097).fill({})), false);
+  });
+
   test("status requires a version's exact map and aggregates current artifact drift", () => {
-    const status = sourceOf(namedFunction("getLearnStatusSnapshot"));
+    const status = statusSourceOf(namedStatusFunction("getLearnStatusSnapshot"));
     assert.match(
       status,
       /const versionMap = isContractBackedLearningMap\(versionMapCandidate\)/,
     );
     assert.match(
       status,
-      /let sourceSetChanged =\s*Boolean\(latestVersion && !versionMap\) \|\|\s*learnLifecycleMapBindingMismatch[\s\S]*?learnSelectionDiffersFromMapBinding/,
+      /let sourceSetChanged =\s*context\.incomplete \|\|\s*Boolean\(latestVersion && !versionMap\) \|\|\s*learnLifecycleMapBindingMismatch[\s\S]*?learnSelectionDiffersFromMapBinding/,
     );
     assert.match(
       status,
@@ -1045,7 +1288,7 @@ describe("Learn validation, reads, and publication contracts", () => {
   });
 
   test("status flags a newest-job selection paired with an unrelated fallback map", () => {
-    const selectionDiffers = executableNamedFunction("learnSelectionDiffersFromMapBinding");
+    const selectionDiffers = executableStatusNamedFunction("learnSelectionDiffersFromMapBinding");
     const currentSelection = {
       sourceIds: ["source-current-generic", "guide-current-generic"],
       syllabusSourceId: "guide-current-generic",
@@ -1082,7 +1325,7 @@ describe("Learn validation, reads, and publication contracts", () => {
   });
 
   test("status treats map identity as part of the published lifecycle binding", () => {
-    const lifecycleMismatch = executableNamedFunction("learnLifecycleMapBindingMismatch");
+    const lifecycleMismatch = executableStatusNamedFunction("learnLifecycleMapBindingMismatch");
     const publishedMapId = "map-published-generic";
     const newerMapId = "map-newer-generic";
 
@@ -1811,26 +2054,27 @@ describe("Learn repair timing and abandoned-job recovery", () => {
     );
   });
 
-  test("Node startup wires a guarded detached Learn recovery sweep", () => {
+  test("native Runtime startup owns the single-flight Learn recovery schedule", () => {
     assert.match(
-      instrumentationSource,
-      /__breadboardAbandonedLearnSweeper\?: ReturnType<typeof setInterval>/,
+      nativeServiceEngineSource,
+      /RuntimeScheduleRegistration::fixed\("learn-recovery", 0, 60_000\)/,
     );
     assert.match(
-      instrumentationSource,
-      /if \(!globalState\.__breadboardAbandonedLearnSweeper\)/,
+      nativeServiceEngineSource,
+      /claim_due_runtime_schedule\(now_ms\)/,
     );
-    assert.match(instrumentationSource, /process\.env\.QUARTZ_CONTENT_PATH/);
     assert.match(
-      instrumentationSource,
-      /await launchAbandonedLearnRecoveryWorker\(\)/,
+      nativeServiceEngineSource,
+      /occurrence\.schedule_id == "learn-recovery"[\s\S]*?registry\.submit_job/,
     );
-    assert.doesNotMatch(instrumentationSource, /learn\.ts|recoverAbandonedLearnJobs/);
-    assert.match(instrumentationSource, /setTimeout\(\(\) => void sweep\(\), 0\)/);
-    assert.match(instrumentationSource, /setInterval\(\(\) => void sweep\(\), 60 \* 1000\)/);
     assert.match(
-      instrumentationSource,
-      /globalState\.__breadboardAbandonedLearnSweeper = timer/,
+      nativeServiceEngineSource,
+      /bind_runtime_schedule_occurrence_job\([\s\S]*?&occurrence,[\s\S]*?&job\.job_id/,
+    );
+    assert.equal(
+      fs.existsSync(path.join(dashboardRoot, "src", "instrumentation-node.ts")),
+      false,
+      "the dashboard must not revive a second recovery timer",
     );
   });
 

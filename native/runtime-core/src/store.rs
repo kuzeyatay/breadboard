@@ -1,14 +1,18 @@
 use crate::admission::RegisteredJobAdmission;
+use crate::input_uploads::{
+    adopt_job_input_uploads_tx, query_job_input_blob_bindings, JobInputBlobBinding,
+};
 use crate::state_machine::validate_completion_confirmation;
 use crate::system_commit::SystemCommitReadError;
 #[cfg(test)]
 use crate::RuntimePaths;
 use crate::{
     validate_transition, AdmissionDecision, AdmissionDenial, AdmissionPolicy, AdmissionRequest,
-    OwnedWorkerEvent, PriorGenerationDrained, ProcessExitClassification, ProcessOwnerError,
-    ProcessTreeAccounting, ProcessTreeExit, ProcessTreeResidency, ResidentWorkerProcess,
-    RuntimeGenerationScope, RuntimeLoad, SystemCommit, WorkerCompletionProof,
-    WorkerLaunchNotCreated, WorkerResidencyAuthority, WorkerTreeExitAuthority,
+    CurrentGenerationMembership, OwnedWorkerEvent, PriorGenerationDrained,
+    ProcessExitClassification, ProcessOwnerError, ProcessTreeAccounting, ProcessTreeExit,
+    ProcessTreeResidency, ResidentWorkerProcess, RuntimeGenerationScope, RuntimeLoad, SystemCommit,
+    TrustedFilePin, WorkerCompletionProof, WorkerLaunchNotCreated, WorkerLaunchNotCreatedCleanup,
+    WorkerLaunchOutcome, WorkerLaunchRequest, WorkerResidencyAuthority, WorkerTreeExitAuthority,
 };
 use breadboard_runtime_protocol::{
     validate_bounded_text, validate_identifier, validate_relative_path, validate_scope_id,
@@ -20,18 +24,91 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, Transact
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+#[cfg(test)]
 use std::path::Path;
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
-const SCHEMA_VERSION: i64 = 4;
-const JOB_COLUMNS: &str = "job_id, job_type, worker_kind, resource_class, owner_principal, user_id, garden_id, conversation_id, state, stage, attempt, worker_instance_id, input_manifest_path, workspace_path, checkpoint_path, result_path, created_at, started_at, updated_at, finished_at, last_heartbeat_at, last_worker_sequence, progress_current, progress_total, failure_code, failure_message, cancellation_requested, idempotency_key, request_digest";
+const SCHEMA_VERSION: i64 = 13;
+const JOB_COLUMNS: &str = "job_id, job_type, worker_kind, resource_class, owner_principal, user_id, garden_id, conversation_id, state, stage, attempt, worker_instance_id, input_manifest_path, workspace_path, checkpoint_path, result_path, created_at, started_at, updated_at, finished_at, last_heartbeat_at, last_worker_sequence, progress_current, progress_total, failure_code, failure_message, cancellation_requested, idempotency_key, request_digest, (SELECT evidence.resource FROM runtime_job_resource_exhaustion evidence WHERE evidence.job_id=runtime_jobs.job_id), (SELECT evidence.required_headroom_mb FROM runtime_job_resource_exhaustion evidence WHERE evidence.job_id=runtime_jobs.job_id), (SELECT evidence.available_headroom_mb FROM runtime_job_resource_exhaustion evidence WHERE evidence.job_id=runtime_jobs.job_id)";
 const ADMISSION_RESOURCE_EXHAUSTED_FAILURE_CODE: &str = "BREADBOARD_RESOURCE_EXHAUSTED";
 const ADMISSION_RESOURCE_EXHAUSTED_FAILURE_MESSAGE: &str =
     "Runtime resource admission was permanently denied";
 pub const MAX_DISPATCH_CANDIDATES: usize = 32;
+pub const JOB_IDEMPOTENCY_CANCELLATION_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
+pub const MAX_IDEMPOTENCY_CANCELLATIONS_PER_OWNER: u64 = 128;
+pub const MAX_IDEMPOTENCY_CANCELLATIONS_GLOBAL: u64 = 4_096;
+pub const MAX_IDEMPOTENCY_CANCELLATION_CLEANUP_BATCH: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "a quarantined duplicate service launch requires fatal runtime shutdown"]
+pub enum ServiceLaunchRetentionDisposition {
+    Retained,
+    DuplicateQuarantined,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputUploadQuotaScope {
+    Owner,
+    Global,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdempotencyCancellationQuotaScope {
+    Owner,
+    Global,
+}
+
+struct SharedRuntimeStoreState {
+    database_path: PathBuf,
+    database_pin: Arc<TrustedFilePin>,
+    generation_shutdown: Arc<AtomicBool>,
+    admission_open: Arc<Mutex<bool>>,
+    trusted_service_bootstrap_open: Arc<Mutex<bool>>,
+    service_launches: Arc<Mutex<crate::service_store::RetainedServiceAuthorities>>,
+}
+
+impl SharedRuntimeStoreState {
+    fn new(database_pin: TrustedFilePin) -> Self {
+        let database_path = database_pin.absolute().to_path_buf();
+        Self {
+            database_path,
+            database_pin: Arc::new(database_pin),
+            generation_shutdown: Arc::new(AtomicBool::new(false)),
+            admission_open: Arc::new(Mutex::new(true)),
+            trusted_service_bootstrap_open: Arc::new(Mutex::new(true)),
+            service_launches: Arc::new(Mutex::new(
+                crate::service_store::RetainedServiceAuthorities::default(),
+            )),
+        }
+    }
+}
+
+fn shared_runtime_store_state(
+    scope: &RuntimeGenerationScope,
+    database_pin: TrustedFilePin,
+) -> Result<Arc<SharedRuntimeStoreState>, StoreError> {
+    static STATES: OnceLock<Mutex<HashMap<RuntimeGenerationScope, Arc<SharedRuntimeStoreState>>>> =
+        OnceLock::new();
+    let states = STATES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut states = states
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let database_path = database_pin.absolute();
+    if let Some(shared) = states.get(scope) {
+        if shared.database_path != database_path {
+            return Err(StoreError::GenerationDatabaseConflict);
+        }
+        return Ok(Arc::clone(shared));
+    }
+    let shared = Arc::new(SharedRuntimeStoreState::new(database_pin));
+    states.insert(scope.clone(), Arc::clone(&shared));
+    Ok(shared)
+}
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -39,12 +116,28 @@ pub enum StoreError {
     Database(#[from] rusqlite::Error),
     #[error("job {0} was not found")]
     JobNotFound(String),
+    #[error("job input upload {0} was not found")]
+    InputUploadNotFound(String),
+    #[error("job input upload {0} is not owned by the authenticated scope")]
+    InputUploadNotOwned(String),
+    #[error("job input upload {upload_id} cannot be used while {state}")]
+    InputUploadState { upload_id: String, state: String },
+    #[error("job input upload {0} expired before it could be used")]
+    InputUploadExpired(String),
+    #[error("job input upload quota is exhausted for the {scope:?} scope")]
+    InputUploadQuotaExceeded { scope: InputUploadQuotaScope },
+    #[error("job idempotency cancellation quota is exhausted for the {scope:?} scope")]
+    IdempotencyCancellationQuotaExceeded {
+        scope: IdempotencyCancellationQuotaScope,
+    },
     #[error("job id {0} is already bound to another request")]
     JobIdConflict(String),
     #[error("runtime is not accepting new work")]
     AdmissionClosed,
     #[error("idempotency key {key} was reused by {owner} with a different request")]
     IdempotencyConflict { owner: String, key: String },
+    #[error("idempotency key {0} was durably cancelled before submission")]
+    CancelledBeforeSubmission(String),
     #[error("job {0} has corrupt persisted state")]
     CorruptState(String),
     #[error("stale worker identity for job {0}")]
@@ -87,6 +180,10 @@ pub enum StoreError {
     SchemaMismatch { version: i64, column: String },
     #[error("prior-generation drain authority does not match this runtime data root")]
     GenerationAuthorityMismatch,
+    #[error("runtime data root is already bound to a different authoritative database")]
+    GenerationDatabaseConflict,
+    #[error(transparent)]
+    Path(#[from] crate::PathError),
     #[error(
         "runtime database schema v2 contains {jobs} jobs whose canonical request inputs cannot be recovered; refusing a lossy migration"
     )]
@@ -213,9 +310,14 @@ impl AuthenticatedJobContext {
         &self.owner
     }
 
-    #[cfg(test)]
-    pub(crate) fn user_id(&self) -> Option<i64> {
+    /// Sanitized scope discriminator; the principal proof itself remains
+    /// opaque and cannot be constructed by an HTTP payload.
+    pub fn user_id(&self) -> Option<i64> {
         self.owner.user_id()
+    }
+
+    pub fn is_runtime_internal(&self) -> bool {
+        self.owner.user_id().is_none()
     }
 
     pub(crate) fn garden_id(&self) -> Option<&str> {
@@ -254,6 +356,7 @@ pub(crate) struct NewJob {
     pub(crate) idempotency_key: String,
     pub(crate) request_digest: String,
     pub(crate) canonical_request_payload: Vec<u8>,
+    pub(crate) input_blobs: Vec<JobInputBlobBinding>,
 }
 
 impl NewJob {
@@ -313,12 +416,39 @@ impl NewJob {
             ));
         }
         validate_canonical_request_payload(&self.canonical_request_payload)?;
+        if self.input_blobs.len() > breadboard_runtime_protocol::MAX_JOB_INPUT_UPLOADS {
+            return Err(StoreError::InvalidInput("too many job input blobs".into()));
+        }
+        for (ordinal, blob) in self.input_blobs.iter().enumerate() {
+            if blob.ordinal as usize != ordinal {
+                return Err(StoreError::InvalidInput(
+                    "job input blob ordinals were not contiguous".into(),
+                ));
+            }
+            blob.worker_blob().validate()?;
+            if blob.blob_id != crate::input_uploads::semantic_blob_id(blob.ordinal, &blob.sha256) {
+                return Err(StoreError::InvalidInput(
+                    "job input blob id was not derived from its semantic binding".into(),
+                ));
+            }
+            if blob.relative_path
+                != format!(
+                    "runtime/jobs/{}/inputs/{}/payload",
+                    self.job_id, blob.blob_id
+                )
+            {
+                return Err(StoreError::InvalidInput(
+                    "job input blob path was not runtime-derived".into(),
+                ));
+            }
+        }
         let expected_digest = compute_submission_digest(
             &self.owner,
             &self.job_type,
             self.garden_id.as_deref(),
             self.conversation_id.as_deref(),
             &self.canonical_request_payload,
+            &self.input_blobs,
         )?;
         if self.request_digest != expected_digest {
             return Err(StoreError::InvalidInput(
@@ -368,6 +498,12 @@ pub struct JobRecord {
     pub idempotency_key: String,
     #[serde(skip)]
     request_digest: String,
+    #[serde(skip)]
+    pub(crate) resource_exhaustion_resource: Option<String>,
+    #[serde(skip)]
+    pub(crate) resource_exhaustion_required_headroom_mb: Option<u64>,
+    #[serde(skip)]
+    pub(crate) resource_exhaustion_available_headroom_mb: Option<u64>,
 }
 
 impl JobRecord {
@@ -384,6 +520,15 @@ impl JobRecord {
             worker_instance_id: self.worker_instance_id.clone()?,
         })
     }
+}
+
+/// Durable result of cancellation keyed by the exact authenticated authority
+/// scope. `Pending` proves a bounded tombstone exists; `Job` returns only the
+/// already-owned durable row and whether cancellation was accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelJobByIdempotencyOutcome {
+    Pending { expires_at: i64 },
+    Job { job: Box<JobRecord>, accepted: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -510,15 +655,65 @@ pub enum JobAdmissionResult {
     Denied(AdmissionDenial),
 }
 
-/// Advisory FIFO work discovered by the dispatcher. This value deliberately
-/// carries no launch authority: only `try_claim_admitted_worker` can mint the
-/// non-cloneable claim required to continue a launch.
+/// Advisory priority/FIFO work discovered by the dispatcher. This value
+/// deliberately carries no launch authority: only
+/// `try_claim_admitted_worker` can mint the non-cloneable claim required to
+/// continue a launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerDispatchCandidate {
     job_id: String,
     worker_kind: String,
     resource_class: String,
     created_at: i64,
+}
+
+/// Opaque proof that Registry selected one exact manifest-declared service
+/// dependency for one exact durable job and worker definition. The durable
+/// service store revalidates the owner job and its pending admission
+/// reservation in the same transaction that acquires the service; this value
+/// alone never grants an admission exemption.
+#[derive(PartialEq, Eq)]
+pub struct WorkerServiceDependencyAdmission {
+    job_id: String,
+    worker_kind: String,
+    worker_resource_class: ResourceClass,
+    worker_estimated_cold_start_commit_mb: u64,
+    service_id: String,
+}
+
+impl std::fmt::Debug for WorkerServiceDependencyAdmission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkerServiceDependencyAdmission")
+            .field("authority", &"<opaque manifest-selected dependency>")
+            .finish()
+    }
+}
+
+impl WorkerServiceDependencyAdmission {
+    pub(crate) fn from_registry(
+        job_id: impl Into<String>,
+        worker_kind: impl Into<String>,
+        worker_resource_class: ResourceClass,
+        worker_estimated_cold_start_commit_mb: u64,
+        service_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            job_id: job_id.into(),
+            worker_kind: worker_kind.into(),
+            worker_resource_class,
+            worker_estimated_cold_start_commit_mb,
+            service_id: service_id.into(),
+        }
+    }
+
+    pub fn job_id(&self) -> &str {
+        &self.job_id
+    }
+
+    pub fn service_id(&self) -> &str {
+        &self.service_id
+    }
 }
 
 /// Advisory queued work for the admission scheduler. This record carries no
@@ -581,6 +776,7 @@ pub struct WorkerDispatchClaim {
     generation_scope: RuntimeGenerationScope,
     identity: WorkerIdentity,
     job: JobRecord,
+    input_blobs: Vec<JobInputBlobBinding>,
 }
 
 impl std::fmt::Debug for WorkerDispatchClaim {
@@ -601,6 +797,13 @@ impl WorkerDispatchClaim {
         &self.job
     }
 
+    pub(crate) fn worker_input_blobs(&self) -> Vec<breadboard_runtime_protocol::WorkerInputBlob> {
+        self.input_blobs
+            .iter()
+            .map(JobInputBlobBinding::worker_blob)
+            .collect()
+    }
+
     pub(crate) fn matches_generation_scope(&self, scope: &RuntimeGenerationScope) -> bool {
         self.generation_scope == *scope
     }
@@ -610,7 +813,26 @@ impl WorkerDispatchClaim {
         generation_scope: RuntimeGenerationScope,
         identity: WorkerIdentity,
     ) -> Self {
+        Self::for_test_with_execution_scope(
+            generation_scope,
+            identity,
+            breadboard_runtime_protocol::WorkerExecutionScope::unscoped(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_execution_scope(
+        generation_scope: RuntimeGenerationScope,
+        identity: WorkerIdentity,
+        execution_scope: breadboard_runtime_protocol::WorkerExecutionScope,
+    ) -> Self {
+        execution_scope
+            .validate()
+            .expect("test worker execution scope must be valid");
         let job_root = format!("runtime/jobs/{}", identity.job_id);
+        let owner_principal = execution_scope
+            .user_id
+            .map_or_else(|| "internal:test-runtime".into(), |id| format!("user:{id}"));
         Self {
             generation_scope,
             identity: identity.clone(),
@@ -619,10 +841,10 @@ impl WorkerDispatchClaim {
                 job_type: "test-job".into(),
                 worker_kind: "test-worker".into(),
                 resource_class: "core".into(),
-                owner_principal: "internal:test-runtime".into(),
-                user_id: None,
-                garden_id: None,
-                conversation_id: None,
+                owner_principal,
+                user_id: execution_scope.user_id,
+                garden_id: execution_scope.garden_id,
+                conversation_id: execution_scope.conversation_id,
                 state: JobState::Starting,
                 stage: None,
                 attempt: identity.attempt,
@@ -644,7 +866,11 @@ impl WorkerDispatchClaim {
                 cancellation_requested: false,
                 idempotency_key: "test-request".into(),
                 request_digest: "0".repeat(64),
+                resource_exhaustion_resource: None,
+                resource_exhaustion_required_headroom_mb: None,
+                resource_exhaustion_available_headroom_mb: None,
             },
+            input_blobs: Vec::new(),
         }
     }
 }
@@ -714,6 +940,16 @@ pub enum WorkerClaimOutcome {
     NotClaimable,
 }
 
+/// Atomic outcome of finalizing a dependency failure for an advisory dispatch
+/// candidate. A cancellation or competing claim can settle the candidate
+/// first; that benign race must not be retried or turned into a dispatcher-
+/// fatal invalid transition.
+#[derive(Debug)]
+pub enum WorkerServiceDependencyFailureDisposition {
+    Finalized(Box<JobRecord>),
+    OwnerAlreadySettled,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreResidencyClaimDisposition {
     #[cfg(test)]
@@ -723,9 +959,29 @@ enum PreResidencyClaimDisposition {
 }
 
 pub struct JobStore {
-    connection: Mutex<Connection>,
-    admission_open: Mutex<bool>,
-    generation_scope: RuntimeGenerationScope,
+    pub(crate) connection: Mutex<Connection>,
+    pub(crate) generation_shutdown: Arc<AtomicBool>,
+    pub(crate) admission_open: Arc<Mutex<bool>>,
+    pub(crate) trusted_service_bootstrap_open: Arc<Mutex<bool>>,
+    pub(crate) service_launches: Arc<Mutex<crate::service_store::RetainedServiceAuthorities>>,
+    pub(crate) generation_scope: RuntimeGenerationScope,
+    _database_pin: Arc<TrustedFilePin>,
+}
+
+/// Opaque authority proving both that the prior generation is zero-resident
+/// and that every nonterminal durable job from that generation has already
+/// been classified terminal. Blob reconciliation accepts only this stronger
+/// post-transaction capability.
+#[must_use = "post-restart blob cleanup must consume this reconciled authority"]
+pub struct PriorGenerationJobsReconciled {
+    pub(crate) scope: RuntimeGenerationScope,
+    _private: (),
+}
+
+impl PriorGenerationJobsReconciled {
+    pub(crate) fn matches_scope(&self, scope: &RuntimeGenerationScope) -> bool {
+        self.scope == *scope
+    }
 }
 
 /// Explicit test-only substitute for the non-forgeable kernel drain proof.
@@ -741,18 +997,29 @@ impl JobStore {
     /// the same pinned `RuntimePaths` data root. There is intentionally no
     /// production path-only opener.
     pub fn open_authoritative(
-        path: impl AsRef<Path>,
+        database_pin: TrustedFilePin,
         generation_scope: RuntimeGenerationScope,
     ) -> Result<Self, StoreError> {
-        let mut connection = Connection::open(path)?;
+        if !database_pin.matches_generation_scope(&generation_scope) {
+            return Err(StoreError::GenerationAuthorityMismatch);
+        }
+        database_pin.revalidate()?;
+        let database_path = database_pin.absolute().to_path_buf();
+        let mut connection = Connection::open(&database_path)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         initialize_schema(&mut connection)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
+        database_pin.revalidate()?;
+        let shared = shared_runtime_store_state(&generation_scope, database_pin)?;
         Ok(Self {
             connection: Mutex::new(connection),
-            admission_open: Mutex::new(true),
+            generation_shutdown: Arc::clone(&shared.generation_shutdown),
+            admission_open: Arc::clone(&shared.admission_open),
+            trusted_service_bootstrap_open: Arc::clone(&shared.trusted_service_bootstrap_open),
+            service_launches: Arc::clone(&shared.service_launches),
             generation_scope,
+            _database_pin: Arc::clone(&shared.database_pin),
         })
     }
 
@@ -769,7 +1036,15 @@ impl JobStore {
                 "test store parent could not mint generation scope: {error}"
             ))
         })?;
-        Self::open_authoritative(path, paths.runtime_generation_scope())
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                StoreError::InvalidInput("test store path must have a UTF-8 file name".into())
+            })?;
+        let database_path = paths.resolve_data(file_name)?;
+        let database_pin = paths.pin_data_file_for_update(&database_path)?;
+        Self::open_authoritative(database_pin, paths.runtime_generation_scope())
     }
 
     /// Compatibility shim for crate-local unit tests outside this module.
@@ -779,6 +1054,47 @@ impl JobStore {
         Self::open_for_test(path)
     }
 
+    /// Returns an already-committed, byte-for-byte identical submission
+    /// without touching upload files. This read path intentionally remains
+    /// available after admission closes so an HTTP retry after an unknown
+    /// response can recover its durable job instead of attempting reuse.
+    pub(crate) fn replay_raw(&self, input: &NewJob) -> Result<Option<JobRecord>, StoreError> {
+        input.validate()?;
+        let mut connection = self.connection.lock().expect("job store mutex poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let submission_context = AuthenticatedJobContext::new(
+            input.owner.clone(),
+            input.garden_id.as_deref(),
+            input.conversation_id.as_deref(),
+        )?;
+        let now = now_ms();
+        if query_active_idempotency_cancellation_tx(
+            &transaction,
+            &submission_context,
+            &input.idempotency_key,
+            now,
+        )?
+        .is_some()
+        {
+            if query_job_by_idempotency_key(
+                &transaction,
+                input.owner.principal(),
+                &input.idempotency_key,
+            )?
+            .is_some()
+            {
+                return Err(StoreError::CancelledBeforeSubmission(
+                    input.idempotency_key.clone(),
+                ));
+            }
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let replay = replay_existing_submission_tx(&transaction, input)?;
+        transaction.commit()?;
+        Ok(replay)
+    }
+
     pub(crate) fn submit_raw(&self, input: &NewJob) -> Result<JobRecord, StoreError> {
         input.validate()?;
         let now = now_ms();
@@ -786,29 +1102,36 @@ impl JobStore {
             .admission_open
             .lock()
             .expect("job admission gate mutex poisoned");
-        if !*admission_gate {
+        if self.generation_shutdown.load(Ordering::Acquire) || !*admission_gate {
             return Err(StoreError::AdmissionClosed);
         }
         let mut connection = self.connection.lock().expect("job store mutex poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) = query_job_by_idempotency_key(
+        let submission_context = AuthenticatedJobContext::new(
+            input.owner.clone(),
+            input.garden_id.as_deref(),
+            input.conversation_id.as_deref(),
+        )?;
+        let cancellation_pending = query_active_idempotency_cancellation_tx(
             &transaction,
-            input.owner.principal(),
+            &submission_context,
             &input.idempotency_key,
-        )? {
-            if existing.request_digest != input.request_digest {
-                return Err(StoreError::IdempotencyConflict {
-                    owner: input.owner.principal().to_string(),
-                    key: input.idempotency_key.clone(),
-                });
+            now,
+        )?
+        .is_some();
+        if cancellation_pending {
+            if query_job_by_idempotency_key(
+                &transaction,
+                input.owner.principal(),
+                &input.idempotency_key,
+            )?
+            .is_some()
+            {
+                return Err(StoreError::CancelledBeforeSubmission(
+                    input.idempotency_key.clone(),
+                ));
             }
-            let stored_payload = query_bound_job_input(&transaction, &existing)?;
-            if stored_payload.as_slice() != input.canonical_request_payload.as_slice() {
-                return Err(StoreError::IdempotencyConflict {
-                    owner: input.owner.principal().to_string(),
-                    key: input.idempotency_key.clone(),
-                });
-            }
+        } else if let Some(existing) = replay_existing_submission_tx(&transaction, input)? {
             transaction.commit()?;
             return Ok(existing);
         }
@@ -849,6 +1172,13 @@ impl JobStore {
                 input.canonical_request_payload.as_slice(),
             ],
         )?;
+        adopt_job_input_uploads_tx(
+            &transaction,
+            &submission_context,
+            &input.job_id,
+            &input.input_blobs,
+            now,
+        )?;
         append_event_tx(
             &transaction,
             &input.job_id,
@@ -858,7 +1188,18 @@ impl JobStore {
             &serde_json::json!({ "state": "queued" }),
             now,
         )?;
-        let job = query_job(&transaction, &input.job_id)?;
+        let job = if cancellation_pending {
+            consume_active_idempotency_cancellation_tx(
+                &transaction,
+                &submission_context,
+                &input.idempotency_key,
+                now,
+            )?;
+            let queued = query_job(&transaction, &input.job_id)?;
+            request_job_cancellation_tx(&transaction, &submission_context, queued)?
+        } else {
+            query_job(&transaction, &input.job_id)?
+        };
         transaction.commit()?;
         Ok(job)
     }
@@ -866,7 +1207,6 @@ impl JobStore {
     /// Loads the exact canonical request bytes for a trusted worker launcher.
     /// This is deliberately crate-private: renderer/HTTP callers receive job
     /// records, never the authority to launch work or read another job's input.
-    #[cfg(test)]
     pub(crate) fn load_canonical_request_payload(
         &self,
         job_id: &str,
@@ -893,15 +1233,186 @@ impl JobStore {
         )
     }
 
-    /// Changes whether new durable admission reservations may be created. This
-    /// gate is held across the complete admission transaction, so shutdown and
-    /// admission have a deterministic order.
-    pub fn set_accepting_work(&self, accepting_work: bool) {
+    pub fn get_by_idempotency_key(
+        &self,
+        context: &AuthenticatedJobContext,
+        idempotency_key: &str,
+    ) -> Result<Option<JobRecord>, StoreError> {
+        context.validate()?;
+        validate_bounded_text("idempotencyKey", idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES)?;
+        if idempotency_key.chars().any(char::is_control) {
+            return Err(StoreError::InvalidInput(
+                "idempotency key contains a control character".into(),
+            ));
+        }
+        let connection = self.connection.lock().expect("job store mutex poisoned");
+        Ok(
+            query_job_by_idempotency_key(
+                &connection,
+                context.owner().principal(),
+                idempotency_key,
+            )?
+            .filter(|job| job.is_owned_by(context)),
+        )
+    }
+
+    /// Atomically cancels the exact matching job or records a bounded durable
+    /// tombstone for this authenticated authority scope. A different scope
+    /// sharing the same owner/key is deliberately neither returned nor
+    /// cancelled.
+    pub fn cancel_job_by_idempotency_key(
+        &self,
+        context: &AuthenticatedJobContext,
+        idempotency_key: &str,
+    ) -> Result<CancelJobByIdempotencyOutcome, StoreError> {
+        context.validate()?;
+        validate_idempotency_key(idempotency_key)?;
+        let now = now_ms();
+        let expires_at = now
+            .checked_add(JOB_IDEMPOTENCY_CANCELLATION_TTL_MS)
+            .filter(|value| *value <= breadboard_runtime_protocol::MAX_JSON_SAFE_INTEGER as i64)
+            .ok_or_else(|| StoreError::InvalidInput("cancellation expiry overflowed".into()))?;
+        let mut connection = self.connection.lock().expect("job store mutex poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        delete_expired_idempotency_cancellations_tx(
+            &transaction,
+            now,
+            MAX_IDEMPOTENCY_CANCELLATION_CLEANUP_BATCH,
+        )?;
+        transaction.execute(
+            "DELETE FROM runtime_job_idempotency_cancellations
+             WHERE owner_principal=?1 AND user_id=?2 AND garden_id=?3
+               AND conversation_id=?4 AND idempotency_key=?5 AND expires_at<=?6",
+            params![
+                context.owner().principal(),
+                cancellation_scope_user_id(context),
+                cancellation_scope_id(context.garden_id()),
+                cancellation_scope_id(context.conversation_id()),
+                idempotency_key,
+                now,
+            ],
+        )?;
+
+        if let Some(current) = query_job_by_idempotency_key(
+            &transaction,
+            context.owner().principal(),
+            idempotency_key,
+        )? {
+            if current.is_owned_by(context) {
+                let job = request_job_cancellation_tx(&transaction, context, current)?;
+                let accepted = matches!(job.state, JobState::Cancelling | JobState::Cancelled);
+                transaction.commit()?;
+                return Ok(CancelJobByIdempotencyOutcome::Job {
+                    job: Box::new(job),
+                    accepted,
+                });
+            }
+        }
+
+        if let Some(existing_expiry) =
+            query_active_idempotency_cancellation_tx(&transaction, context, idempotency_key, now)?
+        {
+            transaction.commit()?;
+            return Ok(CancelJobByIdempotencyOutcome::Pending {
+                expires_at: existing_expiry,
+            });
+        }
+
+        let owner_active: u64 = transaction.query_row(
+            "SELECT COUNT(*) FROM runtime_job_idempotency_cancellations
+             WHERE owner_principal=?1 AND expires_at>?2",
+            params![context.owner().principal(), now],
+            |row| row.get(0),
+        )?;
+        if owner_active >= MAX_IDEMPOTENCY_CANCELLATIONS_PER_OWNER {
+            return Err(StoreError::IdempotencyCancellationQuotaExceeded {
+                scope: IdempotencyCancellationQuotaScope::Owner,
+            });
+        }
+        let global_active: u64 = transaction.query_row(
+            "SELECT COUNT(*) FROM runtime_job_idempotency_cancellations WHERE expires_at>?1",
+            params![now],
+            |row| row.get(0),
+        )?;
+        if global_active >= MAX_IDEMPOTENCY_CANCELLATIONS_GLOBAL {
+            return Err(StoreError::IdempotencyCancellationQuotaExceeded {
+                scope: IdempotencyCancellationQuotaScope::Global,
+            });
+        }
+        transaction.execute(
+            "INSERT INTO runtime_job_idempotency_cancellations (
+                owner_principal, user_id, garden_id, conversation_id,
+                idempotency_key, created_at, expires_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                context.owner().principal(),
+                cancellation_scope_user_id(context),
+                cancellation_scope_id(context.garden_id()),
+                cancellation_scope_id(context.conversation_id()),
+                idempotency_key,
+                now,
+                expires_at,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(CancelJobByIdempotencyOutcome::Pending { expires_at })
+    }
+
+    /// Deletes at most `limit` expired tombstones. Active cancellation
+    /// authority and all job rows are outside this bounded online sweep.
+    pub fn reconcile_expired_idempotency_cancellations_online(
+        &self,
+        limit: usize,
+    ) -> Result<usize, StoreError> {
+        if !(1..=MAX_IDEMPOTENCY_CANCELLATION_CLEANUP_BATCH).contains(&limit) {
+            return Err(StoreError::InvalidInput(format!(
+                "idempotency cancellation cleanup limit must be between 1 and {MAX_IDEMPOTENCY_CANCELLATION_CLEANUP_BATCH}"
+            )));
+        }
+        let mut connection = self.connection.lock().expect("job store mutex poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let deleted = delete_expired_idempotency_cancellations_tx(&transaction, now_ms(), limit)?;
+        transaction.commit()?;
+        Ok(deleted)
+    }
+
+    /// Temporarily closes admission while bootstrap is incomplete. Unlike
+    /// generation shutdown, this state may be reopened exactly until the
+    /// irreversible shutdown bit is published.
+    pub fn pause_accepting_work(&self) {
         let mut gate = self
             .admission_open
             .lock()
             .expect("job admission gate mutex poisoned");
-        *gate = accepting_work;
+        *gate = false;
+    }
+
+    /// Opens admission after bootstrap, unless any handle for this generation
+    /// has already begun shutdown. The second shutdown check closes the race
+    /// between the lock-free fast rejection and acquisition of the gate.
+    pub fn open_accepting_work(&self) -> Result<(), StoreError> {
+        if self.generation_shutdown.load(Ordering::Acquire) {
+            return Err(StoreError::AdmissionClosed);
+        }
+        let mut gate = self
+            .admission_open
+            .lock()
+            .expect("job admission gate mutex poisoned");
+        if self.generation_shutdown.load(Ordering::Acquire) {
+            return Err(StoreError::AdmissionClosed);
+        }
+        *gate = true;
+        Ok(())
+    }
+
+    /// Irreversibly closes all admission and launch gates shared by this
+    /// runtime generation. Publishing the atomic bit first prevents another
+    /// store handle from slipping through or reopening a temporarily closed
+    /// gate while shutdown waits for an in-flight operation.
+    pub fn close_for_runtime_shutdown(&self) {
+        self.generation_shutdown.store(true, Ordering::Release);
+        self.close_durable_service_launch_gate();
+        self.pause_accepting_work();
     }
 
     /// Evaluates a commit sample and every active reservation while the same
@@ -956,7 +1467,7 @@ impl JobStore {
                 "queued job {job_id} already has an active admission reservation"
             )));
         }
-        if !*admission_gate {
+        if self.generation_shutdown.load(Ordering::Acquire) || !*admission_gate {
             let denial = AdmissionDenial::runtime_shutdown_gate(
                 policy
                     .minimum_reserve_mb
@@ -967,35 +1478,25 @@ impl JobStore {
         }
 
         let sampled_commit = sample_commit()?;
-        let reservations = active_reservation_summary_tx(&transaction)?;
-        let effective_commit = SystemCommit {
-            total_mb: sampled_commit
-                .total_mb
-                .saturating_add(reservations.pending_commit_mb),
-            limit_mb: sampled_commit.limit_mb,
-        };
+        let reservations = global_admission_snapshot_tx(&transaction)?;
         let active_definition_count = reservations
             .active_job_definitions
             .iter()
             .filter(|definition| definition.as_str() == admission.definition_key.as_str())
             .count();
-        let load = RuntimeLoad {
-            accepting_work: *admission_gate,
-            active_job_classes: reservations.active_job_classes,
-            active_service_classes: reservations.active_service_classes,
-        };
         let request = AdmissionRequest {
             resource_class: admission.resource_class,
             estimated_cold_start_commit_mb: admission.estimated_cold_start_commit_mb,
             reserve_floor_mb: None,
         };
-        let durable_policy = AdmissionPolicy {
-            one_heavyweight_at_a_time: true,
-            ..policy
-        };
-        if let AdmissionDecision::Denied(denial) =
-            durable_policy.decide(request, effective_commit, &load)
-        {
+        let evaluation = evaluate_global_admission(
+            reservations,
+            sampled_commit,
+            *admission_gate,
+            request,
+            policy,
+        );
+        if let AdmissionDecision::Denied(denial) = evaluation.decision {
             return finish_admission_denial_tx(transaction, &current, denial);
         }
 
@@ -1006,7 +1507,7 @@ impl JobStore {
                 resource: "worker_concurrency".into(),
                 required_headroom_mb: reserve
                     .saturating_add(admission.estimated_cold_start_commit_mb),
-                available_headroom_mb: effective_commit.free_mb(),
+                available_headroom_mb: evaluation.effective_commit.free_mb(),
                 retryable: false,
                 reason: format!(
                     "worker {} reached maximum concurrency {}",
@@ -1060,8 +1561,10 @@ impl JobStore {
         Ok(JobAdmissionResult::Admitted(Box::new(admitted)))
     }
 
-    /// Returns bounded FIFO queued work for the admission scheduler. This is a
-    /// read-only snapshot and cannot create a reservation or claim authority.
+    /// Returns a bounded priority/FIFO snapshot for the admission scheduler.
+    /// Authenticated user work precedes runtime-owned schedule/reconciliation
+    /// work, with FIFO preserved within each tier. This read-only snapshot
+    /// cannot create a reservation or claim authority.
     pub fn queued_admission_candidates(
         &self,
         limit: usize,
@@ -1077,7 +1580,8 @@ impl JobStore {
                     jobs.created_at
              FROM runtime_jobs AS jobs INDEXED BY runtime_jobs_queued_fifo_idx
              WHERE jobs.state='queued'
-             ORDER BY jobs.created_at ASC, jobs.job_id ASC
+             ORDER BY CASE WHEN jobs.user_id IS NOT NULL THEN 0 ELSE 1 END ASC,
+                      jobs.created_at ASC, jobs.job_id ASC
              LIMIT ?1",
         )?;
         let rows = statement.query_map(params![limit as i64], |row| {
@@ -1093,9 +1597,11 @@ impl JobStore {
             .map_err(StoreError::from)
     }
 
-    /// Returns a bounded FIFO snapshot of admitted jobs. Enumeration is
-    /// advisory only and never changes durable state or creates launch
-    /// authority. Queued jobs are intentionally excluded: the admission
+    /// Returns a bounded priority/FIFO snapshot of admitted jobs. The same
+    /// durable owner policy used for admission is repeated here so an admitted
+    /// maintenance row cannot jump foreground work.
+    /// Enumeration is advisory only and never changes durable state or creates
+    /// launch authority. Queued jobs are intentionally excluded: the admission
     /// governor must first create their matching durable pending reservation.
     pub fn dispatch_candidates(
         &self,
@@ -1111,7 +1617,8 @@ impl JobStore {
             "SELECT jobs.job_id, jobs.worker_kind, jobs.resource_class, jobs.created_at
              FROM runtime_jobs AS jobs INDEXED BY runtime_jobs_admitted_fifo_idx
              WHERE jobs.state='admitted'
-             ORDER BY jobs.created_at ASC, jobs.job_id ASC
+             ORDER BY CASE WHEN jobs.user_id IS NOT NULL THEN 0 ELSE 1 END ASC,
+                      jobs.created_at ASC, jobs.job_id ASC
              LIMIT ?1",
         )?;
         let rows = statement.query_map(params![limit as i64], |row| {
@@ -1142,7 +1649,7 @@ impl JobStore {
             .admission_open
             .lock()
             .expect("job admission gate mutex poisoned");
-        if !*admission_gate {
+        if self.generation_shutdown.load(Ordering::Acquire) || !*admission_gate {
             return Ok(WorkerClaimOutcome::NotClaimable);
         }
         let mut connection = self.connection.lock().expect("job store mutex poisoned");
@@ -1203,12 +1710,72 @@ impl JobStore {
             now,
         )?;
         let job = query_job(&transaction, job_id)?;
+        let input_blobs = query_job_input_blob_bindings(&transaction, job_id)?;
         transaction.commit()?;
         Ok(WorkerClaimOutcome::Claimed(Box::new(WorkerDispatchClaim {
             generation_scope: self.generation_scope.clone(),
             identity,
             job,
+            input_blobs,
         })))
+    }
+
+    /// The sole public worker CreateProcess boundary. A durable claim may be
+    /// minted immediately before shutdown, but this generation-global gate is
+    /// checked again and held through process creation. Rejection returns a
+    /// no-process-created authority that can be durably finalized.
+    pub fn launch_claimed_worker(
+        &self,
+        claim: Box<WorkerDispatchClaim>,
+        generation: &CurrentGenerationMembership,
+        request: WorkerLaunchRequest,
+    ) -> WorkerLaunchOutcome {
+        let admission_gate = self
+            .admission_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !claim.matches_generation_scope(&self.generation_scope) {
+            return WorkerLaunchOutcome::NotCreated(
+                WorkerLaunchNotCreated::rejected_before_creation(
+                    claim,
+                    ProcessOwnerError::GenerationScopeMismatch,
+                ),
+            );
+        }
+        if self.generation_shutdown.load(Ordering::Acquire) || !*admission_gate {
+            return WorkerLaunchOutcome::NotCreated(
+                WorkerLaunchNotCreated::rejected_before_creation(
+                    claim,
+                    ProcessOwnerError::InvalidLaunch(
+                        "runtime shutdown closed the worker launch boundary",
+                    ),
+                ),
+            );
+        }
+        claim.launch(generation, request)
+    }
+
+    /// Performs the only retained no-process worker retry under the same
+    /// irreversible generation-global launch gate. Closed or exhausted
+    /// retries return the complete authority without creating a process.
+    pub fn retry_worker_launch(
+        &self,
+        authority: WorkerLaunchNotCreated,
+        generation: &CurrentGenerationMembership,
+    ) -> Result<WorkerLaunchOutcome, WorkerLaunchNotCreated> {
+        let admission_gate = self
+            .admission_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !authority
+            .claim()
+            .matches_generation_scope(&self.generation_scope)
+            || self.generation_shutdown.load(Ordering::Acquire)
+            || !*admission_gate
+        {
+            return Err(authority);
+        }
+        authority.retry(generation)
     }
 
     pub fn worker_dispatch_snapshot(
@@ -2042,80 +2609,16 @@ impl JobStore {
         job_id: &str,
     ) -> Result<JobRecord, StoreError> {
         context.validate()?;
-        let owner = context.owner();
         let mut connection = self.connection.lock().expect("job store mutex poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = query_owned_job(
             &transaction,
-            owner,
+            context.owner(),
             context.garden_id(),
             context.conversation_id(),
             job_id,
         )?;
-        if current.state.is_terminal() {
-            transaction.commit()?;
-            return Ok(current);
-        }
-        if matches!(current.state, JobState::Queued | JobState::Admitted)
-            || (current.state == JobState::Cancelling && current.identity().is_none())
-        {
-            cancel_unstarted_job_tx(&transaction, &current)?;
-            let updated = query_owned_job(
-                &transaction,
-                owner,
-                context.garden_id(),
-                context.conversation_id(),
-                job_id,
-            )?;
-            transaction.commit()?;
-            return Ok(updated);
-        }
-        if current.state == JobState::Cancelling {
-            // An assigned attempt remains receipt-gated even if its admission
-            // reservation is still pending. Requesting cancellation must never
-            // infer that the process tree failed to become resident or release
-            // its hold without authoritative zero-resident evidence.
-            current
-                .identity()
-                .ok_or_else(|| StoreError::CorruptState(current.job_id.clone()))?;
-            require_active_job_reservation_matches_job_tx(&transaction, &current)?;
-            transaction.commit()?;
-            return Ok(current);
-        }
-        current
-            .identity()
-            .ok_or_else(|| StoreError::CorruptState(current.job_id.clone()))?;
-        require_active_job_reservation_matches_job_tx(&transaction, &current)?;
-        validate_transition(current.state, JobState::Cancelling)?;
-        let now = now_ms();
-        transaction.execute(
-            "UPDATE runtime_jobs SET state='cancelling', cancellation_requested=1, updated_at=?5
-             WHERE job_id=?1 AND owner_principal=?2
-               AND garden_id IS ?3 AND conversation_id IS ?4",
-            params![
-                job_id,
-                owner.principal(),
-                context.garden_id(),
-                context.conversation_id(),
-                now,
-            ],
-        )?;
-        append_event_tx(
-            &transaction,
-            job_id,
-            current.attempt,
-            current.worker_instance_id.as_deref(),
-            "cancellation-requested",
-            &serde_json::json!({ "state": "cancelling" }),
-            now,
-        )?;
-        let updated = query_owned_job(
-            &transaction,
-            owner,
-            context.garden_id(),
-            context.conversation_id(),
-            job_id,
-        )?;
+        let updated = request_job_cancellation_tx(&transaction, context, current)?;
         transaction.commit()?;
         Ok(updated)
     }
@@ -2238,6 +2741,77 @@ impl JobStore {
         Ok(updated)
     }
 
+    /// Records a closed, structured dependency failure before a worker
+    /// identity or process tree exists. The dependency identity never comes
+    /// from the request, and the pending job reservation is released in the
+    /// same transaction so unavailable services cannot strand admission.
+    pub fn worker_service_dependency_unavailable_before_assignment(
+        &self,
+        job_id: &str,
+        resource_exhausted: bool,
+    ) -> Result<WorkerServiceDependencyFailureDisposition, StoreError> {
+        validate_identifier("jobId", job_id)?;
+        let target = if resource_exhausted {
+            JobState::ResourceExhausted
+        } else {
+            JobState::Failed
+        };
+        let code = if resource_exhausted {
+            "SERVICE_DEPENDENCY_RESOURCE_EXHAUSTED"
+        } else {
+            "SERVICE_DEPENDENCY_UNAVAILABLE"
+        };
+        let message = if resource_exhausted {
+            "A required Runtime service dependency could not be admitted"
+        } else {
+            "A required Runtime service dependency was unavailable"
+        };
+        let mut connection = self.connection.lock().expect("job store mutex poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = query_job(&transaction, job_id)?;
+        if current.state != JobState::Admitted {
+            transaction.commit()?;
+            return Ok(WorkerServiceDependencyFailureDisposition::OwnerAlreadySettled);
+        }
+        if current.attempt != 0 || current.worker_instance_id.is_some() {
+            return Err(StoreError::InvalidInput(format!(
+                "job {job_id} already has a worker identity"
+            )));
+        }
+        validate_transition(current.state, target)?;
+        require_pending_job_reservation_tx(&transaction, &current)?;
+        let now = now_ms();
+        transaction.execute(
+            "UPDATE runtime_jobs SET state=?2, failure_code=?3, failure_message=?4,
+             updated_at=?5, finished_at=?5 WHERE job_id=?1",
+            params![job_id, state_name(target), code, message, now],
+        )?;
+        append_event_tx(
+            &transaction,
+            job_id,
+            current.attempt,
+            None,
+            state_name(target),
+            &serde_json::json!({ "code": code, "message": message }),
+            now,
+        )?;
+        release_active_job_reservation_tx(&transaction, job_id, now)?;
+        append_event_tx(
+            &transaction,
+            job_id,
+            current.attempt,
+            None,
+            "reservation-released",
+            &serde_json::json!({ "reservationState": "released" }),
+            now,
+        )?;
+        let updated = query_job(&transaction, job_id)?;
+        transaction.commit()?;
+        Ok(WorkerServiceDependencyFailureDisposition::Finalized(
+            Box::new(updated),
+        ))
+    }
+
     /// Finalizes only an opaque claim-owned proof minted before CreateProcess.
     /// The failure class is derived from the actual launch error rather than a
     /// caller-selected release reason. Every database error returns the exact
@@ -2245,10 +2819,20 @@ impl JobStore {
     pub fn finish_worker_not_created(
         &self,
         authority: WorkerLaunchNotCreated,
-    ) -> Result<JobRecord, WorkerStoreTransitionError<WorkerLaunchNotCreated>> {
+    ) -> Result<
+        (JobRecord, WorkerLaunchNotCreatedCleanup),
+        WorkerStoreTransitionError<WorkerLaunchNotCreated>,
+    > {
         let disposition = pre_residency_disposition_for_launch_error(authority.error());
         match self.finish_worker_claim_before_residency_inner(authority.claim(), disposition) {
-            Ok(job) => Ok(job),
+            Ok(job) => {
+                let cleanup = WorkerLaunchNotCreatedCleanup {
+                    generation_scope: self.generation_scope.clone(),
+                    identity: authority.identity().clone(),
+                };
+                drop(authority);
+                Ok((job, cleanup))
+            }
             Err(error) => Err(WorkerStoreTransitionError {
                 authority: Box::new(authority),
                 error,
@@ -2446,13 +3030,20 @@ impl JobStore {
     pub fn finish_worker_before_started(
         &self,
         authority: WorkerTreeExitAuthority,
-    ) -> Result<JobRecord, WorkerStoreTransitionError<WorkerTreeExitAuthority>> {
+    ) -> Result<(JobRecord, ProcessTreeExit), WorkerStoreTransitionError<WorkerTreeExitAuthority>>
+    {
         let result = {
             let (claim, tree_exit) = authority.parts();
             self.finish_worker_claim_after_tree_exit_inner(claim, tree_exit)
         };
         match result {
-            Ok(job) => Ok(job),
+            Ok(job) => {
+                let (process, tree_exit) = authority.into_parts();
+                // The exited process still retains launch/blob pins. Drop it
+                // before returning the zero-resident receipt used by cleanup.
+                drop(process);
+                Ok((job, tree_exit))
+            }
             Err(error) => Err(WorkerStoreTransitionError {
                 authority: Box::new(authority),
                 error,
@@ -2781,11 +3372,18 @@ impl JobStore {
     pub fn reconcile_after_runtime_restart(
         &self,
         prior_generation_drained: PriorGenerationDrained,
-    ) -> Result<Vec<JobRecord>, StoreError> {
+    ) -> Result<(Vec<JobRecord>, PriorGenerationJobsReconciled), StoreError> {
         if !prior_generation_drained.matches_scope(&self.generation_scope) {
             return Err(StoreError::GenerationAuthorityMismatch);
         }
-        self.reconcile_after_runtime_restart_authorized()
+        let jobs = self.reconcile_after_runtime_restart_authorized()?;
+        Ok((
+            jobs,
+            PriorGenerationJobsReconciled {
+                scope: self.generation_scope.clone(),
+                _private: (),
+            },
+        ))
     }
 
     /// Mints an explicit one-shot restart proof for source tests. Unlike the
@@ -2807,6 +3405,24 @@ impl JobStore {
             return Err(StoreError::GenerationAuthorityMismatch);
         }
         self.reconcile_after_runtime_restart_authorized()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reconcile_after_runtime_restart_with_blob_authority_for_test(
+        &self,
+        proof: RuntimeRestartProofForTest,
+    ) -> Result<(Vec<JobRecord>, PriorGenerationJobsReconciled), StoreError> {
+        if proof.scope != self.generation_scope {
+            return Err(StoreError::GenerationAuthorityMismatch);
+        }
+        let jobs = self.reconcile_after_runtime_restart_authorized()?;
+        Ok((
+            jobs,
+            PriorGenerationJobsReconciled {
+                scope: self.generation_scope.clone(),
+                _private: (),
+            },
+        ))
     }
 
     fn reconcile_after_runtime_restart_authorized(&self) -> Result<Vec<JobRecord>, StoreError> {
@@ -2989,14 +3605,14 @@ impl JobStore {
         // only while it retains a pending reservation; all other cases become
         // interrupted rather than silently starting without a reservation.
         let mut statement = transaction.prepare(&format!(
-            "SELECT {JOB_COLUMNS} FROM runtime_jobs AS jobs
+            "SELECT {JOB_COLUMNS} FROM runtime_jobs
              WHERE state='admitted' AND NOT EXISTS (
                  SELECT 1 FROM runtime_admission_reservations AS reservations
                  WHERE reservations.subject_kind='job'
-                   AND reservations.subject_id=jobs.job_id
+                   AND reservations.subject_id=runtime_jobs.job_id
                    AND reservations.lifecycle_state='pending'
-                   AND reservations.definition_key=jobs.worker_kind
-                   AND reservations.resource_class=jobs.resource_class
+                   AND reservations.definition_key=runtime_jobs.worker_kind
+                   AND reservations.resource_class=runtime_jobs.resource_class
              ) ORDER BY created_at"
         ))?;
         let stranded = statement
@@ -3063,6 +3679,7 @@ impl JobStore {
              )",
             params![now],
         )?;
+        crate::service_store::reconcile_services_after_runtime_restart_tx(&transaction, now)?;
         transaction.commit()?;
         Ok(reconciled)
     }
@@ -3267,6 +3884,21 @@ struct ActiveJobReservation {
     lifecycle_state: String,
 }
 
+/// Transaction-local proof that the opaque Registry authority still belongs
+/// to an unclaimed admitted job with its exact pending reservation. Only this
+/// validated value can narrow a global service-admission snapshot.
+#[derive(Debug)]
+pub(crate) struct ValidatedWorkerServiceDependencyAdmission {
+    owner_job_id: String,
+    _private: (),
+}
+
+#[derive(Debug)]
+pub(crate) enum WorkerServiceDependencyOwnerValidation {
+    Valid(ValidatedWorkerServiceDependencyAdmission),
+    Lost,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompletionConfirmation {
     completion_sequence: u64,
@@ -3293,12 +3925,50 @@ struct PersistedCompletionConfirmation {
     peak_accounting_complete: Option<bool>,
 }
 
+/// One lifecycle-validated view of every active durable admission hold.
+/// Jobs and services use this exact snapshot while holding the same global
+/// admission gate and SQLite write transaction, so neither path can authorize
+/// work from a narrower or differently interpreted view of the ledger.
 #[derive(Debug, Default)]
-struct ActiveReservationSummary {
-    pending_commit_mb: u64,
-    active_job_classes: Vec<ResourceClass>,
-    active_service_classes: Vec<ResourceClass>,
-    active_job_definitions: Vec<String>,
+pub(crate) struct GlobalAdmissionSnapshot {
+    pub(crate) pending_commit_mb: u64,
+    pub(crate) active_job_classes: Vec<ResourceClass>,
+    pub(crate) active_service_classes: Vec<ResourceClass>,
+    pub(crate) active_job_definitions: Vec<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct GlobalAdmissionEvaluation {
+    pub(crate) decision: AdmissionDecision,
+    pub(crate) effective_commit: SystemCommit,
+}
+
+pub(crate) fn evaluate_global_admission(
+    snapshot: GlobalAdmissionSnapshot,
+    sampled_commit: SystemCommit,
+    accepting_work: bool,
+    request: AdmissionRequest,
+    policy: AdmissionPolicy,
+) -> GlobalAdmissionEvaluation {
+    let effective_commit = SystemCommit {
+        total_mb: sampled_commit
+            .total_mb
+            .saturating_add(snapshot.pending_commit_mb),
+        limit_mb: sampled_commit.limit_mb,
+    };
+    let load = RuntimeLoad {
+        accepting_work,
+        active_job_classes: snapshot.active_job_classes,
+        active_service_classes: snapshot.active_service_classes,
+    };
+    let durable_policy = AdmissionPolicy {
+        one_heavyweight_at_a_time: true,
+        ..policy
+    };
+    GlobalAdmissionEvaluation {
+        decision: durable_policy.decide(request, effective_commit, &load),
+        effective_commit,
+    }
 }
 
 /// Completes the serialized disposition of one admission denial. Shutdown is
@@ -3352,6 +4022,18 @@ fn finish_admission_denial_tx(
             current.job_id
         )));
     }
+    transaction.execute(
+        "INSERT INTO runtime_job_resource_exhaustion (
+            job_id, resource, required_headroom_mb, available_headroom_mb, denied_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            current.job_id,
+            denial.resource,
+            denial.required_headroom_mb,
+            denial.available_headroom_mb,
+            now,
+        ],
+    )?;
     append_event_tx(
         &transaction,
         &current.job_id,
@@ -3383,6 +4065,79 @@ fn finish_admission_denial_tx(
 /// by admission, which is released in this same transaction. Once an identity
 /// exists, even a still-pending hold remains fail-closed and must use the
 /// process-owner path instead.
+fn request_job_cancellation_tx(
+    transaction: &Transaction<'_>,
+    context: &AuthenticatedJobContext,
+    current: JobRecord,
+) -> Result<JobRecord, StoreError> {
+    if current.state.is_terminal() {
+        return Ok(current);
+    }
+    if matches!(current.state, JobState::Queued | JobState::Admitted)
+        || (current.state == JobState::Cancelling && current.identity().is_none())
+    {
+        cancel_unstarted_job_tx(transaction, &current)?;
+        return query_owned_job(
+            transaction,
+            context.owner(),
+            context.garden_id(),
+            context.conversation_id(),
+            &current.job_id,
+        );
+    }
+    if current.state == JobState::Cancelling {
+        // An assigned attempt remains receipt-gated even if its admission
+        // reservation is still pending. Requesting cancellation must never
+        // infer that the process tree failed to become resident or release its
+        // hold without authoritative zero-resident evidence.
+        current
+            .identity()
+            .ok_or_else(|| StoreError::CorruptState(current.job_id.clone()))?;
+        require_active_job_reservation_matches_job_tx(transaction, &current)?;
+        return Ok(current);
+    }
+    current
+        .identity()
+        .ok_or_else(|| StoreError::CorruptState(current.job_id.clone()))?;
+    require_active_job_reservation_matches_job_tx(transaction, &current)?;
+    validate_transition(current.state, JobState::Cancelling)?;
+    let now = now_ms();
+    let changed = transaction.execute(
+        "UPDATE runtime_jobs SET state='cancelling', cancellation_requested=1, updated_at=?5
+         WHERE job_id=?1 AND owner_principal=?2
+           AND garden_id IS ?3 AND conversation_id IS ?4",
+        params![
+            current.job_id,
+            context.owner().principal(),
+            context.garden_id(),
+            context.conversation_id(),
+            now,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(StoreError::CorruptState(format!(
+            "job {} changed while cancellation was requested",
+            current.job_id
+        )));
+    }
+    append_event_tx(
+        transaction,
+        &current.job_id,
+        current.attempt,
+        current.worker_instance_id.as_deref(),
+        "cancellation-requested",
+        &serde_json::json!({ "state": "cancelling" }),
+        now,
+    )?;
+    query_owned_job(
+        transaction,
+        context.owner(),
+        context.garden_id(),
+        context.conversation_id(),
+        &current.job_id,
+    )
+}
+
 fn cancel_unstarted_job_tx(
     transaction: &Transaction<'_>,
     current: &JobRecord,
@@ -3540,15 +4295,51 @@ fn require_registered_admission_matches(
     Ok(())
 }
 
-fn active_reservation_summary_tx(
+pub(crate) fn global_admission_snapshot_tx(
     transaction: &Transaction<'_>,
-) -> Result<ActiveReservationSummary, StoreError> {
+) -> Result<GlobalAdmissionSnapshot, StoreError> {
+    global_admission_snapshot_inner_tx(transaction, None)
+}
+
+pub(crate) fn global_admission_snapshot_for_worker_dependency_tx(
+    transaction: &Transaction<'_>,
+    admission: &ValidatedWorkerServiceDependencyAdmission,
+) -> Result<GlobalAdmissionSnapshot, StoreError> {
+    global_admission_snapshot_inner_tx(transaction, Some(admission))
+}
+
+fn global_admission_snapshot_inner_tx(
+    transaction: &Transaction<'_>,
+    worker_dependency: Option<&ValidatedWorkerServiceDependencyAdmission>,
+) -> Result<GlobalAdmissionSnapshot, StoreError> {
     let mut statement = transaction.prepare(
-        "SELECT subject_kind, subject_id, definition_key, resource_class,
-                estimated_pending_commit_mb, lifecycle_state
-         FROM runtime_admission_reservations
-         WHERE lifecycle_state IN ('pending','resident')
-         ORDER BY reservation_id",
+        "SELECT reservations.subject_kind, reservations.subject_id,
+                reservations.definition_key, reservations.resource_class,
+                reservations.estimated_pending_commit_mb,
+                reservations.lifecycle_state, services.service_id,
+                services.startup_policy, services.resource_class,
+                services.estimated_pending_commit_mb,
+                services.lifecycle_state, services.generation,
+                EXISTS (
+                    SELECT 1
+                    FROM runtime_service_leases AS leases
+                    WHERE leases.service_id=services.service_id
+                      AND leases.generation=services.generation
+                      AND leases.lifecycle_state='pending'
+                ) AS has_pending_generation_lease,
+                EXISTS (
+                    SELECT 1
+                    FROM runtime_service_leases AS leases
+                    WHERE leases.service_id=services.service_id
+                      AND leases.generation=services.generation
+                      AND leases.lifecycle_state='active'
+                ) AS has_active_generation_lease
+         FROM runtime_admission_reservations AS reservations
+         LEFT JOIN runtime_services AS services
+           ON reservations.subject_kind='service'
+          AND services.service_id=reservations.subject_id
+         WHERE reservations.lifecycle_state IN ('pending','resident')
+         ORDER BY reservations.reservation_id",
     )?;
     let rows = statement.query_map([], |row| {
         Ok((
@@ -3558,11 +4349,35 @@ fn active_reservation_summary_tx(
             row.get::<_, String>(3)?,
             row.get::<_, i64>(4)?,
             row.get::<_, String>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<i64>>(9)?,
+            row.get::<_, Option<String>>(10)?,
+            row.get::<_, Option<i64>>(11)?,
+            row.get::<_, i64>(12)?,
+            row.get::<_, i64>(13)?,
         ))
     })?;
-    let mut summary = ActiveReservationSummary::default();
+    let mut summary = GlobalAdmissionSnapshot::default();
+    let mut matching_owner_reservations = 0_u32;
     for row in rows {
-        let (subject_kind, subject_id, definition_key, resource_class, estimate, state) = row?;
+        let (
+            subject_kind,
+            subject_id,
+            definition_key,
+            resource_class,
+            estimate,
+            reservation_state,
+            joined_service_id,
+            service_startup_policy,
+            service_resource_class,
+            service_estimate,
+            service_lifecycle_state,
+            service_generation,
+            has_pending_generation_lease,
+            has_active_generation_lease,
+        ) = row?;
         validate_identifier("reservation subject", &subject_id)?;
         validate_identifier("reservation definition", &definition_key)?;
         validate_identifier("reservation resource class", &resource_class)?;
@@ -3572,26 +4387,163 @@ fn active_reservation_summary_tx(
             ))
         })?;
         let estimate = i64_to_u64(estimate, 4, "pending admission commit")?;
-        if state == "pending" {
-            summary.pending_commit_mb = summary
-                .pending_commit_mb
-                .checked_add(estimate)
-                .ok_or_else(|| {
-                    StoreError::CorruptState(
-                        "active pending admission commit total overflowed".into(),
-                    )
-                })?;
-        } else if state != "resident" {
+        if !matches!(reservation_state.as_str(), "pending" | "resident") {
             return Err(StoreError::CorruptState(format!(
-                "reservation {subject_kind}:{subject_id} has invalid active state {state}"
+                "reservation {subject_kind}:{subject_id} has invalid active state {reservation_state}"
             )));
         }
+
         match subject_kind.as_str() {
             "job" => {
-                summary.active_job_classes.push(resource_class);
+                if joined_service_id.is_some()
+                    || service_startup_policy.is_some()
+                    || service_resource_class.is_some()
+                    || service_estimate.is_some()
+                    || service_lifecycle_state.is_some()
+                    || service_generation.is_some()
+                    || has_pending_generation_lease != 0
+                    || has_active_generation_lease != 0
+                {
+                    return Err(StoreError::CorruptState(format!(
+                        "job reservation {subject_id} unexpectedly joined service data"
+                    )));
+                }
+                if reservation_state == "pending" {
+                    summary.pending_commit_mb =
+                        checked_pending_commit_sum(summary.pending_commit_mb, estimate)?;
+                }
+                if worker_dependency
+                    .is_some_and(|admission| admission.owner_job_id.as_str() == subject_id.as_str())
+                {
+                    matching_owner_reservations =
+                        matching_owner_reservations.checked_add(1).ok_or_else(|| {
+                            StoreError::CorruptState(
+                                "worker dependency owner reservation count overflowed".into(),
+                            )
+                        })?;
+                } else {
+                    summary.active_job_classes.push(resource_class);
+                }
                 summary.active_job_definitions.push(definition_key);
             }
-            "service" => summary.active_service_classes.push(resource_class),
+            "service" => {
+                if joined_service_id.as_deref() != Some(subject_id.as_str()) {
+                    return Err(StoreError::CorruptState(format!(
+                        "service reservation {subject_id} has no matching service registration"
+                    )));
+                }
+                service_generation
+                    .and_then(|value| u64::try_from(value).ok())
+                    .filter(|generation| *generation > 0)
+                    .ok_or_else(|| {
+                        StoreError::CorruptState(format!(
+                            "service reservation {subject_id} has invalid registered generation"
+                        ))
+                    })?;
+                let has_pending_generation_lease = parse_admission_evidence(
+                    has_pending_generation_lease,
+                    &subject_id,
+                    "pending-lease",
+                )?;
+                let has_active_generation_lease = parse_admission_evidence(
+                    has_active_generation_lease,
+                    &subject_id,
+                    "active-lease",
+                )?;
+                let registered_resource_class = service_resource_class
+                    .as_deref()
+                    .and_then(parse_resource_class)
+                    .ok_or_else(|| {
+                        StoreError::CorruptState(format!(
+                            "service reservation {subject_id} has invalid registered resource class"
+                        ))
+                    })?;
+                if registered_resource_class != resource_class {
+                    return Err(StoreError::CorruptState(format!(
+                        "service reservation {subject_id} disagrees with its registered resource class"
+                    )));
+                }
+                let registered_estimate = service_estimate
+                    .and_then(|value| u64::try_from(value).ok())
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| {
+                        StoreError::CorruptState(format!(
+                            "service reservation {subject_id} has invalid registered estimate"
+                        ))
+                    })?;
+                if registered_estimate != estimate {
+                    return Err(StoreError::CorruptState(format!(
+                        "service reservation {subject_id} disagrees with its registered estimate"
+                    )));
+                }
+                if !matches!(definition_key.as_str(), "lean" | "hot" | "packaged") {
+                    return Err(StoreError::CorruptState(format!(
+                        "service reservation {subject_id} has invalid runtime mode binding"
+                    )));
+                }
+                let startup_policy = service_startup_policy.as_deref().ok_or_else(|| {
+                    StoreError::CorruptState(format!(
+                        "service reservation {subject_id} has invalid startup policy"
+                    ))
+                })?;
+                if !matches!(startup_policy, "eager" | "on-demand" | "scheduled") {
+                    return Err(StoreError::CorruptState(format!(
+                        "service reservation {subject_id} has invalid startup policy"
+                    )));
+                }
+
+                match service_lifecycle_state.as_deref() {
+                    Some("starting") => {
+                        if has_active_generation_lease {
+                            return Err(StoreError::CorruptState(format!(
+                                "starting service reservation {subject_id} has an active current-generation lease"
+                            )));
+                        }
+                        // Residency can be proven before readiness. Until the
+                        // service leaves `starting`, retain both the cold-start
+                        // estimate and logical class even if its reservation
+                        // has already transitioned to `resident`.
+                        summary.pending_commit_mb =
+                            checked_pending_commit_sum(summary.pending_commit_mb, estimate)?;
+                        summary.active_service_classes.push(resource_class);
+                    }
+                    Some("ready") => {
+                        if reservation_state != "resident" || has_pending_generation_lease {
+                            return Err(StoreError::CorruptState(format!(
+                                "ready service reservation {subject_id} has an invalid reservation or lease state"
+                            )));
+                        }
+                        if startup_policy != "eager" && has_active_generation_lease {
+                            // A resident dynamic service holds its logical
+                            // class only while this exact generation owns an
+                            // active lease. Its memory is already sampled.
+                            summary.active_service_classes.push(resource_class);
+                        }
+                    }
+                    Some("stopping") => {
+                        if has_pending_generation_lease || has_active_generation_lease {
+                            return Err(StoreError::CorruptState(format!(
+                                "stopping service reservation {subject_id} retains a current-generation lease"
+                            )));
+                        }
+                        if reservation_state == "pending" {
+                            summary.pending_commit_mb =
+                                checked_pending_commit_sum(summary.pending_commit_mb, estimate)?;
+                            summary.active_service_classes.push(resource_class);
+                        }
+                    }
+                    Some("available_but_stopped" | "failed") => {
+                        return Err(StoreError::CorruptState(format!(
+                            "inactive service {subject_id} retains an active reservation"
+                        )))
+                    }
+                    _ => {
+                        return Err(StoreError::CorruptState(format!(
+                            "service reservation {subject_id} has invalid lifecycle state"
+                        )))
+                    }
+                }
+            }
             _ => {
                 return Err(StoreError::CorruptState(format!(
                     "reservation has unknown subject kind {subject_kind}"
@@ -3599,7 +4551,93 @@ fn active_reservation_summary_tx(
             }
         }
     }
+    if worker_dependency.is_some() && matching_owner_reservations != 1 {
+        return Err(StoreError::CorruptState(
+            "worker dependency owner does not have exactly one active admission reservation".into(),
+        ));
+    }
     Ok(summary)
+}
+
+pub(crate) fn validate_worker_service_dependency_admission_tx(
+    transaction: &Transaction<'_>,
+    admission: &WorkerServiceDependencyAdmission,
+    expected_service_id: &str,
+) -> Result<WorkerServiceDependencyOwnerValidation, StoreError> {
+    validate_identifier("worker dependency jobId", &admission.job_id)?;
+    validate_identifier("worker dependency workerKind", &admission.worker_kind)?;
+    validate_identifier("worker dependency serviceId", &admission.service_id)?;
+    if admission.service_id != expected_service_id {
+        return Err(StoreError::CorruptState(
+            "worker dependency authority targeted a different service".into(),
+        ));
+    }
+
+    let Some(current) = query_job_optional(transaction, &admission.job_id)? else {
+        return Ok(WorkerServiceDependencyOwnerValidation::Lost);
+    };
+    if current.state != JobState::Admitted {
+        return Ok(WorkerServiceDependencyOwnerValidation::Lost);
+    }
+    if current.attempt != 0
+        || current.worker_instance_id.is_some()
+        || current.started_at.is_some()
+        || current.cancellation_requested
+        || normalized_relative_path(&current.workspace_path)
+            != format!("runtime/jobs/{}/workspace", current.job_id)
+    {
+        return Err(StoreError::CorruptState(format!(
+            "admitted worker dependency owner {} is not an unclaimed attempt-zero job",
+            current.job_id
+        )));
+    }
+    if current.worker_kind != admission.worker_kind
+        || current.resource_class != admission.worker_resource_class.as_str()
+    {
+        return Err(StoreError::CorruptState(format!(
+            "worker dependency authority does not match admitted job {}",
+            current.job_id
+        )));
+    }
+    let reservation = require_active_job_reservation_matches_job_tx(transaction, &current)?;
+    if reservation.lifecycle_state != "pending" {
+        return Err(StoreError::InvalidAdmissionReservationState {
+            job_id: current.job_id,
+            state: reservation.lifecycle_state,
+        });
+    }
+    if reservation.estimated_pending_commit_mb != admission.worker_estimated_cold_start_commit_mb {
+        return Err(StoreError::CorruptState(format!(
+            "worker dependency authority estimate does not match admitted job {}",
+            current.job_id
+        )));
+    }
+    Ok(WorkerServiceDependencyOwnerValidation::Valid(
+        ValidatedWorkerServiceDependencyAdmission {
+            owner_job_id: current.job_id,
+            _private: (),
+        },
+    ))
+}
+
+fn checked_pending_commit_sum(current: u64, estimate: u64) -> Result<u64, StoreError> {
+    current.checked_add(estimate).ok_or_else(|| {
+        StoreError::CorruptState("active pending admission commit total overflowed".into())
+    })
+}
+
+fn parse_admission_evidence(
+    evidence: i64,
+    subject_id: &str,
+    evidence_name: &str,
+) -> Result<bool, StoreError> {
+    match evidence {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(StoreError::CorruptState(format!(
+            "service reservation {subject_id} has invalid {evidence_name} evidence"
+        ))),
+    }
 }
 
 fn active_job_reservation_tx(
@@ -3738,6 +4776,127 @@ fn parse_resource_class(value: &str) -> Option<ResourceClass> {
     })
 }
 
+fn replay_existing_submission_tx(
+    connection: &Connection,
+    input: &NewJob,
+) -> Result<Option<JobRecord>, StoreError> {
+    let Some(existing) =
+        query_job_by_idempotency_key(connection, input.owner.principal(), &input.idempotency_key)?
+    else {
+        return Ok(None);
+    };
+    let existing_blobs = query_job_input_blob_bindings(connection, &existing.job_id)?;
+    let conflicts = existing.request_digest != input.request_digest
+        || query_bound_job_input(connection, &existing)?.as_slice()
+            != input.canonical_request_payload.as_slice()
+        || !job_input_blobs_semantically_equal(&existing_blobs, &input.input_blobs);
+    if conflicts {
+        return Err(StoreError::IdempotencyConflict {
+            owner: input.owner.principal().to_string(),
+            key: input.idempotency_key.clone(),
+        });
+    }
+    Ok(Some(existing))
+}
+
+fn validate_idempotency_key(idempotency_key: &str) -> Result<(), StoreError> {
+    validate_bounded_text("idempotencyKey", idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES)?;
+    if idempotency_key.chars().any(char::is_control) {
+        return Err(StoreError::InvalidInput(
+            "idempotency key contains a control character".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn cancellation_scope_user_id(context: &AuthenticatedJobContext) -> i64 {
+    context.owner().user_id().unwrap_or(0)
+}
+
+fn cancellation_scope_id(scope: Option<&str>) -> &str {
+    scope.unwrap_or("")
+}
+
+fn query_active_idempotency_cancellation_tx(
+    connection: &Connection,
+    context: &AuthenticatedJobContext,
+    idempotency_key: &str,
+    now: i64,
+) -> Result<Option<i64>, StoreError> {
+    connection
+        .query_row(
+            "SELECT expires_at FROM runtime_job_idempotency_cancellations
+             WHERE owner_principal=?1 AND user_id=?2 AND garden_id=?3
+               AND conversation_id=?4 AND idempotency_key=?5 AND expires_at>?6",
+            params![
+                context.owner().principal(),
+                cancellation_scope_user_id(context),
+                cancellation_scope_id(context.garden_id()),
+                cancellation_scope_id(context.conversation_id()),
+                idempotency_key,
+                now,
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(StoreError::from)
+}
+
+fn consume_active_idempotency_cancellation_tx(
+    transaction: &Transaction<'_>,
+    context: &AuthenticatedJobContext,
+    idempotency_key: &str,
+    now: i64,
+) -> Result<(), StoreError> {
+    let changed = transaction.execute(
+        "DELETE FROM runtime_job_idempotency_cancellations
+         WHERE owner_principal=?1 AND user_id=?2 AND garden_id=?3
+           AND conversation_id=?4 AND idempotency_key=?5 AND expires_at>?6",
+        params![
+            context.owner().principal(),
+            cancellation_scope_user_id(context),
+            cancellation_scope_id(context.garden_id()),
+            cancellation_scope_id(context.conversation_id()),
+            idempotency_key,
+            now,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(StoreError::CorruptState(
+            "active idempotency cancellation changed during submission".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn delete_expired_idempotency_cancellations_tx(
+    transaction: &Transaction<'_>,
+    now: i64,
+    limit: usize,
+) -> Result<usize, StoreError> {
+    transaction
+        .execute(
+            "DELETE FROM runtime_job_idempotency_cancellations
+             WHERE tombstone_id IN (
+                SELECT tombstone_id FROM runtime_job_idempotency_cancellations
+                WHERE expires_at<=?1 ORDER BY expires_at, tombstone_id LIMIT ?2
+             )",
+            params![now, limit as i64],
+        )
+        .map_err(StoreError::from)
+}
+
+fn job_input_blobs_semantically_equal(
+    left: &[JobInputBlobBinding],
+    right: &[JobInputBlobBinding],
+) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.semantically_eq(right))
+}
+
 fn query_job_by_idempotency_key(
     connection: &Connection,
     owner_principal: &str,
@@ -3756,7 +4915,7 @@ fn query_job_by_idempotency_key(
         .map_err(StoreError::from)
 }
 
-fn query_job(connection: &Connection, job_id: &str) -> Result<JobRecord, StoreError> {
+pub(crate) fn query_job(connection: &Connection, job_id: &str) -> Result<JobRecord, StoreError> {
     query_job_optional(connection, job_id)?
         .ok_or_else(|| StoreError::JobNotFound(job_id.to_string()))
 }
@@ -3901,6 +5060,7 @@ fn query_bound_job_input(connection: &Connection, job: &JobRecord) -> Result<Vec
         job.garden_id.as_deref(),
         job.conversation_id.as_deref(),
         &canonical_payload,
+        &query_job_input_blob_bindings(connection, &job.job_id)?,
     )
     .map_err(|_| StoreError::CorruptState(job.job_id.clone()))?;
     if expected_digest != input_digest {
@@ -3977,6 +5137,15 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<JobRecord> {
         cancellation_requested,
         idempotency_key: row.get(27)?,
         request_digest,
+        resource_exhaustion_resource: row.get(29)?,
+        resource_exhaustion_required_headroom_mb: row
+            .get::<_, Option<i64>>(30)?
+            .map(|value| i64_to_u64(value, 30, "resource exhaustion required headroom"))
+            .transpose()?,
+        resource_exhaustion_available_headroom_mb: row
+            .get::<_, Option<i64>>(31)?
+            .map(|value| i64_to_u64(value, 31, "resource exhaustion available headroom"))
+            .transpose()?,
     };
     validate_persisted_job_record(&job).map_err(|message| text_conversion_error(0, &message))?;
     Ok(job)
@@ -4067,6 +5236,28 @@ fn validate_persisted_job_record(job: &JobRecord) -> Result<(), String> {
     }
     if job.last_worker_sequence > 0 && job.worker_instance_id.is_none() {
         return Err("persisted worker sequence has no worker fence".into());
+    }
+    match (
+        job.resource_exhaustion_resource.as_deref(),
+        job.resource_exhaustion_required_headroom_mb,
+        job.resource_exhaustion_available_headroom_mb,
+    ) {
+        (None, None, None) => {}
+        (Some(resource), Some(required), Some(available))
+            if job.state == JobState::ResourceExhausted
+                && job.failure_code.as_deref()
+                    == Some(ADMISSION_RESOURCE_EXHAUSTED_FAILURE_CODE)
+                && matches!(
+                    resource,
+                    "windows_commit_critical"
+                        | "heavyweight_concurrency"
+                        | "windows_commit"
+                        | "worker_concurrency"
+                )
+                && required > 0
+                && required <= MAX_COMMIT_LIMIT_MB
+                && available <= MAX_COMMIT_LIMIT_MB => {}
+        _ => return Err("persisted resource exhaustion evidence is invalid".into()),
     }
     Ok(())
 }
@@ -4191,6 +5382,7 @@ pub(crate) fn compute_submission_digest(
     garden_id: Option<&str>,
     conversation_id: Option<&str>,
     canonical_request_payload: &[u8],
+    input_blobs: &[JobInputBlobBinding],
 ) -> Result<String, StoreError> {
     owner.validate()?;
     validate_identifier("jobType", job_type)?;
@@ -4209,6 +5401,14 @@ pub(crate) fn compute_submission_digest(
     update_optional_digest_field(&mut digest, garden_id.map(str::as_bytes));
     update_optional_digest_field(&mut digest, conversation_id.map(str::as_bytes));
     update_digest_field(&mut digest, canonical_request_payload);
+    update_digest_field(&mut digest, &(input_blobs.len() as u64).to_be_bytes());
+    for blob in input_blobs {
+        update_digest_field(&mut digest, &(blob.ordinal as u64).to_be_bytes());
+        update_digest_field(&mut digest, &blob.size_bytes.to_be_bytes());
+        update_digest_field(&mut digest, blob.sha256.as_bytes());
+        update_digest_field(&mut digest, blob.display_name.as_bytes());
+        update_optional_digest_field(&mut digest, blob.media_type.as_deref().map(str::as_bytes));
+    }
     Ok(format!("{:x}", digest.finalize()))
 }
 
@@ -4862,6 +6062,85 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
         transaction.execute_batch(SCHEMA_V4)?;
         version = 4;
     }
+    if version == 4 {
+        // The service lifecycle tables share this exact authoritative
+        // database and admission ledger. Validate the full v4 schema before
+        // adding durable service generations, leases, and transition outbox.
+        validate_schema_v4_shape(&transaction)?;
+        transaction.execute_batch(SCHEMA_V5)?;
+        version = 5;
+    }
+    if version == 5 {
+        // Restart limits existed in the v5 manifest binding but their timing
+        // state did not. Validate the exact v5 authority schema before adding
+        // only bounded, default-safe columns. Existing on-failure rows remain
+        // explicitly policy-unbound until their trusted manifest registration
+        // supplies the immutable timing values.
+        validate_schema_v5_shape(&transaction)?;
+        transaction.execute_batch(SCHEMA_V6)?;
+        version = 6;
+    }
+    if version == 6 {
+        // Failure-driven StopTree authority is distinct from idle and global
+        // shutdown. Validate the exact v6 schema, then rebuild only the child
+        // outbox table so every existing intent and fence is preserved while
+        // extending its closed stop-cause domain.
+        validate_schema_v6_shape(&transaction)?;
+        transaction.execute_batch(SCHEMA_V7)?;
+        version = 7;
+    }
+    if version == 7 {
+        // Admission denial is a durable service lifecycle observation, not a
+        // controller-local retry hint. Validate the complete v7 authority
+        // schema before adding the one-to-one denial record used to project
+        // `resource-blocked` without rewriting the FK-owned service table.
+        validate_schema_v7_shape(&transaction)?;
+        transaction.execute_batch(SCHEMA_V8)?;
+        version = 8;
+    }
+    if version == 8 {
+        // V9 adds ownership-scoped upload reservations and their atomic job
+        // adoption ledger. Validate the complete service/admission schema
+        // first; upload rows cannot be smuggled into an older authority DB.
+        validate_schema_v8_shape(&transaction)?;
+        transaction.execute_batch(SCHEMA_V9)?;
+        version = 9;
+    }
+    if version == 9 {
+        // V10 adds only bounded, ownership-scoped pre-submission cancellation
+        // tombstones. Validate the complete upload/blob authority schema before
+        // introducing a key that can prevent a future job from becoming
+        // admission-visible.
+        validate_schema_v9_shape(&transaction)?;
+        transaction.execute_batch(SCHEMA_V10)?;
+        version = 10;
+    }
+    if version == 10 {
+        // V11 adds the Runtime-owned schedule/reconciliation ledger. Validate
+        // the complete cancellation schema before adding durable epochs and
+        // occurrence fences; no timer state is inferred from an untrusted DB.
+        validate_schema_v10_shape(&transaction)?;
+        transaction.execute_batch(SCHEMA_V11)?;
+        version = 11;
+    }
+    if version == 11 {
+        // V12 generalizes the schedule ledger's durable desired-state epoch to
+        // one closed persistent Runtime service and stores its typed launch
+        // configuration in the same transaction. Rebuild only this leaf table
+        // after validating the exact v11 authority schema.
+        validate_schema_v11_shape(&transaction)?;
+        transaction.execute_batch(SCHEMA_V12)?;
+        version = 12;
+    }
+    if version == 12 {
+        // Several trusted interactive service profiles legitimately admit more
+        // than 64 concurrent view/caller leases. Rebuild the service authority
+        // and its three FK children as one transaction so the durable lifecycle,
+        // lease, outbox, and admission-denial state survives the wider bound.
+        validate_schema_v12_shape(&transaction)?;
+        migrate_schema_v13(&transaction)?;
+        version = 13;
+    }
     if version != SCHEMA_VERSION {
         return Err(StoreError::UnsupportedSchemaVersion {
             found: version,
@@ -4876,7 +6155,7 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
             supported: SCHEMA_VERSION,
         });
     }
-    validate_schema_v4_shape(&transaction)?;
+    validate_schema_v13_shape(&transaction)?;
     transaction.commit()?;
     Ok(())
 }
@@ -5090,22 +6369,652 @@ fn validate_schema_v3_shape(
 }
 
 fn validate_schema_v4_shape(connection: &Connection) -> Result<(), StoreError> {
-    validate_schema_v3_shape(connection, 4, SCHEMA_V4_OBJECTS)?;
+    validate_schema_v4_shape_for(connection, 4, SCHEMA_V4_OBJECTS)
+}
+
+fn validate_schema_v4_shape_for(
+    connection: &Connection,
+    version: i64,
+    expected_objects: &[&str],
+) -> Result<(), StoreError> {
+    validate_schema_v3_shape(connection, version, expected_objects)?;
     require_schema_object_matches(
         connection,
-        4,
+        version,
         "index",
         "runtime_jobs_admitted_fifo_idx",
         SCHEMA_V4,
     )?;
     require_schema_object_matches(
         connection,
-        4,
+        version,
         "index",
         "runtime_jobs_queued_fifo_idx",
         SCHEMA_V4,
     )?;
-    require_no_unexpected_schema_objects(connection, 4, SCHEMA_V4_OBJECTS)?;
+    require_no_unexpected_schema_objects(connection, version, expected_objects)?;
+    Ok(())
+}
+
+fn validate_schema_v5_shape(connection: &Connection) -> Result<(), StoreError> {
+    validate_service_schema_shape(
+        connection,
+        5,
+        SCHEMA_V5_OBJECTS,
+        SCHEMA_V5,
+        SCHEMA_V5,
+        &[
+            "service_id",
+            "display_name",
+            "required",
+            "startup_policy",
+            "restart_policy",
+            "resource_class",
+            "estimated_pending_commit_mb",
+            "max_concurrent_leases",
+            "max_lease_ms",
+            "max_restarts",
+            "idle_ttl_ms",
+            "lifecycle_state",
+            "generation",
+            "restarts",
+            "retry_required",
+            "acquisition_closed",
+            "idle_due_at",
+            "last_error",
+            "last_exited_generation",
+            "last_observed_at",
+            "created_at",
+            "updated_at",
+        ],
+    )
+}
+
+fn validate_schema_v6_shape(connection: &Connection) -> Result<(), StoreError> {
+    validate_service_schema_shape(
+        connection,
+        6,
+        SCHEMA_V5_OBJECTS,
+        SCHEMA_V6_RUNTIME_SERVICES,
+        SCHEMA_V5,
+        &[
+            "service_id",
+            "display_name",
+            "required",
+            "startup_policy",
+            "restart_policy",
+            "resource_class",
+            "estimated_pending_commit_mb",
+            "max_concurrent_leases",
+            "max_lease_ms",
+            "max_restarts",
+            "idle_ttl_ms",
+            "lifecycle_state",
+            "generation",
+            "restarts",
+            "retry_required",
+            "acquisition_closed",
+            "idle_due_at",
+            "last_error",
+            "last_exited_generation",
+            "last_observed_at",
+            "created_at",
+            "updated_at",
+            "restart_window_ms",
+            "initial_restart_backoff_ms",
+            "maximum_restart_backoff_ms",
+            "restart_window_started_at",
+            "restart_attempts_in_window",
+            "next_restart_at",
+        ],
+    )
+}
+
+fn validate_schema_v7_shape(connection: &Connection) -> Result<(), StoreError> {
+    validate_service_schema_shape(
+        connection,
+        7,
+        SCHEMA_V5_OBJECTS,
+        SCHEMA_V6_RUNTIME_SERVICES,
+        SCHEMA_V7,
+        &[
+            "service_id",
+            "display_name",
+            "required",
+            "startup_policy",
+            "restart_policy",
+            "resource_class",
+            "estimated_pending_commit_mb",
+            "max_concurrent_leases",
+            "max_lease_ms",
+            "max_restarts",
+            "idle_ttl_ms",
+            "lifecycle_state",
+            "generation",
+            "restarts",
+            "retry_required",
+            "acquisition_closed",
+            "idle_due_at",
+            "last_error",
+            "last_exited_generation",
+            "last_observed_at",
+            "created_at",
+            "updated_at",
+            "restart_window_ms",
+            "initial_restart_backoff_ms",
+            "maximum_restart_backoff_ms",
+            "restart_window_started_at",
+            "restart_attempts_in_window",
+            "next_restart_at",
+        ],
+    )
+}
+
+fn validate_schema_v8_shape(connection: &Connection) -> Result<(), StoreError> {
+    validate_schema_v8_shape_for(connection, 8, SCHEMA_V8_OBJECTS, SCHEMA_V6_RUNTIME_SERVICES)
+}
+
+fn validate_schema_v8_shape_for(
+    connection: &Connection,
+    version: i64,
+    expected_objects: &[&str],
+    runtime_services_schema: &str,
+) -> Result<(), StoreError> {
+    validate_service_schema_shape(
+        connection,
+        version,
+        expected_objects,
+        runtime_services_schema,
+        SCHEMA_V7,
+        &[
+            "service_id",
+            "display_name",
+            "required",
+            "startup_policy",
+            "restart_policy",
+            "resource_class",
+            "estimated_pending_commit_mb",
+            "max_concurrent_leases",
+            "max_lease_ms",
+            "max_restarts",
+            "idle_ttl_ms",
+            "lifecycle_state",
+            "generation",
+            "restarts",
+            "retry_required",
+            "acquisition_closed",
+            "idle_due_at",
+            "last_error",
+            "last_exited_generation",
+            "last_observed_at",
+            "created_at",
+            "updated_at",
+            "restart_window_ms",
+            "initial_restart_backoff_ms",
+            "maximum_restart_backoff_ms",
+            "restart_window_started_at",
+            "restart_attempts_in_window",
+            "next_restart_at",
+        ],
+    )?;
+    require_schema_object_matches(
+        connection,
+        version,
+        "table",
+        "runtime_service_admission_blocks",
+        SCHEMA_V8,
+    )?;
+    require_table_columns(
+        connection,
+        version,
+        "runtime_service_admission_blocks",
+        &[
+            "service_id",
+            "code",
+            "resource",
+            "required_headroom_mb",
+            "available_headroom_mb",
+            "retryable",
+            "reason",
+            "blocked_at",
+        ],
+    )?;
+    require_foreign_key(
+        connection,
+        version,
+        "runtime_service_admission_blocks",
+        "service_id",
+        "runtime_services",
+        "service_id",
+        "CASCADE",
+    )?;
+    Ok(())
+}
+
+fn validate_schema_v9_shape(connection: &Connection) -> Result<(), StoreError> {
+    validate_schema_v9_shape_for(connection, 9, SCHEMA_V9_OBJECTS, SCHEMA_V6_RUNTIME_SERVICES)
+}
+
+fn validate_schema_v9_shape_for(
+    connection: &Connection,
+    version: i64,
+    expected_objects: &[&str],
+    runtime_services_schema: &str,
+) -> Result<(), StoreError> {
+    validate_schema_v8_shape_for(
+        connection,
+        version,
+        expected_objects,
+        runtime_services_schema,
+    )?;
+    for (object_type, object_name) in [
+        ("table", "runtime_job_resource_exhaustion"),
+        ("table", "runtime_job_input_uploads"),
+        ("index", "runtime_job_input_uploads_owner_state_idx"),
+        ("index", "runtime_job_input_uploads_expiry_idx"),
+        ("index", "runtime_job_input_uploads_quota_idx"),
+        ("table", "runtime_job_blobs"),
+        ("index", "runtime_job_blobs_cleanup_idx"),
+        ("trigger", "runtime_job_blobs_terminal_cleanup"),
+    ] {
+        require_schema_object_matches(connection, version, object_type, object_name, SCHEMA_V9)?;
+    }
+    require_table_columns(
+        connection,
+        version,
+        "runtime_job_resource_exhaustion",
+        &[
+            "job_id",
+            "resource",
+            "required_headroom_mb",
+            "available_headroom_mb",
+            "denied_at",
+        ],
+    )?;
+    require_foreign_key(
+        connection,
+        version,
+        "runtime_job_resource_exhaustion",
+        "job_id",
+        "runtime_jobs",
+        "job_id",
+        "CASCADE",
+    )?;
+    require_table_columns(
+        connection,
+        version,
+        "runtime_job_input_uploads",
+        &[
+            "upload_id",
+            "owner_principal",
+            "user_id",
+            "garden_id",
+            "conversation_id",
+            "lifecycle_state",
+            "display_name",
+            "media_type",
+            "declared_size_bytes",
+            "maximum_bytes",
+            "relative_path",
+            "sealed_size_bytes",
+            "sealed_sha256",
+            "job_id",
+            "expires_at",
+            "created_at",
+            "updated_at",
+            "sealed_at",
+            "adopted_at",
+            "abandoned_at",
+            "cleaned_at",
+        ],
+    )?;
+    require_table_columns(
+        connection,
+        version,
+        "runtime_job_blobs",
+        &[
+            "job_id",
+            "ordinal",
+            "blob_id",
+            "upload_id",
+            "relative_path",
+            "size_bytes",
+            "sha256",
+            "display_name",
+            "media_type",
+            "cleanup_state",
+            "cleanup_reason",
+            "cleanup_requested_at",
+            "cleaned_at",
+        ],
+    )?;
+    require_foreign_key(
+        connection,
+        version,
+        "runtime_job_blobs",
+        "job_id",
+        "runtime_jobs",
+        "job_id",
+        "CASCADE",
+    )?;
+    require_foreign_key(
+        connection,
+        version,
+        "runtime_job_blobs",
+        "upload_id",
+        "runtime_job_input_uploads",
+        "upload_id",
+        "RESTRICT",
+    )?;
+    require_no_unexpected_schema_objects(connection, version, expected_objects)?;
+    Ok(())
+}
+
+fn validate_schema_v10_shape(connection: &Connection) -> Result<(), StoreError> {
+    validate_schema_v9_shape_for(
+        connection,
+        10,
+        SCHEMA_V10_OBJECTS,
+        SCHEMA_V6_RUNTIME_SERVICES,
+    )?;
+    for (object_type, object_name) in [
+        ("table", "runtime_job_idempotency_cancellations"),
+        ("index", "runtime_job_idempotency_cancellations_scope_idx"),
+        ("index", "runtime_job_idempotency_cancellations_expiry_idx"),
+        ("index", "runtime_job_idempotency_cancellations_owner_idx"),
+    ] {
+        require_schema_object_matches(connection, 10, object_type, object_name, SCHEMA_V10)?;
+    }
+    require_table_columns(
+        connection,
+        10,
+        "runtime_job_idempotency_cancellations",
+        &[
+            "tombstone_id",
+            "owner_principal",
+            "user_id",
+            "garden_id",
+            "conversation_id",
+            "idempotency_key",
+            "created_at",
+            "expires_at",
+        ],
+    )?;
+    require_no_unexpected_schema_objects(connection, 10, SCHEMA_V10_OBJECTS)?;
+    Ok(())
+}
+
+fn validate_schema_v11_shape(connection: &Connection) -> Result<(), StoreError> {
+    validate_schema_v9_shape_for(
+        connection,
+        11,
+        SCHEMA_V11_OBJECTS,
+        SCHEMA_V6_RUNTIME_SERVICES,
+    )?;
+    for (object_type, object_name, schema) in [
+        ("table", "runtime_job_idempotency_cancellations", SCHEMA_V10),
+        (
+            "index",
+            "runtime_job_idempotency_cancellations_scope_idx",
+            SCHEMA_V10,
+        ),
+        (
+            "index",
+            "runtime_job_idempotency_cancellations_expiry_idx",
+            SCHEMA_V10,
+        ),
+        (
+            "index",
+            "runtime_job_idempotency_cancellations_owner_idx",
+            SCHEMA_V10,
+        ),
+        ("table", "runtime_schedules", SCHEMA_V11),
+        ("index", "runtime_schedules_due_idx", SCHEMA_V11),
+    ] {
+        require_schema_object_matches(connection, 11, object_type, object_name, schema)?;
+    }
+    require_table_columns(
+        connection,
+        11,
+        "runtime_schedules",
+        &[
+            "schedule_id",
+            "schedule_kind",
+            "desired_state",
+            "decision_epoch",
+            "owner_user_id",
+            "initial_delay_ms",
+            "interval_ms",
+            "next_fire_at",
+            "pending_due_at",
+            "inflight_job_id",
+            "reconcile_trigger",
+            "reconcile_requested_state",
+            "reconcile_owner_user_id",
+            "reconcile_job_id",
+            "updated_at",
+        ],
+    )?;
+    require_no_unexpected_schema_objects(connection, 11, SCHEMA_V11_OBJECTS)?;
+    Ok(())
+}
+
+fn validate_schema_v12_shape(connection: &Connection) -> Result<(), StoreError> {
+    validate_schema_v9_shape_for(
+        connection,
+        12,
+        SCHEMA_V12_OBJECTS,
+        SCHEMA_V6_RUNTIME_SERVICES,
+    )?;
+    for (object_type, object_name, schema) in [
+        ("table", "runtime_job_idempotency_cancellations", SCHEMA_V10),
+        (
+            "index",
+            "runtime_job_idempotency_cancellations_scope_idx",
+            SCHEMA_V10,
+        ),
+        (
+            "index",
+            "runtime_job_idempotency_cancellations_expiry_idx",
+            SCHEMA_V10,
+        ),
+        (
+            "index",
+            "runtime_job_idempotency_cancellations_owner_idx",
+            SCHEMA_V10,
+        ),
+        ("table", "runtime_schedules", SCHEMA_V12),
+        ("index", "runtime_schedules_due_idx", SCHEMA_V12),
+    ] {
+        require_schema_object_matches(connection, 12, object_type, object_name, schema)?;
+    }
+    require_table_columns(
+        connection,
+        12,
+        "runtime_schedules",
+        &[
+            "schedule_id",
+            "schedule_kind",
+            "desired_state",
+            "decision_epoch",
+            "owner_user_id",
+            "initial_delay_ms",
+            "interval_ms",
+            "next_fire_at",
+            "pending_due_at",
+            "inflight_job_id",
+            "reconcile_trigger",
+            "reconcile_requested_state",
+            "reconcile_owner_user_id",
+            "reconcile_job_id",
+            "launch_configuration_json",
+            "configuration_fingerprint",
+            "updated_at",
+        ],
+    )?;
+    require_no_unexpected_schema_objects(connection, 12, SCHEMA_V12_OBJECTS)?;
+    Ok(())
+}
+
+fn validate_schema_v13_shape(connection: &Connection) -> Result<(), StoreError> {
+    let runtime_services_schema = schema_v13_runtime_services();
+    validate_schema_v9_shape_for(connection, 13, SCHEMA_V13_OBJECTS, &runtime_services_schema)?;
+    for (object_type, object_name, schema) in [
+        ("table", "runtime_job_idempotency_cancellations", SCHEMA_V10),
+        (
+            "index",
+            "runtime_job_idempotency_cancellations_scope_idx",
+            SCHEMA_V10,
+        ),
+        (
+            "index",
+            "runtime_job_idempotency_cancellations_expiry_idx",
+            SCHEMA_V10,
+        ),
+        (
+            "index",
+            "runtime_job_idempotency_cancellations_owner_idx",
+            SCHEMA_V10,
+        ),
+        ("table", "runtime_schedules", SCHEMA_V12),
+        ("index", "runtime_schedules_due_idx", SCHEMA_V12),
+    ] {
+        require_schema_object_matches(connection, 13, object_type, object_name, schema)?;
+    }
+    require_table_columns(
+        connection,
+        13,
+        "runtime_schedules",
+        &[
+            "schedule_id",
+            "schedule_kind",
+            "desired_state",
+            "decision_epoch",
+            "owner_user_id",
+            "initial_delay_ms",
+            "interval_ms",
+            "next_fire_at",
+            "pending_due_at",
+            "inflight_job_id",
+            "reconcile_trigger",
+            "reconcile_requested_state",
+            "reconcile_owner_user_id",
+            "reconcile_job_id",
+            "launch_configuration_json",
+            "configuration_fingerprint",
+            "updated_at",
+        ],
+    )?;
+    require_no_unexpected_schema_objects(connection, 13, SCHEMA_V13_OBJECTS)?;
+    Ok(())
+}
+
+fn validate_service_schema_shape(
+    connection: &Connection,
+    version: i64,
+    expected_objects: &[&str],
+    runtime_services_schema: &str,
+    runtime_service_outbox_schema: &str,
+    runtime_service_columns: &[&str],
+) -> Result<(), StoreError> {
+    validate_schema_v4_shape_for(connection, version, expected_objects)?;
+    require_schema_object_matches(
+        connection,
+        version,
+        "table",
+        "runtime_services",
+        runtime_services_schema,
+    )?;
+    for (object_type, object_name) in [
+        ("table", "runtime_service_leases"),
+        ("index", "runtime_service_leases_active_service_idx"),
+    ] {
+        require_schema_object_matches(connection, version, object_type, object_name, SCHEMA_V5)?;
+    }
+    for (object_type, object_name) in [
+        ("table", "runtime_service_outbox"),
+        ("index", "runtime_service_outbox_claim_idx"),
+        ("index", "runtime_service_outbox_unique_action_idx"),
+    ] {
+        require_schema_object_matches(
+            connection,
+            version,
+            object_type,
+            object_name,
+            runtime_service_outbox_schema,
+        )?;
+    }
+    require_table_columns(
+        connection,
+        version,
+        "runtime_services",
+        runtime_service_columns,
+    )?;
+    require_table_columns(
+        connection,
+        version,
+        "runtime_service_leases",
+        &[
+            "lease_id",
+            "service_id",
+            "generation",
+            "lifecycle_state",
+            "created_at",
+            "updated_at",
+            "expires_at",
+            "released_at",
+            "release_reason",
+        ],
+    )?;
+    require_table_columns(
+        connection,
+        version,
+        "runtime_service_outbox",
+        &[
+            "intent_id",
+            "service_id",
+            "generation",
+            "action",
+            "stop_cause",
+            "lifecycle_state",
+            "claim_epoch",
+            "claimed_at",
+            "claim_expires_at",
+            "created_at",
+            "updated_at",
+            "acked_at",
+        ],
+    )?;
+    require_foreign_key(
+        connection,
+        version,
+        "runtime_service_leases",
+        "service_id",
+        "runtime_services",
+        "service_id",
+        "CASCADE",
+    )?;
+    require_foreign_key(
+        connection,
+        version,
+        "runtime_service_outbox",
+        "service_id",
+        "runtime_services",
+        "service_id",
+        "CASCADE",
+    )?;
+    require_unique_index_columns(
+        connection,
+        version,
+        "runtime_service_outbox",
+        &["service_id", "generation", "action"],
+        false,
+        Some(
+            "CREATE UNIQUE INDEX runtime_service_outbox_unique_action_idx
+             ON runtime_service_outbox(service_id, generation, action)",
+        ),
+    )?;
+    require_no_unexpected_schema_objects(connection, version, expected_objects)?;
     Ok(())
 }
 
@@ -5124,11 +7033,20 @@ fn require_schema_object_matches(
         )
         .optional()?;
     let normalized_name = object_name.to_ascii_lowercase();
-    let expected_sql = expected_schema.split(';').find(|statement| {
-        let normalized = normalize_schema_sql(statement).to_ascii_lowercase();
-        normalized.starts_with(&format!("createtable{normalized_name}("))
-            || normalized.starts_with(&format!("createindex{normalized_name}on"))
-            || normalized.starts_with(&format!("createuniqueindex{normalized_name}on"))
+    let trigger_expected = (object_type == "trigger").then(|| {
+        let prefix = format!("CREATE TRIGGER {object_name}");
+        let start = expected_schema.find(&prefix)?;
+        let tail = &expected_schema[start..];
+        let end = tail.find("\nEND;")? + "\nEND".len();
+        Some(&tail[..end])
+    });
+    let expected_sql = trigger_expected.flatten().or_else(|| {
+        expected_schema.split(';').find(|statement| {
+            let normalized = normalize_schema_sql(statement).to_ascii_lowercase();
+            normalized.starts_with(&format!("createtable{normalized_name}("))
+                || normalized.starts_with(&format!("createindex{normalized_name}on"))
+                || normalized.starts_with(&format!("createuniqueindex{normalized_name}on"))
+        })
     });
     let matches = match (actual_sql.as_deref(), expected_sql) {
         (Some(actual), Some(expected)) => {
@@ -5433,6 +7351,167 @@ const SCHEMA_V4_OBJECTS: &[&str] = &[
     "runtime_jobs_queued_fifo_idx",
 ];
 
+const SCHEMA_V5_OBJECTS: &[&str] = &[
+    "runtime_jobs",
+    "runtime_jobs_state_idx",
+    "runtime_jobs_owner_idx",
+    "runtime_job_events",
+    "runtime_job_events_replay_idx",
+    "runtime_job_events_worker_sequence_idx",
+    "runtime_job_checkpoints",
+    "runtime_job_checkpoints_job_idx",
+    "runtime_admission_reservations",
+    "runtime_admission_reservations_active_subject_idx",
+    "runtime_admission_reservations_active_definition_idx",
+    "runtime_jobs_request_binding_idx",
+    "runtime_job_inputs",
+    "runtime_jobs_admitted_fifo_idx",
+    "runtime_jobs_queued_fifo_idx",
+    "runtime_services",
+    "runtime_service_leases",
+    "runtime_service_leases_active_service_idx",
+    "runtime_service_outbox",
+    "runtime_service_outbox_claim_idx",
+    "runtime_service_outbox_unique_action_idx",
+];
+
+const SCHEMA_V8_OBJECTS: &[&str] = &[
+    "runtime_jobs",
+    "runtime_jobs_state_idx",
+    "runtime_jobs_owner_idx",
+    "runtime_job_events",
+    "runtime_job_events_replay_idx",
+    "runtime_job_events_worker_sequence_idx",
+    "runtime_job_checkpoints",
+    "runtime_job_checkpoints_job_idx",
+    "runtime_admission_reservations",
+    "runtime_admission_reservations_active_subject_idx",
+    "runtime_admission_reservations_active_definition_idx",
+    "runtime_jobs_request_binding_idx",
+    "runtime_job_inputs",
+    "runtime_jobs_admitted_fifo_idx",
+    "runtime_jobs_queued_fifo_idx",
+    "runtime_services",
+    "runtime_service_leases",
+    "runtime_service_leases_active_service_idx",
+    "runtime_service_outbox",
+    "runtime_service_outbox_claim_idx",
+    "runtime_service_outbox_unique_action_idx",
+    "runtime_service_admission_blocks",
+];
+
+const SCHEMA_V9_OBJECTS: &[&str] = &[
+    "runtime_jobs",
+    "runtime_jobs_state_idx",
+    "runtime_jobs_owner_idx",
+    "runtime_job_events",
+    "runtime_job_events_replay_idx",
+    "runtime_job_events_worker_sequence_idx",
+    "runtime_job_checkpoints",
+    "runtime_job_checkpoints_job_idx",
+    "runtime_admission_reservations",
+    "runtime_admission_reservations_active_subject_idx",
+    "runtime_admission_reservations_active_definition_idx",
+    "runtime_jobs_request_binding_idx",
+    "runtime_job_inputs",
+    "runtime_jobs_admitted_fifo_idx",
+    "runtime_jobs_queued_fifo_idx",
+    "runtime_services",
+    "runtime_service_leases",
+    "runtime_service_leases_active_service_idx",
+    "runtime_service_outbox",
+    "runtime_service_outbox_claim_idx",
+    "runtime_service_outbox_unique_action_idx",
+    "runtime_service_admission_blocks",
+    "runtime_job_resource_exhaustion",
+    "runtime_job_input_uploads",
+    "runtime_job_input_uploads_owner_state_idx",
+    "runtime_job_input_uploads_expiry_idx",
+    "runtime_job_input_uploads_quota_idx",
+    "runtime_job_blobs",
+    "runtime_job_blobs_cleanup_idx",
+    "runtime_job_blobs_terminal_cleanup",
+];
+
+const SCHEMA_V10_OBJECTS: &[&str] = &[
+    "runtime_jobs",
+    "runtime_jobs_state_idx",
+    "runtime_jobs_owner_idx",
+    "runtime_job_events",
+    "runtime_job_events_replay_idx",
+    "runtime_job_events_worker_sequence_idx",
+    "runtime_job_checkpoints",
+    "runtime_job_checkpoints_job_idx",
+    "runtime_admission_reservations",
+    "runtime_admission_reservations_active_subject_idx",
+    "runtime_admission_reservations_active_definition_idx",
+    "runtime_jobs_request_binding_idx",
+    "runtime_job_inputs",
+    "runtime_jobs_admitted_fifo_idx",
+    "runtime_jobs_queued_fifo_idx",
+    "runtime_services",
+    "runtime_service_leases",
+    "runtime_service_leases_active_service_idx",
+    "runtime_service_outbox",
+    "runtime_service_outbox_claim_idx",
+    "runtime_service_outbox_unique_action_idx",
+    "runtime_service_admission_blocks",
+    "runtime_job_resource_exhaustion",
+    "runtime_job_input_uploads",
+    "runtime_job_input_uploads_owner_state_idx",
+    "runtime_job_input_uploads_expiry_idx",
+    "runtime_job_input_uploads_quota_idx",
+    "runtime_job_blobs",
+    "runtime_job_blobs_cleanup_idx",
+    "runtime_job_blobs_terminal_cleanup",
+    "runtime_job_idempotency_cancellations",
+    "runtime_job_idempotency_cancellations_scope_idx",
+    "runtime_job_idempotency_cancellations_expiry_idx",
+    "runtime_job_idempotency_cancellations_owner_idx",
+];
+
+const SCHEMA_V11_OBJECTS: &[&str] = &[
+    "runtime_jobs",
+    "runtime_jobs_state_idx",
+    "runtime_jobs_owner_idx",
+    "runtime_job_events",
+    "runtime_job_events_replay_idx",
+    "runtime_job_events_worker_sequence_idx",
+    "runtime_job_checkpoints",
+    "runtime_job_checkpoints_job_idx",
+    "runtime_admission_reservations",
+    "runtime_admission_reservations_active_subject_idx",
+    "runtime_admission_reservations_active_definition_idx",
+    "runtime_jobs_request_binding_idx",
+    "runtime_job_inputs",
+    "runtime_jobs_admitted_fifo_idx",
+    "runtime_jobs_queued_fifo_idx",
+    "runtime_services",
+    "runtime_service_leases",
+    "runtime_service_leases_active_service_idx",
+    "runtime_service_outbox",
+    "runtime_service_outbox_claim_idx",
+    "runtime_service_outbox_unique_action_idx",
+    "runtime_service_admission_blocks",
+    "runtime_job_resource_exhaustion",
+    "runtime_job_input_uploads",
+    "runtime_job_input_uploads_owner_state_idx",
+    "runtime_job_input_uploads_expiry_idx",
+    "runtime_job_input_uploads_quota_idx",
+    "runtime_job_blobs",
+    "runtime_job_blobs_cleanup_idx",
+    "runtime_job_blobs_terminal_cleanup",
+    "runtime_job_idempotency_cancellations",
+    "runtime_job_idempotency_cancellations_scope_idx",
+    "runtime_job_idempotency_cancellations_expiry_idx",
+    "runtime_job_idempotency_cancellations_owner_idx",
+    "runtime_schedules",
+    "runtime_schedules_due_idx",
+];
+
+const SCHEMA_V12_OBJECTS: &[&str] = SCHEMA_V11_OBJECTS;
+const SCHEMA_V13_OBJECTS: &[&str] = SCHEMA_V12_OBJECTS;
+
 const SCHEMA_V1: &str = r#"
 CREATE TABLE runtime_jobs (
     job_id TEXT PRIMARY KEY,
@@ -5559,6 +7638,792 @@ CREATE INDEX runtime_jobs_queued_fifo_idx
 PRAGMA user_version = 4;
 "#;
 
+const SCHEMA_V5: &str = r#"
+CREATE TABLE runtime_services (
+    service_id TEXT PRIMARY KEY CHECK (length(service_id) BETWEEN 1 AND 128),
+    display_name TEXT NOT NULL CHECK (
+        typeof(display_name)='text' AND length(CAST(display_name AS BLOB)) BETWEEN 1 AND 256
+    ),
+    required INTEGER NOT NULL CHECK (required IN (0,1)),
+    startup_policy TEXT NOT NULL CHECK (startup_policy IN ('eager','on-demand','scheduled')),
+    restart_policy TEXT NOT NULL CHECK (restart_policy IN ('never','on_failure')),
+    resource_class TEXT NOT NULL CHECK (length(resource_class) BETWEEN 1 AND 128),
+    estimated_pending_commit_mb INTEGER NOT NULL
+        CHECK (estimated_pending_commit_mb BETWEEN 1 AND 1048576),
+    max_concurrent_leases INTEGER NOT NULL
+        CHECK (max_concurrent_leases BETWEEN 1 AND 64),
+    max_lease_ms INTEGER NOT NULL CHECK (max_lease_ms BETWEEN 1 AND 604800000),
+    max_restarts INTEGER NOT NULL CHECK (max_restarts BETWEEN 0 AND 64),
+    idle_ttl_ms INTEGER CHECK (idle_ttl_ms IS NULL OR idle_ttl_ms BETWEEN 1 AND 604800000),
+    lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN (
+        'available_but_stopped','starting','ready','failed','stopping'
+    )),
+    generation INTEGER NOT NULL DEFAULT 0 CHECK (generation BETWEEN 0 AND 9223372036854775807),
+    restarts INTEGER NOT NULL DEFAULT 0 CHECK (restarts BETWEEN 0 AND 64),
+    retry_required INTEGER NOT NULL DEFAULT 0 CHECK (retry_required IN (0,1)),
+    acquisition_closed INTEGER NOT NULL DEFAULT 0 CHECK (acquisition_closed IN (0,1)),
+    idle_due_at INTEGER CHECK (idle_due_at IS NULL OR idle_due_at >= 0),
+    last_error TEXT CHECK (
+        last_error IS NULL OR
+        (typeof(last_error)='text' AND length(CAST(last_error AS BLOB)) BETWEEN 1 AND 8192)
+    ),
+    last_exited_generation INTEGER CHECK (
+        last_exited_generation IS NULL OR
+        last_exited_generation BETWEEN 1 AND 9223372036854775807
+    ),
+    last_observed_at INTEGER NOT NULL CHECK (last_observed_at >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    CHECK (
+        (generation=0 AND lifecycle_state='available_but_stopped') OR generation>0
+    )
+);
+
+CREATE TABLE runtime_service_leases (
+    lease_id TEXT PRIMARY KEY CHECK (length(lease_id) BETWEEN 1 AND 128),
+    service_id TEXT NOT NULL REFERENCES runtime_services(service_id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL CHECK (generation BETWEEN 1 AND 9223372036854775807),
+    lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('pending','active','released')),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at >= created_at),
+    released_at INTEGER CHECK (released_at IS NULL OR released_at >= created_at),
+    release_reason TEXT CHECK (release_reason IS NULL OR release_reason IN (
+        'success','failure','cancellation','disconnect','timeout','explicit','runtime-restart'
+    )),
+    CHECK (
+        (lifecycle_state IN ('pending','active') AND released_at IS NULL AND release_reason IS NULL) OR
+        (lifecycle_state='released' AND released_at IS NOT NULL AND release_reason IS NOT NULL)
+    )
+);
+CREATE INDEX runtime_service_leases_active_service_idx
+    ON runtime_service_leases(service_id, lifecycle_state, expires_at);
+
+CREATE TABLE runtime_service_outbox (
+    intent_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id TEXT NOT NULL REFERENCES runtime_services(service_id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL CHECK (generation BETWEEN 1 AND 9223372036854775807),
+    action TEXT NOT NULL CHECK (action IN ('start_tree','stop_tree')),
+    stop_cause TEXT CHECK (stop_cause IS NULL OR stop_cause IN ('idle','shutdown')),
+    lifecycle_state TEXT NOT NULL CHECK (
+        lifecycle_state IN ('pending','claimed','acked','superseded')
+    ),
+    claim_epoch INTEGER NOT NULL DEFAULT 0
+        CHECK (claim_epoch BETWEEN 0 AND 9223372036854775807),
+    claimed_at INTEGER CHECK (claimed_at IS NULL OR claimed_at >= 0),
+    claim_expires_at INTEGER CHECK (claim_expires_at IS NULL OR claim_expires_at >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    acked_at INTEGER CHECK (acked_at IS NULL OR acked_at >= 0),
+    CHECK (
+        (action='start_tree' AND stop_cause IS NULL) OR
+        (action='stop_tree' AND stop_cause IS NOT NULL)
+    ),
+    CHECK (
+        (lifecycle_state='pending' AND claimed_at IS NULL AND claim_expires_at IS NULL AND acked_at IS NULL) OR
+        (lifecycle_state='claimed' AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL AND acked_at IS NULL) OR
+        (lifecycle_state='acked' AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL AND acked_at IS NOT NULL) OR
+        (lifecycle_state='superseded' AND acked_at IS NULL)
+    )
+);
+CREATE INDEX runtime_service_outbox_claim_idx
+    ON runtime_service_outbox(lifecycle_state, claim_expires_at, intent_id);
+CREATE UNIQUE INDEX runtime_service_outbox_unique_action_idx
+    ON runtime_service_outbox(service_id, generation, action);
+PRAGMA user_version = 5;
+"#;
+
+// SQLite preserves each ADD COLUMN definition in sqlite_master. Keeping this
+// migration additive avoids rebuilding a parent table that already owns lease
+// and outbox foreign keys, while the final column-level CHECK binds the six
+// fields into one closed restart-state shape.
+const SCHEMA_V6: &str = r#"
+ALTER TABLE runtime_services ADD COLUMN restart_window_ms INTEGER NOT NULL DEFAULT 0
+    CHECK (restart_window_ms BETWEEN 0 AND 604800000);
+ALTER TABLE runtime_services ADD COLUMN initial_restart_backoff_ms INTEGER NOT NULL DEFAULT 0
+    CHECK (initial_restart_backoff_ms BETWEEN 0 AND 604800000);
+ALTER TABLE runtime_services ADD COLUMN maximum_restart_backoff_ms INTEGER NOT NULL DEFAULT 0
+    CHECK (maximum_restart_backoff_ms BETWEEN 0 AND 604800000);
+ALTER TABLE runtime_services ADD COLUMN restart_window_started_at INTEGER
+    CHECK (restart_window_started_at IS NULL OR restart_window_started_at >= 0);
+ALTER TABLE runtime_services ADD COLUMN restart_attempts_in_window INTEGER NOT NULL DEFAULT 0
+    CHECK (restart_attempts_in_window BETWEEN 0 AND 64);
+ALTER TABLE runtime_services ADD COLUMN next_restart_at INTEGER
+    CHECK (next_restart_at IS NULL OR next_restart_at >= 0)
+    CHECK (
+        (restart_policy='never' AND max_restarts=0 AND
+         restart_window_ms=0 AND initial_restart_backoff_ms=0 AND
+         maximum_restart_backoff_ms=0 AND restart_window_started_at IS NULL AND
+         restart_attempts_in_window=0 AND next_restart_at IS NULL) OR
+        (restart_policy='on_failure' AND max_restarts BETWEEN 1 AND 64 AND (
+            (restart_window_ms=0 AND initial_restart_backoff_ms=0 AND
+             maximum_restart_backoff_ms=0 AND restart_window_started_at IS NULL AND
+             restart_attempts_in_window=0 AND next_restart_at IS NULL) OR
+            (restart_window_ms BETWEEN 1 AND 604800000 AND
+             initial_restart_backoff_ms BETWEEN 1 AND maximum_restart_backoff_ms AND
+             maximum_restart_backoff_ms <= restart_window_ms AND
+             restart_attempts_in_window <= max_restarts AND (
+                 (restart_window_started_at IS NULL AND
+                  restart_attempts_in_window=0 AND next_restart_at IS NULL) OR
+                 (restart_window_started_at IS NOT NULL AND
+                  (next_restart_at IS NULL OR
+                   (next_restart_at >= restart_window_started_at AND
+                    next_restart_at <= restart_window_started_at + restart_window_ms)))
+             ) AND
+             ((retry_required=0 AND next_restart_at IS NULL) OR
+              (retry_required=1 AND lifecycle_state='failed' AND next_restart_at IS NOT NULL))
+            )
+        ))
+    );
+PRAGMA user_version = 6;
+"#;
+
+// V7 extends only the closed StopTree cause domain. The rebuild preserves
+// every intent id, generation, claim fence, timestamp, and lifecycle state;
+// runtime_service_outbox is a child table and has no inbound foreign keys.
+const SCHEMA_V7: &str = r#"
+DROP INDEX runtime_service_outbox_claim_idx;
+DROP INDEX runtime_service_outbox_unique_action_idx;
+ALTER TABLE runtime_service_outbox RENAME TO runtime_service_outbox_v6;
+
+CREATE TABLE runtime_service_outbox (
+    intent_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id TEXT NOT NULL REFERENCES runtime_services(service_id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL CHECK (generation BETWEEN 1 AND 9223372036854775807),
+    action TEXT NOT NULL CHECK (action IN ('start_tree','stop_tree')),
+    stop_cause TEXT CHECK (stop_cause IS NULL OR stop_cause IN ('idle','shutdown','failure')),
+    lifecycle_state TEXT NOT NULL CHECK (
+        lifecycle_state IN ('pending','claimed','acked','superseded')
+    ),
+    claim_epoch INTEGER NOT NULL DEFAULT 0
+        CHECK (claim_epoch BETWEEN 0 AND 9223372036854775807),
+    claimed_at INTEGER CHECK (claimed_at IS NULL OR claimed_at >= 0),
+    claim_expires_at INTEGER CHECK (claim_expires_at IS NULL OR claim_expires_at >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    acked_at INTEGER CHECK (acked_at IS NULL OR acked_at >= 0),
+    CHECK (
+        (action='start_tree' AND stop_cause IS NULL) OR
+        (action='stop_tree' AND stop_cause IS NOT NULL)
+    ),
+    CHECK (
+        (lifecycle_state='pending' AND claimed_at IS NULL AND claim_expires_at IS NULL AND acked_at IS NULL) OR
+        (lifecycle_state='claimed' AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL AND acked_at IS NULL) OR
+        (lifecycle_state='acked' AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL AND acked_at IS NOT NULL) OR
+        (lifecycle_state='superseded' AND acked_at IS NULL)
+    )
+);
+
+INSERT INTO runtime_service_outbox (
+    intent_id, service_id, generation, action, stop_cause, lifecycle_state,
+    claim_epoch, claimed_at, claim_expires_at, created_at, updated_at, acked_at
+)
+SELECT intent_id, service_id, generation, action, stop_cause, lifecycle_state,
+       claim_epoch, claimed_at, claim_expires_at, created_at, updated_at, acked_at
+FROM runtime_service_outbox_v6;
+
+DROP TABLE runtime_service_outbox_v6;
+CREATE INDEX runtime_service_outbox_claim_idx
+    ON runtime_service_outbox(lifecycle_state, claim_expires_at, intent_id);
+CREATE UNIQUE INDEX runtime_service_outbox_unique_action_idx
+    ON runtime_service_outbox(service_id, generation, action);
+PRAGMA user_version = 7;
+"#;
+
+// A denial record is separate from process lifecycle because no generation is
+// created when admission fails. The one-to-one child row still belongs to the
+// same authoritative transaction and cascades with its trusted registration.
+// Its closed shape admits only the resource denials the global governor can
+// produce; it cannot become a generic or caller-supplied error ledger.
+const SCHEMA_V8: &str = r#"
+CREATE TABLE runtime_service_admission_blocks (
+    service_id TEXT PRIMARY KEY REFERENCES runtime_services(service_id) ON DELETE CASCADE,
+    code TEXT NOT NULL CHECK (code='BREADBOARD_RESOURCE_EXHAUSTED'),
+    resource TEXT NOT NULL CHECK (resource IN (
+        'windows_commit_critical','heavyweight_concurrency','windows_commit'
+    )),
+    required_headroom_mb INTEGER NOT NULL
+        CHECK (required_headroom_mb BETWEEN 0 AND 9223372036854775807),
+    available_headroom_mb INTEGER NOT NULL
+        CHECK (available_headroom_mb BETWEEN 0 AND 9223372036854775807),
+    retryable INTEGER NOT NULL CHECK (retryable=0),
+    reason TEXT NOT NULL CHECK (
+        typeof(reason)='text' AND length(CAST(reason AS BLOB)) BETWEEN 1 AND 8192
+    ),
+    blocked_at INTEGER NOT NULL CHECK (blocked_at >= 0)
+);
+PRAGMA user_version = 8;
+"#;
+
+const SCHEMA_V9: &str = r#"
+CREATE TABLE runtime_job_resource_exhaustion (
+    job_id TEXT PRIMARY KEY REFERENCES runtime_jobs(job_id) ON DELETE CASCADE,
+    resource TEXT NOT NULL CHECK (resource IN (
+        'windows_commit_critical','heavyweight_concurrency','windows_commit','worker_concurrency'
+    )),
+    required_headroom_mb INTEGER NOT NULL CHECK (required_headroom_mb BETWEEN 1 AND 1048576),
+    available_headroom_mb INTEGER NOT NULL CHECK (available_headroom_mb BETWEEN 0 AND 1048576),
+    denied_at INTEGER NOT NULL CHECK (denied_at >= 0)
+);
+
+CREATE TABLE runtime_job_input_uploads (
+    upload_id TEXT PRIMARY KEY CHECK (length(upload_id) BETWEEN 1 AND 128),
+    owner_principal TEXT NOT NULL CHECK (length(owner_principal) BETWEEN 1 AND 256),
+    user_id INTEGER CHECK (user_id IS NULL OR user_id > 0),
+    garden_id TEXT,
+    conversation_id TEXT,
+    lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN (
+        'pending','uploading','sealed','adopted','abandoning','abandoned','expired','cleanup_blocked'
+    )),
+    display_name TEXT NOT NULL CHECK (
+        typeof(display_name)='text' AND
+        length(CAST(display_name AS BLOB)) BETWEEN 1 AND 512
+    ),
+    media_type TEXT CHECK (
+        media_type IS NULL OR
+        (typeof(media_type)='text' AND length(CAST(media_type AS BLOB)) BETWEEN 1 AND 256)
+    ),
+    declared_size_bytes INTEGER NOT NULL CHECK (
+        declared_size_bytes BETWEEN 1 AND 2147483648
+    ),
+    maximum_bytes INTEGER NOT NULL CHECK (
+        maximum_bytes BETWEEN declared_size_bytes AND 2147483648
+    ),
+    relative_path TEXT NOT NULL CHECK (
+        relative_path='runtime/uploads/' || upload_id || '/payload'
+    ),
+    sealed_size_bytes INTEGER CHECK (
+        sealed_size_bytes IS NULL OR sealed_size_bytes=declared_size_bytes
+    ),
+    sealed_sha256 TEXT CHECK (
+        sealed_sha256 IS NULL OR (
+            length(sealed_sha256)=64 AND sealed_sha256 NOT GLOB '*[^0-9a-f]*'
+        )
+    ),
+    job_id TEXT REFERENCES runtime_jobs(job_id) ON DELETE RESTRICT,
+    expires_at INTEGER NOT NULL CHECK (expires_at >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
+    sealed_at INTEGER CHECK (sealed_at IS NULL OR sealed_at >= created_at),
+    adopted_at INTEGER CHECK (adopted_at IS NULL OR adopted_at >= created_at),
+    abandoned_at INTEGER CHECK (abandoned_at IS NULL OR abandoned_at >= created_at),
+    cleaned_at INTEGER CHECK (cleaned_at IS NULL OR cleaned_at >= created_at),
+    CHECK (
+        (lifecycle_state IN ('pending','uploading') AND
+         sealed_size_bytes IS NULL AND sealed_sha256 IS NULL AND sealed_at IS NULL AND
+         job_id IS NULL AND adopted_at IS NULL AND abandoned_at IS NULL AND cleaned_at IS NULL) OR
+        (lifecycle_state='sealed' AND
+         sealed_size_bytes IS NOT NULL AND sealed_sha256 IS NOT NULL AND sealed_at IS NOT NULL AND
+         job_id IS NULL AND adopted_at IS NULL AND abandoned_at IS NULL AND cleaned_at IS NULL) OR
+        (lifecycle_state='adopted' AND
+         sealed_size_bytes IS NOT NULL AND sealed_sha256 IS NOT NULL AND sealed_at IS NOT NULL AND
+         job_id IS NOT NULL AND adopted_at IS NOT NULL AND abandoned_at IS NULL) OR
+        (lifecycle_state='abandoning' AND job_id IS NULL AND adopted_at IS NULL AND
+         abandoned_at IS NOT NULL AND cleaned_at IS NULL AND
+         sealed_size_bytes IS NULL AND sealed_sha256 IS NULL AND sealed_at IS NULL) OR
+        (lifecycle_state IN ('abandoned','expired') AND job_id IS NULL AND adopted_at IS NULL AND
+         abandoned_at IS NOT NULL AND
+         ((sealed_size_bytes IS NULL AND sealed_sha256 IS NULL AND sealed_at IS NULL) OR
+          (sealed_size_bytes IS NOT NULL AND sealed_sha256 IS NOT NULL AND sealed_at IS NOT NULL))) OR
+        (lifecycle_state='cleanup_blocked' AND job_id IS NULL AND adopted_at IS NULL AND
+         abandoned_at IS NOT NULL AND cleaned_at IS NULL AND
+         ((sealed_size_bytes IS NULL AND sealed_sha256 IS NULL AND sealed_at IS NULL) OR
+          (sealed_size_bytes IS NOT NULL AND sealed_sha256 IS NOT NULL AND sealed_at IS NOT NULL)))
+    )
+);
+CREATE INDEX runtime_job_input_uploads_owner_state_idx
+    ON runtime_job_input_uploads(owner_principal, lifecycle_state, created_at, upload_id);
+CREATE INDEX runtime_job_input_uploads_expiry_idx
+    ON runtime_job_input_uploads(lifecycle_state, expires_at, upload_id);
+CREATE INDEX runtime_job_input_uploads_quota_idx
+    ON runtime_job_input_uploads(cleaned_at, owner_principal);
+
+CREATE TABLE runtime_job_blobs (
+    job_id TEXT NOT NULL REFERENCES runtime_jobs(job_id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 15),
+    blob_id TEXT NOT NULL CHECK (length(blob_id) BETWEEN 1 AND 128),
+    upload_id TEXT NOT NULL UNIQUE
+        REFERENCES runtime_job_input_uploads(upload_id) ON DELETE RESTRICT,
+    relative_path TEXT NOT NULL CHECK (
+        relative_path='runtime/jobs/' || job_id || '/inputs/' || blob_id || '/payload'
+    ),
+    size_bytes INTEGER NOT NULL CHECK (size_bytes BETWEEN 1 AND 2147483648),
+    sha256 TEXT NOT NULL CHECK (
+        length(sha256)=64 AND sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+    display_name TEXT NOT NULL CHECK (
+        typeof(display_name)='text' AND
+        length(CAST(display_name AS BLOB)) BETWEEN 1 AND 512
+    ),
+    media_type TEXT CHECK (
+        media_type IS NULL OR
+        (typeof(media_type)='text' AND length(CAST(media_type AS BLOB)) BETWEEN 1 AND 256)
+    ),
+    cleanup_state TEXT NOT NULL DEFAULT 'retained' CHECK (
+        cleanup_state IN ('retained','pending','cleaned','blocked')
+    ),
+    cleanup_reason TEXT CHECK (
+        cleanup_reason IS NULL OR cleanup_reason IN (
+            'cancelled','succeeded','failed','resource_exhausted','interrupted','uncertain'
+        )
+    ),
+    cleanup_requested_at INTEGER CHECK (
+        cleanup_requested_at IS NULL OR cleanup_requested_at >= 0
+    ),
+    cleaned_at INTEGER CHECK (cleaned_at IS NULL OR cleaned_at >= 0),
+    PRIMARY KEY (job_id, ordinal),
+    UNIQUE (job_id, blob_id),
+    CHECK (
+        (cleanup_state='retained' AND cleanup_reason IS NULL AND
+         cleanup_requested_at IS NULL AND cleaned_at IS NULL) OR
+        (cleanup_state IN ('pending','blocked') AND cleanup_reason IS NOT NULL AND
+         cleanup_requested_at IS NOT NULL AND cleaned_at IS NULL) OR
+        (cleanup_state='cleaned' AND cleanup_reason IS NOT NULL AND
+         cleanup_requested_at IS NOT NULL AND cleaned_at IS NOT NULL)
+    )
+);
+CREATE INDEX runtime_job_blobs_cleanup_idx
+    ON runtime_job_blobs(cleanup_state, cleanup_requested_at, job_id, ordinal);
+
+CREATE TRIGGER runtime_job_blobs_terminal_cleanup
+AFTER UPDATE OF state ON runtime_jobs
+WHEN NEW.state IN (
+    'cancelled','succeeded','failed','resource_exhausted','interrupted','uncertain'
+) AND OLD.state <> NEW.state
+BEGIN
+    UPDATE runtime_job_blobs
+       SET cleanup_state='pending', cleanup_reason=NEW.state,
+           cleanup_requested_at=NEW.updated_at, cleaned_at=NULL
+     WHERE job_id=NEW.job_id AND cleanup_state='retained';
+END;
+PRAGMA user_version = 9;
+"#;
+
+const SCHEMA_V10: &str = r#"
+CREATE TABLE runtime_job_idempotency_cancellations (
+    tombstone_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_principal TEXT NOT NULL CHECK (
+        typeof(owner_principal)='text' AND
+        length(CAST(owner_principal AS BLOB)) BETWEEN 1 AND 256
+    ),
+    user_id INTEGER NOT NULL CHECK (user_id BETWEEN 0 AND 9007199254740991),
+    garden_id TEXT NOT NULL CHECK (
+        typeof(garden_id)='text' AND length(CAST(garden_id AS BLOB)) <= 256
+    ),
+    conversation_id TEXT NOT NULL CHECK (
+        typeof(conversation_id)='text' AND length(CAST(conversation_id AS BLOB)) <= 256
+    ),
+    idempotency_key TEXT NOT NULL CHECK (
+        typeof(idempotency_key)='text' AND
+        length(CAST(idempotency_key AS BLOB)) BETWEEN 1 AND 256
+    ),
+    created_at INTEGER NOT NULL CHECK (created_at BETWEEN 1 AND 9007199254740991),
+    expires_at INTEGER NOT NULL CHECK (
+        expires_at > created_at AND expires_at <= 9007199254740991
+    )
+);
+CREATE UNIQUE INDEX runtime_job_idempotency_cancellations_scope_idx
+    ON runtime_job_idempotency_cancellations(
+        owner_principal, user_id, garden_id, conversation_id, idempotency_key
+    );
+CREATE INDEX runtime_job_idempotency_cancellations_expiry_idx
+    ON runtime_job_idempotency_cancellations(expires_at, tombstone_id);
+CREATE INDEX runtime_job_idempotency_cancellations_owner_idx
+    ON runtime_job_idempotency_cancellations(owner_principal, expires_at, tombstone_id);
+PRAGMA user_version = 10;
+"#;
+
+const SCHEMA_V11: &str = r#"
+CREATE TABLE runtime_schedules (
+    schedule_id TEXT PRIMARY KEY CHECK (length(schedule_id) BETWEEN 1 AND 128),
+    schedule_kind TEXT NOT NULL CHECK (schedule_kind IN ('fixed','dynamic','gateway')),
+    desired_state TEXT NOT NULL CHECK (desired_state IN ('running','stopped')),
+    decision_epoch INTEGER NOT NULL CHECK (
+        decision_epoch BETWEEN 0 AND 9007199254740991
+    ),
+    owner_user_id INTEGER CHECK (
+        owner_user_id IS NULL OR owner_user_id BETWEEN 1 AND 9007199254740991
+    ),
+    initial_delay_ms INTEGER CHECK (
+        initial_delay_ms IS NULL OR initial_delay_ms BETWEEN 0 AND 604800000
+    ),
+    interval_ms INTEGER CHECK (
+        interval_ms IS NULL OR interval_ms BETWEEN 1 AND 604800000
+    ),
+    next_fire_at INTEGER CHECK (
+        next_fire_at IS NULL OR next_fire_at BETWEEN 1 AND 9007199254740991
+    ),
+    pending_due_at INTEGER CHECK (
+        pending_due_at IS NULL OR pending_due_at BETWEEN 1 AND 9007199254740991
+    ),
+    inflight_job_id TEXT CHECK (
+        inflight_job_id IS NULL OR length(inflight_job_id) BETWEEN 1 AND 128
+    ),
+    reconcile_trigger TEXT CHECK (
+        reconcile_trigger IS NULL OR reconcile_trigger IN ('startup','explicit')
+    ),
+    reconcile_requested_state TEXT CHECK (
+        reconcile_requested_state IS NULL OR
+        reconcile_requested_state IN ('running','stopped')
+    ),
+    reconcile_owner_user_id INTEGER CHECK (
+        reconcile_owner_user_id IS NULL OR
+        reconcile_owner_user_id BETWEEN 1 AND 9007199254740991
+    ),
+    reconcile_job_id TEXT CHECK (
+        reconcile_job_id IS NULL OR length(reconcile_job_id) BETWEEN 1 AND 128
+    ),
+    updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN 1 AND 9007199254740991),
+    CHECK (
+        (schedule_kind='fixed' AND decision_epoch=0 AND desired_state='running' AND
+         owner_user_id IS NULL AND initial_delay_ms IS NOT NULL AND interval_ms IS NOT NULL) OR
+        (schedule_kind='dynamic') OR
+        (schedule_kind='gateway' AND initial_delay_ms IS NULL AND interval_ms IS NULL AND
+         next_fire_at IS NULL AND pending_due_at IS NULL AND inflight_job_id IS NULL)
+    ),
+    CHECK (
+        (reconcile_trigger IS NULL AND reconcile_requested_state IS NULL AND
+         reconcile_owner_user_id IS NULL AND reconcile_job_id IS NULL) OR
+        (reconcile_trigger='startup' AND reconcile_requested_state IS NULL AND
+         reconcile_owner_user_id IS NULL) OR
+        (reconcile_trigger='explicit' AND reconcile_requested_state IS NOT NULL AND
+         reconcile_owner_user_id IS NOT NULL)
+    )
+);
+CREATE INDEX runtime_schedules_due_idx
+    ON runtime_schedules(desired_state, next_fire_at, pending_due_at, schedule_id);
+PRAGMA user_version = 11;
+"#;
+
+const SCHEMA_V12: &str = r#"
+ALTER TABLE runtime_schedules RENAME TO runtime_schedules_v11;
+DROP INDEX runtime_schedules_due_idx;
+
+CREATE TABLE runtime_schedules (
+    schedule_id TEXT PRIMARY KEY CHECK (length(schedule_id) BETWEEN 1 AND 128),
+    schedule_kind TEXT NOT NULL CHECK (
+        schedule_kind IN ('fixed','dynamic','gateway','service')
+    ),
+    desired_state TEXT NOT NULL CHECK (desired_state IN ('running','stopped')),
+    decision_epoch INTEGER NOT NULL CHECK (
+        decision_epoch BETWEEN 0 AND 9007199254740991
+    ),
+    owner_user_id INTEGER CHECK (
+        owner_user_id IS NULL OR owner_user_id BETWEEN 1 AND 9007199254740991
+    ),
+    initial_delay_ms INTEGER CHECK (
+        initial_delay_ms IS NULL OR initial_delay_ms BETWEEN 0 AND 604800000
+    ),
+    interval_ms INTEGER CHECK (
+        interval_ms IS NULL OR interval_ms BETWEEN 1 AND 604800000
+    ),
+    next_fire_at INTEGER CHECK (
+        next_fire_at IS NULL OR next_fire_at BETWEEN 1 AND 9007199254740991
+    ),
+    pending_due_at INTEGER CHECK (
+        pending_due_at IS NULL OR pending_due_at BETWEEN 1 AND 9007199254740991
+    ),
+    inflight_job_id TEXT CHECK (
+        inflight_job_id IS NULL OR length(inflight_job_id) BETWEEN 1 AND 128
+    ),
+    reconcile_trigger TEXT CHECK (
+        reconcile_trigger IS NULL OR reconcile_trigger IN ('startup','explicit')
+    ),
+    reconcile_requested_state TEXT CHECK (
+        reconcile_requested_state IS NULL OR
+        reconcile_requested_state IN ('running','stopped')
+    ),
+    reconcile_owner_user_id INTEGER CHECK (
+        reconcile_owner_user_id IS NULL OR
+        reconcile_owner_user_id BETWEEN 1 AND 9007199254740991
+    ),
+    reconcile_job_id TEXT CHECK (
+        reconcile_job_id IS NULL OR length(reconcile_job_id) BETWEEN 1 AND 128
+    ),
+    launch_configuration_json TEXT CHECK (
+        launch_configuration_json IS NULL OR
+        (typeof(launch_configuration_json)='text' AND
+         length(CAST(launch_configuration_json AS BLOB)) BETWEEN 2 AND 98304)
+    ),
+    configuration_fingerprint TEXT CHECK (
+        configuration_fingerprint IS NULL OR
+        (typeof(configuration_fingerprint)='text' AND
+         length(configuration_fingerprint)=64)
+    ),
+    updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN 1 AND 9007199254740991),
+    CHECK (
+        (schedule_kind='fixed' AND decision_epoch=0 AND desired_state='running' AND
+         owner_user_id IS NULL AND initial_delay_ms IS NOT NULL AND interval_ms IS NOT NULL AND
+         launch_configuration_json IS NULL AND configuration_fingerprint IS NULL) OR
+        (schedule_kind='dynamic' AND launch_configuration_json IS NULL AND
+         configuration_fingerprint IS NULL) OR
+        (schedule_kind='gateway' AND initial_delay_ms IS NULL AND interval_ms IS NULL AND
+         next_fire_at IS NULL AND pending_due_at IS NULL AND inflight_job_id IS NULL AND
+         launch_configuration_json IS NULL AND configuration_fingerprint IS NULL) OR
+        (schedule_kind='service' AND initial_delay_ms IS NULL AND interval_ms IS NULL AND
+         next_fire_at IS NULL AND pending_due_at IS NULL AND inflight_job_id IS NULL AND
+         reconcile_trigger IS NULL AND reconcile_requested_state IS NULL AND
+         reconcile_owner_user_id IS NULL AND reconcile_job_id IS NULL AND
+         ((desired_state='stopped' AND launch_configuration_json IS NULL AND
+           configuration_fingerprint IS NULL) OR
+          (desired_state='running' AND owner_user_id IS NOT NULL AND
+           launch_configuration_json IS NOT NULL AND configuration_fingerprint IS NOT NULL)))
+    ),
+    CHECK (
+        (reconcile_trigger IS NULL AND reconcile_requested_state IS NULL AND
+         reconcile_owner_user_id IS NULL AND reconcile_job_id IS NULL) OR
+        (reconcile_trigger='startup' AND reconcile_requested_state IS NULL AND
+         reconcile_owner_user_id IS NULL) OR
+        (reconcile_trigger='explicit' AND reconcile_requested_state IS NOT NULL AND
+         reconcile_owner_user_id IS NOT NULL)
+    )
+);
+
+INSERT INTO runtime_schedules (
+    schedule_id, schedule_kind, desired_state, decision_epoch, owner_user_id,
+    initial_delay_ms, interval_ms, next_fire_at, pending_due_at, inflight_job_id,
+    reconcile_trigger, reconcile_requested_state, reconcile_owner_user_id,
+    reconcile_job_id, launch_configuration_json, configuration_fingerprint, updated_at
+)
+SELECT schedule_id, schedule_kind, desired_state, decision_epoch, owner_user_id,
+       initial_delay_ms, interval_ms, next_fire_at, pending_due_at, inflight_job_id,
+       reconcile_trigger, reconcile_requested_state, reconcile_owner_user_id,
+       reconcile_job_id, NULL, NULL, updated_at
+FROM runtime_schedules_v11;
+
+DROP TABLE runtime_schedules_v11;
+CREATE INDEX runtime_schedules_due_idx
+    ON runtime_schedules(desired_state, next_fire_at, pending_due_at, schedule_id);
+PRAGMA user_version = 12;
+"#;
+
+fn schema_v13_runtime_services() -> String {
+    const V12_LIMIT: &str = "CHECK (max_concurrent_leases BETWEEN 1 AND 64)";
+    const V13_LIMIT: &str = "CHECK (max_concurrent_leases BETWEEN 1 AND 256)";
+    debug_assert_eq!(SCHEMA_V6_RUNTIME_SERVICES.matches(V12_LIMIT).count(), 1);
+    SCHEMA_V6_RUNTIME_SERVICES.replacen(V12_LIMIT, V13_LIMIT, 1)
+}
+
+fn migrate_schema_v13(connection: &Connection) -> Result<(), StoreError> {
+    connection.execute_batch(
+        r#"
+CREATE TEMP TABLE runtime_service_leases_v12_backup AS
+    SELECT * FROM runtime_service_leases;
+CREATE TEMP TABLE runtime_service_outbox_v12_backup AS
+    SELECT * FROM runtime_service_outbox;
+CREATE TEMP TABLE runtime_service_admission_blocks_v12_backup AS
+    SELECT * FROM runtime_service_admission_blocks;
+
+DROP INDEX runtime_service_leases_active_service_idx;
+DROP INDEX runtime_service_outbox_claim_idx;
+DROP INDEX runtime_service_outbox_unique_action_idx;
+DROP TABLE runtime_service_leases;
+DROP TABLE runtime_service_outbox;
+DROP TABLE runtime_service_admission_blocks;
+ALTER TABLE runtime_services RENAME TO runtime_services_v12;
+"#,
+    )?;
+    connection.execute_batch(&schema_v13_runtime_services())?;
+    connection.execute_batch(SCHEMA_V13_REBUILD_SERVICE_AUTHORITY)?;
+    Ok(())
+}
+
+const SCHEMA_V13_REBUILD_SERVICE_AUTHORITY: &str = r#"
+INSERT INTO runtime_services (
+    service_id, display_name, required, startup_policy, restart_policy,
+    resource_class, estimated_pending_commit_mb, max_concurrent_leases,
+    max_lease_ms, max_restarts, idle_ttl_ms, lifecycle_state, generation,
+    restarts, retry_required, acquisition_closed, idle_due_at, last_error,
+    last_exited_generation, last_observed_at, created_at, updated_at,
+    restart_window_ms, initial_restart_backoff_ms, maximum_restart_backoff_ms,
+    restart_window_started_at, restart_attempts_in_window, next_restart_at
+)
+SELECT service_id, display_name, required, startup_policy, restart_policy,
+       resource_class, estimated_pending_commit_mb, max_concurrent_leases,
+       max_lease_ms, max_restarts, idle_ttl_ms, lifecycle_state, generation,
+       restarts, retry_required, acquisition_closed, idle_due_at, last_error,
+       last_exited_generation, last_observed_at, created_at, updated_at,
+       restart_window_ms, initial_restart_backoff_ms, maximum_restart_backoff_ms,
+       restart_window_started_at, restart_attempts_in_window, next_restart_at
+FROM runtime_services_v12;
+
+CREATE TABLE runtime_service_leases (
+    lease_id TEXT PRIMARY KEY CHECK (length(lease_id) BETWEEN 1 AND 128),
+    service_id TEXT NOT NULL REFERENCES runtime_services(service_id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL CHECK (generation BETWEEN 1 AND 9223372036854775807),
+    lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('pending','active','released')),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at >= created_at),
+    released_at INTEGER CHECK (released_at IS NULL OR released_at >= created_at),
+    release_reason TEXT CHECK (release_reason IS NULL OR release_reason IN (
+        'success','failure','cancellation','disconnect','timeout','explicit','runtime-restart'
+    )),
+    CHECK (
+        (lifecycle_state IN ('pending','active') AND released_at IS NULL AND release_reason IS NULL) OR
+        (lifecycle_state='released' AND released_at IS NOT NULL AND release_reason IS NOT NULL)
+    )
+);
+
+CREATE TABLE runtime_service_outbox (
+    intent_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id TEXT NOT NULL REFERENCES runtime_services(service_id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL CHECK (generation BETWEEN 1 AND 9223372036854775807),
+    action TEXT NOT NULL CHECK (action IN ('start_tree','stop_tree')),
+    stop_cause TEXT CHECK (stop_cause IS NULL OR stop_cause IN ('idle','shutdown','failure')),
+    lifecycle_state TEXT NOT NULL CHECK (
+        lifecycle_state IN ('pending','claimed','acked','superseded')
+    ),
+    claim_epoch INTEGER NOT NULL DEFAULT 0
+        CHECK (claim_epoch BETWEEN 0 AND 9223372036854775807),
+    claimed_at INTEGER CHECK (claimed_at IS NULL OR claimed_at >= 0),
+    claim_expires_at INTEGER CHECK (claim_expires_at IS NULL OR claim_expires_at >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    acked_at INTEGER CHECK (acked_at IS NULL OR acked_at >= 0),
+    CHECK (
+        (action='start_tree' AND stop_cause IS NULL) OR
+        (action='stop_tree' AND stop_cause IS NOT NULL)
+    ),
+    CHECK (
+        (lifecycle_state='pending' AND claimed_at IS NULL AND claim_expires_at IS NULL AND acked_at IS NULL) OR
+        (lifecycle_state='claimed' AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL AND acked_at IS NULL) OR
+        (lifecycle_state='acked' AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL AND acked_at IS NOT NULL) OR
+        (lifecycle_state='superseded' AND acked_at IS NULL)
+    )
+);
+
+CREATE TABLE runtime_service_admission_blocks (
+    service_id TEXT PRIMARY KEY REFERENCES runtime_services(service_id) ON DELETE CASCADE,
+    code TEXT NOT NULL CHECK (code='BREADBOARD_RESOURCE_EXHAUSTED'),
+    resource TEXT NOT NULL CHECK (resource IN (
+        'windows_commit_critical','heavyweight_concurrency','windows_commit'
+    )),
+    required_headroom_mb INTEGER NOT NULL
+        CHECK (required_headroom_mb BETWEEN 0 AND 9223372036854775807),
+    available_headroom_mb INTEGER NOT NULL
+        CHECK (available_headroom_mb BETWEEN 0 AND 9223372036854775807),
+    retryable INTEGER NOT NULL CHECK (retryable=0),
+    reason TEXT NOT NULL CHECK (
+        typeof(reason)='text' AND length(CAST(reason AS BLOB)) BETWEEN 1 AND 8192
+    ),
+    blocked_at INTEGER NOT NULL CHECK (blocked_at >= 0)
+);
+
+INSERT INTO runtime_service_leases (
+    lease_id, service_id, generation, lifecycle_state, created_at, updated_at,
+    expires_at, released_at, release_reason
+)
+SELECT lease_id, service_id, generation, lifecycle_state, created_at, updated_at,
+       expires_at, released_at, release_reason
+FROM runtime_service_leases_v12_backup;
+
+INSERT INTO runtime_service_outbox (
+    intent_id, service_id, generation, action, stop_cause, lifecycle_state,
+    claim_epoch, claimed_at, claim_expires_at, created_at, updated_at, acked_at
+)
+SELECT intent_id, service_id, generation, action, stop_cause, lifecycle_state,
+       claim_epoch, claimed_at, claim_expires_at, created_at, updated_at, acked_at
+FROM runtime_service_outbox_v12_backup;
+
+INSERT INTO runtime_service_admission_blocks (
+    service_id, code, resource, required_headroom_mb, available_headroom_mb,
+    retryable, reason, blocked_at
+)
+SELECT service_id, code, resource, required_headroom_mb, available_headroom_mb,
+       retryable, reason, blocked_at
+FROM runtime_service_admission_blocks_v12_backup;
+
+DROP TABLE runtime_service_leases_v12_backup;
+DROP TABLE runtime_service_outbox_v12_backup;
+DROP TABLE runtime_service_admission_blocks_v12_backup;
+DROP TABLE runtime_services_v12;
+
+CREATE INDEX runtime_service_leases_active_service_idx
+    ON runtime_service_leases(service_id, lifecycle_state, expires_at);
+CREATE INDEX runtime_service_outbox_claim_idx
+    ON runtime_service_outbox(lifecycle_state, claim_expires_at, intent_id);
+CREATE UNIQUE INDEX runtime_service_outbox_unique_action_idx
+    ON runtime_service_outbox(service_id, generation, action);
+PRAGMA user_version = 13;
+"#;
+
+// Exact sqlite_master result of applying SCHEMA_V6 to SCHEMA_V5. This is kept
+// separate from the migration statements so a database cannot claim v6 while
+// omitting constraints, defaults, or one of the durable timing columns.
+const SCHEMA_V6_RUNTIME_SERVICES: &str = r#"
+CREATE TABLE runtime_services (
+    service_id TEXT PRIMARY KEY CHECK (length(service_id) BETWEEN 1 AND 128),
+    display_name TEXT NOT NULL CHECK (
+        typeof(display_name)='text' AND length(CAST(display_name AS BLOB)) BETWEEN 1 AND 256
+    ),
+    required INTEGER NOT NULL CHECK (required IN (0,1)),
+    startup_policy TEXT NOT NULL CHECK (startup_policy IN ('eager','on-demand','scheduled')),
+    restart_policy TEXT NOT NULL CHECK (restart_policy IN ('never','on_failure')),
+    resource_class TEXT NOT NULL CHECK (length(resource_class) BETWEEN 1 AND 128),
+    estimated_pending_commit_mb INTEGER NOT NULL
+        CHECK (estimated_pending_commit_mb BETWEEN 1 AND 1048576),
+    max_concurrent_leases INTEGER NOT NULL
+        CHECK (max_concurrent_leases BETWEEN 1 AND 64),
+    max_lease_ms INTEGER NOT NULL CHECK (max_lease_ms BETWEEN 1 AND 604800000),
+    max_restarts INTEGER NOT NULL CHECK (max_restarts BETWEEN 0 AND 64),
+    idle_ttl_ms INTEGER CHECK (idle_ttl_ms IS NULL OR idle_ttl_ms BETWEEN 1 AND 604800000),
+    lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN (
+        'available_but_stopped','starting','ready','failed','stopping'
+    )),
+    generation INTEGER NOT NULL DEFAULT 0 CHECK (generation BETWEEN 0 AND 9223372036854775807),
+    restarts INTEGER NOT NULL DEFAULT 0 CHECK (restarts BETWEEN 0 AND 64),
+    retry_required INTEGER NOT NULL DEFAULT 0 CHECK (retry_required IN (0,1)),
+    acquisition_closed INTEGER NOT NULL DEFAULT 0 CHECK (acquisition_closed IN (0,1)),
+    idle_due_at INTEGER CHECK (idle_due_at IS NULL OR idle_due_at >= 0),
+    last_error TEXT CHECK (
+        last_error IS NULL OR
+        (typeof(last_error)='text' AND length(CAST(last_error AS BLOB)) BETWEEN 1 AND 8192)
+    ),
+    last_exited_generation INTEGER CHECK (
+        last_exited_generation IS NULL OR
+        last_exited_generation BETWEEN 1 AND 9223372036854775807
+    ),
+    last_observed_at INTEGER NOT NULL CHECK (last_observed_at >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0), restart_window_ms INTEGER NOT NULL DEFAULT 0
+    CHECK (restart_window_ms BETWEEN 0 AND 604800000), initial_restart_backoff_ms INTEGER NOT NULL DEFAULT 0
+    CHECK (initial_restart_backoff_ms BETWEEN 0 AND 604800000), maximum_restart_backoff_ms INTEGER NOT NULL DEFAULT 0
+    CHECK (maximum_restart_backoff_ms BETWEEN 0 AND 604800000), restart_window_started_at INTEGER
+    CHECK (restart_window_started_at IS NULL OR restart_window_started_at >= 0), restart_attempts_in_window INTEGER NOT NULL DEFAULT 0
+    CHECK (restart_attempts_in_window BETWEEN 0 AND 64), next_restart_at INTEGER
+    CHECK (next_restart_at IS NULL OR next_restart_at >= 0)
+    CHECK (
+        (restart_policy='never' AND max_restarts=0 AND
+         restart_window_ms=0 AND initial_restart_backoff_ms=0 AND
+         maximum_restart_backoff_ms=0 AND restart_window_started_at IS NULL AND
+         restart_attempts_in_window=0 AND next_restart_at IS NULL) OR
+        (restart_policy='on_failure' AND max_restarts BETWEEN 1 AND 64 AND (
+            (restart_window_ms=0 AND initial_restart_backoff_ms=0 AND
+             maximum_restart_backoff_ms=0 AND restart_window_started_at IS NULL AND
+             restart_attempts_in_window=0 AND next_restart_at IS NULL) OR
+            (restart_window_ms BETWEEN 1 AND 604800000 AND
+             initial_restart_backoff_ms BETWEEN 1 AND maximum_restart_backoff_ms AND
+             maximum_restart_backoff_ms <= restart_window_ms AND
+             restart_attempts_in_window <= max_restarts AND (
+                 (restart_window_started_at IS NULL AND
+                  restart_attempts_in_window=0 AND next_restart_at IS NULL) OR
+                 (restart_window_started_at IS NOT NULL AND
+                  (next_restart_at IS NULL OR
+                   (next_restart_at >= restart_window_started_at AND
+                    next_restart_at <= restart_window_started_at + restart_window_ms)))
+             ) AND
+             ((retry_required=0 AND next_restart_at IS NULL) OR
+              (retry_required=1 AND lifecycle_state='failed' AND next_restart_at IS NOT NULL))
+            )
+        ))
+    ),
+    CHECK (
+        (generation=0 AND lifecycle_state='available_but_stopped') OR generation>0
+    )
+)
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5589,6 +8454,29 @@ mod tests {
         connection.execute_batch(SCHEMA_V3).unwrap();
     }
 
+    fn create_v5_database(path: &Path) {
+        create_v3_database(path);
+        let connection = Connection::open(path).unwrap();
+        connection.execute_batch(SCHEMA_V4).unwrap();
+        connection.execute_batch(SCHEMA_V5).unwrap();
+    }
+
+    fn create_v6_database(path: &Path) {
+        create_v5_database(path);
+        let connection = Connection::open(path).unwrap();
+        connection.execute_batch(SCHEMA_V6).unwrap();
+    }
+
+    fn create_v12_database(path: &Path) {
+        create_v6_database(path);
+        let connection = Connection::open(path).unwrap();
+        for schema in [
+            SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12,
+        ] {
+            connection.execute_batch(schema).unwrap();
+        }
+    }
+
     fn owner(user_id: i64) -> JobOwner {
         JobOwner::user(user_id).unwrap()
     }
@@ -5598,13 +8486,24 @@ mod tests {
     }
 
     fn input_for(job_id: &str, key: &str, job_owner: JobOwner, payload: Value) -> NewJob {
+        input_for_scope(job_id, key, job_owner, Some("garden-1"), payload)
+    }
+
+    fn input_for_scope(
+        job_id: &str,
+        key: &str,
+        job_owner: JobOwner,
+        garden_id: Option<&str>,
+        payload: Value,
+    ) -> NewJob {
         let canonical_request_payload = canonicalize_request_payload(&payload).unwrap();
         let request_digest = compute_submission_digest(
             &job_owner,
             "learn",
-            Some("garden-1"),
+            garden_id,
             None,
             &canonical_request_payload,
+            &[],
         )
         .unwrap();
         NewJob {
@@ -5613,7 +8512,7 @@ mod tests {
             worker_kind: "learn-node".into(),
             resource_class: "large-generation".into(),
             owner: job_owner,
-            garden_id: Some("garden-1".into()),
+            garden_id: garden_id.map(str::to_owned),
             conversation_id: None,
             input_manifest_path: format!("runtime/jobs/{job_id}/input.json"),
             workspace_path: format!("runtime/jobs/{job_id}/workspace"),
@@ -5622,6 +8521,7 @@ mod tests {
             idempotency_key: key.into(),
             request_digest,
             canonical_request_payload,
+            input_blobs: Vec::new(),
         }
     }
 
@@ -5631,6 +8531,16 @@ mod tests {
             key,
             owner(1),
             serde_json::json!({ "source": "test" }),
+        )
+    }
+
+    fn internal_input(job_id: &str, key: &str) -> NewJob {
+        input_for_scope(
+            job_id,
+            key,
+            JobOwner::internal("runtime-scheduler").unwrap(),
+            None,
+            serde_json::json!({ "source": "test-schedule" }),
         )
     }
 
@@ -5695,6 +8605,87 @@ mod tests {
             .unwrap()
     }
 
+    fn insert_service_reservation(
+        store: &JobStore,
+        service_id: &str,
+        startup_policy: &str,
+        resource_class: ResourceClass,
+        reservation_state: &str,
+        estimated_pending_commit_mb: u64,
+    ) {
+        let service_state = match reservation_state {
+            "pending" => "starting",
+            "resident" => "ready",
+            state => panic!("unsupported test reservation state {state}"),
+        };
+        let connection = store.connection.lock().unwrap();
+        connection
+            .execute(
+                "INSERT INTO runtime_services (
+                    service_id, display_name, required, startup_policy,
+                    restart_policy, resource_class, estimated_pending_commit_mb,
+                    max_concurrent_leases, max_lease_ms, max_restarts, idle_ttl_ms,
+                    lifecycle_state, generation, last_observed_at, created_at, updated_at
+                 ) VALUES (?1, ?1, 1, ?2, 'on_failure', ?3, ?4,
+                           16, 1000, 2, NULL, ?5, 1, 1, 1, 1)",
+                params![
+                    service_id,
+                    startup_policy,
+                    resource_class.as_str(),
+                    i64::try_from(estimated_pending_commit_mb).unwrap(),
+                    service_state,
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO runtime_admission_reservations (
+                    subject_kind, subject_id, definition_key, resource_class,
+                    estimated_pending_commit_mb, lifecycle_state, settled_at,
+                    created_at, updated_at
+                 ) VALUES ('service', ?1, 'lean', ?2, ?3, ?4,
+                           CASE WHEN ?4='resident' THEN 1 ELSE NULL END, 1, 1)",
+                params![
+                    service_id,
+                    resource_class.as_str(),
+                    i64::try_from(estimated_pending_commit_mb).unwrap(),
+                    reservation_state,
+                ],
+            )
+            .unwrap();
+    }
+
+    fn insert_service_lease(
+        store: &JobStore,
+        service_id: &str,
+        lease_id: &str,
+        generation: u64,
+        active: bool,
+    ) {
+        let connection = store.connection.lock().unwrap();
+        if active {
+            connection
+                .execute(
+                    "INSERT INTO runtime_service_leases (
+                        lease_id, service_id, generation, lifecycle_state,
+                        created_at, updated_at, expires_at
+                     ) VALUES (?1, ?2, ?3, 'active', 1, 1, 1000)",
+                    params![lease_id, service_id, i64::try_from(generation).unwrap()],
+                )
+                .unwrap();
+        } else {
+            connection
+                .execute(
+                    "INSERT INTO runtime_service_leases (
+                        lease_id, service_id, generation, lifecycle_state,
+                        created_at, updated_at, expires_at, released_at, release_reason
+                     ) VALUES (?1, ?2, ?3, 'released', 1, 2, 1000, 2, 'explicit')",
+                    params![lease_id, service_id, i64::try_from(generation).unwrap()],
+                )
+                .unwrap();
+        }
+    }
+
     fn job_reservation_count(store: &JobStore, job_id: &str) -> i64 {
         let connection = store.connection.lock().unwrap();
         connection
@@ -5747,6 +8738,7 @@ mod tests {
             generation_scope: claim.generation_scope.clone(),
             identity: claim.identity.clone(),
             job: claim.job.clone(),
+            input_blobs: claim.input_blobs.clone(),
         }
     }
 
@@ -5808,9 +8800,238 @@ mod tests {
     }
 
     #[test]
+    fn idempotency_lookup_is_owner_and_scope_qualified_without_returning_the_key() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        let owned = store
+            .get_by_idempotency_key(&context(1), "request_1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(owned.job_id, "job_1");
+        assert!(store
+            .get_by_idempotency_key(&context(2), "request_1")
+            .unwrap()
+            .is_none());
+        let wrong_scope =
+            AuthenticatedJobContext::for_verified_user(1, Some("garden-2"), None).unwrap();
+        assert!(store
+            .get_by_idempotency_key(&wrong_scope, "request_1")
+            .unwrap()
+            .is_none());
+        assert!(store.get_by_idempotency_key(&context(1), "\n").is_err());
+    }
+
+    #[test]
+    fn pre_submission_cancellation_survives_reopen_and_materializes_only_cancelled() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("runtime-v2.sqlite3");
+        {
+            let store = JobStore::open_for_test(&path).unwrap();
+            let outcome = store
+                .cancel_job_by_idempotency_key(&context(1), "request_cancelled")
+                .unwrap();
+            assert!(matches!(
+                outcome,
+                CancelJobByIdempotencyOutcome::Pending { expires_at }
+                    if expires_at > now_ms()
+            ));
+        }
+
+        let reopened = JobStore::open_for_test(&path).unwrap();
+        let cancelled = reopened
+            .submit_raw(&input("job_cancelled", "request_cancelled"))
+            .unwrap();
+        assert_eq!(cancelled.state, JobState::Cancelled);
+        assert_eq!(cancelled.attempt, 0);
+        assert!(cancelled.cancellation_requested);
+        assert!(reopened.queued_admission_candidates(1).unwrap().is_empty());
+        assert_eq!(
+            reopened
+                .submit_raw(&input("job_retry", "request_cancelled"))
+                .unwrap(),
+            cancelled
+        );
+        let events = reopened
+            .events_after(&context(1), &cancelled.job_id, 0, 10)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["queued", "cancellation-requested", "cancelled"]
+        );
+        let connection = reopened.connection.lock().unwrap();
+        let tombstones: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_job_idempotency_cancellations",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tombstones, 0);
+    }
+
+    #[test]
+    fn cancel_and_submit_race_always_finishes_before_admission_visibility() {
+        let (_directory, store) = store();
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(2));
+        let submit_store = Arc::clone(&store);
+        let submit_barrier = Arc::clone(&barrier);
+        let submit = thread::spawn(move || {
+            submit_barrier.wait();
+            submit_store.submit_raw(&input("job_race", "request_race"))
+        });
+        barrier.wait();
+        let cancellation = store
+            .cancel_job_by_idempotency_key(&context(1), "request_race")
+            .unwrap();
+        let submitted = submit.join().unwrap().unwrap();
+        let final_job = store.get(&context(1), &submitted.job_id).unwrap();
+        assert_eq!(final_job.state, JobState::Cancelled);
+        assert!(final_job.cancellation_requested);
+        assert!(store.queued_admission_candidates(1).unwrap().is_empty());
+        assert!(matches!(
+            cancellation,
+            CancelJobByIdempotencyOutcome::Pending { .. }
+                | CancelJobByIdempotencyOutcome::Job { accepted: true, .. }
+        ));
+    }
+
+    #[test]
+    fn idempotency_cancellation_is_exact_scope_and_never_cancels_a_sibling_scope() {
+        let (_directory, store) = store();
+        let sibling_context =
+            AuthenticatedJobContext::for_verified_user(1, Some("garden-2"), None).unwrap();
+        let sibling = input_for_scope(
+            "job_sibling",
+            "shared_key",
+            owner(1),
+            Some("garden-2"),
+            serde_json::json!({ "source": "sibling" }),
+        );
+        store.submit_raw(&sibling).unwrap();
+
+        assert!(matches!(
+            store
+                .cancel_job_by_idempotency_key(&context(1), "shared_key")
+                .unwrap(),
+            CancelJobByIdempotencyOutcome::Pending { .. }
+        ));
+        assert_eq!(
+            store.get(&sibling_context, "job_sibling").unwrap().state,
+            JobState::Queued
+        );
+        let target = input_for_scope(
+            "job_target",
+            "shared_key",
+            owner(1),
+            Some("garden-1"),
+            serde_json::json!({ "source": "target" }),
+        );
+        assert!(matches!(
+            store.submit_raw(&target),
+            Err(StoreError::CancelledBeforeSubmission(key)) if key == "shared_key"
+        ));
+        assert_eq!(
+            store.get(&sibling_context, "job_sibling").unwrap().state,
+            JobState::Queued
+        );
+    }
+
+    #[test]
+    fn idempotency_cancellation_quota_and_expiry_cleanup_are_bounded() {
+        let (_directory, store) = store();
+        for index in 0..MAX_IDEMPOTENCY_CANCELLATIONS_PER_OWNER {
+            store
+                .cancel_job_by_idempotency_key(&context(1), &format!("cancel_{index}"))
+                .unwrap();
+        }
+        assert!(matches!(
+            store.cancel_job_by_idempotency_key(&context(1), "over_owner_quota"),
+            Err(StoreError::IdempotencyCancellationQuotaExceeded {
+                scope: IdempotencyCancellationQuotaScope::Owner
+            })
+        ));
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute(
+                    "UPDATE runtime_job_idempotency_cancellations
+                     SET created_at=1, expires_at=2
+                     WHERE idempotency_key IN ('cancel_0','cancel_1')",
+                    [],
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .reconcile_expired_idempotency_cancellations_online(1)
+                .unwrap(),
+            1
+        );
+        let remaining_expired: i64 = store
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_job_idempotency_cancellations
+                 WHERE expires_at<=?1",
+                params![now_ms()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_expired, 1);
+        assert!(store
+            .reconcile_expired_idempotency_cancellations_online(0)
+            .is_err());
+    }
+
+    #[test]
+    fn global_idempotency_cancellation_quota_is_transactional() {
+        let (_directory, store) = store();
+        let expires_at = now_ms() + JOB_IDEMPOTENCY_CANCELLATION_TTL_MS;
+        {
+            let mut connection = store.connection.lock().unwrap();
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            {
+                let mut insert = transaction
+                    .prepare(
+                        "INSERT INTO runtime_job_idempotency_cancellations (
+                            owner_principal, user_id, garden_id, conversation_id,
+                            idempotency_key, created_at, expires_at
+                         ) VALUES (?1, ?2, '', '', ?3, 1, ?4)",
+                    )
+                    .unwrap();
+                for index in 0..MAX_IDEMPOTENCY_CANCELLATIONS_GLOBAL {
+                    let user_id = i64::try_from(index + 10_000).unwrap();
+                    insert
+                        .execute(params![
+                            format!("user:{user_id}"),
+                            user_id,
+                            format!("seed_{index}"),
+                            expires_at,
+                        ])
+                        .unwrap();
+                }
+            }
+            transaction.commit().unwrap();
+        }
+        assert!(matches!(
+            store.cancel_job_by_idempotency_key(&context(1), "global_overflow"),
+            Err(StoreError::IdempotencyCancellationQuotaExceeded {
+                scope: IdempotencyCancellationQuotaScope::Global
+            })
+        ));
+    }
+
+    #[test]
     fn closed_admission_rejects_submission_before_any_durable_row_or_event() {
         let (_directory, store) = store();
-        store.set_accepting_work(false);
+        store.pause_accepting_work();
 
         assert!(matches!(
             store.submit_raw(&input("job_closed", "request_closed")),
@@ -5828,9 +9049,7 @@ mod tests {
             }
         }
 
-        // Tests may explicitly reopen the lifecycle gate; production shutdown
-        // never does so within the same generation.
-        store.set_accepting_work(true);
+        store.open_accepting_work().unwrap();
         assert_eq!(
             store
                 .submit_raw(&input("job_reopened", "request_reopened"))
@@ -5845,6 +9064,27 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn generation_shutdown_is_shared_and_irreversible_across_store_handles() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("runtime-v2.sqlite3");
+        let first = JobStore::open_for_test(&database).unwrap();
+        let second = JobStore::open_for_test(&database).unwrap();
+
+        first.pause_accepting_work();
+        second.open_accepting_work().unwrap();
+        first.close_for_runtime_shutdown();
+
+        assert!(matches!(
+            second.open_accepting_work(),
+            Err(StoreError::AdmissionClosed)
+        ));
+        assert!(matches!(
+            second.submit_raw(&input("job_closed", "request_closed")),
+            Err(StoreError::AdmissionClosed)
+        ));
     }
 
     #[test]
@@ -6008,22 +9248,17 @@ mod tests {
     }
 
     #[test]
-    fn durable_service_reservation_participates_in_global_heavyweight_admission() {
+    fn pending_eager_heavyweight_blocks_global_heavyweight_admission() {
         let (_directory, store) = store();
         store.submit_raw(&input("job_1", "request_1")).unwrap();
-        {
-            let connection = store.connection.lock().unwrap();
-            connection
-                .execute(
-                    "INSERT INTO runtime_admission_reservations (
-                        subject_kind, subject_id, definition_key, resource_class,
-                        estimated_pending_commit_mb, lifecycle_state, created_at, updated_at
-                     ) VALUES ('service', 'service_1', 'service_1', 'local-model',
-                               128, 'pending', 1, 1)",
-                    [],
-                )
-                .unwrap();
-        }
+        insert_service_reservation(
+            &store,
+            "chatmock",
+            "eager",
+            ResourceClass::LocalModel,
+            "pending",
+            128,
+        );
         let result = store
             .try_admit_job(
                 "job_1",
@@ -6067,6 +9302,164 @@ mod tests {
             "heavyweight_concurrency"
         );
         assert_eq!(terminal.payload["admissionDenial"]["retryable"], false);
+
+        let response = crate::runtime_job_response(&denied).unwrap();
+        let breadboard_runtime_protocol::RuntimeJobResponse::RuntimeJob { job, .. } = response;
+        assert_eq!(
+            job.resource_exhaustion,
+            Some(breadboard_runtime_protocol::RuntimeResourceExhaustion {
+                resource: "windows_commit".into(),
+                required_headroom_mb: denial.required_headroom_mb,
+                available_headroom_mb: denial.available_headroom_mb,
+                retryable: false,
+            })
+        );
+        let projected = crate::runtime_job_events_response(&denied, true, 0, 10, &events).unwrap();
+        let breadboard_runtime_protocol::RuntimeJobEventsResponse::RuntimeJobEvents {
+            events: projected_events,
+            ..
+        } = projected;
+        let projected_terminal = projected_events
+            .iter()
+            .find(|event| {
+                event.event_type
+                    == breadboard_runtime_protocol::RuntimeJobEventType::JobResourceExhausted
+            })
+            .unwrap();
+        assert_eq!(
+            projected_terminal.payload.resource_exhaustion,
+            job.resource_exhaustion
+        );
+        let encoded = serde_json::to_string(projected_terminal).unwrap();
+        assert!(!encoded.contains("reason"));
+        assert!(!encoded.contains("heavyweight_concurrency"));
+        assert!(!encoded.contains("admissionDenial"));
+    }
+
+    #[test]
+    fn resident_eager_heavyweight_is_a_sampled_baseline_not_a_concurrency_hold() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        insert_service_reservation(
+            &store,
+            "chatmock",
+            "eager",
+            ResourceClass::LocalModel,
+            "resident",
+            4_096,
+        );
+
+        let result = store
+            .try_admit_job(
+                "job_1",
+                &default_admission(),
+                AdmissionPolicy::default(),
+                || {
+                    Ok(SystemCommit {
+                        // The resident baseline is already reflected here.
+                        total_mb: 8_192,
+                        limit_mb: 64 * 1024,
+                    })
+                },
+            )
+            .unwrap();
+        assert!(matches!(result, JobAdmissionResult::Admitted(_)));
+    }
+
+    #[test]
+    fn resident_on_demand_heavyweight_with_an_active_lease_remains_a_concurrency_hold() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        insert_service_reservation(
+            &store,
+            "local_search",
+            "on-demand",
+            ResourceClass::LocalModel,
+            "resident",
+            4_096,
+        );
+        insert_service_lease(&store, "local_search", "lease_1", 1, true);
+
+        let result = store
+            .try_admit_job(
+                "job_1",
+                &default_admission(),
+                AdmissionPolicy::default(),
+                || {
+                    Ok(SystemCommit {
+                        total_mb: 8_192,
+                        limit_mb: 64 * 1024,
+                    })
+                },
+            )
+            .unwrap();
+        let JobAdmissionResult::Denied(denial) = result else {
+            panic!("resident on-demand heavyweight must keep the global class occupied")
+        };
+        assert_eq!(denial.resource, "heavyweight_concurrency");
+    }
+
+    #[test]
+    fn resident_idle_on_demand_heavyweight_with_released_lease_is_sampled_only() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        insert_service_reservation(
+            &store,
+            "local_search",
+            "on-demand",
+            ResourceClass::LocalModel,
+            "resident",
+            4_096,
+        );
+        insert_service_lease(&store, "local_search", "lease_1", 1, false);
+
+        let result = store
+            .try_admit_job(
+                "job_1",
+                &default_admission(),
+                AdmissionPolicy::default(),
+                || {
+                    Ok(SystemCommit {
+                        total_mb: 8_192,
+                        limit_mb: 64 * 1024,
+                    })
+                },
+            )
+            .unwrap();
+        assert!(matches!(result, JobAdmissionResult::Admitted(_)));
+    }
+
+    #[test]
+    fn service_reservation_without_registration_fails_closed() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO runtime_admission_reservations (
+                        subject_kind, subject_id, definition_key, resource_class,
+                        estimated_pending_commit_mb, lifecycle_state, settled_at,
+                        created_at, updated_at
+                     ) VALUES ('service', 'missing_service', 'missing_service',
+                               'local-model', 128, 'resident', 1, 1, 1)",
+                    [],
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            store.try_admit_job(
+                "job_1",
+                &default_admission(),
+                AdmissionPolicy::default(),
+                || Ok(SystemCommit {
+                    total_mb: 0,
+                    limit_mb: 64 * 1024,
+                }),
+            ),
+            Err(StoreError::CorruptState(message))
+                if message.contains("no matching service registration")
+        ));
     }
 
     #[test]
@@ -6109,7 +9502,11 @@ mod tests {
     fn shutdown_denial_is_serialized_and_leaves_the_job_queued() {
         let (_directory, store) = store();
         store.submit_raw(&input("job_1", "request_1")).unwrap();
-        store.set_accepting_work(false);
+        store.close_for_runtime_shutdown();
+        assert!(matches!(
+            store.open_accepting_work(),
+            Err(StoreError::AdmissionClosed)
+        ));
         let result = store
             .try_admit_job(
                 "job_1",
@@ -6354,7 +9751,52 @@ mod tests {
     }
 
     #[test]
-    fn queued_admission_candidates_are_bounded_fifo_and_advisory() {
+    fn dependency_failure_finalizer_is_atomic_and_cancellation_race_is_a_noop() {
+        let (_directory, store) = store();
+        store
+            .submit_raw(&input("job_failed", "request_failed"))
+            .unwrap();
+        admit(&store, "job_failed", &default_admission());
+
+        let finalized = store
+            .worker_service_dependency_unavailable_before_assignment("job_failed", true)
+            .unwrap();
+        let WorkerServiceDependencyFailureDisposition::Finalized(job) = finalized else {
+            panic!("admitted owner must be finalized exactly once")
+        };
+        assert_eq!(job.state, JobState::ResourceExhausted);
+        assert_eq!(
+            job.failure_code.as_deref(),
+            Some("SERVICE_DEPENDENCY_RESOURCE_EXHAUSTED")
+        );
+        assert_eq!(latest_reservation_state(&store, "job_failed"), "released");
+
+        store
+            .submit_raw(&input("job_cancelled", "request_cancelled"))
+            .unwrap();
+        admit(&store, "job_cancelled", &default_admission());
+        let cancelled = store
+            .request_cancellation(&context(1), "job_cancelled")
+            .unwrap();
+        assert_eq!(cancelled.state, JobState::Cancelled);
+        let raced = store
+            .worker_service_dependency_unavailable_before_assignment("job_cancelled", false)
+            .unwrap();
+        assert!(matches!(
+            raced,
+            WorkerServiceDependencyFailureDisposition::OwnerAlreadySettled
+        ));
+        let replay = store.get(&context(1), "job_cancelled").unwrap();
+        assert_eq!(replay.state, JobState::Cancelled);
+        assert_eq!(replay.failure_code, None);
+        assert_eq!(
+            latest_reservation_state(&store, "job_cancelled"),
+            "released"
+        );
+    }
+
+    #[test]
+    fn queued_admission_candidates_are_user_first_then_fifo_and_advisory() {
         let (_directory, store) = store();
         for (job_id, key) in [
             ("job_b", "request_b"),
@@ -6363,12 +9805,17 @@ mod tests {
         ] {
             store.submit_raw(&input(job_id, key)).unwrap();
         }
+        store
+            .submit_raw(&internal_input("job_internal", "request_internal"))
+            .unwrap();
         {
             let connection = store.connection.lock().unwrap();
             connection
                 .execute(
-                    "UPDATE runtime_jobs SET created_at=100, updated_at=100
-                     WHERE job_id IN ('job_a','job_b')",
+                    "UPDATE runtime_jobs
+                     SET created_at=CASE WHEN job_id='job_internal' THEN 1 ELSE 100 END,
+                         updated_at=100
+                     WHERE job_id IN ('job_a','job_b','job_internal')",
                     [],
                 )
                 .unwrap();
@@ -6379,7 +9826,8 @@ mod tests {
                             jobs.created_at
                      FROM runtime_jobs AS jobs INDEXED BY runtime_jobs_queued_fifo_idx
                      WHERE jobs.state='queued'
-                     ORDER BY jobs.created_at ASC, jobs.job_id ASC
+                     ORDER BY CASE WHEN jobs.user_id IS NOT NULL THEN 0 ELSE 1 END ASC,
+                              jobs.created_at ASC, jobs.job_id ASC
                      LIMIT ?1",
                 )
                 .unwrap();
@@ -6402,15 +9850,15 @@ mod tests {
             store.queued_admission_candidates(MAX_DISPATCH_CANDIDATES + 1),
             Err(StoreError::InvalidInput(_))
         ));
-        let candidates = store.queued_admission_candidates(2).unwrap();
+        let candidates = store.queued_admission_candidates(3).unwrap();
         assert_eq!(
             candidates
                 .iter()
                 .map(QueuedAdmissionCandidate::job_id)
                 .collect::<Vec<_>>(),
-            vec!["job_a", "job_b"]
+            vec!["job_a", "job_b", "job_internal"]
         );
-        assert!(candidates.iter().all(|candidate| {
+        assert!(candidates[..2].iter().all(|candidate| {
             candidate.job_type() == "learn"
                 && candidate.worker_kind() == "learn-node"
                 && candidate.resource_class() == "large-generation"
@@ -6428,7 +9876,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_candidates_are_bounded_admitted_only_and_fifo() {
+    fn dispatch_candidates_are_bounded_admitted_user_first_then_fifo() {
         let (_directory, store) = store();
         let admission = registered_admission("learn-node", ResourceClass::Core, 128, 16);
         for (job_id, key) in [
@@ -6441,7 +9889,10 @@ mod tests {
             job.resource_class = "core".into();
             store.submit_raw(&job).unwrap();
         }
-        for job_id in ["job_b", "job_a", "job_c"] {
+        let mut internal = internal_input("job_internal", "request_internal");
+        internal.resource_class = "core".into();
+        store.submit_raw(&internal).unwrap();
+        for job_id in ["job_b", "job_a", "job_c", "job_internal"] {
             admit(&store, job_id, &admission);
         }
         {
@@ -6450,8 +9901,9 @@ mod tests {
                 .execute(
                     "UPDATE runtime_jobs
                      SET created_at=CASE job_id
+                         WHEN 'job_internal' THEN 1
                          WHEN 'job_a' THEN 100 WHEN 'job_b' THEN 100 ELSE 200 END
-                     WHERE job_id IN ('job_a','job_b','job_c')",
+                     WHERE job_id IN ('job_a','job_b','job_c','job_internal')",
                     [],
                 )
                 .unwrap();
@@ -6461,7 +9913,8 @@ mod tests {
                      SELECT jobs.job_id, jobs.worker_kind, jobs.resource_class, jobs.created_at
                      FROM runtime_jobs AS jobs INDEXED BY runtime_jobs_admitted_fifo_idx
                      WHERE jobs.state='admitted'
-                     ORDER BY jobs.created_at ASC, jobs.job_id ASC
+                     ORDER BY CASE WHEN jobs.user_id IS NOT NULL THEN 0 ELSE 1 END ASC,
+                              jobs.created_at ASC, jobs.job_id ASC
                      LIMIT ?1",
                 )
                 .unwrap();
@@ -6483,19 +9936,19 @@ mod tests {
             store.dispatch_candidates(MAX_DISPATCH_CANDIDATES + 1),
             Err(StoreError::InvalidInput(_))
         ));
-        let candidates = store.dispatch_candidates(2).unwrap();
+        let candidates = store.dispatch_candidates(4).unwrap();
         assert_eq!(
             candidates
                 .iter()
                 .map(WorkerDispatchCandidate::job_id)
                 .collect::<Vec<_>>(),
-            vec!["job_a", "job_b"]
+            vec!["job_a", "job_b", "job_c", "job_internal"]
         );
-        assert!(candidates
+        assert!(candidates[..3]
             .iter()
             .all(|candidate| candidate.worker_kind() == "learn-node"
                 && candidate.resource_class() == "core"
-                && candidate.created_at() == 100));
+                && candidate.created_at() >= 100));
         assert_eq!(
             store.get(&context(1), "job_a").unwrap().state,
             JobState::Admitted
@@ -6505,7 +9958,7 @@ mod tests {
             .iter()
             .any(|candidate| candidate.job_id() == "job_queued"));
 
-        store.set_accepting_work(false);
+        store.pause_accepting_work();
         assert!(matches!(
             store
                 .try_claim_admitted_worker("job_b", "worker_shutdown")
@@ -6516,7 +9969,7 @@ mod tests {
             store.get(&context(1), "job_b").unwrap().state,
             JobState::Admitted
         );
-        store.set_accepting_work(true);
+        store.open_accepting_work().unwrap();
 
         let claim = claim(&store, candidates[0].job_id(), "worker_fifo");
         let cancelled = store
@@ -6702,7 +10155,7 @@ mod tests {
                 ProcessTreeResidency::service_for_test(
                     store.generation_scope.clone(),
                     "hermes",
-                    "service_1",
+                    1,
                 ),
             ),
             Err(StoreError::InvalidInput(_))
@@ -6755,6 +10208,7 @@ mod tests {
             generation_scope: claim.generation_scope.clone(),
             identity: claim.identity.clone(),
             job: claim.job.clone(),
+            input_blobs: claim.input_blobs.clone(),
         };
 
         let failed = store
@@ -6852,7 +10306,7 @@ mod tests {
         // there is no cloneable proof that can survive beside the retry.
         let retried = not_created.retry_for_test();
         let failed = store.finish_worker_not_created(retried).unwrap();
-        assert_eq!(failed.state, JobState::Interrupted);
+        assert_eq!(failed.0.state, JobState::Interrupted);
         assert_eq!(latest_reservation_state(&store, "job_retry"), "released");
 
         let replay_error = store
@@ -6890,8 +10344,8 @@ mod tests {
                 ProcessOwnerError::Spawn(std::io::Error::from_raw_os_error(1455)),
             ))
             .unwrap();
-        assert_eq!(cancelled.state, JobState::Cancelled);
-        assert_eq!(cancelled.failure_code, None);
+        assert_eq!(cancelled.0.state, JobState::Cancelled);
+        assert_eq!(cancelled.0.failure_code, None);
         assert_eq!(latest_reservation_state(&store, "job_cancel"), "released");
 
         let mut foreign_claim = claim(&store, "job_scope", "worker_scope");
@@ -7067,7 +10521,7 @@ mod tests {
                 ProcessTreeExit::service_release_for_test_in_scope(
                     store.generation_scope.clone(),
                     "hermes",
-                    "service_1",
+                    1,
                 ),
             ),
             Err(StoreError::InvalidInput(_))
@@ -7132,6 +10586,7 @@ mod tests {
             generation_scope: claim.generation_scope.clone(),
             identity: claim.identity.clone(),
             job: claim.job.clone(),
+            input_blobs: claim.input_blobs.clone(),
         };
         settle_claim(&store, claim);
 
@@ -8529,7 +11984,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_v1_schema_is_explicitly_migrated_through_v4() {
+    fn valid_v1_schema_is_explicitly_migrated_through_v12() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("runtime-v1.sqlite3");
         let connection = Connection::open(&path).unwrap();
@@ -8568,10 +12023,301 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, 4);
+        let service_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='runtime_services'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let service_admission_block_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='runtime_service_admission_blocks'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let idempotency_cancellation_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='runtime_job_idempotency_cancellations'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
         assert_eq!(reservation_table, 1);
         assert_eq!(input_table, 1);
         assert_eq!(dispatch_index, 1);
+        assert_eq!(service_table, 1);
+        assert_eq!(service_admission_block_table, 1);
+        assert_eq!(idempotency_cancellation_table, 1);
+    }
+
+    #[test]
+    fn valid_v5_service_rows_are_additively_migrated_without_losing_failure_state() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("runtime-v5.sqlite3");
+        create_v5_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO runtime_services (
+                    service_id, display_name, required, startup_policy,
+                    restart_policy, resource_class, estimated_pending_commit_mb,
+                    max_concurrent_leases, max_lease_ms, max_restarts, idle_ttl_ms,
+                    lifecycle_state, generation, retry_required, last_error,
+                    last_exited_generation, last_observed_at, created_at, updated_at
+                 ) VALUES (
+                    'search', 'Search', 1, 'on-demand', 'on_failure', 'local-model', 64,
+                    8, 1000, 2, 100, 'failed', 1, 1, 'legacy failure', 1, 50, 1, 50
+                 )",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = JobStore::open_for_test(&path).unwrap();
+        let connection = store.connection.lock().unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let migrated = connection
+            .query_row(
+                "SELECT lifecycle_state, retry_required, last_error,
+                        restart_window_ms, initial_restart_backoff_ms,
+                        maximum_restart_backoff_ms, restart_window_started_at,
+                        restart_attempts_in_window, next_restart_at
+                 FROM runtime_services WHERE service_id='search'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, Option<i64>>(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(
+            migrated,
+            (
+                "failed".into(),
+                1,
+                "legacy failure".into(),
+                0,
+                0,
+                0,
+                None,
+                0,
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn valid_v6_outbox_rows_are_rebuilt_without_losing_claim_fences() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("runtime-v6.sqlite3");
+        create_v6_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO runtime_services (
+                    service_id, display_name, required, startup_policy,
+                    restart_policy, resource_class, estimated_pending_commit_mb,
+                    max_concurrent_leases, max_lease_ms, max_restarts, idle_ttl_ms,
+                    lifecycle_state, generation, last_observed_at, created_at, updated_at
+                 ) VALUES (
+                    'search', 'Search', 1, 'on-demand', 'never', 'core', 64,
+                    8, 1000, 0, 100, 'stopping', 1, 50, 1, 50
+                 )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO runtime_service_outbox (
+                    intent_id, service_id, generation, action, stop_cause,
+                    lifecycle_state, claim_epoch, claimed_at, claim_expires_at,
+                    created_at, updated_at, acked_at
+                 ) VALUES (
+                    7, 'search', 1, 'start_tree', NULL, 'acked', 3,
+                    10, 110, 1, 12, 12
+                 );
+                 INSERT INTO runtime_service_outbox (
+                    intent_id, service_id, generation, action, stop_cause,
+                    lifecycle_state, claim_epoch, claimed_at, claim_expires_at,
+                    created_at, updated_at, acked_at
+                 ) VALUES (
+                    8, 'search', 1, 'stop_tree', 'shutdown', 'claimed', 4,
+                    20, 120, 19, 20, NULL
+                 );",
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = JobStore::open_for_test(&path).unwrap();
+        let connection = store.connection.lock().unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let mut statement = connection
+            .prepare(
+                "SELECT intent_id, action, stop_cause, lifecycle_state,
+                        claim_epoch, claimed_at, claim_expires_at, acked_at
+                 FROM runtime_service_outbox ORDER BY intent_id",
+            )
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    7,
+                    "start_tree".into(),
+                    None,
+                    "acked".into(),
+                    3,
+                    Some(10),
+                    Some(110),
+                    Some(12)
+                ),
+                (
+                    8,
+                    "stop_tree".into(),
+                    Some("shutdown".into()),
+                    "claimed".into(),
+                    4,
+                    Some(20),
+                    Some(120),
+                    None
+                ),
+            ]
+        );
+        drop(statement);
+        connection
+            .execute(
+                "INSERT INTO runtime_service_outbox (
+                    service_id, generation, action, stop_cause, lifecycle_state,
+                    claim_epoch, created_at, updated_at
+                 ) VALUES ('search', 2, 'stop_tree', 'failure', 'pending', 0, 30, 30)",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn valid_v12_service_authority_is_preserved_while_lease_limit_expands() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("runtime-v12.sqlite3");
+        create_v12_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO runtime_services (
+                    service_id, display_name, required, startup_policy,
+                    restart_policy, resource_class, estimated_pending_commit_mb,
+                    max_concurrent_leases, max_lease_ms, max_restarts, idle_ttl_ms,
+                    lifecycle_state, generation, last_observed_at, created_at, updated_at
+                 ) VALUES (
+                    'viewer', 'Viewer', 0, 'on-demand', 'never', 'core', 64,
+                    64, 600000, 0, 60000, 'ready', 1, 50, 1, 50
+                 );
+                 INSERT INTO runtime_service_leases (
+                    lease_id, service_id, generation, lifecycle_state,
+                    created_at, updated_at, expires_at
+                 ) VALUES ('lease-1', 'viewer', 1, 'active', 10, 10, 1000);
+                 INSERT INTO runtime_service_outbox (
+                    intent_id, service_id, generation, action, stop_cause,
+                    lifecycle_state, claim_epoch, claimed_at, claim_expires_at,
+                    created_at, updated_at, acked_at
+                 ) VALUES (
+                    7, 'viewer', 1, 'start_tree', NULL, 'acked', 2,
+                    10, 100, 1, 12, 12
+                 );
+                 INSERT INTO runtime_service_admission_blocks (
+                    service_id, code, resource, required_headroom_mb,
+                    available_headroom_mb, retryable, reason, blocked_at
+                 ) VALUES (
+                    'viewer', 'BREADBOARD_RESOURCE_EXHAUSTED', 'windows_commit',
+                    1024, 512, 0, 'bounded denial', 20
+                 );",
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = JobStore::open_for_test(&path).unwrap();
+        let connection = store.connection.lock().unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        for table in [
+            "runtime_services",
+            "runtime_service_leases",
+            "runtime_service_outbox",
+            "runtime_service_admission_blocks",
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 1, "migration lost the {table} row");
+        }
+        let foreign_key_failures: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_key_failures, 0);
+        connection
+            .execute(
+                "INSERT INTO runtime_services (
+                    service_id, display_name, required, startup_policy,
+                    restart_policy, resource_class, estimated_pending_commit_mb,
+                    max_concurrent_leases, max_lease_ms, max_restarts, idle_ttl_ms,
+                    lifecycle_state, generation, last_observed_at, created_at, updated_at
+                 ) VALUES (
+                    'high-fanout', 'High fanout', 0, 'on-demand', 'never', 'core', 64,
+                    128, 600000, 0, 60000, 'available_but_stopped', 0, 60, 60, 60
+                 )",
+                [],
+            )
+            .unwrap();
+        assert!(connection
+            .execute(
+                "UPDATE runtime_services SET max_concurrent_leases=257
+                 WHERE service_id='high-fanout'",
+                [],
+            )
+            .is_err());
     }
 
     #[test]
@@ -8707,7 +12453,97 @@ mod tests {
         drop(store);
         assert!(matches!(
             JobStore::open_for_test(path),
-            Err(StoreError::SchemaMismatch { version: 4, .. })
+            Err(StoreError::SchemaMismatch {
+                version: SCHEMA_VERSION,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_v5_service_outbox_fence_is_rejected() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("malformed-v5-index.sqlite3");
+        let store = JobStore::open_for_test(&path).unwrap();
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute_batch(
+                    "DROP INDEX runtime_service_outbox_unique_action_idx;
+                     CREATE UNIQUE INDEX runtime_service_outbox_unique_action_idx
+                     ON runtime_service_outbox(service_id, action)",
+                )
+                .unwrap();
+        }
+        drop(store);
+        assert!(matches!(
+            JobStore::open_for_test(path),
+            Err(StoreError::SchemaMismatch {
+                version: SCHEMA_VERSION,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_v8_service_admission_block_domain_is_rejected() {
+        let directory = tempdir().unwrap();
+        let path = directory
+            .path()
+            .join("malformed-v8-admission-block.sqlite3");
+        let store = JobStore::open_for_test(&path).unwrap();
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute_batch(
+                    "DROP TABLE runtime_service_admission_blocks;
+                     CREATE TABLE runtime_service_admission_blocks (
+                         service_id TEXT PRIMARY KEY,
+                         code TEXT NOT NULL,
+                         resource TEXT NOT NULL,
+                         required_headroom_mb INTEGER NOT NULL,
+                         available_headroom_mb INTEGER NOT NULL,
+                         retryable INTEGER NOT NULL,
+                         reason TEXT NOT NULL,
+                         blocked_at INTEGER NOT NULL
+                     );",
+                )
+                .unwrap();
+        }
+        drop(store);
+        assert!(matches!(
+            JobStore::open_for_test(path),
+            Err(StoreError::SchemaMismatch {
+                version: SCHEMA_VERSION,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_v10_idempotency_cancellation_scope_index_is_rejected() {
+        let directory = tempdir().unwrap();
+        let path = directory
+            .path()
+            .join("malformed-v10-cancellation-index.sqlite3");
+        let store = JobStore::open_for_test(&path).unwrap();
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute_batch(
+                    "DROP INDEX runtime_job_idempotency_cancellations_scope_idx;
+                     CREATE UNIQUE INDEX runtime_job_idempotency_cancellations_scope_idx
+                     ON runtime_job_idempotency_cancellations(owner_principal, idempotency_key);",
+                )
+                .unwrap();
+        }
+        drop(store);
+        assert!(matches!(
+            JobStore::open_for_test(path),
+            Err(StoreError::SchemaMismatch {
+                version: SCHEMA_VERSION,
+                ..
+            })
         ));
     }
 
@@ -8717,13 +12553,13 @@ mod tests {
         let future_path = directory.path().join("future.sqlite3");
         let connection = Connection::open(&future_path).unwrap();
         connection
-            .execute_batch("PRAGMA user_version = 5;")
+            .execute_batch("PRAGMA user_version = 14;")
             .unwrap();
         drop(connection);
         assert!(matches!(
             JobStore::open_for_test(future_path),
             Err(StoreError::UnsupportedSchemaVersion {
-                found: 5,
+                found: 14,
                 supported: SCHEMA_VERSION
             })
         ));

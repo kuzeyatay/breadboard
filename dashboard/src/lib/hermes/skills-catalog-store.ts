@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import Database from "better-sqlite3";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import type Database from "better-sqlite3";
 import { load as loadYaml, JSON_SCHEMA } from "js-yaml";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { openRuntimeSqliteDatabase } from "../runtime-sqlite-database.ts";
 import { databaseDir } from "../runtime-paths.ts";
 import type {
   SkillsShAudit,
@@ -102,7 +103,7 @@ export interface CatalogStatus {
   latestRun: Record<string, unknown> | null;
 }
 
-type SqliteDatabase = InstanceType<typeof Database>;
+type SqliteDatabase = Database.Database;
 
 const storeCache = new Map<string, SkillsCatalogStore>();
 
@@ -127,7 +128,11 @@ export class SkillsCatalogStore {
   constructor(filename: string) {
     this.filename = path.resolve(filename);
     fs.mkdirSync(path.dirname(this.filename), { recursive: true });
-    this.db = new Database(this.filename);
+    this.db = openRuntimeSqliteDatabase({
+      authorityRoot: path.dirname(this.filename),
+      candidate: this.filename,
+      filename: path.basename(this.filename),
+    });
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.migrate();

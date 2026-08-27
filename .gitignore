@@ -85,6 +85,18 @@ dashboard/playwright-report/
 *.db
 *.db-wal
 *.db-shm
+/runtime/jobs/
+/runtime/endpoints.json
+/runtime-v2/runtime-v2.sqlite3
+/runtime-v2/runtime-v2.sqlite3-shm
+/runtime-v2/runtime-v2.sqlite3-wal
+
+# Machine-local integration credentials and generated optimizer state.
+/cliproxy/api-key
+/cliproxy/management-key
+/cliproxy/config.yaml
+/.claude/proven-config.json
+/.claude/.proven-config-version
 
 # Breadboard Council run ledgers (JSONL/JSON, dev persistence)
 .breadboard/
@@ -264,6 +276,13 @@ dashboard/db/
 dashboard/database/
 dashboard/artifacts/[0-9]*/
 dashboard/chat-videos/
+
+# Disposable gardens created by actual-Electron development QA.
+/quartz/content/critical-qa-garden-*/
+/quartz/content/hot-gbrain-smoke-*/
+
+# Crash leftovers from the esbuild-backed document-editor integration test.
+/dashboard/tests/artifact-document-editor-*.test.mjs
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 graft/

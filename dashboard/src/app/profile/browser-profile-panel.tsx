@@ -7,11 +7,16 @@ import type { BrowserProfileState } from "@/lib/agent-browser/service.ts";
 const MESSAGES: Record<string, string> = {
   browser_not_found: "No Chrome or Edge was found on this computer.",
   browser_launch_failed: "The browser would not start.",
+  browser_launch_cancelled: "The browser opening was cancelled.",
   invalid_url: "That is not a web address the browser can open.",
   profile_not_writable: "Breadboard could not create the profile directory.",
   profile_not_removable: "The profile could not be deleted. Close the browser and try again.",
   run_in_progress: "An agent is using the browser right now. Wait for it to finish.",
+  resource_exhausted: "There is not enough free memory to open the browser right now.",
+  runtime_unavailable: "The browser Runtime is not available right now.",
   sign_in_window_open: "Close the sign-in window first.",
+  sign_in_window_owned_by_another_user: "Another signed-in account opened this browser window.",
+  unmanaged_sign_in_window: "Close the existing browser window directly, then try again.",
   unsafe_profile_directory: "The configured profile directory is not safe to delete.",
   unknown_action: "That action is not available.",
 };

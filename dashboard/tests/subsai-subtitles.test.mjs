@@ -172,17 +172,23 @@ test("the editor reaches subsai through the shared speech resolver", () => {
 test("nothing installs behind a run", () => {
   // The environment is gigabytes; it is only ever built from a button.
   const setup = read("src/lib/subsai/setup.ts");
-  assert.match(setup, /export async function buildEnvironment/);
+  assert.doesNotMatch(setup, /node:child_process|\bspawn\s*\(|\brun\s*\(/);
   const runtime = read("src/lib/subsai/runtime.ts");
   assert.doesNotMatch(runtime, /uv pip install|buildEnvironment/);
   const route = read("src/app/api/video-use/setup/route.ts");
   assert.match(route, /action === "build_subtitles"/);
   assert.match(route, /requireUserId\(\)/);
-  // And health stays cheap: file checks, never a spawn on a hot path.
-  assert.doesNotMatch(
-    runtime.slice(runtime.indexOf("export function subsAiHealth")),
-    /spawnSync/,
-  );
+  assert.match(route, /runManagedSetupJob\(\{/);
+  assert.match(route, /serviceId: "subsai"/);
+  assert.match(route, /signal: request\.signal/);
+  // Transcription and executable discovery are finite Runtime work; neither
+  // the run path nor the authenticated health route owns a child process.
+  const transcribe = read("src/lib/subsai/transcribe.ts");
+  assert.match(transcribe, /transcribeWithSubsAiViaRuntime/);
+  assert.doesNotMatch(transcribe, /node:child_process|\bspawn\s*\(|\bspawnSync\s*\(/);
+  const healthRoute = read("src/app/api/video-use/health/route.ts");
+  assert.match(healthRoute, /subsAiHealthViaRuntime/);
+  assert.doesNotMatch(healthRoute, /subsai\/runtime|\bspawn\s*\(|\bspawnSync\s*\(/);
 });
 
 test("only the backend that is actually used gets installed", () => {
@@ -192,7 +198,11 @@ test("only the backend that is actually used gets installed", () => {
   // nothing here asks for.
   const configs = read("subsai/src/subsai/configs.py", repositoryRoot);
   assert.match(configs, /except ImportError/);
-  const setup = read("src/lib/subsai/setup.ts");
+  const executor = read("scripts/runtime-v2-managed-setup-executor.mjs");
+  const setup = executor.slice(
+    executor.indexOf("async function subsaiSetup"),
+    executor.indexOf("async function boltSlidesSetup"),
+  );
   assert.match(setup, /"faster-whisper",/);
   assert.match(setup, /"--no-deps"/, "the clone's own requirements union is not installed");
   // Scoped to what is actually installed — the comments above it name the

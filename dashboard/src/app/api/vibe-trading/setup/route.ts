@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { isVendorCredentialKey, setCredential } from "@/lib/vibe-trading/credentials.ts";
 import { invalidateHealth } from "@/lib/vibe-trading/runtime.ts";
-import { isSetupAction, runSetupAction, SetupError } from "@/lib/vibe-trading/setup.ts";
-import { stopService } from "@/lib/vibe-trading/service.ts";
+import { isSetupAction, SetupError } from "@/lib/vibe-trading/setup.ts";
+import {
+  ManagedSetupExecutionError,
+  runManagedSetupJob,
+} from "@/lib/runtime-v2/managed-setup-job.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,12 +15,12 @@ export const runtime = "nodejs";
 /**
  * Three kinds of setup step, all of which only the user can authorise: building
  * the clone's Python environment, storing an optional data-vendor key, and
- * stopping the supervised service. A key is written and never read back — the
- * health route reports only whether one is set.
+ * requesting the supervised service's normal idle stop. A key is written and
+ * never read back — the health route reports only whether one is set.
  */
 export async function POST(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const text = await request.text();
     if (text.length > 8 * 1024) {
       return NextResponse.json({ ok: false, error: "payload_too_large" }, { status: 413 });
@@ -32,9 +36,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: false, error: "value_too_long" }, { status: 413 });
       }
       setCredential(body.credential, value);
-      // The running service read the old key set at boot, so it has to go before
-      // the next run can see the change. The next run starts a fresh one.
-      await stopService();
       invalidateHealth();
       return NextResponse.json({
         ok: true,
@@ -47,10 +48,14 @@ export async function POST(request: Request) {
     }
 
     if (body.action === "stop") {
-      await stopService();
       return NextResponse.json({
         ok: true,
-        result: { ok: true, message: "The Vibe Trading service was stopped.", detail: "" },
+        result: {
+          ok: true,
+          message:
+            "Runtime will stop Vibe Trading after active runs release and its idle timeout expires.",
+          detail: "",
+        },
       });
     }
 
@@ -58,13 +63,24 @@ export async function POST(request: Request) {
     if (!isSetupAction(action)) {
       return NextResponse.json({ ok: false, error: "unknown_action" }, { status: 400 });
     }
-    const result = await runSetupAction(action);
+    const result = await runManagedSetupJob({
+      userId,
+      serviceId: "vibe-trading",
+      action,
+      signal: request.signal,
+    });
+    invalidateHealth();
     return NextResponse.json({ ok: true, result });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
     }
     if (error instanceof SetupError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+    }
+    if (error instanceof ManagedSetupExecutionError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
     if (error instanceof RouteError) {

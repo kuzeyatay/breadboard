@@ -21,7 +21,7 @@ import {
   type CapabilityToken,
 } from "./capability-token.ts";
 import { resolveGBrainConfig } from "../gbrain/config.ts";
-import { GBrainClient } from "../gbrain/client.ts";
+import { GBrainAdapterError, GBrainClient } from "../gbrain/client.ts";
 import {
   getOrCreateSourceMapping,
   loadClusterById,
@@ -37,7 +37,10 @@ import type {
   GBrainSynthesizeOutput,
   GBrainRetrievalMode,
 } from "../gbrain/types.ts";
-import { readSupervisedServiceSnapshot } from "../supervisor-control.ts";
+import {
+  readSupervisedServiceSnapshot,
+  SupervisorResourceExhaustedError,
+} from "../supervisor-control.ts";
 
 export const GBRAIN_TOOLS = [
   "gbrain_status",
@@ -54,6 +57,13 @@ export interface GBrainToolResult {
   tool: string;
   data?: unknown;
   error?: string;
+  errorCode?: "gbrain_unavailable" | "resource_exhausted";
+  resourceExhaustion?: {
+    resource: "windows_commit";
+    requiredHeadroomMb: number;
+    availableHeadroomMb: number;
+    retryable: false;
+  };
 }
 
 interface AuthorizedGarden {
@@ -263,14 +273,35 @@ export async function executeGBrainTool(input: {
         return { ok: false, tool: input.tool, error: `Unknown GBrain tool: ${input.tool}` };
     }
   } catch (err) {
-    const code = err instanceof Error ? err.message : "error";
+    if (err instanceof SupervisorResourceExhaustedError) {
+      audit(input.tool.replace("gbrain_", ""), 0, 0, null, "error:resource_exhausted");
+      return {
+        ok: false,
+        tool: input.tool,
+        errorCode: "resource_exhausted",
+        error: "GBrain could not start because Breadboard is preserving safe memory headroom. No knowledge retrieval was performed.",
+        resourceExhaustion: {
+          resource: err.result.resource,
+          requiredHeadroomMb: err.result.requiredHeadroomMb,
+          availableHeadroomMb: err.result.availableHeadroomMb,
+          retryable: false,
+        },
+      };
+    }
+    const code = err instanceof GBrainAdapterError ? err.code : "unavailable";
     audit(input.tool.replace("gbrain_", ""), 0, 0, null, `error:${code}`);
     if (config.mode === "required") {
-      return { ok: false, tool: input.tool, error: `GBrain retrieval failed (${code}).` };
+      return {
+        ok: false,
+        tool: input.tool,
+        errorCode: "gbrain_unavailable",
+        error: `GBrain retrieval failed (${code}).`,
+      };
     }
     return {
       ok: false,
       tool: input.tool,
+      errorCode: "gbrain_unavailable",
       error: `GBrain is unavailable (${code}). No knowledge retrieval was performed; Breadboard garden tools remain available.`,
     };
   }

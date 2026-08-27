@@ -33,6 +33,7 @@ test("a selected intelligence mode becomes the durable user default", () => {
     reasoningEffort: "high",
     reasoningEffortByModel: {},
     intelligencePreferenceSet: false,
+    autonomyTier: "autonomous",
     // "Rewrite naturally" as a standing preference. Off until asked for: it
     // rewrites what Breadboard says.
     humanizerAuto: false,
@@ -49,6 +50,7 @@ test("a selected intelligence mode becomes the durable user default", () => {
     reasoningEffort: "xhigh",
     reasoningEffortByModel: { "gpt-5.6-terra": "xhigh" },
     intelligencePreferenceSet: true,
+    autonomyTier: "autonomous",
     // Choosing a model or an effort must not disturb the rewriting preference.
     humanizerAuto: false,
   });
@@ -120,7 +122,7 @@ test("preferences survive reloads locally, sync to the account, and reach Quartz
   assert.match(hook, /breadboard:assistant-model/);
   assert.match(hook, /breadboard:assistant-reasoning-effort/);
   assert.match(hook, /localStorage\.setItem/);
-  assert.match(hook, /method: "PATCH"/);
+  assert.match(hook, /patchAssistantPreferences\(value\)/);
   assert.match(route, /intelligencePreferenceSet/);
   assert.match(route, /setHermesUserSettings/);
   assert.match(quartz, /api\/assistant-preferences/);

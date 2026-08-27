@@ -1,22 +1,27 @@
-import fs from "node:fs";
-import path from "node:path";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import db from "../db.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   createMcpOAuthProvider,
   mcpOAuthRevision,
 } from "./mcp-oauth.ts";
+import {
+  isApprovedLocalMcpProfileReference,
+  loadApprovedLocalMcpProfile,
+  prepareApprovedLocalMcpLaunch,
+  sealApprovedLocalMcpProfile,
+  type ApprovedLocalMcpProfileReference,
+  type LegacyApprovedLocalMcpDefinition,
+} from "./local-mcp-approved-profile.ts";
 import { ApiError } from "./route-core.ts";
 
 export type StoredMcpConfig =
-  | {
-      transport: "local";
-      executable: string;
-      args: string[];
-      cwd?: string;
-      environmentNames: string[];
-      timeout: number;
-    }
+  | ApprovedLocalMcpProfileReference
+  // Read-only compatibility for rows approved before profile revision 1. A
+  // valid legacy row is sealed and replaced on first read/use without another
+  // renderer approval; it is never sent to the Runtime broker.
+  | LegacyApprovedLocalMcpDefinition
   | {
       transport: "remote";
       url: string;
@@ -28,9 +33,8 @@ export type StoredMcpConfig =
 export type RuntimeMcpConfig =
   | {
       type: "local";
-      command: string[];
-      cwd?: string;
-      environment?: Record<string, string>;
+      profileRevision: 1;
+      profileDigest: string;
       enabled: boolean;
       timeout: number;
     }
@@ -329,6 +333,11 @@ export function saveMcpConnection(
   userId: number,
   parsed: ReturnType<typeof parseMcpConfig>,
 ): McpConnectionRecord {
+  const storedConfig: StoredMcpConfig = parsed.config.transport === "local"
+    ? isApprovedLocalMcpProfileReference(parsed.config)
+      ? parsed.config
+      : sealApprovedLocalMcpProfile(userId, parsed.slug, parsed.config).reference
+    : parsed.config;
   const existing = db
     .prepare(
       "SELECT id FROM hermes_mcp_connections WHERE user_id = ? AND slug = ?",
@@ -340,16 +349,16 @@ export function saveMcpConnection(
       `UPDATE hermes_mcp_connections SET display_name = ?, transport = ?, config_json = ?, enabled = 1, approved_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND user_id = ?`,
     ).run(
       parsed.displayName,
-      parsed.config.transport,
-      JSON.stringify(parsed.config),
+      storedConfig.transport,
+      JSON.stringify(storedConfig),
       existing.id,
       userId,
     );
     const previousRemote = previous?.config.transport === "remote"
       ? previous.config
       : null;
-    const nextRemote = parsed.config.transport === "remote"
-      ? parsed.config
+    const nextRemote = storedConfig.transport === "remote"
+      ? storedConfig
       : null;
     if (
       !previousRemote ||
@@ -374,8 +383,8 @@ export function saveMcpConnection(
       userId,
       parsed.slug,
       parsed.displayName,
-      parsed.config.transport,
-      JSON.stringify(parsed.config),
+      storedConfig.transport,
+      JSON.stringify(storedConfig),
     );
   return getMcpConnection(userId, Number(result.lastInsertRowid))!;
 }
@@ -410,19 +419,44 @@ export function runtimeMcpConfig(
   connection: McpConnectionRecord,
 ): RuntimeMcpConfig {
   if (connection.config.transport === "local") {
-    const environment = Object.fromEntries(
-      connection.config.environmentNames.flatMap((name) => {
-        const value = process.env[name];
-        return value === undefined ? [] : [[name, value]];
-      }),
+    if (!connection.approvedAt) {
+      throw new Error("The local MCP definition has not been explicitly approved.");
+    }
+    let reference: ApprovedLocalMcpProfileReference;
+    if (isApprovedLocalMcpProfileReference(connection.config)) {
+      reference = connection.config;
+    } else {
+      const sealed = sealApprovedLocalMcpProfile(
+        connection.userId,
+        connection.slug,
+        connection.config,
+      );
+      reference = sealed.reference;
+      db.prepare(
+        `UPDATE hermes_mcp_connections
+         SET config_json = ?, updated_at = datetime('now')
+         WHERE id = ? AND user_id = ?`,
+      ).run(JSON.stringify(reference), connection.id, connection.userId);
+      connection.config = reference;
+    }
+    const profile = loadApprovedLocalMcpProfile(
+      connection.userId,
+      connection.slug,
+      reference,
+    );
+    // Secret values live only in an encrypted, private, expiring one-shot
+    // envelope. The durable profile retains environment names, never values.
+    prepareApprovedLocalMcpLaunch(
+      connection.userId,
+      connection.slug,
+      reference,
     );
     return {
       type: "local",
-      command: [connection.config.executable, ...connection.config.args],
-      ...(connection.config.cwd ? { cwd: connection.config.cwd } : {}),
-      ...(Object.keys(environment).length ? { environment } : {}),
+      profileRevision: reference.profileRevision,
+      profileDigest: reference.profileDigest,
       enabled: connection.enabled,
-      timeout: connection.config.timeout,
+      timeout: profile.timeoutMs,
     };
   }
   const headers = Object.fromEntries(
@@ -452,13 +486,29 @@ export function runtimeMcpConfig(
 export function publicMcpConnection(connection: McpConnectionRecord) {
   const config =
     connection.config.transport === "local"
-      ? {
-          executable: connection.config.executable,
-          args: connection.config.args,
-          cwd: connection.config.cwd,
-          environmentNames: connection.config.environmentNames,
-          timeout: connection.config.timeout,
-        }
+      ? (() => {
+          if (!isApprovedLocalMcpProfileReference(connection.config)) {
+            return {
+              executable: connection.config.executable,
+              args: connection.config.args,
+              cwd: connection.config.cwd,
+              environmentNames: connection.config.environmentNames,
+              timeout: connection.config.timeout,
+            };
+          }
+          const profile = loadApprovedLocalMcpProfile(
+            connection.userId,
+            connection.slug,
+            connection.config,
+          );
+          return {
+            executable: profile.executable.path,
+            args: profile.arguments,
+            cwd: profile.cwd ?? undefined,
+            environmentNames: profile.environmentNames,
+            timeout: profile.timeoutMs,
+          };
+        })()
       : {
           url: connection.config.url,
           oauth: connection.config.oauth,

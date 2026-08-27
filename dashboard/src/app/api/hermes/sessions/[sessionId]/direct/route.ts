@@ -8,6 +8,7 @@
 // The conversation, its ownership, and its surface are still Breadboard's, so
 // they are checked here exactly as they are for an agent turn.
 
+import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import {
   apiErrorResponse,
@@ -22,6 +23,7 @@ import { parseChatAttachments } from "@/lib/chat-attachments-request.ts";
 import { resolveDocumentAttachments } from "@/lib/document-attachments-server.ts";
 import { retrieveDocumentAttachments } from "@/lib/colpali/retrieval.ts";
 import { parseCurrentLocationPayload } from "@/lib/hermes/current-location-context.ts";
+import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +68,8 @@ export async function POST(
         userId,
         resolveDocumentAttachments(userId, parseChatAttachments(body.attachments)),
         requireString(body.text, "text", 100_000),
+        process.env,
+        request.signal,
       ),
       retry: body.retry === true,
       adhdMode: body.adhdMode === true,
@@ -77,6 +81,12 @@ export async function POST(
         : {}),
     });
   } catch (error) {
+    if (error instanceof SupervisorResourceExhaustedError) {
+      return NextResponse.json(
+        { error: error.message, ...error.result },
+        { status: 503 },
+      );
+    }
     return apiErrorResponse(error);
   }
 }

@@ -19,9 +19,13 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { resolveMatraixArtifactPath } from
+  "../src/lib/matraix/runtime-run-manager.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dashboard = path.resolve(here, "..");
@@ -512,5 +516,80 @@ test("the study never writes inside the clone", () => {
       ),
       `the bridge writes into ${match[1]}, which is not a workspace directory`,
     );
+  }
+});
+
+test("durable report receipts fence the exact Runtime attempt, path, and size", () => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-matraix-artifact-"));
+  const job = {
+    jobId: "job_matraix_artifact_1",
+    attempt: 1,
+    workerInstanceId: "worker_matraix_artifact_1",
+  };
+  const relativePath = "study.md";
+  const artifactPath = path.join(
+    dataRoot,
+    "runtime",
+    "jobs",
+    job.jobId,
+    "attempts",
+    "1",
+    job.workerInstanceId,
+    "workspace",
+    "output",
+    relativePath,
+  );
+  fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+  fs.writeFileSync(artifactPath, "# Durable study\n");
+  const record = {
+    id: Buffer.from(relativePath).toString("base64url"),
+    relativePath,
+    name: "study.md",
+    kind: "report",
+    contentType: "text/markdown; charset=utf-8",
+    size: fs.statSync(artifactPath).size,
+    modifiedAt: fs.statSync(artifactPath).mtime.toISOString(),
+  };
+  const event = {
+    sequenceNumber: 7,
+    type: "run.completed",
+    payload: { artifacts: [record] },
+    at: new Date().toISOString(),
+  };
+  try {
+    const resolved = resolveMatraixArtifactPath({
+      dataRoot,
+      job,
+      events: [event],
+      artifactId: record.id,
+    });
+    assert.equal(resolved?.canonicalPath, fs.realpathSync.native(artifactPath));
+    assert.equal(resolved?.record.name, "study.md");
+
+    fs.appendFileSync(artifactPath, "tamper");
+    assert.equal(resolveMatraixArtifactPath({
+      dataRoot,
+      job,
+      events: [event],
+      artifactId: record.id,
+    }), null);
+
+    const traversal = {
+      ...event,
+      payload: { artifacts: [{
+        ...record,
+        id: Buffer.from("../outside.md").toString("base64url"),
+        relativePath: "../outside.md",
+        name: "outside.md",
+      }] },
+    };
+    assert.throws(() => resolveMatraixArtifactPath({
+      dataRoot,
+      job,
+      events: [traversal],
+      artifactId: traversal.payload.artifacts[0].id,
+    }), /receipt is invalid/u);
+  } finally {
+    fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });

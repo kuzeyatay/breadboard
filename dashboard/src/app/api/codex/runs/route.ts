@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth.ts";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
 import { resolveConnectedRepository } from "@/lib/opencode/repository.ts";
-import { graftRunContext } from "@/lib/code-index/garden.ts";
+import {
+  graftEnabledForGarden,
+  prepareGraftIndex,
+} from "@/lib/code-index/garden.ts";
 import {
   abortRun,
   getEventsSince,
@@ -11,11 +13,7 @@ import {
   startRun,
 } from "@/lib/codex/run-manager.ts";
 import { externalAgentActivityFromRunEvents } from "@/lib/conversations/external-agent-runs.ts";
-import {
-  captureSnapshot,
-  finalizeRunSnapshot,
-  rememberRunSnapshot,
-} from "@/lib/agent-edits/snapshot.ts";
+import { agentEditsFromRunEvents } from "@/lib/agent-edits/runtime-client.ts";
 import { codexUserMessage } from "@/lib/codex/identity.ts";
 import { resolveCommandMessage } from "@/lib/hermes/commands.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
@@ -119,10 +117,15 @@ export async function POST(request: Request) {
     });
     const selectedSkill = resolved.invocations.find((invocation) => invocation.kind === "skill");
     const { baseURL } = resolveChatmockBaseUrl(request);
-    // Snapshot before the agent can write anything, so the run stays undoable.
-    const snapshotBefore = captureSnapshot(repository.path);
-    const run = startRun({
+    const graftEnabled = graftEnabledForGarden(userId, repository.gardenSlug);
+    if (graftEnabled) {
+      await prepareGraftIndex(userId, repository.path);
+    }
+    const run = await startRun({
       userId,
+      requestId: /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(clientMessageId)
+        ? clientMessageId
+        : undefined,
       task,
       // The chat this was typed into, so a task that refers back to it ("yes",
       // "the second one") resolves instead of reaching Codex as a bare word.
@@ -137,14 +140,12 @@ export async function POST(request: Request) {
       model,
       reasoningEffort: ALLOWED_EFFORTS.has(requestedEffort) ? requestedEffort : "high",
       baseUrl: baseURL,
-      apiKey: chatmockApiKeyValue(),
       repositoryPath: repository.path,
       repositoryName: repository.name,
       gardenSlug: repository.gardenSlug,
       attachments,
-      graft: graftRunContext(userId, repository),
+      graftEnabled,
     });
-    rememberRunSnapshot(run.runId, repository.path, snapshotBefore);
     const externalRun = {
       kind: "codex" as const,
       runId: run.runId,
@@ -181,8 +182,9 @@ export async function POST(request: Request) {
             });
           }
         }
-        setRunTerminalHandler(userId, run.runId, (result) => {
+        setRunTerminalHandler(userId, run.runId, async (result) => {
           try {
+            const runEvents = await getEventsSince(userId, run.runId, 0);
             finishExternalAgentTurn({
               conversationId: durableConversation.id,
               clientMessageId,
@@ -192,18 +194,18 @@ export async function POST(request: Request) {
               // The run manager holds events in memory only — store the
               // timeline now so history keeps it after the process restarts.
               activity: externalAgentActivityFromRunEvents(
-                getEventsSince(userId, run.runId, 0),
+                runEvents,
               ),
-              // Close the undo bracket here too: a task finished with no tab
-              // open still has to be revertable later.
-              edits: finalizeRunSnapshot(run.runId, repository.path) ?? undefined,
+              // The disposable worker captured this before publishing its
+              // terminal event, so no open browser tab is required for undo.
+              edits: agentEditsFromRunEvents(runEvents) ?? undefined,
             });
           } catch {
             // The event stream can replay the terminal frame and retry safely.
           }
         });
       } catch (persistenceError) {
-        abortRun(userId, run.runId);
+        await abortRun(userId, run.runId);
         throw persistenceError;
       }
     }

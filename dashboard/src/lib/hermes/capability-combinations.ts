@@ -275,6 +275,7 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
     acceptsAttachments: true,
     launchableByModel: false,
     requiresLaunchApproval: false,
+    surfaces: ["dashboard_terminal"],
   }),
   // MoneyPrinter is the other end of the same job from ViMax: ViMax draws a film
   // that does not exist, this one cuts stock footage to a script. The message is

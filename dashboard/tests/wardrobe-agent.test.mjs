@@ -269,7 +269,10 @@ test("the run route refuses a message with no photos, and one with no setup", ()
   assert.match(runsRouteSource, /resolveChatmockBaseUrl\(request\)/);
   // Stored defaults are read, and the message still wins over them.
   assert.match(runsRouteSource, /agentSettingsFor\(userId, WARDROBE_AGENT_ID\)/);
-  assert.match(runsRouteSource, /parseWardrobeRequest\(task, requestDefaultsFrom\(settings\)\)/);
+  assert.match(
+    runsRouteSource,
+    /parseWardrobeRequest\(\s*task,\s*requestDefaultsFrom\(settings\),?\s*\)/,
+  );
 });
 
 test("the agent is registered everywhere a run has to be found again", async () => {
@@ -290,5 +293,8 @@ test("the agent is registered everywhere a run has to be found again", async () 
     "utf8",
   );
   assert.match(cancelSource, /wardrobe: async \(userId, runId\) =>/);
-  assert.match(cancelSource, /import\("\.\.\/wardrobe\/run-manager\.ts"\)\)\.abortRun/);
+  assert.match(
+    cancelSource,
+    /import\("\.\.\/wardrobe\/runtime-run-manager\.ts"\)\)\.abortRun/,
+  );
 });

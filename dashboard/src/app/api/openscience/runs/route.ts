@@ -1,13 +1,18 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { openscienceDefaults } from "@/lib/agent-settings/defaults.ts";
-import { startRun } from "@/lib/openscience/run-manager.ts";
+import { startRun } from "@/lib/openscience/runtime-run-manager.ts";
 import { isHarness } from "@/lib/openscience/prompt.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
+import {
+  ConversationStoreError,
+  ensureConversationForLegacyChatSession,
+  getConversationForUser,
+} from "@/lib/conversations/store.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -26,6 +31,20 @@ export async function POST(request: Request) {
     const model = typeof body.model === "string" ? body.model.trim() : "";
     const requestedEffort =
       typeof body.reasoningEffort === "string" ? body.reasoningEffort.trim().toLowerCase() : "";
+    const clientMessageId =
+      typeof body.clientMessageId === "string" ? body.clientMessageId.trim() : "";
+    let conversationPublicId =
+      typeof body.conversationPublicId === "string" ? body.conversationPublicId.trim() : "";
+    if (!conversationPublicId && typeof body.chatSessionId === "number") {
+      try {
+        conversationPublicId = ensureConversationForLegacyChatSession(
+          body.chatSessionId,
+          userId,
+        ).public_id;
+      } catch {
+        conversationPublicId = "";
+      }
+    }
 
     if (!task) return NextResponse.json({ ok: false, error: "empty_task" }, { status: 400 });
     if (task.length > 20_000) {
@@ -33,6 +52,25 @@ export async function POST(request: Request) {
     }
     if (!model) {
       return NextResponse.json({ ok: false, error: "model_not_configured" }, { status: 400 });
+    }
+    if (!conversationPublicId) {
+      return NextResponse.json({ ok: false, error: "conversation_required" }, { status: 400 });
+    }
+    if (!/^conv_[A-Za-z0-9_-]{24}$/u.test(conversationPublicId)) {
+      return NextResponse.json(
+        { ok: false, error: "invalid_conversation_id" },
+        { status: 400 },
+      );
+    }
+    getConversationForUser(conversationPublicId, userId);
+    if (
+      clientMessageId &&
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(clientMessageId)
+    ) {
+      return NextResponse.json(
+        { ok: false, error: "invalid_client_message_id" },
+        { status: 400 },
+      );
     }
 
     // The goal reaches the research harness verbatim, so a stacked `/skill`
@@ -60,29 +98,35 @@ export async function POST(request: Request) {
 
     const reasoningEffort = ALLOWED_EFFORTS.has(requestedEffort) ? requestedEffort : "medium";
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
+      ...(clientMessageId ? { requestId: clientMessageId } : {}),
       task,
       model,
       reasoningEffort,
       baseUrl: baseURL,
-      apiKey: chatmockApiKeyValue(),
       options: { harness, deliverFiles },
+      conversationPublicId,
       // The chat this was launched from, so a request that refers back to
       // it resolves instead of arriving as a bare fragment.
       conversationContext: conversationContextFromBody(userId, body),
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
     }
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
-    return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "runtime_error" },
-      { status: 502 },
-    );
+    if (error instanceof ConversationStoreError) {
+      return NextResponse.json(
+        { ok: false, error: error.code, message: error.message },
+        { status: error.status },
+      );
+    }
+    return NextResponse.json({ ok: false, error: "runtime_error" }, { status: 502 });
   }
 }

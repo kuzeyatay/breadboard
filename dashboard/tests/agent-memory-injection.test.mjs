@@ -287,7 +287,7 @@ test("the legal agent takes memory as a system-prompt section, never as the brie
   const manager = source("src/lib/legal/run-manager.ts");
   // Memory shares this field with the chat the assignment was given in.
   // Both are harness background; neither may reach the assignment.
-  assert.match(manager, /userContext: \[input\.memoryContext, contextSection\(/);
+  assert.match(manager, /userContext: \[input\.prepared\.memoryContext, contextSection\(/);
   assert.doesNotMatch(
     manager,
     /task: run\.request\.task,[\s\S]{0,200}memoryContext/,
@@ -325,20 +325,26 @@ test("the stock analyst prefixes at the wire, keeping the saved task the user's 
 });
 
 test("deep research sends memory beside the question, never inside it", () => {
-  const service = source("src/lib/deep-research/service.ts");
+  const facade = source("src/lib/deep-research/runtime-run-manager.ts");
+  const worker = source("src/lib/deep-research/runtime-worker-run-manager.ts");
   // The id has one author now: the memory scope, the launch record and the
   // evidence entry only line up if they agree on the spelling, so the literal
   // lives in identity.ts and everything else imports it.
-  assert.match(service, /agentId: DEEP_RESEARCH_AGENT_ID/);
+  assert.match(facade, /agentId: DEEP_RESEARCH_AGENT_ID/);
   assert.match(
     repoSource("dashboard/src/lib/deep-research/identity.ts"),
     /export const DEEP_RESEARCH_AGENT_ID = "deep_research";/,
   );
   // Memory keeps its own field; it now shares it with the chat the run was
   // launched from, which is background for the same reason memory is.
-  assert.match(service, /userContext: \[\n\s+memory\?\.text \?\? "",/);
+  assert.match(facade, /memoryContext: memory\?\.text \?\? ""/);
+  assert.match(
+    worker,
+    /userContext: \[run\.request\.memoryContext, run\.request\.conversationContext\]/,
+  );
+  assert.match(worker, /query: run\.request\.query/);
   assert.doesNotMatch(
-    service,
+    worker,
     /query: `\$\{/,
     "the engine embeds the query in a <prompt> tag to generate search terms",
   );

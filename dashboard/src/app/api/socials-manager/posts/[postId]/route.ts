@@ -67,7 +67,7 @@ function requireImageArtifactId(value: unknown, userId: number): string | null {
 async function mirrorImageToStack(userId: number, post: SocialsManagerPost): Promise<void> {
   if (!post.remoteId) return;
   try {
-    const session = await openPostizSessionIfRunning();
+    const session = await openPostizSessionIfRunning({ userId });
     if (!session) return;
     await republishWithImage(session, getSocialsManagerStore(), userId, post);
   } catch {

@@ -7,9 +7,10 @@
 // it needs their Google or Microsoft OAuth client and their consent in a real
 // browser — so it is reported as a step with a link, never as an error.
 //
-// The minted session is cached in memory for the life of the process. Minting
+// Minted sessions are cached by the authenticated Breadboard user. Minting
 // writes a row to Inbox Zero's session table, and doing that once per turn would
-// fill it with a session per message.
+// fill it with a session per message. The scope key is equally important: a
+// cookie minted during one user's request must never be reused by another.
 
 import "server-only";
 
@@ -21,29 +22,17 @@ import {
   hasEmailProvider,
   stackStatus,
   startStack,
-  type StackStatus,
 } from "./stack.ts";
-import { mintSession, listMailboxes, type InboxZeroSession } from "./session.ts";
+import { mintSession, listMailboxes } from "./session.ts";
 import { verifySession } from "./client.ts";
+import type {
+  InboxZeroSession,
+  ReadyResult,
+  SetupStatus,
+  SetupStep,
+} from "./contract.ts";
 
-export type SetupStep =
-  | "clone_missing"
-  | "docker_unavailable"
-  | "oauth_client_missing"
-  | "stack_not_running"
-  | "mailbox_not_connected"
-  | "ready";
-
-export interface SetupStatus {
-  step: SetupStep;
-  ready: boolean;
-  /** One sentence, written for the person rather than for a log. */
-  message: string;
-  /** Where they finish the step, when there is somewhere to go. */
-  url?: string;
-  stack?: StackStatus;
-  mailboxes?: Array<{ email: string; provider: string }>;
-}
+export type { ReadyResult, SetupStatus, SetupStep } from "./contract.ts";
 
 interface CachedSession {
   session: InboxZeroSession;
@@ -51,16 +40,28 @@ interface CachedSession {
 }
 
 const runtimeGlobal = globalThis as typeof globalThis & {
-  __breadboardInboxZeroSession?: CachedSession;
+  __breadboardInboxZeroSessions?: Map<number, CachedSession>;
 };
 
 /** Re-mint well before the seven-day session expiry rather than at the edge. */
 const SESSION_REUSE_MS = 12 * 60 * 60_000;
+/** Keep a compromised or long-lived service from accumulating one entry per user forever. */
+const MAX_CACHED_USER_SCOPES = 64;
 
-export interface ReadyResult {
-  ok: boolean;
-  session?: InboxZeroSession;
-  setup: SetupStatus;
+function cachedSessions(): Map<number, CachedSession> {
+  return runtimeGlobal.__breadboardInboxZeroSessions ??=
+    new Map<number, CachedSession>();
+}
+
+function cacheSession(scopeUserId: number, session: InboxZeroSession): void {
+  const sessions = cachedSessions();
+  sessions.delete(scopeUserId);
+  sessions.set(scopeUserId, { session, cachedAt: Date.now() });
+  while (sessions.size > MAX_CACHED_USER_SCOPES) {
+    const oldest = sessions.keys().next().value;
+    if (oldest === undefined) break;
+    sessions.delete(oldest);
+  }
 }
 
 function step(step: SetupStep, message: string, extra: Partial<SetupStatus> = {}): SetupStatus {
@@ -134,6 +135,7 @@ function describe(error: unknown): string {
  * cold start is the honest cost of it.
  */
 export async function ensureReady(input: {
+  scopeUserId: number;
   allowStart: boolean;
   chatmockBaseUrl: string;
   chatmockApiKey: string;
@@ -141,6 +143,9 @@ export async function ensureReady(input: {
   preferredEmail?: string;
   config?: InboxZeroConfig;
 }): Promise<ReadyResult> {
+  if (!Number.isSafeInteger(input.scopeUserId) || input.scopeUserId < 1) {
+    throw new Error("A valid authenticated Inbox Zero user scope is required.");
+  }
   const config = input.config ?? resolveInboxZeroConfig();
   if (config.mode === "disabled") {
     return { ok: false, setup: step("clone_missing", "The Inbox Zero agent is switched off.") };
@@ -193,7 +198,8 @@ export async function ensureReady(input: {
     }
   }
 
-  const cached = runtimeGlobal.__breadboardInboxZeroSession;
+  const sessions = cachedSessions();
+  const cached = sessions.get(input.scopeUserId);
   if (
     cached &&
     Date.now() - cached.cachedAt < SESSION_REUSE_MS &&
@@ -203,7 +209,7 @@ export async function ensureReady(input: {
     if (verified.ok) {
       return { ok: true, session: cached.session, setup: step("ready", `Connected to ${cached.session.identity.email}.`, { stack }) };
     }
-    runtimeGlobal.__breadboardInboxZeroSession = undefined;
+    sessions.delete(input.scopeUserId);
   }
 
   try {
@@ -233,7 +239,7 @@ export async function ensureReady(input: {
         ),
       };
     }
-    runtimeGlobal.__breadboardInboxZeroSession = { session, cachedAt: Date.now() };
+    cacheSession(input.scopeUserId, session);
     return {
       ok: true,
       session,
@@ -246,5 +252,5 @@ export async function ensureReady(input: {
 
 /** Forget the cached session, so the next turn mints a fresh one. */
 export function forgetSession(): void {
-  runtimeGlobal.__breadboardInboxZeroSession = undefined;
+  cachedSessions().clear();
 }

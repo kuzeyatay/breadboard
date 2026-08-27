@@ -42,6 +42,22 @@ function checkDirWritable(dir: string): HealthCheckItem {
   }
 }
 
+/** Garden health remains a read: check the nearest existing ancestor only. */
+function checkGardenPathWritable(dir: string): HealthCheckItem {
+  try {
+    let existing = path.resolve(dir);
+    while (!fs.existsSync(existing)) {
+      const parent = path.dirname(existing);
+      if (parent === existing) return { ok: false, detail: "not writable" };
+      existing = parent;
+    }
+    fs.accessSync(existing, fs.constants.W_OK);
+    return { ok: true };
+  } catch {
+    return { ok: false, detail: "not writable" };
+  }
+}
+
 export async function checkVideoTranscriptionHealth(
   config: VideoTranscriptionConfig,
   {
@@ -78,7 +94,7 @@ export async function checkVideoTranscriptionHealth(
     },
     tempDirWritable: checkDirWritable(config.tempDir),
     sourcesDirWritable: sourcesDir
-      ? checkDirWritable(sourcesDir)
+      ? checkGardenPathWritable(sourcesDir)
       : { ok: false, detail: "garden content path not configured" },
   };
 }

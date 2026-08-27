@@ -9,7 +9,7 @@
 // still run concurrently.
 
 import { getMe, TelegramApiError } from "./client.ts";
-import { telegramFeatureEnabled, telegramTimings } from "./config.ts";
+import { telegramTimings } from "./config.ts";
 import { readBotToken, tokenIsFromEnvironment, writeBotToken, clearBotToken } from "./credentials.ts";
 import {
   getTelegramGateway,
@@ -31,7 +31,6 @@ type ServiceGlobals = typeof globalThis & {
   __breadboardTelegramPoll?: ReturnType<typeof setInterval>;
   __breadboardTelegramPolling?: boolean;
   __breadboardTelegramChains?: Map<string, Promise<void>>;
-  __breadboardTelegramAutostarted?: boolean;
 };
 
 const globals = globalThis as ServiceGlobals;
@@ -177,28 +176,4 @@ export async function unlinkTelegramBot(): Promise<TelegramGatewaySnapshot> {
   clearBotToken();
   (await store()).clearBot();
   return gateway.snapshot();
-}
-
-/**
- * Reconnect a linked bot on boot, so messages sent while the app was closed are
- * answered as soon as it opens. Never throws: a failed autostart is reported
- * through the status endpoint, not by breaking server startup.
- */
-export function autostartTelegramGateway(): void {
-  if (globals.__breadboardTelegramAutostarted) return;
-  globals.__breadboardTelegramAutostarted = true;
-  if (!telegramFeatureEnabled()) return;
-
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const settings = (await store()).settings();
-        if (!settings.autostart || settings.ownerUserId === null) return;
-        if (!readBotToken()) return;
-        await startTelegramGateway();
-      } catch {
-        // Status reports the error; the user can reconnect from Settings.
-      }
-    })();
-  }, 8_000).unref?.();
 }

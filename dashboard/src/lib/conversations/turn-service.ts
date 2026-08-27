@@ -44,7 +44,7 @@ import {
 import { scheduleCapabilityExpiry } from "../hermes/capability-lifecycle.ts";
 import { composeHermesSystemPrompt } from "../hermes/system-prompts.ts";
 import { suppliedEvidenceText } from "../hermes/evidence-calibration.ts";
-import { ApiError } from "../hermes/route-helpers.ts";
+import { ApiError } from "../hermes/route-core.ts";
 import type { HermesSurface } from "../hermes/config.ts";
 import {
   reserveConversationTurn,
@@ -1168,6 +1168,7 @@ export async function startConversationTurn(
   });
   const documents = await prepareDocumentContext({
     userId: input.conversation.user_id,
+    conversationId: input.conversation.public_id,
     attachments: input.attachments,
   });
   // A linked video is fetched only once Watch is actually going to open it, and

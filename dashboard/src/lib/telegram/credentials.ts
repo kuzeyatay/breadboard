@@ -4,8 +4,8 @@
 // the token is the bot. The browser only ever learns whether one is present and
 // which bot it resolved to.
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 import { telegramEnvToken, telegramTokenFile } from "./config.ts";
 
@@ -25,9 +25,9 @@ export function readBotToken(): string | null {
   const fromEnv = telegramEnvToken();
   if (fromEnv) return fromEnv;
   const file = telegramTokenFile();
-  if (!existsSync(file)) return null;
+  if (!fs.existsSync(file)) return null;
   try {
-    const token = readFileSync(file, "utf8").trim();
+    const token = fs.readFileSync(file, "utf8").trim();
     return token || null;
   } catch {
     return null;
@@ -44,16 +44,16 @@ export function writeBotToken(token: string): void {
     throw new Error("That does not look like a bot token from BotFather.");
   }
   const file = telegramTokenFile();
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, `${trimmed}\n`, { encoding: "utf8", mode: 0o600 });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${trimmed}\n`, { encoding: "utf8", mode: 0o600 });
   try {
     // A fresh write honours `mode`, but an existing file keeps its old bits.
-    chmodSync(file, 0o600);
+    fs.chmodSync(file, 0o600);
   } catch {
     // Windows has no POSIX mode; the file already sits in a per-user directory.
   }
 }
 
 export function clearBotToken(): void {
-  rmSync(telegramTokenFile(), { force: true });
+  fs.rmSync(telegramTokenFile(), { force: true });
 }

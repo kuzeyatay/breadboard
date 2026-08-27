@@ -539,10 +539,12 @@ test("SolidWorks is only reached when a run actually needs mechanical CAD", () =
     "a run with no physical part must never reach the CAD agent",
   );
 
-  // And the design service only probes SolidWorks when SolidWorks was chosen.
+  // And the design service only reads the passive Runtime projection when
+  // SolidWorks was chosen; it does not lease or wake the bridge here.
   const service = source("src/lib/cad/design-service.ts");
   assert.match(service, /if \(requested === "solidworks"\) \{/);
-  assert.match(service, /solidworksAvailability\(\)/);
+  assert.match(service, /readSolidWorksRuntimeStatus\(\)/);
+  assert.doesNotMatch(service, /solidworksBridge|child_process|acquireServiceLease/);
 });
 
 test("an explicit SolidWorks choice never silently falls back to CadQuery", () => {
@@ -651,8 +653,9 @@ test("a file the bridge reports is validated before it is read", () => {
   const nextConfig = source("next.config.ts");
   assert.match(
     nextConfig,
-    /const bundlerRoot = path\.resolve\(process\.cwd\(\), "\.\."\)/,
+    /const bundlerRoot = path\.dirname\(fileURLToPath\(import\.meta\.url\)\)/,
   );
+  assert.doesNotMatch(nextConfig, /const turbopackRoot|process\.cwd\(\), "\.\."/);
   assert.match(nextConfig, /outputFileTracingRoot:\s*bundlerRoot/);
   assert.match(nextConfig, /turbopack:\s*\{[\s\S]*?root:\s*bundlerRoot/);
   assert.doesNotMatch(config, /C:\\\\Users\\\\/, "no absolute developer path may be hard-coded");
@@ -661,7 +664,8 @@ test("a file the bridge reports is validated before it is read", () => {
 test("the health endpoint reports each backend, and starts none of them", () => {
   const route = source("src/app/api/cad/health/route.ts");
   assert.match(route, /requireUserId/);
-  assert.match(route, /solidworksAvailability/);
+  assert.match(route, /readSolidWorksRuntimeStatus/);
+  assert.doesNotMatch(route, /solidworksBridge|child_process|acquireServiceLease/);
   assert.match(route, /engines: \{/);
   assert.match(route, /cadquery: \{/);
   // No hardcoded engine list survives.

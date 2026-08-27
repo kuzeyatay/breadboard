@@ -7,6 +7,7 @@ const source = (relativePath) =>
 
 const resolver = source('../src/lib/selected-model.ts');
 const ingestRoute = source('../src/app/api/ingest/route.ts');
+const ingestWorker = source('../src/lib/runtime-v2/ingest-executor.ts');
 const learnRoute = (action) =>
   source(`../src/app/api/gardens/[gardenId]/learn/${action}/route.ts`);
 
@@ -22,7 +23,8 @@ test('the resolver reads the user preference and never lets a lookup fail a run'
 
 test('the ingestion pipeline no longer hardcodes a model', () => {
   assert.doesNotMatch(ingestRoute, /DEFAULT_MODEL/);
-  assert.match(ingestRoute, /const model = selectedModelForUser\(userId\)/);
+  assert.match(ingestRoute, /model = selectedModelForUser\(userId\)/);
+  assert.match(ingestRoute, /jobType: "document-ingestion"/);
 });
 
 test('every AI call in the ingestion pipeline receives the resolved model', () => {
@@ -34,13 +36,13 @@ test('every AI call in the ingestion pipeline receives the resolved model', () =
     'writeDocumentKnowledge',
   ]) {
     assert.match(
-      ingestRoute,
+      ingestWorker,
       new RegExp(`${call}\\(\\{[^}]*\\bmodel\\b`, 's'),
       `${call} is not passed the model`,
     );
   }
   // Handwriting OCR fans out over pages; the model has to reach that worker.
-  assert.match(ingestRoute, /transcribePdfPages\(\s*client!,\s*model,/);
+  assert.match(ingestWorker, /transcribePdfPages\(\s*client!,\s*model,/);
 });
 
 test('the Learn panel runs on the selected model too', () => {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimePath as path } from "@/lib/external-runtime-path";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import { getRuntimeV2LearnEventCompatibility } from "@/lib/learn-operation-runtime-v2";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -133,7 +134,7 @@ export async function GET(
 ) {
   try {
     const { gardenId } = await params;
-    const { cluster } = await requireOwnedClusterFromSlug(gardenId);
+    const { userId, cluster } = await requireOwnedClusterFromSlug(gardenId);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
       return NextResponse.json(
@@ -144,6 +145,18 @@ export async function GET(
 
     const url = new URL(request.url);
     const jobId = url.searchParams.get("jobId")?.trim() || "";
+    const runtimeCompatibility = await getRuntimeV2LearnEventCompatibility({
+      userId,
+      gardenId: cluster.slug,
+      contentPath,
+      ...(jobId ? { requestedJobId: jobId } : {}),
+    });
+    if (runtimeCompatibility && runtimeCompatibility.legacyJobId === null) {
+      return NextResponse.json({ events: runtimeCompatibility.events.slice(-MAX_EVENTS) });
+    }
+    const legacyJobId = jobId
+      ? runtimeCompatibility?.legacyJobId ?? jobId
+      : "";
 
     const eventsPath = path.join(contentPath, cluster.slug, ".breadboard", "events.jsonl");
     let raw = "";
@@ -175,7 +188,7 @@ export async function GET(
       }
       const type = String(parsed.type ?? "");
       if (!type.startsWith("learn_")) continue;
-      if (jobId && String(parsed.jobId ?? "") !== jobId) continue;
+      if (legacyJobId && String(parsed.jobId ?? "") !== legacyJobId) continue;
       const councilRunId = typeof parsed.councilRunId === "string" ? parsed.councilRunId : undefined;
       events.push({
         at: String(parsed.at ?? parsed.timestamp ?? ""),

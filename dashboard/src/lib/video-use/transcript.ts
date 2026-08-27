@@ -1,28 +1,20 @@
 // Speech, at word resolution — the clone's primary reading surface.
 //
-// The clone gets this from ElevenLabs Scribe via `helpers/transcribe.py`.
-// Breadboard does not: speech is transcribed on this machine, by the Scriberr
-// service or by the subsai venv behind it (see `speech.ts`), and the result is
-// written to the same path in the same shape Scribe would have produced. That
-// is what `pack_transcripts.py` and `render.py --build-subtitles` read, so the
-// clone's Python needs no fork — and no audio and no key ever leave the machine.
-//
-// Word-level verbatim is not a preference, it is Hard Rule 8: phrase-level
-// output loses the sub-second gaps that cuts are made of, and a normalizing
-// model deletes the fillers the edit exists to remove.
-//
-// Transcripts are cached per source and never regenerated (Hard Rule 9). The
-// source of an edit session is immutable, so its transcript is too.
+// SubsAI remains in its separately managed Runtime lane. The ffmpeg extraction
+// needed by Scriberr, and the clone's finite transcript packer, run in the
+// disposable speech/media worker.
 
-import { spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
-import { helperScript, resolvePython, videoUseEnv } from "./runtime.ts";
-import { resolveFfmpeg } from "../vimax/video.ts";
-import type { VideoEditSession } from "./session.ts";
+
+import {
+  extractVideoAudioViaRuntime,
+  packVideoTranscriptViaRuntime,
+  SpeechMediaRuntimeError,
+  type SpeechMediaRuntimeScope,
+} from "../runtime-v2/speech-media-job.ts";
 import { writeWordTranscript } from "../subsai/transcribe.ts";
+import type { VideoEditSession } from "./session.ts";
 import { resolveSpeechEngine, transcribeWithScriberr, type SpeechEngine } from "./speech.ts";
 
 /**
@@ -39,6 +31,11 @@ export class TranscriptError extends Error {
   }
 }
 
+function transcriptRuntimeError(error: unknown): never {
+  if (error instanceof SpeechMediaRuntimeError) throw new TranscriptError(error.message);
+  throw error;
+}
+
 export function hasTranscript(session: VideoEditSession): boolean {
   try {
     return fs.statSync(session.transcriptPath).size > 0;
@@ -47,57 +44,13 @@ export function hasTranscript(session: VideoEditSession): boolean {
   }
 }
 
-function extractAudio(
-  source: string,
-  destination: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  const ffmpeg = resolveFfmpeg();
-  if (!ffmpeg) throw new TranscriptError("No ffmpeg was found, so the audio cannot be read.");
-  return new Promise((resolve, reject) => {
-    // Mono 16kHz PCM: what Scribe wants, and a tenth the bytes of the source.
-    const child = spawn(
-      ffmpeg,
-      ["-y", "-i", source, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", destination],
-      { windowsHide: true, env: videoUseEnv() },
-    );
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr = `${stderr}${chunk.toString()}`.slice(-8_000);
-    });
-    const onAbort = () => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // Already gone.
-      }
-    };
-    signal?.addEventListener("abort", onAbort);
-    child.on("error", (error) => {
-      signal?.removeEventListener("abort", onAbort);
-      reject(new TranscriptError(error.message));
-    });
-    child.on("close", (code) => {
-      signal?.removeEventListener("abort", onAbort);
-      if (code === 0) resolve();
-      else {
-        reject(
-          new TranscriptError(
-            stderr.split(/\r?\n/).filter(Boolean).slice(-2).join(" ") ||
-              "The audio track could not be extracted.",
-          ),
-        );
-      }
-    });
-  });
-}
-
 /**
  * Transcribe the session's source and cache the result. Returns false when
  * there is nothing to transcribe (a silent source, no engine, too long) — a
  * missing transcript narrows what an edit can do, it does not fail it.
  */
 export async function transcribeSource(input: {
+  runtimeScope: SpeechMediaRuntimeScope;
   session: VideoEditSession;
   durationSeconds: number;
   /** Which local engine to use. Resolved by the caller so it can say so first. */
@@ -112,12 +65,12 @@ export async function transcribeSource(input: {
   const engine = input.engine ?? (await resolveSpeechEngine());
   if (!engine) return false;
 
-  // Whichever engine runs, it produces the same file in the same shape at the
-  // same path. Everything downstream — the packer, the caption builder, the
-  // cache — is unaware of which one it was.
+  // SubsAI has its own Runtime worker and writes the same immutable transcript
+  // shape. It deliberately stays out of this speech/media job family.
   if (engine === "subsai") {
     input.onProgress?.("Transcribing locally");
     return writeWordTranscript({
+      runtimeScope: input.runtimeScope,
       media: input.session.sourcePath,
       destination: input.session.transcriptPath,
       language: input.language ?? null,
@@ -126,20 +79,22 @@ export async function transcribeSource(input: {
     });
   }
 
-  // Scriberr transcribes an audio file, and mono 16kHz is both what WhisperX
-  // wants and a tenth of the bytes of the source to hand it.
-  const temporary = path.join(
-    os.tmpdir(),
-    `video-use-${randomBytes(8).toString("hex")}.wav`,
-  );
+  let extracted;
   try {
-    await extractAudio(input.session.sourcePath, temporary, input.signal);
-    if (!fs.statSync(temporary).size) return false;
+    extracted = await extractVideoAudioViaRuntime(
+      input.runtimeScope,
+      input.session.sourcePath,
+      { signal: input.signal },
+    );
+  } catch (error) {
+    return transcriptRuntimeError(error);
+  }
 
+  try {
     let transcript;
     try {
       transcript = await transcribeWithScriberr({
-        audioPath: temporary,
+        audioPath: extracted.filePath,
         title: `Video Use — ${input.session.artifactId}`,
         language: input.language ?? null,
         signal: input.signal,
@@ -158,65 +113,27 @@ export async function transcribeSource(input: {
     fs.renameSync(draft, input.session.transcriptPath);
     return true;
   } finally {
-    try {
-      fs.rmSync(temporary, { force: true });
-    } catch {
-      // A leftover temp wav is harmless.
-    }
+    extracted.cleanup();
   }
 }
 
 /**
  * The packed transcript, produced by the clone's own `pack_transcripts.py`.
- *
- * This is the artifact the planner reads: one phrase-level line per utterance
- * with a `[start-end]` prefix, breaking on silence or speaker change. It is a
- * tenth the tokens of the raw Scribe JSON and still carries word-boundary
- * precision, which is exactly the trade the clone was built around — so it is
- * the clone's script that makes it, not a reimplementation.
  */
 export async function packTranscript(input: {
+  runtimeScope: SpeechMediaRuntimeScope;
   session: VideoEditSession;
+  /** Kept for callers that also inspect the clone root. */
   root: string;
   signal?: AbortSignal;
 }): Promise<string | null> {
   if (!hasTranscript(input.session)) return null;
-  const python = resolvePython(input.root);
-  if (!python) return null;
-
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(
-      python,
-      [helperScript(input.root, "pack_transcripts.py"), "--edit-dir", input.session.editDir],
-      { cwd: input.root, windowsHide: true, env: videoUseEnv() },
-    );
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr = `${stderr}${chunk.toString()}`.slice(-4_000);
-    });
-    const onAbort = () => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // Already gone.
-      }
-    };
-    input.signal?.addEventListener("abort", onAbort);
-    child.on("error", (error) => {
-      input.signal?.removeEventListener("abort", onAbort);
-      reject(new TranscriptError(error.message));
-    });
-    child.on("close", (code) => {
-      input.signal?.removeEventListener("abort", onAbort);
-      if (code === 0) resolve();
-      else reject(new TranscriptError(stderr.trim() || "The transcript could not be packed."));
-    });
-  });
-
   try {
-    return fs.readFileSync(input.session.packedTranscriptPath, "utf8");
-  } catch {
-    return null;
+    return await packVideoTranscriptViaRuntime(input.runtimeScope, input.session, {
+      signal: input.signal,
+    });
+  } catch (error) {
+    return transcriptRuntimeError(error);
   }
 }
 

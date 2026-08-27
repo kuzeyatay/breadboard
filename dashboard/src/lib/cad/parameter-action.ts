@@ -37,6 +37,7 @@ export interface ParameterUpdateInput {
   database?: Database.Database;
   storageRoot?: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }
 
 export interface ParameterUpdateResult {
@@ -125,6 +126,7 @@ export async function applyParameterUpdate(
     ...(input.database ? { database: input.database } : {}),
     ...(input.storageRoot ? { storageRoot: input.storageRoot } : {}),
     ...(input.env ? { env: input.env } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
   };
 
   const outcome = await buildAndRecord({

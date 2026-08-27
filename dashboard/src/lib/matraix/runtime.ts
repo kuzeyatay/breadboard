@@ -7,9 +7,13 @@
 // therefore already set up, and someone who has not gets a setup button.
 
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
-import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import {
+  dashboardDataDir,
+  repositoryRoot,
+  runtimeV2ServiceVenv,
+} from "../runtime-paths.ts";
+import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
 
 /** The pool the clone ships: 200 personas, enough for a real study. */
 export const MATRAIX_DEV_POOL = "persona/datasets/matraix-persona-dev-sample";
@@ -41,8 +45,8 @@ function configured(value: string | undefined): string | null {
 function isCheckout(candidate: string | null): boolean {
   return Boolean(
     candidate &&
-      fs.existsSync(path.join(candidate, "environment", "runtime", "harbor")) &&
-      fs.existsSync(path.join(candidate, "src", "matraix", "cli.py")),
+      externalRuntimePathExists(path.join(candidate, "environment", "runtime", "harbor")) &&
+      externalRuntimePathExists(path.join(candidate, "src", "matraix", "cli.py")),
   );
 }
 
@@ -52,14 +56,12 @@ export function resolveMatraixRoot(env: NodeJS.ProcessEnv = process.env): string
   const candidates = [
     explicit,
     path.join(repositoryRoot(), "MatrAIx-Persona-8B"),
-    path.resolve(process.cwd(), "MatrAIx-Persona-8B"),
-    path.resolve(process.cwd(), "..", "MatrAIx-Persona-8B"),
   ];
   return candidates.find(isCheckout) ?? null;
 }
 
-export function matraixVenv(env: NodeJS.ProcessEnv = process.env): string {
-  return configured(env.MATRAIX_VENV) ?? path.join(repositoryRoot(), ".runtime", "matraix-venv");
+export function matraixVenv(): string {
+  return runtimeV2ServiceVenv("matraix");
 }
 
 function pythonIn(venv: string): string {
@@ -73,11 +75,9 @@ function pythonIn(venv: string): string {
  * exists yet. The clone's own `.venv` is accepted second so an upstream install
  * counts as an install.
  */
-export function matraixPython(env: NodeJS.ProcessEnv = process.env): string | null {
-  const candidates = [pythonIn(matraixVenv(env))];
-  const root = resolveMatraixRoot(env);
-  if (root) candidates.push(pythonIn(path.join(root, ".venv")));
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+export function matraixPython(): string | null {
+  const candidate = pythonIn(matraixVenv());
+  return externalRuntimePathExists(candidate) ? candidate : null;
 }
 
 export function matraixBridge(): string {
@@ -90,7 +90,7 @@ export function matraixWorkspaceRoot(env: NodeJS.ProcessEnv = process.env): stri
 
 /** True once someone has downloaded the Persona 1M release into the clone. */
 export function productionPoolPresent(root: string): boolean {
-  return fs.existsSync(path.join(root, MATRAIX_PRODUCTION_POOL, "release"));
+  return externalRuntimePathExists(path.join(root, MATRAIX_PRODUCTION_POOL, "release"));
 }
 
 /**
@@ -131,7 +131,7 @@ export function matraixAvailability(env: NodeJS.ProcessEnv = process.env): Matra
         "The MatrAIx clone was not found. Set MATRAIX_ROOT if it is not at ./MatrAIx-Persona-8B.",
     };
   }
-  if (!fs.existsSync(bridge)) {
+  if (!externalRuntimePathExists(bridge)) {
     return {
       available: false,
       cloned: true,
@@ -142,7 +142,7 @@ export function matraixAvailability(env: NodeJS.ProcessEnv = process.env): Matra
       reason: "Breadboard's MatrAIx bridge is missing.",
     };
   }
-  const python = matraixPython(env);
+  const python = matraixPython();
   if (!python) {
     return {
       available: false,

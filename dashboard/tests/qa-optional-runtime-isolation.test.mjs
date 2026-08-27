@@ -13,7 +13,7 @@ import { resolveMoneyPrinterRoot } from "../src/lib/money-printer/runtime.ts";
 import { resolveOpenMontageRoot } from "../src/lib/openmontage/runtime.ts";
 import { resolveResource2SkillRoot } from "../src/lib/resource2skill/runtime.ts";
 import { resolveShortsRoot } from "../src/lib/shorts/runtime.ts";
-import { resolveShapeRRoot } from "../src/lib/shaper/runtime.ts";
+import { resolveShapeRRoot } from "../src/lib/shaper/source.ts";
 import { resolveStockAnalystRoot } from "../src/lib/stock-analyst/runtime.ts";
 import { resolveSubsAiRoot } from "../src/lib/subsai/runtime.ts";
 import { resolveTradingAgentsRoot } from "../src/lib/tradingagents/runtime.ts";

@@ -1,22 +1,20 @@
-import { randomUUID } from "node:crypto";
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
 import { tmpdir } from "node:os";
-import path from "node:path";
 import {
   spawn,
-  spawnSync,
   type ChildProcess,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import type { ChatMessageAttachment } from "../chat-attachments.ts";
-import { finalizeRunSnapshot } from "../agent-edits/snapshot.ts";
 import type { GraftRunContext, GraftServer } from "../code-index/index-service.ts";
+import { repositoryRoot } from "../runtime-paths.ts";
+import {
+  externalRuntimeFilesystem as fs,
+  externalRuntimeLstat,
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+  externalRuntimeRealpath,
+} from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 export interface OpenCodeEvent {
   sequenceNumber: number;
@@ -70,6 +68,16 @@ const MAX_OPENCODE_IMAGES = 4;
 const MAX_OPENCODE_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_LAUNCH_ATTEMPTS = 4;
 const TRANSIENT_RETRY_DELAYS_MS = [2_000, 8_000, 20_000] as const;
+const TERMINAL_RETENTION_MS = 30 * 60 * 1000;
+const cleanupScheduled = new WeakSet<RunState>();
+
+function scheduleCleanup(run: RunState): void {
+  if (cleanupScheduled.has(run)) return;
+  cleanupScheduled.add(run);
+  const runId = run.runId;
+  const timer = setTimeout(() => runs.delete(runId), TERMINAL_RETENTION_MS);
+  timer.unref?.();
+}
 
 export function isTransientOpenCodeFailure(value: string): boolean {
   return /(?:overload|too many requests|rate.?limit|\b429\b|\b502\b|\b503\b|\b504\b|temporar(?:y|ily) unavailable|capacity|service unavailable|gateway timeout)/i.test(
@@ -105,7 +113,7 @@ function materializeImageAttachments(
 ): { paths: string[]; cleanup: () => void } {
   if (attachments.length === 0) return { paths: [], cleanup: () => undefined };
   const repositoryRoot = path.resolve(repositoryPath);
-  const temporaryDirectory = mkdtempSync(
+  const temporaryDirectory = fs.mkdtempSync(
     path.join(repositoryRoot, ".breadboard-opencode-"),
   );
   let cleaned = false;
@@ -115,7 +123,7 @@ function materializeImageAttachments(
     const resolved = path.resolve(temporaryDirectory);
     const expectedPrefix = `${repositoryRoot}${path.sep}.breadboard-opencode-`;
     if (resolved.startsWith(expectedPrefix)) {
-      rmSync(resolved, { recursive: true, force: true });
+      fs.rmSync(resolved, { recursive: true, force: true });
     }
   };
 
@@ -131,7 +139,7 @@ function materializeImageAttachments(
       }
       const extension = match[1].toLowerCase() === "jpeg" ? "jpg" : match[1].toLowerCase();
       const filePath = path.join(temporaryDirectory, `screenshot-${index + 1}.${extension}`);
-      writeFileSync(filePath, bytes, { flag: "wx" });
+      fs.writeFileSync(filePath, bytes, { flag: "wx" });
       return filePath;
     });
     return { paths, cleanup };
@@ -155,12 +163,11 @@ function imageInstruction(repositoryPath: string, paths: readonly string[]): str
 function resolveOpenCodeRoot(env: NodeJS.ProcessEnv = process.env): string | null {
   const candidates = [
     env.OPENCODE_ROOT?.trim(),
-    path.resolve(process.cwd(), "opencode"),
-    path.resolve(process.cwd(), "..", "opencode"),
+    path.join(repositoryRoot(), "opencode"),
   ].filter((candidate): candidate is string => Boolean(candidate));
   return (
     candidates.find((candidate) =>
-      existsSync(path.join(candidate, "packages", "opencode", "package.json")),
+      externalRuntimePathExists(path.join(candidate, "packages", "opencode", "package.json")),
     ) ?? null
   );
 }
@@ -168,10 +175,9 @@ function resolveOpenCodeRoot(env: NodeJS.ProcessEnv = process.env): string | nul
 function resolveConfigPath(env: NodeJS.ProcessEnv = process.env): string | null {
   const candidates = [
     env.BREADBOARD_OPENCODE_CONFIG?.trim(),
-    path.resolve(process.cwd(), "opencode-config", "opencode.json"),
-    path.resolve(process.cwd(), "..", "opencode-config", "opencode.json"),
+    path.join(repositoryRoot(), "opencode-config", "opencode.json"),
   ].filter((candidate): candidate is string => Boolean(candidate));
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+  return candidates.find((candidate) => externalRuntimePathExists(candidate)) ?? null;
 }
 
 /**
@@ -307,7 +313,7 @@ function runConfigPath(
   const noCleanup = { path: basePath, cleanup: () => undefined };
   let parsed: Record<string, unknown>;
   try {
-    const value = JSON.parse(readFileSync(basePath, "utf8")) as unknown;
+    const value = JSON.parse(externalRuntimeReadUtf8(basePath)) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) return noCleanup;
     parsed = value as Record<string, unknown>;
   } catch {
@@ -323,31 +329,22 @@ function runConfigPath(
 
   // Outside the repository: a config file inside it would land in the run's
   // own undo snapshot and diff.
-  const directory = mkdtempSync(path.join(tmpdir(), "breadboard-opencode-config-"));
+  const directory = fs.mkdtempSync(path.join(tmpdir(), "breadboard-opencode-config-"));
   const filePath = path.join(directory, "opencode.json");
-  writeFileSync(filePath, JSON.stringify(config, null, 2), "utf8");
+  fs.writeFileSync(filePath, JSON.stringify(config, null, 2), "utf8");
   return {
     path: filePath,
-    cleanup: () => rmSync(directory, { recursive: true, force: true }),
+    cleanup: () => fs.rmSync(directory, { recursive: true, force: true }),
   };
 }
 
 function clonedVersion(root: string): string {
   const parsed = JSON.parse(
-    readFileSync(path.join(root, "packages", "opencode", "package.json"), "utf8"),
+    externalRuntimeReadUtf8(path.join(root, "packages", "opencode", "package.json")),
   ) as { version?: unknown };
   return typeof parsed.version === "string" && parsed.version.trim()
     ? parsed.version.trim()
     : "latest";
-}
-
-function commandWorks(command: string): boolean {
-  const probe = spawnSync(command, ["--version"], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 5_000,
-  });
-  return !probe.error && probe.status === 0;
 }
 
 function resolveLauncher(env: NodeJS.ProcessEnv = process.env): Launcher | null {
@@ -355,19 +352,18 @@ function resolveLauncher(env: NodeJS.ProcessEnv = process.env): Launcher | null 
   if (!root) return null;
   const version = clonedVersion(root);
   const configured = env.OPENCODE_BIN?.trim();
-  if (configured && commandWorks(configured)) {
-    return { command: configured, prefix: [], version };
+  if (!configured || !path.isAbsolute(configured)) return null;
+  try {
+    const metadata = externalRuntimeLstat(path.resolve(configured));
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
+    return {
+      command: externalRuntimeRealpath(path.resolve(configured)),
+      prefix: [],
+      version,
+    };
+  } catch {
+    return null;
   }
-  if (commandWorks("opencode")) {
-    return { command: "opencode", prefix: [], version };
-  }
-  const bunx = process.platform === "win32" ? "bunx.exe" : "bunx";
-  if (!commandWorks(bunx)) return null;
-  return {
-    command: bunx,
-    prefix: ["--bun", `opencode-ai@${version}`],
-    version,
-  };
 }
 
 export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): {
@@ -392,22 +388,15 @@ export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): {
     return {
       available: false,
       installed: true,
-      reason: "Install OpenCode or Bun so Breadboard can launch the cloned version",
+      reason: "Breadboard's fixed OpenCode runtime is not installed",
     };
   }
   return { available: true, installed: true, version: launcher.version };
 }
 
-/**
- * Closing the undo bracket here, rather than when a browser notices, keeps
- * edits the user makes after the run out of the run's own diff.
- */
 const TERMINAL_EVENTS = new Set(["run.completed", "run.failed", "run.aborted"]);
 
 function emit(run: RunState, type: string, payload: Record<string, unknown> = {}): void {
-  if (TERMINAL_EVENTS.has(type)) {
-    finalizeRunSnapshot(run.runId, run.repositoryPath);
-  }
   run.sequence += 1;
   run.events.push({
     sequenceNumber: run.sequence,
@@ -418,6 +407,7 @@ function emit(run: RunState, type: string, payload: Record<string, unknown> = {}
   if (run.events.length > MAX_EVENTS) {
     run.events.splice(0, run.events.length - MAX_EVENTS);
   }
+  if (TERMINAL_EVENTS.has(type)) scheduleCleanup(run);
 }
 
 function requireRun(userId: number, runId: string): RunState {
@@ -549,8 +539,9 @@ function ingestOpenCodeEvent(run: RunState, value: Record<string, unknown>): voi
   }
 }
 
-export function startRun(input: {
+export interface OpenCodeRuntimeWorkerRunInput {
   userId: number;
+  runtimeJobId: string;
   task: string;
   instruction?: string;
   skill?: {
@@ -567,7 +558,12 @@ export function startRun(input: {
   gardenSlug: string;
   attachments?: readonly OpenCodeImageAttachment[];
   graft?: GraftRunContext | null;
-}): { runId: string; status: RunStatus } {
+}
+
+/** Fixed Runtime worker entrypoint. Next.js routes must call `startRun`. */
+export function startRuntimeWorkerRun(
+  input: OpenCodeRuntimeWorkerRunInput,
+): { runId: string; status: RunStatus } {
   const availability = runtimeAvailability();
   const launcher = resolveLauncher();
   const configPath = resolveConfigPath();
@@ -575,7 +571,7 @@ export function startRun(input: {
     throw new Error(availability.reason ?? "OpenCode runtime unavailable");
   }
 
-  const runId = `ocrun_${randomUUID().replaceAll("-", "")}`;
+  const runId = input.runtimeJobId;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -821,7 +817,7 @@ export function startRun(input: {
   return { runId, status: run.status };
 }
 
-export function getEventsSince(
+export function getRuntimeWorkerEventsSince(
   userId: number,
   runId: string,
   since = 0,
@@ -831,13 +827,13 @@ export function getEventsSince(
   );
 }
 
-export function isTerminal(userId: number, runId: string): boolean {
+export function isRuntimeWorkerTerminal(userId: number, runId: string): boolean {
   return ["completed", "failed", "aborted"].includes(
     requireRun(userId, runId).status,
   );
 }
 
-export function abortRun(userId: number, runId: string): boolean {
+export function abortRuntimeWorkerRun(userId: number, runId: string): boolean {
   const run = requireRun(userId, runId);
   if (["completed", "failed", "aborted"].includes(run.status)) return false;
   run.status = "aborted";
@@ -850,4 +846,66 @@ export function abortRun(userId: number, runId: string): boolean {
   run.cleanup = null;
   emit(run, "run.aborted", { summary: "OpenCode task stopped." });
   return true;
+}
+
+export interface StartRunInput {
+  userId: number;
+  requestId?: string;
+  task: string;
+  instruction?: string;
+  skill?: { id: string; slug: string; contentHash?: string };
+  model: string;
+  reasoningEffort: string;
+  baseUrl: string;
+  repositoryPath: string;
+  repositoryName: string;
+  gardenSlug: string;
+  attachments?: readonly OpenCodeImageAttachment[];
+  graftEnabled?: boolean;
+}
+
+/** Public durable facade. Runtime V2, rather than Next.js, owns the process tree. */
+export async function startRun(
+  input: StartRunInput,
+): Promise<{ runId: string; status: RunStatus }> {
+  const { startOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return startOuterAgentRun({
+    kind: "opencode",
+    userId: input.userId,
+    requestId: input.requestId,
+    requestPayload: {
+      task: input.task,
+      instruction: input.instruction ?? null,
+      skill: input.skill ?? null,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      baseUrl: input.baseUrl,
+      repositoryPath: input.repositoryPath,
+      repositoryName: input.repositoryName,
+      gardenSlug: input.gardenSlug,
+      attachmentCount: input.attachments?.length ?? 0,
+      graftEnabled: input.graftEnabled === true,
+    },
+    images: input.attachments?.map((attachment) => ({ dataUrl: attachment.dataUrl })),
+  }) as Promise<{ runId: string; status: RunStatus }>;
+}
+
+export async function getEventsSince(
+  userId: number,
+  runId: string,
+  since = 0,
+): Promise<OpenCodeEvent[]> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  const view = await readOuterAgentRunView("opencode", userId, runId, since);
+  return view.events as OpenCodeEvent[];
+}
+
+export async function isTerminal(userId: number, runId: string): Promise<boolean> {
+  const { readOuterAgentRunView } = await import("../runtime-v2/outer-agent-run.ts");
+  return (await readOuterAgentRunView("opencode", userId, runId, 0)).terminal;
+}
+
+export async function abortRun(userId: number, runId: string): Promise<boolean> {
+  const { abortOuterAgentRun } = await import("../runtime-v2/outer-agent-run.ts");
+  return abortOuterAgentRun("opencode", userId, runId);
 }

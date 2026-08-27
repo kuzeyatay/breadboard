@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { startRun } from "@/lib/max-research/run-manager.ts";
+import { startRun } from "@/lib/max-research/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    const run = startRun({
+    const run = await startRun({
       userId,
       question: question.slice(0, 4_000),
       model: typeof body.model === "string" ? body.model : "",

@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 
+import "../helpers/genoffice-node-loader.mjs";
+
 import { ensureArtifactSchema } from "../../src/lib/hermes/artifact-schema.ts";
 import {
   artifactDeliveryFile,
@@ -26,6 +28,10 @@ import {
   parseGenOfficeAiReply,
 } from "../../src/lib/hermes/genoffice-ai.ts";
 import { buildContext, findQuote } from "../../src/vendor/human-review/anchor-text.ts";
+import { createOfficeRuntimeFixture } from "../helpers/office-runtime-fixture.mjs";
+
+const officeRuntime = createOfficeRuntimeFixture();
+test.after(() => officeRuntime.cleanup());
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-document-editor-test-"));
@@ -70,7 +76,11 @@ function shared(input, overrides = {}) {
 }
 
 function options(input) {
-  return { database: input.database, storageRoot: input.storage };
+  return {
+    database: input.database,
+    storageRoot: input.storage,
+    officeRuntimeControl: officeRuntime.control,
+  };
 }
 
 test("editor modes and Human Review anchors cover every document family", () => {
@@ -127,11 +137,12 @@ test("DOCX blocks round-trip through the native editor and retain an HTML previe
     path.join(input.workspace, "report.docx"),
   );
   try {
-    const artifact = createImportedArtifact(shared(input, {
+    const artifact = await createImportedArtifact(shared(input, {
       kind: "document",
       filename: "report.docx",
       authorizedRoot: input.workspace,
       filePath: "report.docx",
+      scrubProvenance: false,
     }));
     const opened = await loadArtifactEditor(artifact, options(input));
     assert.equal(opened.mode, "office-blocks");
@@ -163,11 +174,12 @@ test("GenOffice saves the complete DOCX package as a conflict-checked artifact v
   const sourcePath = path.resolve(process.cwd(), "../OfficeCLI/examples/word/document-formatting.docx");
   fs.copyFileSync(sourcePath, path.join(input.workspace, "genoffice.docx"));
   try {
-    const artifact = createImportedArtifact(shared(input, {
+    const artifact = await createImportedArtifact(shared(input, {
       kind: "document",
       filename: "genoffice.docx",
       authorizedRoot: input.workspace,
       filePath: "genoffice.docx",
+      scrubProvenance: false,
     }));
     const bytes = fs.readFileSync(sourcePath);
     const saved = await saveArtifactOfficeBytes(artifact, 1, bytes, options(input));
@@ -198,11 +210,12 @@ test("PPTX slide text round-trips through anchored native blocks", async () => {
     path.join(input.workspace, "slides.pptx"),
   );
   try {
-    const artifact = createImportedArtifact(shared(input, {
+    const artifact = await createImportedArtifact(shared(input, {
       kind: "presentation",
       filename: "slides.pptx",
       authorizedRoot: input.workspace,
       filePath: "slides.pptx",
+      scrubProvenance: false,
     }));
     const opened = await loadArtifactEditor(artifact, options(input));
     const block = opened.blocks.find((candidate) => candidate.editable && candidate.text.trim());
@@ -226,11 +239,12 @@ test("imported JSON remains valid and versioned after text editing", async () =>
   fs.mkdirSync(input.workspace, { recursive: true });
   fs.writeFileSync(path.join(input.workspace, "data.json"), '{"status":"draft"}', "utf8");
   try {
-    const artifact = createImportedArtifact(shared(input, {
+    const artifact = await createImportedArtifact(shared(input, {
       kind: "data",
       filename: "data.json",
       authorizedRoot: input.workspace,
       filePath: "data.json",
+      scrubProvenance: false,
     }));
     assert.equal((await loadArtifactEditor(artifact, options(input))).mode, "file-text");
     const saved = await saveArtifactEditor({
@@ -257,11 +271,12 @@ test("XLSX cells round-trip by stable sheet/cell anchors", async () => {
     path.join(input.workspace, "workbook.xlsx"),
   );
   try {
-    const artifact = createImportedArtifact(shared(input, {
+    const artifact = await createImportedArtifact(shared(input, {
       kind: "spreadsheet",
       filename: "workbook.xlsx",
       authorizedRoot: input.workspace,
       filePath: "workbook.xlsx",
+      scrubProvenance: false,
     }));
     const opened = await loadArtifactEditor(artifact, options(input));
     assert.equal(opened.mode, "spreadsheet-cells");
@@ -298,11 +313,12 @@ test("PDF editor bytes publish as a new version without overwriting the original
     source = await renderArtifact({ artifact: source, runId: "run_editor", assistantMessageId: null, ...options(input) });
     const sourceFile = artifactDeliveryFile(source, 1, input.storage, input.database);
     fs.copyFileSync(sourceFile.absolutePath, path.join(input.workspace, "editable.pdf"));
-    const artifact = createImportedArtifact(shared(input, {
+    const artifact = await createImportedArtifact(shared(input, {
       kind: "pdf",
       filename: "editable.pdf",
       authorizedRoot: input.workspace,
       filePath: "editable.pdf",
+      scrubProvenance: false,
     }));
     const before = fs.readFileSync(artifactDeliveryFile(artifact, 1, input.storage, input.database).absolutePath);
     const saved = await saveArtifactPdfBytes(artifact, before, options(input));

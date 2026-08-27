@@ -418,9 +418,20 @@ export interface BuildDefinitionsInput {
   config: DesktopRuntimeConfig;
   binaries: RuntimeBinaries;
   memoryPolicy?: MemoryPolicy;
+  /**
+   * The legacy definition graph exists only until the central shell cutover.
+   * Runtime V2 must load its checked-in manifests and may never fall back to
+   * Electron-owned service definitions.
+   */
+  lifecycleOwner?: "legacy-electron" | "runtime-v2";
 }
 
 export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopServiceDefinition[] {
+  if (input.lifecycleOwner === "runtime-v2") {
+    throw new Error(
+      "Runtime V2 service ownership is manifest-only; Electron service definitions are not a fallback.",
+    );
+  }
   const { paths, config, binaries, memoryPolicy } = input;
   const urls = serviceUrls(config);
   const hermesUrl = hermesServiceUrl(config);
@@ -445,22 +456,11 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const councilRequestReceiptDir = path.join(councilLedgerDir, "request-receipts");
 
   // GBrain (garden knowledge retrieval). On by default (`preferred`), and still
-  // additive: it runs as a supervised loopback Bun sidecar with a per-install
+  // additive: it runs as a supervised loopback Node sidecar with a per-install
   // secret, storing its mutable PGLite/index data under the desktop data dir,
   // and never blocks startup. `disabled` in desktop-config.json turns it off.
-  // Per-launch capability secret for the Postiz coordinator's control plane.
-  // Absent only in configurations that never minted launch secrets, in which
-  // case the coordinator fails closed and refuses every control request.
-  const postizCoordinatorToken = config.launchSecrets?.postizCoordinatorToken ?? "";
   const supervisorControlToken = config.launchSecrets?.supervisorControlToken ?? "";
   const supervisorControlUrl = `http://127.0.0.1:${config.ports.supervisorControl ?? 7739}`;
-  // How long a Breadboard-started, unused, draft-only stack may idle before it
-  // is brought down. Future scheduled publishing suppresses the stop regardless.
-  const postizIdleTimeoutOverride = Number(process.env["POSTIZ_IDLE_TIMEOUT_MS"]?.trim());
-  const postizIdleTimeoutMs =
-    Number.isFinite(postizIdleTimeoutOverride) && postizIdleTimeoutOverride >= 0
-      ? Math.floor(postizIdleTimeoutOverride)
-      : 25 * 60_000;
 
   const gbrainEnabled = persistent.gbrainMode !== "disabled";
   const gbrainPort = config.ports.gbrain ?? 7717;
@@ -595,72 +595,6 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
             path.join(paths.appRoot, "chatmock", "chatmock", "providers", "store.py"),
           ]
         : undefined,
-  };
-
-  // The Postiz *lifecycle coordinator* — not Postiz itself.
-  //
-  // This process is a few hundred kilobytes of Node that listens on loopback
-  // and waits. It runs no Docker command until an authenticated dashboard
-  // request asks for the stack, so starting Breadboard leaves Docker Desktop
-  // closed, the docker-desktop WSL VM stopped, and none of the nine Postiz
-  // Compose containers in existence.
-  //
-  // It is registered as a background start rather than on-demand because the
-  // coordinator itself must be alive to receive the activation request; what
-  // is on-demand is everything the coordinator owns. Its readiness therefore
-  // means "the coordinator answers", never "Postiz is running", and a stopped
-  // Postiz stack is the expected healthy state at launch.
-  const postiz: DesktopServiceDefinition = {
-    id: "postiz",
-    displayName: "Social publishing (Postiz)",
-    // Social publishing degrades to local drafts. Docker is external software,
-    // so its absence or a slow first container pull must never block Breadboard.
-    required: false,
-    startPolicy: "eager",
-    command: binaries.node,
-    args: [
-      "--experimental-strip-types",
-      path.join(paths.appRoot, "scripts", "start-postiz-supervisor.mjs"),
-    ],
-    cwd: paths.appRoot,
-    env: {
-      ...shared,
-      BREADBOARD_DATA_DIR: paths.mode === "packaged" ? paths.dataRoot : "",
-      BREADBOARD_REPO_ROOT: paths.appRoot,
-      SOCIALS_MANAGER_MODE: "stack",
-      SOCIALS_MANAGER_URL: urls.postiz,
-      SOCIALS_MANAGER_ROOT: path.join(paths.appRoot, "postiz-app"),
-      SOCIALS_MANAGER_SUPPRESS_DOCKER_UI: "true",
-      POSTIZ_SUPERVISOR_HOST: "127.0.0.1",
-      POSTIZ_SUPERVISOR_PORT: String(config.ports.postizSupervisor),
-      POSTIZ_SUPERVISOR_STARTUP_TIMEOUT_MS: String(18 * 60_000),
-      // The per-launch capability secret. It reaches exactly two processes:
-      // this coordinator and the dashboard server. Never a renderer, never
-      // endpoints.json, never an API response.
-      POSTIZ_COORDINATOR_TOKEN: postizCoordinatorToken,
-      POSTIZ_IDLE_TIMEOUT_MS: String(postizIdleTimeoutMs),
-      BREADBOARD_SUPERVISOR_CONTROL_URL: supervisorControlUrl,
-      BREADBOARD_SUPERVISOR_CONTROL_TOKEN: supervisorControlToken,
-    },
-    healthCheck: {
-      // Liveness of the coordinator process, and nothing else. It answers
-      // within milliseconds of launch with the stack still stopped, which is
-      // exactly the state Breadboard should be in until someone asks for Postiz.
-      type: "http",
-      url: `http://127.0.0.1:${config.ports.postizSupervisor}/health`,
-      expectBodyIncludes: '"ok":true',
-      timeoutMs: 3_000,
-      intervalMs: 500,
-    },
-    // Seconds, not minutes: nothing here waits for Docker, image pulls,
-    // migrations, Temporal, Elasticsearch or Postiz authentication.
-    startupTimeoutMs: 30_000,
-    // Long enough for the exit-time idle decision (which may run one
-    // `compose down`) before the tree is killed.
-    gracefulShutdownMs: 20_000,
-    restartPolicy: "on-failure",
-    estimatedColdStartCommitMb: 128,
-    priority: 95,
   };
 
   const hermes: DesktopServiceDefinition = {
@@ -836,7 +770,6 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     devStandaloneBuildRoot,
     ".next-desktop",
     "standalone",
-    "dashboard",
     "server.js",
   );
   const useDevStandalone = paths.mode === "dev" && requestedDashboardMode === "standalone";
@@ -852,6 +785,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       : [
           path.join(paths.dashboardServerDir, "node_modules", "next", "dist", "bin", "next"),
           "dev",
+          "--webpack",
           "--port",
           String(config.ports.dashboard),
           "--hostname",
@@ -879,7 +813,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       ...(paths.mode === "dev" && !dashboardProduction
         ? {
             NODE_OPTIONS: dashboardDevNodeOptions(shared["NODE_OPTIONS"], process.env, undefined, memoryPolicy),
-            BREADBOARD_DASHBOARD_BUNDLER: "turbopack",
+            BREADBOARD_DASHBOARD_BUNDLER: "webpack",
           }
         : {}),
       PORT: String(config.ports.dashboard),
@@ -918,15 +852,12 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // Learn trace readers must inspect the same durable Council snapshots
       // that ChatMock writes under the mutable desktop data root.
       COUNCIL_LEDGER_DIR: councilLedgerDir,
-      // The coordinator owns Postiz startup; the dashboard is a client of it.
-      // Handing over the loopback URL and the capability token is what makes
-      // the dashboard route every activation, stop and status read through the
-      // one lifecycle owner instead of running Compose itself.
+      // Runtime V2 injects the Postiz coordinator URL/capability into this
+      // service from its closed environment profile. Electron must never mint
+      // or provide a fallback process-owner endpoint.
       SOCIALS_MANAGER_MODE: "stack",
       SOCIALS_MANAGER_URL: urls.postiz,
       SOCIALS_MANAGER_SUPPRESS_DOCKER_UI: "true",
-      POSTIZ_COORDINATOR_URL: `http://127.0.0.1:${config.ports.postizSupervisor}`,
-      POSTIZ_COORDINATOR_TOKEN: postizCoordinatorToken,
       BREADBOARD_SUPERVISOR_CONTROL_URL: supervisorControlUrl,
       BREADBOARD_SUPERVISOR_CONTROL_TOKEN: supervisorControlToken,
       BREADBOARD_SKILLS_CATALOG_URL:
@@ -1151,7 +1082,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     displayName: "Knowledge retrieval (GBrain)",
     // Retrieval operations already hold a supervisor lease. A passive status
     // read now distinguishes available-but-stopped from failure, so this model
-    // service no longer needs to retain its Bun/model tree at app startup.
+    // service no longer needs to retain its Node/model tree at app startup.
     required: false,
     startPolicy: "on-demand",
     idleTtlMs: 10 * 60_000,
@@ -1163,8 +1094,12 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     // Retrieval is stateless between requests. Admission may also reclaim a
     // warm, unleased tree before its ordinary idle deadline.
     pressureSheddable: true,
-    command: binaries.bun,
-    args: ["run", path.join(paths.appRoot, "gbrain-adapter", "src", "server.ts")],
+    command: binaries.node,
+    args: [
+      "--no-warnings",
+      "--experimental-transform-types",
+      path.join(paths.appRoot, "gbrain-adapter", "src", "node-entrypoint.mjs"),
+    ],
     cwd: path.join(paths.appRoot, "gbrain-adapter"),
     dependsOn: ["chatmock"],
     env: {
@@ -1433,7 +1368,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     restartPolicy: "on-failure",
   };
 
-  const definitions: DesktopServiceDefinition[] = [chatmock, postiz];
+  const definitions: DesktopServiceDefinition[] = [chatmock];
   // Before ChatMock's wave completes: ChatMock resolves `cliproxy/<model>` per
   // request, so ordering only affects how quickly the first such call succeeds,
   // not correctness.

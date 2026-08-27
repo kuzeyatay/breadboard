@@ -41,7 +41,7 @@ export async function POST(request: Request) {
     const { baseURL } = resolveChatmockBaseUrl(request);
     // How long a run may work before it has to answer, from the user's settings.
     const maxSteps = maxStepsSetting(agentSettingsFor(userId, "career-ops"), 24);
-    const run = startRun({
+    const run = await startRun({
       userId,
       task,
       model,

@@ -65,9 +65,15 @@ function liquidGlassSupported(): boolean {
     const gl =
       probe.getContext("webgl") ??
       (probe.getContext("experimental-webgl") as WebGLRenderingContext | null);
-    if (!gl) return false;
+    if (!gl) {
+      probe.width = 0;
+      probe.height = 0;
+      return false;
+    }
     // Hand the probe context straight back; browsers cap how many stay alive.
     gl.getExtension("WEBGL_lose_context")?.loseContext();
+    probe.width = 0;
+    probe.height = 0;
     return true;
   } catch {
     return false;

@@ -1,29 +1,30 @@
-// Real wiring of the video transcription feature: the SQLite-backed job store
-// on the shared app database, the Scriberr client from validated env config,
-// and a process-wide runner singleton (survives Next.js dev hot reloads the
-// same way the db handle does). Routes import from here; tests import the
-// underlying modules directly with injected fakes.
+// Framework wiring only. The dashboard owns authentication and the durable
+// browser projection; every finite tool/process boundary runs in Rust-owned
+// Runtime V2 workers with no in-process fallback.
 
 import db from "../db.ts";
 import {
   requireOwnedClusterFromSlug,
 } from "../server-auth.ts";
+import {
+  abandonScriberrRuntimeUpload,
+  cancelScriberrRuntimeJob,
+  checkScriberrHealthViaRuntime,
+  inspectScriberrYouTubeViaRuntime,
+  reconcileScriberrRuntimeJobs,
+  retryScriberrRuntimeJob,
+  sealScriberrRuntimeUpload,
+  startScriberrRuntimeJob,
+  type SealedScriberrRuntimeUpload,
+} from "../runtime-v2/scriberr-job.ts";
 import { getVideoTranscriptionConfig } from "./config.ts";
-import { ScriberrClient, scriberrClientFromConfig } from "./client.ts";
+import { sanitizeErrorForClient } from "./errors.ts";
 import { VideoTranscriptionJobStore } from "./job-store.ts";
-import { VideoTranscriptionRunner } from "./job-runner.ts";
-import { ingestTranscriptSource, resumeTranscriptIndexing } from "./ingest.ts";
-import { findExistingVideoSource } from "./video-source-store.ts";
-import { probeMediaFile } from "./ffprobe.ts";
-import { inspectYouTubeVideo } from "./ytdlp.ts";
-import { checkVideoTranscriptionHealth } from "./health.ts";
 import type { VideoTranscriptionRouteDeps } from "./route-core.ts";
-import type { ParsedYouTubeUrl } from "./youtube.ts";
-import { withServiceLease } from "../supervisor-control.ts";
+import { findExistingVideoSource } from "./video-source-store.ts";
 
 interface VideoTranscriptionGlobals {
   videoTranscriptionStore?: VideoTranscriptionJobStore;
-  videoTranscriptionRunner?: VideoTranscriptionRunner;
 }
 
 const globals = globalThis as typeof globalThis & VideoTranscriptionGlobals;
@@ -35,33 +36,9 @@ export function getVideoTranscriptionStore(): VideoTranscriptionJobStore {
   return globals.videoTranscriptionStore;
 }
 
-export function createScriberrClientFromConfig(): ScriberrClient {
-  return scriberrClientFromConfig();
-}
-
-export function getVideoTranscriptionRunner(): VideoTranscriptionRunner {
-  if (!globals.videoTranscriptionRunner) {
-    const config = getVideoTranscriptionConfig();
-    globals.videoTranscriptionRunner = new VideoTranscriptionRunner({
-      config,
-      store: getVideoTranscriptionStore(),
-      createScriberrClient: () => createScriberrClientFromConfig(),
-      probeMedia: (filePath) => probeMediaFile(config.ffprobePath, filePath),
-      ingest: ingestTranscriptSource,
-      resumeIndexing: resumeTranscriptIndexing,
-      findExistingVideoSource,
-      contentPath: () => process.env.QUARTZ_CONTENT_PATH ?? "",
-      withScriberrLease: (reason, operation) =>
-        withServiceLease("scriberr", reason, operation),
-    });
-  }
-  return globals.videoTranscriptionRunner;
-}
-
 export function videoTranscriptionRouteDeps(): VideoTranscriptionRouteDeps {
   const config = getVideoTranscriptionConfig();
   const store = getVideoTranscriptionStore();
-  const runner = getVideoTranscriptionRunner();
   return {
     config,
     store,
@@ -70,20 +47,45 @@ export function videoTranscriptionRouteDeps(): VideoTranscriptionRouteDeps {
       return { userId, clusterId: cluster.id, clusterSlug: cluster.slug };
     },
     contentPath: () => process.env.QUARTZ_CONTENT_PATH ?? null,
-    runnerKick: () => runner.kick(),
-    runnerCancel: (jobId: string) => runner.requestCancel(jobId),
-    runnerRetry: (jobId: string) => runner.retry(jobId),
-    inspectYouTube: (parsed: ParsedYouTubeUrl) =>
-      inspectYouTubeVideo(
-        { ytdlpPath: config.ytdlpPath, timeoutMs: 60_000 },
-        parsed,
-      ),
-    findExistingVideoSource,
-    checkHealth: ({ contentPath, clusterSlug }) =>
-      checkVideoTranscriptionHealth(config, {
-        contentPath,
-        clusterSlug,
-        scriberrHealthCheck: () => createScriberrClientFromConfig().healthCheck(),
+    runnerKick: (clusterId) => reconcileScriberrRuntimeJobs({ store, clusterId }),
+    runnerStart: async (jobId, upload) => {
+      try {
+        return await startScriberrRuntimeJob({
+          store,
+          jobId,
+          upload: upload as SealedScriberrRuntimeUpload | null,
+        });
+      } catch (error) {
+        const failure = sanitizeErrorForClient(error);
+        store.transition(jobId, "failed", failure);
+        throw error;
+      }
+    },
+    runnerCancel: (jobId) => cancelScriberrRuntimeJob({ store, jobId }),
+    runnerRetry: (jobId) => retryScriberrRuntimeJob({ store, jobId }),
+    sealUpload: ({ garden, file, displayFilename, signal }) =>
+      sealScriberrRuntimeUpload({
+        userId: garden.userId,
+        gardenId: garden.clusterSlug,
+        file,
+        displayFilename,
+        maxBytes: config.maxUploadBytes,
+        signal,
       }),
+    abandonUpload: (garden, uploadId) =>
+      abandonScriberrRuntimeUpload({
+        userId: garden.userId,
+        gardenId: garden.clusterSlug,
+        uploadId,
+      }),
+    inspectYouTube: (garden, parsed) =>
+      inspectScriberrYouTubeViaRuntime({
+        userId: garden.userId,
+        gardenId: garden.clusterSlug,
+        parsed,
+      }),
+    findExistingVideoSource,
+    checkHealth: ({ userId, gardenId }) =>
+      checkScriberrHealthViaRuntime({ userId, gardenId }),
   };
 }

@@ -27,8 +27,13 @@ import {
   type CadExecuteResponse,
   type CadExportRequest,
 } from "../service.ts";
-import { solidworksBridge, type SolidWorksBridge } from "./bridge.ts";
 import { solidworksVersionHint, solidworksWorkspaceRoot } from "./config.ts";
+import type { SolidWorksBridgeLike } from "./protocol.ts";
+import {
+  acquireSolidWorksRuntimeLease,
+  releaseSolidWorksRuntimeLease,
+  solidWorksRuntimeBridge,
+} from "./runtime-service.ts";
 import {
   parseSolidWorksProgram,
   type SolidWorksProgram,
@@ -48,7 +53,7 @@ export interface SolidWorksBuildInput {
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
   emit?: (type: string, payload: Record<string, unknown>) => void;
-  bridge?: SolidWorksBridge;
+  bridge?: SolidWorksBridgeLike;
 }
 
 interface ToolFailure {
@@ -63,7 +68,7 @@ function toolMessage(payload: Record<string, unknown>, text: string): string {
 
 /** A tool call that must succeed, with the bridge's own error text preserved. */
 async function call(
-  bridge: SolidWorksBridge,
+  bridge: SolidWorksBridgeLike,
   input: SolidWorksBuildInput,
   tool: string,
   args: Record<string, unknown>,
@@ -164,7 +169,7 @@ function readProduced(workspace: string, filename: string, label: string): Buffe
 }
 
 async function runSketch(
-  bridge: SolidWorksBridge,
+  bridge: SolidWorksBridgeLike,
   input: SolidWorksBuildInput,
   operation: SolidWorksSketchOperation,
 ): Promise<string> {
@@ -260,7 +265,7 @@ async function runSketch(
 }
 
 async function runProgram(
-  bridge: SolidWorksBridge,
+  bridge: SolidWorksBridgeLike,
   input: SolidWorksBuildInput,
   program: SolidWorksProgram,
 ): Promise<{ features: string[] }> {
@@ -361,7 +366,7 @@ export function massPropertiesFrom(payload: Record<string, unknown>): SolidWorks
 }
 
 async function measureInSolidWorks(
-  bridge: SolidWorksBridge,
+  bridge: SolidWorksBridgeLike,
   input: SolidWorksBuildInput,
 ): Promise<SolidWorksMassProperties> {
   try {
@@ -422,7 +427,6 @@ export async function buildWithSolidWorks(
 
   const program = parsed.program;
   const env = input.env ?? process.env;
-  const bridge = input.bridge ?? solidworksBridge();
   const root = solidworksWorkspaceRoot(env);
   fs.mkdirSync(root, { recursive: true });
   pruneWorkspaces(root);
@@ -435,6 +439,8 @@ export async function buildWithSolidWorks(
     part: program.name,
   });
 
+  const lease = input.bridge ? null : await acquireSolidWorksRuntimeLease(env);
+  const bridge = input.bridge ?? solidWorksRuntimeBridge(env);
   try {
     await bridge.ensureStarted(env);
     input.emit?.("cad.solidworks.connected", {
@@ -576,5 +582,6 @@ export async function buildWithSolidWorks(
     };
   } finally {
     input.emit?.("cad.solidworks.finished", { durationMs: Date.now() - startedAt });
+    await releaseSolidWorksRuntimeLease(lease, env);
   }
 }

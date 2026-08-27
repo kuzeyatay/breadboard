@@ -63,6 +63,7 @@ export async function POST(request: Request) {
         send({ stage: "preparing" });
         try {
           const text = await transcribeStoredRecording({
+            runtimeScope: { userId, gardenId: null, conversationId: null },
             workspace,
             filename,
             model: settings.transcriptionModel,

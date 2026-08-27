@@ -181,6 +181,8 @@ export async function openGardenAgentChat(
     userId,
     resolveDocumentAttachments(userId, parseChatAttachments(payload.attachments)),
     text,
+    process.env,
+    signal,
   );
   const selectedSlugs = parseSelectedDocumentSlugs(payload.selectedDocumentSlugs);
   let conversation = ensureConversationForLegacyChatSession(
@@ -498,6 +500,7 @@ export async function openGardenAgentChat(
   });
   const documents = await prepareDocumentContext({
     userId,
+    conversationId: conversation.public_id,
     attachments,
     garden: { clusterSlug, selectedDocumentSlugs: selectedSlugs },
     signal,

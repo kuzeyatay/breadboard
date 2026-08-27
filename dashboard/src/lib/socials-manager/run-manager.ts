@@ -4,8 +4,8 @@
 // emits each as a durable artifact. Calendar entries are opt-in: an ordinary
 // run leaves every post off the calendar, while an explicit `--at` flag is
 // treated as the user's scheduling instruction.
-// Runs live in memory and stream NDJSON-shaped events to the inline chat UI,
-// matching the OpenPlanter and Agent Browser run managers.
+// The run state is process-local because this module executes only inside one
+// fresh disposable Runtime V2 worker. Rust persists and replays the projection.
 //
 // The ordering matters and is deliberate: persist first, optional calendar, then
 // artifact. Each later step is allowed to fail without losing the earlier one,
@@ -217,7 +217,17 @@ async function execute(
   // A run is one of the few things that legitimately wants Postiz, so it
   // activates the stack and holds it for the duration: idle shutdown must not
   // pull the containers away between drafting and publishing.
-  const availability = await openPostizSession({ reason: "run", hold: true });
+  const availability = await openPostizSession({
+    scope: {
+      userId: run.userId,
+      runId: run.runId,
+      ...(input.conversationPublicId
+        ? { conversationPublicId: input.conversationPublicId }
+        : {}),
+    },
+    reason: "run",
+    hold: true,
+  });
   run.postizLeaseId = availability.leaseId ?? null;
   const connectedProviderIds = [
     ...new Set(
@@ -438,16 +448,22 @@ async function execute(
   }
 }
 
-export function startRun(input: {
+export interface StartSocialsManagerRunInput {
   userId: number;
+  /** Runtime identity. Present only inside the disposable worker. */
+  runtimeJobId?: string;
   brief: string;
   model: string;
   baseUrl: string;
   conversationPublicId?: string | null;
   /** The chat this was launched from, so a brief can refer back to it. */
   conversationContext?: string;
-}): { runId: string; status: SocialsManagerRunStatus } {
-  const runId = `pzrun_${randomUUID().replaceAll("-", "")}`;
+}
+
+export function startRun(
+  input: StartSocialsManagerRunInput,
+): { runId: string; status: SocialsManagerRunStatus } {
+  const runId = input.runtimeJobId ?? `pzrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
     runId,
     userId: input.userId,
@@ -485,7 +501,16 @@ export function startRun(input: {
       // until its next abort check.
       const leaseId = run.postizLeaseId ?? null;
       run.postizLeaseId = null;
-      void closePostizSession({ ...(leaseId ? { leaseId } : {}) }).catch(() => null);
+      void closePostizSession({
+        scope: {
+          userId: run.userId,
+          runId: run.runId,
+          ...(input.conversationPublicId
+            ? { conversationPublicId: input.conversationPublicId }
+            : {}),
+        },
+        ...(leaseId ? { leaseId } : {}),
+      }).catch(() => null);
     });
 
   return { runId, status: "queued" };
@@ -515,3 +540,17 @@ export function abortRun(userId: number, runId: string): boolean {
   emit(run, "run.aborted", { summary: "Postiz drafting stopped." });
   return true;
 }
+
+/** Worker-only entrypoint selected by the fixed Runtime adapter. */
+export function startRuntimeWorkerRun(
+  input: StartSocialsManagerRunInput & { runtimeJobId: string },
+): { runId: string; status: SocialsManagerRunStatus } {
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId)) {
+    throw new Error("Socials Manager Runtime identity is invalid.");
+  }
+  return startRun(input);
+}
+
+export const getRuntimeWorkerEventsSince = getEventsSince;
+export const isRuntimeWorkerTerminal = isTerminal;
+export const abortRuntimeWorkerRun = abortRun;

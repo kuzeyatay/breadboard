@@ -14,6 +14,7 @@ import {
   resolveMaxRuntimeMs,
   runAuthorizedTerminalCommand,
 } from "../src/lib/hermes/terminal-execution.ts";
+import { executeTerminalCommand } from "../scripts/runtime-v2-terminal-command-worker.mjs";
 import { planTask } from "../src/lib/hermes/task-plan.ts";
 import { brokerCapabilities } from "../src/lib/hermes/capability-broker.ts";
 import { ensureArtifactSchema } from "../src/lib/hermes/artifact-schema.ts";
@@ -36,6 +37,7 @@ import {
   updateArtifactContent,
 } from "../src/lib/hermes/artifact-store.ts";
 import { resolveSkillCompatibility } from "../src/lib/hermes/skill-compatibility.ts";
+import { createOfficeRuntimeFixture } from "./helpers/office-runtime-fixture.mjs";
 
 function grantFor(surface) {
   return brokerCapabilities({
@@ -47,17 +49,158 @@ function grantFor(surface) {
   });
 }
 
+const TERMINAL_TEST_AUTHORITY = {
+  userId: 1,
+  gardenId: null,
+  conversationId: "conv_terminal_runtime_test",
+};
+let terminalJobSequence = 0;
+
+function terminalSnapshot(identity, authority, state = "running") {
+  const now = Date.now();
+  return {
+    jobId: identity.jobId,
+    jobType: "terminal-command",
+    workerKind: "terminal-command-node",
+    resourceClass: "document-processing",
+    state,
+    stage: state === "running" ? "processing" : null,
+    attempt: identity.attempt,
+    workerInstanceId: identity.workerInstanceId,
+    gardenId: authority.gardenId,
+    conversationId: authority.conversationId,
+    createdAt: now,
+    startedAt: now,
+    updatedAt: now,
+    finishedAt: null,
+    lastHeartbeatAt: now,
+    lastWorkerSequence: 1,
+    progressCurrent: 0,
+    progressTotal: 0,
+    failureCode: null,
+    failureMessage: null,
+    resourceExhaustion: null,
+    cancellationRequested: false,
+  };
+}
+
+function inProcessTerminalRuntime() {
+  const jobs = new Map();
+  const copy = (value) => structuredClone(value);
+  const requireJob = (authority, jobId) => {
+    const entry = jobs.get(jobId);
+    assert.ok(entry, `missing test Runtime job ${jobId}`);
+    assert.deepEqual(authority, entry.authority);
+    return entry;
+  };
+  return {
+    async submit(authority, submission) {
+      assert.equal(submission.jobType, "terminal-command");
+      const sequence = ++terminalJobSequence;
+      const identity = {
+        jobId: `terminal_test_job_${sequence}`,
+        attempt: 1,
+        workerInstanceId: `terminal_test_worker_${sequence}`,
+      };
+      const entry = {
+        authority: copy(authority),
+        identity,
+        job: terminalSnapshot(identity, authority),
+        outputs: new Map(),
+        abort: new AbortController(),
+      };
+      jobs.set(identity.jobId, entry);
+      const execution = executeTerminalCommand(
+        { identity, request: copy(submission.requestPayload) },
+        entry.abort.signal,
+        {
+          checkpoint(snapshot) {
+            entry.job.lastWorkerSequence += 1;
+            entry.job.updatedAt = Date.now();
+            entry.outputs.set("checkpoint", {
+              jobId: identity.jobId,
+              kind: "checkpoint",
+              content: { protocolVersion: 1, identity, snapshot },
+            });
+          },
+        },
+      );
+      void execution.then((result) => {
+        entry.job.lastWorkerSequence += 1;
+        entry.job.updatedAt = Date.now();
+        entry.job.finishedAt = entry.job.updatedAt;
+        if (entry.abort.signal.aborted) {
+          entry.job.state = "cancelled";
+          entry.job.stage = null;
+          return;
+        }
+        entry.job.state = "succeeded";
+        entry.job.stage = null;
+        entry.outputs.set("result", {
+          jobId: identity.jobId,
+          kind: "result",
+          content: {
+            protocolVersion: 1,
+            identity,
+            completionSequence: entry.job.lastWorkerSequence,
+            result,
+          },
+        });
+      }, (error) => {
+        entry.job.state = "failed";
+        entry.job.stage = null;
+        entry.job.failureCode = "WORKER_FAILED";
+        entry.job.failureMessage = String(error?.message ?? error);
+        entry.job.updatedAt = Date.now();
+        entry.job.finishedAt = entry.job.updatedAt;
+      });
+      return copy(entry.job);
+    },
+    async inspect(authority, jobId) {
+      return copy(requireJob(authority, jobId).job);
+    },
+    async readOutput(authority, jobId, kind) {
+      const output = requireJob(authority, jobId).outputs.get(kind);
+      if (!output) throw new Error(`test Runtime output ${kind} is not ready`);
+      return copy(output);
+    },
+    async cancel(authority, jobId) {
+      const entry = requireJob(authority, jobId);
+      if (!["cancelled", "succeeded", "failed"].includes(entry.job.state)) {
+        entry.job.state = "cancelling";
+        entry.job.stage = "cancelling";
+        entry.job.cancellationRequested = true;
+        entry.job.updatedAt = Date.now();
+        entry.abort.abort();
+      }
+      return copy(entry.job);
+    },
+  };
+}
+
+function terminalRuntimeOptions(runtimeSessionId) {
+  return {
+    runtimeSessionId,
+    runtimeAuthority: TERMINAL_TEST_AUTHORITY,
+    runtimeControl: inProcessTerminalRuntime(),
+  };
+}
+
 test("dedicated Terminal authorizes ordinary inspection and focused verification", async () => {
+  const runtime = terminalRuntimeOptions(8701);
   for (const command of ["pwd", "git status", "rg artifact dashboard/src", "npm run test -- focused"]) {
     assert.equal(authorizeTerminalCommand(command).allowed, true, command);
   }
-  const pwd = await runAuthorizedTerminalCommand("pwd");
+  const pwd = await runAuthorizedTerminalCommand("pwd", runtime);
   assert.equal(pwd.exitCode, 0);
   assert.equal(pwd.cwd, ".");
   assert.ok(pwd.stdout.trim());
-  const git = await runAuthorizedTerminalCommand("git status --short");
+  const git = await runAuthorizedTerminalCommand("git status --short", runtime);
   assert.equal(git.exitCode, 0);
-  const focused = await runAuthorizedTerminalCommand("node --test --experimental-strip-types dashboard/tests/ai-models.test.mjs");
+  const focused = await runAuthorizedTerminalCommand(
+    "node --test --experimental-strip-types dashboard/tests/ai-models.test.mjs",
+    runtime,
+  );
   assert.equal(focused.exitCode, 0, focused.stderr || focused.stdout);
 });
 
@@ -68,7 +211,7 @@ test("Terminal can inspect an explicitly authorized external folder with a read-
     fs.writeFileSync(path.join(root, "largest.txt"), "x".repeat(64));
     const quotedRoot = `"${root.replaceAll('"', '""')}"`;
     const command = `Get-ChildItem ${quotedRoot} -File | Sort-Object Length -Descending | Select-Object -First 1 -ExpandProperty Name`;
-    const options = { authorizedRoots: [root] };
+    const options = { ...terminalRuntimeOptions(8702), authorizedRoots: [root] };
     assert.equal(authorizeTerminalCommand(command, options).allowed, true);
     if (process.platform === "win32") {
       const result = await runAuthorizedTerminalCommand(command, options);
@@ -97,6 +240,7 @@ test("Terminal deletes only an exact server-authorized file target", async () =>
       ? `Remove-Item -LiteralPath '${target}'`
       : `rm -- '${target}'`;
     const options = {
+      ...terminalRuntimeOptions(8703),
       workspaceRoot: root,
       authorizedRoots: [root],
       authorizedDeleteTargets: [target],
@@ -154,9 +298,10 @@ function withTerminalTiming(t, { sliceMs, maxCommandMs }) {
 test("a Terminal command that outlives its slice keeps running and returns its real result", async (t) => {
   withTerminalTiming(t, { sliceMs: 200 });
   const runtimeSessionId = 8801;
+  const runtime = terminalRuntimeOptions(runtimeSessionId);
   const command = slowCommand(1.4);
   const started = await runAuthorizedTerminalCommand(command, {
-    runtimeSessionId,
+    ...runtime,
     approvedCommand: command,
   });
   assert.equal(started.running, true);
@@ -169,6 +314,7 @@ test("a Terminal command that outlives its slice keeps running and returns its r
   await assert.rejects(
     () =>
       continueAuthorizedTerminalCommand(started.commandId, {
+        ...runtime,
         runtimeSessionId: runtimeSessionId + 1,
       }),
     /no longer running/i,
@@ -177,7 +323,7 @@ test("a Terminal command that outlives its slice keeps running and returns its r
   let result = started;
   for (let attempt = 0; result.running && attempt < 40; attempt += 1) {
     result = await continueAuthorizedTerminalCommand(result.commandId, {
-      runtimeSessionId,
+      ...runtime,
     });
   }
   assert.equal(result.running, false);
@@ -187,7 +333,7 @@ test("a Terminal command that outlives its slice keeps running and returns its r
   assert.ok(result.elapsedMs >= 1_000, `elapsed ${result.elapsedMs}ms`);
   await assert.rejects(
     () =>
-      continueAuthorizedTerminalCommand(started.commandId, { runtimeSessionId }),
+      continueAuthorizedTerminalCommand(started.commandId, runtime),
     /no longer running/i,
     "a collected command releases its handle",
   );
@@ -197,7 +343,7 @@ test("a Terminal command is still ended by its wall-clock ceiling", async (t) =>
   withTerminalTiming(t, { sliceMs: 5_000, maxCommandMs: 1_200 });
   const command = slowCommand(30);
   const result = await runAuthorizedTerminalCommand(command, {
-    runtimeSessionId: 8802,
+    ...terminalRuntimeOptions(8802),
     approvedCommand: command,
   });
   assert.equal(result.timedOut, true);
@@ -235,7 +381,7 @@ test("a Terminal command is ended by the deadline the model chose for it", async
   withTerminalTiming(t, { sliceMs: 5_000 });
   const command = slowCommand(30);
   const result = await runAuthorizedTerminalCommand(command, {
-    runtimeSessionId: 8804,
+    ...terminalRuntimeOptions(8804),
     approvedCommand: command,
     maxRuntimeMs: 1_200,
   });
@@ -276,15 +422,16 @@ test("the Terminal tool lets Hermes choose the timeout and collects for as long 
 test("cancelling a session ends its running Terminal command", async (t) => {
   withTerminalTiming(t, { sliceMs: 200 });
   const runtimeSessionId = 8803;
+  const runtime = terminalRuntimeOptions(runtimeSessionId);
   const command = slowCommand(30);
   const started = await runAuthorizedTerminalCommand(command, {
-    runtimeSessionId,
+    ...runtime,
     approvedCommand: command,
   });
   assert.equal(started.running, true);
   assert.equal(await cancelAuthorizedTerminalCommand(runtimeSessionId), true);
   const collected = await continueAuthorizedTerminalCommand(started.commandId, {
-    runtimeSessionId,
+    ...runtime,
   });
   assert.equal(collected.running, false);
   assert.notEqual(collected.exitCode, 0);
@@ -365,6 +512,7 @@ test("Terminal executes an exact-approved write inside its active folder", async
     assert.equal(pending.approvalRequired, true);
 
     const result = await runAuthorizedTerminalCommand(command, {
+      ...terminalRuntimeOptions(8704),
       workspaceRoot: root,
       authorizedRoots: [root],
       approvedCommand: command,
@@ -788,6 +936,7 @@ test("artifact lifecycle persists, streams safe events, and preserves revisions"
 
 test("DOCX, PDF, and sandbox-source HTML renderers produce real files", async () => {
   const fixture = artifactFixture();
+  const officeRuntime = createOfficeRuntimeFixture();
   try {
     const cases = [
       { kind: "document", rendererId: "docx", filename: "report.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", content: "Title\nBody" },
@@ -800,7 +949,14 @@ test("DOCX, PDF, and sandbox-source HTML renderers produce real files", async ()
       if (index > 1) fixture.database.prepare("INSERT INTO hermes_runs VALUES (?, 20)").run("run_three");
       const effectiveRun = index > 1 ? "run_three" : runId;
       let artifact = createArtifact(createInput(fixture, { ...item, runId: effectiveRun, title: `${item.kind} report` }));
-      artifact = await renderArtifact({ artifact, runId: effectiveRun, assistantMessageId: null, database: fixture.database, storageRoot: fixture.storage });
+      artifact = await renderArtifact({
+        artifact,
+        runId: effectiveRun,
+        assistantMessageId: null,
+        database: fixture.database,
+        storageRoot: fixture.storage,
+        officeRuntimeControl: officeRuntime.control,
+      });
       const output = artifactFile({ artifact, version: 1, purpose: "download", database: fixture.database, storageRoot: fixture.storage });
       const bytes = fs.readFileSync(output.path);
       if (item.rendererId === "docx") {
@@ -812,6 +968,7 @@ test("DOCX, PDF, and sandbox-source HTML renderers produce real files", async ()
       index += 1;
     }
   } finally {
+    officeRuntime.cleanup();
     fixture.database.close();
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -839,7 +996,7 @@ test("artifact validation rejects traversal, bad MIME, oversized data, and unsup
   }
 });
 
-test("generated media imports stay inside the authorized workspace and become ready artifacts", () => {
+test("generated media imports stay inside the authorized workspace and become ready artifacts", async () => {
   const fixture = artifactFixture();
   const workspace = path.join(fixture.root, "authorized-workspace");
   const outside = path.join(fixture.root, "outside.png");
@@ -856,10 +1013,11 @@ test("generated media imports stay inside the authorized workspace and become re
       title: "Generated image",
       filename: "generated.png",
     });
-    const imported = createImportedArtifact({
+    const imported = await createImportedArtifact({
       ...input,
       authorizedRoot: workspace,
       filePath: "result.png",
+      scrubProvenance: false,
     });
     assert.equal(imported.status, "ready");
     assert.equal(imported.kind, "image");
@@ -875,11 +1033,12 @@ test("generated media imports stay inside the authorized workspace and become re
       storageRoot: fixture.storage,
     });
     assert.deepEqual(fs.readFileSync(preview.path), onePixelPng);
-    assert.throws(
+    await assert.rejects(
       () => createImportedArtifact({
         ...input,
         authorizedRoot: workspace,
         filePath: outside,
+        scrubProvenance: false,
       }),
       /authorized workspace/i,
     );
@@ -1047,9 +1206,9 @@ test("Garden UI places Artifacts directly below Videos and Quartz contains no ar
   const artifacts = workspace.indexOf("Artifacts", videos);
   assert.ok(videos >= 0 && artifacts > videos);
   assert.ok(workspace.slice(videos, artifacts).length < 5_000, "Artifacts should be the next sidebar section after Videos");
-  assert.match(workspace, /artifact\.created/);
-  assert.match(workspace, /artifactDismissedRuns/);
-  assert.match(workspace, /<ArtifactPanel compact hideHeader gardenSlug=\{clusterSlug\} sourceSurface="garden_chat" \/>/);
+  assert.match(workspace, /event\.type\.startsWith\("artifact\."\)/);
+  assert.match(workspace, /new CustomEvent\(ARTIFACT_BROWSER_EVENT, \{ detail: event \}\)/);
+  assert.match(workspace, /<ArtifactPanel[\s\S]*?compact[\s\S]*?hideHeader[\s\S]*?gardenSlug=\{clusterSlug\}[\s\S]*?sourceSurface="garden_chat"[\s\S]*?\/>/);
   assert.doesNotMatch(workspace, /<ArtifactPanel compact gardenSlug=\{clusterSlug\} legacyChatSessionId=/);
   const panel = fs.readFileSync(new URL("../src/app/components/hermes/artifact-panel.tsx", import.meta.url), "utf8");
   const terminal = fs.readFileSync(new URL("../src/app/components/hermes/dashboard-agent-terminal.tsx", import.meta.url), "utf8");
@@ -1060,7 +1219,7 @@ test("Garden UI places Artifacts directly below Videos and Quartz contains no ar
   );
   assert.match(panel, /across Terminal chats/);
   assert.match(panel, /across this garden's chats/);
-  assert.match(`${panel}\n${viewer}`, /sandbox=""/);
+  assert.match(viewer, /sandbox=\{liveDeck \? "allow-scripts" : ""\}/);
   assert.match(`${panel}\n${viewer}`, /downloadAvailable/);
   const quartzPrompt = fs.readFileSync(new URL("../../hermes-config/system/quartz-assistant.md", import.meta.url), "utf8");
   const sharedPrompt = fs.readFileSync(new URL("../../hermes-config/system/assistant.md", import.meta.url), "utf8");

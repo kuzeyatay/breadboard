@@ -27,6 +27,12 @@ test("adapter refuses to start without a secret", async () => {
   await expect(startAdapter({ port: 0, secret: "", pgDir: ":memory:" })).rejects.toThrow(/secret/i);
 });
 
+test("adapter refuses to bind outside loopback", async () => {
+  await expect(
+    startAdapter({ port: 0, secret: SECRET, pgDir: ":memory:", host: "0.0.0.0" }),
+  ).rejects.toThrow(/loopback/i);
+});
+
 test("health is reachable and never leaks the secret or a path", async () => {
   const s = await boot(":memory:");
   const res = await fetch(`http://127.0.0.1:${s.port}/health`);
@@ -75,6 +81,49 @@ test("errors never contain a stack, path, or secret", async () => {
   expect(text).not.toContain(SECRET);
   expect(JSON.parse(text).error).toBe("invalid_json");
   await s.stop();
+});
+
+test("Bun shutdown drains the admitted backend operation before closing the store", async () => {
+  const s = await boot(":memory:");
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let release!: (value: unknown) => void;
+  const slowResult = new Promise((resolve) => {
+    release = resolve;
+  });
+  s.store.search = async () => {
+    markStarted();
+    return slowResult as never;
+  };
+  const originalClose = s.store.close.bind(s.store);
+  let storeClosed = false;
+  s.store.close = async () => {
+    storeClosed = true;
+    await originalClose();
+  };
+
+  const request = fetch(`http://127.0.0.1:${s.port}/search`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${SECRET}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scope: { userId: "1", authorizedSourceIds: ["source"] },
+      query: "drain before close",
+    }),
+  }).catch(() => null);
+  await started;
+  const stopping = s.stop();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  expect(storeClosed).toBe(false);
+
+  release({ results: [], mode: "lexical_degraded", warnings: [] });
+  await stopping;
+  await request;
+  expect(storeClosed).toBe(true);
 });
 
 test("end-to-end: register -> durable persistence across restart -> scoped query -> citation", async () => {

@@ -17,7 +17,6 @@ import { loadRecallConfig } from "../src/lib/recall/config.ts";
 import { parseInstallStatus, platformPackage } from "../src/lib/recall/install.ts";
 import { RecallClient, normalizeTimeExpression } from "../src/lib/recall/client.ts";
 import {
-  ensureRecallApiKey,
   readStoredRecallApiKey,
   recallApiKeyPath,
   resolveRecallApiKey,
@@ -163,16 +162,24 @@ test("engine arguments carry the privacy choices through to the recorder", () =>
   assert.ok(!withAudio.includes("--ignored-windows"));
 });
 
-test("the launcher hands the engine the same key the client presents", () => {
-  // The engine resolves SCREENPIPE_API_KEY first and mirrors it into its own
-  // secret store. Dropping it here would leave the recorder minting a key of
-  // its own in a data directory `screenpipe auth token` cannot even read.
+test("Next neither launches Recall nor sends its engine key over Runtime control", () => {
   const engine = fs.readFileSync(
     path.join(repoRoot, "dashboard", "src", "lib", "recall", "engine.ts"),
     "utf8",
   );
-  assert.ok(engine.includes("SCREENPIPE_API_KEY"), "the engine must be launched with a key");
-  assert.ok(engine.includes("ensureRecallApiKey"), "and with the one Breadboard stores");
+  const runtime = fs.readFileSync(
+    path.join(repoRoot, "dashboard", "src", "lib", "recall", "runtime-service.ts"),
+    "utf8",
+  );
+  const apiKey = fs.readFileSync(
+    path.join(repoRoot, "dashboard", "src", "lib", "recall", "api-key.ts"),
+    "utf8",
+  );
+  assert.doesNotMatch(engine, /child_process|\bspawn\s*\(|process\.kill/);
+  assert.doesNotMatch(runtime, /ensureRecallApiKey|SCREENPIPE_API_KEY|RECALL_API_KEY/);
+  assert.doesNotMatch(apiKey, /randomBytes|writeFile/);
+  assert.match(runtime, /authorization:\s*`Bearer \$\{target\.token\}`/);
+  assert.match(runtime, /"x-breadboard-user-id": String\(userId\)/);
 });
 
 test("opening the app has a route to announce itself to, and a mount that does", () => {
@@ -194,7 +201,19 @@ test("opening the app has a route to announce itself to, and a mount that does",
     path.join(repoRoot, "dashboard", "src", "app", "components", "recall-autostart.tsx"),
     "utf8",
   );
-  assert.ok(component.includes("/api/recall/autostart"));
+  const lifecycle = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "dashboard",
+      "src",
+      "app",
+      "components",
+      "recall-autostart-lifecycle.ts",
+    ),
+    "utf8",
+  );
+  assert.ok(component.includes("announceRecallAutostart"));
+  assert.ok(lifecycle.includes("/api/recall/autostart"));
 });
 
 test("the engine port follows the configured base URL", () => {
@@ -270,25 +289,21 @@ test("only platforms screenpipe publishes a binary for are supported", () => {
 // The engine answers 403 to every read without a bearer, and only /health is
 // open — so an unkeyed client looks healthy in the settings tab while every
 // question about the day fails. These three tests pin the whole key path.
-test("one minted key is reused, not regenerated on every start", () => {
+test("the Runtime-minted key is reused by every dashboard reader", () => {
   const config = temporaryRecallConfig();
   assert.equal(readStoredRecallApiKey(config), null, "nothing exists before the first start");
 
-  const first = ensureRecallApiKey(config);
-  assert.match(first, /^sp-[0-9a-f]{32}$/);
-  assert.equal(ensureRecallApiKey(config), first, "a second start must not rotate the key");
-  assert.equal(readStoredRecallApiKey(config), first);
-  assert.equal(fs.readFileSync(recallApiKeyPath(config), "utf8").trim(), first);
+  const nativeKey = "sp-0123456789abcdef0123456789abcdef";
+  fs.writeFileSync(recallApiKeyPath(config), `${nativeKey}\n`, "utf8");
+  assert.equal(readStoredRecallApiKey(config), nativeKey);
+  assert.equal(resolveRecallApiKey(config), nativeKey);
+  assert.equal(resolveRecallApiKey(config), nativeKey, "reads must never rotate the key");
+  assert.equal(fs.readFileSync(recallApiKeyPath(config), "utf8").trim(), nativeKey);
 });
 
 test("a configured key wins, and a corrupt file is not passed on as one", () => {
   const configured = temporaryRecallConfig({ RECALL_API_KEY: "sp-operators-own-key" });
   assert.equal(resolveRecallApiKey(configured), "sp-operators-own-key");
-  assert.equal(
-    ensureRecallApiKey(configured),
-    "sp-operators-own-key",
-    "an engine Breadboard did not key must not be handed a new one",
-  );
   assert.equal(fs.existsSync(recallApiKeyPath(configured)), false, "nothing to mint, nothing to write");
 
   // Whitespace or control characters would ride into an HTTP header and a
@@ -300,7 +315,8 @@ test("a configured key wins, and a corrupt file is not passed on as one", () => 
 
 test("the client authenticates every read, because the engine rejects unkeyed ones", async () => {
   const config = temporaryRecallConfig();
-  const key = ensureRecallApiKey(config);
+  const key = "sp-fedcba9876543210fedcba9876543210";
+  fs.writeFileSync(recallApiKeyPath(config), `${key}\n`, "utf8");
 
   const seen = [];
   const realFetch = globalThis.fetch;

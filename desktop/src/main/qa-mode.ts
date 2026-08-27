@@ -100,14 +100,23 @@ export function prepareQaServiceDefinitions(
         env["COMFYUI_ENABLED"] = "false";
         env["COMFYUI_MANAGED"] = "false";
         env["COMFYUI_AUTOSTART"] = "false";
+        env["COMFYUI_ROOT"] = path.join(
+          paths.dataRoot,
+          "runtime-v2",
+          "toolchains",
+          "comfyui",
+        );
         env["COMFYUI_ENV_DIR"] = path.join(
           paths.dataRoot,
-          "runtime",
-          "comfyui-venv",
+          "runtime-v2",
+          "services",
+          "comfyui",
+          ".venv",
         );
         env["COMFYUI_RUNTIME_DIR"] = path.join(
           paths.dataRoot,
-          "runtime",
+          "runtime-v2",
+          "services",
           "comfyui",
         );
         env["BREADBOARD_IFIXAI_MODE"] = "off";

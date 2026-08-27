@@ -339,6 +339,10 @@ describe("learn route and council wiring", () => {
 
   test("page generation is gated behind confirmation, including automatic retained-lease handoff", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+    const statusSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "learn-status-projection.ts"),
+      "utf8",
+    );
 
     // Human review stops at confirmation; the explicitly automatic pipeline
     // retains its fenced lease while it moves the same job into generation.
@@ -361,8 +365,8 @@ describe("learn route and council wiring", () => {
     // Legacy confirmed/proposed maps without Learning Unit Contracts must not
     // be exposed to generation/status.
     assert.match(learnSource, /function isContractBackedLearningMap/);
-    assert.match(learnSource, /isContractBackedLearningMap\(latestConfirmed\)/);
-    assert.match(learnSource, /visibleJob/);
+    assert.match(statusSource, /isContractBackedLearningMap\(latestConfirmed\)/);
+    assert.match(statusSource, /visibleJob/);
   });
 
   test("generate route refuses a stale confirmed map instead of silently replanning", () => {
@@ -409,6 +413,10 @@ describe("learn route and council wiring", () => {
 
   test("generation replan intent is durable across background handoff and refresh", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+    const statusSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "learn-status-projection.ts"),
+      "utf8",
+    );
     const workspaceSource = fs.readFileSync(
       path.join(repoRoot, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
       "utf8",
@@ -425,7 +433,7 @@ describe("learn route and council wiring", () => {
       learnSource,
       /async function rethrowAfterBestEffortLearnFailureCleanup\([\s\S]*?await cleanup\(\);[\s\S]*?catch \{[\s\S]*?throw authoritativeError;/,
     );
-    assert.match(learnSource, /failedGenerationRequiresReplanFromEvents/);
+    assert.match(statusSource, /failedGenerationRequiresReplanFromEvents/);
     assert.match(
       workspaceSource,
       /job\?\.status === "failed"[\s\S]*?job\.requiresReplan[\s\S]*?postLearnAction\("plan"\)/,
@@ -532,7 +540,10 @@ describe("learn route and council wiring", () => {
       path.join(repoRoot, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
       "utf8",
     );
-    const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+    const statusSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "learn-status-projection.ts"),
+      "utf8",
+    );
 
     assert.match(
       workspaceSource,
@@ -547,7 +558,7 @@ describe("learn route and council wiring", () => {
       /shouldRepairFromPrimaryAction[\s\S]*?\? handleRepairIssues/,
     );
     assert.match(
-      learnSource,
+      statusSource,
       /return hasTextbook \|\| latestVersion \? "Repair issues" : "Review Learning Map"/,
     );
     assert.doesNotMatch(workspaceSource, /Last repair:/);

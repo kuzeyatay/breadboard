@@ -283,13 +283,20 @@ export default function InlineVideoUseRun({
     let disposed = false;
     let stream: EventSource | null = null;
     let timer: number | undefined;
+    let recoveryController: AbortController | null = null;
     let attempt = 0;
     // `status` only reaches its ref after a render, which is a tick too late
     // for the checks below, so the run's end is read off the events instead.
     let finished = false;
 
     const apply = (event: RunEvent) => {
-      if (TERMINAL_EVENT_TYPES.has(event.type)) finished = true;
+      if (TERMINAL_EVENT_TYPES.has(event.type)) {
+        finished = true;
+        window.clearTimeout(timer);
+        recoveryController?.abort();
+        recoveryController = null;
+        closeStream();
+      }
       applyEvent(event);
     };
 
@@ -317,9 +324,13 @@ export default function InlineVideoUseRun({
     // for a stream, which is how a card that lost its stream catches up on what
     // it missed before deciding whether there is anything left to watch.
     const catchUp = async (): Promise<"gone" | "live" | "unreachable"> => {
+      const controller = new AbortController();
+      recoveryController?.abort();
+      recoveryController = controller;
       try {
         const response = await fetch(`${base}/events?since=${cursorRef.current}`, {
           headers: { accept: "application/json" },
+          signal: controller.signal,
         });
         // The manager forgets a run once it ends, so a run that is no longer
         // there is a run that is over.
@@ -330,6 +341,8 @@ export default function InlineVideoUseRun({
         return "live";
       } catch {
         return "unreachable";
+      } finally {
+        if (recoveryController === controller) recoveryController = null;
       }
     };
 
@@ -373,6 +386,8 @@ export default function InlineVideoUseRun({
     return () => {
       disposed = true;
       window.clearTimeout(timer);
+      recoveryController?.abort();
+      recoveryController = null;
       closeStream();
     };
   }, [applyEvent, base, persistedOutcome]);

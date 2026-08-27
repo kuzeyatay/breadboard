@@ -115,6 +115,7 @@ export default function ParametricCadArtifact({
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
+  const parameterRequestIds = useRef(new Map<string, string>());
 
   const measurements = design.measurements;
   const tone = statusTone(design.status);
@@ -167,13 +168,17 @@ export default function ParametricCadArtifact({
 
     setSaving(true);
     setSaveMessage("Rebuilding and re-validating…");
+    const requestSignature = JSON.stringify([design.projectId, design.revision, changed]);
+    const requestId =
+      parameterRequestIds.current.get(requestSignature) ?? crypto.randomUUID();
+    parameterRequestIds.current.set(requestSignature, requestId);
     try {
       const response = await fetch(
         `/api/cad/projects/${encodeURIComponent(design.projectId)}/parameters`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ conversationId, parameters: changed }),
+          body: JSON.stringify({ conversationId, parameters: changed, requestId }),
         },
       );
       const body = (await response.json().catch(() => ({}))) as {
@@ -190,6 +195,7 @@ export default function ParametricCadArtifact({
       setSaveMessage(
         `Revision ${body.revision} built (${body.status}). The previous revision is still available.`,
       );
+      parameterRequestIds.current.delete(requestSignature);
       setEdits({});
       onRevised?.();
     } catch (error) {
@@ -197,7 +203,7 @@ export default function ParametricCadArtifact({
     } finally {
       setSaving(false);
     }
-  }, [conversationId, design.projectId, edits, editable, onRevised]);
+  }, [conversationId, design.projectId, design.revision, edits, editable, onRevised]);
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col gap-4">

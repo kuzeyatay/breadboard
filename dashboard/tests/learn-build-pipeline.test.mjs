@@ -48,7 +48,9 @@ import {
 } from "../src/lib/learn-convergence-loop.ts";
 
 const roots = [];
-test.after(() => roots.forEach((root) => fs.rmSync(root, { recursive: true, force: true })));
+test.after(() =>
+  roots.forEach((root) => fs.rmSync(root, { recursive: true, force: true })),
+);
 
 function tmp(prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
@@ -74,7 +76,10 @@ async function eventually(predicate, timeoutMs = 1500) {
 }
 
 function runLockContender(garden, jobId, buildId = `build-${jobId}`) {
-  const moduleUrl = new URL("../src/lib/learn-atomic-promotion.ts", import.meta.url).href;
+  const moduleUrl = new URL(
+    "../src/lib/learn-atomic-promotion.ts",
+    import.meta.url,
+  ).href;
   const script = [
     `import { acquireGardenLearnLock } from ${JSON.stringify(moduleUrl)};`,
     `const result = acquireGardenLearnLock(${JSON.stringify(garden)}, {`,
@@ -83,36 +88,51 @@ function runLockContender(garden, jobId, buildId = `build-${jobId}`) {
     `process.stdout.write(JSON.stringify({ acquired: result.acquired }));`,
   ].join("\n");
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [
-      "--experimental-strip-types",
-      "--input-type=module",
-      "--eval",
-      script,
-    ], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(
+      process.execPath,
+      ["--experimental-strip-types", "--input-type=module", "--eval", script],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
     child.on("error", reject);
     child.on("close", (code) => {
       if (code !== 0) {
         reject(new Error(`lock contender exited ${code}: ${stderr}`));
         return;
       }
-      try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (error) {
+        reject(error);
+      }
     });
   });
 }
 
 function unit(id, title, role = "core_concept") {
   return {
-    id, title, role,
+    id,
+    title,
+    role,
     learningQuestion: `What is ${title}?`,
-    prerequisiteConcepts: [], newConcepts: [title],
-    sourceAnchors: [], sourceFigures: [], sourceFormulas: [], sourceTables: [],
-    zettelNotes: [], mustNotRepeat: [], expectedWordRange: [700, 1100],
+    prerequisiteConcepts: [],
+    newConcepts: [title],
+    sourceAnchors: [],
+    sourceFigures: [],
+    sourceFormulas: [],
+    sourceTables: [],
+    zettelNotes: [],
+    mustNotRepeat: [],
+    expectedWordRange: [700, 1100],
   };
 }
 
@@ -135,7 +155,9 @@ function writePage(gardenDir, rel, ownership, extra = "") {
     "---",
     "",
     "Body.",
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
   fs.writeFileSync(abs, fm);
   return abs;
 }
@@ -148,8 +170,13 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
   const repo = tmp("repo");
   fs.mkdirSync(path.join(repo, "sources"), { recursive: true });
   fs.writeFileSync(path.join(repo, "sources", "s1.md"), "# Page 1\n");
-  fs.mkdirSync(path.join(repo, "learning", "1. Old Section"), { recursive: true });
-  fs.writeFileSync(path.join(repo, "learning", "1. Old Section", "1.1 Old.md"), "old page");
+  fs.mkdirSync(path.join(repo, "learning", "1. Old Section"), {
+    recursive: true,
+  });
+  fs.writeFileSync(
+    path.join(repo, "learning", "1. Old Section", "1.1 Old.md"),
+    "old page",
+  );
   fs.mkdirSync(path.join(repo, ".breadboard"), { recursive: true });
   fs.writeFileSync(path.join(repo, ".breadboard", "source-visuals.json"), "[]");
   fs.writeFileSync(
@@ -166,26 +193,47 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
     "visual-decision-records.json",
     "visual-contract-executability-reviews.json",
   ]) {
-    fs.writeFileSync(path.join(repo, ".breadboard", name), "stale model output");
+    fs.writeFileSync(
+      path.join(repo, ".breadboard", name),
+      "stale model output",
+    );
   }
 
   const ws = createLearnBuildWorkspace({
-    gardenSlug: "g1", jobId: "job1", mode: "generate",
-    repositoryGardenDir: repo, contractFingerprint: "cf1", sourceSetFingerprint: "sf1",
+    gardenSlug: "g1",
+    jobId: "job1",
+    mode: "generate",
+    repositoryGardenDir: repo,
+    contractFingerprint: "cf1",
+    sourceSetFingerprint: "sf1",
     workspaceRoot: path.join(tmp("wsroot"), "ws"),
   });
   roots.push(ws.workspaceRoot);
   // durable inputs present
   assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, "sources", "s1.md")));
-  assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "source-visuals.json")));
   assert.ok(
     fs.existsSync(
-      path.join(ws.stagingGardenDir, ".breadboard", "source-visual-source-index.json"),
+      path.join(ws.stagingGardenDir, ".breadboard", "source-visuals.json"),
+    ),
+  );
+  assert.ok(
+    fs.existsSync(
+      path.join(
+        ws.stagingGardenDir,
+        ".breadboard",
+        "source-visual-source-index.json",
+      ),
     ),
   );
   // old learning tree and disposable projections NOT copied
-  assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, "learning")), false);
-  assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "claims.json")), false);
+  assert.equal(
+    fs.existsSync(path.join(ws.stagingGardenDir, "learning")),
+    false,
+  );
+  assert.equal(
+    fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "claims.json")),
+    false,
+  );
   for (const name of [
     "visual-necessity-decisions.json",
     "visual-necessity-decisions.md",
@@ -203,7 +251,10 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
 test("1a. default workspace falls back to OS temp when LOCALAPPDATA staging is unavailable", () => {
   const repo = tmp("repo-workspace-fallback");
   fs.writeFileSync(path.join(repo, "durable.md"), "durable input\n");
-  const blockedLocalAppData = path.join(tmp("blocked-local-appdata"), "not-a-directory");
+  const blockedLocalAppData = path.join(
+    tmp("blocked-local-appdata"),
+    "not-a-directory",
+  );
   fs.writeFileSync(blockedLocalAppData, "file blocks workspace descendants\n");
   const originalLocalAppData = process.env.LOCALAPPDATA;
   const gardenSlug = `g-fallback-${crypto.randomUUID()}`;
@@ -236,15 +287,23 @@ test("1a. default workspace falls back to OS temp when LOCALAPPDATA staging is u
 
 test("1aa. workspace setup retries EPERM, cleans the default root, and only then uses safe temp fallback", () => {
   const repo = tmp("repo-workspace-root-preparation");
-  const primaryRoot = path.join(tmp("workspace-primary-unavailable"), "workspace");
-  const fallbackRoot = path.join(tmp("workspace-fallback-available"), "workspace");
+  const primaryRoot = path.join(
+    tmp("workspace-primary-unavailable"),
+    "workspace",
+  );
+  const fallbackRoot = path.join(
+    tmp("workspace-fallback-available"),
+    "workspace",
+  );
   let primaryRemoveAttempts = 0;
   const created = [];
   const fileSystem = {
     rmSync(directoryPath) {
       if (directoryPath === primaryRoot) {
         primaryRemoveAttempts += 1;
-        throw Object.assign(new Error("temporary Windows scanner lock"), { code: "EPERM" });
+        throw Object.assign(new Error("temporary Windows scanner lock"), {
+          code: "EPERM",
+        });
       }
     },
     mkdirSync(directoryPath) {
@@ -271,30 +330,32 @@ test("1aa. workspace setup retries EPERM, cleans the default root, and only then
   assert.deepEqual(created, [path.join(fallbackRoot, "staging")]);
 
   assert.throws(
-    () => prepareLearnWorkspaceRoot({
-      workspaceRoot: primaryRoot,
-      fallbackWorkspaceRoot: fallbackRoot,
-      repositoryGardenDir: repo,
-      stagingDirectoryName: "staging",
-      allowFallback: false,
-      retryDelaysMs: [],
-      sleep() {},
-      fileSystem,
-    }),
+    () =>
+      prepareLearnWorkspaceRoot({
+        workspaceRoot: primaryRoot,
+        fallbackWorkspaceRoot: fallbackRoot,
+        repositoryGardenDir: repo,
+        stagingDirectoryName: "staging",
+        allowFallback: false,
+        retryDelaysMs: [],
+        sleep() {},
+        fileSystem,
+      }),
     (error) => error?.code === "EPERM",
   );
 
   assert.throws(
-    () => prepareLearnWorkspaceRoot({
-      workspaceRoot: primaryRoot,
-      fallbackWorkspaceRoot: path.join(repo, "unsafe-temp-workspace"),
-      repositoryGardenDir: repo,
-      stagingDirectoryName: "staging",
-      allowFallback: true,
-      retryDelaysMs: [],
-      sleep() {},
-      fileSystem,
-    }),
+    () =>
+      prepareLearnWorkspaceRoot({
+        workspaceRoot: primaryRoot,
+        fallbackWorkspaceRoot: path.join(repo, "unsafe-temp-workspace"),
+        repositoryGardenDir: repo,
+        stagingDirectoryName: "staging",
+        allowFallback: true,
+        retryDelaysMs: [],
+        sleep() {},
+        fileSystem,
+      }),
     /outside the authoritative repository garden/,
   );
 });
@@ -302,34 +363,42 @@ test("1aa. workspace setup retries EPERM, cleans the default root, and only then
 test("1ab. failed fallback setup and failed descriptor writes clean their disposable roots", () => {
   const repo = tmp("repo-workspace-cleanup");
   const primaryRoot = path.join(tmp("workspace-primary-cleanup"), "workspace");
-  const failedFallbackRoot = path.join(tmp("workspace-fallback-cleanup"), "workspace");
+  const failedFallbackRoot = path.join(
+    tmp("workspace-fallback-cleanup"),
+    "workspace",
+  );
   let fallbackRemoveAttempts = 0;
   const fileSystem = {
     rmSync(directoryPath) {
       if (directoryPath === primaryRoot) {
-        throw Object.assign(new Error("primary root remains unavailable"), { code: "EPERM" });
+        throw Object.assign(new Error("primary root remains unavailable"), {
+          code: "EPERM",
+        });
       }
       if (directoryPath === failedFallbackRoot) fallbackRemoveAttempts += 1;
     },
     mkdirSync(directoryPath) {
       if (directoryPath === path.join(failedFallbackRoot, "staging")) {
-        throw Object.assign(new Error("fallback setup stopped"), { code: "EPERM" });
+        throw Object.assign(new Error("fallback setup stopped"), {
+          code: "EPERM",
+        });
       }
       return directoryPath;
     },
   };
 
   assert.throws(
-    () => prepareLearnWorkspaceRoot({
-      workspaceRoot: primaryRoot,
-      fallbackWorkspaceRoot: failedFallbackRoot,
-      repositoryGardenDir: repo,
-      stagingDirectoryName: "staging",
-      allowFallback: true,
-      retryDelaysMs: [],
-      sleep() {},
-      fileSystem,
-    }),
+    () =>
+      prepareLearnWorkspaceRoot({
+        workspaceRoot: primaryRoot,
+        fallbackWorkspaceRoot: failedFallbackRoot,
+        repositoryGardenDir: repo,
+        stagingDirectoryName: "staging",
+        allowFallback: true,
+        retryDelaysMs: [],
+        sleep() {},
+        fileSystem,
+      }),
     (error) => error?.code === "EPERM",
   );
   assert.equal(
@@ -338,25 +407,32 @@ test("1ab. failed fallback setup and failed descriptor writes clean their dispos
     "the partial fallback is reset once and removed again when setup fails",
   );
 
-  const terminalPrimaryRoot = path.join(tmp("workspace-terminal-primary-cleanup"), "workspace");
+  const terminalPrimaryRoot = path.join(
+    tmp("workspace-terminal-primary-cleanup"),
+    "workspace",
+  );
   let terminalPrimaryRemoveAttempts = 0;
   assert.throws(
-    () => prepareLearnWorkspaceRoot({
-      workspaceRoot: terminalPrimaryRoot,
-      repositoryGardenDir: repo,
-      stagingDirectoryName: "staging",
-      allowFallback: false,
-      retryDelaysMs: [],
-      sleep() {},
-      fileSystem: {
-        rmSync(directoryPath) {
-          if (directoryPath === terminalPrimaryRoot) terminalPrimaryRemoveAttempts += 1;
+    () =>
+      prepareLearnWorkspaceRoot({
+        workspaceRoot: terminalPrimaryRoot,
+        repositoryGardenDir: repo,
+        stagingDirectoryName: "staging",
+        allowFallback: false,
+        retryDelaysMs: [],
+        sleep() {},
+        fileSystem: {
+          rmSync(directoryPath) {
+            if (directoryPath === terminalPrimaryRoot)
+              terminalPrimaryRemoveAttempts += 1;
+          },
+          mkdirSync() {
+            throw Object.assign(new Error("disk full during primary setup"), {
+              code: "ENOSPC",
+            });
+          },
         },
-        mkdirSync() {
-          throw Object.assign(new Error("disk full during primary setup"), { code: "ENOSPC" });
-        },
-      },
-    }),
+      }),
     (error) => error?.code === "ENOSPC",
   );
   assert.equal(
@@ -367,26 +443,35 @@ test("1ab. failed fallback setup and failed descriptor writes clean their dispos
 
   const descriptorRepo = tmp("repo-workspace-descriptor-cleanup");
   fs.writeFileSync(path.join(descriptorRepo, "durable.md"), "durable input\n");
-  const descriptorWorkspaceRoot = path.join(tmp("workspace-descriptor-cleanup"), "workspace");
-  const descriptorPath = path.join(descriptorWorkspaceRoot, "build-workspace.json");
+  const descriptorWorkspaceRoot = path.join(
+    tmp("workspace-descriptor-cleanup"),
+    "workspace",
+  );
+  const descriptorPath = path.join(
+    descriptorWorkspaceRoot,
+    "build-workspace.json",
+  );
   const originalWriteFileSync = fs.writeFileSync;
   try {
     fs.writeFileSync = (filePath, ...args) => {
       if (path.resolve(String(filePath)) === path.resolve(descriptorPath)) {
-        throw Object.assign(new Error("descriptor write denied"), { code: "EPERM" });
+        throw Object.assign(new Error("descriptor write denied"), {
+          code: "EPERM",
+        });
       }
       return originalWriteFileSync(filePath, ...args);
     };
     assert.throws(
-      () => createLearnBuildWorkspace({
-        gardenSlug: "g-descriptor-cleanup",
-        jobId: "job-descriptor-cleanup",
-        mode: "generate",
-        repositoryGardenDir: descriptorRepo,
-        contractFingerprint: "cf-descriptor-cleanup",
-        sourceSetFingerprint: "sf-descriptor-cleanup",
-        workspaceRoot: descriptorWorkspaceRoot,
-      }),
+      () =>
+        createLearnBuildWorkspace({
+          gardenSlug: "g-descriptor-cleanup",
+          jobId: "job-descriptor-cleanup",
+          mode: "generate",
+          repositoryGardenDir: descriptorRepo,
+          contractFingerprint: "cf-descriptor-cleanup",
+          sourceSetFingerprint: "sf-descriptor-cleanup",
+          workspaceRoot: descriptorWorkspaceRoot,
+        }),
       (error) => error?.code === "EPERM",
     );
   } finally {
@@ -403,20 +488,23 @@ test("1c. generation workspace preserves the authoritative source-anchor ledger 
   const repo = tmp("repo-anchor-ledger");
   const breadboard = path.join(repo, ".breadboard");
   fs.mkdirSync(breadboard, { recursive: true });
-  const ledgerBytes = Buffer.from([
-    "{\r\n",
-    '  "sourceStructuralAnchors": [\r\n',
-    "    {\r\n",
-    '      "id": "text-engineering-electromagnetics-page-406",\r\n',
-    '      "kind": "guidance",\r\n',
-    '      "sourceId": "engineering-electromagnetics",\r\n',
-    '      "page": 406,\r\n',
-    '      "title": "Late-page boundary condition",\r\n',
-    '      "exactText": "E_t is continuous across the boundary."\r\n',
-    "    }\r\n",
-    "  ]\r\n",
-    "}\r\n",
-  ].join(""), "utf8");
+  const ledgerBytes = Buffer.from(
+    [
+      "{\r\n",
+      '  "sourceStructuralAnchors": [\r\n',
+      "    {\r\n",
+      '      "id": "text-engineering-electromagnetics-page-406",\r\n',
+      '      "kind": "guidance",\r\n',
+      '      "sourceId": "engineering-electromagnetics",\r\n',
+      '      "page": 406,\r\n',
+      '      "title": "Late-page boundary condition",\r\n',
+      '      "exactText": "E_t is continuous across the boundary."\r\n',
+      "    }\r\n",
+      "  ]\r\n",
+      "}\r\n",
+    ].join(""),
+    "utf8",
+  );
   fs.writeFileSync(path.join(breadboard, "source-anchors.json"), ledgerBytes);
 
   const ws = createLearnBuildWorkspace({
@@ -450,19 +538,23 @@ test("1c. generation workspace preserves the authoritative source-anchor ledger 
 
 test("1d. required authoritative source-anchor ledger fails closed when missing", () => {
   const repo = tmp("repo-anchor-ledger-missing");
-  const workspaceRoot = path.join(tmp("workspace-anchor-ledger-missing"), "workspace");
+  const workspaceRoot = path.join(
+    tmp("workspace-anchor-ledger-missing"),
+    "workspace",
+  );
 
   assert.throws(
-    () => createLearnBuildWorkspace({
-      gardenSlug: "g-ledger-missing",
-      jobId: "job-ledger-missing",
-      mode: "generate",
-      repositoryGardenDir: repo,
-      contractFingerprint: "cf-ledger-missing",
-      sourceSetFingerprint: "sf-ledger-missing",
-      workspaceRoot,
-      requireAuthoritativeSourceAnchorLedger: true,
-    }),
+    () =>
+      createLearnBuildWorkspace({
+        gardenSlug: "g-ledger-missing",
+        jobId: "job-ledger-missing",
+        mode: "generate",
+        repositoryGardenDir: repo,
+        contractFingerprint: "cf-ledger-missing",
+        sourceSetFingerprint: "sf-ledger-missing",
+        workspaceRoot,
+        requireAuthoritativeSourceAnchorLedger: true,
+      }),
     /Authoritative source-anchor ledger is missing/,
   );
   assert.equal(fs.existsSync(workspaceRoot), false);
@@ -470,7 +562,11 @@ test("1d. required authoritative source-anchor ledger fails closed when missing"
 
 test("1e. source-anchor ledger verification rejects staged or authoritative mutation", () => {
   const repo = tmp("repo-anchor-ledger-mutation");
-  const authoritativePath = path.join(repo, ".breadboard", "source-anchors.json");
+  const authoritativePath = path.join(
+    repo,
+    ".breadboard",
+    "source-anchors.json",
+  );
   fs.mkdirSync(path.dirname(authoritativePath), { recursive: true });
   const original = Buffer.from('{"sourceTextConceptAnchors":[]}\n');
   fs.writeFileSync(authoritativePath, original);
@@ -481,19 +577,32 @@ test("1e. source-anchor ledger verification rejects staged or authoritative muta
     repositoryGardenDir: repo,
     contractFingerprint: "cf-ledger-mutation",
     sourceSetFingerprint: "sf-ledger-mutation",
-    workspaceRoot: path.join(tmp("workspace-anchor-ledger-mutation"), "workspace"),
+    workspaceRoot: path.join(
+      tmp("workspace-anchor-ledger-mutation"),
+      "workspace",
+    ),
     requireAuthoritativeSourceAnchorLedger: true,
   });
-  const stagedPath = path.join(ws.stagingGardenDir, ".breadboard", "source-anchors.json");
+  const stagedPath = path.join(
+    ws.stagingGardenDir,
+    ".breadboard",
+    "source-anchors.json",
+  );
 
-  fs.writeFileSync(stagedPath, '{"sourceTextConceptAnchors":[{"id":"changed"}]}\n');
+  fs.writeFileSync(
+    stagedPath,
+    '{"sourceTextConceptAnchors":[{"id":"changed"}]}\n',
+  );
   assert.throws(
     () => verifyAuthoritativeSourceAnchorLedger(ws),
     /not byte-for-byte identical/,
   );
 
   fs.writeFileSync(stagedPath, original);
-  fs.writeFileSync(authoritativePath, '{"sourceTextConceptAnchors":[{"id":"changed"}]}\n');
+  fs.writeFileSync(
+    authoritativePath,
+    '{"sourceTextConceptAnchors":[{"id":"changed"}]}\n',
+  );
   assert.throws(
     () => verifyAuthoritativeSourceAnchorLedger(ws),
     /not byte-for-byte identical/,
@@ -520,7 +629,11 @@ test("1f. the confirmed Learning Unit Contract receipt is seeded intact", () => 
   };
   fs.writeFileSync(
     path.join(breadboard, "source-formula-review-set.json"),
-    JSON.stringify({ reviewSetHash: "review-set", formulaIds: [], sourceIds: [] }),
+    JSON.stringify({
+      reviewSetHash: "review-set",
+      formulaIds: [],
+      sourceIds: [],
+    }),
   );
   fs.writeFileSync(
     path.join(breadboard, "learning-unit-contract.json"),
@@ -538,7 +651,11 @@ test("1f. the confirmed Learning Unit Contract receipt is seeded intact", () => 
   });
   const stagedContract = JSON.parse(
     fs.readFileSync(
-      path.join(ws.stagingGardenDir, ".breadboard", "learning-unit-contract.json"),
+      path.join(
+        ws.stagingGardenDir,
+        ".breadboard",
+        "learning-unit-contract.json",
+      ),
       "utf8",
     ),
   );
@@ -548,7 +665,10 @@ test("1f. the confirmed Learning Unit Contract receipt is seeded intact", () => 
     stagedContract.syllabusCoverageEvidenceRecoveryHash,
     recoveryReceipt.integritySha256,
   );
-  assert.deepEqual(stagedContract.syllabusCoverageEvidenceRecovery, recoveryReceipt);
+  assert.deepEqual(
+    stagedContract.syllabusCoverageEvidenceRecovery,
+    recoveryReceipt,
+  );
   assert.equal(
     fingerprintDurableGardenState(repo),
     fingerprintDurableGardenState(ws.stagingGardenDir),
@@ -570,7 +690,10 @@ test("4. seeding leaves the repository garden unchanged", () => {
 test("1b. mixed-case Windows names cannot seed stale Learn projections", () => {
   const repo = tmp("repo-case-seed");
   fs.mkdirSync(path.join(repo, "LEARNING"), { recursive: true });
-  fs.writeFileSync(path.join(repo, "LEARNING", "stale.md"), "stale learner page");
+  fs.writeFileSync(
+    path.join(repo, "LEARNING", "stale.md"),
+    "stale learner page",
+  );
   const breadboard = path.join(repo, ".BreadBoard");
   fs.mkdirSync(breadboard, { recursive: true });
   fs.writeFileSync(path.join(breadboard, "CLAIMS.JSON"), "{}");
@@ -591,12 +714,35 @@ test("1b. mixed-case Windows names cannot seed stale Learn projections", () => {
     workspaceRoot: path.join(workspaceParent, "workspace"),
   });
 
-  assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, "LEARNING")), false);
-  assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "CLAIMS.JSON")), false);
-  assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "CrItIc-RePoRt.Md")), false);
-  assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "SOURCE-VISUALS.JSON")));
-  assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "EVENTS.JSONL")));
-  assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "Manual-Other.json")));
+  assert.equal(
+    fs.existsSync(path.join(ws.stagingGardenDir, "LEARNING")),
+    false,
+  );
+  assert.equal(
+    fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "CLAIMS.JSON")),
+    false,
+  );
+  assert.equal(
+    fs.existsSync(
+      path.join(ws.stagingGardenDir, ".breadboard", "CrItIc-RePoRt.Md"),
+    ),
+    false,
+  );
+  assert.ok(
+    fs.existsSync(
+      path.join(ws.stagingGardenDir, ".breadboard", "SOURCE-VISUALS.JSON"),
+    ),
+  );
+  assert.ok(
+    fs.existsSync(
+      path.join(ws.stagingGardenDir, ".breadboard", "EVENTS.JSONL"),
+    ),
+  );
+  assert.ok(
+    fs.existsSync(
+      path.join(ws.stagingGardenDir, ".breadboard", "Manual-Other.json"),
+    ),
+  );
   assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, "note.md")));
   assert.equal(
     fingerprintDurableGardenState(repo),
@@ -635,9 +781,16 @@ test("2b. all-caps disposable paths stay excluded while canonical ledgers affect
 test("6/12. ownership metadata identifies a page by unit+build, not path", () => {
   const contract = [unit("U1", "Alpha"), unit("U2", "Beta")];
   const manifest = createActiveBuildManifest({
-    buildId: "buildA", jobId: "job1", gardenSlug: "g", sourceSetFingerprint: "sf",
+    buildId: "buildA",
+    jobId: "job1",
+    gardenSlug: "g",
+    sourceSetFingerprint: "sf",
     contractFingerprint: contractFingerprint(contract),
-    units: contract.map((u, i) => ({ unitId: u.id, sectionId: "sec1", expectedPagePath: `learning/1. Sec/1.${i + 1} ${u.title}.md` })),
+    units: contract.map((u, i) => ({
+      unitId: u.id,
+      sectionId: "sec1",
+      expectedPagePath: `learning/1. Sec/1.${i + 1} ${u.title}.md`,
+    })),
     sectionIds: ["sec1"],
   });
   const meta = ownershipMetadata(manifest, "U1");
@@ -649,8 +802,18 @@ test("6/12. ownership metadata identifies a page by unit+build, not path", () =>
 test("manifest round-trips through disk", () => {
   const garden = tmp("gm");
   const manifest = createActiveBuildManifest({
-    buildId: "b", jobId: "j", gardenSlug: "g", sourceSetFingerprint: "sf", contractFingerprint: "cf",
-    units: [{ unitId: "U1", sectionId: "s", expectedPagePath: "learning/1. S/1.1 A.md" }],
+    buildId: "b",
+    jobId: "j",
+    gardenSlug: "g",
+    sourceSetFingerprint: "sf",
+    contractFingerprint: "cf",
+    units: [
+      {
+        unitId: "U1",
+        sectionId: "s",
+        expectedPagePath: "learning/1. S/1.1 A.md",
+      },
+    ],
     sectionIds: ["s"],
   });
   writeActiveBuildManifest(garden, manifest);
@@ -664,11 +827,29 @@ test("manifest round-trips through disk", () => {
 // ---------------------------------------------------------------------------
 
 test("16/17. quarantine and canonical-shadow are excluded from active scans", () => {
-  assert.equal(isActiveLearnerProjectionPath("learning/1. S/1.1 A.md", "b"), true);
-  assert.equal(isActiveLearnerProjectionPath(".breadboard/quarantine/b/obsolete-pages/x.md", "b"), false);
-  assert.equal(isActiveLearnerProjectionPath(".breadboard/canonical-shadow/y.md", "b"), false);
-  assert.equal(isActiveLearnerProjectionPath(".breadboard/backups/z.md", "b"), false);
-  assert.equal(isActiveLearnerProjectionPath("node_modules/pkg/readme.md", "b"), false);
+  assert.equal(
+    isActiveLearnerProjectionPath("learning/1. S/1.1 A.md", "b"),
+    true,
+  );
+  assert.equal(
+    isActiveLearnerProjectionPath(
+      ".breadboard/quarantine/b/obsolete-pages/x.md",
+      "b",
+    ),
+    false,
+  );
+  assert.equal(
+    isActiveLearnerProjectionPath(".breadboard/canonical-shadow/y.md", "b"),
+    false,
+  );
+  assert.equal(
+    isActiveLearnerProjectionPath(".breadboard/backups/z.md", "b"),
+    false,
+  );
+  assert.equal(
+    isActiveLearnerProjectionPath("node_modules/pkg/readme.md", "b"),
+    false,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -678,9 +859,16 @@ test("16/17. quarantine and canonical-shadow are excluded from active scans", ()
 function gardenWithManifest(contract, buildId = "cur") {
   const garden = tmp("garden");
   const manifest = createActiveBuildManifest({
-    buildId, jobId: "job1", gardenSlug: "g", sourceSetFingerprint: "sf",
+    buildId,
+    jobId: "job1",
+    gardenSlug: "g",
+    sourceSetFingerprint: "sf",
     contractFingerprint: contractFingerprint(contract),
-    units: contract.map((u, i) => ({ unitId: u.id, sectionId: "sec1", expectedPagePath: `learning/1. Current/1.${i + 1} ${u.title}.md` })),
+    units: contract.map((u, i) => ({
+      unitId: u.id,
+      sectionId: "sec1",
+      expectedPagePath: `learning/1. Current/1.${i + 1} ${u.title}.md`,
+    })),
     sectionIds: ["sec1"],
   });
   writeActiveBuildManifest(garden, manifest);
@@ -690,64 +878,121 @@ function gardenWithManifest(contract, buildId = "cur") {
 test("7. a foreign-build page for a current unit is removed and flagged for regen", () => {
   const contract = [unit("U1", "Alpha")];
   const { garden, manifest } = gardenWithManifest(contract);
-  writePage(garden, "learning/1. Old/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "OLD_BUILD" });
+  writePage(garden, "learning/1. Old/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "OLD_BUILD",
+  });
   const result = reconcileActiveLearnStructure(garden, contract, manifest);
   assert.ok(result.issuesBefore.some((i) => i.type === "foreign_build_page"));
-  assert.equal(fs.existsSync(path.join(garden, "learning", "1. Old", "1.1 Alpha.md")), false);
+  assert.equal(
+    fs.existsSync(path.join(garden, "learning", "1. Old", "1.1 Alpha.md")),
+    false,
+  );
   assert.ok(result.pagesRegenerated.includes("U1"));
 });
 
 test("8. an unknown-unit page (U24) is quarantined out of the active tree", () => {
   const contract = [unit("U1", "Alpha")];
   const { garden, manifest } = gardenWithManifest(contract);
-  writePage(garden, "learning/1. Current/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "cur" });
-  writePage(garden, "learning/9. Obsolete/9.1 Ghost.md", { learningUnitId: "U24", generatedByBuildId: "cur" });
+  writePage(garden, "learning/1. Current/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "cur",
+  });
+  writePage(garden, "learning/9. Obsolete/9.1 Ghost.md", {
+    learningUnitId: "U24",
+    generatedByBuildId: "cur",
+  });
   const result = reconcileActiveLearnStructure(garden, contract, manifest);
-  assert.ok(result.issuesBefore.some((i) => i.type === "unknown_learning_unit" && i.unitId === "U24"));
-  assert.equal(fs.existsSync(path.join(garden, "learning", "9. Obsolete", "9.1 Ghost.md")), false);
+  assert.ok(
+    result.issuesBefore.some(
+      (i) => i.type === "unknown_learning_unit" && i.unitId === "U24",
+    ),
+  );
+  assert.equal(
+    fs.existsSync(path.join(garden, "learning", "9. Obsolete", "9.1 Ghost.md")),
+    false,
+  );
   assert.equal(result.pagesQuarantined.length, 1);
   // quarantined copy is under .breadboard/quarantine and NOT active
   assert.ok(result.pagesQuarantined[0].startsWith(".breadboard/quarantine/"));
-  assert.equal(isActiveLearnerProjectionPath(result.pagesQuarantined[0], "cur"), false);
+  assert.equal(
+    isActiveLearnerProjectionPath(result.pagesQuarantined[0], "cur"),
+    false,
+  );
 });
 
 test("9. a duplicate unit page keeps the manifest candidate and removes the other", () => {
   const contract = [unit("U1", "Alpha")];
   const { garden, manifest } = gardenWithManifest(contract);
   // Manifest expects learning/1. Current/1.1 Alpha.md
-  writePage(garden, "learning/1. Current/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "cur" });
-  writePage(garden, "learning/1. Why Alpha Matters/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "cur" });
+  writePage(garden, "learning/1. Current/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "cur",
+  });
+  writePage(garden, "learning/1. Why Alpha Matters/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "cur",
+  });
   const result = reconcileActiveLearnStructure(garden, contract, manifest);
   assert.ok(result.issuesBefore.some((i) => i.type === "duplicate_unit_page"));
-  assert.ok(fs.existsSync(path.join(garden, "learning", "1. Current", "1.1 Alpha.md")));
-  assert.equal(fs.existsSync(path.join(garden, "learning", "1. Why Alpha Matters", "1.1 Alpha.md")), false);
+  assert.ok(
+    fs.existsSync(path.join(garden, "learning", "1. Current", "1.1 Alpha.md")),
+  );
+  assert.equal(
+    fs.existsSync(
+      path.join(garden, "learning", "1. Why Alpha Matters", "1.1 Alpha.md"),
+    ),
+    false,
+  );
   assert.ok(result.pagesKept.includes("learning/1. Current/1.1 Alpha.md"));
 });
 
 test("10. two older-build duplicates are both removed and the unit is regenerated", () => {
   const contract = [unit("U1", "Alpha")];
   const { garden, manifest } = gardenWithManifest(contract);
-  writePage(garden, "learning/1. A/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "OLD1" });
-  writePage(garden, "learning/1. B/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "OLD2" });
+  writePage(garden, "learning/1. A/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "OLD1",
+  });
+  writePage(garden, "learning/1. B/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "OLD2",
+  });
   const result = reconcileActiveLearnStructure(garden, contract, manifest);
-  assert.equal(fs.existsSync(path.join(garden, "learning", "1. A", "1.1 Alpha.md")), false);
-  assert.equal(fs.existsSync(path.join(garden, "learning", "1. B", "1.1 Alpha.md")), false);
+  assert.equal(
+    fs.existsSync(path.join(garden, "learning", "1. A", "1.1 Alpha.md")),
+    false,
+  );
+  assert.equal(
+    fs.existsSync(path.join(garden, "learning", "1. B", "1.1 Alpha.md")),
+    false,
+  );
   assert.ok(result.pagesRegenerated.includes("U1"));
 });
 
 test("11. a missing unit page is flagged for regeneration", () => {
   const contract = [unit("U1", "Alpha"), unit("U2", "Beta")];
   const { garden, manifest } = gardenWithManifest(contract);
-  writePage(garden, "learning/1. Current/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "cur" });
+  writePage(garden, "learning/1. Current/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "cur",
+  });
   const result = reconcileActiveLearnStructure(garden, contract, manifest);
-  assert.ok(result.issuesBefore.some((i) => i.type === "missing_unit_page" && i.unitId === "U2"));
+  assert.ok(
+    result.issuesBefore.some(
+      (i) => i.type === "missing_unit_page" && i.unitId === "U2",
+    ),
+  );
   assert.ok(result.pagesRegenerated.includes("U2"));
 });
 
 test("18. structural reconciliation is idempotent on a clean tree", () => {
   const contract = [unit("U1", "Alpha")];
   const { garden, manifest } = gardenWithManifest(contract);
-  writePage(garden, "learning/1. Current/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "cur" });
+  writePage(garden, "learning/1. Current/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "cur",
+  });
   const first = reconcileActiveLearnStructure(garden, contract, manifest);
   assert.equal(first.changed, false);
   assert.deepEqual(detectStructuralIssues(garden, contract, manifest), []);
@@ -764,21 +1009,35 @@ test("19-24. projection reset removes disposable projections, preserves durable 
   const contract = [unit("U1", "Alpha")];
   const { garden, manifest } = gardenWithManifest(contract);
   fs.writeFileSync(path.join(garden, ".breadboard", "claims.json"), "{}");
-  fs.writeFileSync(path.join(garden, ".breadboard", "source-visuals.json"), "[]");
+  fs.writeFileSync(
+    path.join(garden, ".breadboard", "source-visuals.json"),
+    "[]",
+  );
   fs.mkdirSync(path.join(garden, "sources"), { recursive: true });
   fs.writeFileSync(path.join(garden, "sources", "s.md"), "x");
   const result = resetDisposableLearnProjections(garden, manifest);
   assert.ok(result.removed.includes(".breadboard/claims.json"));
-  assert.equal(fs.existsSync(path.join(garden, ".breadboard", "claims.json")), false);
-  assert.ok(fs.existsSync(path.join(garden, ".breadboard", "source-visuals.json"))); // durable preserved
+  assert.equal(
+    fs.existsSync(path.join(garden, ".breadboard", "claims.json")),
+    false,
+  );
+  assert.ok(
+    fs.existsSync(path.join(garden, ".breadboard", "source-visuals.json")),
+  ); // durable preserved
   assert.ok(result.preservedDurableInputs.includes("sources"));
 });
 
 test("35. recoverable vs terminal issue classification", () => {
   assert.equal(isRecoverableLearnIssue({ type: "duplicate_unit_page" }), true);
   assert.equal(isRecoverableLearnIssue({ type: "stale_claim_mapping" }), true);
-  assert.equal(isRecoverableLearnIssue({ type: "source_evidence_unavailable" }), false);
-  assert.equal(isRecoverableLearnIssue({ type: "repair_budget_exhausted" }), false);
+  assert.equal(
+    isRecoverableLearnIssue({ type: "source_evidence_unavailable" }),
+    false,
+  );
+  assert.equal(
+    isRecoverableLearnIssue({ type: "repair_budget_exhausted" }),
+    false,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -793,7 +1052,10 @@ test("45/47. atomic promotion swaps in the staging tree without a mixed result",
   const dest = path.join(parent, "published");
   fs.mkdirSync(path.join(dest, "learning"), { recursive: true });
   fs.writeFileSync(path.join(dest, "learning", "old.md"), "old");
-  const result = await promoteStagingGarden({ stagingGardenDir: staging, destinationGardenDir: dest });
+  const result = await promoteStagingGarden({
+    stagingGardenDir: staging,
+    destinationGardenDir: dest,
+  });
   assert.equal(result.promoted, true);
   assert.ok(fs.existsSync(path.join(dest, "learning", "new.md")));
   assert.equal(fs.existsSync(path.join(dest, "learning", "old.md")), false); // fully swapped, not merged
@@ -808,7 +1070,8 @@ test("46. failed manifest verification preserves the previous published garden",
   fs.mkdirSync(dest, { recursive: true });
   fs.writeFileSync(path.join(dest, "keep.md"), "old");
   const result = await promoteStagingGarden({
-    stagingGardenDir: staging, destinationGardenDir: dest,
+    stagingGardenDir: staging,
+    destinationGardenDir: dest,
     verifyManifest: () => false,
   });
   assert.equal(result.promoted, false);
@@ -834,7 +1097,10 @@ test("46a. promoted candidate keeps the logical garden basename during verificat
 
   assert.equal(result.promoted, true, result.reason);
   assert.equal(path.basename(verifiedCandidate), "electromagnetism-1");
-  assert.equal(fs.readFileSync(path.join(destination, "candidate.md"), "utf8"), "new");
+  assert.equal(
+    fs.readFileSync(path.join(destination, "candidate.md"), "utf8"),
+    "new",
+  );
 });
 
 test("46b. destination concurrency check aborts before swap", async () => {
@@ -854,7 +1120,10 @@ test("46b. destination concurrency check aborts before swap", async () => {
 
   assert.equal(result.promoted, false);
   assert.match(result.reason, /destination changed while staging/);
-  assert.equal(fs.readFileSync(path.join(dest, "keep.md"), "utf8"), "concurrent edit");
+  assert.equal(
+    fs.readFileSync(path.join(dest, "keep.md"), "utf8"),
+    "concurrent edit",
+  );
   assert.equal(fs.existsSync(path.join(dest, "new.md")), false);
 });
 
@@ -875,7 +1144,10 @@ test("46c. caller may retain the previous tree until a second resource commits",
 
   assert.equal(result.promoted, true);
   assert.ok(result.previousPreservedAt);
-  assert.equal(fs.readFileSync(path.join(result.previousPreservedAt, "old.md"), "utf8"), "old");
+  assert.equal(
+    fs.readFileSync(path.join(result.previousPreservedAt, "old.md"), "utf8"),
+    "old",
+  );
   assert.equal(fs.readFileSync(path.join(dest, "new.md"), "utf8"), "new");
 });
 
@@ -914,13 +1186,16 @@ test("47c. a legacy in-garden lock is honored and migrated to stable storage", (
   const legacyPath = path.join(garden, ".breadboard", "learn-build.lock.json");
   fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
   const timestamp = new Date().toISOString();
-  fs.writeFileSync(legacyPath, `${JSON.stringify({
-    gardenSlug: "g",
-    jobId: "legacy-job",
-    buildId: "legacy-build",
-    acquiredAt: timestamp,
-    heartbeatAt: timestamp,
-  })}\n`);
+  fs.writeFileSync(
+    legacyPath,
+    `${JSON.stringify({
+      gardenSlug: "g",
+      jobId: "legacy-job",
+      buildId: "legacy-build",
+      acquiredAt: timestamp,
+      heartbeatAt: timestamp,
+    })}\n`,
+  );
 
   const blocked = acquireGardenLearnLock(garden, {
     gardenSlug: "g",
@@ -957,7 +1232,10 @@ test("48/50. a heartbeat keeps a long job fresh; a truly stale lock is recoverab
 
   // The job has existed for more than five minutes, but its recent heartbeat
   // prevents another process from stealing valid ownership.
-  assert.equal(heartbeatGardenLearnLock(garden, "job1", started + 4 * 60 * 1000), true);
+  assert.equal(
+    heartbeatGardenLearnLock(garden, "job1", started + 4 * 60 * 1000),
+    true,
+  );
   const stillOwned = acquireGardenLearnLock(
     garden,
     { gardenSlug: "g", jobId: "job2", buildId: "b2" },
@@ -972,7 +1250,10 @@ test("48/50. a heartbeat keeps a long job fresh; a truly stale lock is recoverab
     started + 10 * 60 * 1000,
   );
   assert.equal(takeover.acquired, true);
-  assert.equal(heartbeatGardenLearnLock(garden, "job1", started + 11 * 60 * 1000), false);
+  assert.equal(
+    heartbeatGardenLearnLock(garden, "job1", started + 11 * 60 * 1000),
+    false,
+  );
   releaseGardenLearnLock(garden, "job1");
   assert.equal(readGardenLearnLock(garden)?.jobId, "job2");
   releaseGardenLearnLock(garden, "job2");
@@ -981,7 +1262,9 @@ test("48/50. a heartbeat keeps a long job fresh; a truly stale lock is recoverab
 test("48b. atomic acquisition lets exactly one competing process win", async () => {
   const garden = tmp("lock-race");
   const results = await Promise.all(
-    Array.from({ length: 8 }, (_, index) => runLockContender(garden, `job-${index}`)),
+    Array.from({ length: 8 }, (_, index) =>
+      runLockContender(garden, `job-${index}`),
+    ),
   );
   assert.equal(results.filter((result) => result.acquired).length, 1);
   const winner = readGardenLearnLock(garden);
@@ -992,9 +1275,8 @@ test("48b. atomic acquisition lets exactly one competing process win", async () 
 test("48c. repeated public owner fields do not make a fresh lease reentrant", async () => {
   const garden = tmp("lock-same-owner-race");
   const results = await Promise.all(
-    Array.from(
-      { length: 8 },
-      () => runLockContender(garden, "same-job", "same-build"),
+    Array.from({ length: 8 }, () =>
+      runLockContender(garden, "same-job", "same-build"),
     ),
   );
   assert.equal(results.filter((result) => result.acquired).length, 1);
@@ -1052,7 +1334,9 @@ test("49. the auto-renewing lease remains owned beyond the original stale bounda
   assert.equal(duplicate.acquired, false);
 
   clock = started + LOCK_STALE_MS + 1000;
-  await eventually(() => Date.parse(readGardenLearnLock(garden)?.heartbeatAt ?? "") === clock);
+  await eventually(
+    () => Date.parse(readGardenLearnLock(garden)?.heartbeatAt ?? "") === clock,
+  );
   const competitor = acquireGardenLearnLock(
     garden,
     { gardenSlug: "g", jobId: "other-job", buildId: "other-build" },
@@ -1062,6 +1346,54 @@ test("49. the auto-renewing lease remains owned beyond the original stale bounda
   assert.equal(result.lease.lost, false);
   assert.equal(result.lease.release(), true);
   assert.equal(readGardenLearnLock(garden), null);
+});
+
+test("49b. a live process-bound mutation lease survives a blocked heartbeat but expires absolutely", () => {
+  const garden = tmp("lock-process-bound");
+  const started = Date.now();
+  const processBoundMs = 10 * 60 * 1000;
+  const original = acquireGardenLearnLease(
+    garden,
+    {
+      gardenSlug: "g",
+      jobId: "blocked-ingestion",
+      buildId: "blocked-ingestion-build",
+    },
+    {
+      now: () => started,
+      processBoundStaleMs: processBoundMs,
+    },
+  );
+  assert.equal(original.acquired, true);
+  if (!original.acquired) return;
+
+  const whileAlive = acquireGardenLearnLock(
+    garden,
+    { gardenSlug: "g", jobId: "ordinary-edit", buildId: "ordinary-edit-build" },
+    started + LOCK_STALE_MS + 1,
+  );
+  assert.equal(whileAlive.acquired, false);
+
+  const ordinaryLearnAfterAbsoluteExpiry = acquireGardenLearnLease(
+    garden,
+    {
+      gardenSlug: "g",
+      jobId: "ordinary-learn",
+      buildId: "ordinary-learn-build",
+    },
+    { now: () => started + processBoundMs + 1 },
+  );
+  assert.equal(ordinaryLearnAfterAbsoluteExpiry.acquired, false);
+
+  const afterAbsoluteExpiry = acquireGardenLearnLock(
+    garden,
+    { gardenSlug: "g", jobId: "recovery", buildId: "recovery-build" },
+    started + processBoundMs + 1,
+  );
+  assert.equal(afterAbsoluteExpiry.acquired, true);
+  assert.equal(original.lease.release(), false);
+  assert.equal(readGardenLearnLock(garden)?.jobId, "recovery");
+  releaseGardenLearnLock(garden, "recovery");
 });
 
 test("50b. an old fenced lease cannot release a stale takeover with the same job id", () => {
@@ -1126,7 +1458,11 @@ test("50d. guard contention and unreadable state remain uncertain, not lost", ()
   assert.equal(result.lease.confirmOwnership(), "uncertain");
   assert.equal(result.lease.lost, false);
 
-  fs.writeFileSync(stableLock, `${JSON.stringify(expectedLock, null, 2)}\n`, "utf8");
+  fs.writeFileSync(
+    stableLock,
+    `${JSON.stringify(expectedLock, null, 2)}\n`,
+    "utf8",
+  );
   assert.equal(result.lease.confirmOwnership(), "owned");
   assert.equal(result.lease.release(), true);
 });
@@ -1167,16 +1503,24 @@ test("11 (flag). LEARN_FINALIZATION_MODE defaults to legacy", () => {
   assert.equal(learnFinalizationMode(), "legacy");
   process.env.LEARN_FINALIZATION_MODE = "convergent";
   assert.equal(learnFinalizationMode(), "convergent");
-  if (prev === undefined) delete process.env.LEARN_FINALIZATION_MODE; else process.env.LEARN_FINALIZATION_MODE = prev;
+  if (prev === undefined) delete process.env.LEARN_FINALIZATION_MODE;
+  else process.env.LEARN_FINALIZATION_MODE = prev;
 });
 
 function convergenceWorkspace(contract, buildId = "cur") {
   const { garden, manifest } = gardenWithManifest(contract, buildId);
   const ws = {
-    buildId, jobId: "job1", gardenSlug: "g", mode: "generate",
-    repositoryGardenDir: garden, workspaceRoot: garden,
-    stagingGardenDir: garden, stagingLearningDir: path.join(garden, "learning"),
-    contractFingerprint: "cf", sourceSetFingerprint: "sf", createdAt: new Date().toISOString(),
+    buildId,
+    jobId: "job1",
+    gardenSlug: "g",
+    mode: "generate",
+    repositoryGardenDir: garden,
+    workspaceRoot: garden,
+    stagingGardenDir: garden,
+    stagingLearningDir: path.join(garden, "learning"),
+    contractFingerprint: "cf",
+    sourceSetFingerprint: "sf",
+    createdAt: new Date().toISOString(),
   };
   return { ws, garden, manifest };
 }
@@ -1184,12 +1528,20 @@ function convergenceWorkspace(contract, buildId = "cur") {
 test("25/32. structural cleanup precedes semantics; loop stops accepted at zero blockers", async () => {
   const contract = [unit("U1", "Alpha")];
   const { ws, garden } = convergenceWorkspace(contract);
-  writePage(garden, "learning/1. Current/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "cur" });
+  writePage(garden, "learning/1. Current/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "cur",
+  });
   let fp = 0;
   const result = await runLearnConvergenceLoop(ws, contract, {
     runSemanticPass: async () => ({
-      issues: [], deterministicOperations: [], modelPackets: [],
-      modelDecisionsReceived: 0, modelDecisionsVerified: 0, modelDecisionsRejected: 0, changedFiles: [],
+      issues: [],
+      deterministicOperations: [],
+      modelPackets: [],
+      modelDecisionsReceived: 0,
+      modelDecisionsVerified: 0,
+      modelDecisionsRejected: 0,
+      changedFiles: [],
     }),
     stateFingerprint: () => String(fp),
   });
@@ -1202,12 +1554,19 @@ test("26/28. deterministic structural repair happens before ChatMock; a verified
   const contract = [unit("U1", "Alpha")];
   const { ws, garden } = convergenceWorkspace(contract);
   // A foreign page will be removed structurally in round 1; regen restores it.
-  writePage(garden, "learning/1. Old/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "OLD" });
+  writePage(garden, "learning/1. Old/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "OLD",
+  });
   let semanticCalls = 0;
   let fp = 0;
   const result = await runLearnConvergenceLoop(ws, contract, {
     regenerateUnitPages: async (unitIds) => {
-      for (const id of unitIds) writePage(garden, `learning/1. Current/1.1 Alpha.md`, { learningUnitId: id, generatedByBuildId: "cur" });
+      for (const id of unitIds)
+        writePage(garden, `learning/1. Current/1.1 Alpha.md`, {
+          learningUnitId: id,
+          generatedByBuildId: "cur",
+        });
       fp += 1;
       return unitIds.map((id) => `learning/1. Current/1.1 Alpha.md#${id}`);
     },
@@ -1218,14 +1577,32 @@ test("26/28. deterministic structural repair happens before ChatMock; a verified
       if (round === 1) {
         fp += 1;
         return {
-          issues: [{ issueId: "sem:1", type: "contract_page_anchor", severity: "blocking", reason: "anchor drift" }],
-          deterministicOperations: [], modelPackets: [{}],
-          modelDecisionsReceived: 1, modelDecisionsVerified: 1, modelDecisionsRejected: 0,
+          issues: [
+            {
+              issueId: "sem:1",
+              type: "contract_page_anchor",
+              severity: "blocking",
+              reason: "anchor drift",
+            },
+          ],
+          deterministicOperations: [],
+          modelPackets: [{}],
+          modelDecisionsReceived: 1,
+          modelDecisionsVerified: 1,
+          modelDecisionsRejected: 0,
           changedFiles: ["learning/1. Current/1.1 Alpha.md"],
         };
       }
       fp += 1;
-      return { issues: [], deterministicOperations: [], modelPackets: [], modelDecisionsReceived: 0, modelDecisionsVerified: 0, modelDecisionsRejected: 0, changedFiles: [] };
+      return {
+        issues: [],
+        deterministicOperations: [],
+        modelPackets: [],
+        modelDecisionsReceived: 0,
+        modelDecisionsVerified: 0,
+        modelDecisionsRejected: 0,
+        changedFiles: [],
+      };
     },
     stateFingerprint: () => String(fp),
   });
@@ -1237,15 +1614,34 @@ test("26/28. deterministic structural repair happens before ChatMock; a verified
 test("33. loop stops on proven no-progress instead of churning", async () => {
   const contract = [unit("U1", "Alpha")];
   const { ws, garden } = convergenceWorkspace(contract);
-  writePage(garden, "learning/1. Current/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "cur" });
-  const result = await runLearnConvergenceLoop(ws, contract, {
-    runSemanticPass: async () => ({
-      issues: [{ issueId: "sem:stuck", type: "contract_page_anchor", severity: "blocking", reason: "cannot fix" }],
-      deterministicOperations: [], modelPackets: [],
-      modelDecisionsReceived: 0, modelDecisionsVerified: 0, modelDecisionsRejected: 0, changedFiles: [],
-    }),
-    stateFingerprint: () => "constant", // never changes → no progress
-  }, { enableChatMockRepairs: false });
+  writePage(garden, "learning/1. Current/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "cur",
+  });
+  const result = await runLearnConvergenceLoop(
+    ws,
+    contract,
+    {
+      runSemanticPass: async () => ({
+        issues: [
+          {
+            issueId: "sem:stuck",
+            type: "contract_page_anchor",
+            severity: "blocking",
+            reason: "cannot fix",
+          },
+        ],
+        deterministicOperations: [],
+        modelPackets: [],
+        modelDecisionsReceived: 0,
+        modelDecisionsVerified: 0,
+        modelDecisionsRejected: 0,
+        changedFiles: [],
+      }),
+      stateFingerprint: () => "constant", // never changes → no progress
+    },
+    { enableChatMockRepairs: false },
+  );
   assert.equal(result.passed, false);
   assert.equal(result.stoppedReason, "no_progress");
 });
@@ -1253,12 +1649,26 @@ test("33. loop stops on proven no-progress instead of churning", async () => {
 test("chatmock-unavailable with a non-deterministic blocker stops as chatmock_unavailable", async () => {
   const contract = [unit("U1", "Alpha")];
   const { ws, garden } = convergenceWorkspace(contract);
-  writePage(garden, "learning/1. Current/1.1 Alpha.md", { learningUnitId: "U1", generatedByBuildId: "cur" });
+  writePage(garden, "learning/1. Current/1.1 Alpha.md", {
+    learningUnitId: "U1",
+    generatedByBuildId: "cur",
+  });
   const result = await runLearnConvergenceLoop(ws, contract, {
     runSemanticPass: async () => ({
-      issues: [{ issueId: "sem:amb", type: "section_semantic_mismatch", severity: "blocking", reason: "ambiguous" }],
-      deterministicOperations: [], modelPackets: [],
-      modelDecisionsReceived: 0, modelDecisionsVerified: 0, modelDecisionsRejected: 0, changedFiles: [],
+      issues: [
+        {
+          issueId: "sem:amb",
+          type: "section_semantic_mismatch",
+          severity: "blocking",
+          reason: "ambiguous",
+        },
+      ],
+      deterministicOperations: [],
+      modelPackets: [],
+      modelDecisionsReceived: 0,
+      modelDecisionsVerified: 0,
+      modelDecisionsRejected: 0,
+      changedFiles: [],
       chatMockUnavailable: true,
     }),
     stateFingerprint: () => "s",

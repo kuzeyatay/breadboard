@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { capabilityForInternalToolRequest } from "@/lib/hermes/tool-service-auth.ts";
 import { tokenAllows, verifyCapabilityToken } from "@/lib/hermes/capability-token.ts";
@@ -24,44 +25,55 @@ import {
   SPOTIFY_SKILL_SLUG,
 } from "@/lib/spotify/service.ts";
 import {
-  ensureSpotifyPlaybackEngine,
+  issueSpotifyPlaybackEngineTicket,
   spotifyPlaybackEngineStatus,
 } from "@/lib/spotify/playback-engine.ts";
+import {
+  releaseSpotifyPlaybackViewLease,
+  renewSpotifyPlaybackViewLease,
+} from "@/lib/spotify/view-lease.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 async function startInlinePlaylistPlayback(input: {
   userId: number;
-  requestOrigin: string;
   uris: string[];
 }): Promise<boolean> {
-  let engine = ensureSpotifyPlaybackEngine(input.userId, input.requestOrigin);
-  for (let attempt = 0; attempt < 20 && !engine.ready; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    engine = spotifyPlaybackEngineStatus(input.userId);
-  }
-  if (!engine.ready || !engine.deviceId) return false;
+  const viewId = randomUUID();
   try {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await spotifyApiRequest({
-        userId: input.userId,
-        method: "PUT",
-        endpoint: "/v1/me/player/play",
-        query: { device_id: engine.deviceId },
-        body: { uris: input.uris },
-      });
-      for (let poll = 0; poll < 6; poll += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 350));
-        const current = await spotifyCurrentPlaybackState(input.userId).catch(
-          () => null,
-        );
-        if (
-          current?.isPlaying === true &&
-          input.uris.includes(current.track.uri)
-        ) {
-          return true;
-        }
+    await renewSpotifyPlaybackViewLease({
+      userId: input.userId,
+      viewId,
+      ticket: issueSpotifyPlaybackEngineTicket(input.userId),
+    });
+  } catch {
+    return false;
+  }
+  try {
+    let engine = await spotifyPlaybackEngineStatus(input.userId);
+    for (let attempt = 0; attempt < 20 && !engine.ready; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      engine = await spotifyPlaybackEngineStatus(input.userId);
+    }
+    if (!engine.ready || !engine.deviceId) return false;
+    await spotifyApiRequest({
+      userId: input.userId,
+      method: "PUT",
+      endpoint: "/v1/me/player/play",
+      query: { device_id: engine.deviceId },
+      body: { uris: input.uris },
+    });
+    for (let poll = 0; poll < 18; poll += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      const current = await spotifyCurrentPlaybackState(input.userId).catch(
+        () => null,
+      );
+      if (
+        current?.isPlaying === true &&
+        input.uris.includes(current.track.uri)
+      ) {
+        return true;
       }
     }
     return false;
@@ -70,6 +82,11 @@ async function startInlinePlaylistPlayback(input: {
     // queue available so a transient playback-device delay is recoverable with
     // the widget's Play control instead of turning the write into a false fail.
     return false;
+  } finally {
+    await releaseSpotifyPlaybackViewLease({
+      userId: input.userId,
+      viewId,
+    });
   }
 }
 
@@ -156,7 +173,6 @@ export async function POST(request: Request) {
           const playbackStarted = shouldPlay
             ? await startInlinePlaylistPlayback({
                 userId: session.user_id!,
-                requestOrigin: new URL(request.url).origin,
                 uris: tracks.map((track) => track.uri),
               })
             : false;

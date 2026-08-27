@@ -56,12 +56,12 @@ function connectionMode(provider: PostizProviderConnection): string {
  * catalog — Discord, YouTube, Reddit, TikTok, Pinterest among them — behind a
  * connection the user may never want.
  */
-async function liveSettings() {
+async function liveSettings(userId: number) {
   // Opening this dialog *is* the channel-connection flow, which is one of the
   // few things that legitimately needs the real stack. Nothing else on this
   // route activates Postiz: the network checkboxes below are answered from
   // local settings while the containers stay stopped.
-  const availability = await openPostizSession({ reason: "channels" });
+  const availability = await openPostizSession({ scope: { userId }, reason: "channels" });
   if (!availability.session) {
     return {
       availability,
@@ -154,7 +154,7 @@ function responseForError(error: unknown) {
 export async function GET() {
   try {
     const userId = await requireUserId();
-    return NextResponse.json(present(await liveSettings(), draftingNetworks(userId)));
+    return NextResponse.json(present(await liveSettings(userId), draftingNetworks(userId)));
   } catch (error) {
     return responseForError(error);
   }
@@ -175,10 +175,10 @@ export async function POST(request: Request) {
     // stack is down, which is exactly when a run drafts locally.
     if (action === "networks") {
       const networks = saveDraftingNetworks(userId, body.networks);
-      return NextResponse.json(present(await liveSettings(), networks));
+      return NextResponse.json(present(await liveSettings(userId), networks));
     }
 
-    const settings = await liveSettings();
+    const settings = await liveSettings(userId);
     const session = settings.availability.session;
     if (!session) {
       return NextResponse.json(
@@ -195,7 +195,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: false, error: "Unknown connected account." }, { status: 404 });
       }
       await session.client.deleteIntegration(integrationId);
-      return NextResponse.json(present(await liveSettings(), draftingNetworks(userId)));
+      return NextResponse.json(present(await liveSettings(userId), draftingNetworks(userId)));
     }
 
     const providerId = typeof body.providerId === "string"
@@ -267,7 +267,7 @@ export async function POST(request: Request) {
       const rawTimezone = typeof body.timezone === "number" ? body.timezone : 0;
       const timezone = Math.max(-840, Math.min(840, Math.round(rawTimezone)));
       await session.client.completeConnection({ providerId, state, code, timezone });
-      return NextResponse.json(present(await liveSettings(), draftingNetworks(userId)));
+      return NextResponse.json(present(await liveSettings(userId), draftingNetworks(userId)));
     }
 
     return NextResponse.json({ ok: false, error: "Unknown settings action." }, { status: 400 });

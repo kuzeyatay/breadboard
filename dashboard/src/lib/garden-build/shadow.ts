@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { renderAcceptedGardenSnapshot } from "../garden-renderer/render-garden.ts";
 import type { RenderedGardenManifest } from "../garden-renderer/manifest.ts";
 import { validateRenderedGardenProjection, type ProjectionValidationResult } from "../garden-renderer/projection-validation.ts";

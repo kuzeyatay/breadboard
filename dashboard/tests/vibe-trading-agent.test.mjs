@@ -217,35 +217,30 @@ test("the clone is recognised by the two files Breadboard actually runs", () => 
   assert.equal(isClone(path.join(repoRoot, "tradingagents")), false);
 });
 
-test("the service is started against ChatMock, with shell tools off", () => {
+test("the Runtime profile pins ChatMock, authentication, and shell safety", () => {
   const service = source("src/lib/vibe-trading/service.ts");
-  const runManager = source("src/lib/vibe-trading/run-manager.ts");
+  const runtimeFacade = source("src/lib/vibe-trading/runtime-run-manager.ts");
   // The clone's `openai` provider with an overridden base URL is what makes
   // ChatMock the model layer; without all three the process reaches OpenAI.
   assert.match(service, /LANGCHAIN_PROVIDER:\s*"openai"/);
   assert.match(service, /OPENAI_BASE_URL:\s*options\.baseUrl/);
   assert.match(service, /OPENAI_API_KEY:\s*options\.apiKey/);
-  // Reasoning is selected per chat turn. It must reach the clone and take part
-  // in the restart fingerprint because the clone reads it only at boot.
+  // Reasoning is selected per chat turn and reaches the closed launch profile.
   assert.match(service, /LANGCHAIN_REASONING_EFFORT:\s*options\.reasoningEffort/);
-  assert.match(
-    service,
-    /effectiveModel\(options\),\s*options\.reasoningEffort,\s*credentialFingerprint\(\)/,
-  );
-  assert.match(service, /credentialFingerprint\(\),\s*agentLoopFingerprint\(\)/);
-  assert.match(runManager, /reasoningEffort:\s*input\.reasoningEffort/);
-  // A per-process bearer: without one the clone trusts every loopback peer.
-  assert.match(service, /API_AUTH_KEY:\s*apiKey/);
-  assert.match(service, /randomBytes\(24\)/);
+  assert.match(runtimeFacade, /reasoningEffort:\s*input\.reasoningEffort/);
+  // Runtime injects the per-launch bearer into both sides; it is never minted
+  // or returned by the renderer-facing adapter.
+  assert.match(service, /serviceAuthentication:\s*"runtime-injected"/);
+  assert.match(service, /apiKey:\s*endpoint\.apiKey/);
   assert.match(service, /VIBE_TRADING_ENABLE_SHELL_TOOLS:\s*"0"/);
-  // Configuration reaches the clone as environment only. The clone has a
-  // settings API that persists into `agent/.env` inside the user's checkout;
-  // calling it would overwrite their own keys and conflict with a `git pull`.
+  // The clone's settings API and direct process ownership stay absent.
   for (const file of ["service.ts", "run-manager.ts", "setup.ts"]) {
     const text = source(`src/lib/vibe-trading/${file}`);
-    assert.doesNotMatch(text, /writeFile|appendFile/, `${file} writes into the clone`);
     assert.doesNotMatch(text, /\/settings\//, `${file} mutates the clone's settings`);
+    assert.doesNotMatch(text, /node:child_process|spawn\(|detached:|stopService/);
   }
+  assert.match(service, /runtimeServiceConfigPath\(\)/);
+  assert.match(service, /flag:\s*"wx"/);
 });
 
 test("one empty ChatMock turn is retried before Vibe becomes unavailable", () => {

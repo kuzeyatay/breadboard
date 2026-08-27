@@ -11,9 +11,12 @@
 // and treats as the database. Relocating it would only mean the gallery and the
 // agent disagreed about where the wardrobe lives.
 
-import fs from "node:fs";
 import path from "node:path";
-import { repositoryRoot } from "../runtime-paths.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
+import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
 
 /** Files that identify a directory as the Wardrobe clone rather than a namesake. */
 const MARKERS = ["package.json", path.join("scripts", "import-job-api.mjs")];
@@ -34,21 +37,27 @@ export function resolveWardrobeRoot(env: NodeJS.ProcessEnv = process.env): strin
     candidates.find(
       (candidate) =>
         Boolean(candidate) &&
-        MARKERS.every((marker) => fs.existsSync(path.join(candidate as string, marker))),
+        MARKERS.every((marker) =>
+          externalRuntimePathExists(path.join(candidate as string, marker)),
+        ),
     ) ?? null
   );
 }
 
-/** The clone's data directory — its library, its imported assets, its jobs. */
-export function wardrobeDataDir(env: NodeJS.ProcessEnv = process.env): string | null {
-  const root = resolveWardrobeRoot(env);
-  if (!root) return null;
-  return path.resolve(root, env.WARDROBE_DATA_DIR?.trim() || "data");
+/** The immutable source copied and dependency-installed by managed setup. */
+export function wardrobeRuntimeRoot(env: NodeJS.ProcessEnv = process.env): string {
+  return configured(env.WARDROBE_RUNTIME_ROOT) ??
+    path.join(dashboardDataDir(), "runtime-v2", "toolchains", "wardrobe");
+}
+
+/** Runtime-owned library, imported assets, and jobs. */
+export function wardrobeDataDir(env: NodeJS.ProcessEnv = process.env): string {
+  return configured(env.WARDROBE_DATA_DIR) ?? path.join(dashboardDataDir(), "wardrobe-data");
 }
 
 export function libraryFile(env: NodeJS.ProcessEnv = process.env): string | null {
   const data = wardrobeDataDir(env);
-  return data ? path.join(data, "library.json") : null;
+  return path.join(data, "library.json");
 }
 
 /**
@@ -59,15 +68,14 @@ export function libraryFile(env: NodeJS.ProcessEnv = process.env): string | null
  * should not have to upload it a second time.
  */
 export function modelReferencePath(env: NodeJS.ProcessEnv = process.env): string | null {
-  const root = resolveWardrobeRoot(env);
-  if (!root) return null;
-  return path.resolve(root, env.WARDROBE_MODEL_REFERENCE?.trim() || "data/model-reference.png");
+  return configured(env.WARDROBE_MODEL_REFERENCE) ??
+    path.join(wardrobeDataDir(env), "model-reference.png");
 }
 
 export function hasModelReference(env: NodeJS.ProcessEnv = process.env): boolean {
   const reference = modelReferencePath(env);
   try {
-    return Boolean(reference) && fs.statSync(reference as string).isFile();
+    return Boolean(reference) && externalRuntimeStat(reference as string).isFile();
   } catch {
     return false;
   }
@@ -75,10 +83,8 @@ export function hasModelReference(env: NodeJS.ProcessEnv = process.env): boolean
 
 /** Vite's own entry point inside the clone, run through Node so no shim is spawned. */
 export function viteEntry(env: NodeJS.ProcessEnv = process.env): string | null {
-  const root = resolveWardrobeRoot(env);
-  if (!root) return null;
-  const entry = path.join(root, "node_modules", "vite", "bin", "vite.js");
-  return fs.existsSync(entry) ? entry : null;
+  const entry = path.join(wardrobeRuntimeRoot(env), "node_modules", "vite", "bin", "vite.js");
+  return externalRuntimePathExists(entry) ? entry : null;
 }
 
 /**
@@ -91,11 +97,10 @@ export function installedDependencies(env: NodeJS.ProcessEnv = process.env): {
   vite: boolean;
   sharp: boolean;
 } {
-  const root = resolveWardrobeRoot(env);
-  if (!root) return { vite: false, sharp: false };
+  const root = wardrobeRuntimeRoot(env);
   return {
     vite: Boolean(viteEntry(env)),
-    sharp: fs.existsSync(path.join(root, "node_modules", "sharp", "package.json")),
+    sharp: externalRuntimePathExists(path.join(root, "node_modules", "sharp", "package.json")),
   };
 }
 

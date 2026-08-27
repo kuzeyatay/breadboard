@@ -6,9 +6,9 @@
 // model-driven, so a traversal attempt is an expected input, not a hypothetical.
 
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import db from "../db.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
 import type {
   BookType,
@@ -253,7 +253,19 @@ export function writeSkillFile(slug: string, relativePath: string, content: stri
   const target = skillFilePath(slug, relativePath);
   if (!target) throw new Error(`Invalid skill file path: ${relativePath}`);
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, content, "utf8");
+  const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    const descriptor = fs.openSync(temporary, "r+");
+    try {
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.renameSync(temporary, target);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
 
 export function listSkillFiles(slug: string): DocumentSkillFile[] {

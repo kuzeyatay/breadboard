@@ -6,10 +6,15 @@ import type { ArtifactKind } from "../hermes/artifact-types.ts";
 import {
   WatermarkError,
   containWorkspacePath,
-  parseReport,
-  runScript,
 } from "./scripts.ts";
 import { selectAttachment, type CleanableAttachment } from "./attachments.ts";
+import {
+  auditWatermarksViaRuntime,
+  cleanWatermarkViaRuntime,
+  inspectWatermarkViaRuntime,
+  type WatermarkRuntimeControl,
+  type WatermarkRuntimeScope,
+} from "../runtime-v2/watermark-job.ts";
 
 // The agent-facing layer behind the `watermark_*` Hermes tools. The route owns
 // session identity and artifact registration; nothing here reads a user id from
@@ -23,6 +28,35 @@ import { selectAttachment, type CleanableAttachment } from "./attachments.ts";
 // it. The skill tells it to do the rewrite itself.
 
 export { WatermarkError };
+
+export interface WatermarkRuntimeExecution {
+  scope: WatermarkRuntimeScope;
+  signal?: AbortSignal;
+  control?: WatermarkRuntimeControl;
+}
+
+function requireRuntime(
+  execution: WatermarkRuntimeExecution | undefined,
+): WatermarkRuntimeExecution {
+  if (!execution) {
+    throw new WatermarkError(
+      500,
+      "watermarks_runtime_scope_required",
+      "Watermark work requires an authenticated Runtime scope.",
+    );
+  }
+  return execution;
+}
+
+function runtimeFailure(what: string, error: unknown): never {
+  if (error instanceof WatermarkError) throw error;
+  const detail = error instanceof Error ? error.message : String(error ?? "unknown error");
+  throw new WatermarkError(
+    502,
+    "watermarks_runtime_failed",
+    `${what} failed in the managed Runtime: ${detail.slice(0, 400)}`,
+  );
+}
 
 /** Inline text over this many characters is a file, not a chat message. */
 const MAX_INLINE_TEXT = 400_000;
@@ -175,15 +209,26 @@ export async function inspectSource(
   workspace: string,
   args: Record<string, unknown>,
   attachments: readonly CleanableAttachment[],
+  execution?: WatermarkRuntimeExecution,
 ): Promise<InspectResult> {
   const source = resolveSource(workspace, args, attachments);
   try {
-    // Inline text is text by construction; the file router would otherwise
-    // classify a `.md` scratch file as a container and skip the codepoint scan.
-    const script = source.kind === "text" ? "inspect_text.py" : "inspect_file.py";
-    const flags = args.aggressive === true ? ["--aggressive"] : [];
-    const run = await runScript(script, [source.filePath, "--json", ...flags], workspace);
-    const report = parseReport(run, `Inspecting ${source.label}`);
+    const runtime = requireRuntime(execution);
+    let report: Record<string, unknown>;
+    try {
+      // Inline text is text by construction; the file router would otherwise
+      // classify a `.md` scratch file as a container and skip the codepoint scan.
+      report = await inspectWatermarkViaRuntime({
+        scope: runtime.scope,
+        sourcePath: source.filePath,
+        mode: source.kind === "text" ? "text" : "auto",
+        aggressive: args.aggressive === true,
+        signal: runtime.signal,
+        control: runtime.control,
+      });
+    } catch (error) {
+      runtimeFailure(`Inspecting ${source.label}`, error);
+    }
     return {
       source: source.label,
       sourceKind: source.kind,
@@ -237,29 +282,37 @@ export async function cleanSource(
   workspace: string,
   args: Record<string, unknown>,
   attachments: readonly CleanableAttachment[],
+  execution?: WatermarkRuntimeExecution,
 ): Promise<CleanStaging> {
   const source = resolveSource(workspace, args, attachments);
+  const runtime = requireRuntime(execution);
   const noop = () => {};
   try {
-    const flags: string[] = [];
-    if (args.nfkc === true) flags.push("--nfkc");
-    if (args.aggressiveHomoglyphs === true) flags.push("--aggressive-homoglyphs");
-    if (args.keepNonAiMetadata === true) flags.push("--keep-non-ai-metadata");
-
     if (source.kind === "text") {
       const output = path.join(stagingDir(workspace), `cleaned-${crypto.randomUUID()}.md`);
       // `clean_text.py` writes stats to stderr and the cleaned bytes to the
       // output file. Reading the file rather than stdout matters on Windows:
       // text-mode stdout rewrites every \n to \r\n, which would silently
       // change the line endings of prose the user is about to paste back.
-      const run = await runScript("clean_text.py", [source.filePath, "-o", output, "--stats", ...flags], workspace);
-      if (!fs.existsSync(output)) {
-        parseReport(run, "Cleaning the text");
-        throw new WatermarkError(502, "watermarks_clean_failed", "Cleaning the text produced no output.");
+      let result;
+      try {
+        result = await cleanWatermarkViaRuntime({
+          scope: runtime.scope,
+          sourcePath: source.filePath,
+          outputPath: output,
+          mode: "text",
+          nfkc: args.nfkc === true,
+          aggressiveHomoglyphs: args.aggressiveHomoglyphs === true,
+          signal: runtime.signal,
+          control: runtime.control,
+        });
+      } catch (error) {
+        runtimeFailure("Cleaning the text", error);
       }
+      if (!result.ok) throw new WatermarkError(502, result.errorCode, result.message);
       const cleanedText = fs.readFileSync(output, "utf8");
       fs.rmSync(output, { force: true });
-      const report = parseReport({ ...run, stdout: run.stderr }, "Cleaning the text");
+      const report = result.report;
       const removed = Number(report.removed_count ?? 0) + Number(report.replaced_count ?? 0);
       return {
         source: source.label,
@@ -286,8 +339,24 @@ export async function cleanSource(
       );
     }
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-    const run = await runScript("clean_file.py", [source.filePath, "-o", outputPath, "--json", ...flags], workspace);
-    const report = parseReport(run, `Cleaning ${source.label}`);
+    let result;
+    try {
+      result = await cleanWatermarkViaRuntime({
+        scope: runtime.scope,
+        sourcePath: source.filePath,
+        outputPath,
+        mode: "auto",
+        nfkc: args.nfkc === true,
+        aggressiveHomoglyphs: args.aggressiveHomoglyphs === true,
+        keepNonAiMetadata: args.keepNonAiMetadata === true,
+        signal: runtime.signal,
+        control: runtime.control,
+      });
+    } catch (error) {
+      runtimeFailure(`Cleaning ${source.label}`, error);
+    }
+    if (!result.ok) throw new WatermarkError(502, result.errorCode, result.message);
+    const report = result.report;
     if (!fs.existsSync(outputPath)) {
       throw new WatermarkError(502, "watermarks_clean_failed", `Cleaning ${source.label} produced no output file.`);
     }
@@ -317,6 +386,7 @@ export async function cleanSource(
 export async function auditWorkspace(
   workspace: string,
   args: Record<string, unknown>,
+  execution?: WatermarkRuntimeExecution,
 ): Promise<{ directory: string; report: Record<string, unknown> }> {
   const requested = readString(args, "directory");
   const target = requested
@@ -325,9 +395,22 @@ export async function auditWorkspace(
   if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
     throw new WatermarkError(404, "watermarks_directory_not_found", `${requested ?? "."} is not a directory in the workspace.`);
   }
-  const run = await runScript("audit_dir.py", [target, "--json", "--skip", ".watermarks,.officecli,.breadboard"], workspace);
+  const directory = path.relative(workspace, target).replace(/\\/g, "/") || ".";
+  const runtime = requireRuntime(execution);
+  let report: Record<string, unknown>;
+  try {
+    report = await auditWatermarksViaRuntime({
+      scope: runtime.scope,
+      auditRoot: target,
+      directory,
+      signal: runtime.signal,
+      control: runtime.control,
+    });
+  } catch (error) {
+    runtimeFailure("Auditing the workspace", error);
+  }
   return {
-    directory: path.relative(workspace, target).replace(/\\/g, "/") || ".",
-    report: parseReport(run, "Auditing the workspace"),
+    directory,
+    report,
   };
 }

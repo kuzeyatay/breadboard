@@ -9,22 +9,24 @@
 import { recordAuditEvent } from "../hermes/runtime-store.ts";
 import type { HermesSurface } from "../hermes/config.ts";
 import type { CapabilityMode } from "../hermes/capability-policy.ts";
-import { decideEngagement, deliveryFor } from "./governance.ts";
 import {
-  LoopxError,
+  LoopxTickRuntimeError,
+  runLoopxTickViaRuntime,
+} from "../runtime-v2/loopx-tick-job.ts";
+import { decideEngagement } from "./governance.ts";
+import { LoopxError, loopxText } from "./request.ts";
+import {
   loopxEnabled,
   loopxGoalExists,
   loopxPaths,
-  loopxText,
-  resolveLoopxRuntime,
-  runLoopx,
-} from "./runtime.ts";
-import { buildSnapshot, readObjective, writeSnapshot } from "./snapshot.ts";
+} from "./state.ts";
 
 /** One tick per conversation at a time; a second request is dropped, not queued. */
 const inFlight = new Set<string>();
 
 export interface LoopxTickInput {
+  userId: number;
+  gardenId: string | null;
   conversationPublicId: string;
   surface: HermesSurface;
   mode: CapabilityMode;
@@ -64,81 +66,41 @@ export async function runLoopxTick(
     hasGoal,
   });
   if (!engagement.engaged) return { ran: false, reason: engagement.reason };
-  if (!resolveLoopxRuntime(env)) {
-    return { ran: false, reason: "runtime_unavailable" };
-  }
   if (inFlight.has(input.conversationPublicId)) {
     return { ran: false, reason: "tick_in_flight" };
   }
   inFlight.add(input.conversationPublicId);
-  const started = Date.now();
   const paths = loopxPaths(input.conversationPublicId, env);
   try {
-    if (!hasGoal) {
-      const objective = loopxText(input.objective) || "Continue this work";
-      await runLoopx({
+    const result = await runLoopxTickViaRuntime({
+      scope: {
+        userId: input.userId,
+        gardenId: input.gardenId,
+        conversationId: input.conversationPublicId,
+      },
+      request: {
+        protocolVersion: 1,
+        operation: "tick",
         conversationPublicId: input.conversationPublicId,
-        command: [
-          "bootstrap",
-          "--project",
-          paths.project,
-          "--goal-id",
-          paths.goalId,
-          "--objective",
-          objective,
-          // The project directory is Breadboard's own, so there is nothing to
-          // scan, and the shared registry is never written.
-          "--no-onboarding-scan",
-          "--no-global-sync",
-        ],
-        env,
-      });
-    }
-
-    const delivery = deliveryFor(input);
-    await runLoopx({
-      conversationPublicId: input.conversationPublicId,
-      command: [
-        "refresh-state",
-        "--goal-id",
-        paths.goalId,
-        "--project",
-        paths.project,
-        "--classification",
-        delivery.classification,
-        "--delivery-batch-scale",
-        delivery.scale,
-        "--delivery-outcome",
-        delivery.outcome,
-        "--no-global-sync",
-        "--suppress-external-sinks",
-      ],
-      env,
+        turnSequence: input.userTurnCount,
+        objective: loopxText(input.objective) || "Continue this work",
+        outcome: input.outcome,
+        toolCalls: input.toolCalls,
+        producedArtifact: input.producedArtifact,
+      },
     });
-
-    const quota = await runLoopx({
-      conversationPublicId: input.conversationPublicId,
-      command: ["quota", "should-run", "--goal-id", paths.goalId],
-      env,
-    });
-    writeSnapshot(
-      input.conversationPublicId,
-      buildSnapshot({
-        goalId: paths.goalId,
-        objective: readObjective(paths.stateFile),
-        quota: quota.payload,
-        capturedAt: new Date().toISOString(),
-      }),
-      env,
-    );
     return {
       ran: true,
       reason: engagement.reason,
-      created: !hasGoal,
-      goalId: paths.goalId,
-      durationMs: Date.now() - started,
+      created: result.created,
+      goalId: result.goalId,
+      durationMs: result.durationMs,
     };
   } catch (error) {
+    if (
+      error instanceof LoopxTickRuntimeError &&
+      error.code === "loopx_runtime_unavailable"
+    ) return { ran: false, reason: "runtime_unavailable" };
     // A failed tick must never surface as a failed turn. Record it and leave the
     // previous snapshot alone: stale loop context is better than none, and the
     // next completed turn tries again.
@@ -146,7 +108,10 @@ export async function runLoopxTick(
       eventType: "loopx.tick_failed",
       payload: {
         goalId: paths.goalId,
-        code: error instanceof LoopxError ? error.code : "loopx_unknown_error",
+        code:
+          error instanceof LoopxError || error instanceof LoopxTickRuntimeError
+            ? error.code
+            : "loopx_unknown_error",
         message: loopxText(
           error instanceof Error ? error.message : String(error),
           300,

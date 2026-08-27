@@ -1,5 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { validateFormulaAssignment } from "../formula-assignment.ts";
 import { buildCanonicalFormulaUsageIndex, parseFormulaMetadataEntries, resolveWorkedExampleLineage, type FormulaUsageRepairPacket } from "../formula-usage-reconciliation.ts";
 import { buildFinalGardenState } from "../final-garden-state.ts";

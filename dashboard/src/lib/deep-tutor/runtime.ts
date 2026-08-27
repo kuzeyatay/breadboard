@@ -3,18 +3,20 @@
 // Like the TradingAgents clone, this is a real Python package with a heavy
 // dependency tree (llama-index, FAISS, PyMuPDF, FastAPI). Breadboard never
 // installs it behind a run: the agent's settings dialog asks, the user agrees,
-// and everything lands in `DeepTutor/.venv` — inside the clone, covered by its
-// own .gitignore, and removable by deleting one directory.
+// and Runtime owns the environment under its mutable service data root.
 //
 // Two Breadboard-owned files drive it, both outside the clone so a `git pull`
 // there never conflicts: `scripts/deeptutor-bridge.py` runs one turn and
 // reports NDJSON, and `scripts/deeptutor-files-mcp.mjs` is the read-only file
 // server the tutor reaches its material through.
 
-import { spawn } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
-import { repositoryRoot } from "../runtime-paths.ts";
+import { repositoryRoot, runtimeV2ServiceVenv } from "../runtime-paths.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
 
 export interface DeepTutorRuntime {
   /** Directory of the cloned repository — the cwd of every command. */
@@ -47,7 +49,6 @@ export interface DeepTutorHealth {
   reason: string | null;
 }
 
-const PROBE_TIMEOUT_MS = 90_000;
 const HEALTH_CACHE_MS = 20_000;
 
 function configured(value: string | undefined): string | null {
@@ -58,9 +59,9 @@ function configured(value: string | undefined): string | null {
 /** A directory is a DeepTutor clone when the package and its CLI are there. */
 export function isClone(candidate: string): boolean {
   return (
-    fs.existsSync(path.join(candidate, "deeptutor", "app", "facade.py")) &&
-    fs.existsSync(path.join(candidate, "deeptutor_cli", "main.py")) &&
-    fs.existsSync(path.join(candidate, "pyproject.toml"))
+    externalRuntimePathExists(path.join(candidate, "deeptutor", "app", "facade.py")) &&
+    externalRuntimePathExists(path.join(candidate, "deeptutor_cli", "main.py")) &&
+    externalRuntimePathExists(path.join(candidate, "pyproject.toml"))
   );
 }
 
@@ -76,18 +77,14 @@ export function resolveDeepTutorRoot(
   }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({ root: path.join(repositoryRoot(), "DeepTutor"), source: "repository" });
-  candidates.push({ root: path.resolve(process.cwd(), "DeepTutor"), source: "cwd" });
-  candidates.push({ root: path.resolve(process.cwd(), "..", "DeepTutor"), source: "cwd" });
   return candidates.find((candidate) => isClone(candidate.root)) ?? null;
 }
 
 function ownScript(name: string): string | null {
   const candidates = [
     path.join(repositoryRoot(), "scripts", name),
-    path.resolve(process.cwd(), "scripts", name),
-    path.resolve(process.cwd(), "..", "scripts", name),
   ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  return candidates.find((candidate) => externalRuntimePathExists(candidate)) ?? null;
 }
 
 /** The turn bridge, which is Breadboard's own file and not part of the clone. */
@@ -101,7 +98,8 @@ export function fileServerScriptPath(): string | null {
 }
 
 export function venvDirectory(root: string): string {
-  return path.join(root, ".venv");
+  void root;
+  return runtimeV2ServiceVenv("deep-tutor");
 }
 
 /** The Python inside the clone's virtual environment, if it has been built. */
@@ -110,7 +108,7 @@ export function venvPython(root: string): string | null {
     process.platform === "win32"
       ? path.join(venvDirectory(root), "Scripts", "python.exe")
       : path.join(venvDirectory(root), "bin", "python");
-  return fs.existsSync(candidate) ? candidate : null;
+  return externalRuntimePathExists(candidate) ? candidate : null;
 }
 
 /** Find an executable on PATH, honouring PATHEXT on Windows. */
@@ -118,7 +116,7 @@ export function resolveOnPath(
   executable: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  if (path.isAbsolute(executable)) return fs.existsSync(executable) ? executable : null;
+  if (path.isAbsolute(executable)) return externalRuntimePathExists(executable) ? executable : null;
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   const directories = (env[pathKey] ?? "").split(path.delimiter).filter(Boolean);
   const extensions =
@@ -128,7 +126,7 @@ export function resolveOnPath(
   for (const directory of directories) {
     for (const extension of extensions) {
       const candidate = path.join(directory, `${executable}${extension}`);
-      if (fs.existsSync(candidate)) return candidate;
+      if (externalRuntimePathExists(candidate)) return candidate;
     }
   }
   return null;
@@ -136,7 +134,7 @@ export function resolveOnPath(
 
 function safeSize(file: string): number {
   try {
-    return fs.statSync(file).size;
+    return externalRuntimeStat(file).size;
   } catch {
     return 0;
   }
@@ -149,7 +147,7 @@ function safeSize(file: string): number {
  */
 export function findSystemPython(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = configured(env.DEEP_TUTOR_PYTHON);
-  if (explicit && fs.existsSync(explicit)) return explicit;
+  if (explicit && externalRuntimePathExists(explicit)) return explicit;
   for (const name of ["python3", "python"]) {
     const found = resolveOnPath(name, env);
     // The Windows Store alias is a zero-byte reparse point that opens the Store
@@ -166,7 +164,7 @@ export function uvPath(env: NodeJS.ProcessEnv = process.env): string | null {
 /** The Node that runs the file server. Under Electron, argv[0] is the shell. */
 export function nodeExecutable(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = configured(env.DEEP_TUTOR_NODE);
-  if (explicit && fs.existsSync(explicit)) return explicit;
+  if (explicit && externalRuntimePathExists(explicit)) return explicit;
   return resolveOnPath("node", env) ?? process.execPath;
 }
 
@@ -192,93 +190,13 @@ export function deepTutorEnv(
   };
 }
 
-export interface CommandResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-}
-
-/**
- * Run one command for the clone. Never throws: every caller either reports the
- * failure to the user or turns it into a health reason.
- */
-export function runCommand(
-  command: string,
-  args: string[],
-  options: {
-    cwd: string;
-    timeoutMs: number;
-    env?: Record<string, string | undefined>;
-    maxOutputChars?: number;
-    onChild?: (kill: () => void) => void;
-    onStdout?: (chunk: string) => void;
-  },
-): Promise<CommandResult> {
-  const limit = options.maxOutputChars ?? 200_000;
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(command, args, {
-        cwd: options.cwd,
-        windowsHide: true,
-        env: deepTutorEnv(options.env ?? {}),
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (error) {
-      resolve({
-        code: null,
-        stdout: "",
-        stderr: error instanceof Error ? error.message : "spawn failed",
-        timedOut: false,
-      });
-      return;
-    }
-    options.onChild?.(() => {
-      try {
-        child.kill();
-      } catch {
-        // Already gone.
-      }
-    });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    child.stdout?.setEncoding("utf8");
-    child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      options.onStdout?.(chunk);
-      if (stdout.length < limit) stdout += chunk;
-    });
-    child.stderr?.on("data", (chunk: string) => {
-      if (stderr.length < 32_000) stderr += chunk;
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill();
-      } catch {
-        // Already gone.
-      }
-    }, options.timeoutMs);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({ code: null, stdout, stderr: error.message, timedOut });
-    });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
-    });
-  });
-}
-
 export function cloneVersion(root: string): string | null {
   for (const relative of [
     ["deeptutor", "__version__.py"],
     ["pyproject.toml"],
   ]) {
     try {
-      const text = fs.readFileSync(path.join(root, ...relative), "utf8");
+      const text = externalRuntimeReadUtf8(path.join(root, ...relative));
       const found =
         /__version__\s*=\s*["']([^"']+)["']/.exec(text)?.[1] ??
         /^version\s*=\s*"([^"]+)"/m.exec(text)?.[1];
@@ -297,10 +215,18 @@ interface HealthCache {
 
 const globalCache = globalThis as typeof globalThis & {
   __breadboardDeepTutorHealth?: HealthCache;
-  __breadboardDeepTutorHealthInFlight?: Promise<DeepTutorHealth>;
 };
 
-async function probe(): Promise<DeepTutorHealth> {
+export interface DeepTutorEnvironmentProbe {
+  packageInstalled: boolean;
+  mcpInstalled: boolean;
+  timedOut: boolean;
+  detail: string;
+}
+
+async function probe(
+  probeEnvironment?: () => Promise<DeepTutorEnvironmentProbe>,
+): Promise<DeepTutorHealth> {
   const runtime = resolveDeepTutorRoot();
   const bridgeFound = Boolean(bridgeScriptPath());
   const fileServerFound = Boolean(fileServerScriptPath());
@@ -345,20 +271,25 @@ async function probe(): Promise<DeepTutorHealth> {
   }
 
   // Importing the package is the only check that means anything: the venv can
-  // exist with a half-finished install behind it. `mcp` is checked in the same
-  // breath because without it the tutor can start and then be blind to every
-  // file — a failure that would otherwise look like a bad answer.
-  const probeResult = await runCommand(
-    python,
-    [
-      "-c",
-      "import importlib.util as u; import deeptutor; from deeptutor.app import DeepTutorApp;"
-        + " print('ok mcp' if u.find_spec('mcp') else 'ok')",
-    ],
-    { cwd: runtime.root, timeoutMs: PROBE_TIMEOUT_MS },
-  );
-  const packageInstalled = probeResult.code === 0 && probeResult.stdout.includes("ok");
-  const mcpInstalled = probeResult.stdout.includes("ok mcp");
+  // exist with a half-finished install behind it. Native Runtime owns that
+  // interpreter and its complete process tree; this module only assembles the
+  // stable health response around the fenced result.
+  let probeResult: DeepTutorEnvironmentProbe;
+  try {
+    if (!probeEnvironment) {
+      throw new Error("Breadboard's Runtime health worker is unavailable.");
+    }
+    probeResult = await probeEnvironment();
+  } catch (error) {
+    probeResult = {
+      packageInstalled: false,
+      mcpInstalled: false,
+      timedOut: error instanceof DOMException && error.name === "TimeoutError",
+      detail: error instanceof Error ? error.message : "The environment check failed.",
+    };
+  }
+  const packageInstalled = probeResult.packageInstalled;
+  const mcpInstalled = probeResult.mcpInstalled;
 
   if (!packageInstalled) {
     return {
@@ -371,7 +302,7 @@ async function probe(): Promise<DeepTutorHealth> {
       reason: probeResult.timedOut
         ? "The Deep Tutor environment did not answer in time."
         : `The Deep Tutor environment exists but the package does not import. ${
-            probeResult.stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? ""
+            probeResult.detail
           }`.trim(),
     };
   }
@@ -406,24 +337,17 @@ async function probe(): Promise<DeepTutorHealth> {
 }
 
 /** Cached because the probe really starts a Python interpreter. */
-export async function health(options: { force?: boolean } = {}): Promise<DeepTutorHealth> {
+export async function health(options: {
+  force?: boolean;
+  probeEnvironment?: () => Promise<DeepTutorEnvironmentProbe>;
+} = {}): Promise<DeepTutorHealth> {
   const cached = globalCache.__breadboardDeepTutorHealth;
   if (!options.force && cached && Date.now() - cached.at < HEALTH_CACHE_MS) {
     return cached.health;
   }
-  if (globalCache.__breadboardDeepTutorHealthInFlight) {
-    return globalCache.__breadboardDeepTutorHealthInFlight;
-  }
-  const request = probe()
-    .then((result) => {
-      globalCache.__breadboardDeepTutorHealth = { at: Date.now(), health: result };
-      return result;
-    })
-    .finally(() => {
-      globalCache.__breadboardDeepTutorHealthInFlight = undefined;
-    });
-  globalCache.__breadboardDeepTutorHealthInFlight = request;
-  return request;
+  const result = await probe(options.probeEnvironment);
+  globalCache.__breadboardDeepTutorHealth = { at: Date.now(), health: result };
+  return result;
 }
 
 /** Drop the cached probe so the next read reflects a setup step just taken. */

@@ -3,10 +3,9 @@
 // These are the ONLY capabilities the breadboard-garden and breadboard-quartz
 // agents may use to touch garden content. Each tool is a thin, schema-validated
 // adapter that:
-//   1. reads the short-lived capability token from this session's isolated
-//      workspace (written there by the Breadboard gateway, never in the prompt),
-//   2. calls back to Breadboard's internal tool endpoint over the loopback,
-//   3. returns the bounded, structured result to the model.
+//   1. authenticates the Hermes process and session to Breadboard's loopback
+//      endpoint, where a short-lived capability is minted from server state,
+//   2. returns the bounded, structured result to the model.
 //
 // The garden/quartz agents have no shell, file, git, or network tools — only
 // these. Breadboard intersects every requested garden with the token's

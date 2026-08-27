@@ -33,6 +33,7 @@ import ChatJumpToBottom from '@/app/components/chat-jump-to-bottom';
 import ChatMessageRail, {
   type ChatMessageRailItem,
 } from '@/app/components/chat-message-rail';
+import ChatMessageAttachments from '@/app/components/chat-message-attachments';
 import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
 import ActivityPanel from '@/app/components/hermes/activity-panel';
@@ -509,10 +510,11 @@ const TranscriptRow = memo(function TranscriptRow({
             </CollapsibleUserMessage>
           </>
         )}
-        {message.attachmentNames?.length ? (
-          <p className="mt-1.5 text-[11px] text-gray-500">
-            {message.attachmentNames.join(' · ')}
-          </p>
+        {message.role === 'user' ? (
+          <ChatMessageAttachments
+            attachments={message.attachments}
+            attachmentNames={message.attachmentNames}
+          />
         ) : null}
         </div>
         {message.role === 'assistant' && showActions ? (
@@ -618,6 +620,13 @@ export default function GardenAssistant({
   const [attachmentStatus, setAttachmentStatus] = useState('');
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const [learnState, setLearnState] = useState<AssistantLearnState | null>(null);
+  const learnStatusClusterRef = useRef(activeClusterSlug);
+  learnStatusClusterRef.current = activeClusterSlug;
+  const learnStatusRequestRef = useRef<{
+    clusterSlug: string;
+    controller: AbortController;
+    promise: Promise<AssistantLearnState | null>;
+  } | null>(null);
   const [learnBusy, setLearnBusy] = useState(false);
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
   const [showPrompts, setShowPrompts] = useState(false);
@@ -758,26 +767,62 @@ export default function GardenAssistant({
     setMessages(activeChat?.messages ?? []);
   }, [activeChat?.id, activeChat?.messages]);
 
-  const fetchLearnStatus = useCallback(async () => {
+  const fetchLearnStatus = useCallback((): Promise<AssistantLearnState | null> => {
     if (!activeClusterSlug) {
+      learnStatusRequestRef.current?.controller.abort();
+      learnStatusRequestRef.current = null;
       setLearnState(null);
-      return;
+      return Promise.resolve(null);
     }
-    try {
-      const response = await fetch(
-        `/api/gardens/${encodeURIComponent(activeClusterSlug)}/learn/status`,
-      );
-      if (!response.ok) return;
-      const data = (await response.json().catch(() => ({}))) as AssistantLearnState;
-      setLearnState(data);
-    } catch {
-      // Learn status is best-effort in the assistant panel.
+    const existing = learnStatusRequestRef.current;
+    if (
+      existing?.clusterSlug === activeClusterSlug &&
+      !existing.controller.signal.aborted
+    ) {
+      return existing.promise;
     }
+    existing?.controller.abort();
+
+    const clusterSlug = activeClusterSlug;
+    const controller = new AbortController();
+    const promise = (async () => {
+      try {
+        const response = await fetch(
+          `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/status`,
+          { signal: controller.signal },
+        );
+        if (!response.ok) return null;
+        const data = (await response.json().catch(() => ({}))) as AssistantLearnState;
+        if (
+          !controller.signal.aborted &&
+          learnStatusClusterRef.current === clusterSlug
+        ) {
+          setLearnState(data);
+          return data;
+        }
+      } catch {
+        // Learn status is best-effort in the assistant panel.
+      } finally {
+        if (learnStatusRequestRef.current?.controller === controller) {
+          learnStatusRequestRef.current = null;
+        }
+      }
+      return null;
+    })();
+    learnStatusRequestRef.current = { clusterSlug, controller, promise };
+    return promise;
   }, [activeClusterSlug]);
 
   useEffect(() => {
     void fetchLearnStatus();
-  }, [fetchLearnStatus]);
+    return () => {
+      const request = learnStatusRequestRef.current;
+      if (request?.clusterSlug === activeClusterSlug) {
+        learnStatusRequestRef.current = null;
+        request.controller.abort();
+      }
+    };
+  }, [activeClusterSlug, fetchLearnStatus]);
 
   useEffect(() => {
     const active = isAssistantLearnActive(learnState?.job?.status) || learnBusy;

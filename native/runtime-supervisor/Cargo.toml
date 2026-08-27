@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
   "Win32_Security",
   "Win32_System_Console",
   "Win32_System_IO",

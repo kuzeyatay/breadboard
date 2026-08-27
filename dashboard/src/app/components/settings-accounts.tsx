@@ -354,6 +354,7 @@ export default function SettingsAccounts() {
    */
   useEffect(() => {
     if (!subscriptionLogin) return;
+    const loginState = subscriptionLogin.state;
 
     const timer = window.setInterval(() => {
       void (async () => {
@@ -399,7 +400,14 @@ export default function SettingsAccounts() {
       })();
     }, POLL_INTERVAL_MS);
 
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      void fetch(`/api/cliproxy/login?state=${encodeURIComponent(loginState)}`, {
+        method: "DELETE",
+        cache: "no-store",
+        keepalive: true,
+      }).catch(() => undefined);
+    };
   }, [subscriptionLogin, refreshSubscriptions, syncSubscriptionModels]);
 
   /**

@@ -10,9 +10,8 @@
 // launch. Looking up "the current chat" when the run finishes would attach an
 // hour-old report to whatever the person happens to be reading by then.
 
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import {
   createArtifact,
   createImportedArtifact,
@@ -27,6 +26,7 @@ import {
 } from "../hermes/runtime-store.ts";
 import { getConversationForUser } from "../conversations/store.ts";
 import { findExternalAgentAssistantMessage } from "../conversations/external-agent-turns.ts";
+import { dashboardDataDir } from "../runtime-paths.ts";
 
 export const DEER_FLOW_PRESENT_TOOL = "deer_flow_present_files";
 
@@ -198,12 +198,12 @@ function safeFilename(name: string): string {
  * Store one file a run presented. Never throws: a file the store refuses is
  * reported to the run so it can say so, and must not cost the answer.
  */
-export function saveDeerFlowArtifact(input: {
+export async function saveDeerFlowArtifact(input: {
   context: DeerFlowArtifactContext;
   /** The virtual path DeerFlow reported, kept as provenance. */
   path: string;
   bytes: Buffer;
-}): { ok: true; artifact: ArtifactRow } | { ok: false; reason: string } {
+}): Promise<{ ok: true; artifact: ArtifactRow } | { ok: false; reason: string }> {
   const filename = safeFilename(input.path.split("/").filter(Boolean).pop() ?? "output");
   const extension = path.extname(filename).toLowerCase();
   const title = filename.slice(0, 240);
@@ -241,8 +241,12 @@ export function saveDeerFlowArtifact(input: {
         content: input.bytes.toString("utf8"),
         sourceHermesTool: DEER_FLOW_PRESENT_TOOL,
       });
-      void renderArtifact({ artifact, runId: input.context.runId, assistantMessageId });
-      return { ok: true, artifact };
+      const rendered = await renderArtifact({
+        artifact,
+        runId: input.context.runId,
+        assistantMessageId,
+      });
+      return { ok: true, artifact: rendered };
     }
 
     if (!binaryKind) {
@@ -251,11 +255,15 @@ export function saveDeerFlowArtifact(input: {
 
     // The import path only reads from a root it can verify, so the bytes are
     // staged first and the same containment check runs over the copy.
-    const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-deer-flow-"));
+    // The outer worker derives BREADBOARD_DATA_DIR from its sealed launch. Keep
+    // staging there so the worker does not need inherited TEMP/TMP authority.
+    const stagingParent = path.join(dashboardDataDir(), "runtime", "deer-flow", "artifact-stage");
+    fs.mkdirSync(stagingParent, { recursive: true, mode: 0o700 });
+    const stagingRoot = fs.mkdtempSync(path.join(stagingParent, "run-"));
     try {
       const staged = path.join(stagingRoot, filename);
       fs.writeFileSync(staged, input.bytes, { flag: "wx" });
-      const artifact = createImportedArtifact({
+      const artifact = await createImportedArtifact({
         ...shared,
         toolCallId: null,
         kind: binaryKind,

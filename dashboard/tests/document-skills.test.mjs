@@ -46,7 +46,7 @@ test("the clone is what segments a document, and it is found where it was cloned
 
 test("segmentation splits at the body headings, not at the table of contents", async () => {
   const text = book({ toc: true, index: true });
-  const structure = await bridge.segmentDocument(text);
+  const structure = await bridge.segmentDocumentInWorker(text);
 
   assert.equal(structure.chapters.length, 3);
   assert.ok(structure.fromClone, "the clone's Python detector should have run");
@@ -68,7 +68,7 @@ test("segmentation splits at the body headings, not at the table of contents", a
 
 test("the TS fallback reaches the same boundaries as the clone", async () => {
   const text = book({ toc: true, index: true });
-  const fromClone = await bridge.segmentDocument(text);
+  const fromClone = await bridge.segmentDocumentInWorker(text);
   const fallback = await bridge.fallbackStructure(text);
 
   assert.equal(fallback.fromClone, false);

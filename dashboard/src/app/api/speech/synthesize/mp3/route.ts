@@ -26,6 +26,7 @@ export async function POST(request: Request) {
       signal: request.signal,
     });
     const mp3 = await speechAsMp3(
+      { userId, gardenId: null, conversationId: null },
       new Uint8Array(await spoken.arrayBuffer()),
       request.signal,
     );

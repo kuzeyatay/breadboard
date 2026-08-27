@@ -18,7 +18,7 @@ const dock = source("../src/app/components/scheduled-chats-dock.tsx");
 const dashboard = source("../src/app/dashboard/dashboard-client.tsx");
 const runner = source("../src/lib/schedules/runner.ts");
 const scheduler = source("../src/lib/schedules/scheduler.ts");
-const instrumentation = source("../src/instrumentation-node.ts");
+const backgroundExecutor = source("../scripts/runtime-v2-background-executor.mjs");
 const eventStream = source("../src/lib/hermes/event-stream.ts");
 
 test("the Prompts palette no longer schedules anything", () => {
@@ -130,10 +130,11 @@ test("the pump can run without a browser attached, and the SSE route still uses 
   assert.match(eventStream, /return pump\.response\(signal, extraHeaders\)/);
 });
 
-test("the scheduler ticks in-process, never overlaps, and never blocks shutdown", () => {
-  assert.match(instrumentation, /startScheduledChatScheduler\(\)/);
-  assert.match(scheduler, /__breadboardChatSchedulerRunning/);
-  assert.match(scheduler, /timer\.unref\(\)/);
+test("the scheduler tick is a native-owned finite worker operation", () => {
+  assert.match(backgroundExecutor, /case "scheduled-chats"/);
+  assert.match(backgroundExecutor, /await runDueScheduledChats\(\)/);
+  assert.match(backgroundExecutor, /await drainDetachedPumps\(sourceRoot\)/);
+  assert.doesNotMatch(scheduler, /setInterval|setTimeout|__breadboardChatScheduler/);
   assert.match(scheduler, /store\.claimDue\(now\)/);
   assert.match(scheduler, /store\.recordRun\(/);
 });

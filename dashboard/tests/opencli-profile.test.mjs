@@ -60,9 +60,9 @@ test("the daemon's profiles are read from its side-effect-free status API", asyn
   assert.equal(seen[0].url, "http://127.0.0.1:19825/status");
   assert.equal(seen[0].header, "1", "the daemon requires its own header");
 
-  const module = source("src/lib/agent-browser/opencli-profile.ts");
+  const sourceText = source("src/lib/agent-browser/opencli-profile.ts");
   assert.ok(
-    !/doctor/.test(module.replace(/^\/\/.*$/gm, "")),
+    !/doctor/.test(sourceText.replace(/^\/\/.*$/gm, "")),
     "doctor auto-starts the daemon, so reading state through it would change what it measures",
   );
 });
@@ -211,16 +211,16 @@ test("a claim that fails leaves the person a browser rather than an error", asyn
   assert.match(renameFailed.reason, /could not name the profile/);
 });
 
-test("the snapshot is taken before the window opens, or the new profile is indistinguishable", () => {
-  const route = source("src/app/api/agent-browser/browser-profile/route.ts");
-  const open = route.slice(route.indexOf('action === "open"'), route.indexOf('action === "close"'));
-  const snapshot = open.indexOf("readBridgeStatus");
-  const launch = open.indexOf("openSignInWindow");
-  const claim = open.indexOf("claimBreadboardProfile");
+test("the Runtime worker snapshots the bridge before launching Chromium", () => {
+  const executor = source("scripts/runtime-v2-agent-browser-profile-executor.mjs");
+  const body = executor.slice(executor.indexOf("executeAgentBrowserProfileOperation"));
+  const snapshot = body.indexOf("readBridgeStatus");
+  const launch = body.indexOf("spawnImpl(browser");
+  const claim = body.indexOf("claimProfile");
 
   assert.ok(snapshot >= 0 && launch >= 0 && claim >= 0);
-  assert.ok(snapshot < launch, "a snapshot taken after the launch would already contain our profile");
-  assert.ok(launch < claim, "there is nothing to claim until the window exists");
+  assert.ok(snapshot < launch, "a snapshot taken after launch would already contain our profile");
+  assert.ok(launch < claim, "there is nothing to claim until the browser exists");
 });
 
 test("the identified profile is remembered, so a re-open does not have to infer it again", async () => {
@@ -360,7 +360,7 @@ test("agent reach passes that environment to the commands it spawns", () => {
   assert.match(runManager, /run\.openCliEnv \?\?= await openCliProfileEnv\(\)/);
   assert.match(
     runManager,
-    /const env = \{ \.\.\.agentReachEnv\(runtime\), \.\.\.run\.openCliEnv \}/,
+    /const env = \{\s*\.\.\.agentReachEnv\(runtime\),\s*\.\.\.run\.openCliEnv,/s,
     "the overlay has to reach the spawned process, not just be computed",
   );
 });

@@ -1,0 +1,10 @@
+{
+  "name": "@breadboard/recall-runtime",
+  "version": "0.4.37",
+  "private": true,
+  "description": "Immutable Windows x64 Screenpipe runtime authority for Breadboard Recall.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@screenpipe/cli-win32-x64": "0.4.37"
+  }
+}

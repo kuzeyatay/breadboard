@@ -93,15 +93,44 @@ test.describe.serial("critical actual-Electron user journeys", () => {
       testInfo,
       "desktop-startup-welcome-gate",
       async () => {
+        // Hot development starts with an empty compiler cache. Wait for the
+        // real startup gate before reading Runtime V2's endpoint publication;
+        // the standalone path used to win this race by accident.
+        await startupPage
+          .getByRole("button", {
+            name: "Welcome to Breadboard. Click to continue.",
+          })
+          .waitFor({ state: "visible", timeout: 6 * 60_000 });
+        const startupState = await startupPage.evaluate(async () => {
+          const desktop = (
+            globalThis as typeof globalThis & {
+              breadboardDesktop?: {
+                getStartupState(): Promise<{
+                  phase: string;
+                  services: Array<{ id: string; required: boolean }>;
+                }>;
+              };
+            }
+          ).breadboardDesktop;
+          return desktop?.getStartupState() ?? null;
+        });
+        expect(startupState?.phase).toBe("ready");
+        expect(startupState?.services).toHaveLength(32);
+        expect(new Set(startupState?.services.map(({ id }) => id)).size).toBe(32);
+        expect(startupState?.services.every(({ required }) => required)).toBe(true);
+        expect(startupState?.services.some(({ id }) => id === "gbrain")).toBe(true);
+
+        const page = await qa.dismissWelcome();
         const endpoints = qa.readEndpoints();
-        expect(endpoints.pid).toBe(await qa.mainProcessPid());
+        expect(endpoints.pid).toBeGreaterThan(0);
+        expect(endpoints.pid).not.toBe(await qa.mainProcessPid());
+        expect(endpoints.urls).not.toHaveProperty("hermes");
         for (const service of ["dashboard", "chatmock", "quartz"] as const) {
           const url = new URL(requiredEndpoint(endpoints.urls, service));
           expect(url.protocol).toBe("http:");
           expect(url.hostname).toBe("127.0.0.1");
         }
 
-        const page = await qa.dismissWelcome();
         await expect(
           page.getByRole("heading", { name: "Sign in", exact: true }),
         ).toBeVisible({ timeout: 60_000 });
@@ -158,6 +187,35 @@ test.describe.serial("critical actual-Electron user journeys", () => {
       name: `Critical QA Garden ${qa.run.runId.slice(-8)}`,
       description: "Disposable local state for the actual Electron critical journey.",
     });
+    const isolatedGardenIndex = path.join(
+      qa.run.paths.dataDir,
+      "quartz",
+      "content",
+      garden.slug,
+      "_index.md",
+    );
+    const repositoryGardenDirectory = path.join(
+      qa.run.paths.repoRoot,
+      "quartz",
+      "content",
+      garden.slug,
+    );
+    await expect
+      .poll(
+        () => ({
+          isolatedGardenExists: fs.existsSync(isolatedGardenIndex),
+          repositoryGardenExists: fs.existsSync(repositoryGardenDirectory),
+        }),
+        {
+          timeout: 10_000,
+          message:
+            "Garden creation must remain inside the disposable QA data root",
+        },
+      )
+      .toEqual({
+        isolatedGardenExists: true,
+        repositoryGardenExists: false,
+      });
     await assertAuthenticatedDashboard(qa.page, garden);
   });
 
@@ -229,7 +287,7 @@ test.describe.serial("critical actual-Electron user journeys", () => {
     qa.diagnostics.assertNoFatal("renderer refresh");
   });
 
-  test("the dashboard terminal opens and closes through visible controls", async ({
+  test("the dashboard terminal boots brown, then opens and closes through visible controls", async ({
     qa,
   }) => {
     await Promise.all([
@@ -238,6 +296,29 @@ test.describe.serial("critical actual-Electron user journeys", () => {
         .getByRole("link", { name: "Back to dashboard", exact: true })
         .click(),
     ]);
+
+    // This assertion deliberately runs before the first terminal click. The
+    // collapsed dock must already be the real, initialized terminal rather
+    // than a white activation placeholder that mounts the terminal on click.
+    const openButton = qa.page.getByRole("button", {
+      name: "Open terminal",
+      exact: true,
+    });
+    await expect(openButton).toBeVisible({ timeout: 60_000 });
+    const dockColors = await qa.page.locator("[data-terminal-dock]").evaluate((dock) => {
+      const probe = document.createElement("div");
+      probe.style.background = "var(--terminal-bar)";
+      document.body.append(probe);
+      const expected = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return {
+        actual: getComputedStyle(dock).backgroundColor,
+        expected,
+      };
+    });
+    expect(dockColors.expected).not.toBe("rgba(0, 0, 0, 0)");
+    expect(dockColors.actual).toBe(dockColors.expected);
+
     await openTerminal(qa.page);
     await closeTerminal(qa.page);
     await assertAuthenticatedDashboard(qa.page, requireGarden(garden));
@@ -257,7 +338,9 @@ test.describe.serial("critical actual-Electron user journeys", () => {
         expect(shutdown.endpoints.pid).toBe(firstEndpoints.pid);
         expect(shutdown.exitCode).toBe(0);
         expect(shutdown.signalCode).toBeNull();
-        expect(shutdown.releasedPorts.length).toBeGreaterThanOrEqual(3);
+        // Runtime V2 exposes Quartz through the dashboard lease route, so the
+        // dashboard and Quartz endpoint URLs can intentionally share a port.
+        expect(shutdown.releasedPorts.length).toBeGreaterThanOrEqual(2);
 
         const page = await qa.dismissWelcome();
         await ensureAuthenticatedDashboard(page, qa.run.bootstrap.auth);
@@ -297,10 +380,10 @@ test.describe.serial("critical actual-Electron user journeys", () => {
     const endpoints = qa.readEndpoints();
     const receipt = await qa.shutdown({ assertPortsReleased: true });
     expect(receipt.endpoints.pid).toBe(endpoints.pid);
-    expect(receipt.mainPid).toBe(endpoints.pid);
+    expect(receipt.mainPid).not.toBe(endpoints.pid);
     expect(receipt.exitCode).toBe(0);
     expect(receipt.signalCode).toBeNull();
-    expect(receipt.releasedPorts.length).toBeGreaterThanOrEqual(3);
+    expect(receipt.releasedPorts.length).toBeGreaterThanOrEqual(2);
     expect(qa.isRunning).toBe(false);
   });
 });

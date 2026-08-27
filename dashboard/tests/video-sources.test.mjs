@@ -284,15 +284,17 @@ test("one video is fetched once, however many callers ask at once", () => {
   }
 });
 
-test("the downloader reuses the app's existing yt-dlp contract", () => {
+test("the downloader delegates to the sealed speech/media Runtime contract", () => {
   const download = read("src/lib/video-sources/download.ts");
-  // YTDLP_PATH is what the desktop shell sets and what Scriberr and Watch read.
-  assert.match(download, /env\.YTDLP_PATH/);
-  // Metadata comes from the shared builder rather than a second argument list.
-  assert.match(download, /buildYtdlpMetadataArgs/);
-  assert.match(download, /from "\.\.\/scriberr\/exec\.ts"/);
-  // A playlist, a livestream and an oversized fetch each fail before any bytes.
-  assert.match(download, /"--no-playlist"/);
-  assert.match(download, /is_live/);
-  assert.match(download, /--max-filesize/);
+  assert.match(download, /downloadVideoSourceViaRuntime/);
+  assert.match(download, /inspectVideoSourceViaRuntime/);
+  assert.doesNotMatch(download, /node:child_process|\bspawn\(|\bexecFile\(/);
+  assert.doesNotMatch(download, /YTDLP_PATH|buildYtdlpMetadataArgs|scriberr\/exec/);
+
+  const executor = read("scripts/runtime-v2-speech-media-executor.mjs");
+  // The fixed worker argv still refuses playlists/config files and bounds the
+  // fetched file; none of these switches come from a renderer request.
+  assert.match(executor, /"--ignore-config", "--no-playlist"/);
+  assert.match(executor, /"--max-filesize", String\(MAX_VIDEO_BYTES\)/);
+  assert.match(executor, /parsed\.is_live === true/);
 });

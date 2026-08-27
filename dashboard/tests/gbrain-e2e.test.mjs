@@ -6,25 +6,25 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// True end-to-end: canonical markdown pages -> durable GBrain indexing (real Bun
+// True end-to-end: canonical markdown pages -> durable GBrain indexing (real Node
 // adapter over PGLite) -> authenticated scoped query through the dashboard trust
-// boundary -> mapped Breadboard citation. Opt-in because it spawns Bun.
+// boundary -> mapped Breadboard citation. Opt-in because it starts the real engine.
 //   BREADBOARD_TEST_GBRAIN_E2E=1 node --test --experimental-strip-types tests/gbrain-e2e.test.mjs
 const ENABLED = process.env.BREADBOARD_TEST_GBRAIN_E2E === "1";
 
 const repoRoot = path.resolve(process.cwd(), "..");
 const PORT = 7799;
 const SECRET = crypto.randomBytes(16).toString("hex");
-const pgDir = fs.mkdtempSync(path.join(os.tmpdir(), "gbrain-e2e-"));
 
 process.env.QUARTZ_CONTENT_PATH = process.env.QUARTZ_CONTENT_PATH || path.join(os.tmpdir(), "gbrain-e2e-content");
 process.env.GBRAIN_MODE = "preferred";
 process.env.GBRAIN_ADAPTER_URL = `http://127.0.0.1:${PORT}`;
 process.env.GBRAIN_ADAPTER_SECRET = SECRET;
 
-async function waitForHealth(url, timeoutMs = 20000) {
+async function waitForHealth(url, child, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) return false;
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(1500) });
       if (r.ok) return true;
@@ -34,21 +34,50 @@ async function waitForHealth(url, timeoutMs = 20000) {
   return false;
 }
 
+async function stopChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise((resolve) => {
+    const forceTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+    forceTimer.unref();
+    child.once("exit", () => {
+      clearTimeout(forceTimer);
+      resolve();
+    });
+    child.kill("SIGTERM");
+  });
+}
+
 test("end-to-end: canonical markdown -> durable index -> scoped query -> mapped citation", { skip: !ENABLED }, async () => {
-  const adapter = spawn("bun", ["run", path.join(repoRoot, "gbrain-adapter", "src", "server.ts")], {
+  const pgDir = fs.mkdtempSync(path.join(os.tmpdir(), "gbrain-e2e-"));
+  const adapter = spawn(process.execPath, [
+    "--no-warnings",
+    "--experimental-transform-types",
+    path.join(repoRoot, "gbrain-adapter", "src", "node-entrypoint.mjs"),
+  ], {
     env: {
       ...process.env,
       GBRAIN_ADAPTER_HOST: "127.0.0.1",
       GBRAIN_ADAPTER_PORT: String(PORT),
       GBRAIN_ADAPTER_SECRET: SECRET,
       GBRAIN_PG_DIR: pgDir,
-      GBRAIN_EMBEDDING_PROVIDER: "hash",
+      GBRAIN_EMBEDDING_PROVIDER: "none",
     },
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  let adapterOutput = "";
+  const capture = (chunk) => {
+    adapterOutput = `${adapterOutput}${chunk}`.slice(-8_000);
+  };
+  adapter.stdout.setEncoding("utf8");
+  adapter.stderr.setEncoding("utf8");
+  adapter.stdout.on("data", capture);
+  adapter.stderr.on("data", capture);
 
   try {
-    assert.ok(await waitForHealth(`http://127.0.0.1:${PORT}/health`), "adapter did not become healthy");
+    assert.ok(
+      await waitForHealth(`http://127.0.0.1:${PORT}/health`, adapter),
+      `adapter did not become healthy\n${adapterOutput}`,
+    );
 
     const dbMod = await import("../src/lib/db.ts");
     const db = dbMod.default;
@@ -109,7 +138,7 @@ test("end-to-end: canonical markdown -> durable index -> scoped query -> mapped 
       db.prepare("DELETE FROM users WHERE id = ?").run(userId);
     }
   } finally {
-    adapter.kill("SIGTERM");
+    await stopChild(adapter);
     fs.rmSync(pgDir, { recursive: true, force: true });
   }
 });

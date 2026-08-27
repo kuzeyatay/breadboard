@@ -1,4 +1,4 @@
-import path from "path";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 // Single authority for the dashboard's mutable-data and repo-root locations.
 //
@@ -35,4 +35,20 @@ export function repositoryRoot(): string {
   return path.basename(process.cwd()).toLowerCase() === "dashboard"
     ? path.resolve(process.cwd(), "..")
     : process.cwd();
+}
+
+/**
+ * Mutable state owned by one supervised Runtime V2 service. Installed
+ * application sources are read-only, so provisioned environments must never
+ * live beside a clone under repositoryRoot().
+ */
+export function runtimeV2ServiceRoot(serviceId: string): string {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(serviceId)) {
+    throw new Error("Invalid Runtime V2 service identifier.");
+  }
+  return path.join(dashboardDataDir(), "runtime-v2", "services", serviceId);
+}
+
+export function runtimeV2ServiceVenv(serviceId: string): string {
+  return path.join(runtimeV2ServiceRoot(serviceId), ".venv");
 }

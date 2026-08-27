@@ -4,8 +4,11 @@
 import { NextResponse } from "next/server";
 import { RouteError } from "../server-auth.ts";
 import { DeepResearchError } from "./service.ts";
+import { runtimeAuthorityErrorResponse } from "../runtime-v2/authority-errors.ts";
 
 export function deepResearchErrorResponse(error: unknown): NextResponse {
+  const runtimeResponse = runtimeAuthorityErrorResponse(error);
+  if (runtimeResponse) return runtimeResponse;
   if (error instanceof DeepResearchError) {
     return NextResponse.json({ ok: false, error: error.code }, { status: error.status });
   }

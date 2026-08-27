@@ -100,20 +100,22 @@ test("missing settings fall back to what the server said it can do", () => {
   assert.equal(options.negativePrompt, COMFYUI_DEFAULT_NEGATIVE);
 });
 
-test("any ComfyUI at the configured URL is used before the vendored one is started", () => {
+test("managed ComfyUI has no dashboard process-launch fallback", () => {
   const server = source("src/lib/comfyui/server.ts");
-  const reachable = server.indexOf("comfyUiReachable(config.baseUrl)");
-  const managed = server.indexOf("!config.managed || !cloneInstalled(config)");
-  assert.ok(reachable > 0 && managed > reachable, "reachability has to be checked first");
-  // One start at a time: two servers on one port is a worse failure than a
-  // slow first render.
-  assert.match(server, /__breadboardComfyUiStart/);
+  assert.doesNotMatch(server, /function launch\(|__breadboardComfyUiStart|comfyUiReachable/);
+  const service = source("src/lib/comfyui/service.ts");
+  assert.match(service, /Managed ComfyUI requires the Breadboard Runtime service owner/);
 });
 
-test("setup is explicit, detached, and reports through the status file", () => {
+test("setup is an authenticated Runtime job and reports through the existing status file", () => {
   const server = source("src/lib/comfyui/server.ts");
-  assert.match(server, /detached: true/);
-  assert.match(server, /COMFYUI_STATUS_PATH: config\.statusFile/);
+  const route = source("src/app/api/comfyui/route.ts");
+  assert.doesNotMatch(server, /node:child_process|\bspawn\s*\(|detached:/);
+  assert.match(server, /writeSetupStatus\(config, "queued"/);
+  assert.match(server, /!isRuntimeV2ServiceControlConfigured\(\)/);
+  assert.match(route, /submitManagedSetupJob\(\{/);
+  assert.match(route, /serviceId: "comfyui"/);
+  assert.match(route, /signal: request\.signal/);
   // Nothing may install or start as a side effect of asking how things are.
   const service = source("src/lib/comfyui/service.ts");
   const statusStart = service.indexOf("export async function comfyUiStatus");
@@ -122,23 +124,18 @@ test("setup is explicit, detached, and reports through the status file", () => {
   assert.doesNotMatch(service.slice(statusStart, statusEnd), /beginSetup|ensureComfyUiRunning/);
 });
 
-test("ComfyUI starts with the app, but only when there is one to start", () => {
-  const autostart = source("src/lib/comfyui/autostart.ts");
-  const instrumentation = source("src/instrumentation-node.ts");
+test("ComfyUI stays stopped at app startup and starts only for an explicit operation", () => {
+  const instrumentation = source("src/instrumentation-runtime.ts");
+  const service = source("src/lib/comfyui/service.ts");
+  const route = source("src/app/api/comfyui/route.ts");
 
-  // Booted from the same place as the chat scheduler and the messaging
-  // gateways, so it runs whether or not a page is open.
-  assert.match(instrumentation, /autostartComfyUi\(\)/);
-
-  // `stopped` is the only state it acts on: installed, managed, enabled, and
-  // nothing already answering. Installing at boot, or starting a second server
-  // next to one the user runs themselves, would both be worse than a slow
-  // first render.
-  assert.match(autostart, /status\.state !== "stopped"/);
-  assert.doesNotMatch(autostart, /beginSetup/);
-  assert.match(autostart, /!config\.enabled \|\| !config\.managed \|\| !config\.autostart/);
-  // Never blocks boot on a Python start.
-  assert.match(autostart, /setTimeout\(/);
+  // Opening Breadboard or its background coordinator must not wake a local
+  // diffusion model. A real render and the existing explicit Start action both
+  // keep their automatic first-operation behavior.
+  assert.doesNotMatch(instrumentation, /autostartComfyUi|comfyui\/autostart/);
+  assert.match(service, /renderComfyUiImage[\s\S]*acquireManagedComfyUiLease\("image-render"\)/);
+  assert.match(service, /startComfyUi[\s\S]*acquireManagedComfyUiLease\("explicit-start"\)/);
+  assert.match(route, /body\.action === "start"[\s\S]*startComfyUi\(config\)/);
 });
 
 test("the settings name is honoured over the browser's claim about models", () => {
@@ -147,12 +144,24 @@ test("the settings name is honoured over the browser's claim about models", () =
   assert.match(service, /capabilities\.checkpoints\.includes\(normalized\.checkpoint\)/);
 });
 
-test("configuration points at the vendored clone but can be sent elsewhere", () => {
+test("managed configuration is sealed by Runtime V2 while explicit external mode is HTTP-only", () => {
   const config = resolveComfyUiConfig({});
   assert.equal(config.baseUrl, "http://127.0.0.1:8188");
   assert.ok(config.cloneRoot.endsWith("comfyui"));
   assert.equal(config.enabled, true);
   assert.equal(config.managed, true);
+
+  const ignoredLegacyOverrides = resolveComfyUiConfig({
+    COMFYUI_URL: "http://10.0.0.4:9000/",
+    COMFYUI_PORT: "9000",
+    COMFYUI_ROOT: path.resolve("untrusted-comfyui"),
+    COMFYUI_ENV_DIR: path.resolve("untrusted-environment"),
+    COMFYUI_RUNTIME_DIR: path.resolve("untrusted-runtime"),
+  });
+  assert.equal(ignoredLegacyOverrides.baseUrl, "http://127.0.0.1:8188");
+  assert.equal(ignoredLegacyOverrides.port, 8188);
+  assert.ok(ignoredLegacyOverrides.cloneRoot.endsWith("comfyui"));
+  assert.ok(ignoredLegacyOverrides.envDir.endsWith(path.join(".runtime", "comfyui-venv")));
 
   const external = resolveComfyUiConfig({
     COMFYUI_URL: "http://10.0.0.4:9000/",
@@ -160,18 +169,33 @@ test("configuration points at the vendored clone but can be sent elsewhere", () 
   });
   assert.equal(external.baseUrl, "http://10.0.0.4:9000");
   assert.equal(external.managed, false);
-  assert.equal(resolveComfyUiConfig({}).autostart, true);
-  assert.equal(resolveComfyUiConfig({ COMFYUI_AUTOSTART: "false" }).autostart, false);
-  const isolatedRuntime = resolveComfyUiConfig({
-    COMFYUI_RUNTIME_DIR: path.resolve("qa-comfy-runtime"),
-  });
-  assert.equal(
-    isolatedRuntime.statusFile,
-    path.resolve("qa-comfy-runtime", "startup-status.json"),
+  assert.throws(() =>
+    resolveComfyUiConfig({
+      COMFYUI_URL: "http://user:secret@10.0.0.4:9000",
+      COMFYUI_MANAGED: "false",
+    }),
   );
-  assert.equal(
-    isolatedRuntime.logFile,
-    path.resolve("qa-comfy-runtime", "comfyui.log"),
+
+  const runtimeManaged = resolveComfyUiConfig({
+    BREADBOARD_RUNTIME_V2_ACTIVE: "true",
+    COMFYUI_MANAGED: "true",
+    COMFYUI_URL: "http://127.0.0.1:43128",
+    COMFYUI_PORT: "43128",
+    COMFYUI_ROOT: path.resolve("comfyui"),
+    COMFYUI_ENV_DIR: path.resolve(".runtime/comfyui-venv"),
+    COMFYUI_RUNTIME_DIR: path.resolve(".runtime/comfyui"),
+  });
+  assert.equal(runtimeManaged.port, 43128);
+  assert.throws(() =>
+    resolveComfyUiConfig({
+      BREADBOARD_RUNTIME_V2_ACTIVE: "true",
+      COMFYUI_MANAGED: "true",
+      COMFYUI_URL: "http://10.0.0.4:43128",
+      COMFYUI_PORT: "43128",
+      COMFYUI_ROOT: path.resolve("comfyui"),
+      COMFYUI_ENV_DIR: path.resolve(".runtime/comfyui-venv"),
+      COMFYUI_RUNTIME_DIR: path.resolve(".runtime/comfyui"),
+    }),
   );
 });
 

@@ -17,8 +17,9 @@
 //
 // Server-only: reads the filesystem and the grants table.
 
-import fs from "node:fs";
-import path from "node:path";
+import type { Dirent } from "node:fs";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 import { createFilesystemGrantStore } from "../hermes/filesystem-grants.ts";
 import db from "../db.ts";
@@ -334,7 +335,7 @@ function walk(
   visit: (file: string, size: number) => void,
 ): void {
   if (depth > 6) return;
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = fs.readdirSync(directory, { withFileTypes: true });
   } catch {

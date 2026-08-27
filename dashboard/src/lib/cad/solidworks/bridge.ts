@@ -20,9 +20,14 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import { CadServiceError } from "../errors.ts";
 import { solidworksAvailability, solidworksRunning } from "./availability.ts";
-import { solidworksHome, solidworksPaths, solidworksVersionHint } from "./config.ts";
+import { solidworksHome, solidworksVersionHint } from "./config.ts";
+import { solidWorksPythonDependenciesInstalled } from "./configuration.ts";
+import type { SolidWorksBridgeStatus, SolidWorksToolResult } from "./protocol.ts";
+
+export type { SolidWorksBridgeStatus, SolidWorksToolResult } from "./protocol.ts";
 
 /** The MCP protocol revision the pinned clone implements. */
 const PROTOCOL_VERSION = "2025-06-18";
@@ -41,6 +46,7 @@ const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 
 /** Bounded diagnostics. The clone logs to stderr; a run must not retain it all. */
 const MAX_LOG_CHARS = 16_000;
+const SETUP_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * Whether a bridge that has just started owns the SolidWorks session it uses.
@@ -60,31 +66,6 @@ interface PendingCall {
   resolve: (value: SolidWorksToolResult) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
-}
-
-export interface SolidWorksToolResult {
-  /** The tool's own JSON payload when it returned one, else its text. */
-  data: Record<string, unknown>;
-  text: string;
-  /** True when the server flagged the result as an error. */
-  isError: boolean;
-  /**
-   * The JSON-RPC `result` object as it arrived.
-   *
-   * `data` is the tool's payload, which for `tools/call` lives inside the text
-   * content. Methods that answer with a shaped result instead — `tools/list` —
-   * have nothing in that content at all, so they read this.
-   */
-  raw: Record<string, unknown>;
-}
-
-export interface SolidWorksBridgeStatus {
-  running: boolean;
-  /** True when this process started SOLIDWORKS.EXE rather than attaching. */
-  ownsSolidWorks: boolean;
-  startedAt: string | null;
-  toolCount: number;
-  log: string;
 }
 
 function scrubbedEnvironment(env: NodeJS.ProcessEnv, dataDir: string): NodeJS.ProcessEnv {
@@ -114,6 +95,12 @@ function scrubbedEnvironment(env: NodeJS.ProcessEnv, dataDir: string): NodeJS.Pr
     "PROCESSOR_ARCHITECTURE",
     "OS",
     "HOME",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
   ];
   // NODE_ENV is the one variable `ProcessEnv` insists on; it is meaningless to
   // a Python child, so it is set to nothing rather than carried across.
@@ -139,6 +126,11 @@ function scrubbedEnvironment(env: NodeJS.ProcessEnv, dataDir: string): NodeJS.Pr
   // a generated-VBA path for some of them would make a build non-deterministic.
   child.SOLIDWORKS_MCP_ENABLE_INTELLIGENT_ROUTING = "false";
   child.SOLIDWORKS_MCP_DB_LOGGING = "0";
+  const uvEnvironment = env.UV_PROJECT_ENVIRONMENT?.trim();
+  if (uvEnvironment) child.UV_PROJECT_ENVIRONMENT = uvEnvironment;
+  const uvCache = env.UV_CACHE_DIR?.trim();
+  if (uvCache) child.UV_CACHE_DIR = uvCache;
+  child.UV_PYTHON_DOWNLOADS = "never";
 
   const version = solidworksVersionHint(env);
   if (version) child.SOLIDWORKS_MCP_SOLIDWORKS_YEAR = String(version);
@@ -151,6 +143,127 @@ function scrubbedEnvironment(env: NodeJS.ProcessEnv, dataDir: string): NodeJS.Pr
   }
 
   return child;
+}
+
+function directFile(candidate: string | undefined): string | null {
+  const value = candidate?.trim();
+  if (!value || !path.isAbsolute(value)) return null;
+  try {
+    const resolved = path.resolve(value);
+    const metadata = fs.lstatSync(resolved);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
+    const canonical = fs.realpathSync.native(resolved);
+    return process.platform === "win32"
+      ? canonical.toLowerCase() === resolved.toLowerCase()
+        ? resolved
+        : null
+      : canonical === resolved
+        ? resolved
+        : null;
+  } catch {
+    return null;
+  }
+}
+
+async function runProvisioningStep(
+  command: string,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let diagnostics = "";
+    const append = (chunk: Buffer | string) => {
+      diagnostics = `${diagnostics}${String(chunk)}`.slice(-2_000);
+    };
+    child.stdout.on("data", append);
+    child.stderr.on("data", append);
+    const timer = setTimeout(() => child.kill(), SETUP_TIMEOUT_MS);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(
+        new CadServiceError(
+          "solidworks_bridge_failed",
+          "The managed SolidWorks bridge environment could not be provisioned.",
+          { detail: error.message },
+        ),
+      );
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else {
+        reject(
+          new CadServiceError(
+            "solidworks_bridge_failed",
+            "The managed SolidWorks bridge environment could not be provisioned.",
+            { detail: diagnostics },
+          ),
+        );
+      }
+    });
+  });
+}
+
+async function ensureManagedPython(
+  env: NodeJS.ProcessEnv,
+  clone: string,
+  childEnvironment: NodeJS.ProcessEnv,
+): Promise<string> {
+  const configured = env.BREADBOARD_SOLIDWORKS_PYTHON?.trim();
+  if (!configured || !path.isAbsolute(configured)) {
+    throw new CadServiceError(
+      "solidworks_unavailable",
+      "SolidWorks backend unavailable: the managed Python path is invalid.",
+    );
+  }
+  const existing = directFile(configured);
+  if (existing && solidWorksPythonDependenciesInstalled(existing)) return existing;
+  if (env.BREADBOARD_SOLIDWORKS_IMMUTABLE_RUNTIME?.trim() === "1") {
+    throw new CadServiceError(
+      "solidworks_unavailable",
+      "SolidWorks backend unavailable: its immutable packaged Python runtime is missing or incomplete.",
+    );
+  }
+  const uv = directFile(env.BREADBOARD_UV_PATH);
+  const basePython = directFile(env.BREADBOARD_SOLIDWORKS_BASE_PYTHON);
+  if (!uv || (!existing && !basePython)) {
+    throw new CadServiceError(
+      "solidworks_unavailable",
+      "SolidWorks backend unavailable: its sealed uv or Python runtime is missing.",
+    );
+  }
+  if (!existing) {
+    const environmentRoot = path.dirname(path.dirname(path.resolve(configured)));
+    fs.mkdirSync(path.dirname(environmentRoot), { recursive: true });
+    await runProvisioningStep(
+      uv,
+      ["--no-config", "venv", "--python", basePython!, environmentRoot],
+      clone,
+      childEnvironment,
+    );
+  }
+  await runProvisioningStep(
+    uv,
+    ["--no-config", "pip", "install", "--python", configured, clone],
+    clone,
+    childEnvironment,
+  );
+  const installed = directFile(configured);
+  if (!installed || !solidWorksPythonDependenciesInstalled(installed)) {
+    throw new CadServiceError(
+      "solidworks_bridge_failed",
+      "The managed SolidWorks bridge environment did not produce its Python runtime.",
+    );
+  }
+  return installed;
 }
 
 export class SolidWorksBridge {
@@ -272,32 +385,32 @@ export class SolidWorksBridge {
    * user's own.
    */
   private async start(env: NodeJS.ProcessEnv): Promise<void> {
+    if (
+      env.BREADBOARD_SOLIDWORKS_RUNTIME_MANAGED?.trim() !== "1" ||
+      env.BREADBOARD_SOLIDWORKS_BRIDGE_OWNER?.trim() !== "runtime-v2-service"
+    ) {
+      throw new CadServiceError(
+        "solidworks_unavailable",
+        "The SolidWorks bridge lifecycle is owned by Runtime V2.",
+      );
+    }
     const availability = await solidworksAvailability(env, { checkRunning: false });
     if (!availability.available || !availability.clonePath) {
       throw new CadServiceError("solidworks_unavailable", availability.message);
     }
 
-    const paths = solidworksPaths(env);
     const clone = availability.clonePath;
-    const command = paths.python ?? paths.uv;
-    if (!command) {
-      throw new CadServiceError(
-        "solidworks_unavailable",
-        "SolidWorks backend unavailable: no Python runtime was found for the SolidworksMCP-python checkout.",
-      );
-    }
-    const args = paths.python
-      ? ["-m", "solidworks_mcp.server", "--mode", "local"]
-      : ["run", "--project", clone, "python", "-m", "solidworks_mcp.server", "--mode", "local"];
-
     const dataDir = solidworksHome(env);
     fs.mkdirSync(dataDir, { recursive: true });
+    const childEnvironment = scrubbedEnvironment(env, dataDir);
+    const command = await ensureManagedPython(env, clone, childEnvironment);
+    const args = ["-m", "solidworks_mcp.server", "--mode", "local"];
 
     const wasRunning = await solidworksRunning();
 
     const child = spawn(command, args, {
       cwd: clone,
-      env: scrubbedEnvironment(env, dataDir),
+      env: childEnvironment,
       stdio: ["pipe", "pipe", "pipe"],
       // No shell: the arguments are fixed and the paths are ours, so handing
       // them to a command interpreter would only add a quoting bug.

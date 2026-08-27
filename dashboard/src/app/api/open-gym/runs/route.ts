@@ -38,7 +38,7 @@ export async function POST(request: Request) {
       : ALLOWED_EFFORTS.has(requestedEffort) ? requestedEffort : "medium";
     const conversation = contextConversationFromBody(userId, body);
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
       task,
       model,

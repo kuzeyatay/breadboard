@@ -9,7 +9,8 @@ import {
   parseMoneyPrinterRequest,
 } from "@/lib/money-printer/identity.ts";
 import { moneyPrinterSettingsFrom } from "@/lib/money-printer/settings.ts";
-import { startRun } from "@/lib/money-printer/run-manager.ts";
+import { startRun } from "@/lib/money-printer/runtime-run-manager.ts";
+import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -79,8 +80,13 @@ export async function POST(request: Request) {
     }
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const clientMessageId =
+      typeof body.clientMessageId === "string" ? body.clientMessageId.trim() : "";
+    const run = await startRun({
       userId,
+      ...(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(clientMessageId)
+        ? { requestId: clientMessageId }
+        : {}),
       conversationPublicId,
       request: parsed,
       model,
@@ -88,15 +94,14 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
     }
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
-    return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "runtime_error" },
-      { status: 502 },
-    );
+    return NextResponse.json({ ok: false, error: "runtime_error" }, { status: 502 });
   }
 }

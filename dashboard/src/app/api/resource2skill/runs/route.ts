@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { parseResource2SkillBrief } from "@/lib/resource2skill/identity.ts";
-import { startRun } from "@/lib/resource2skill/run-manager.ts";
+import { startRun } from "@/lib/resource2skill/runtime-run-manager.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
@@ -35,16 +34,14 @@ export async function POST(request: Request) {
     const reasoningEffort = rawEffort === "max" ? "xhigh" : EFFORTS.has(rawEffort) ? rawEffort : "medium";
     const maxIterations = typeof body.maxIterations === "number" ? body.maxIterations : undefined;
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
-      brief,
       task: parsed.task,
       domain: parsed.domain,
       model,
       reasoningEffort,
       maxIterations,
       baseUrl: baseURL,
-      apiKey: chatmockApiKeyValue(),
       // The chat this was launched from, so a request that refers back to
       // it resolves instead of arriving as a bare fragment.
       conversationContext: conversationContextFromBody(userId, body, { maxChars: 6_000 }),

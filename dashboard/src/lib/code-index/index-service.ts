@@ -1,8 +1,7 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
-import path from "node:path";
-import { resolveGraftLauncher, type GraftLauncher } from "./launcher.ts";
+import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { resolveGraftLauncher } from "./launcher.ts";
 
 /**
  * The graft code index behind every coding agent run.
@@ -45,19 +44,7 @@ export interface GraftRunContext {
 
 export type GraftIndexState = "ready" | "building" | "missing" | "unavailable";
 
-const BUILD_TIMEOUT_MS = 20 * 60_000;
-/** A failed build should not be retried on every keystroke-fast rerun. */
-const BUILD_RETRY_COOLDOWN_MS = 5 * 60_000;
-
-interface BuildRecord {
-  status: "building" | "failed";
-  startedAt: number;
-  finishedAt: number;
-}
-
-const builds = new Map<string, BuildRecord>();
-
-function repositoryKey(repositoryPath: string): string {
+export function graftRepositoryKey(repositoryPath: string): string {
   const resolved = path.resolve(repositoryPath);
   const normalized = process.platform === "win32" ? resolved.toLowerCase() : resolved;
   return createHash("sha1").update(normalized).digest("hex").slice(0, 16);
@@ -65,7 +52,11 @@ function repositoryKey(repositoryPath: string): string {
 
 function graphRoot(env: NodeJS.ProcessEnv): string {
   const configured = env.BREADBOARD_GRAFT_HOME?.trim();
-  return configured || path.resolve(process.cwd(), ".runtime", "graft");
+  if (configured) return path.resolve(configured);
+  const dataRoot = env.BREADBOARD_DATA_DIR?.trim();
+  return dataRoot
+    ? path.join(path.resolve(dataRoot), "runtime-v2", "graft")
+    : path.resolve(process.cwd(), ".runtime", "graft");
 }
 
 /**
@@ -80,14 +71,14 @@ export function graftGraphDirectory(
   const label =
     path.basename(path.resolve(repositoryPath)).replace(/[^A-Za-z0-9._-]/g, "-") ||
     "repository";
-  return path.join(graphRoot(env), `${label}-${repositoryKey(repositoryPath)}`);
+  return path.join(graphRoot(env), `${label}-${graftRepositoryKey(repositoryPath)}`);
 }
 
 export function graftIndexExists(
   repositoryPath: string,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  return existsSync(path.join(graftGraphDirectory(repositoryPath, env), "INDEX.md"));
+  return externalRuntimePathExists(path.join(graftGraphDirectory(repositoryPath, env), "INDEX.md"));
 }
 
 export function graftIndexState(
@@ -96,74 +87,7 @@ export function graftIndexState(
 ): GraftIndexState {
   if (!resolveGraftLauncher(env)) return "unavailable";
   if (graftIndexExists(repositoryPath, env)) return "ready";
-  return builds.get(repositoryKey(repositoryPath))?.status === "building"
-    ? "building"
-    : "missing";
-}
-
-function startBuild(
-  launcher: GraftLauncher,
-  repositoryPath: string,
-  graphDirectory: string,
-  key: string,
-): void {
-  mkdirSync(graphDirectory, { recursive: true });
-  builds.set(key, { status: "building", startedAt: Date.now(), finishedAt: 0 });
-  const child = spawn(
-    launcher.command,
-    [...launcher.args, "--dir", graphDirectory, "build", repositoryPath],
-    {
-      cwd: repositoryPath,
-      windowsHide: true,
-      stdio: "ignore",
-      env: { ...process.env, NO_COLOR: "1" },
-    },
-  );
-  const timer = setTimeout(() => child.kill(), BUILD_TIMEOUT_MS);
-  // A build outliving the request that asked for it is the point; it must not
-  // hold the process open once it is the only thing left running.
-  timer.unref?.();
-  child.unref();
-  const settle = (built: boolean) => {
-    clearTimeout(timer);
-    if (built) builds.delete(key);
-    else builds.set(key, { status: "failed", startedAt: 0, finishedAt: Date.now() });
-  };
-  child.on("close", () => settle(graftIndexExists(repositoryPath)));
-  child.on("error", () => settle(false));
-}
-
-/**
- * Build the graph for this repository if it has none, and report what a run can
- * count on right now. Safe to call on every run: a build already in flight, a
- * graph already on disk, and a build that failed minutes ago all short-circuit.
- */
-export function ensureGraftIndex(
-  repositoryPath: string,
-  env: NodeJS.ProcessEnv = process.env,
-): GraftIndexState {
-  const launcher = resolveGraftLauncher(env);
-  if (!launcher) return "unavailable";
-  if (graftIndexExists(repositoryPath, env)) return "ready";
-
-  const key = repositoryKey(repositoryPath);
-  const record = builds.get(key);
-  if (record?.status === "building") {
-    if (Date.now() - record.startedAt < BUILD_TIMEOUT_MS) return "building";
-  } else if (
-    record?.status === "failed" &&
-    Date.now() - record.finishedAt < BUILD_RETRY_COOLDOWN_MS
-  ) {
-    return "missing";
-  }
-
-  try {
-    startBuild(launcher, path.resolve(repositoryPath), graftGraphDirectory(repositoryPath, env), key);
-  } catch {
-    builds.set(key, { status: "failed", startedAt: 0, finishedAt: Date.now() });
-    return "missing";
-  }
-  return "building";
+  return "missing";
 }
 
 export function graftServerFor(
@@ -217,8 +141,7 @@ export function graftRunContextFor(
   repositoryPath: string,
   env: NodeJS.ProcessEnv = process.env,
 ): GraftRunContext | null {
-  const state = ensureGraftIndex(repositoryPath, env);
-  if (state !== "ready") return null;
+  if (graftIndexState(repositoryPath, env) !== "ready") return null;
   const server = graftServerFor(repositoryPath, env);
   if (!server) return null;
   const resolvedRepository = path.resolve(repositoryPath);

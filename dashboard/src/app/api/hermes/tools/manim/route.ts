@@ -17,12 +17,9 @@ import {
 import { getActiveRuntimeRun, parseRuntimeRunDispatch } from "@/lib/hermes/run-store.ts";
 import { presentArtifact } from "@/lib/hermes/artifact-store.ts";
 import { MANIM_SKILL, MANIM_TOOL } from "@/lib/manim/identity.ts";
-import {
-  ManimServiceError,
-  runManim,
-  validateManimRequest,
-} from "@/lib/manim/service.ts";
+import { ManimServiceError, validateManimRequest } from "@/lib/manim/request.ts";
 import { publishManimVideo } from "@/lib/manim/artifact.ts";
+import { ManimRuntimeError, runManimViaRuntime } from "@/lib/runtime-v2/manim-job.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -49,6 +46,16 @@ export async function POST(request: Request) {
         403,
         "manim_session_scope_mismatch",
         "Manim is available only in an authenticated chat session.",
+      );
+    }
+    const conversation = db.prepare(
+      "SELECT public_id FROM conversations WHERE id = ? AND user_id = ?",
+    ).get(session.conversation_id, session.user_id) as { public_id: string } | undefined;
+    if (!conversation?.public_id) {
+      throw new ApiError(
+        403,
+        "manim_conversation_scope_mismatch",
+        "Manim conversation scope is invalid.",
       );
     }
     const run = getActiveRuntimeRun(session.id);
@@ -87,53 +94,65 @@ export async function POST(request: Request) {
       },
     });
 
-    const result = await runManim(manimRequest, request.signal);
-    const dispatch = parseRuntimeRunDispatch(run);
-    const assistantMessage = dispatch.clientMessageId
-      ? (db
-          .prepare(
-            `SELECT id FROM conversation_messages
-             WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'`,
-          )
-          .get(session.conversation_id, dispatch.clientMessageId) as { id: number } | undefined)
-      : undefined;
-    const artifact = publishManimVideo({
-      context: {
+    const result = await runManimViaRuntime({
+      scope: {
         userId: session.user_id,
-        runtimeSessionId: session.id,
-        hermesSessionId: runtimeExternalSessionId(session)!,
-        conversationId: session.conversation_id,
-        clusterId: session.cluster_id,
-        surface: session.surface,
-        runId: run.id,
-        assistantMessageId: assistantMessage?.id ?? null,
-        toolCallId: typeof body.toolCallId === "string" ? body.toolCallId.slice(0, 200) : null,
+        gardenId: session.garden_id,
+        conversationId: conversation.public_id,
       },
-      result,
+      request: manimRequest,
+      signal: request.signal,
     });
+    try {
+      const dispatch = parseRuntimeRunDispatch(run);
+      const assistantMessage = dispatch.clientMessageId
+        ? (db
+            .prepare(
+              `SELECT id FROM conversation_messages
+               WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'`,
+            )
+            .get(session.conversation_id, dispatch.clientMessageId) as { id: number } | undefined)
+        : undefined;
+      const artifact = await publishManimVideo({
+        context: {
+          userId: session.user_id,
+          runtimeSessionId: session.id,
+          hermesSessionId: runtimeExternalSessionId(session)!,
+          conversationId: session.conversation_id,
+          clusterId: session.cluster_id,
+          surface: session.surface,
+          runId: run.id,
+          assistantMessageId: assistantMessage?.id ?? null,
+          toolCallId: typeof body.toolCallId === "string" ? body.toolCallId.slice(0, 200) : null,
+        },
+        result,
+      });
 
-    recordAuditEvent({
-      eventType: "manim.render_completed",
-      runtimeSessionId: session.id,
-      userId: session.user_id,
-      payload: {
-        runId: run.id,
-        artifactId: artifact.id,
-        quality: result.quality,
-        durationSeconds: result.durationSeconds,
-        sourceHash: result.sourceHash,
-      },
-    });
-    return NextResponse.json({
-      ok: true,
-      data: {
-        artifact: presentArtifact(artifact),
-        sceneName: result.sceneName,
-        quality: result.quality,
-        durationSeconds: result.durationSeconds,
-        runtimeImage: result.image,
-      },
-    });
+      recordAuditEvent({
+        eventType: "manim.render_completed",
+        runtimeSessionId: session.id,
+        userId: session.user_id,
+        payload: {
+          runId: run.id,
+          artifactId: artifact.id,
+          quality: result.quality,
+          durationSeconds: result.durationSeconds,
+          sourceHash: result.sourceHash,
+        },
+      });
+      return NextResponse.json({
+        ok: true,
+        data: {
+          artifact: presentArtifact(artifact),
+          sceneName: result.sceneName,
+          quality: result.quality,
+          durationSeconds: result.durationSeconds,
+          runtimeImage: result.image,
+        },
+      });
+    } finally {
+      result.cleanup();
+    }
   } catch (error) {
     if (runtimeSessionId !== null) {
       recordAuditEvent({
@@ -141,13 +160,16 @@ export async function POST(request: Request) {
         runtimeSessionId,
         payload: {
           reason:
-            error instanceof ManimServiceError
+            (error instanceof ManimServiceError || error instanceof ManimRuntimeError)
               ? error.code
               : error instanceof ApiError
                 ? error.code
                 : "manim_render_failed",
         },
       });
+    }
+    if (error instanceof ManimRuntimeError) {
+      return apiErrorResponse(new ApiError(error.status, error.code, error.message));
     }
     if (error instanceof ManimServiceError) {
       const status = error.code === "manim_runtime_unavailable"

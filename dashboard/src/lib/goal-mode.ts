@@ -11,8 +11,8 @@
 // one transition the model may make, and only against evidence.
 
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { dashboardDataDir, repositoryRoot } from "./runtime-paths.ts";
 
 export const GOAL_MODE_CONNECTION = "goal";

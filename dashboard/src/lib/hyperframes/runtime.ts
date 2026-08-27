@@ -16,10 +16,15 @@
 // Chrome or Edge), so a working install needs no admin rights and no second
 // copy of anything.
 
-import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import {
+  externalRuntimeAccess,
+  externalRuntimeFilesystem as fs,
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+  externalRuntimeStat,
+} from "../external-runtime-filesystem.ts";
 
 export interface HyperframesLauncher {
   /** argv[0] used to invoke the CLI. */
@@ -57,16 +62,33 @@ export interface RuntimeAvailability {
   reason?: string;
 }
 
-const VERSION_TIMEOUT_MS = 20_000;
-
 function configured(value: string | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? path.resolve(trimmed) : null;
 }
 
+function regularFile(candidate: string | null): candidate is string {
+  if (!candidate) return false;
+  try {
+    return externalRuntimeStat(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function executableFile(candidate: string | null): candidate is string {
+  if (!regularFile(candidate)) return false;
+  try {
+    if (process.platform !== "win32") externalRuntimeAccess(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function firstExisting(candidates: readonly (string | null)[]): string | null {
   return candidates.find((candidate): candidate is string =>
-    Boolean(candidate) && fs.existsSync(candidate as string),
+    executableFile(candidate),
   ) ?? null;
 }
 
@@ -77,14 +99,12 @@ export function resolveHyperframesRoot(
   const candidates = [
     configured(env.HYPERFRAMES_ROOT),
     path.join(repositoryRoot(), "hyperframes"),
-    path.resolve(process.cwd(), "hyperframes"),
-    path.resolve(process.cwd(), "..", "hyperframes"),
   ];
   return (
     candidates.find(
       (candidate) =>
         Boolean(candidate) &&
-        fs.existsSync(path.join(candidate as string, "skills", "hyperframes", "SKILL.md")),
+        externalRuntimePathExists(path.join(candidate as string, "skills", "hyperframes", "SKILL.md")),
     ) ?? null
   );
 }
@@ -94,7 +114,7 @@ export function skillsRoot(env: NodeJS.ProcessEnv = process.env): string | null 
   const root = resolveHyperframesRoot(env);
   if (!root) return null;
   const skills = path.join(root, "skills");
-  return fs.existsSync(skills) ? skills : null;
+  return externalRuntimePathExists(skills) ? skills : null;
 }
 
 /**
@@ -115,27 +135,67 @@ export function workspaceRoot(env: NodeJS.ProcessEnv = process.env): string {
   );
 }
 
-function cliVersion(command: string, baseArgs: readonly string[]): string | null {
-  const probe = spawnSync(command, [...baseArgs, "--version"], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: VERSION_TIMEOUT_MS,
-    env: { ...process.env, HYPERFRAMES_NO_TELEMETRY: "1", NO_COLOR: "1" },
-  });
-  if (probe.error || probe.status !== 0) return null;
-  const output = `${probe.stdout ?? ""}${probe.stderr ?? ""}`.trim();
-  return output ? output.split(/\r?\n/)[0].slice(0, 120) : "hyperframes";
+function packageVersion(entry: string): string {
+  let directory = path.dirname(path.resolve(entry));
+  for (let depth = 0; depth < 8; depth += 1) {
+    const manifest = path.join(directory, "package.json");
+    try {
+      const parsed = JSON.parse(externalRuntimeReadUtf8(manifest)) as {
+        name?: unknown;
+        version?: unknown;
+      };
+      if (
+        typeof parsed.version === "string" &&
+        parsed.version.trim() &&
+        Buffer.byteLength(parsed.version, "utf8") <= 120
+      ) return parsed.version.trim();
+    } catch {
+      // Walk toward the package root without executing the candidate.
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return "hyperframes";
 }
 
 function nodeLauncher(
   entry: string,
   source: HyperframesLauncher["source"],
 ): HyperframesLauncher | null {
-  if (!fs.existsSync(entry)) return null;
-  const version = cliVersion(process.execPath, [entry]);
-  return version
-    ? { command: process.execPath, baseArgs: [entry], version, source }
-    : null;
+  if (!regularFile(entry)) return null;
+  return {
+    command: process.execPath,
+    baseArgs: [entry],
+    version: packageVersion(entry),
+    source,
+  };
+}
+
+function pathDirectories(env: NodeJS.ProcessEnv): string[] {
+  const key = Object.keys(env).find((name) => name.toLowerCase() === "path");
+  return (key ? env[key] : "")
+    ?.split(path.delimiter)
+    .map((entry) => entry.trim().replace(/^"|"$/gu, ""))
+    .filter(Boolean) ?? [];
+}
+
+function findOnPath(command: string, env: NodeJS.ProcessEnv): string | null {
+  if (path.isAbsolute(command) || /[\\/]/u.test(command)) {
+    const resolved = path.resolve(command);
+    return executableFile(resolved) ? resolved : null;
+  }
+  const hasExtension = Boolean(path.extname(command));
+  const extensions = process.platform === "win32" && !hasExtension
+    ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+    : [""];
+  for (const directory of pathDirectories(env)) {
+    for (const extension of extensions) {
+      const candidate = path.join(directory, `${command}${extension}`);
+      if (executableFile(candidate)) return candidate;
+    }
+  }
+  return null;
 }
 
 /**
@@ -147,20 +207,18 @@ export function resolveLauncher(
   env: NodeJS.ProcessEnv = process.env,
 ): HyperframesLauncher | null {
   const explicit = configured(env.HYPERFRAMES_BIN);
-  if (explicit && fs.existsSync(explicit)) {
+  if (explicit && regularFile(explicit)) {
     const asNode = explicit.endsWith(".mjs") || explicit.endsWith(".js");
     const launcher = asNode
       ? nodeLauncher(explicit, "configured")
       : (() => {
-          const version = cliVersion(explicit, []);
-          return version
-            ? {
-                command: explicit,
-                baseArgs: [] as string[],
-                version,
-                source: "configured" as const,
-              }
-            : null;
+          if (!executableFile(explicit)) return null;
+          return {
+            command: explicit,
+            baseArgs: [] as string[],
+            version: packageVersion(explicit),
+            source: "configured" as const,
+          };
         })();
     if (launcher) return launcher;
   }
@@ -169,7 +227,7 @@ export function resolveLauncher(
   if (root) {
     // The clone's bin script imports ../dist, so it only works once built.
     const built = path.join(root, "packages", "cli", "dist", "cli.js");
-    if (fs.existsSync(built)) {
+    if (externalRuntimePathExists(built)) {
       const launcher = nodeLauncher(path.join(root, "packages", "cli", "bin", "hyperframes.mjs"), "clone");
       if (launcher) return launcher;
     }
@@ -181,21 +239,15 @@ export function resolveLauncher(
   );
   if (managed) return managed;
 
-  const onPath = process.platform === "win32" ? "hyperframes.cmd" : "hyperframes";
-  const version = cliVersion(onPath, []);
-  return version ? { command: onPath, baseArgs: [], version, source: "path" } : null;
-}
-
-function whichSync(executable: string): string | null {
-  const finder = process.platform === "win32" ? "where" : "which";
-  const probe = spawnSync(finder, [executable], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 5_000,
-  });
-  if (probe.status !== 0) return null;
-  const first = (probe.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean);
-  return first && fs.existsSync(first) ? first : null;
+  const onPath = findOnPath("hyperframes", env);
+  return onPath
+    ? {
+        command: onPath,
+        baseArgs: [],
+        version: packageVersion(onPath),
+        source: "path",
+      }
+    : null;
 }
 
 function executableName(base: string): string {
@@ -214,7 +266,7 @@ function resolveFfmpegPiece(
   const explicit = configured(
     base === "ffmpeg" ? env.HYPERFRAMES_FFMPEG_PATH : env.HYPERFRAMES_FFPROBE_PATH,
   );
-  if (explicit && fs.existsSync(explicit)) {
+  if (explicit && executableFile(explicit)) {
     return { found: true, path: explicit, source: "configured" };
   }
   const shared = path.join(
@@ -224,10 +276,10 @@ function resolveFfmpegPiece(
     "bin",
     executableName(base),
   );
-  if (fs.existsSync(shared)) {
+  if (externalRuntimePathExists(shared)) {
     return { found: true, path: shared, source: "agent-reach tools" };
   }
-  const onPath = whichSync(base);
+  const onPath = findOnPath(base, env);
   if (onPath) return { found: true, path: onPath, source: "PATH" };
   return { found: false, path: "", source: "" };
 }
@@ -254,7 +306,7 @@ const UNIX_BROWSERS = [
  */
 export function resolveBrowser(env: NodeJS.ProcessEnv = process.env): ToolchainPiece {
   const explicit = configured(env.HYPERFRAMES_BROWSER_PATH);
-  if (explicit && fs.existsSync(explicit)) {
+  if (explicit && executableFile(explicit)) {
     return { found: true, path: explicit, source: "configured" };
   }
   const installed = firstExisting(

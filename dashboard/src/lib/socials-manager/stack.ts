@@ -10,32 +10,25 @@
 // a response header instead of a Secure cookie. That is what lets ./bootstrap.ts
 // register the first account over plain http on localhost.
 
-import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import type { SocialsManagerConfig, PostizCredentials } from "./config.ts";
-import { composeCommand, ensureDockerRunning, run, type DockerStatus } from "./docker.ts";
+import { composeCommand, ensureDockerRunning, run } from "./docker.ts";
+import {
+  ensureCredentials,
+  reachable,
+  type StackStatus,
+} from "./local-state.ts";
 
-export type StackState =
-  | "running"
-  | "starting"
-  | "stopped"
-  | "docker_unavailable"
-  | "not_installed";
-
-export interface StackStatus {
-  state: StackState;
-  /**
-   * Present only when the caller explicitly asked for a Docker probe. A status
-   * read is not allowed to run `docker info` behind the user's back, so the
-   * ordinary answer simply omits it.
-   */
-  docker?: DockerStatus;
-  /** True once the Postiz HTTP endpoint answers. */
-  reachable: boolean;
-  reason?: string;
-}
+export {
+  ensureCredentials,
+  reachable,
+  readCredentials,
+  writeCredentials,
+  type StackState,
+  type StackStatus,
+} from "./local-state.ts";
 
 /** Social OAuth apps Postiz reads from its environment, passed through when set. */
 const SOCIAL_ENV_KEYS = [
@@ -95,54 +88,6 @@ function resourceLines(
 
 function quote(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
-}
-
-export function readCredentials(config: SocialsManagerConfig): PostizCredentials | null {
-  try {
-    const parsed = JSON.parse(
-      readFileSync(config.credentialsFile, "utf8"),
-    ) as Partial<PostizCredentials>;
-    if (!parsed.email || !parsed.password || !parsed.jwtSecret) return null;
-    return {
-      email: parsed.email,
-      password: parsed.password,
-      apiKey: parsed.apiKey ?? "",
-      jwtSecret: parsed.jwtSecret,
-      createdAt: parsed.createdAt ?? new Date().toISOString(),
-    };
-  } catch {
-    return null;
-  }
-}
-
-export function writeCredentials(
-  config: SocialsManagerConfig,
-  credentials: PostizCredentials,
-): void {
-  mkdirSync(config.stateDir, { recursive: true });
-  writeFileSync(
-    config.credentialsFile,
-    `${JSON.stringify(credentials, null, 2)}\n`,
-    { encoding: "utf8", mode: 0o600 },
-  );
-}
-
-/**
- * Mint the local Postiz account on first use. The password is never shown to
- * anyone: Breadboard is the only client, and it reads it back from this file.
- */
-export function ensureCredentials(config: SocialsManagerConfig): PostizCredentials {
-  const existing = readCredentials(config);
-  if (existing) return existing;
-  const credentials: PostizCredentials = {
-    email: "breadboard@localhost.local",
-    password: randomBytes(24).toString("base64url"),
-    apiKey: "",
-    jwtSecret: randomBytes(48).toString("base64url"),
-    createdAt: new Date().toISOString(),
-  };
-  writeCredentials(config, credentials);
-  return credentials;
 }
 
 export function upstreamComposeFile(config: SocialsManagerConfig): string {
@@ -229,24 +174,6 @@ export function writeOverride(
   mkdirSync(config.stateDir, { recursive: true });
   writeFileSync(config.overrideFile, renderOverride(config, credentials, env), "utf8");
   return config.overrideFile;
-}
-
-/** Does the Postiz backend answer yet (not merely its frontend/nginx shell)? */
-export async function reachable(config: SocialsManagerConfig): Promise<boolean> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3_000);
-  try {
-    const response = await fetch(`${config.appApiUrl}/auth/can-register`, {
-      cache: "no-store",
-      redirect: "manual",
-      signal: controller.signal,
-    });
-    return response.ok;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /**

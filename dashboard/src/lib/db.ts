@@ -1,6 +1,5 @@
-import Database from "better-sqlite3";
-import path from "path";
-import fs from "fs";
+import type Database from "better-sqlite3";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { ensureVideoTranscriptionSchema } from "./scriberr/job-store.ts";
 import { ensureBuzzSchema } from "./buzz/schema.ts";
 import { databaseDir } from "./runtime-paths.ts";
@@ -30,8 +29,14 @@ import { ensureReviewSchema } from "./review/schema.ts";
 import { ensureMcpOAuthSchema } from "./hermes/mcp-oauth-schema.ts";
 import { ensureSpotifySchema } from "./spotify/schema.ts";
 import { configureSqliteConcurrency } from "./sqlite-concurrency.ts";
+import {
+  externalRuntimeFilesystem as fs,
+  externalRuntimePathExists,
+} from "./external-runtime-filesystem.ts";
+import { openRuntimeSqliteDatabase } from "./runtime-sqlite-database.ts";
 
-const DB_PATH = path.join(databaseDir(), "brain.db");
+const DB_ROOT = databaseDir();
+const DB_PATH = path.join(DB_ROOT, "brain.db");
 
 // Singleton — prevents duplicate connections during Next.js hot-reloading in dev
 const globalWithDb = global as typeof globalThis & { db?: Database.Database };
@@ -39,11 +44,15 @@ let databaseOpenedHere = false;
 
 if (!globalWithDb.db) {
   const dbDir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dbDir)) {
+  if (!externalRuntimePathExists(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
   }
 
-  globalWithDb.db = new Database(DB_PATH);
+  globalWithDb.db = openRuntimeSqliteDatabase({
+    authorityRoot: DB_ROOT,
+    candidate: DB_PATH,
+    filename: "brain.db",
+  });
   databaseOpenedHere = true;
   configureSqliteConcurrency(globalWithDb.db);
   globalWithDb.db.pragma("foreign_keys = ON");
@@ -823,8 +832,8 @@ ensureGBrainSchema(db);
 // approvals, artifacts) + server-only provider-key storage. Safe to re-apply.
 ensureUITarsSchema(db);
 
-// Additive agent-browser runtime-agent config table (runs are ephemeral and
-// owned by the in-memory run manager). Safe to re-apply.
+// Additive Agent Browser configuration plus Runtime V2 ownership correlation;
+// native Runtime V2 remains the run lifecycle ledger. Safe to re-apply.
 ensureAgentBrowserSchema(db);
 
 // Additive parametric CAD tables (projects, immutable revisions, the files each

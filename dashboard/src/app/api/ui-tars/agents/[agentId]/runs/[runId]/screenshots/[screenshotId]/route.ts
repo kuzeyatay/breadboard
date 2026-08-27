@@ -16,8 +16,7 @@ export async function GET(
   try {
     const userId = await requireUserId();
     const { agentId, runId, screenshotId } = await params;
-    service.requireAgent(userId, agentId);
-    const png = await service.screenshot(userId, runId, screenshotId);
+    const png = await service.screenshot(userId, agentId, runId, screenshotId);
     if (!png) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
     return new NextResponse(new Uint8Array(png), {
       status: 200,

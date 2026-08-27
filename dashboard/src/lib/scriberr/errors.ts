@@ -4,6 +4,7 @@
 // lines, or stack traces.
 
 export type VideoTranscriptionErrorCode =
+  | "BREADBOARD_RESOURCE_EXHAUSTED"
   | "feature_disabled"
   | "scriberr_unavailable"
   | "scriberr_auth_failed"
@@ -35,6 +36,8 @@ export type VideoTranscriptionErrorCode =
   | "internal_error";
 
 const USER_MESSAGES: Record<VideoTranscriptionErrorCode, string> = {
+  BREADBOARD_RESOURCE_EXHAUSTED:
+    "Breadboard does not currently have enough available memory to start video transcription.",
   feature_disabled:
     "Video transcription is disabled. Set VIDEO_TRANSCRIPTION_ENABLED=true and restart the dashboard.",
   scriberr_unavailable:
@@ -148,6 +151,20 @@ export function sanitizeErrorForClient(error: unknown): {
 } {
   if (error instanceof VideoTranscriptionError) {
     return { errorCode: error.code, errorMessage: error.userMessage };
+  }
+  if (
+    error instanceof Error &&
+    error.name === "SupervisorResourceExhaustedError" &&
+    "result" in error &&
+    typeof error.result === "object" &&
+    error.result !== null &&
+    "code" in error.result &&
+    error.result.code === "BREADBOARD_RESOURCE_EXHAUSTED"
+  ) {
+    return {
+      errorCode: "BREADBOARD_RESOURCE_EXHAUSTED",
+      errorMessage: error.message,
+    };
   }
   return {
     errorCode: "internal_error",

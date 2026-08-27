@@ -5,6 +5,10 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import ModelAttachmentViewer from "@/app/components/model-attachment-viewer";
 import {
+  ReclaimingAudio,
+  ReclaimingVideo,
+} from "@/app/components/reclaiming-media";
+import {
   chatAttachmentHref,
   type ChatMessageAttachment,
 } from "@/lib/chat-attachments";
@@ -187,7 +191,7 @@ export default function ChatMessageAttachments({
                 className="neu-surface-raised w-full max-w-[min(32rem,72vw)] overflow-hidden rounded-[22px] border border-[var(--line)] p-1"
               >
                 {isPlayableVideoFormat(attachment.format) ? (
-                  <video
+                  <ReclaimingVideo
                     controls
                     // The file can be gigabytes; nothing is fetched until played.
                     preload="metadata"
@@ -227,7 +231,7 @@ export default function ChatMessageAttachments({
                 {/* Every stored audio format plays in a browser, so unlike a
                     video there is no unplayable branch. Nothing is fetched
                     until the person presses play. */}
-                <audio
+                <ReclaimingAudio
                   controls
                   preload="metadata"
                   src={`/api/chat-attachments/audio/${attachment.blobId}`}

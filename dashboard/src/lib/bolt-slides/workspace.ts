@@ -16,8 +16,17 @@
 // is addressed by relative path under that directory and nothing else, so a
 // deck URL can never reach a file the build did not produce.
 
-import fs from "node:fs";
-import path from "node:path";
+import type { Stats } from "node:fs";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import {
+  externalRuntimeCopyFile,
+  externalRuntimeFilesystem as fs,
+  externalRuntimeLstat,
+  externalRuntimePathExists,
+  externalRuntimeReadDirectoryEntries,
+  externalRuntimeReadUtf8,
+  externalRuntimeRealpath,
+} from "../external-runtime-filesystem.ts";
 import { boltSlidesModules, boltSlidesWorkspaceRoot, resolveBoltSlidesRoot } from "./runtime.ts";
 
 export interface BoltSlidesOwner {
@@ -38,6 +47,8 @@ export interface BoltSlidesArtifact {
 }
 
 const RUN_ID = /^bsrun_[0-9a-f]{32}$/;
+const MAX_SOURCE_ARTIFACT_BYTES = 8 * 1024 * 1024;
+const MAX_DECK_FILE_BYTES = 512 * 1024 * 1024;
 
 /** Directories copied from the clone into every workspace, verbatim. */
 const COPIED_DIRECTORIES = [
@@ -93,28 +104,52 @@ export function runDirectory(runId: string): string {
 }
 
 export function distDirectory(runId: string): string {
-  return path.join(runDirectory(runId), "dist");
+  return distDirectoryAt(runDirectory(runId));
 }
 
 export function appSourcePath(runId: string): string {
-  return path.join(runDirectory(runId), "src", "App.tsx");
+  return appSourcePathAt(runDirectory(runId));
 }
 
 export function tokensPath(runId: string): string {
-  return path.join(runDirectory(runId), "src", "styles", "tokens.css");
+  return tokensPathAt(runDirectory(runId));
 }
 
 export function baseStylesPath(runId: string): string {
-  return path.join(runDirectory(runId), "src", "styles", "base.css");
+  return baseStylesPathAt(runDirectory(runId));
 }
 
 export function indexHtmlPath(runId: string): string {
-  return path.join(runDirectory(runId), "index.html");
+  return indexHtmlPathAt(runDirectory(runId));
 }
 
 /** Where a component the deck author had to invent is written. */
 export function authoredDirectory(runId: string): string {
-  return path.join(runDirectory(runId), "src", "authored");
+  return authoredDirectoryAt(runDirectory(runId));
+}
+
+export function distDirectoryAt(workspaceRoot: string): string {
+  return path.join(workspaceRoot, "dist");
+}
+
+export function appSourcePathAt(workspaceRoot: string): string {
+  return path.join(workspaceRoot, "src", "App.tsx");
+}
+
+export function tokensPathAt(workspaceRoot: string): string {
+  return path.join(workspaceRoot, "src", "styles", "tokens.css");
+}
+
+export function baseStylesPathAt(workspaceRoot: string): string {
+  return path.join(workspaceRoot, "src", "styles", "base.css");
+}
+
+export function indexHtmlPathAt(workspaceRoot: string): string {
+  return path.join(workspaceRoot, "index.html");
+}
+
+export function authoredDirectoryAt(workspaceRoot: string): string {
+  return path.join(workspaceRoot, "src", "authored");
 }
 
 /**
@@ -127,7 +162,7 @@ export function authoredDirectory(runId: string): string {
 function linkModules(directory: string): void {
   const modules = boltSlidesModules();
   const link = path.join(directory, "node_modules");
-  if (!modules || fs.existsSync(link)) return;
+  if (!modules || externalRuntimePathExists(link)) return;
   try {
     fs.symlinkSync(modules, link, process.platform === "win32" ? "junction" : "dir");
   } catch {
@@ -137,7 +172,11 @@ function linkModules(directory: string): void {
 }
 
 export function modulesLinked(runId: string): boolean {
-  return fs.existsSync(path.join(runDirectory(runId), "node_modules", "vite", "package.json"));
+  return modulesLinkedAt(runDirectory(runId));
+}
+
+export function modulesLinkedAt(workspaceRoot: string): boolean {
+  return externalRuntimePathExists(path.join(workspaceRoot, "node_modules", "vite", "package.json"));
 }
 
 /**
@@ -167,37 +206,70 @@ function viteConfig(): string {
 
 function copyDirectory(from: string, to: string): void {
   fs.mkdirSync(to, { recursive: true });
-  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+  for (const entry of externalRuntimeReadDirectoryEntries(from)) {
     const source = path.join(from, entry.name);
     const target = path.join(to, entry.name);
     if (entry.isDirectory()) copyDirectory(source, target);
-    else if (entry.isFile()) fs.copyFileSync(source, target);
+    else if (entry.isFile()) externalRuntimeCopyFile(source, target);
   }
 }
 
+function samePath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const resolved = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(left) === normalize(right);
+}
+
+function contained(candidate: string, root: string): boolean {
+  const normalizedCandidate = process.platform === "win32" ? candidate.toLowerCase() : candidate;
+  const normalizedRoot = process.platform === "win32" ? root.toLowerCase() : root;
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
+}
+
 /**
- * Build a workspace from the clone and record who owns it.
- *
- * `public/` comes across when the clone has one: generated imagery for a deck
- * is written there, and a deck that lost its images between authoring and
- * building would render empty panels rather than fail loudly.
+ * Prove that Runtime handed the worker one direct, non-linked attempt
+ * workspace. The native start manifest already identity-binds this path; this
+ * second check keeps the domain code from ever following an indirect root.
  */
-export function createWorkspace(owner: BoltSlidesOwner): string {
+export function requireDirectRuntimeWorkspace(candidate: string): string {
+  const resolved = path.resolve(candidate);
+  try {
+    const metadata = externalRuntimeLstat(resolved);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !samePath(externalRuntimeRealpath(resolved), resolved)
+    ) {
+      throw new Error("indirect workspace");
+    }
+    return resolved;
+  } catch {
+    throw new BoltSlidesWorkspaceError(
+      "workspace_unavailable",
+      "The Runtime-owned Bolt Slides workspace is unavailable.",
+    );
+  }
+}
+
+function populateWorkspace(directory: string): string {
   const root = resolveBoltSlidesRoot();
   if (!root) {
     throw new BoltSlidesWorkspaceError("not_cloned", "The bolt-slides clone was not found.");
   }
-  const directory = runDirectory(owner.runId);
   fs.mkdirSync(path.join(directory, "src"), { recursive: true });
   for (const relative of COPIED_DIRECTORIES) {
     copyDirectory(path.join(root, relative), path.join(directory, relative));
   }
-  if (fs.existsSync(path.join(root, "public"))) {
+  if (externalRuntimePathExists(path.join(root, "public"))) {
     copyDirectory(path.join(root, "public"), path.join(directory, "public"));
   }
   for (const relative of COPIED_FILES) {
     const source = path.join(root, relative);
-    if (fs.existsSync(source)) fs.copyFileSync(source, path.join(directory, relative));
+    if (externalRuntimePathExists(source)) {
+      externalRuntimeCopyFile(source, path.join(directory, relative));
+    }
   }
   fs.writeFileSync(path.join(directory, "vite.config.ts"), viteConfig(), "utf8");
   fs.writeFileSync(
@@ -210,6 +282,25 @@ export function createWorkspace(owner: BoltSlidesOwner): string {
     "utf8",
   );
   linkModules(directory);
+  return directory;
+}
+
+/** Populate the exact attempt workspace selected by the trusted Rust manifest. */
+export function createRuntimeWorkspace(runtimeWorkspacePath: string): string {
+  return populateWorkspace(requireDirectRuntimeWorkspace(runtimeWorkspacePath));
+}
+
+/**
+ * Build a workspace from the clone and record who owns it.
+ *
+ * `public/` comes across when the clone has one: generated imagery for a deck
+ * is written there, and a deck that lost its images between authoring and
+ * building would render empty panels rather than fail loudly.
+ */
+export function createWorkspace(owner: BoltSlidesOwner): string {
+  const directory = runDirectory(owner.runId);
+  fs.mkdirSync(directory, { recursive: true });
+  populateWorkspace(directory);
   fs.writeFileSync(
     path.join(directory, "owner.json"),
     `${JSON.stringify(owner, null, 2)}\n`,
@@ -221,7 +312,7 @@ export function createWorkspace(owner: BoltSlidesOwner): string {
 export function requireWorkspaceOwner(userId: number, runId: string): BoltSlidesOwner {
   try {
     const parsed = JSON.parse(
-      fs.readFileSync(path.join(runDirectory(runId), "owner.json"), "utf8"),
+      externalRuntimeReadUtf8(path.join(runDirectory(runId), "owner.json")),
     ) as BoltSlidesOwner;
     if (parsed.userId === userId) return parsed;
   } catch {
@@ -231,7 +322,7 @@ export function requireWorkspaceOwner(userId: number, runId: string): BoltSlides
   throw new BoltSlidesWorkspaceError("run_not_found", "That Bolt Slides run was not found.");
 }
 
-function artifactId(relativePath: string): string {
+export function boltSlidesArtifactId(relativePath: string): string {
   return Buffer.from(relativePath, "utf8").toString("base64url");
 }
 
@@ -241,15 +332,19 @@ function artifactId(relativePath: string): string {
  * the workspace came from the clone and is already on their disk.
  */
 export function scanArtifacts(runId: string): BoltSlidesArtifact[] {
-  const directory = runDirectory(runId);
+  return scanArtifactsAt(runDirectory(runId));
+}
+
+export function scanArtifactsAt(workspaceRoot: string): BoltSlidesArtifact[] {
+  const directory = requireDirectRuntimeWorkspace(workspaceRoot);
   const candidates: Array<{ relative: string; kind: BoltSlidesArtifact["kind"] }> = [
     { relative: "src/App.tsx", kind: "deck" },
     { relative: "src/styles/tokens.css", kind: "theme" },
     { relative: "index.html", kind: "page" },
   ];
-  const authored = authoredDirectory(runId);
-  if (fs.existsSync(authored)) {
-    for (const entry of fs.readdirSync(authored, { withFileTypes: true })) {
+  const authored = authoredDirectoryAt(directory);
+  if (externalRuntimePathExists(authored)) {
+    for (const entry of externalRuntimeReadDirectoryEntries(authored)) {
       if (entry.isFile()) {
         candidates.push({ relative: `src/authored/${entry.name}`, kind: "component" });
       }
@@ -258,15 +353,22 @@ export function scanArtifacts(runId: string): BoltSlidesArtifact[] {
   const artifacts: BoltSlidesArtifact[] = [];
   for (const candidate of candidates) {
     const absolute = path.join(directory, ...candidate.relative.split("/"));
-    let stats: fs.Stats;
+    let stats: Stats;
     try {
-      stats = fs.statSync(absolute);
+      stats = externalRuntimeLstat(absolute);
     } catch {
       continue;
     }
-    if (!stats.isFile()) continue;
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_SOURCE_ARTIFACT_BYTES) continue;
+    let canonical: string;
+    try {
+      canonical = externalRuntimeRealpath(absolute);
+    } catch {
+      continue;
+    }
+    if (!samePath(canonical, absolute) || !contained(canonical, directory)) continue;
     artifacts.push({
-      id: artifactId(candidate.relative),
+      id: boltSlidesArtifactId(candidate.relative),
       relativePath: candidate.relative,
       name: path.basename(candidate.relative),
       kind: candidate.kind,
@@ -293,6 +395,22 @@ export function resolveArtifact(
   };
 }
 
+export function resolveArtifactAt(
+  workspaceRoot: string,
+  id: string,
+): { record: BoltSlidesArtifact; absolutePath: string } {
+  const root = requireDirectRuntimeWorkspace(workspaceRoot);
+  const record = scanArtifactsAt(root).find((artifact) => artifact.id === id);
+  if (!record) {
+    throw new BoltSlidesWorkspaceError("artifact_not_found", "That deck file was not found.");
+  }
+  const absolutePath = path.resolve(root, ...record.relativePath.split("/"));
+  if (!contained(absolutePath, root)) {
+    throw new BoltSlidesWorkspaceError("artifact_not_found", "That deck file was not found.");
+  }
+  return { record, absolutePath };
+}
+
 export interface DeckFile {
   absolutePath: string;
   contentType: string;
@@ -307,28 +425,55 @@ export interface DeckFile {
  * stays inside it, so no request can walk out into the workspace.
  */
 export function resolveDeckFile(runId: string, relative: string): DeckFile {
-  const root = path.resolve(distDirectory(runId));
+  return resolveDeckFileAt(runDirectory(runId), relative);
+}
+
+export function resolveDeckFileAt(workspaceRoot: string, relative: string): DeckFile {
+  const workspace = requireDirectRuntimeWorkspace(workspaceRoot);
+  const root = path.resolve(distDirectoryAt(workspace));
   const cleaned = relative.replace(/^\/+/, "");
-  if (cleaned.includes("\0")) {
+  if (
+    cleaned.length > 4_096 ||
+    cleaned.includes("\0") ||
+    path.win32.isAbsolute(cleaned) ||
+    /[\\:\r\n]/u.test(cleaned) ||
+    (cleaned && cleaned.split("/").some((segment) => !segment || segment === "." || segment === ".."))
+  ) {
     throw new BoltSlidesWorkspaceError("deck_not_found", "That deck file was not found.");
   }
   let absolutePath = path.resolve(root, cleaned || "index.html");
-  if (absolutePath !== root && !absolutePath.startsWith(`${root}${path.sep}`)) {
+  if (!contained(absolutePath, root)) {
     throw new BoltSlidesWorkspaceError("deck_not_found", "That deck file was not found.");
   }
-  let stats: fs.Stats;
+  let stats: Stats;
   try {
-    stats = fs.statSync(absolutePath);
+    const rootMetadata = externalRuntimeLstat(root);
+    if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) throw new Error("bad root");
+    stats = externalRuntimeLstat(absolutePath);
   } catch {
     throw new BoltSlidesWorkspaceError("deck_not_found", "That deck file was not found.");
   }
   if (stats.isDirectory()) {
     absolutePath = path.join(absolutePath, "index.html");
     try {
-      stats = fs.statSync(absolutePath);
+      stats = externalRuntimeLstat(absolutePath);
     } catch {
       throw new BoltSlidesWorkspaceError("deck_not_found", "That deck file was not found.");
     }
+  }
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_DECK_FILE_BYTES) {
+    throw new BoltSlidesWorkspaceError("deck_not_found", "That deck file was not found.");
+  }
+  try {
+    const canonicalRoot = externalRuntimeRealpath(root);
+    const canonicalPath = externalRuntimeRealpath(absolutePath);
+    if (
+      !samePath(canonicalRoot, root) ||
+      !samePath(canonicalPath, absolutePath) ||
+      !contained(canonicalPath, canonicalRoot)
+    ) throw new Error("indirect deck file");
+  } catch {
+    throw new BoltSlidesWorkspaceError("deck_not_found", "That deck file was not found.");
   }
   return {
     absolutePath,
@@ -339,8 +484,12 @@ export function resolveDeckFile(runId: string, relative: string): DeckFile {
 }
 
 export function deckIsBuilt(runId: string): boolean {
+  return deckIsBuiltAt(runDirectory(runId));
+}
+
+export function deckIsBuiltAt(workspaceRoot: string): boolean {
   try {
-    return fs.statSync(path.join(distDirectory(runId), "index.html")).isFile();
+    return resolveDeckFileAt(workspaceRoot, "index.html").size > 0;
   } catch {
     return false;
   }

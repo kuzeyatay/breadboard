@@ -324,9 +324,13 @@ export async function sendOwnerMessage(
   let destination: string;
   if (channel === "whatsapp") {
     const target = await whatsAppTarget();
-    const { getWhatsAppBridge } = await import("../whatsapp/bridge.ts");
-    const bridge = getWhatsAppBridge();
-    if (bridge.currentState() !== "connected") {
+    const {
+      runtimeGatewayStatus,
+      sendRuntimeWhatsAppMedia,
+      sendRuntimeWhatsAppMessage,
+    } = await import("../runtime-v2/gateway-control.ts");
+    const status = await runtimeGatewayStatus<{ state: string }>("whatsapp", input.userId);
+    if (status?.state !== "connected") {
       throw new MessagingServiceError(
         "messaging_channel_offline",
         "WhatsApp is linked but not connected right now. Open Settings → Messaging → WhatsApp and press Connect.",
@@ -334,13 +338,13 @@ export async function sendOwnerMessage(
     }
     try {
       if (attachment) {
-        await bridge.sendMedia(target.chatId, {
+        await sendRuntimeWhatsAppMedia(input.userId, target.chatId, {
           filePath: attachment.file.absolutePath,
           fileName: attachment.file.filename,
           caption: text,
         });
       } else {
-        await bridge.sendMessage(target.chatId, text);
+        await sendRuntimeWhatsAppMessage(input.userId, target.chatId, text);
       }
     } catch (cause) {
       throw new MessagingServiceError(

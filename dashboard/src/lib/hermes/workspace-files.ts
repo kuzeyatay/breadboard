@@ -16,9 +16,9 @@
 //
 // The containment rules are the ones agent-loop-service.ts already proved out —
 // no absolute paths, no drive letters, no UNC prefixes, no `..`, no symlinked
-// ancestor — plus one this location makes mandatory: `.breadboard/` holds the
-// session's live capability token (session-service.ts writes it there), so a
-// path naming that directory is refused outright rather than merely hidden.
+// ancestor — plus one this location makes mandatory: `.breadboard/` is reserved
+// for Breadboard-owned runtime metadata, so a path naming that directory is
+// refused outright rather than merely hidden.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -65,9 +65,9 @@ const MAX_SEARCH_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_WALK_ENTRIES = 20_000;
 
 /**
- * Directories never walked and never reachable. `.breadboard` is the security
- * one — it holds this session's capability token. The rest are noise that would
- * bury a listing.
+ * Directories never walked and never reachable. `.breadboard` is reserved for
+ * Breadboard-owned runtime metadata. The rest are noise that would bury a
+ * listing.
  */
 const DENIED_DIRECTORIES = new Set([".breadboard", ".git", "node_modules"]);
 

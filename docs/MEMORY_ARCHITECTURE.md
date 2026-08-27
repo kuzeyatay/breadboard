@@ -115,9 +115,18 @@ is restoring an already-open Terminal.
 
 A sustained hard crossing records a bounded diagnostic, terminates the whole
 owned tree, marks that attempt failed, and does not run the ordinary automatic
-restart policy. Required services emit a fatal classification. Durable workers
-retain their checkpoints; a later user-initiated action may resume where the
-domain supports it.
+restart policy. In Lean and Hot development, each Runtime V2 worker and service
+also receives a live system-commit guard. It clamps that tree's Job Object
+ceiling to the headroom currently available above the bounded development
+reserve and re-evaluates it while the tree runs. Every guarded tree can tighten;
+only the sealed dashboard compiler profile can expand after launch, making it
+the single live consumer of newly released shared slack. The dashboard is also
+the only tree terminated solely by crossing the shared development reserve;
+worker and service supervisors do not independently turn one global pressure
+sample into a kill-all storm. Their manifest hard limits remain enforced.
+Packaged mode keeps the fixed 8 GiB admission reserve. Required services emit a
+fatal classification. Durable workers retain their checkpoints; a later
+user-initiated action may resume where the domain supports it.
 
 ## Durable and streaming work
 

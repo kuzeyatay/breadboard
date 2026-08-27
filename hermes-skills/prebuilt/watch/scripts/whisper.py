@@ -90,10 +90,10 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
             return None
         return None
 
-    dotenv_paths = [
-        Path.home() / ".config" / "watch" / ".env",
-        Path.cwd() / ".env",
-    ]
+    config_dir = Path(
+        os.environ.get("WATCH_CONFIG_DIR") or (Path.home() / ".config" / "watch")
+    ).expanduser().resolve()
+    dotenv_paths = [config_dir / ".env", Path.cwd() / ".env"]
 
     candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
     if preferred is not None:

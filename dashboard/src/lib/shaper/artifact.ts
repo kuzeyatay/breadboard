@@ -2,7 +2,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { createImportedArtifact, type ArtifactRow } from "../hermes/artifact-store.ts";
+import {
+  createImportedArtifact,
+  listArtifactsForUser,
+  type ArtifactRow,
+} from "../hermes/artifact-store.ts";
 import { beginRuntimeRun, finishRuntimeRun } from "../hermes/run-store.ts";
 import {
   getRuntimeSessionByConversation,
@@ -98,15 +102,15 @@ export function closeFormsmithArtifactContext(
   }
 }
 
-export function publishFormsmithMesh(input: {
+export async function publishFormsmithMesh(input: {
   context: FormsmithArtifactContext;
   workspace: string;
   meshPath: string;
   sourceFilename: string;
-}): ArtifactRow {
+}): Promise<ArtifactRow> {
   const base = path.basename(input.sourceFilename, path.extname(input.sourceFilename));
   const safeBase = base.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "object";
-  return createImportedArtifact({
+  return await createImportedArtifact({
     userId: input.context.userId,
     runtimeSessionId: input.context.runtimeSessionId,
     hermesSessionId: input.context.hermesSessionId,
@@ -130,6 +134,24 @@ export function publishFormsmithMesh(input: {
     },
     sourceHermesTool: FORMSMITH_TOOL,
   });
+}
+
+/** Idempotent recovery guard for a crash after import but before terminal projection. */
+export function findPublishedFormsmithMesh(
+  context: FormsmithArtifactContext,
+): ArtifactRow | null {
+  try {
+    return listArtifactsForUser({
+      userId: context.userId,
+      conversationPublicId: context.conversationPublicId,
+    }).find((artifact) =>
+      artifact.originating_run_id === context.runId &&
+      artifact.source_hermes_tool === FORMSMITH_TOOL &&
+      artifact.kind === "model" &&
+      artifact.status === "ready") ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function discardFormsmithWorkspace(workspace: string): void {

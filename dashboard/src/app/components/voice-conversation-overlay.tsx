@@ -110,6 +110,9 @@ export default function VoiceConversationOverlay({
   const awaitingRef = useRef(false);
   const answeredKeyRef = useRef<string | null>(null);
   const watchdogRef = useRef<number | null>(null);
+  const deferredFinishRef = useRef<number | null>(null);
+  const resumeListeningRef = useRef<number | null>(null);
+  const requestAbortRef = useRef<Set<AbortController>>(new Set());
   /** The chat has taken the turn: it is generating, or the turn is in its log. */
   const dispatchedRef = useRef(false);
   const sentMessageCountRef = useRef(0);
@@ -131,6 +134,19 @@ export default function VoiceConversationOverlay({
     watchdogRef.current = null;
   }, []);
 
+  const clearDeferredWork = useCallback(() => {
+    if (deferredFinishRef.current !== null) {
+      window.clearTimeout(deferredFinishRef.current);
+      deferredFinishRef.current = null;
+    }
+    if (resumeListeningRef.current !== null) {
+      window.clearTimeout(resumeListeningRef.current);
+      resumeListeningRef.current = null;
+    }
+    for (const controller of requestAbortRef.current) controller.abort();
+    requestAbortRef.current.clear();
+  }, []);
+
   const releaseMicrophone = useCallback(() => {
     listeningRef.current = false;
     const capture = captureRef.current;
@@ -146,6 +162,10 @@ export default function VoiceConversationOverlay({
   }, []);
 
   const beginTurn = useCallback(() => {
+    if (resumeListeningRef.current !== null) {
+      window.clearTimeout(resumeListeningRef.current);
+      resumeListeningRef.current = null;
+    }
     chunksRef.current = [];
     turnRef.current = initialVoiceTurn();
     listeningRef.current = true;
@@ -162,10 +182,16 @@ export default function VoiceConversationOverlay({
       enterStage('transcribing');
 
       const wav = encodePcm16Wav(chunks, capture.context.sampleRate);
+      const controller = new AbortController();
+      requestAbortRef.current.add(controller);
       try {
         const form = new FormData();
         form.set('file', wav, 'voice-turn.wav');
-        const response = await fetch('/api/speech/transcribe', { method: 'POST', body: form });
+        const response = await fetch('/api/speech/transcribe', {
+          method: 'POST',
+          body: form,
+          signal: controller.signal,
+        });
         if (session !== sessionRef.current) return;
         if (response.status === 202) {
           setNote('Voicebox is still downloading the transcription model. Say that again in a moment.');
@@ -210,6 +236,8 @@ export default function VoiceConversationOverlay({
         if (session !== sessionRef.current) return;
         setNote('That could not be transcribed.');
         beginTurn();
+      } finally {
+        requestAbortRef.current.delete(controller);
       }
     },
     [beginTurn, clearWatchdog, enterStage, onSend],
@@ -231,16 +259,25 @@ export default function VoiceConversationOverlay({
       return;
     }
 
+    let openingStream: MediaStream | null = null;
+    let openingContext: AudioContext | null = null;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
+      openingStream = stream;
       if (session !== sessionRef.current) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
       const context = new AudioContextClass();
+      openingContext = context;
       if (context.state === 'suspended') await context.resume();
+      if (session !== sessionRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        void context.close();
+        return;
+      }
       const source = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(4096, 1, 1);
       // A silent sink keeps the processor scheduled without feeding the speakers.
@@ -264,7 +301,13 @@ export default function VoiceConversationOverlay({
           listeningRef.current = false;
           // Encoding a whole turn takes long enough to stutter the next audio
           // frame, so it happens after this callback returns, not inside it.
-          window.setTimeout(() => void finishTurn(session), 0);
+          if (deferredFinishRef.current !== null) {
+            window.clearTimeout(deferredFinishRef.current);
+          }
+          deferredFinishRef.current = window.setTimeout(() => {
+            deferredFinishRef.current = null;
+            void finishTurn(session);
+          }, 0);
         } else if (verdict === 'silent') {
           // Nobody spoke. Drop the silence rather than transcribing a room.
           chunksRef.current = [];
@@ -276,8 +319,12 @@ export default function VoiceConversationOverlay({
       processor.connect(sink);
       sink.connect(context.destination);
       captureRef.current = { stream, context, source, processor, sink };
+      openingStream = null;
+      openingContext = null;
       beginTurn();
     } catch (caught) {
+      openingStream?.getTracks().forEach((track) => track.stop());
+      void openingContext?.close();
       if (session !== sessionRef.current) return;
       releaseMicrophone();
       if (caught instanceof DOMException && caught.name === 'NotAllowedError') {
@@ -304,6 +351,7 @@ export default function VoiceConversationOverlay({
       sessionRef.current += 1;
       awaitingRef.current = false;
       clearWatchdog();
+      clearDeferredWork();
       stopSpeechPlayback();
       releaseMicrophone();
     };
@@ -361,11 +409,14 @@ export default function VoiceConversationOverlay({
         beginTurn();
         return;
       }
+      const controller = new AbortController();
+      requestAbortRef.current.add(controller);
       try {
         const response = await fetch('/api/speech/synthesize', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: spoken }),
+          signal: controller.signal,
         });
         if (session !== sessionRef.current) return;
         if (!response.ok) throw new Error(await responseMessage(response, 'That answer could not be spoken.'));
@@ -379,12 +430,18 @@ export default function VoiceConversationOverlay({
         // The answer is on screen and already in the chat, so reading time is
         // all that is owed before the microphone opens again — roughly as long
         // as the answer takes to read, and the ring cuts it short.
-        window.setTimeout(
+        if (resumeListeningRef.current !== null) {
+          window.clearTimeout(resumeListeningRef.current);
+        }
+        resumeListeningRef.current = window.setTimeout(
           () => {
+            resumeListeningRef.current = null;
             if (session === sessionRef.current) beginTurn();
           },
           Math.min(9_000, 1_500 + spoken.length * 25),
         );
+      } finally {
+        requestAbortRef.current.delete(controller);
       }
     },
     [beginTurn, enterStage],

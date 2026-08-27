@@ -11,6 +11,10 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ModelCubeIcon from "@/app/components/model-cube-icon";
+import {
+  ReclaimingAudio,
+  ReclaimingVideo,
+} from "@/app/components/reclaiming-media";
 import { formatUploadSize, type StoredUpload } from "@/lib/conversations/uploads";
 import { defaultModelUpAxis } from "@/lib/model-attachments";
 
@@ -154,7 +158,7 @@ function UploadViewer({ upload, onClose }: { upload: StoredUpload; onClose: () =
             />
           ) : upload.kind === "video" ? (
             <div className="flex h-full items-center justify-center">
-              <video
+              <ReclaimingVideo
                 controls
                 preload="metadata"
                 src={previewHref}
@@ -162,11 +166,11 @@ function UploadViewer({ upload, onClose }: { upload: StoredUpload; onClose: () =
                 className="max-h-full w-full rounded-xl bg-black"
               >
                 Your browser cannot preview this video file.
-              </video>
+              </ReclaimingVideo>
             </div>
           ) : upload.kind === "audio" ? (
             <div className="flex h-full items-center justify-center">
-              <audio
+              <ReclaimingAudio
                 controls
                 preload="metadata"
                 src={previewHref}
@@ -174,7 +178,7 @@ function UploadViewer({ upload, onClose }: { upload: StoredUpload; onClose: () =
                 className="w-full max-w-xl"
               >
                 Your browser cannot play this audio file.
-              </audio>
+              </ReclaimingAudio>
             </div>
           ) : upload.kind === "model" && upload.previewFormat ? (
             <div className="h-full min-h-[28rem] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-surface)]">

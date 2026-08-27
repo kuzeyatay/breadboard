@@ -1,33 +1,32 @@
-// In-memory run manager for the agent-browser runtime. The Next.js server drives
-// the agent loop itself: it calls ChatMock (OpenAI-compatible) with a single
-// `agent_browser` tool (the same schema agent-browser's own `chat` uses), and
-// executes each proposed command via the agent-browser CLI against a dedicated
-// browser session. Because WE execute the tools, sensitive actions can be paused
-// for real per-action approval before they touch the browser — true approve/
-// reject that agent-browser's own `chat` subprocess cannot offer out of band.
-//
-// Runs are ephemeral: events + screenshots live here in memory and the SSE route
-// replays them; only the agent CONFIG is persisted (SQLite).
-//
-// The CLI is always invoked as `node <agent-browser.js> ...` with argv passed as
-// an array (never a shell string) so a model-proposed command cannot be
-// interpreted by a shell.
+// Runtime V2 compatibility adapter for Agent Browser. Next.js authenticates
+// and projects the existing UI contract, but never owns the browser process,
+// Chromium descendants, event heap, or cancellation lifecycle.
 
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { breadSystemPrompt } from "../assistant-identity.ts";
+import { randomUUID } from "node:crypto";
+
+import {
+  externalRuntimeFilesystem as fs,
+  externalRuntimeLstat,
+  externalRuntimePathExists,
+  externalRuntimeReadFile,
+  externalRuntimeReadFileAsync,
+} from "../external-runtime-filesystem.ts";
+import { dashboardDataDir } from "../runtime-paths.ts";
 import { isChatmockProvider } from "../ui-tars/model-provider.ts";
 import {
-  SupervisorResourceExhaustedError,
-  withCapabilityLease,
+  cancelRuntimeJob,
+  inspectRuntimeJob,
+  inspectRuntimeJobForStatus,
+  readRuntimeJobOutput,
+  RuntimeJobControlError,
+  submitRuntimeJob,
+  type RuntimeJobAuthority,
+  type RuntimeJobSnapshot,
 } from "../supervisor-control.ts";
-import { publicId } from "./store.ts";
-import { chatmockApiKeyValue } from "./provider.ts";
-import { chatmockGatewayBase, type AgentBrowserConfiguration, type ApprovalMode } from "./config.ts";
+import { chatmockGatewayBase, type AgentBrowserConfiguration } from "./config.ts";
 import { activeProfileDir, resolveBrowserExecutable } from "./browser-profile.ts";
+import * as store from "./store.ts";
 
 export { resolveBrowserExecutable };
 
@@ -38,100 +37,350 @@ export interface NormalizedEvent {
   at: string;
 }
 
-type RunStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "aborted";
+type RunStatus =
+  | "queued"
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "aborted";
 
 interface PendingApproval {
   actionId: string;
-  resolve: (decision: "approve" | "reject") => void;
+  action: string;
+  target: string;
+  explanation: string;
+  risk: string;
+  requestedAt: string;
 }
 
-interface RunState {
-  runId: string;
-  userId: number;
-  agentId: string;
-  session: string;
-  task: string;
+interface RuntimeRunProjection {
+  protocolVersion: 1;
+  identity: {
+    jobId: string;
+    attempt: number;
+    workerInstanceId: string;
+  };
+  scope: {
+    userId: number;
+    agentId: string;
+  };
   status: RunStatus;
-  seq: number;
+  pendingApproval: PendingApproval | null;
   events: NormalizedEvent[];
-  screenshotDir: string;
-  poller: NodeJS.Timeout | null;
-  subscribers: Set<(event: NormalizedEvent) => void>;
-  pending: PendingApproval | null;
-  aborted: boolean;
-  finalText: string;
-  createdAt: string;
 }
 
-// In dev each route bundle gets its own instance of this module, so the map
-// must live on globalThis — otherwise the events/approve/abort routes look at
-// an empty map and treat every run the POST route starts as already gone.
-const globalRuns = globalThis as typeof globalThis & {
-  __breadboardAgentBrowserRuns?: Map<string, RunState>;
-};
-const runs = globalRuns.__breadboardAgentBrowserRuns ?? new Map<string, RunState>();
-globalRuns.__breadboardAgentBrowserRuns = runs;
+export interface RuntimeRunView {
+  readonly events: readonly NormalizedEvent[];
+  readonly terminal: boolean;
+  readonly status: RunStatus | null;
+}
+
+const JOB_TYPE = "agent-browser-run";
+const WORKER_KIND = "agent-browser-node";
+const RESOURCE_CLASS = "browser-automation";
+const MAX_ARTIFACT_BYTES = 1024 * 1024;
+const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
 const MAX_EVENTS = 5_000;
-const MAX_TOOL_RESULT_CHARS = 8_000;
+const MAX_APPROVAL_BYTES = 2_048;
+const MAX_ACTIVE_RECONCILIATIONS = 64;
+const JOB_ID = /^job_[0-9a-f]{64}$/u;
+const AGENT_ID = /^abr_[0-9a-f]{32}$/u;
+const WORKER_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+const ACTION_ID = /^act_[0-9a-f]{32}$/u;
+const SCREENSHOT_ID = /^[0-9]{1,6}$/u;
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const TERMINAL_RUNTIME_STATES = new Set<RuntimeJobSnapshot["state"]>([
+  "cancelled",
+  "succeeded",
+  "failed",
+  "resource_exhausted",
+  "interrupted",
+  "uncertain",
+]);
+const TERMINAL_RUN_STATUSES = new Set<RunStatus>([
+  "completed",
+  "failed",
+  "aborted",
+]);
+const EVENT_TYPES = new Set([
+  "run.started",
+  "run.status",
+  "agent.thinking",
+  "agent.usage",
+  "observation.page",
+  "observation.screenshot",
+  "action.proposed",
+  "action.completed",
+  "approval.requested",
+  "approval.approved",
+  "approval.rejected",
+  "run.completed",
+  "run.failed",
+  "run.aborted",
+]);
 
-// Screenshots are written to disk under a deterministic, runId-derived directory
-// and served from there — never held only in per-process memory. This keeps them
-// retrievable even when the screenshot request lands on a different worker than
-// the one that owns the run's in-memory state.
-const SCREENSHOTS_ROOT = path.join(os.tmpdir(), "breadboard-agent-browser");
-
-function screenshotDirFor(runId: string): string {
-  return path.join(SCREENSHOTS_ROOT, runId);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-// The exact tool schema agent-browser's own chat loop exposes (single tool that
-// runs an agent-browser command string).
-const AGENT_BROWSER_TOOL = {
-  type: "function" as const,
-  function: {
-    name: "agent_browser",
-    description:
-      "Execute an agent-browser command against the active browser session. One command per call; do not chain with && or ;. Do not add --json.",
-    parameters: {
-      type: "object",
-      properties: {
-        command: {
-          type: "string",
-          description:
-            "The command to run, e.g. 'agent-browser open https://example.com', 'agent-browser snapshot -i', 'agent-browser click @e3', 'agent-browser type @e2 hello'.",
-        },
-      },
-      required: ["command"],
-    },
-  },
-};
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
 
-const SYSTEM_PROMPT = breadSystemPrompt(`You control a web browser through the agent-browser CLI on Bread's behalf.
+function pathWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return (
+    relative === "" ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+  );
+}
 
-RULES:
-- You MUST use the agent_browser tool for every browser action. Never claim you did something without calling the tool.
-- One command per tool call. Do not chain with && or ;. Do not add --json.
-- Discover interactive elements with 'agent-browser snapshot -i' — it lists elements with @refs (e.g. @e3). Use those refs with click/type.
-- Common commands: open <url>, snapshot -i, snapshot, click @ref, type @ref <text>, press <key>, eval "<js>", back, screenshot.
-- Screenshots are captured automatically and shown to the user — do not embed image markdown.
-- If a request is outside a browser's capabilities, say so honestly instead of pretending.
-- When the task is complete, reply with a short plain-text summary and DO NOT call the tool.`);
+function authority(userId: number, agentId: string): RuntimeJobAuthority {
+  if (!Number.isSafeInteger(userId) || userId < 1 || !AGENT_ID.test(agentId)) {
+    throw new TypeError("The Agent Browser Runtime authority is invalid.");
+  }
+  return { userId, gardenId: null, conversationId: agentId };
+}
 
-// ---- environment resolution -------------------------------------------------
+function isRuntimeAgentBrowserJob(job: RuntimeJobSnapshot, agentId: string): boolean {
+  return (
+    job.jobType === JOB_TYPE &&
+    job.workerKind === WORKER_KIND &&
+    job.resourceClass === RESOURCE_CLASS &&
+    job.gardenId === null &&
+    job.conversationId === agentId
+  );
+}
 
-export function resolveAgentBrowserEntry(env: NodeJS.ProcessEnv = process.env): string | null {
-  const explicit = env.AGENT_BROWSER_JS?.trim();
-  if (explicit && existsSync(explicit)) return explicit;
-  const roots: string[] = [];
-  if (env.AGENT_BROWSER_HOME?.trim()) roots.push(env.AGENT_BROWSER_HOME.trim());
-  if (env.APPDATA) roots.push(path.join(env.APPDATA, "npm", "node_modules", "agent-browser"));
-  if (env.npm_config_prefix) roots.push(path.join(env.npm_config_prefix, "node_modules", "agent-browser"));
-  roots.push("/usr/local/lib/node_modules/agent-browser", "/usr/lib/node_modules/agent-browser");
-  for (const root of roots) {
-    const entry = path.join(root, "bin", "agent-browser.js");
-    if (existsSync(entry)) return entry;
+function requireRuntimeAgentBrowserJob(job: RuntimeJobSnapshot, agentId: string): RuntimeJobSnapshot {
+  if (!isRuntimeAgentBrowserJob(job, agentId)) {
+    throw new Error("Runtime returned an Agent Browser job outside its exact scope.");
+  }
+  return job;
+}
+
+function artifactRunRoot(runId: string): string {
+  if (!JOB_ID.test(runId)) throw new TypeError("The Agent Browser run identity is invalid.");
+  const root = path.resolve(dashboardDataDir(), "agent-browser-artifacts");
+  const candidate = path.resolve(root, runId);
+  if (!pathWithin(root, candidate) || path.dirname(candidate) !== root) {
+    throw new TypeError("The Agent Browser artifact path escaped its data authority.");
+  }
+  return candidate;
+}
+
+function directDirectory(directoryPath: string): boolean {
+  try {
+    const metadata = externalRuntimeLstat(directoryPath);
+    return metadata.isDirectory() && !metadata.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function readBoundedJson(filePath: string, maximumBytes: number): unknown {
+  const metadata = externalRuntimeLstat(filePath);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size < 1 || metadata.size > maximumBytes) {
+    throw new Error("The Agent Browser artifact is not a bounded direct file.");
+  }
+  const bytes = externalRuntimeReadFile(filePath);
+  if (bytes.byteLength !== metadata.size || bytes.byteLength > maximumBytes) {
+    throw new Error("The Agent Browser artifact changed while it was read.");
+  }
+  return JSON.parse(bytes.toString("utf8")) as unknown;
+}
+
+function validPendingApproval(value: unknown): value is PendingApproval {
+  return (
+    isRecord(value) &&
+    exactKeys(value, [
+      "actionId",
+      "action",
+      "target",
+      "explanation",
+      "risk",
+      "requestedAt",
+    ]) &&
+    typeof value.actionId === "string" &&
+    ACTION_ID.test(value.actionId) &&
+    typeof value.action === "string" &&
+    typeof value.target === "string" &&
+    typeof value.explanation === "string" &&
+    typeof value.risk === "string" &&
+    ["low", "medium", "high"].includes(value.risk) &&
+    typeof value.requestedAt === "string" &&
+    Number.isFinite(Date.parse(value.requestedAt))
+  );
+}
+
+function parseProjection(
+  value: unknown,
+  expected: { userId: number; agentId: string; runId: string },
+  job?: RuntimeJobSnapshot | null,
+): RuntimeRunProjection {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, [
+      "protocolVersion",
+      "identity",
+      "scope",
+      "status",
+      "pendingApproval",
+      "events",
+    ]) ||
+    value.protocolVersion !== 1 ||
+    !isRecord(value.identity) ||
+    !exactKeys(value.identity, ["jobId", "attempt", "workerInstanceId"]) ||
+    value.identity.jobId !== expected.runId ||
+    !Number.isSafeInteger(value.identity.attempt) ||
+    (value.identity.attempt as number) < 1 ||
+    typeof value.identity.workerInstanceId !== "string" ||
+    !WORKER_ID.test(value.identity.workerInstanceId) ||
+    !isRecord(value.scope) ||
+    !exactKeys(value.scope, ["userId", "agentId"]) ||
+    value.scope.userId !== expected.userId ||
+    value.scope.agentId !== expected.agentId ||
+    typeof value.status !== "string" ||
+    ![
+      "queued",
+      "running",
+      "awaiting_approval",
+      "completed",
+      "failed",
+      "aborted",
+    ].includes(value.status) ||
+    (value.pendingApproval !== null && !validPendingApproval(value.pendingApproval)) ||
+    !Array.isArray(value.events) ||
+    value.events.length > MAX_EVENTS
+  ) {
+    throw new Error("The durable Agent Browser run projection is invalid.");
+  }
+  if (
+    job &&
+    (job.jobId !== value.identity.jobId ||
+      job.attempt !== value.identity.attempt ||
+      job.workerInstanceId !== value.identity.workerInstanceId)
+  ) {
+    throw new Error("The Agent Browser run projection is fenced to another worker attempt.");
+  }
+  let priorSequence = 0;
+  for (const event of value.events) {
+    if (
+      !isRecord(event) ||
+      !exactKeys(event, ["sequenceNumber", "type", "payload", "at"]) ||
+      !Number.isSafeInteger(event.sequenceNumber) ||
+      (event.sequenceNumber as number) <= priorSequence ||
+      typeof event.type !== "string" ||
+      !EVENT_TYPES.has(event.type) ||
+      !isRecord(event.payload) ||
+      typeof event.at !== "string" ||
+      !Number.isFinite(Date.parse(event.at))
+    ) {
+      throw new Error("The durable Agent Browser event stream is invalid.");
+    }
+    priorSequence = event.sequenceNumber as number;
+  }
+  if ((value.status === "awaiting_approval") !== (value.pendingApproval !== null)) {
+    throw new Error("The Agent Browser approval projection is inconsistent.");
+  }
+  const terminalEvent = value.events.findLast((event) =>
+    ["run.completed", "run.failed", "run.aborted"].includes(String((event as { type?: unknown }).type)),
+  ) as Record<string, unknown> | undefined;
+  if (TERMINAL_RUN_STATUSES.has(value.status as RunStatus)) {
+    const expectedType = `run.${value.status}`;
+    if (!terminalEvent || terminalEvent.type !== expectedType) {
+      throw new Error("The Agent Browser terminal projection is inconsistent.");
+    }
+  } else if (terminalEvent) {
+    throw new Error("The Agent Browser projection continued after a terminal event.");
+  }
+  return value as unknown as RuntimeRunProjection;
+}
+
+function artifactProjection(
+  userId: number,
+  agentId: string,
+  runId: string,
+  job?: RuntimeJobSnapshot | null,
+): RuntimeRunProjection | null {
+  const root = artifactRunRoot(runId);
+  const base = path.dirname(root);
+  if (!directDirectory(base) || !directDirectory(root)) return null;
+  const filePath = path.join(root, "run.json");
+  try {
+    return parseProjection(readBoundedJson(filePath, MAX_ARTIFACT_BYTES), {
+      userId,
+      agentId,
+      runId,
+    }, job);
+  } catch {
+    return null;
+  }
+}
+
+async function runtimeOutputProjection(
+  userId: number,
+  agentId: string,
+  runId: string,
+  job: RuntimeJobSnapshot,
+): Promise<RuntimeRunProjection | null> {
+  const scopedAuthority = authority(userId, agentId);
+  const kinds: Array<"checkpoint" | "result"> =
+    job.state === "succeeded" ? ["result", "checkpoint"] : ["checkpoint"];
+  for (const kind of kinds) {
+    try {
+      const output = await readRuntimeJobOutput(scopedAuthority, runId, kind);
+      const candidate =
+        kind === "result" && isRecord(output.content) && "run" in output.content
+          ? output.content.run
+          : output.content;
+      return parseProjection(candidate, { userId, agentId, runId }, job);
+    } catch (error) {
+      if (!(error instanceof RuntimeJobControlError)) throw error;
+      if (!["JOB_OUTPUT_NOT_READY", "JOB_NOT_FOUND"].includes(error.code)) throw error;
+    }
   }
   return null;
+}
+
+function synthesizedTerminalEvent(
+  job: RuntimeJobSnapshot,
+  sequenceNumber: number,
+): NormalizedEvent | null {
+  if (!TERMINAL_RUNTIME_STATES.has(job.state)) return null;
+  const at = new Date(job.finishedAt ?? job.updatedAt).toISOString();
+  if (job.state === "succeeded") {
+    return { sequenceNumber, type: "run.completed", payload: { summary: "Task complete." }, at };
+  }
+  if (job.state === "cancelled") {
+    return { sequenceNumber, type: "run.aborted", payload: {}, at };
+  }
+  return {
+    sequenceNumber,
+    type: "run.failed",
+    payload: { message: job.failureMessage ?? "Agent Browser could not complete the task." },
+    at,
+  };
+}
+
+async function inspectMappedRun(
+  userId: number,
+  agentId: string,
+  runId: string,
+  statusRead = true,
+): Promise<RuntimeJobSnapshot | null> {
+  if (!store.getRuntimeRun(userId, agentId, runId)) return null;
+  const job = statusRead
+    ? await inspectRuntimeJobForStatus(authority(userId, agentId), runId)
+    : await inspectRuntimeJob(authority(userId, agentId), runId);
+  requireRuntimeAgentBrowserJob(job, agentId);
+  if (TERMINAL_RUNTIME_STATES.has(job.state)) {
+    store.markRuntimeRunTerminal(runId, new Date(job.finishedAt ?? job.updatedAt).toISOString());
+  }
+  return job;
 }
 
 export interface RuntimeAvailability {
@@ -139,6 +388,21 @@ export interface RuntimeAvailability {
   entry: string | null;
   browser: string | null;
   reason?: string;
+}
+
+export function resolveAgentBrowserEntry(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit = env.AGENT_BROWSER_JS?.trim();
+  if (explicit && externalRuntimePathExists(explicit)) return explicit;
+  const roots: string[] = [];
+  if (env.AGENT_BROWSER_HOME?.trim()) roots.push(env.AGENT_BROWSER_HOME.trim());
+  if (env.APPDATA) roots.push(path.join(env.APPDATA, "npm", "node_modules", "agent-browser"));
+  if (env.npm_config_prefix) roots.push(path.join(env.npm_config_prefix, "node_modules", "agent-browser"));
+  roots.push("/usr/local/lib/node_modules/agent-browser", "/usr/lib/node_modules/agent-browser");
+  for (const root of roots) {
+    const entry = path.join(root, "bin", "agent-browser.js");
+    if (externalRuntimePathExists(entry)) return entry;
+  }
+  return null;
 }
 
 export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): RuntimeAvailability {
@@ -149,508 +413,354 @@ export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): Runti
   return { available: true, entry, browser };
 }
 
-function childEnv(browser: string, timeoutMs: number): NodeJS.ProcessEnv {
-  // The shared profile, once someone has signed into it from the profile page.
-  // agent-browser hands it to Chromium as --user-data-dir, so the run opens
-  // already logged into whatever that window logged into. Absent, the run gets
-  // a blank browser, which is how this behaved before the profile existed.
-  const profile = activeProfileDir();
-  return {
-    ...process.env,
-    // The dashboard may run under Electron (execPath = electron); this makes it
-    // behave as plain Node for our spawns. Harmless under a real Node parent.
-    ELECTRON_RUN_AS_NODE: "1",
-    NO_COLOR: "1",
-    AGENT_BROWSER_EXECUTABLE_PATH: browser,
-    AGENT_BROWSER_IDLE_TIMEOUT_MS: String(Math.max(30_000, timeoutMs)),
-    ...(profile ? { AGENT_BROWSER_PROFILE: profile } : {}),
-  };
-}
-
-// ---- event plumbing ---------------------------------------------------------
-
-function emit(run: RunState, type: string, payload: Record<string, unknown> = {}): void {
-  run.seq += 1;
-  const event: NormalizedEvent = { sequenceNumber: run.seq, type, payload, at: new Date().toISOString() };
-  run.events.push(event);
-  if (run.events.length > MAX_EVENTS) run.events.splice(0, run.events.length - MAX_EVENTS);
-  for (const subscriber of run.subscribers) {
-    try {
-      subscriber(event);
-    } catch {
-      /* a slow/broken subscriber never blocks the run */
-    }
-  }
-}
-
-const SENSITIVE = /^(click|type|fill|press|submit|select|check|uncheck|upload|drag|tap|hover|eval|download|clear|set)\b/i;
-
-function classifyCommand(command: string): { action: string; target: string; sensitive: boolean } {
-  const stripped = command.replace(/^agent-browser\s+/, "").replace(/^--session\s+\S+\s+/, "").trim();
-  const [verb, ...rest] = stripped.split(/\s+/);
-  return { action: verb || "command", target: rest.join(" "), sensitive: SENSITIVE.test(stripped) };
-}
-
-function needsApproval(mode: ApprovalMode, sensitive: boolean): boolean {
-  if (mode === "none") return false;
-  if (mode === "every_action") return true;
-  return sensitive;
-}
-
-function riskOf(action: string): string {
-  if (/^(eval|download|upload|submit)$/i.test(action)) return "high";
-  if (/^(click|type|fill|press|select|check|set)$/i.test(action)) return "medium";
-  return "low";
-}
-
-// ---- command execution ------------------------------------------------------
-
-/** Minimal, shell-free tokenizer (handles single/double quotes). */
-function tokenize(input: string): string[] {
-  const tokens: string[] = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(input)) !== null) {
-    tokens.push(match[1] ?? match[2] ?? match[3] ?? "");
-  }
-  return tokens;
-}
-
-/** Run one agent-browser command against the run's session; return its output. */
-function execCommand(
-  entry: string,
-  config: AgentBrowserConfiguration,
-  browser: string,
-  session: string,
-  command: string,
-): Promise<string> {
-  // Only the first statement is honored (mirror agent-browser's chat executor).
-  const single = command.split("&&")[0].split(";")[0].trim();
-  const stripped = single.replace(/^agent-browser\s+/, "");
-  const words = tokenize(stripped).filter((word) => word !== "--json");
-  const hasSession = words.includes("--session");
-  const args = [entry, ...(hasSession ? [] : ["--session", session]), ...words];
-
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, args, { env: childEnv(browser, config.timeoutMs), windowsHide: true });
-    let out = "";
-    let err = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => (out += chunk));
-    child.stderr.on("data", (chunk: string) => (err += chunk));
-    const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* gone */
-      }
-    }, 60_000);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve(`Command failed: ${error.message}`);
-    });
-    child.on("exit", () => {
-      clearTimeout(timer);
-      const text = (out.trim() || err.trim() || "(no output)").replace(/\x1b\[[0-9;]*m/g, "");
-      resolve(text.slice(0, MAX_TOOL_RESULT_CHARS));
-    });
-  });
-}
-
-// ---- ChatMock completion ----------------------------------------------------
-
-interface ChatMessage {
-  role: "system" | "user" | "assistant" | "tool";
-  content?: string | null;
-  tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
-  tool_call_id?: string;
-}
-
-interface ChatUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-}
-
-async function chatCompletion(
-  config: AgentBrowserConfiguration,
-  messages: ChatMessage[],
-): Promise<{ message: ChatMessage; usage: ChatUsage }> {
-  // ChatMock's port is assigned when the desktop app starts, so an endpoint
-  // stored in an agent configuration goes stale after any restart. The server
-  // environment is the source of truth on every call; only a non-ChatMock
-  // provider keeps its explicitly configured endpoint.
-  const base = (
-    isChatmockProvider(config.provider) ? chatmockGatewayBase() : (config.endpoint ?? chatmockGatewayBase())
-  ).replace(/\/$/, "");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120_000);
-  try {
-    const response = await fetch(`${base}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${chatmockApiKeyValue()}` },
-      body: JSON.stringify({ model: config.model, messages, tools: [AGENT_BROWSER_TOOL], tool_choice: "auto" }),
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`model endpoint returned ${response.status}`);
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: ChatMessage }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-    };
-    const message = data.choices?.[0]?.message;
-    if (!message) throw new Error("model returned no message");
-    return {
-      message,
-      usage: {
-        inputTokens: data.usage?.prompt_tokens,
-        outputTokens: data.usage?.completion_tokens,
-        totalTokens: data.usage?.total_tokens,
-      },
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// ---- lifecycle --------------------------------------------------------------
-
 export interface StartRunResult {
   runId: string;
   status: RunStatus;
 }
 
-export function startRun(input: {
+function runtimeStatus(job: RuntimeJobSnapshot): RunStatus {
+  if (job.state === "succeeded") return "completed";
+  if (job.state === "cancelled") return "aborted";
+  if (TERMINAL_RUNTIME_STATES.has(job.state)) return "failed";
+  return "queued";
+}
+
+export async function startRun(input: {
   userId: number;
   agentId: string;
   task: string;
+  requestId?: string;
   config: AgentBrowserConfiguration;
-}): StartRunResult {
+}): Promise<StartRunResult> {
+  const requestId = input.requestId ?? randomUUID();
+  if (!REQUEST_ID.test(requestId)) throw new TypeError("The Agent Browser request identity is invalid.");
+  const normalizedRequestId = requestId.toLowerCase();
+  const idempotencyKey = `agent-browser-v2-${input.agentId}-${normalizedRequestId}`;
+  const existing = store.getRuntimeRunByRequest(
+    input.userId,
+    input.agentId,
+    normalizedRequestId,
+  );
+  if (existing) {
+    try {
+      const job = requireRuntimeAgentBrowserJob(
+        await inspectRuntimeJobForStatus(authority(input.userId, input.agentId), existing.job_id),
+        input.agentId,
+      );
+      if (TERMINAL_RUNTIME_STATES.has(job.state)) {
+        store.markRuntimeRunTerminal(
+          job.jobId,
+          new Date(job.finishedAt ?? job.updatedAt).toISOString(),
+        );
+      }
+      return { runId: job.jobId, status: runtimeStatus(job) };
+    } catch (error) {
+      if (!(error instanceof RuntimeJobControlError) || error.code !== "JOB_NOT_FOUND") {
+        const durable = artifactProjection(input.userId, input.agentId, existing.job_id);
+        if (durable) return { runId: existing.job_id, status: durable.status };
+        throw error;
+      }
+      store.markRuntimeRunTerminal(existing.job_id);
+      const durable = artifactProjection(input.userId, input.agentId, existing.job_id);
+      return {
+        runId: existing.job_id,
+        status: durable && TERMINAL_RUN_STATUSES.has(durable.status) ? durable.status : "failed",
+      };
+    }
+  }
   const availability = runtimeAvailability();
   if (!availability.available || !availability.entry || !availability.browser) {
     throw new Error(availability.reason ?? "agent-browser runtime unavailable");
   }
-  const runId = publicId("abrun");
-  const run: RunState = {
-    runId,
-    userId: input.userId,
-    agentId: input.agentId,
-    session: runId,
-    task: input.task,
-    status: "queued",
-    seq: 0,
-    events: [],
-    screenshotDir: screenshotDirFor(runId),
-    poller: null,
-    subscribers: new Set(),
-    pending: null,
-    aborted: false,
-    finalText: "",
-    createdAt: new Date().toISOString(),
-  };
-  runs.set(runId, run);
-  void driveRun(run, input.config, availability.entry, availability.browser);
-  return { runId, status: "queued" };
-}
-
-async function driveRun(
-  run: RunState,
-  config: AgentBrowserConfiguration,
-  entry: string,
-  browser: string,
-): Promise<void> {
-  return withCapabilityLease("browser-agent", "browser-run", () =>
-    driveRunWithLease(run, config, entry, browser),
-  );
-}
-
-async function driveRunWithLease(
-  run: RunState,
-  config: AgentBrowserConfiguration,
-  entry: string,
-  browser: string,
-): Promise<void> {
-  await mkdir(run.screenshotDir, { recursive: true }).catch(() => undefined);
-  emit(run, "run.started", { task: run.task, operator: "browser" });
-  run.status = "running";
-  startScreenshotPoller(run, entry, config, browser);
-
-  const deadline = Date.now() + config.timeoutMs;
-  const messages: ChatMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: run.task },
-  ];
-  // Cumulative token usage across every model call this run.
-  const usageTotals = { inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, estimated: false };
-  let lastActionLabel = "";
-
-  try {
-    for (let step = 0; step < config.maxSteps; step += 1) {
-      if (run.aborted) return;
-      if (Date.now() > deadline) {
-        finish(run, "completed", { summary: run.finalText || "Time limit reached." });
-        return;
-      }
-
-      emit(run, "agent.thinking", {
-        state: "active",
-        summary: lastActionLabel
-          ? `Reviewing the result of ${lastActionLabel} and planning the next step`
-          : "Planning the first browser action",
-      });
-      const { message: assistant, usage } = await chatCompletion(config, messages);
-      if (run.aborted) return;
-
-      usageTotals.calls += 1;
-      usageTotals.inputTokens += usage.inputTokens ?? 0;
-      usageTotals.outputTokens += usage.outputTokens ?? 0;
-      usageTotals.totalTokens +=
-        usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
-      if (usage.totalTokens === undefined && usage.inputTokens === undefined) usageTotals.estimated = true;
-      emit(run, "agent.usage", { ...usageTotals });
-
-      const text = (assistant.content ?? "").trim();
-      if (text) {
-        run.finalText = text;
-        emit(run, "run.status", { message: text });
-      }
-      messages.push({ role: "assistant", content: assistant.content ?? "", tool_calls: assistant.tool_calls });
-
-      const toolCalls = assistant.tool_calls ?? [];
-      if (toolCalls.length === 0) {
-        finish(run, "completed", { summary: run.finalText || "Task complete." });
-        return;
-      }
-
-      for (const call of toolCalls) {
-        if (run.aborted) return;
-        let command = "";
-        try {
-          command = String((JSON.parse(call.function.arguments || "{}") as { command?: string }).command ?? "");
-        } catch {
-          command = "";
-        }
-        if (!command) {
-          messages.push({ role: "tool", tool_call_id: call.id, content: "No command provided." });
-          continue;
-        }
-
-        const { action, target, sensitive } = classifyCommand(command);
-        lastActionLabel = `${action}${target ? ` ${target}` : ""}`.trim().slice(0, 80);
-        emit(run, "action.proposed", { action, target, command });
-        const url = /https?:\/\/\S+/.exec(command)?.[0];
-        if (url) emit(run, "observation.page", { url });
-
-        if (needsApproval(config.approvalMode, sensitive)) {
-          const decision = await requestApproval(run, { action, target, command });
-          if (run.aborted) return;
-          if (decision === "reject") {
-            emit(run, "action.completed", { summary: "rejected by user", action, target });
-            messages.push({
-              role: "tool",
-              tool_call_id: call.id,
-              content: "The user rejected this action. Do not retry it; choose a different approach or stop.",
-            });
-            continue;
-          }
-        }
-
-        const result = await execCommand(entry, config, browser, run.session, command);
-        if (run.aborted) return;
-        emit(run, "action.completed", { summary: result.split(/\r?\n/)[0]?.slice(0, 200) || "done", action, target });
-        messages.push({ role: "tool", tool_call_id: call.id, content: result });
-      }
-    }
-    finish(run, "completed", { summary: run.finalText || "Step limit reached." });
-  } catch (error) {
-    if (run.aborted) return;
-    finish(run, "failed", {
-      message: error instanceof Error ? error.message : "run failed",
-      ...(error instanceof SupervisorResourceExhaustedError ? error.result : {}),
-    });
-  }
-}
-
-/** Emit approval.requested and wait until a route resolves the decision. */
-function requestApproval(
-  run: RunState,
-  info: { action: string; target: string; command: string },
-): Promise<"approve" | "reject"> {
-  const actionId = publicId("act");
-  run.status = "awaiting_approval";
-  emit(run, "approval.requested", {
-    actionId,
-    action: info.action,
-    target: info.target,
-    explanation: `agent-browser wants to run: ${info.command}`,
-    risk: riskOf(info.action),
-    requestedAt: new Date().toISOString(),
-  });
-  return new Promise<"approve" | "reject">((resolve) => {
-    run.pending = {
-      actionId,
-      resolve: (decision) => {
-        run.pending = null;
-        if (run.status === "awaiting_approval") run.status = "running";
-        emit(run, decision === "approve" ? "approval.approved" : "approval.rejected", { actionId });
-        resolve(decision);
+  const modelBaseUrl = (
+    isChatmockProvider(input.config.provider)
+      ? chatmockGatewayBase()
+      : (input.config.endpoint ?? chatmockGatewayBase())
+  ).replace(/\/$/u, "");
+  const job = requireRuntimeAgentBrowserJob(
+    await submitRuntimeJob(authority(input.userId, input.agentId), {
+      jobType: JOB_TYPE,
+      idempotencyKey,
+      requestPayload: {
+        task: input.task,
+        provider: input.config.provider,
+        model: input.config.model,
+        modelBaseUrl,
+        maxSteps: input.config.maxSteps,
+        timeoutMs: input.config.timeoutMs,
+        approvalMode: input.config.approvalMode,
+        allowedDomains: input.config.allowedDomains,
+        engine: input.config.engine,
+        agentBrowserEntry: availability.entry,
+        browserExecutable: availability.browser,
+        profilePath: activeProfileDir(),
       },
-    };
+    }),
+    input.agentId,
+  );
+  store.recordRuntimeRun({
+    jobId: job.jobId,
+    ownerUserId: input.userId,
+    agentId: input.agentId,
+    requestId: normalizedRequestId,
+    idempotencyKey,
+    createdAt: new Date(job.createdAt).toISOString(),
   });
-}
-
-function startScreenshotPoller(
-  run: RunState,
-  entry: string,
-  config: AgentBrowserConfiguration,
-  browser: string,
-): void {
-  let index = 0;
-  let lastSize = -1;
-  let inFlight = false;
-  run.poller = setInterval(() => {
-    if (inFlight || (run.status !== "running" && run.status !== "awaiting_approval")) return;
-    inFlight = true;
-    const current = index + 1;
-    // Capture to a temp name, then keep it on disk as s{id}.png only when it is a
-    // new frame — the served path is deterministic from runId + id.
-    const tmp = path.join(run.screenshotDir, `capture-${current}.png`);
-    const shot = spawn(process.execPath, [entry, "screenshot", tmp, "--session", run.session, "--json"], {
-      env: childEnv(browser, config.timeoutMs),
-      windowsHide: true,
-    });
-    shot.on("error", () => {
-      inFlight = false;
-    });
-    shot.on("exit", async () => {
-      try {
-        const bytes = await readFile(tmp);
-        if (bytes.length > 0 && bytes.length !== lastSize) {
-          lastSize = bytes.length;
-          index = current;
-          await writeFile(path.join(run.screenshotDir, `s${current}.png`), bytes).catch(() => undefined);
-          emit(run, "observation.screenshot", { screenshotId: String(current) });
-        }
-        await rm(tmp, { force: true }).catch(() => undefined);
-      } catch {
-        /* no screenshot yet */
-      } finally {
-        inFlight = false;
-      }
-    });
-  }, 2_500);
-}
-
-function finish(run: RunState, status: RunStatus, payload: Record<string, unknown>): void {
-  if (run.poller) {
-    clearInterval(run.poller);
-    run.poller = null;
+  if (TERMINAL_RUNTIME_STATES.has(job.state)) {
+    store.markRuntimeRunTerminal(job.jobId, new Date(job.finishedAt ?? job.updatedAt).toISOString());
   }
-  run.status = status;
-  // Freeze the thinking timer with the run's total duration.
-  emit(run, "agent.thinking", {
-    state: "completed",
-    durationMs: Math.max(0, Date.now() - Date.parse(run.createdAt)),
-    summary: status === "completed" ? "Finished the task" : `Run ${status}`,
-  });
-  emit(run, status === "completed" ? "run.completed" : status === "aborted" ? "run.aborted" : "run.failed", payload);
-  void closeSession(run).catch(() => undefined);
-  // Keep screenshots + run readable for a grace period so a just-finished card
-  // (and late reconnects) can still load them, then clean up together.
-  setTimeout(() => {
-    runs.delete(run.runId);
-    void rm(run.screenshotDir, { recursive: true, force: true }).catch(() => undefined);
-  }, 10 * 60 * 1000);
+  return { runId: job.jobId, status: runtimeStatus(job) };
 }
 
-/** Best-effort: close the browser session so no daemon/browser leaks. */
-function closeSession(run: RunState): Promise<void> {
-  const availability = runtimeAvailability();
-  if (!availability.entry || !availability.browser) return Promise.resolve();
-  return new Promise((resolve) => {
-    const child = spawn(
-      process.execPath,
-      [availability.entry as string, "close", "--session", run.session],
-      { env: childEnv(availability.browser as string, 30_000), windowsHide: true },
-    );
-    child.on("error", () => resolve());
-    child.on("exit", () => resolve());
-    setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* gone */
-      }
-      resolve();
-    }, 15_000);
-  });
-}
-
-// ---- read/control API (used by routes) --------------------------------------
-
-function ownedRun(userId: number, runId: string): RunState | null {
-  const run = runs.get(runId);
-  if (!run || run.userId !== userId) return null;
-  return run;
-}
-
-export function getEventsSince(userId: number, runId: string, since: number): NormalizedEvent[] {
-  const run = ownedRun(userId, runId);
-  if (!run) return [];
-  return run.events.filter((event) => event.sequenceNumber > since);
-}
-
-export function isTerminal(userId: number, runId: string): boolean {
-  const run = ownedRun(userId, runId);
-  return !run || run.status === "completed" || run.status === "failed" || run.status === "aborted";
-}
-
-/**
- * Is any run still holding a browser? Asked before the profile is opened for a
- * sign-in or wiped, since both would be fighting a live run for the same
- * --user-data-dir.
- */
-export function hasActiveRun(): boolean {
-  for (const run of runs.values()) {
-    if (run.status === "queued" || run.status === "running" || run.status === "awaiting_approval") return true;
+export async function readRunView(
+  userId: number,
+  agentId: string,
+  runId: string,
+  since = 0,
+): Promise<RuntimeRunView> {
+  const mapping = store.getRuntimeRun(userId, agentId, runId);
+  if (!mapping) {
+    return { events: [], terminal: true, status: null };
   }
-  return false;
-}
-
-/**
- * Read a screenshot from disk by its deterministic runId-derived path. Works
- * across workers/reloads (shared filesystem) and does not depend on in-memory
- * run state. `screenshotId` is constrained to digits, so it cannot traverse.
- */
-export async function getScreenshot(runId: string, screenshotId: string): Promise<Buffer | null> {
-  if (!/^[0-9]{1,6}$/.test(screenshotId) || !/^[A-Za-z0-9_-]{1,80}$/.test(runId)) return null;
+  let job: RuntimeJobSnapshot | null = null;
+  let runtimeMissing = false;
+  let runtimeMissingAt = mapping.terminal_at;
   try {
-    return await readFile(path.join(screenshotDirFor(runId), `s${screenshotId}.png`));
+    job = await inspectMappedRun(userId, agentId, runId, true);
+  } catch (error) {
+    if (error instanceof RuntimeJobControlError && error.code === "JOB_NOT_FOUND") {
+      runtimeMissing = true;
+      runtimeMissingAt ??= new Date().toISOString();
+      store.markRuntimeRunTerminal(runId, runtimeMissingAt);
+    } else {
+      const durable = artifactProjection(userId, agentId, runId);
+      return {
+        events: (durable?.events ?? []).filter((event) => event.sequenceNumber > since),
+        terminal: durable ? TERMINAL_RUN_STATUSES.has(durable.status) : false,
+        status: durable?.status ?? null,
+      };
+    }
+  }
+  let projection = artifactProjection(userId, agentId, runId, job);
+  if (
+    job &&
+    (!projection ||
+      (TERMINAL_RUNTIME_STATES.has(job.state) && !TERMINAL_RUN_STATUSES.has(projection.status)))
+  ) {
+    const runtimeProjection = await runtimeOutputProjection(userId, agentId, runId, job).catch(
+      () => null,
+    );
+    if (runtimeProjection) projection = runtimeProjection;
+  }
+  const events = projection ? [...projection.events] : [];
+  const last = events.at(-1)?.sequenceNumber ?? 0;
+  if (job && !events.some((event) => ["run.completed", "run.failed", "run.aborted"].includes(event.type))) {
+    const synthesized = synthesizedTerminalEvent(job, last + 1);
+    if (synthesized) events.push(synthesized);
+  }
+  if (
+    runtimeMissing &&
+    !events.some((event) => ["run.completed", "run.failed", "run.aborted"].includes(event.type))
+  ) {
+    events.push({
+      sequenceNumber: last + 1,
+      type: "run.failed",
+      payload: { message: "Agent Browser could not recover its native Runtime record." },
+      at: runtimeMissingAt ?? mapping.created_at,
+    });
+  }
+  const projectionTerminal = Boolean(
+    projection && TERMINAL_RUN_STATUSES.has(projection.status),
+  );
+  const nativeTerminal = runtimeMissing || Boolean(job && TERMINAL_RUNTIME_STATES.has(job.state));
+  const terminal = projectionTerminal || nativeTerminal;
+  const status = projectionTerminal
+    ? projection?.status ?? null
+    : job && TERMINAL_RUNTIME_STATES.has(job.state)
+      ? runtimeStatus(job)
+      : runtimeMissing
+        ? "failed"
+        : projection?.status ?? (job ? runtimeStatus(job) : null);
+  return {
+    events: events.filter((event) => event.sequenceNumber > since),
+    terminal,
+    status,
+  };
+}
+
+export async function getEventsSince(
+  userId: number,
+  agentId: string,
+  runId: string,
+  since: number,
+): Promise<NormalizedEvent[]> {
+  const view = await readRunView(userId, agentId, runId, since);
+  return [...view.events];
+}
+
+export async function isTerminal(userId: number, agentId: string, runId: string): Promise<boolean> {
+  return (await readRunView(userId, agentId, runId)).terminal;
+}
+
+export async function hasActiveRun(): Promise<boolean> {
+  for (let index = 0; index < MAX_ACTIVE_RECONCILIATIONS; index += 1) {
+    const row = store.firstPotentiallyActiveRuntimeRun();
+    if (!row) return false;
+    try {
+      const job = await inspectRuntimeJobForStatus(
+        authority(row.owner_user_id, row.agent_id),
+        row.job_id,
+      );
+      requireRuntimeAgentBrowserJob(job, row.agent_id);
+      if (TERMINAL_RUNTIME_STATES.has(job.state)) {
+        store.markRuntimeRunTerminal(
+          row.job_id,
+          new Date(job.finishedAt ?? job.updatedAt).toISOString(),
+        );
+        continue;
+      }
+      return true;
+    } catch (error) {
+      if (error instanceof RuntimeJobControlError && error.code === "JOB_NOT_FOUND") {
+        store.markRuntimeRunTerminal(row.job_id);
+        continue;
+      }
+      // An unreachable native owner is not evidence that the shared profile is free.
+      return true;
+    }
+  }
+  return true;
+}
+
+export async function getScreenshot(
+  userId: number,
+  agentId: string,
+  runId: string,
+  screenshotId: string,
+): Promise<Buffer | null> {
+  if (!SCREENSHOT_ID.test(screenshotId) || !store.getRuntimeRun(userId, agentId, runId)) return null;
+  const root = artifactRunRoot(runId);
+  const screenshots = path.join(root, "screenshots");
+  const candidate = path.join(screenshots, `s${screenshotId}.png`);
+  if (
+    !directDirectory(path.dirname(root)) ||
+    !directDirectory(root) ||
+    !directDirectory(screenshots) ||
+    !pathWithin(screenshots, candidate) ||
+    path.dirname(candidate) !== screenshots
+  ) {
+    return null;
+  }
+  try {
+    const metadata = externalRuntimeLstat(candidate);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size < 1 || metadata.size > MAX_SCREENSHOT_BYTES) {
+      return null;
+    }
+    const bytes = await externalRuntimeReadFileAsync(candidate);
+    return bytes.byteLength === metadata.size && bytes.byteLength <= MAX_SCREENSHOT_BYTES ? bytes : null;
   } catch {
     return null;
   }
 }
 
-/** Resolve a pending approval. Returns false when there is nothing to decide. */
-export function decideApproval(
+function approvalFile(runId: string, actionId: string): string {
+  if (!ACTION_ID.test(actionId)) throw new TypeError("The approval action identity is invalid.");
+  const root = artifactRunRoot(runId);
+  const approvals = path.join(root, "approvals");
+  const candidate = path.join(approvals, `${actionId}.json`);
+  if (!pathWithin(approvals, candidate) || path.dirname(candidate) !== approvals) {
+    throw new TypeError("The approval decision escaped its run artifact root.");
+  }
+  return candidate;
+}
+
+export async function decideApproval(
   userId: number,
+  agentId: string,
   runId: string,
   actionId: string,
   decision: "approve" | "reject",
-): boolean {
-  const run = ownedRun(userId, runId);
-  if (!run || !run.pending || run.pending.actionId !== actionId) return false;
-  run.pending.resolve(decision);
-  return true;
+): Promise<boolean> {
+  const row = store.getRuntimeRun(userId, agentId, runId);
+  if (!row || !ACTION_ID.test(actionId)) return false;
+  let job: RuntimeJobSnapshot;
+  try {
+    const inspected = await inspectMappedRun(userId, agentId, runId, false);
+    if (!inspected) return false;
+    job = inspected;
+  } catch {
+    return false;
+  }
+  if (
+    TERMINAL_RUNTIME_STATES.has(job.state) ||
+    job.attempt < 1 ||
+    !job.workerInstanceId
+  ) {
+    return false;
+  }
+  const projection = artifactProjection(userId, agentId, runId, job) ??
+    (await runtimeOutputProjection(userId, agentId, runId, job).catch(() => null));
+  if (
+    !projection ||
+    projection.status !== "awaiting_approval" ||
+    projection.pendingApproval?.actionId !== actionId
+  ) {
+    return false;
+  }
+  const filePath = approvalFile(runId, actionId);
+  const parent = path.dirname(filePath);
+  if (!directDirectory(path.dirname(parent)) || !directDirectory(parent)) return false;
+  const bytes = Buffer.from(`${JSON.stringify({
+    protocolVersion: 1,
+    jobId: runId,
+    attempt: job.attempt,
+    workerInstanceId: job.workerInstanceId,
+    actionId,
+    decision,
+    decidedAt: new Date().toISOString(),
+  })}\n`, "utf8");
+  if (bytes.byteLength > MAX_APPROVAL_BYTES) return false;
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(filePath, "wx", 0o600);
+    fs.writeFileSync(descriptor, bytes);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    return true;
+  } catch {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    return false;
+  }
 }
 
-export function abortRun(userId: number, runId: string): boolean {
-  const run = ownedRun(userId, runId);
-  if (!run) return false;
-  if (run.status === "running" || run.status === "queued" || run.status === "awaiting_approval") {
-    run.aborted = true;
-    run.pending?.resolve("reject");
-    finish(run, "aborted", {});
+export async function abortRun(userId: number, runId: string): Promise<boolean>;
+export async function abortRun(userId: number, agentId: string, runId: string): Promise<boolean>;
+export async function abortRun(
+  userId: number,
+  agentIdOrRunId: string,
+  explicitRunId?: string,
+): Promise<boolean> {
+  const runId = explicitRunId ?? agentIdOrRunId;
+  const agentId = explicitRunId
+    ? agentIdOrRunId
+    : store.getRuntimeRunByOwner(userId, runId)?.agent_id;
+  if (!agentId) return false;
+  if (!store.getRuntimeRun(userId, agentId, runId)) return false;
+  try {
+    const job = requireRuntimeAgentBrowserJob(
+      await cancelRuntimeJob(authority(userId, agentId), runId),
+      agentId,
+    );
+    if (TERMINAL_RUNTIME_STATES.has(job.state)) {
+      store.markRuntimeRunTerminal(runId, new Date(job.finishedAt ?? job.updatedAt).toISOString());
+    }
+    return true;
+  } catch (error) {
+    if (error instanceof RuntimeJobControlError && error.code === "JOB_NOT_FOUND") {
+      const durable = artifactProjection(userId, agentId, runId);
+      return Boolean(durable && TERMINAL_RUN_STATUSES.has(durable.status));
+    }
+    return false;
   }
-  return true;
 }

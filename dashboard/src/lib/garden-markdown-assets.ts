@@ -6,10 +6,10 @@
 // written inside the cluster directory the caller owns, and only next to a note
 // that actually exists.
 
-import fs from 'fs';
-import path from 'path';
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { externalRuntimeFilesystem as fs } from './external-runtime-filesystem.ts';
 
 /**
  * Resolve `<contentPath>/<clusterSlug>` and refuse anything that escapes the

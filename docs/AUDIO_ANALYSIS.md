@@ -108,6 +108,11 @@ summary said; the server auto-reduces past 800 rows rather than failing.
 
 ## Provisioning
 
+This is an explicit developer/build-time boundary, not a product runtime path.
+Electron and Next never launch this command. Installed Breadboard uses its
+staged/verified Runtime artifact and authenticated Runtime-owned setup; the
+developer command below is never a fallback inside the running app.
+
 ```bash
 npm run setup:audio-analyzer          # build from source, or install the pinned release
 npm run setup:audio-analyzer -- --check   # report, install nothing

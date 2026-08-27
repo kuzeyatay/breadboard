@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import type { ProposedLearningMap } from "./learn-utils.ts";

@@ -23,10 +23,13 @@
 // of side effects. `opencli doctor` is not usable here: it auto-starts the
 // daemon, so a health check written on it changes what it measures.
 
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import {
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+} from "../external-runtime-filesystem.ts";
 import { agentBrowserProfileDir } from "./browser-profile.ts";
 
 const DAEMON_STATUS_URL = "http://127.0.0.1:19825/status";
@@ -101,9 +104,9 @@ export function bridgeProfileRecordPath(env: NodeJS.ProcessEnv = process.env): s
 /** The contextId Breadboard's browser last connected under, if it is known. */
 export function rememberedContextId(env: NodeJS.ProcessEnv = process.env): string | null {
   const file = bridgeProfileRecordPath(env);
-  if (!existsSync(file)) return null;
+  if (!externalRuntimePathExists(file)) return null;
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as { contextId?: unknown };
+    const parsed = JSON.parse(externalRuntimeReadUtf8(file)) as { contextId?: unknown };
     return typeof parsed.contextId === "string" && parsed.contextId ? parsed.contextId : null;
   } catch {
     return null;
@@ -157,25 +160,6 @@ export type ProfileClaim =
   /** Something is connected that we cannot safely tell apart from ours. */
   | { status: "skipped"; reason: string };
 
-function runOpenCli(args: string[], timeoutMs = 10_000): Promise<{ ok: boolean; message: string }> {
-  return new Promise((resolve) => {
-    execFile(
-      "opencli",
-      args,
-      // shell:true so Windows resolves the npm-installed `opencli.cmd` shim,
-      // which execFile will not find on its own.
-      { timeout: timeoutMs, shell: process.platform === "win32", windowsHide: true },
-      (error, stdout, stderr) => {
-        if (error) {
-          resolve({ ok: false, message: (stderr || stdout || error.message).trim().slice(0, 400) });
-          return;
-        }
-        resolve({ ok: true, message: String(stdout).trim().slice(0, 400) });
-      },
-    );
-  });
-}
-
 /**
  * Name and select the profile that appeared after the window opened.
  *
@@ -187,13 +171,14 @@ export async function claimBreadboardProfile(options: {
   /** Profiles connected *before* the window was launched. */
   before: readonly string[];
   fetchImpl?: typeof fetch;
-  execImpl?: (args: string[]) => Promise<{ ok: boolean; message: string }>;
+  /** Runtime-worker-owned fixed OpenCLI invocation. */
+  execImpl: (args: string[]) => Promise<{ ok: boolean; message: string }>;
   timeoutMs?: number;
   sleepImpl?: (ms: number) => Promise<void>;
   env?: NodeJS.ProcessEnv;
 }): Promise<ProfileClaim> {
   const env = options.env ?? process.env;
-  const exec = options.execImpl ?? ((args: string[]) => runOpenCli(args));
+  const exec = options.execImpl;
   const sleep = options.sleepImpl ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const deadline = Date.now() + (options.timeoutMs ?? CLAIM_TIMEOUT_MS);
   const known = new Set(options.before);

@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "stack": "postiz",
+  "sourceCommit": "cf4c432c00c9db775ea1b1f12480a8e2b89aec32",
+  "platform": "linux/amd64",
+  "sourceFiles": [
+    { "path": "docker-compose.yaml", "size": 7790, "sha256": "817EBF83AC87BB7D92DE4DE6BE9C84E418E8E02C3225AD7A68A092317BC79A42" },
+    { "path": "LICENSE", "size": 34478, "sha256": "D322FB1066693D8ED25495D11029F443AA793316852749E1389773C1946251B3" },
+    { "path": "dynamicconfig/development-cass.yaml", "size": 143, "sha256": "93974403E6C69537DA3BCC35D31E507E4617DF6BFF71FC72BDB2E98CC177625F" },
+    { "path": "dynamicconfig/development-sql.yaml", "size": 197, "sha256": "69ABC71186009E4918D619F221E2C27D5C3D09002361F907526C52F6FDCB8028" }
+  ],
+  "images": [
+    {
+      "service": "postiz",
+      "sourceReference": "ghcr.io/gitroomhq/postiz-app:latest",
+      "immutableReference": "ghcr.io/gitroomhq/postiz-app@sha256:785f97312f66a347fb96cdccc4ded5a33ced69a672c89a9adc8054e7d6a21dc5",
+      "indexDigest": "sha256:785f97312f66a347fb96cdccc4ded5a33ced69a672c89a9adc8054e7d6a21dc5",
+      "linuxAmd64Manifest": { "digest": "sha256:172fd235ca656b28e4f4e7a31a66b7703bf88267b4259cf9f859f10d3b3a8a6f", "size": 2774 }
+    },
+    {
+      "service": "postiz-postgres",
+      "sourceReference": "postgres:17-alpine",
+      "immutableReference": "postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
+      "indexDigest": "sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
+      "linuxAmd64Manifest": { "digest": "sha256:7456ef82e5f5bc43d997f4781bbd7c0d6389bff397564649a356e206ba473aee", "size": 2866 }
+    },
+    {
+      "service": "postiz-redis",
+      "sourceReference": "redis:7.2",
+      "immutableReference": "redis@sha256:74566c6910d13ae61e7ce73ebd3127438a1fe805b309b097c323142719ec8a5b",
+      "indexDigest": "sha256:74566c6910d13ae61e7ce73ebd3127438a1fe805b309b097c323142719ec8a5b",
+      "linuxAmd64Manifest": { "digest": "sha256:e17e3a1993da428251cbd88dbdb3de8c8d4007f840d7350eb17a2d8695fa705f", "size": 2288 }
+    },
+    {
+      "service": "spotlight",
+      "sourceReference": "ghcr.io/getsentry/spotlight:latest",
+      "immutableReference": "ghcr.io/getsentry/spotlight@sha256:daba2de5136fc8db0a0cde45280aa4d369b5ea0a394fe762c86aa42294a11d4d",
+      "indexDigest": "sha256:daba2de5136fc8db0a0cde45280aa4d369b5ea0a394fe762c86aa42294a11d4d",
+      "linuxAmd64Manifest": { "digest": "sha256:9ea120d16ad3ea8fea2cdc2529966105b1fdd3ba93697ab7432dc88114f29e99", "size": 862 }
+    },
+    {
+      "service": "temporal-elasticsearch",
+      "sourceReference": "elasticsearch:7.17.27",
+      "immutableReference": "elasticsearch@sha256:9a6443f55243f6acbfeb4a112d15eb3b9aac74bf25e0e39fa19b3ddd3a6879d0",
+      "indexDigest": "sha256:9a6443f55243f6acbfeb4a112d15eb3b9aac74bf25e0e39fa19b3ddd3a6879d0",
+      "linuxAmd64Manifest": { "digest": "sha256:07e9262b856006959e384de7ca9587bc5c6da024ca7042216a9ea26efe4c69c1", "size": 2867 }
+    },
+    {
+      "service": "temporal-postgresql",
+      "sourceReference": "postgres:16",
+      "immutableReference": "postgres@sha256:c1b3783309b6499c795eed7c20135a1a4d25cae1b575c3d52c6f536129a1b109",
+      "indexDigest": "sha256:c1b3783309b6499c795eed7c20135a1a4d25cae1b575c3d52c6f536129a1b109",
+      "linuxAmd64Manifest": { "digest": "sha256:485935f94cc7165afa896978809c37b592dc07f0a37d2c8f645f12412d0212c8", "size": 3628 }
+    },
+    {
+      "service": "temporal",
+      "sourceReference": "temporalio/auto-setup:1.28.1",
+      "immutableReference": "temporalio/auto-setup@sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
+      "indexDigest": "sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
+      "linuxAmd64Manifest": { "digest": "sha256:e4c296d2b16d7607938e71182b9cc0936c90002ff63d97227f195625cf798ea3", "size": 4845 }
+    },
+    {
+      "service": "temporal-admin-tools",
+      "sourceReference": "temporalio/admin-tools:1.28.1-tctl-1.18.4-cli-1.4.1",
+      "immutableReference": "temporalio/admin-tools@sha256:01537b62d995f27a0f0d33a01ac4caa6779622f454fb2eb36fed0dccd45c6244",
+      "indexDigest": "sha256:01537b62d995f27a0f0d33a01ac4caa6779622f454fb2eb36fed0dccd45c6244",
+      "linuxAmd64Manifest": { "digest": "sha256:00864ac86e79aec0d418582892d3435564c613b68b72fe2e41e9c50176794983", "size": 3157 }
+    },
+    {
+      "service": "temporal-ui",
+      "sourceReference": "temporalio/ui:2.34.0",
+      "immutableReference": "temporalio/ui@sha256:cb17ea423d76a8a19a269d0bcd81fc12eee1f6365acd2a56b590dafb35696a95",
+      "indexDigest": "sha256:cb17ea423d76a8a19a269d0bcd81fc12eee1f6365acd2a56b590dafb35696a95",
+      "linuxAmd64Manifest": { "digest": "sha256:ad58bbefd5919444041ed90ff0498393ee1d95dd9c3d85eb097080d73f6259c6", "size": 2381 }
+    }
+  ]
+}

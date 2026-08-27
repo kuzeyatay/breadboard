@@ -10,7 +10,7 @@ import {
   MAX_PASTED_TRANSCRIPT,
   parseMeetingNotesRequestBody,
 } from "@/lib/meeting-notes/identity.ts";
-import { startRun } from "@/lib/meeting-notes/run-manager.ts";
+import { startRun } from "@/lib/meeting-notes/runtime-run-manager.ts";
 import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
@@ -82,7 +82,7 @@ export async function POST(request: Request) {
     );
 
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const run = startRun({
+    const run = await startRun({
       userId,
       conversationPublicId,
       request: parsed,

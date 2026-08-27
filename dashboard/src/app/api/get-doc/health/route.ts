@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { sourceAvailability } from "@/lib/get-doc/run-manager.ts";
+import { sourceAvailability } from "@/lib/get-doc/runtime-run-manager.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

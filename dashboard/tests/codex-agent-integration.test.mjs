@@ -194,7 +194,14 @@ test("an inline run card can be reopened after it lands", () => {
   // whole run is one click away for as long as the message exists.
   assert.match(card, /aria-expanded=\{activityOpen\}/);
   assert.match(card, /setActivityOpen\(\(open\) => !open\)/);
-  assert.match(card, /if \(TERMINAL\.has\(status\)\) setActivityOpen\(false\);/);
+  // Each terminal frame folds the timeline as part of the same state
+  // transition. Keeping this explicit avoids a follow-up effect briefly
+  // rendering a finished card expanded.
+  assert.match(
+    card,
+    /setStatus\("completed"\);\s*\n\s*setActivityOpen\(false\);/,
+  );
+  assert.match(card, /setStatus\(outcome\);\s*\n\s*setActivityOpen\(false\);/);
   // Live: the tail only. Reopened: everything, and nothing clamped.
   assert.match(
     card,
@@ -225,7 +232,10 @@ test("a transcript stays busy while any inline agent card is still running", () 
     panel,
     /const transcriptResponding =\s*\n\s*\(activeRun \|\| streaming \|\| externalRunActive\) &&/,
   );
-  assert.match(panel, /externalRunLaunching \|\| messages\.some\(externalAgentRunInFlight\)/);
+  assert.match(
+    panel,
+    /externalRunLaunching \|\|\s*\n\s*delegationInFlight \|\|\s*\n\s*messages\.some\(externalAgentRunInFlight\)/,
+  );
   assert.match(workspace, /hasRunningExternalAgentInActiveChat;/);
   // An all-zero usage record carries a duration, not a token count of nothing.
   const meta = source("src/app/components/assistant-response-meta.tsx");

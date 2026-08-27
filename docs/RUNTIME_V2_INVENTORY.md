@@ -90,18 +90,34 @@ memory. The target lifecycle must reclaim the complete process tree:
 - Quartz serving is `service:quartz`, an on-demand server for prebuilt output.
 - Quartz compilation is `job:quartz-esbuild-compiler` under the finite
   `job:quartz-publish` build boundary; it may not run at ordinary startup.
+  Authenticated Next mutations now submit that boundary as an exact user-global
+  Runtime V2 job (`gardenId` and `conversationId` are null). One fresh
+  `quartz-publish-node` worker stages a complete build before atomically
+  promoting it; cancellation and shutdown retain the prior public tree and
+  reap the contained Quartz/esbuild descendants. Sealed Learn and ingestion
+  workers may invoke the same attested executor inside their already-owned job
+  tree, never through a Next direct-spawn fallback or nested Runtime job.
 - Agent Browser uses `job:agent-browser-chromium-worker`, one finite browser tree
   per run, rather than a persistent automation browser service.
 - mem0 is `service:mem0-semantic-engine`, an on-demand leased memory service with
   an idle TTL. Today it is cached on `globalThis` and retains better-sqlite3 handles
   in the dashboard process (`dashboard/src/lib/mem0/client.ts:53-130`); its memory
   is not measured, so this is a lifecycle risk, not a proven numeric cause.
-- Hermes and GBrain now have source-level on-demand leases and 10-minute idle
+- Hermes, GBrain, and managed local ComfyUI have source-level on-demand leases and 10-minute idle
   shutdown under the transitional Electron owner; the actual first use retains
-  the submitted operation while the service starts. This source has not been
-  rebuilt or executed. Runtime V2 still has to take ownership before cutover.
-  ChatMock remains policy/lease driven, not automatically core. The Postiz
-  coordinator is scheduled; its Docker stack is a separate on-demand lease.
+  the submitted operation while the service starts. GBrain additionally has a
+  validated Runtime V2 service manifest, closed Rust-owned environment profile,
+  closed enum-indexed endpoint allocation, immutable package staging, and focused
+  cold-start/cancel/security coverage. Those source contracts are verified but
+  are not the active lifecycle owner: `AppLifecycle` must select
+  `RuntimeProcess`, and the legacy Electron GBrain definition must then be
+  deleted, before the service cutover gate may turn green. ComfyUI additionally
+  pins its setup-produced data-root interpreter, holds one lease through the
+  final image read, and removes the dashboard server-spawn fallback. Its
+  detached setup installer is still a separate, honestly unmigrated finite-job
+  gap. ChatMock remains
+  policy/lease driven, not automatically core. The Postiz coordinator is
+  scheduled; its Docker stack is a separate on-demand lease.
 
 ## Persistent and external roots
 
@@ -170,12 +186,12 @@ The 28 non-agent `disposable-job` rows are:
 `job:quartz-esbuild-compiler`, `job:code-index-build`,
 `job:agent-browser-chromium-worker`, `job:learn-worker`, `job:learn-recovery`,
 `job:ingestion`, `job:artifact-render`, `job:quartz-publish`,
-`job:generated-visual-browser`, `job:deep-tutor-index-build`, `job:sf3d`,
+`job:generated-visual-compile`, `job:generated-visual-browser`, `job:deep-tutor-index-build`, `job:sf3d`,
 `job:manim-render`, `job:audio-analysis`, `job:document-skill-bridge`,
 `job:office-cli`, `job:watermark-scrub`, `job:speech-media-tools`,
 `job:hermes-terminal-execution`, `job:skill-premortem`, `job:skill-factcheck`,
 `job:skill-watch`, `job:skill-agent-loop`, `job:skill-omh`, `job:skill-loopx`,
-`job:runtime-setup`, `job:chatmock-oauth`, `job:runtime-probes`, and
+`job:comfyui-setup`, `job:runtime-setup`, `job:chatmock-oauth`, `job:runtime-probes`, and
 `job:subsai-transcription`.
 
 Together with the externally classified finite dashboard production build, these
@@ -185,7 +201,7 @@ make the 29 non-agent finite operations.
 
 All 37 run kinds are expanded as individual disposable-job entries. The stable
 join key is `runtime-agent:<profile-id>`; all 37 primary IDs exist in the finalized
-475-row feature-parity registry. The execution runtime ID for every table row is
+476-row feature-parity registry. The execution runtime ID for every table row is
 `job:<capability-id>` (for example, `job:runtime-agent:codex`).
 
 | Capability ID | Source run kind | Route root |
@@ -272,15 +288,24 @@ from one manifest:
   `dashboard/scripts/background-coordinator.mjs:1-29`.
 - Canonical feature parity:
   [`qa/runtime-v2/feature-parity.json`](../qa/runtime-v2/feature-parity.json), with
-  475 rows.
+  476 rows.
 - Registry snapshot/drift tooling:
   [`qa/runtime-v2/registry-snapshot.mjs`](../qa/runtime-v2/registry-snapshot.mjs).
 
-All 37 primary runtime-agent IDs join feature parity. Across the full execution
-inventory, 62 of 112 unique capability references currently exist in feature
-parity. The remaining 50 are execution-only service/workflow/recovery/tool taxonomy
-terms until explicitly reconciled. This is recorded as a blocker rather than
-silently claiming a complete join.
+All 37 primary runtime-agent IDs join feature parity. The visible Graft setting,
+finite graph build, and per-run code-index MCP path join through the stable
+`tool-family:code-index` row. Both Quartz compiler entries join the existing
+`workflow:quartz-publishing` capability rather than an invented
+`workflow:quartz-build` ID.
+
+Across the full execution inventory, 64 of 112 unique capability references
+currently exist in feature parity. The remaining 48 are execution-only
+service/workflow/recovery/tool taxonomy terms until explicitly reconciled. This
+is recorded as a blocker rather than
+silently claiming a complete join. Source validation also fails closed if an
+entry marked as Runtime V2 cut over or migrated still names one of those
+unreconciled IDs; legacy/not-yet-cut-over rows may retain them only as explicit
+inventory taxonomy.
 
 ## Open gaps before cutover
 
@@ -290,7 +315,7 @@ silently claiming a complete join.
 | `GAP-BASELINE-002` | Installed baseline aborted | Complete a no-compiler visible Electron workflow baseline. |
 | `GAP-SPAWN-003` | Aggregate job families remain | Split runtime setup, artifact/media, and probe families into trusted leaf definitions. |
 | `GAP-DESCENDANT-004` | Transitive descendants unknown | Capture installed process trees and enforce containment before first instruction. |
-| `GAP-BREAKAWAY-005` | Detached/unref ownership escapes | Remove detach/unref for every app-launched ComfyUI, Spotify, and Recall tree. |
+| `GAP-BREAKAWAY-005` | Detached/unref ownership escapes | Managed ComfyUI server launch is removed; migrate its still-detached setup job plus Spotify and Recall. |
 | `GAP-MEM0-006` | Retained in-process engine unmeasured | Measure and move mem0 behind the registered leased-service boundary and TTL. |
 | `GAP-MCP-007` | Dynamic local executables | Allow-list local stdio manifests; keep only independently managed endpoints external. |
 | `GAP-RECOVERY-008` | Process-local run ownership | Persist attempt events, approvals, cancellation intent, fencing, and uncertainty. |
@@ -298,7 +323,7 @@ silently claiming a complete join.
 | `GAP-DOCKER-010` | Docker/WSL pressure unmeasured | Measure engine, WSL, container, and post-idle return separately from stack leases. |
 | `GAP-OFFICE-011` | Upstream Office resident unknown | Identify and classify the resident process without weakening the finite Office CLI job. |
 | `GAP-SOURCE-012` | Dirty source snapshot | Freeze and hash committed registries; fail CI on drift. |
-| `GAP-CAPABILITY-JOIN-013` | Taxonomy not fully joined | Add or explicitly version the 50 execution-only capability terms. |
+| `GAP-CAPABILITY-JOIN-013` | Taxonomy not fully joined | Add or explicitly version the 48 execution-only capability terms. |
 
 Until those gaps close, the correct status remains `SOURCE_AUDITED_NOT_EXECUTED`
 and `NOT_CUT_OVER`.

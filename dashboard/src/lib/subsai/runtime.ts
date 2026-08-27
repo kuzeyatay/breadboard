@@ -19,7 +19,15 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { repositoryRoot } from "../runtime-paths.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimeReadUtf8,
+} from "../external-runtime-filesystem.ts";
+import {
+  repositoryRoot,
+  runtimeV2ServiceRoot,
+  runtimeV2ServiceVenv,
+} from "../runtime-paths.ts";
 
 export interface SubsAiRuntime {
   root: string;
@@ -67,12 +75,13 @@ function whichSync(command: string): string | null {
     const probe = spawnSync(process.platform === "win32" ? "where" : "which", [command], {
       encoding: "utf8",
       windowsHide: true,
+      timeout: 20_000,
     });
     const first = (probe.stdout ?? "")
       .split(/\r?\n/)
       .map((line) => line.trim())
       .find(Boolean);
-    value = first && fs.existsSync(first) ? first : null;
+    value = first && externalRuntimePathExists(first) ? first : null;
   } catch {
     value = null;
   }
@@ -83,8 +92,8 @@ function whichSync(command: string): string | null {
 /** A directory is the subsai clone when its package and CLI are both there. */
 export function isClone(candidate: string): boolean {
   return (
-    fs.existsSync(path.join(candidate, "src", "subsai", "cli.py")) &&
-    fs.existsSync(path.join(candidate, "src", "subsai", "configs.py"))
+    externalRuntimePathExists(path.join(candidate, "src", "subsai", "cli.py")) &&
+    externalRuntimePathExists(path.join(candidate, "src", "subsai", "configs.py"))
   );
 }
 
@@ -106,16 +115,18 @@ export function resolveSubsAiRoot(env: NodeJS.ProcessEnv = process.env): SubsAiR
 
 /** The venv interpreter this clone's environment was built into, if it exists. */
 export function venvPython(root: string): string | null {
+  void root;
+  const venv = runtimeV2ServiceVenv("subsai");
   const candidate =
     process.platform === "win32"
-      ? path.join(root, ".venv", "Scripts", "python.exe")
-      : path.join(root, ".venv", "bin", "python");
-  return fs.existsSync(candidate) ? candidate : null;
+      ? path.join(venv, "Scripts", "python.exe")
+      : path.join(venv, "bin", "python");
+  return externalRuntimePathExists(candidate) ? candidate : null;
 }
 
 export function resolveUv(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = configured(env.UV_PATH);
-  if (explicit && fs.existsSync(explicit)) return explicit;
+  if (explicit && externalRuntimePathExists(explicit)) return explicit;
   const bundled = path.join(
     repositoryRoot(),
     "desktop",
@@ -123,7 +134,7 @@ export function resolveUv(env: NodeJS.ProcessEnv = process.env): string | null {
     "bin",
     executableName("uv"),
   );
-  if (fs.existsSync(bundled)) return bundled;
+  if (externalRuntimePathExists(bundled)) return bundled;
   return whichSync("uv");
 }
 
@@ -135,9 +146,12 @@ export function resolveUv(env: NodeJS.ProcessEnv = process.env): string | null {
  * paths that must stay cheap.
  */
 function recordedModels(root: string): string[] {
+  void root;
   try {
     const parsed = JSON.parse(
-      fs.readFileSync(path.join(root, ".venv", "breadboard-models.json"), "utf8"),
+      externalRuntimeReadUtf8(
+        path.join(runtimeV2ServiceVenv("subsai"), "breadboard-models.json"),
+      ),
     ) as unknown;
     return Array.isArray(parsed)
       ? parsed.filter((entry): entry is string => typeof entry === "string")
@@ -147,10 +161,10 @@ function recordedModels(root: string): string[] {
   }
 }
 
-export function recordModels(root: string, models: readonly string[]): void {
+export function recordModels(_root: string, models: readonly string[]): void {
   try {
     fs.writeFileSync(
-      path.join(root, ".venv", "breadboard-models.json"),
+      path.join(runtimeV2ServiceVenv("subsai"), "breadboard-models.json"),
       `${JSON.stringify([...models], null, 2)}\n`,
       "utf8",
     );
@@ -216,13 +230,14 @@ export function subsAiEnv(
     [pathKey]: [ffmpegDirectory, env[pathKey] ?? ""].filter(Boolean).join(path.delimiter),
     PYTHONUTF8: "1",
     PYTHONIOENCODING: "utf-8",
+    PYTHONDONTWRITEBYTECODE: "1",
     // Model weights are large and shared; keep them out of the clone so a
     // rebuilt environment does not re-download them.
     ...(root
       ? {
           HF_HOME:
             env.HF_HOME?.trim() ||
-            path.join(repositoryRoot(), ".runtime", "subsai", "models"),
+            path.join(runtimeV2ServiceRoot("subsai"), "models"),
         }
       : {}),
     ...extra,

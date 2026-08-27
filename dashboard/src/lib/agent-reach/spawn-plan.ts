@@ -14,8 +14,11 @@
 // to be a shim, invoke cmd.exe with arguments WE quote and
 // `windowsVerbatimArguments` on, so Node does not re-quote on top.
 
-import { existsSync } from "node:fs";
 import path from "node:path";
+import {
+  externalRuntimeLstat,
+  externalRuntimeRealpath,
+} from "../external-runtime-filesystem.ts";
 
 export interface SpawnPlan {
   command: string;
@@ -24,14 +27,39 @@ export interface SpawnPlan {
   verbatim: boolean;
 }
 
-/** Find an executable on PATH, honoring PATHEXT on Windows. */
+function sameResolvedPath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const resolved = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(left) === normalize(right);
+}
+
+function directExecutable(candidate: string): string | null {
+  const resolved = path.resolve(candidate);
+  try {
+    const metadata = externalRuntimeLstat(resolved);
+    if (
+      metadata.isSymbolicLink() ||
+      !metadata.isFile() ||
+      !sameResolvedPath(externalRuntimeRealpath(resolved), resolved)
+    ) return null;
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+/** Find a direct executable file on the closed PATH, honoring PATHEXT on Windows. */
 export function resolveOnPath(
   executable: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  if (path.isAbsolute(executable)) return existsSync(executable) ? executable : null;
+  if (path.isAbsolute(executable)) return directExecutable(executable);
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-  const directories = (env[pathKey] ?? "").split(path.delimiter).filter(Boolean);
+  const directories = (env[pathKey] ?? "")
+    .split(path.delimiter)
+    .filter((directory) => path.isAbsolute(directory));
   const extensions =
     process.platform === "win32"
       ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
@@ -39,7 +67,8 @@ export function resolveOnPath(
   for (const directory of directories) {
     for (const extension of extensions) {
       const candidate = path.join(directory, `${executable}${extension}`);
-      if (existsSync(candidate)) return candidate;
+      const direct = directExecutable(candidate);
+      if (direct) return direct;
     }
   }
   return null;
@@ -77,8 +106,10 @@ export function planSpawn(
     if (args.some(expandsEnvironment)) {
       return { error: "Environment-variable syntax is not allowed in this command." };
     }
+    const commandProcessor = resolveOnPath(env.ComSpec ?? env.COMSPEC ?? "cmd.exe", env);
+    if (!commandProcessor) return { error: "The trusted Windows command processor is unavailable." };
     return {
-      command: process.env.ComSpec || "cmd.exe",
+      command: commandProcessor,
       // The outer quote pair is required: with /s, cmd.exe strips exactly the
       // first and last quote of the string after /c and runs the rest verbatim.
       // Without it, a shim path containing spaces ("Program Files") is split and

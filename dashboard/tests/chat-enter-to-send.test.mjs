@@ -40,7 +40,7 @@ test("Enter queues behind an external agent run, not only a chat turn", () => {
   assert.match(composer, /const runInFlight = activeRun \|\| externalRunActive/);
   assert.match(composer, /const queueHeld = loading \|\| runInFlight/);
   assert.match(composer, /externalRunActive = false,/);
-  assert.match(runtime, /externalRunLaunching \|\| messages\.some\(externalAgentRunInFlight\)/);
+  assert.match(runtime, /externalRunLaunching \|\|[\s\S]{0,100}?messages\.some\(externalAgentRunInFlight\)/);
   assert.match(runtime, /const runInFlight = activeRun \|\| externalRunActive/);
   assert.match(runtime, /const queueHeld = loadingTranscript \|\| runInFlight/);
   assert.match(runtime, /runInFlight: queueHeld/);

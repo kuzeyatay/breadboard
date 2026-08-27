@@ -10,15 +10,6 @@
 
 import type { ScheduledChatJobRow } from "./store.ts";
 
-const TICK_INTERVAL_MS = 30_000;
-
-type SchedulerGlobals = typeof globalThis & {
-  __breadboardChatScheduler?: ReturnType<typeof setInterval>;
-  __breadboardChatSchedulerRunning?: boolean;
-};
-
-const globals = globalThis as SchedulerGlobals;
-
 /** Run every due job once. Returns the jobs it dispatched. */
 export async function runDueScheduledChats(
   now: Date = new Date(),
@@ -54,29 +45,4 @@ export async function runDueScheduledChats(
     }
   }
   return due;
-}
-
-/** Start the process-wide tick. Safe to call repeatedly (dev hot reloads). */
-export function startScheduledChatScheduler(): void {
-  if (globals.__breadboardChatScheduler) return;
-
-  const tick = async () => {
-    // Never overlap ticks: a slow runtime dispatch must not stack up timers.
-    if (globals.__breadboardChatSchedulerRunning) return;
-    globals.__breadboardChatSchedulerRunning = true;
-    try {
-      await runDueScheduledChats();
-    } catch {
-      // A failed tick is already recorded per job; the next tick retries.
-    } finally {
-      globals.__breadboardChatSchedulerRunning = false;
-    }
-  };
-
-  // Catch up on anything that came due while the server was stopped, then settle
-  // into the regular cadence.
-  setTimeout(() => void tick(), 5_000);
-  const timer = setInterval(() => void tick(), TICK_INTERVAL_MS);
-  timer.unref();
-  globals.__breadboardChatScheduler = timer;
 }

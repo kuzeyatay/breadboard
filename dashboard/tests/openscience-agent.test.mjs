@@ -163,21 +163,22 @@ test("the runtime state root is shallow enough for Windows to write a session", 
   );
 });
 
-test("the workspace stops a package manager from climbing into the repository", async () => {
+test("the service verifies the isolated workspace without provisioning it", async () => {
   // .git is not enough: npm and bun find their project by walking up for a
-  // package.json. Without one in the workspace, `bun install` run by the agent
-  // climbs out and installs over the dashboard's own node_modules — which is
-  // exactly how this integration's verification destroyed the compiled
-  // better-sqlite3 binding.
+  // package.json. Provisioning is owned by the authenticated Runtime setup job;
+  // this service-side helper must only verify the finished output.
   const { ensureWorkspace } = await import("../src/lib/openscience/setup.ts");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-openscience-ws-"));
   try {
-    const created = ensureWorkspace({ OPENSCIENCE_WORKSPACE_ROOT: root });
-    const manifest = path.join(created, "package.json");
-    assert.ok(fs.existsSync(manifest), "the workspace has no package.json to stop the walk");
-    const parsed = JSON.parse(fs.readFileSync(manifest, "utf8"));
-    assert.equal(parsed.private, true);
-    assert.ok(fs.existsSync(path.join(created, ".git")), "the workspace is not its own project root");
+    assert.throws(
+      () => ensureWorkspace({ OPENSCIENCE_WORKSPACE_ROOT: root }),
+      /setup has not prepared/u,
+    );
+    assert.equal(fs.existsSync(path.join(root, "package.json")), false);
+    assert.equal(fs.existsSync(path.join(root, ".git")), false);
+    fs.writeFileSync(path.join(root, "package.json"), '{"private":true}\n');
+    fs.mkdirSync(path.join(root, ".git"));
+    assert.equal(ensureWorkspace({ OPENSCIENCE_WORKSPACE_ROOT: root }), root);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

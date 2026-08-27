@@ -10,6 +10,9 @@ const source = (relative) => fs.readFileSync(path.join(dashboardRoot, relative),
 const identity = await import("../src/lib/hyperframes/identity.ts");
 const runtime = await import("../src/lib/hyperframes/runtime.ts");
 const prompt = await import("../src/lib/hyperframes/prompt.ts");
+const { resolveHyperframesArtifactPath } = await import(
+  "../src/lib/hyperframes/runtime-run-manager.ts"
+);
 
 // The workspace module resolves its root from the environment, so every test
 // that touches disk gets its own directory and none of them can see a real run.
@@ -99,6 +102,35 @@ test("the spawn environment pins the toolchain and disables the CLI's own fetchi
   assert.ok(env.PATH.includes("/usr/bin"));
 });
 
+test("HyperFrames health resolves a configured CLI without executing it", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-hyperframes-static-health-"));
+  const packageRoot = path.join(dir, "node_modules", "hyperframes");
+  const entry = path.join(packageRoot, "bin", "hyperframes.mjs");
+  const marker = path.join(dir, "executed.txt");
+  try {
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "hyperframes", version: "0.7.94" }),
+    );
+    fs.writeFileSync(entry, `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(marker)}, "ran");`);
+
+    const launcher = runtime.resolveLauncher({ HYPERFRAMES_BIN: entry, PATH: "" });
+    assert.deepEqual(launcher, {
+      command: process.execPath,
+      baseArgs: [entry],
+      version: "0.7.94",
+      source: "configured",
+    });
+    assert.equal(fs.existsSync(marker), false, "health must not execute the configured CLI");
+
+    const resolverSource = source("src/lib/hyperframes/runtime.ts");
+    assert.doesNotMatch(resolverSource, /node:child_process|spawnSync\s*\(|["']--version["']/u);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the CLI shim makes `hyperframes` a name the agent can actually type", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-hyperframes-shim-"));
   try {
@@ -162,6 +194,80 @@ test("an artifact id resolves only inside its own project", async () => {
       (error) => error.code === "invalid_run_id",
     );
   });
+});
+
+test("Runtime video receipts fence the exact attempt, project path, and size", () => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-hyperframes-receipt-"));
+  const job = {
+    jobId: "job_hyperframes_artifact_1",
+    attempt: 1,
+    workerInstanceId: "worker_hyperframes_artifact_1",
+  };
+  const relativePath = "out/video.mp4";
+  const artifactPath = path.join(
+    dataRoot,
+    "runtime",
+    "jobs",
+    job.jobId,
+    "attempts",
+    "1",
+    job.workerInstanceId,
+    "workspace",
+    "project",
+    ...relativePath.split("/"),
+  );
+  fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+  fs.writeFileSync(artifactPath, "video-bytes");
+  const record = {
+    id: Buffer.from(relativePath).toString("base64url"),
+    relativePath,
+    name: "video.mp4",
+    kind: "video",
+    contentType: "video/mp4",
+    size: fs.statSync(artifactPath).size,
+    modifiedAt: fs.statSync(artifactPath).mtime.toISOString(),
+  };
+  const event = {
+    sequenceNumber: 5,
+    type: "run.completed",
+    payload: { artifacts: [record] },
+    at: new Date().toISOString(),
+  };
+  try {
+    const resolved = resolveHyperframesArtifactPath({
+      dataRoot,
+      job,
+      events: [event],
+      artifactId: record.id,
+    });
+    assert.equal(resolved?.canonicalPath, fs.realpathSync.native(artifactPath));
+
+    fs.appendFileSync(artifactPath, "tamper");
+    assert.equal(resolveHyperframesArtifactPath({
+      dataRoot,
+      job,
+      events: [event],
+      artifactId: record.id,
+    }), null);
+
+    const traversal = {
+      ...event,
+      payload: { artifacts: [{
+        ...record,
+        id: Buffer.from("../outside.mp4").toString("base64url"),
+        relativePath: "../outside.mp4",
+        name: "outside.mp4",
+      }] },
+    };
+    assert.throws(() => resolveHyperframesArtifactPath({
+      dataRoot,
+      job,
+      events: [traversal],
+      artifactId: traversal.payload.artifacts[0].id,
+    }), /receipt is invalid/u);
+  } finally {
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
 });
 
 test("the scaffold's own npm scripts run the pinned CLI, not a fresh npx download", async () => {

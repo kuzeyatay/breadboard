@@ -16,7 +16,7 @@ const bridge = source("../src/lib/whatsapp/bridge.ts");
 const inbound = source("../src/lib/whatsapp/inbound.ts");
 const service = source("../src/lib/whatsapp/service.ts");
 const status = source("../src/lib/whatsapp/status.ts");
-const instrumentation = source("../src/instrumentation-node.ts");
+const gatewayService = source("../scripts/runtime-v2-whatsapp-gateway-service.mjs");
 const terminal = source("../src/app/components/hermes/dashboard-agent-terminal.tsx");
 const panel = source("../src/app/components/settings-whatsapp.tsx");
 const messaging = source("../src/app/components/settings-messaging.tsx");
@@ -144,8 +144,10 @@ test("a redelivered message never produces a second turn or a second reply", () 
   assert.match(service, /serialize\(message\.chatId, \(\) => handleMessage\(message\)\)/);
 });
 
-test("the gateway loop lives in the server process and never blocks shutdown", () => {
-  assert.match(instrumentation, /autostartWhatsAppGateway\(\)/);
+test("the gateway loop and bridge tree live in the native-owned Runtime service", () => {
+  assert.match(gatewayService, /startRuntimeV2GatewayHttpService/);
+  assert.match(gatewayService, /BREADBOARD_WHATSAPP_GATEWAY_TOKEN/);
+  assert.match(connectionRoute, /reconcileRuntimeGateway\("whatsapp", "running", userId\)/);
   assert.match(service, /__breadboardWhatsAppPolling/);
   assert.match(service, /timer\.unref\(\)/);
   // Autostart must not be able to break server startup: the conversation stack is
@@ -154,6 +156,7 @@ test("the gateway loop lives in the server process and never blocks shutdown", (
   assert.match(service, /await import\("\.\/instance\.ts"\)/);
   assert.doesNotMatch(service, /^import .*from "\.\/inbound\.ts"/m);
   assert.doesNotMatch(service, /^import .*from "\.\/instance\.ts"/m);
+  assert.doesNotMatch(statusRoute, /whatsapp\/service|whatsapp\/bridge/);
 });
 
 test("the raw pairing payload never leaves the server", () => {

@@ -847,6 +847,10 @@ test('Learn policy receipts migrate legacy rows and survive database reopen', ()
 
 test('Learn persistence uses a job-scoped atomic usage table', () => {
   const source = fs.readFileSync(new URL('../src/lib/learn.ts', import.meta.url), 'utf8');
+  const projection = fs.readFileSync(
+    new URL('../src/lib/learn-status-projection.ts', import.meta.url),
+    'utf8',
+  );
   const persistence = fs.readFileSync(
     new URL('../src/lib/learn-token-usage-persistence.ts', import.meta.url),
     'utf8',
@@ -865,9 +869,9 @@ test('Learn persistence uses a job-scoped atomic usage table', () => {
   assert.match(persistence, /persistedLearnTokenUsageForJob/);
   assert.doesNotMatch(persistence, /messages|headers|apiKey|authorization/);
   assert.match(source, /tokenUsage: learnTokenUsageForJob\(row\.id\)/);
-  assert.match(source, /function learnTokenUsageForWorkflow/);
-  assert.match(source, /SELECT garden_id, job_id FROM learn_maps WHERE id = \?/);
-  assert.match(source, /tokenUsage: learnTokenUsageForWorkflow\(visibleJob\)/);
+  assert.match(projection, /function learnTokenUsageForWorkflow/);
+  assert.match(projection, /SELECT garden_id, job_id FROM learn_maps WHERE id = \?/);
+  assert.match(projection, /tokenUsage: learnTokenUsageForWorkflow\(visibleJob\)/);
   assert.doesNotMatch(
     source.match(/function recordLearnTokenUsageEvent[\s\S]*?\n\}/)?.[0] ?? '',
     /learn_jobs[\s\S]*updated_at/,

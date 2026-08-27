@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://breadboard.local/schemas/runtime-v2-parity-evidence-v1.json",
+  "title": "Breadboard Runtime V2 parity evidence receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "runId",
+    "electronRunId",
+    "startedAt",
+    "finishedAt",
+    "inventory",
+    "executable",
+    "packageVerification",
+    "rows",
+    "contentSha256"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "breadboard-runtime-v2-parity-evidence" },
+    "runId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "electronRunId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "schemaVersion", "capabilityCount", "contractSha256"],
+      "properties": {
+        "path": { "const": "qa/runtime-v2/feature-parity.json" },
+        "schemaVersion": { "const": 2 },
+        "capabilityCount": { "type": "integer", "minimum": 1 },
+        "contractSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "executable": { "$ref": "#/$defs/executable" },
+    "packageVerification": { "$ref": "#/$defs/packageVerification" },
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/row" }
+    },
+    "contentSha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-F]{64}$"
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "capturedAt"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^(?:\\.qa-results|qa/runtime-v2/evidence)/[^\\\\#]+$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "capturedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "executable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "pathSha256", "bytes", "sha256"],
+      "properties": {
+        "fileName": { "const": "Breadboard.exe" },
+        "pathSha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "packageVerification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receipt",
+        "packageRootPathSha256",
+        "closureSha256",
+        "closureFileCount",
+        "closureBytes",
+        "verifierSourceClosureSha256"
+      ],
+      "properties": {
+        "receipt": { "$ref": "#/$defs/reference" },
+        "packageRootPathSha256": { "$ref": "#/$defs/sha256" },
+        "closureSha256": { "$ref": "#/$defs/sha256" },
+        "closureFileCount": { "type": "integer", "minimum": 1 },
+        "closureBytes": { "type": "integer", "minimum": 1 },
+        "verifierSourceClosureSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "workflowIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["electronRunId", "workflowId", "conversationIdSha256"],
+      "properties": {
+        "electronRunId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "workflowId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$"
+        },
+        "conversationIdSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["electron", "service", "worker", "output", "cancellation", "recovery"],
+      "properties": {
+        "electron": { "$ref": "#/$defs/references" },
+        "service": { "$ref": "#/$defs/references" },
+        "worker": { "$ref": "#/$defs/references" },
+        "output": { "$ref": "#/$defs/references" },
+        "cancellation": { "$ref": "#/$defs/references" },
+        "recovery": { "$ref": "#/$defs/references" }
+      }
+    },
+    "references": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/reference" }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "summary", "prerequisiteType", "prerequisiteId"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z0-9][A-Z0-9_-]{0,127}$"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "prerequisiteType": {
+          "enum": ["CREDENTIAL", "MODEL_FILE", "EXTERNAL_SERVICE", "EXTERNAL_SOFTWARE"]
+        },
+        "prerequisiteId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "row": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "capabilityId",
+            "result",
+            "executionDisposition",
+            "fallbackUsed",
+            "workflowIdentity",
+            "evidence"
+          ],
+          "properties": {
+            "capabilityId": { "type": "string", "minLength": 1 },
+            "result": { "const": "PASS" },
+            "executionDisposition": { "const": "REAL_WORKFLOW_COMPLETED" },
+            "fallbackUsed": { "const": false },
+            "workflowIdentity": { "$ref": "#/$defs/workflowIdentity" },
+            "evidence": { "$ref": "#/$defs/evidence" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "capabilityId",
+            "result",
+            "executionDisposition",
+            "fallbackUsed",
+            "workflowIdentity",
+            "blocker",
+            "evidence"
+          ],
+          "properties": {
+            "capabilityId": { "type": "string", "minLength": 1 },
+            "result": { "const": "BLOCKED" },
+            "executionDisposition": { "const": "MATCHING_BASELINE_PREREQUISITE_BLOCKED" },
+            "fallbackUsed": { "const": false },
+            "workflowIdentity": { "$ref": "#/$defs/workflowIdentity" },
+            "blocker": { "$ref": "#/$defs/blocker" },
+            "evidence": { "$ref": "#/$defs/evidence" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "capabilityId",
+            "result",
+            "executionDisposition",
+            "fallbackUsed",
+            "workflowIdentity",
+            "failure",
+            "evidence"
+          ],
+          "properties": {
+            "capabilityId": { "type": "string", "minLength": 1 },
+            "result": { "const": "FAIL" },
+            "executionDisposition": { "const": "REAL_WORKFLOW_FAILED" },
+            "fallbackUsed": { "const": false },
+            "workflowIdentity": { "$ref": "#/$defs/workflowIdentity" },
+            "failure": { "$ref": "#/$defs/failure" },
+            "evidence": { "$ref": "#/$defs/failureEvidence" }
+          }
+        }
+      ]
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "summary"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z0-9][A-Z0-9_-]{0,127}$" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "failureEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["electron", "service", "worker", "output", "cancellation", "recovery"],
+      "properties": {
+        "electron": { "$ref": "#/$defs/references" },
+        "service": { "type": "array", "maxItems": 0 },
+        "worker": { "type": "array", "maxItems": 0 },
+        "output": { "type": "array", "maxItems": 0 },
+        "cancellation": { "type": "array", "maxItems": 0 },
+        "recovery": { "type": "array", "maxItems": 0 }
+      }
+    }
+  }
+}

@@ -1,14 +1,13 @@
 // Resolution of Deep Research mode + loopback service connection settings.
 //
-// DEEP_RESEARCH_MODE = disabled | optional | required (default: optional).
-//  - disabled: never contact the service; the agent is shown as disabled.
-//  - optional: try the service; if it is down Breadboard stays fully usable and
-//    the agent shows a diagnostic "unavailable" state.
-//  - required: dev/dedicated only; callers may surface an actionable error.
+// DEEP_RESEARCH_MODE = optional | required (default: optional).
+// "optional" is startup-failure isolation only: the capability remains
+// registered and first use still attempts it. Historical `disabled` values are
+// normalized to optional rather than hiding a mandatory agent.
 
 import { DEFAULT_BREADTH, DEFAULT_DEPTH } from "./identity.ts";
 
-export type DeepResearchMode = "disabled" | "optional" | "required";
+export type DeepResearchMode = "optional" | "required";
 
 export interface DeepResearchConfig {
   mode: DeepResearchMode;
@@ -22,13 +21,14 @@ export const DEEP_RESEARCH_DEFAULT_PORT = 7722;
 
 export function deepResearchMode(env: NodeJS.ProcessEnv = process.env): DeepResearchMode {
   const raw = (env.DEEP_RESEARCH_MODE ?? "optional").trim().toLowerCase();
-  if (raw === "disabled" || raw === "required") return raw;
+  if (raw === "required") return raw;
   return "optional";
 }
 
-/** True when the dashboard should attempt to talk to the service at all. */
+/** The agent is never hidden; optional only isolates startup failure. */
 export function deepResearchEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return deepResearchMode(env) !== "disabled";
+  void env;
+  return true;
 }
 
 export function resolveDeepResearchConfig(

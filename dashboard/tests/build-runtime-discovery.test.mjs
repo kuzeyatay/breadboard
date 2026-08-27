@@ -17,22 +17,22 @@ test("runtime install discovery cannot make Turbopack enumerate sibling workspac
   assert.doesNotMatch(config, /C:\\Users\\/);
 });
 
-test("the repo-wide Turbopack graph resolves linked modules without bundling mem0 natives", () => {
+test("the dashboard-only Turbopack graph excludes Runtime-owned service trees", () => {
   const nextConfig = source("next.config.ts");
-  const bridge = source("src/lib/mem0/mem0ai-oss-runtime.ts");
+  const service = source("scripts/runtime-v2-mem0-service.mjs");
+  const servicesManifest = source("../desktop/runtime-v2/manifests/services.json");
   assert.match(
     nextConfig,
-    /const bundlerRoot = path\.resolve\(process\.cwd\(\), "\.\."\)/,
+    /const bundlerRoot = path\.dirname\(fileURLToPath\(import\.meta\.url\)\)/,
   );
+  assert.doesNotMatch(nextConfig, /const turbopackRoot|process\.cwd\(\), "\.\."/);
   assert.match(nextConfig, /outputFileTracingRoot:\s*bundlerRoot/);
   assert.match(nextConfig, /turbopack:\s*\{[\s\S]*?root:\s*bundlerRoot/);
-  assert.match(
-    nextConfig,
-    /['"]mem0ai\/oss['"]:\s*['"]\.\/src\/lib\/mem0\/mem0ai-oss-runtime\.ts['"]/,
-  );
-  assert.match(bridge, /const importRuntimeExternal = Function\(/);
-  assert.match(bridge, /importRuntimeExternal\("mem0ai\/oss"\)/);
-  assert.doesNotMatch(bridge, /await import\("mem0ai\/oss"\)/);
+  assert.doesNotMatch(nextConfig, /["']\.\.\//);
+  assert.doesNotMatch(nextConfig, /mem0ai\/oss|mem0ai-oss-runtime/);
+  assert.match(service, /import \{ Memory \} from "mem0ai\/oss"/);
+  assert.match(servicesManifest, /"id": "mem0-semantic-engine"/);
+  assert.match(servicesManifest, /dashboard\/scripts\/runtime-v2-mem0-service\.mjs/);
 });
 
 test("the server-level production trace excludes mutable dashboard data", () => {

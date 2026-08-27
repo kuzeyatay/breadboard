@@ -1,6 +1,6 @@
-import fs from "fs";
-import path from "path";
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { TRUSTED_RENDERER_REGISTRY } from "./visualization-registry.ts";
 import type {
   ContractInteractiveVisualPlan,
