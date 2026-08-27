@@ -3083,6 +3083,9 @@ export default function AgentRuntimePanel({
                             key={`${sessionId}:${inlineSpotify.requestedAt ?? ""}`}
                             conversationPublicId={sessionId}
                             requestedAt={inlineSpotify.requestedAt}
+                            turnPending={
+                              index === lastAssistantIndex && runInFlight
+                            }
                           />
                         ) : null}
                         {visibleAssistantContent ||

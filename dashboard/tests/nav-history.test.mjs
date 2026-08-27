@@ -187,6 +187,23 @@ test("the profile page leaves to the dashboard rather than following the trail",
   assert.match(profile, /<BackLink[^>]*fallbackHref="\/dashboard"[^>]*\sfixed\b/);
 });
 
+test("garden and profile navigation use only the global progress bar", () => {
+  const layout = fs.readFileSync(
+    new URL("../src/app/layout.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(layout, /<NavigationProgress \/>/);
+  assert.equal(
+    fs.existsSync(new URL("../src/app/garden/loading.tsx", import.meta.url)),
+    false,
+  );
+  assert.equal(
+    fs.existsSync(new URL("../src/app/profile/loading.tsx", import.meta.url)),
+    false,
+  );
+});
+
 test("reloading the embedded garden does not stack a history entry", () => {
   const gardenClient = fs.readFileSync(
     new URL("../src/app/garden/[clusterSlug]/garden-client.tsx", import.meta.url),

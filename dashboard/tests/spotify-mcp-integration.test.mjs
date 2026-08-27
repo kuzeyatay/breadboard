@@ -51,6 +51,12 @@ test("Spotify uses public-client PKCE with the registered loopback callback", ()
 
 test("Spotify intent reaches the live catalog without confusing search with playback", () => {
   assert.equal(isSpotifyRequest("play Radiohead"), true);
+  assert.equal(
+    isSpotifyRequest(
+      "can you now play a song that walter bishop would liston to when hes high on lsd",
+    ),
+    true,
+  );
   assert.equal(isSpotifyRequest("pause the music"), true);
   assert.equal(
     isSpotifyRequest("create me a playlist that sounds from the 90s and play it"),
@@ -77,6 +83,17 @@ test("Spotify intent reaches the live catalog without confusing search with play
       authenticated: true,
     }),
     { text: "/spotify play Radiohead", automatic: true },
+  );
+  assert.deepEqual(
+    spotifyCommandText({
+      text: "can you now play a song that walter bishop would liston to when hes high on lsd",
+      surface: "dashboard_terminal",
+      authenticated: true,
+    }),
+    {
+      text: "/spotify can you now play a song that walter bishop would liston to when hes high on lsd",
+      automatic: true,
+    },
   );
   assert.deepEqual(
     spotifyCommandText({
@@ -139,8 +156,31 @@ test("the inline player survives later messages and follows contextual Spotify t
   );
   assert.equal(
     spotifyPlayerAssistantIndex(messages),
+    5,
+    "a new request keeps the confirmed player until its Spotify tool starts",
+  );
+
+  messages[7].tools = [
+    { toolName: "spotify_create_playlist", status: "running" },
+  ];
+  assert.equal(
+    spotifyPlayerAssistantIndex(messages),
     7,
-    "an explicit request moves the player while its new intent is loading",
+    "a running Spotify tool moves the loading player to the new turn",
+  );
+
+  messages[7].tools[0].status = "failed";
+  assert.equal(
+    spotifyPlayerAssistantIndex(messages),
+    5,
+    "a failed Spotify tool restores the previous confirmed player",
+  );
+
+  messages[7].tools[0].status = "completed";
+  assert.equal(
+    spotifyPlayerAssistantIndex(messages),
+    7,
+    "a completed Spotify tool keeps the player on the new turn",
   );
 });
 
@@ -349,9 +389,12 @@ test("Spotify login lives in Connections and native tools power an inline player
   assert.doesNotMatch(playbackRoute, /endpoint: `\/v1\/me\/player\/\$\{action\}`/);
   assert.match(player, /currentTrackId: visibleTrack\.id/);
   assert.match(player, /aria-label="Loading Spotify player"/);
+  assert.match(player, /size-10 animate-pulse/);
   assert.match(player, /intentLoading \? <SpotifyPlayerLoading \/> : null/);
+  assert.match(player, /turnPending \|\| attempts < MAX_INTENT_POLLS/);
   assert.match(player, /paletteSource === \(visibleTrack\.imageUrl \?\? null\)/);
   assert.match(runtimePanel, /key=\{`\$\{sessionId\}:\$\{inlineSpotify\.requestedAt \?\? ""\}`\}/);
+  assert.match(runtimePanel, /turnPending=\{/);
   assert.match(playbackRoute, /endpoint: "\/v1\/me\/library"/);
   assert.match(playbackRoute, /query: \{ uris: `spotify:track:\$\{id\}` \}/);
   assert.doesNotMatch(playbackRoute, /endpoint: "\/v1\/me\/tracks"/);

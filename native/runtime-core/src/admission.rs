@@ -101,7 +101,6 @@ impl RegisteredJobAdmission {
 pub struct AdmissionPolicy {
     pub(crate) minimum_reserve_mb: u64,
     pub(crate) critical_reserve_mb: u64,
-    pub(crate) one_heavyweight_at_a_time: bool,
     pub(crate) reserve_strategy: AdmissionReserveStrategy,
 }
 
@@ -177,10 +176,6 @@ impl AdmissionPolicy {
         self.critical_reserve_mb
     }
 
-    pub fn one_heavyweight_at_a_time(self) -> bool {
-        self.one_heavyweight_at_a_time
-    }
-
     /// This seam is crate-private because reserve configuration is resource
     /// authority. Both inputs are clamped so even a malformed future trusted
     /// configuration fails safe instead of weakening the architecture floor.
@@ -188,18 +183,15 @@ impl AdmissionPolicy {
         Self {
             minimum_reserve_mb: minimum_reserve_mb.max(ADMISSION_RESERVE_FLOOR_MB),
             critical_reserve_mb: critical_reserve_mb.max(ADMISSION_RESERVE_FLOOR_MB),
-            one_heavyweight_at_a_time: true,
             reserve_strategy: AdmissionReserveStrategy::Fixed,
         }
     }
 
-    /// Development process trees retain manifest hard caps, serialized pending
-    /// commit estimates, a live commit sample at each durable reservation, and
-    /// the supervisor's single cross-process dynamic-burst lease. Static class
-    /// serialization is therefore unnecessary in development: independent
-    /// bounded trees may coexist only while measured commit headroom fits.
-    /// Packaged mode keeps the fixed architecture reserve and conservative
-    /// class serialization above.
+    /// Process trees retain manifest hard caps, serialized pending commit
+    /// estimates, and a live commit sample at each durable reservation.
+    /// Independent bounded trees may coexist whenever measured commit
+    /// headroom fits; resource-class labels no longer impose an artificial
+    /// one-heavyweight-at-a-time exhaustion limit in any runtime mode.
     pub(crate) fn for_runtime_mode(mode: RuntimeMode) -> Self {
         if mode == RuntimeMode::Packaged {
             return Self::default();
@@ -207,7 +199,6 @@ impl AdmissionPolicy {
         Self {
             minimum_reserve_mb: DEVELOPMENT_RESERVE_FLOOR_MB,
             critical_reserve_mb: DEVELOPMENT_RESERVE_FLOOR_MB,
-            one_heavyweight_at_a_time: false,
             reserve_strategy: AdmissionReserveStrategy::Development,
         }
     }
@@ -265,23 +256,6 @@ impl AdmissionPolicy {
                 reason: "Windows commit headroom is already at the critical reserve".into(),
             });
         }
-        if request.resource_class.is_heavyweight()
-            && self.one_heavyweight_at_a_time
-            && load
-                .active_job_classes
-                .iter()
-                .chain(load.active_service_classes.iter())
-                .any(|class| class.is_heavyweight())
-        {
-            return AdmissionDecision::Denied(AdmissionDenial {
-                code: "BREADBOARD_RESOURCE_EXHAUSTED".into(),
-                resource: "heavyweight_concurrency".into(),
-                required_headroom_mb: required,
-                available_headroom_mb: available,
-                retryable: false,
-                reason: "another heavyweight class is active".into(),
-            });
-        }
         // Equality is not enough: consuming the full cold-start estimate from
         // an exactly-sized allowance would leave free commit at the reserve,
         // while Runtime V2's invariant is that it remains strictly above it.
@@ -334,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_heavyweight_class_is_denied() {
+    fn heavyweight_classes_may_overlap_when_live_headroom_fits() {
         let mut load = empty_load();
         load.active_job_classes.push(ResourceClass::LargeGeneration);
         let result = AdmissionPolicy::default().decide(
@@ -349,11 +323,11 @@ mod tests {
             },
             &load,
         );
-        assert!(matches!(result, AdmissionDecision::Denied(_)));
+        assert_eq!(result, AdmissionDecision::Admitted);
     }
 
     #[test]
-    fn development_heavyweights_follow_live_headroom_while_packaged_stays_serialized() {
+    fn every_mode_uses_live_headroom_instead_of_static_heavyweight_serialization() {
         let mut load = empty_load();
         load.active_service_classes
             .push(ResourceClass::BrowserAutomation);
@@ -364,7 +338,7 @@ mod tests {
             reserve_floor_mb: None,
         };
         let sufficient = SystemCommit {
-            total_mb: 40_221 - 8_706,
+            total_mb: 40_221 - 10_000,
             limit_mb: 40_221,
         };
 
@@ -372,12 +346,10 @@ mod tests {
             policy.decide(request, sufficient, &load),
             AdmissionDecision::Admitted
         );
-        let AdmissionDecision::Denied(packaged) =
-            AdmissionPolicy::default().decide(request, sufficient, &load)
-        else {
-            panic!("packaged admission must retain static class serialization")
-        };
-        assert_eq!(packaged.resource, "heavyweight_concurrency");
+        assert_eq!(
+            AdmissionPolicy::default().decide(request, sufficient, &load),
+            AdmissionDecision::Admitted
+        );
 
         // 40,221 MiB derives the 4,352 MiB guarded development reserve.
         // Equality with that reserve plus Hermes' 1,536 MiB estimate remains
@@ -443,7 +415,6 @@ mod tests {
         let policy = AdmissionPolicy::with_reserve_floors(0, 1);
         assert_eq!(policy.minimum_reserve_mb(), ADMISSION_RESERVE_FLOOR_MB);
         assert_eq!(policy.critical_reserve_mb(), ADMISSION_RESERVE_FLOOR_MB);
-        assert!(policy.one_heavyweight_at_a_time());
     }
 
     #[test]

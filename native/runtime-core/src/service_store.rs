@@ -3698,7 +3698,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_heavy_job_and_service_still_block_worker_dependency() {
+    fn unrelated_heavy_job_and_service_do_not_block_worker_dependency() {
         for blocker in ["job", "service"] {
             let (directory, store) = store();
             let fixture = admitted_gbrain_dependency(&directory, &store);
@@ -3738,18 +3738,18 @@ mod tests {
                     commit_sample,
                 )
                 .unwrap();
-            let DurableWorkerServiceAcquireResult::Evaluated(DurableServiceAcquireResult::Denied(
-                denial,
-            )) = result
+            let DurableWorkerServiceAcquireResult::Evaluated(
+                DurableServiceAcquireResult::Acquired(claim),
+            ) = result
             else {
-                panic!("unrelated heavyweight {blocker} must remain visible")
+                panic!("unrelated heavyweight {blocker} must not impose a static limit")
             };
-            assert_eq!(denial.resource, "heavyweight_concurrency");
+            assert_eq!(claim.service_id(), "gbrain");
         }
     }
 
     #[test]
-    fn ready_idle_heavy_service_rechecks_the_exact_worker_owner() {
+    fn ready_idle_heavy_service_accepts_independent_and_worker_leases() {
         let (directory, store) = store();
         let fixture = admitted_gbrain_dependency(&directory, &store);
         let registration = insert_ready_idle_heavyweight(&store, "gbrain", 1, 500);
@@ -3766,10 +3766,10 @@ mod tests {
                 commit_sample,
             )
             .unwrap();
-        assert!(matches!(
-            independent,
-            DurableServiceAcquireResult::Denied(_)
-        ));
+        let DurableServiceAcquireResult::Acquired(independent_claim) = independent else {
+            panic!("independent lease must not be rejected by a static heavyweight limit")
+        };
+        assert_eq!(independent_claim.state(), ServiceLeaseClaimState::Active);
 
         let result = store
             .begin_durable_worker_service_dependency_acquire(
@@ -3787,7 +3787,7 @@ mod tests {
             claim,
         )) = result
         else {
-            panic!("validated owner must acquire the first logical idle lease")
+            panic!("validated owner must share the ready service")
         };
         assert_eq!(claim.state(), ServiceLeaseClaimState::Active);
         assert_eq!(outbox_count(&store, None), 0);

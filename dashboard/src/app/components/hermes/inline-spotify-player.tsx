@@ -355,13 +355,9 @@ function SpotifyPlayerLoading() {
     >
       <div
         role="status"
-        className="grid size-10 place-items-center rounded-full"
+        className="grid size-10 animate-pulse place-items-center rounded-full"
         style={{ backgroundColor: DEFAULT_PLAYER_PALETTE.buttonBackground }}
       >
-        <Loader2
-          aria-hidden="true"
-          className="size-5 animate-spin motion-reduce:animate-none"
-        />
         <span className="sr-only">Loading music player</span>
       </div>
     </section>
@@ -371,9 +367,11 @@ function SpotifyPlayerLoading() {
 export default function InlineSpotifyPlayer({
   conversationPublicId,
   requestedAt,
+  turnPending = false,
 }: {
   conversationPublicId: string;
   requestedAt?: string;
+  turnPending?: boolean;
 }) {
   const playerRef = useRef<SpotifyPlayer | null>(null);
   const deviceIdRef = useRef<string | null>(null);
@@ -613,7 +611,11 @@ export default function InlineSpotifyPlayer({
         // playback reads, which made the local dashboard even slower precisely
         // while a chat turn was trying to start. Once the tool intent exists,
         // there is nothing left to poll for.
-        if (!cancelled && !foundIntent && attempts < MAX_INTENT_POLLS) {
+        if (
+          !cancelled &&
+          !foundIntent &&
+          (turnPending || attempts < MAX_INTENT_POLLS)
+        ) {
           timer = window.setTimeout(() => void load(), POLL_INTERVAL_MS);
         } else if (!cancelled) {
           setIntentLoading(false);
@@ -625,7 +627,7 @@ export default function InlineSpotifyPlayer({
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [conversationPublicId, requestedAt]);
+  }, [conversationPublicId, requestedAt, turnPending]);
 
   useEffect(() => {
     if (!connection?.connected || !intentRevision || playerRef.current) return;
