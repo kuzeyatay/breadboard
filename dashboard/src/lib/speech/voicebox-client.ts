@@ -50,6 +50,12 @@ function detailMessage(value: unknown): string | null {
   return detailMessage(record.detail) || detailMessage(record.error);
 }
 
+function startupFailureMessage(): string | null {
+  const startup = voiceboxStartupStatus();
+  if (startup?.phase !== "error") return null;
+  return startup.message.trim() || null;
+}
+
 async function fetchVoicebox(
   pathname: string,
   init: RequestInit = {},
@@ -136,7 +142,8 @@ async function fetchVoicebox(
       503,
       timedOut
         ? "Voicebox took too long to respond. It may still be loading a speech model."
-        : "Voicebox is not ready yet. Breadboard starts it with the other local services.",
+        : startupFailureMessage() ||
+          "Voicebox is not ready yet. Breadboard starts it with the other local services.",
     );
   }
 }

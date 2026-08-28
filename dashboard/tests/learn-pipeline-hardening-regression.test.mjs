@@ -2811,6 +2811,45 @@ test("generation and repair use a status CAS at commit entry", () => {
   );
 });
 
+test("failed generation and abandoned-worker recovery retain staging candidates", () => {
+  const generationSource = sourceOf(namedFunction("runTextbookGeneration"));
+  const failureCatch = generationSource.indexOf("} catch (error) {");
+  const retentionDecision = generationSource.indexOf(
+    "retainWorkspaceAfterFailure = !cancelledGeneration",
+    failureCatch,
+  );
+  const finalizer = generationSource.lastIndexOf("} finally {");
+  const retentionWrite = generationSource.indexOf(
+    "retainLearnBuildWorkspace(workspace",
+    finalizer,
+  );
+  const disposal = generationSource.indexOf(
+    "disposeLearnBuildWorkspace(workspace)",
+    retentionWrite,
+  );
+  assert.ok(
+    failureCatch >= 0 &&
+      retentionDecision > failureCatch &&
+      finalizer > retentionDecision &&
+      retentionWrite > finalizer &&
+      disposal > retentionWrite,
+    "ordinary generation failures must select retention before the finalizer, with deletion confined to the success/cancel branch",
+  );
+  assert.match(
+    generationSource.slice(finalizer),
+    /if \(!promotionCommitted && retainWorkspaceAfterFailure\)[\s\S]*?retainLearnBuildWorkspace\(workspace[\s\S]*?\} else \{[\s\S]*?disposeLearnBuildWorkspace\(workspace\)/,
+  );
+
+  const recoverySource = sourceOf(namedFunction("recoverAbandonedLearnJobs"));
+  const cancellationBranch = recoverySource.lastIndexOf("if (cancellationRecovery)");
+  assert.ok(cancellationBranch >= 0);
+  assert.match(
+    recoverySource.slice(cancellationBranch),
+    /if \(cancellationRecovery\) \{[\s\S]*?disposeAbandonedLearnWorkspaces[\s\S]*?\} else \{[\s\S]*?retainFailedLearnWorkspacesForJob/,
+    "crash recovery may delete an explicitly cancelled workspace but must retain an ordinary failed candidate",
+  );
+});
+
 test("half-swap plus restore failure exposes the retained previous tree honestly", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-half-swap-failure-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

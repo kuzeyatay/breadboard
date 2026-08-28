@@ -752,7 +752,7 @@ test("built-in candidate keeps its SDK request recoverable and sends the exact m
     assert.equal(bodies.length, 1);
     assert.equal(GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS, 20 * 60_000);
     assert.equal(GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS, 11 * 60_000);
-    assert.equal(options[0].timeout, undefined);
+    assert.equal(options[0].timeout, GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS);
     assert.ok(options[0].signal instanceof AbortSignal);
     assert.equal(options[0].maxRetries, 0);
     const system = bodies[0].messages.find(({ role }) => role === "system").content;
@@ -986,7 +986,7 @@ test("default author and critic adopt their original late council results and em
       "visualization_generation",
       "critique",
     ]);
-    assert.ok(options.every(({ timeout }) => timeout === undefined));
+    assert.ok(options.every(({ timeout }) => timeout === 5));
     assert.ok(options.every(({ signal }) => signal instanceof AbortSignal));
     for (const eventType of [
       "visual_generation_late_result_wait_started",
@@ -1656,7 +1656,7 @@ test("tracked Learn critic never replays exact refusal even when recovery would 
     const criticUserContent = rawBodies[0].messages.find(({ role }) => role === "user").content;
     assert.ok(Array.isArray(criticUserContent), "the exercised critic request must be multimodal");
     assert.equal(criticUserContent.filter(({ type }) => type === "image_url").length, 1);
-    assert.equal(rawOptions[0].timeout, undefined);
+    assert.equal(rawOptions[0].timeout, GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS);
     assert.ok(rawOptions[0].signal instanceof AbortSignal);
     assert.equal(rawOptions[0].maxRetries, 0);
     assert.equal(recoveryVerifications.length, 0);
@@ -2005,7 +2005,7 @@ test("tracked Learn critic makes one raw call after an ambiguous reset", async (
     );
     assert.equal(rawBodies.length, 1, "unverified recovery cannot authorize a replay");
     assert.equal(rawOptions.length, 1);
-    assert.equal(rawOptions[0].timeout, undefined);
+    assert.equal(rawOptions[0].timeout, GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS);
     assert.ok(rawOptions[0].signal instanceof AbortSignal);
     assert.equal(rawOptions[0].maxRetries, 0);
     assert.deepEqual(usageEvents.map(({ type }) => type), ["started", "completed"]);
@@ -2086,7 +2086,9 @@ test("tracked Learn author never replays exact refusal even when recovery would 
       (error) => error === connectionRefusal,
     );
     assert.equal(rawBodies.length, 1);
-    assert.ok(rawOptions.every(({ timeout }) => timeout === undefined));
+    assert.ok(rawOptions.every(
+      ({ timeout }) => timeout === GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
+    ));
     assert.ok(rawOptions.every(({ signal }) => signal instanceof AbortSignal));
     assert.ok(rawOptions.every(({ maxRetries }) => maxRetries === 0));
     assert.equal(recoveryVerifications.length, 0);

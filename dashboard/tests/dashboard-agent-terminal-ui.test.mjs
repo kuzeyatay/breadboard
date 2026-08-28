@@ -34,6 +34,10 @@ const breadboardLoader = fs.readFileSync(
   new URL("../src/app/components/breadboard-loader.tsx", import.meta.url),
   "utf8",
 );
+const globals = fs.readFileSync(
+  new URL("../src/app/globals.css", import.meta.url),
+  "utf8",
+);
 const terminalSidebar = fs.readFileSync(
   new URL("../src/app/components/hermes/terminal-sidebar.tsx", import.meta.url),
   "utf8",
@@ -209,6 +213,10 @@ test("the selected Terminal chat survives a renderer reload without changing fre
   assert.match(terminal, /window\.addEventListener\("pagehide", persist\)/);
   assert.match(
     terminal,
+    /const snapshot = activeChatSnapshotRef\.current;[\s\S]*?writeActiveTerminalChatSnapshot\(/,
+  );
+  assert.match(
+    terminal,
     /parsed\?\.ownerKey === ownerKey[\s\S]*?parsed\.sessionId === sessionId/,
   );
 });
@@ -269,7 +277,7 @@ test("the red terminal status offers a transcript-preserving reconnect action", 
   );
   assert.match(
     terminal,
-    /refreshingTerminal \? "animate-spin" : ""/,
+    /refreshingTerminal \? \([\s\S]{0,120}?<BreadboardLoader className="h-3\.5 w-3\.5"/,
   );
   assert.match(
     terminal,
@@ -297,7 +305,7 @@ test("mount polling is passive and a stopped Hermes service remains submit-ready
 test("runtime startup never disables drafting and retries a transient failed health check", () => {
   assert.match(
     terminal,
-    /health\.status === "runtime" \|\| health\.status === "checking"/,
+    /health\.status === "runtime" \|\|\s*health\.status === "checking" \|\|\s*runtimeSurfaceEngaged/,
   );
   assert.match(
     terminal,
@@ -330,7 +338,8 @@ test("the Hermes composer adds documents immediately after the slash control", (
 test("active conversations show a small spinner beside their row controls", () => {
   assert.match(historyControls, /export function ActiveChatIcon/);
   assert.match(historyControls, /return <BreadboardLoader className=\{className\} \/>/);
-  assert.match(breadboardLoader, /className=\{`animate-spin \$\{className\}`\}/);
+  assert.match(breadboardLoader, /className=\{`bb-loader \$\{className\}`\}/);
+  assert.match(breadboardLoader, /<g className="bb-loader-rotor">/);
   assert.match(historyControls, /Boolean\(activeRun\)/);
   assert.match(
     historyControls,
@@ -361,7 +370,7 @@ test("active conversations show a small spinner beside their row controls", () =
   );
 });
 
-test("initial transcript and Recents loading use the same text-free circle", () => {
+test("initial transcript and Recents loading use the same multi-pass drawn ring", () => {
   assert.match(
     runtime,
     /<BreadboardLoader[\s\S]{0,120}?label="Loading this chat"[\s\S]{0,120}?\/>/,
@@ -370,7 +379,23 @@ test("initial transcript and Recents loading use the same text-free circle", () 
   assert.match(historyControls, /<SpinnerIcon className="h-3\.5 w-3\.5" \/>/);
   assert.doesNotMatch(historyControls, /<span>\{label\}<\/span>/);
   assert.match(breadboardLoader, /viewBox="0 0 24 24"/);
-  assert.match(breadboardLoader, /<circle/);
+  assert.match(breadboardLoader, /inkRingPath/);
+  assert.match(breadboardLoader, /LOADER_SKETCH_RINGS = \[/);
+  assert.match(breadboardLoader, /LOADER_SKETCH_RINGS\.map/);
+  assert.match(breadboardLoader, /bb-loader-settled/);
+  assert.match(breadboardLoader, /bb-loader-sketch bb-loader-sketch-/);
+  assert.doesNotMatch(breadboardLoader, /<circle|bb-loader-snake/);
+  assert.doesNotMatch(breadboardLoader, /animate-spin/);
+  assert.match(
+    globals,
+    /\.bb-loader-sketch \{[\s\S]{0,260}?animation: bb-loader-turn 2820ms linear var\(--bb-loader-sketch-delay, 0ms\) infinite/,
+  );
+  assert.match(
+    globals,
+    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,220}?\.bb-loader-sketch \{[\s\S]{0,160}?animation: bb-loader-soft 2\.1s cubic-bezier\(0\.77, 0, 0\.175, 1\) infinite/,
+  );
+  assert.match(globals, /\.bb-loader \{[\s\S]{0,120}?overflow: hidden;/);
+  assert.match(globals, /\.bb-loader-sketch-3 \{\s*opacity: 0\.48;/);
   assert.doesNotMatch(breadboardLoader, /<rect|HOLES|bb-loader-charge/);
 });
 
@@ -415,10 +440,11 @@ test("a message queues while its chat is still loading", () => {
   // queue, however, holds the typed follow-up until this lock clears.
   assert.match(
     runtime,
-    /const conversationLocked = Boolean\(disabled\) \|\| loadingTranscript;/,
+    /const conversationLoading =\s*loadingTranscript \|\| \(!visibleConversationJustCreated && !artifactsReady\);/,
   );
+  assert.match(runtime, /const conversationLocked = Boolean\(disabled\) \|\| conversationLoading;/);
   assert.match(runtime, /disabled=\{conversationLocked\}/);
-  assert.match(runtime, /const queueHeld = loadingTranscript \|\| runInFlight/);
+  assert.match(runtime, /const queueHeld = conversationLoading \|\| runInFlight/);
   assert.match(runtime, /runInFlight: queueHeld/);
   assert.match(runtime, /queueDisabled=\{Boolean\(disabled\)\}/);
 
@@ -426,7 +452,7 @@ test("a message queues while its chat is still loading", () => {
   // the ordinary invitation and the field takes typing throughout.
   assert.match(runtime, /placeholder=\{placeholder \?\? "Ask the agent…"\}/);
   assert.doesNotMatch(runtime, /loadingTranscript \? "Loading this chat…"/);
-  assert.match(runtime, /loading=\{loadingTranscript\}/);
+  assert.match(runtime, /loading=\{conversationLoading\}/);
   assert.match(composer, /\(isSending \|\| loading\) && !canQueueFollowUp/);
   assert.match(composer, /const queueHeld = loading \|\| runInFlight/);
   assert.match(composer, /if \(queueHeld\) \{\s*queueSteer\(\)/);
@@ -438,7 +464,7 @@ test("a message queues while its chat is still loading", () => {
   // Voice mode submits without touching the send button.
   assert.match(
     runtime,
-    /function submitComposer\(\) \{[\s\S]{0,220}if \(loadingTranscript\) return;/,
+    /function submitComposer\(\) \{[\s\S]{0,220}if \(conversationLoading\) return;/,
   );
 
   // Both surfaces stop at the top of their dispatch cascade, so a runtime

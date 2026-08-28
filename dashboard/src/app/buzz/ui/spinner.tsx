@@ -3,6 +3,7 @@
 import type * as React from "react";
 
 import { cn } from "@/app/buzz/lib/cn";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 
 type SpinnerProps = React.ComponentPropsWithoutRef<"span"> & {
   className?: string;
@@ -25,7 +26,7 @@ export function Spinner({
     <span
       aria-hidden={ariaHidden}
       className={cn(
-        "sprout-arc-spinner inline-block h-6 w-6 shrink-0 rounded-full border-4 border-current/10 border-t-current",
+        "inline-flex h-6 w-6 shrink-0 items-center justify-center",
         className,
       )}
       role={isDecorative ? undefined : role}
@@ -35,6 +36,7 @@ export function Spinner({
       }}
       {...rest}
     >
+      <BreadboardLoader className="h-full w-full" />
       {children}
       {isDecorative ? null : <span className="sr-only">{ariaLabel}</span>}
     </span>

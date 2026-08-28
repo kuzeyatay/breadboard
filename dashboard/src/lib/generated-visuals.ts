@@ -16,6 +16,7 @@ import {
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   GENERATED_VISUAL_COUNCIL_REASONING,
+  GeneratedVisualCouncilReceiptError,
   runGeneratedVisualCouncilRequestWithReceipt,
   type GeneratedVisualCouncilReceiptResult,
   type GeneratedVisualCouncilRecoveryMetadata,
@@ -72,6 +73,14 @@ export const GENERATED_VISUAL_MAX_SOURCE_CHARS =
  * author/critic path adds a durable request receipt beneath it; custom provider
  * seams still may not replay an ambiguous call. */
 export const GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS = 1;
+/** A terminal durable receipt proves that one accepted Council request (and its
+ * one receipt-authorized redispatch) produced no final answer. A fresh request
+ * may then recover the same semantic operation without spending an author or
+ * critic repair attempt. Keep this outage-recovery budget finite and separate
+ * from the semantic budget. */
+export const GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_MAX_ATTEMPTS = 8;
+const GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_BASE_DELAY_MS = 2_000;
+const GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_MAX_DELAY_MS = 30_000;
 /** Spatial visuals can require several critic-guided, model-authored revisions
  * across independent geometry, runtime, and accessibility gates. Keep that
  * semantic loop finite and distinct from identical-request transport replay. */
@@ -286,6 +295,7 @@ export interface GeneratedVisualCouncilReceiptObservation {
   phase: "author" | "critic";
   semanticAttempt: number;
   criticAttempt?: number;
+  transportRecoveryAttempt?: number;
   requestedModel: string;
   resolvedModel: string;
   requestId: string;
@@ -4574,6 +4584,10 @@ export interface GeneratedVisualBrowserTestRunnerInput {
   outputDir: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Keep narrow-mobile compatibility in the validation contract. Defaults to
+   * true so existing callers remain strict; desktop-only Learn runs opt out
+   * explicitly without disabling browser validation altogether. */
+  requireMobileValidation?: boolean;
 }
 
 export interface GeneratedVisualBrowserTestsInput
@@ -4637,13 +4651,16 @@ export async function runGeneratedVisualBrowserTests(
   }
   fs.mkdirSync(input.outputDir, { recursive: true });
   const timeout = input.timeoutMs ?? 20_000;
+  const requireMobileValidation = input.requireMobileValidation ?? true;
   const scenarios = [
-    {
-      name: "375x667 light",
-      viewport: "375x667",
-      theme: "light" as const,
-      flags: [],
-    },
+    ...(requireMobileValidation
+      ? [{
+          name: "375x667 light",
+          viewport: "375x667",
+          theme: "light" as const,
+          flags: [],
+        }]
+      : []),
     {
       name: "1280x800 dark",
       viewport: "1280x800",
@@ -4894,12 +4911,14 @@ export async function runGeneratedVisualBrowserTests(
     });
   }
   const previewViewports = [
-    {
-      id: "mobile-375x667-light",
-      width: 375,
-      height: 667,
-      theme: "light" as const,
-    },
+    ...(requireMobileValidation
+      ? [{
+          id: "mobile-375x667-light",
+          width: 375,
+          height: 667,
+          theme: "light" as const,
+        }]
+      : []),
     {
       id: "desktop-1000x720-light",
       width: 1000,
@@ -5113,13 +5132,15 @@ export async function runGeneratedVisualBrowserTests(
       ? "created"
       : screenshotFailureDetail,
   });
-  tests.push({
-    name: "mobile primary spatial preview frame",
-    passed: previewPrimarySpatialFrameFailures.length === 0,
-    detail: previewPrimarySpatialFrameFailures.length === 0
-      ? "validated where required"
-      : previewPrimarySpatialFrameFailures.join("; "),
-  });
+  if (requireMobileValidation) {
+    tests.push({
+      name: "mobile primary spatial preview frame",
+      passed: previewPrimarySpatialFrameFailures.length === 0,
+      detail: previewPrimarySpatialFrameFailures.length === 0
+        ? "validated where required"
+        : previewPrimarySpatialFrameFailures.join("; "),
+    });
+  }
   const expectedPreviewCount = previewStates.length * previewViewports.length;
   const previewMatrixComplete = previews.length === expectedPreviewCount;
   const previewMatrixReceipt: GeneratedVisualPreviewMatrixReceipt = {
@@ -6044,6 +6065,7 @@ export default defineVisualization({
       recoveryMetadata: input.councilRecovery.metadata,
       request,
       allowImageUrlParts: availablePreviews.length > 0,
+      startedReceiptObservationTimeoutMs: input.timeoutMs,
       signal: input.signal,
     });
     input.councilRecovery.onReceipt?.(recovered);
@@ -6051,10 +6073,11 @@ export default defineVisualization({
   }
   const response = await input.client.chat.completions.create(request, {
     signal: input.signal,
-    // The caller owns a soft deadline plus a bounded late-result grace. An
-    // SDK timeout here would sever the only handle to a council run that
-    // continues after the client connection closes.
-      maxRetries: 0,
+    // Override the SDK's shorter default timeout with the same configured soft
+    // deadline owned by the receipt-aware outer boundary. The outer signal
+    // still owns the bounded late-result grace and terminal cancellation.
+    timeout: input.timeoutMs,
+    maxRetries: 0,
   });
   const content = response.choices[0]?.message?.content ?? "";
   const tokenUsage = generatedVisualTokenUsage(response.usage);
@@ -6656,6 +6679,7 @@ async function requestGeneratedVisualizationCriticRaw(input: {
       recoveryMetadata: input.councilRecovery.metadata,
       request,
       allowImageUrlParts: availablePreviews.length > 0,
+      startedReceiptObservationTimeoutMs: input.timeoutMs,
       signal: input.signal,
     });
     input.councilRecovery.onReceipt?.(recovered);
@@ -6663,9 +6687,10 @@ async function requestGeneratedVisualizationCriticRaw(input: {
   }
   const response = await input.client.chat.completions.create(request, {
     signal: input.signal,
-    // Keep the original response promise recoverable past the soft deadline;
-    // the outer boundary still aborts it after a finite grace period.
-      maxRetries: 0,
+    // Avoid the SDK's implicit 10-minute cutoff. The outer receipt-aware
+    // boundary owns the later finite grace period and cancellation signal.
+    timeout: input.timeoutMs,
+    maxRetries: 0,
   });
   const content = response.choices[0]?.message?.content ?? "";
   const tokenUsage = generatedVisualTokenUsage(response.usage);
@@ -6868,6 +6893,74 @@ function generatedVisualAbortReason(signal: AbortSignal): unknown {
   return (
     signal.reason ?? new DOMException("The operation was aborted", "AbortError")
   );
+}
+
+function isTerminalGeneratedVisualCouncilNoAnswer(
+  error: unknown,
+): error is GeneratedVisualCouncilReceiptError {
+  return (
+    error instanceof GeneratedVisualCouncilReceiptError &&
+    error.state === "failed"
+  );
+}
+
+function generatedVisualCouncilTransportRecoveryMaxAttempts(): number {
+  const configured = Number(
+    process.env.LEARN_GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_MAX_ATTEMPTS,
+  );
+  return Math.max(
+    1,
+    Math.min(
+      GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_MAX_ATTEMPTS,
+      Number.isFinite(configured)
+        ? Math.floor(configured)
+        : GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_MAX_ATTEMPTS,
+    ),
+  );
+}
+
+function generatedVisualCouncilTransportRecoveryDelayMs(
+  completedRecoveryAttempt: number,
+): number {
+  const configured = Number(
+    process.env.LEARN_GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_BASE_DELAY_MS,
+  );
+  const baseDelayMs = Math.max(
+    0,
+    Number.isFinite(configured)
+      ? Math.floor(configured)
+      : GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_BASE_DELAY_MS,
+  );
+  return Math.min(
+    GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_MAX_DELAY_MS,
+    baseDelayMs * 2 ** Math.max(0, completedRecoveryAttempt - 1),
+  );
+}
+
+async function waitForGeneratedVisualCouncilTransportRecovery(input: {
+  delayMs: number;
+  externalSignal?: AbortSignal;
+  checkCancelled?: () => void;
+}): Promise<void> {
+  input.checkCancelled?.();
+  if (input.externalSignal?.aborted) {
+    throw generatedVisualAbortReason(input.externalSignal);
+  }
+  if (input.delayMs <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      input.externalSignal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    const timer = setTimeout(finish, input.delayMs);
+    const abort = () => {
+      clearTimeout(timer);
+      input.externalSignal?.removeEventListener("abort", abort);
+      reject(generatedVisualAbortReason(input.externalSignal!));
+    };
+    input.externalSignal?.addEventListener("abort", abort, { once: true });
+  });
+  input.checkCancelled?.();
 }
 
 function notifyGeneratedVisualTimeoutObserver<T>(
@@ -7308,6 +7401,7 @@ async function createGeneratedVisualizationWithSlot(
     phase: "author" | "critic",
     semanticAttempt: number,
     criticAttempt?: number,
+    transportRecoveryAttempt = 1,
   ): GeneratedVisualCouncilRecoveryBoundary | undefined => {
     if (!input.durableRecoveryDir) return undefined;
     const invocationKey = [
@@ -7318,6 +7412,9 @@ async function createGeneratedVisualizationWithSlot(
       phase,
       `semantic-${semanticAttempt}`,
       ...(criticAttempt === undefined ? [] : [`critic-${criticAttempt}`]),
+      ...(transportRecoveryAttempt > 1
+        ? [`transport-${transportRecoveryAttempt}`]
+        : []),
     ].join("/");
     return {
       durableRecoveryDir: input.durableRecoveryDir,
@@ -7329,6 +7426,7 @@ async function createGeneratedVisualizationWithSlot(
         phase,
         semanticAttempt,
         ...(criticAttempt === undefined ? {} : { criticAttempt }),
+        transportRecoveryAttempt,
         version,
       },
       onReceipt: (receipt) =>
@@ -7336,6 +7434,7 @@ async function createGeneratedVisualizationWithSlot(
           phase,
           semanticAttempt,
           ...(criticAttempt === undefined ? {} : { criticAttempt }),
+          transportRecoveryAttempt,
           requestedModel: receipt.requestedModel,
           resolvedModel: receipt.resolvedModel,
           requestId: receipt.requestId,
@@ -7394,6 +7493,10 @@ async function createGeneratedVisualizationWithSlot(
     timeoutMs: requestedTimeoutMs,
     lateResultGraceMs: requestedLateResultGraceMs,
   });
+  const councilTransportRecoveryMaxAttempts =
+    generatedVisualCouncilTransportRecoveryMaxAttempts();
+  let authorTransportSemanticAttempt = 0;
+  let authorTransportRecoveryAttempt = 1;
   let currentRepairAttempt = 0;
   const recordRepairFailure = (entry: Omit<
     GeneratedVisualRepairHistoryEntry,
@@ -7420,6 +7523,10 @@ async function createGeneratedVisualizationWithSlot(
   };
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (authorTransportSemanticAttempt !== attempt) {
+      authorTransportSemanticAttempt = attempt;
+      authorTransportRecoveryAttempt = 1;
+    }
     currentRepairAttempt = attempt;
     input.checkCancelled?.();
     if (input.abortSignal?.aborted)
@@ -7483,7 +7590,12 @@ async function createGeneratedVisualizationWithSlot(
               kind: "raw" as const,
               raw: await requestGeneratedVisualizationCandidateRaw({
                 ...candidateRequest,
-                councilRecovery: councilRecoveryFor("author", attempt),
+                councilRecovery: councilRecoveryFor(
+                  "author",
+                  attempt,
+                  undefined,
+                  authorTransportRecoveryAttempt,
+                ),
                 signal,
               }),
             },
@@ -7507,41 +7619,78 @@ async function createGeneratedVisualizationWithSlot(
         },
       });
     } catch (error) {
-      // A thrown provider call has no returned semantic candidate. Record only
-      // best-effort diagnostics and propagate the exact object; another author
-      // POST cannot be justified from an ambiguous/empty provider outcome.
+      // A thrown provider call has no returned semantic candidate. Ambiguous
+      // and arbitrary provider failures remain terminal. An exact durable
+      // Council `failed` receipt proves that all dispatch generations ended
+      // without a final answer, so a fresh invocation key may recover the same
+      // semantic attempt without consuming its repair budget.
+      const canStartTransportRecoveryAttempt =
+        !candidateProvider &&
+        !input.abortSignal?.aborted &&
+        isTerminalGeneratedVisualCouncilNoAnswer(error) &&
+        authorTransportRecoveryAttempt < councilTransportRecoveryMaxAttempts;
+      const providerFailure =
+        error instanceof Error ? error.message : "candidate generation failed";
       try {
-        lastFailure = "generation";
-        repairErrors = [
-          error instanceof Error ? error.message : "candidate generation failed",
-        ];
-        recordRepairFailure({
-          failureCategory: "generation",
-          errors: repairErrors,
-        });
-        writeRejectedAttempt({
-          gardenDir: input.gardenDir,
-          id,
-          runId,
-          attempt,
-          candidate: null,
-          category: "generation",
-          errors: repairErrors,
-          lifecycle,
-          onRejectedAttempt: input.onRejectedAttempt,
-          onEvent: input.onEvent,
-        });
         emit(input.onEvent, "visual_generation_provider_failed", {
           visualizationId: id,
           attempt,
+          transportRecoveryAttempt: authorTransportRecoveryAttempt,
           providerInvocations: 1,
           duplicateRequestSuppressed: true,
           failureCategory: "generation",
-          reason: repairErrors.join("; "),
+          reason: providerFailure,
           durationMs: Date.now() - startedAt,
         });
+        if (canStartTransportRecoveryAttempt) {
+          emit(input.onEvent, "visual_generation_terminal_receipt_retry", {
+            visualizationId: id,
+            attempt,
+            semanticAttempt: attempt,
+            transportRecoveryAttempt: authorTransportRecoveryAttempt,
+            nextTransportRecoveryAttempt: authorTransportRecoveryAttempt + 1,
+            requestId: error.requestId,
+            requestHash: error.requestHash,
+            terminalReceiptState: error.state,
+            duplicateRequestSuppressed: true,
+          });
+        } else {
+          lastFailure = "generation";
+          repairErrors = [providerFailure];
+          recordRepairFailure({
+            failureCategory: "generation",
+            errors: repairErrors,
+          });
+          writeRejectedAttempt({
+            gardenDir: input.gardenDir,
+            id,
+            runId,
+            attempt,
+            candidate: null,
+            category: "generation",
+            errors: repairErrors,
+            lifecycle,
+            onRejectedAttempt: input.onRejectedAttempt,
+            onEvent: input.onEvent,
+          });
+        }
       } catch {
         // Diagnostic persistence is subordinate to the provider error.
+      }
+      if (canStartTransportRecoveryAttempt) {
+        const delayMs = generatedVisualCouncilTransportRecoveryDelayMs(
+          authorTransportRecoveryAttempt,
+        );
+        authorTransportRecoveryAttempt += 1;
+        await waitForGeneratedVisualCouncilTransportRecovery({
+          delayMs,
+          externalSignal: input.abortSignal,
+          checkCancelled: input.checkCancelled,
+        });
+        // The for-loop update restores this same semantic attempt. Only a
+        // returned and rejected candidate is allowed to advance it.
+        attempt -= 1;
+        continue;
       }
       throw error;
     }
@@ -7796,11 +7945,17 @@ async function createGeneratedVisualizationWithSlot(
     // already been issued and make exact receipt accounting irreconcilable.
     const criticModel = input.model;
     let priorCriticFailure: string | undefined;
+    let criticTransportProtocolAttempt = 0;
+    let criticTransportRecoveryAttempt = 1;
     for (
       let criticAttempt = 1;
       criticAttempt <= criticAttempts;
       criticAttempt += 1
     ) {
+      if (criticTransportProtocolAttempt !== criticAttempt) {
+        criticTransportProtocolAttempt = criticAttempt;
+        criticTransportRecoveryAttempt = 1;
+      }
       const criticRequest = {
         client: input.client,
         model: criticModel,
@@ -7843,6 +7998,7 @@ async function createGeneratedVisualizationWithSlot(
                     "critic",
                     attempt,
                     criticAttempt,
+                    criticTransportRecoveryAttempt,
                   ),
                   signal,
                 }),
@@ -7885,22 +8041,58 @@ async function createGeneratedVisualizationWithSlot(
           }
           continue;
         }
+        const canStartTransportRecoveryAttempt =
+          !criticProvider &&
+          !input.abortSignal?.aborted &&
+          isTerminalGeneratedVisualCouncilNoAnswer(error) &&
+          criticTransportRecoveryAttempt < councilTransportRecoveryMaxAttempts;
         // A thrown critic request is not a rejected critic candidate. Keep
-        // diagnostics best-effort, then preserve the exact provider object.
+        // diagnostics best-effort. Only an exact terminal no-answer Council
+        // receipt can start a fresh transport recovery for this same critic
+        // attempt; it must not consume critic or semantic repair capacity.
         try {
           criticFailure = error instanceof Error ? error.message : "critic failed";
           emit(input.onEvent, "visual_critic_provider_failed", {
             visualizationId: id,
             attempt,
             criticAttempt,
+            transportRecoveryAttempt: criticTransportRecoveryAttempt,
             providerInvocations: 1,
             duplicateRequestSuppressed: true,
             failureCategory: "critic",
             reason: criticFailure,
             durationMs: Date.now() - criticStartedAt,
           });
+          if (canStartTransportRecoveryAttempt) {
+            emit(input.onEvent, "visual_critic_terminal_receipt_retry", {
+              visualizationId: id,
+              attempt,
+              criticAttempt,
+              semanticAttempt: attempt,
+              transportRecoveryAttempt: criticTransportRecoveryAttempt,
+              nextTransportRecoveryAttempt: criticTransportRecoveryAttempt + 1,
+              requestId: error.requestId,
+              requestHash: error.requestHash,
+              terminalReceiptState: error.state,
+              duplicateRequestSuppressed: true,
+            });
+          }
         } catch {
           // Diagnostic telemetry is subordinate to the provider error.
+        }
+        if (canStartTransportRecoveryAttempt) {
+          const delayMs = generatedVisualCouncilTransportRecoveryDelayMs(
+            criticTransportRecoveryAttempt,
+          );
+          criticTransportRecoveryAttempt += 1;
+          await waitForGeneratedVisualCouncilTransportRecovery({
+            delayMs,
+            externalSignal: input.abortSignal,
+            checkCancelled: input.checkCancelled,
+          });
+          // The for-loop update restores this same critic attempt.
+          criticAttempt -= 1;
+          continue;
         }
         throw error;
       }

@@ -36,7 +36,9 @@ import {
   type CanonicalSourceAnchor,
 } from "@/lib/final-garden-state";
 import { freezeActiveGenerationByVersion } from "@/lib/learn-structure-reconciliation";
-import { createChatMockAnchorCritic, createChatMockCritic, createChatMockModelRepair, makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
+import { makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
+import { createLearnFinalCriticProviders } from "@/lib/learn-final-critic";
+import { LearnCouncilTerminalReceiptError } from "@/lib/learn-council-semantic-recovery";
 import {
   appendGardenEvent,
   pruneVisualArtifacts,
@@ -190,7 +192,7 @@ import {
   exactLearnCouncilRetryJobBinding,
   isExactLegacyLearnCouncilFailureShape,
   learnCouncilDispatchGenerationOwners,
-  legacyLearnCouncilLineageIsQuiescent,
+  legacyLearnCouncilLineageQuiescenceDelayMs,
   learnCouncilRetryJob,
   materializeCompletedLegacyLearnCouncilCheckpoint,
   materializeCompletedLegacyLearnCouncilCheckpointAfterFailure,
@@ -355,6 +357,8 @@ import {
   disposeLearnBuildWorkspace,
   fingerprintDurableGardenState,
   learnWorkspaceRootCandidates,
+  retainFailedLearnWorkspacesForJob,
+  retainLearnBuildWorkspace,
   verifyAuthoritativeSourceAnchorLedger,
   type LearnBuildWorkspace,
 } from "@/lib/learn-build-workspace";
@@ -5233,6 +5237,27 @@ function learnCouncilStageComponent(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+function terminalOrdinaryCouncilReceiptError(
+  source: LearnCouncilCheckpointRow,
+  requestHash: string,
+  receipt: StrictCouncilReceiptMetadata,
+): LearnCouncilTerminalReceiptError {
+  if (!source.receipt_request_id || !receipt.failureCode) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Terminal ordinary Learn receipt is missing its exact request/failure binding.",
+    );
+  }
+  return new LearnCouncilTerminalReceiptError({
+    requestId: source.receipt_request_id,
+    requestHash,
+    dispatchGeneration: receipt.dispatchGeneration,
+    dispatchCount: receipt.dispatchCount,
+    redispatchCount: receipt.redispatchCount,
+    redispatchAllowed: receipt.redispatchAllowed,
+    failureCode: receipt.failureCode,
+  });
+}
+
 async function callOrdinaryCouncilTextWithReceipt(input: {
   client: OpenAI;
   model: string;
@@ -5435,6 +5460,17 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
             });
         return dispatch(claimed, reason);
       }
+      if (
+        lookup.status === 409 &&
+        lookup.code === "request_failed" &&
+        lookup.receipt
+      ) {
+        throw terminalOrdinaryCouncilReceiptError(
+          source,
+          requestHash,
+          lookup.receipt,
+        );
+      }
       throw new LearnPlanningRecoveryConflictError(
         `Ordinary Learn Council dispatch ended as ${lookup.code ?? `HTTP ${lookup.status}`}; no further model request was authorized (${errorMessage(dispatchError)}).`,
       );
@@ -5584,6 +5620,13 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
               ),
           });
       return dispatch(claimed, "request_failed");
+    }
+    if (failed && lookup.receipt) {
+      throw terminalOrdinaryCouncilReceiptError(
+        source,
+        requestHash,
+        lookup.receipt,
+      );
     }
     throw new LearnPlanningRecoveryConflictError(
       `Ordinary Learn Council checkpoint is ${lookup.code ?? `HTTP ${lookup.status}`}; no model request was authorized.`,
@@ -5949,17 +5992,59 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
       now: nowIso(),
     });
   } else {
+    const canStartAfterLegacyAbsence =
+      canStartLearnCouncilAfterLegacyAbsence(db, input.checkpoint.jobId, {
+        hasCompletedNativePlanningCheckpoint:
+          hasCompletedNativePlanningCheckpoint(db, input.checkpoint.jobId),
+      });
+    const legacyQuiescenceDelayMs =
+      legacyLearnCouncilLineageQuiescenceDelayMs(lineage, Date.now());
     if (
       lineage.length > 0 &&
-      (!legacyLearnCouncilLineageIsQuiescent(lineage, Date.now()) ||
-        !canStartLearnCouncilAfterLegacyAbsence(db, input.checkpoint.jobId, {
-          hasCompletedNativePlanningCheckpoint:
-            hasCompletedNativePlanningCheckpoint(db, input.checkpoint.jobId),
-        }))
+      (!canStartAfterLegacyAbsence || legacyQuiescenceDelayMs === null)
     ) {
       throw new LearnPlanningRecoveryConflictError(
         "Prior exact Learn jobs are not durably quiescent or have no completed failure boundary; 404 absence cannot authorize a model request.",
       );
+    }
+    if (lineage.length > 0 && (legacyQuiescenceDelayMs ?? 0) > 0) {
+      const waitMs = legacyQuiescenceDelayMs!;
+      appendLearnEvent(
+        input.checkpoint.contentPath,
+        gardenId,
+        "learn_council_legacy_quiescence_wait_started",
+        {
+          jobId: input.checkpoint.jobId,
+          stageKey: input.checkpoint.stageKey,
+          semanticAttempt: input.checkpoint.semanticAttempt,
+          waitMs,
+          predecessorCount: lineage.length,
+        },
+      );
+      const deadline = Date.now() + waitMs;
+      while (Date.now() < deadline) {
+        await learnCheckpoint(input.checkpoint.jobId);
+        assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(1_000, Math.max(1, deadline - Date.now()))),
+        );
+      }
+      await learnCheckpoint(input.checkpoint.jobId);
+      assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+      appendLearnEvent(
+        input.checkpoint.contentPath,
+        gardenId,
+        "learn_council_legacy_quiescence_wait_completed",
+        {
+          jobId: input.checkpoint.jobId,
+          stageKey: input.checkpoint.stageKey,
+          semanticAttempt: input.checkpoint.semanticAttempt,
+          predecessorCount: lineage.length,
+        },
+      );
+      // Re-observe every legacy outcome after the safe window. A result that
+      // arrived while waiting must be recovered instead of duplicated.
+      return callOrdinaryCouncilTextWithReceipt(input);
     }
     started = createStartedLearnCouncilCheckpoint(db, {
       requestId: makeId("lrq"),
@@ -11414,7 +11499,11 @@ async function reconcileInteractiveVisuals({
       formulaDefinitions: subsection.sourceFormulaContracts ?? [],
       compilerRunner: async (sourceCode, compilerOpportunity) =>
         compileGeneratedVisualization(sourceCode, compilerOpportunity),
-      browserTestRunner: runGeneratedVisualBrowserTestsLocally,
+      browserTestRunner: (browserInput) =>
+        runGeneratedVisualBrowserTestsLocally({
+          ...browserInput,
+          requireMobileValidation: false,
+        }),
       // Every interaction in this plan was explicitly selected by the model.
       // Give each one the same bounded repair budget; code may not silently
       // demote a recommended or optional model decision after planning.
@@ -12381,6 +12470,19 @@ export async function runTextbookGeneration({
       stagingDirectoryName: gardenId,
       requireAuthoritativeSourceAnchorLedger: true,
     });
+    if (workspace.resumedFromJobId) {
+      updateLearnJob(job.id, {
+        currentStep: "Resuming retained lesson workspace",
+      });
+      appendLearnEvent(contentPath, gardenId, "learn_build_workspace_resumed", {
+        jobId: job.id,
+        buildId: workspace.buildId,
+        resumedFromJobId: workspace.resumedFromJobId,
+        resumedFromBuildId: workspace.resumedFromBuildId,
+        contractFingerprint: workspace.contractFingerprint,
+        sourceSetFingerprint: workspace.sourceSetFingerprint,
+      });
+    }
     throwIfLearnCancelled(job.id);
     if (!lease.heartbeat()) {
       throw new LearnPipelineConflictError(
@@ -12558,6 +12660,8 @@ export async function runTextbookGeneration({
   const clusterDir = workspace.stagingGardenDir;
   let previousPromotedGardenDir: string | undefined;
   let promotionCommitted = false;
+  let retainWorkspaceAfterFailure = false;
+  let retainedWorkspaceFailureStage = "Lesson generation failed";
   // Built once from the confirmed map's own availability check, so every page in
   // this run is judged against the same answer planning used. Empty when there
   // is no syllabus or nothing it assigns is missing, in which case the gate
@@ -13943,19 +14047,70 @@ export async function runTextbookGeneration({
     // critic or unresolved blocker leaves the published garden untouched.
     try {
       if ((process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false") {
+        // Every end-stage model call uses the same durable Council receipt
+        // boundary as lesson generation. A transport timeout first observes
+        // and adopts the exact result; only an authoritative terminal receipt
+        // may advance to one new semantic attempt with a changed request.
+        const finalCriticProviders = createLearnFinalCriticProviders({
+          execute: (request) => callCouncilText({
+            client,
+            model,
+            taskType: request.taskType,
+            gardenId,
+            pageId: request.pageId,
+            system: request.system,
+            user: request.user,
+            sourceContext: request.sourceContext,
+            councilModeOverride: "direct_council",
+            timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+            preserveExactContent: true,
+            ordinaryCheckpoint: {
+              jobId: job.id,
+              contentPath,
+              stageKey: request.stageKey,
+              stageLabel: request.stageLabel,
+              semanticAttempt: request.semanticAttempt,
+            },
+          }),
+          maxSemanticAttempts: 2,
+          onTerminalReceipt: ({
+            kind,
+            semanticAttempt,
+            nextSemanticAttempt,
+            receipt,
+          }) => {
+            appendLearnEvent(
+              contentPath,
+              gardenId,
+              "learn_final_critic_terminal_receipt_retry",
+              {
+                jobId: job.id,
+                kind,
+                semanticAttempt,
+                nextSemanticAttempt,
+                failureCode: receipt.failureCode,
+                dispatchCount: receipt.dispatchCount,
+                redispatchCount: receipt.redispatchCount,
+                duplicateRequestSuppressed: true,
+              },
+            );
+          },
+        });
         // The model rewrites any flagged semantic content. Structural validators
         // re-audit the result without substituting heuristic lesson prose or a
         // canned visual contract for a rejected candidate.
-        const modelRepair = createChatMockModelRepair({ client, model, timeoutMs: LEARN_PLANNING_TIMEOUT_MS });
         const criticLoop = await runCriticLoop({
           gardenDir: clusterDir,
           gardenSlug: gardenId,
-          critic: createChatMockCritic({ client, model, timeoutMs: LEARN_PLANNING_TIMEOUT_MS }),
+          critic: finalCriticProviders.critic,
           // Low-confidence generated source anchors are sent to ChatMock to
           // confirm, replace, create a better anchor, or reject — inside the
           // same critic-loop rounds. Unresolved ones keep publishReady false.
-          anchorConfirm: createChatMockAnchorCritic({ client, model, timeoutMs: LEARN_PLANNING_TIMEOUT_MS }),
-          repair: makeCriticArtifactRepair({ modelRepair, allowDeterministicRepairs: false }),
+          anchorConfirm: finalCriticProviders.anchorConfirm,
+          repair: makeCriticArtifactRepair({
+            modelRepair: finalCriticProviders.modelRepair,
+            allowDeterministicRepairs: false,
+          }),
           // Let the loop audit the live state so anchor resolution counts toward
           // publish-readiness. Deterministic critical failures already threw above.
           structuralFailure: false,
@@ -14206,13 +14361,20 @@ export async function runTextbookGeneration({
       pageCount: generatedPages.length,
     };
   } catch (error) {
+    const cancelledGeneration = isLearnCancellationWithoutMaskingFailure(
+      job.id,
+      error,
+    );
+    // Set this before any lease/rollback diagnostics. Even if failure cleanup
+    // itself cannot proceed, the exact staged candidate must survive.
+    retainWorkspaceAfterFailure = !cancelledGeneration;
     const stillOwnGenerationLease = (): boolean => {
       return confirmLearnLeaseForFailureCleanup(lease, job.id);
     };
     if (!stillOwnGenerationLease()) {
       throw error;
     }
-    if (isLearnCancellationWithoutMaskingFailure(job.id, error)) {
+    if (cancelledGeneration) {
       // The Stop button already flipped the job to cancelled; sweep any
       // partial Learn output that was written before the checkpoint fired.
       try {
@@ -14333,6 +14495,7 @@ export async function runTextbookGeneration({
         lastInternalStep = failedJob?.id === job.id
           ? failedJob.currentStep.trim()
           : "";
+        retainedWorkspaceFailureStage = lastInternalStep || retainedWorkspaceFailureStage;
       } catch {
         // The last-step annotation is optional diagnostic context.
       }
@@ -14370,10 +14533,27 @@ export async function runTextbookGeneration({
       // Tracking cleanup is subordinate to the operation result.
     }
     if (workspace) {
-      try {
-        disposeLearnBuildWorkspace(workspace);
-      } catch {
-        // Abandoned staging cleanup must not replace the operation result.
+      if (!promotionCommitted && retainWorkspaceAfterFailure) {
+        try {
+          retainLearnBuildWorkspace(workspace, {
+            reason: "generation_failure",
+            failureStage: retainedWorkspaceFailureStage,
+          });
+          appendLearnEvent(contentPath, gardenId, "learn_failed_workspace_retained", {
+            jobId: job.id,
+            buildId: workspace.buildId,
+            failureStage: retainedWorkspaceFailureStage,
+          });
+        } catch {
+          // A descriptor update is diagnostic only. Most importantly, never
+          // fall through to deletion after a non-cancelled generation failure.
+        }
+      } else {
+        try {
+          disposeLearnBuildWorkspace(workspace);
+        } catch {
+          // Finished/cancelled staging cleanup must not replace the outcome.
+        }
       }
     }
     if (ownsLease) {
@@ -16820,9 +17000,8 @@ function previousGardenForAbandonedJob(
   return null;
 }
 
-/** Remove every known disposable staging root for a terminal abandoned job.
- * Both the default LOCALAPPDATA root and the OS-temp fallback are included so
- * recovery does not depend on knowing which root a prior worker reached. */
+/** Remove every known staging root only after cancellation or supersession.
+ * Failed candidates are retained by the separate failure lifecycle. */
 function disposeAbandonedLearnWorkspaces(gardenId: string, jobId: string): void {
   for (const abandonedWorkspace of learnWorkspaceRootCandidates(gardenId, jobId)) {
     try {
@@ -17065,7 +17244,27 @@ export async function recoverAbandonedLearnJobs({
             { jobId: candidate.id, error: errorMessage(error) },
           );
         }
-        disposeAbandonedLearnWorkspaces(candidate.garden_id, candidate.id);
+        if (cancellationRecovery) {
+          disposeAbandonedLearnWorkspaces(candidate.garden_id, candidate.id);
+        } else {
+          const retainedWorkspaceRoots = retainFailedLearnWorkspacesForJob({
+            gardenSlug: candidate.garden_id,
+            jobId: candidate.id,
+            reason: "abandoned_worker",
+            failureStage: current.current_step,
+            retainedAt: recoveryNow,
+          });
+          appendLearnEvent(
+            contentPath,
+            candidate.garden_id,
+            "learn_failed_workspace_retained",
+            {
+              jobId: candidate.id,
+              retainedWorkspaceCount: retainedWorkspaceRoots.length,
+              failureStage: current.current_step,
+            },
+          );
+        }
         recoveredJobIds.push(candidate.id);
       } finally {
         lease.release();

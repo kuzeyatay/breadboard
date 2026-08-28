@@ -164,9 +164,9 @@ test("the inline player survives later messages and follows contextual Spotify t
     { toolName: "spotify_create_playlist", status: "running" },
   ];
   assert.equal(
-    spotifyPlayerAssistantIndex(messages),
-    7,
-    "a running Spotify tool moves the loading player to the new turn",
+    spotifyPlayerAssistantIndex(messages, 7),
+    5,
+    "the active assistant row cannot move the player while it is thinking",
   );
 
   messages[7].tools[0].status = "failed";
@@ -178,10 +178,31 @@ test("the inline player survives later messages and follows contextual Spotify t
 
   messages[7].tools[0].status = "completed";
   assert.equal(
+    spotifyPlayerAssistantIndex(messages, 7),
+    5,
+    "even a completed tool waits for the assistant turn to settle",
+  );
+  assert.equal(
     spotifyPlayerAssistantIndex(messages),
     7,
     "a completed Spotify tool keeps the player on the new turn",
   );
+});
+
+test("a first Spotify player waits for a completed assistant turn", () => {
+  const messages = [
+    { role: "user", content: "play Radiohead" },
+    { role: "assistant", content: "" },
+  ];
+
+  assert.equal(spotifyPlayerAssistantIndex(messages, 1), -1);
+  messages[1].tools = [
+    { toolName: "spotify_prepare_playback", status: "running" },
+  ];
+  assert.equal(spotifyPlayerAssistantIndex(messages, 1), -1);
+  messages[1].tools[0].status = "completed";
+  assert.equal(spotifyPlayerAssistantIndex(messages, 1), -1);
+  assert.equal(spotifyPlayerAssistantIndex(messages), 1);
 });
 
 test("catalog-only Spotify searches do not mount a playback widget", () => {
@@ -395,6 +416,10 @@ test("Spotify login lives in Connections and native tools power an inline player
   assert.match(player, /paletteSource === \(visibleTrack\.imageUrl \?\? null\)/);
   assert.match(runtimePanel, /key=\{`\$\{sessionId\}:\$\{inlineSpotify\.requestedAt \?\? ""\}`\}/);
   assert.match(runtimePanel, /turnPending=\{/);
+  assert.match(
+    runtimePanel,
+    /spotifyPlayerAssistantIndex\(\s*messages,\s*runInFlight \? lastAssistantIndex : -1,\s*\)/,
+  );
   assert.match(playbackRoute, /endpoint: "\/v1\/me\/library"/);
   assert.match(playbackRoute, /query: \{ uris: `spotify:track:\$\{id\}` \}/);
   assert.doesNotMatch(playbackRoute, /endpoint: "\/v1\/me\/tracks"/);

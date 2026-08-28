@@ -180,6 +180,60 @@ function jsonResponse(status, value) {
   };
 }
 
+function failedCouncilAttempt(body, generation) {
+  return {
+    dispatchGeneration: generation,
+    outcome: "failed_no_final_answer",
+    councilRunId: `crun_generated_visual_terminal_${generation}`,
+    finalAnswerPresent: false,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cachedInputTokens: 0,
+      reasoningTokens: 0,
+      callCount: 1,
+      reportedCallCount: 0,
+    },
+    usageEstimated: true,
+    modelRouting: [
+      {
+        schemaVersion: 1,
+        at: NOW,
+        requestId: `crun_generated_visual_terminal_${generation}`,
+        endpoint: "council",
+        requestedModel: body.model,
+        resolvedModel: body.model,
+        upstreamModel: body.model,
+        provider: "chatgpt",
+        outcome: "failed",
+        fallback: false,
+        statusCode: 502,
+        errorCode: "connection_closed",
+        failurePhase: "receive",
+        partialOutput: true,
+        replaySafe: false,
+      },
+    ],
+    requestedModel: body.model,
+    resolvedModel: body.model,
+    createdAt: NOW,
+    updatedAt: NOW,
+    failureCode: "council_no_final_answer",
+  };
+}
+
+function failedCouncilProof(body, generation, priorAttempts = []) {
+  return {
+    dispatchGeneration: generation,
+    dispatchCount: generation,
+    redispatchCount: generation - 1,
+    redispatchAllowed: generation === 1,
+    failureCode: "council_no_final_answer",
+    attempts: [...priorAttempts, failedCouncilAttempt(body, generation)],
+  };
+}
+
 function passingBrowserPreview({ outputDir }) {
   fs.mkdirSync(outputDir, { recursive: true });
   const previewPath = path.join(outputDir, "preview.png");
@@ -382,6 +436,156 @@ test("built-in author and image critic use durable exact Council receipts", asyn
       delete process.env.LEARN_GENERATED_VISUAL_CRITIC_MODEL;
     } else {
       process.env.LEARN_GENERATED_VISUAL_CRITIC_MODEL = originalCriticModel;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("terminal no-answer author receipts recover transport without spending a semantic attempt", async () => {
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), "generated-visual-terminal-receipt-integration-"),
+  );
+  const stagingGarden = path.join(root, "staging-garden");
+  const liveGarden = path.join(root, "live-garden");
+  fs.mkdirSync(stagingGarden, { recursive: true });
+  fs.mkdirSync(liveGarden, { recursive: true });
+  const recoveryRoot = stableGeneratedVisualCouncilRecoveryRoot(
+    liveGarden,
+    path.join(root, "runtime"),
+  );
+  const receipts = new Map();
+  const posts = [];
+  const events = [];
+  const originalFetch = globalThis.fetch;
+  const originalTransportRecoveryDelay =
+    process.env.LEARN_GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_BASE_DELAY_MS;
+  process.env.LEARN_GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_BASE_DELAY_MS = "0";
+
+  const client = {
+    baseURL: "http://127.0.0.1:8765/v1",
+    chat: {
+      completions: {
+        create: async (body, options) => {
+          posts.push(structuredClone(body));
+          assert.equal(options.maxRetries, 0);
+          if (body.taskType === "visualization_generation" && posts.length <= 2) {
+            const generation = body.clientRequestRedispatch === true ? 2 : 1;
+            const priorAttempts = generation === 2
+              ? receipts.get(body.clientRequestId)?.proof.attempts ?? []
+              : [];
+            receipts.set(body.clientRequestId, {
+              state: "failed",
+              requestHash: body.clientRequestHash,
+              proof: failedCouncilProof(body, generation, priorAttempts),
+            });
+            throw Object.assign(
+              new Error("Council upstream closed without a final answer."),
+              { status: 502 },
+            );
+          }
+          const content = JSON.stringify(
+            body.taskType === "critique" ? critic : candidate,
+          );
+          const result = receiptResult(body, content, posts.length);
+          receipts.set(body.clientRequestId, {
+            state: "completed",
+            requestHash: body.clientRequestHash,
+            result,
+          });
+          return httpCompletion(result);
+        },
+      },
+    },
+  };
+
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.pathname, "/v1/internal/council-results/resolve");
+    const requestId = url.searchParams.get("requestId");
+    const requestHash = url.searchParams.get("requestHash");
+    const receipt = receipts.get(requestId);
+    if (!receipt) {
+      return jsonResponse(404, {
+        error: { code: "receipt_not_found", message: "missing" },
+      });
+    }
+    assert.equal(requestHash, receipt.requestHash);
+    if (receipt.state === "failed") {
+      return jsonResponse(409, {
+        state: "failed",
+        error: { code: "request_failed", message: "no final answer" },
+        receipt: receipt.proof,
+      });
+    }
+    return jsonResponse(200, { state: "completed", result: receipt.result });
+  };
+
+  try {
+    const result = await createGeneratedVisualization({
+      client,
+      model: MODEL,
+      gardenDir: stagingGarden,
+      durableRecoveryDir: recoveryRoot,
+      recoveryOwnerId: "job-terminal-receipt-integration",
+      opportunity,
+      pageMarkdown: "The source establishes one finite result.",
+      sourceContext: { source: "generic finite-result source" },
+      availableSourceAnchorIds: new Set(),
+      maxAttempts: 1,
+      criticMaxAttempts: 1,
+      browserTestRunner: passingBrowserPreview,
+      onEvent: (event) => events.push(event),
+    });
+
+    assert.ok(result.manifest);
+    assert.deepEqual(
+      posts.map((body) => body.taskType),
+      [
+        "visualization_generation",
+        "visualization_generation",
+        "visualization_generation",
+        "critique",
+      ],
+    );
+    assert.equal(posts[1].clientRequestRedispatch, true);
+    assert.equal(posts[0].clientRequestId, posts[1].clientRequestId);
+    assert.equal(posts[0].clientRequestHash, posts[1].clientRequestHash);
+    assert.notEqual(posts[2].clientRequestId, posts[0].clientRequestId);
+    assert.equal(
+      posts[2].clientRequestHash,
+      posts[0].clientRequestHash,
+      "transport recovery must preserve the exact semantic request",
+    );
+    assert.deepEqual(
+      events
+        .filter(({ type }) => type === "visual_generation_terminal_receipt_retry")
+        .map(({ data }) => ({
+          attempt: data.attempt,
+          semanticAttempt: data.semanticAttempt,
+          transportRecoveryAttempt: data.transportRecoveryAttempt,
+          nextTransportRecoveryAttempt: data.nextTransportRecoveryAttempt,
+          terminalReceiptState: data.terminalReceiptState,
+          duplicateRequestSuppressed: data.duplicateRequestSuppressed,
+        })),
+      [
+        {
+          attempt: 1,
+          semanticAttempt: 1,
+          transportRecoveryAttempt: 1,
+          nextTransportRecoveryAttempt: 2,
+          terminalReceiptState: "failed",
+          duplicateRequestSuppressed: true,
+        },
+      ],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalTransportRecoveryDelay === undefined) {
+      delete process.env
+        .LEARN_GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_BASE_DELAY_MS;
+    } else {
+      process.env.LEARN_GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_BASE_DELAY_MS =
+        originalTransportRecoveryDelay;
     }
     fs.rmSync(root, { recursive: true, force: true });
   }

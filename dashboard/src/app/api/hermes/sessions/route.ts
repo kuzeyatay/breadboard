@@ -58,6 +58,11 @@ function parseInitialTurn(
   const branchGroupId = typeof turn.branchGroupId === "string"
     ? turn.branchGroupId.slice(0, 128)
     : undefined;
+  const responseStartedAt =
+    typeof turn.responseStartedAt === "string" &&
+    Number.isFinite(Date.parse(turn.responseStartedAt))
+      ? turn.responseStartedAt
+      : undefined;
   return {
     clientMessageId: requireString(
       turn.clientMessageId,
@@ -71,6 +76,7 @@ function parseInitialTurn(
       activePageSlug: context.activePageSlug,
       attachmentNames: attachments.map((attachment) => attachment.name),
       attachments: chatMessageAttachments(attachments),
+      ...(responseStartedAt ? { responseStartedAt } : {}),
       ...(branchGroupId ? { branchGroupId } : {}),
       ...(textSelection ? { textSelection } : {}),
       ...(turn.internalAgentContinuation === true

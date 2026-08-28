@@ -66,6 +66,17 @@ test("the Intelligence popup stack opens to the right of its trigger", () => {
   );
 });
 
+test("the Intelligence popup stack paints above workspace rail dividers", () => {
+  const globalStyles = source("../src/app/globals.css");
+  const graphSource = source("../src/app/components/knowledge-graph.tsx");
+
+  assert.match(
+    globalStyles,
+    /\.bb-composer-overlay\s*\{[^}]*z-index:\s*30;/s,
+  );
+  assert.match(graphSource, /absolute inset-y-0 left-0 z-20/);
+});
+
 test("every ChatMock interface gets Usage through AssistantComposer only", () => {
   const composerSource = source("../src/app/components/assistant-composer.tsx");
   const interfaces = [

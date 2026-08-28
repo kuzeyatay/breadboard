@@ -83,6 +83,13 @@ function stableUnit(value: string): number {
   return stableHash(value) / 4294967295
 }
 
+function compactGraphLabel(value: string, maxLength = 30): string {
+  if (value.length <= maxLength) return value
+  const extension = value.match(/\.[a-z0-9]{2,5}$/i)?.[0] ?? ""
+  const leadingLength = Math.max(12, maxLength - extension.length - 1)
+  return `${value.slice(0, leadingLength)}…${extension}`
+}
+
 function connectionId(link: LinkData): string {
   return `${link.source.id}\u0000${link.target.id}`
 }
@@ -238,12 +245,23 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
   )
   labelPriorityIds.add(slug)
 
-  const width = graph.offsetWidth
-  const height = Math.max(graph.offsetHeight, 250)
+  const width = Math.max(graph.offsetWidth, 1)
+  // The compact dashboard preview is shorter than Quartz's normal 260px graph.
+  // Rendering at a hidden 250px minimum made the browser scale only the canvas'
+  // vertical axis back down to the iframe, visibly flattening the whole map.
+  const height = Math.max(graph.offsetHeight, 1)
+  const isCompactPreview =
+    document.documentElement.classList.contains("quartz-graph-preview") &&
+    width < 600 &&
+    height < 360
+  const isSparseOverview = isOverviewGraph && graphData.nodes.length <= 16
 
   // we virtualize the simulation and use pixi to actually render it
   const overviewLinkDistance = isOverviewGraph
-    ? Math.max(44, Math.min(linkDistance, Math.min(width, height) * 0.18))
+    ? Math.max(
+        isSparseOverview ? 68 : 44,
+        Math.min(linkDistance, Math.min(width, height) * (isSparseOverview ? 0.34 : 0.18)),
+      )
     : linkDistance
   const linkDistanceFor = (link: LinkData) => {
     if (!isOverviewGraph) return linkDistance
@@ -692,14 +710,15 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
   for (const n of graphData.nodes) {
     const nodeId = n.id
 
+    const compactLabel = isCompactPreview ? compactGraphLabel(n.text) : n.text
     const label = new Text({
       interactive: false,
       eventMode: "none",
-      text: n.text,
+      text: compactLabel,
       alpha: restingLabelAlpha(nodeId),
       anchor: { x: 0.5, y: 1.2 },
       style: {
-        fontSize: fontSize * 16,
+        fontSize: (isCompactPreview ? Math.min(fontSize, 0.72) : fontSize) * 16,
         fill: computedStyleMap["--dark"],
         fontFamily: computedStyleMap["--bodyFont"],
         fontWeight: "500",

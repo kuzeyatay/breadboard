@@ -1710,6 +1710,13 @@ test("internal Learn recovery URLs are uncredentialed loopback HTTP and endpoint
   );
   assert.equal(
     strictChatMockInternalRecoveryUrl(
+      "http://127.0.0.1:8765/v1",
+      "/internal/council-results/legacy-outcome",
+    ).href,
+    "http://127.0.0.1:8765/v1/internal/council-results/legacy-outcome",
+  );
+  assert.equal(
+    strictChatMockInternalRecoveryUrl(
       "http://[::1]:8765/",
       "/internal/council-results/resolve",
     ).hostname,

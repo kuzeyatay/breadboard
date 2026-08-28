@@ -208,7 +208,7 @@ test("admission preserves the reserve and returns a structured terminal result",
   );
 });
 
-test("heavyweight admission is exclusive across unequal, same-group, and multiple active leases", async () => {
+test("active heavyweight groups do not impose a static admission limit", async () => {
   const metrics = new FakeMetrics();
   const governor = new MemoryGovernor({ policy, metrics });
   metrics.value = snapshot(40_000);
@@ -234,21 +234,11 @@ test("heavyweight admission is exclusive across unequal, same-group, and multipl
   ];
 
   for (const current of cases) {
-    await assert.rejects(
-      () => governor.admit({
-        ...current,
-        priority: 100,
-        required: true,
-      }),
-      (error: unknown) => {
-        assert.ok(error instanceof ResourceExhaustionError);
-        assert.equal(error.result.denialReason, "active_heavyweight");
-        assert.ok(error.result.availableHeadroomMb >= error.result.requiredHeadroomMb);
-        assert.equal(error.result.overlapHeadroomMb, 0);
-        assert.match(error.message, /heavyweight operation is already active/i);
-        return true;
-      },
-    );
+    await governor.admit({
+      ...current,
+      priority: 100,
+      required: true,
+    });
   }
 
   await governor.admit({

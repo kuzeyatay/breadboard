@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import MicrophonePermissionHelp from "./microphone-permission-help";
 import { describeMicrophoneBlock, type MicrophoneFix } from "@/lib/speech/microphone-access";
 import {
@@ -692,10 +693,7 @@ export default function SpeechDictationButton({
         }`}
       >
         {busy ? (
-          <svg className="h-[18px] w-[18px] animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <circle className="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" />
-            <path className="opacity-80" fill="currentColor" d="M12 3a9 9 0 0 1 9 9h-3a6 6 0 0 0-6-6V3Z" />
-          </svg>
+          <BreadboardLoader className="h-[18px] w-[18px]" />
         ) : (
           <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden>
             <rect x="9" y="3" width="6" height="11" rx="3" />
@@ -761,10 +759,7 @@ export default function SpeechDictationButton({
           role="status"
           className="neu-popover absolute bottom-full right-0 z-50 mb-2 flex w-[17.5rem] max-w-[85vw] items-center gap-2.5 rounded-2xl border p-3.5 text-xs leading-5 text-[var(--ink)] shadow-xl"
         >
-          <svg className="h-4 w-4 shrink-0 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <circle className="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" />
-            <path className="opacity-80" fill="currentColor" d="M12 3a9 9 0 0 1 9 9h-3a6 6 0 0 0-6-6V3Z" />
-          </svg>
+          <BreadboardLoader className="h-4 w-4 shrink-0" />
           <span className="min-w-0 flex-1 truncate">{uploadStatus ?? "Transcribing…"}</span>
           <button
             type="button"

@@ -785,7 +785,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       : [
           path.join(paths.dashboardServerDir, "node_modules", "next", "dist", "bin", "next"),
           "dev",
-          "--webpack",
+          "--turbopack",
           "--port",
           String(config.ports.dashboard),
           "--hostname",
@@ -813,7 +813,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       ...(paths.mode === "dev" && !dashboardProduction
         ? {
             NODE_OPTIONS: dashboardDevNodeOptions(shared["NODE_OPTIONS"], process.env, undefined, memoryPolicy),
-            BREADBOARD_DASHBOARD_BUNDLER: "webpack",
+            BREADBOARD_DASHBOARD_BUNDLER: "turbopack",
           }
         : {}),
       PORT: String(config.ports.dashboard),

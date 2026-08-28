@@ -167,7 +167,7 @@
               "path": "dashboard/scripts/runtime-v2-hot-dashboard.mjs"
             },
             { "kind": "literal", "value": "dev" },
-            { "kind": "literal", "value": "--webpack" },
+            { "kind": "literal", "value": "--turbopack" },
             { "kind": "literal", "value": "--port" },
             { "kind": "runtime-value", "value": "service-port" },
             { "kind": "literal", "value": "--hostname" },
@@ -197,8 +197,8 @@
           },
           "resourceLimits": {
             "estimatedColdStartCommitMb": 3072,
-            "softCommitLimitMb": 6144,
-            "hardCommitLimitMb": 8192
+            "softCommitLimitMb": 9216,
+            "hardCommitLimitMb": 11264
           }
         }
       ],

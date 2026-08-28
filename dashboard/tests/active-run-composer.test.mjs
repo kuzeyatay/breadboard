@@ -273,8 +273,12 @@ test("the garden workspace stays editable and steers its active Hermes run", () 
   const composerStart = workspace.lastIndexOf("<AssistantComposer");
   const composerBlock = workspace.slice(composerStart, composerStart + 2_500);
   assert.ok(composerStart >= 0);
-  assert.match(composerBlock, /disabled=\{loadingChats\}/);
-  assert.doesNotMatch(composerBlock, /disabled=\{isStreaming \|\| loadingChats\}/);
+  assert.match(
+    workspace,
+    /const chatContentLoading =\s*loadingChats \|\| \(!visibleChatJustCreated && !inlineArtifactsReady\);/,
+  );
+  assert.match(composerBlock, /disabled=\{chatContentLoading\}/);
+  assert.doesNotMatch(composerBlock, /disabled=\{isStreaming \|\| chatContentLoading\}/);
   assert.match(composerBlock, /runState=\{/);
   // A mid-run message queues — it is never fired directly at a run that may
   // not exist (an external agent run has no steerable Hermes turn behind it).

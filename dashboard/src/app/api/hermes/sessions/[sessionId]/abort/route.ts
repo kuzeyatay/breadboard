@@ -16,6 +16,7 @@ import {
 } from "@/lib/hermes/run-store.ts";
 import { failAssistantMessage } from "@/lib/conversations/store.ts";
 import { stopRuntimeSessionWork } from "@/lib/hermes/session-cancel.ts";
+import { abortDirectProviderTurn } from "@/lib/conversations/direct-turn-service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -27,9 +28,32 @@ export async function POST(
 ) {
   try {
     const userId = await requireUserId();
-    requireEnabled();
     const { sessionId } = await params;
     const session = authorizeRuntimeReference(userId, sessionId);
+    const directTurn = session.row.conversation_id === null
+      ? null
+      : abortDirectProviderTurn(session.row.conversation_id);
+    if (directTurn && session.row.conversation_id !== null) {
+      failAssistantMessage({
+        conversationId: session.row.conversation_id,
+        clientMessageId: directTurn.clientMessageId,
+        status: "aborted",
+        error: "cancelled_by_user",
+      });
+      recordAuditEvent({
+        eventType: "direct_provider.cancelled",
+        runtimeSessionId: session.row.id,
+        userId,
+        gardenId: session.row.garden_id,
+        payload: { clientMessageId: directTurn.clientMessageId },
+      });
+      return NextResponse.json({
+        aborted: true,
+        alreadyFinished: false,
+        runId: null,
+        status: "cancelled",
+      });
+    }
     const activeRun = getActiveRuntimeRun(session.row.id);
     if (!activeRun) {
       const latest = getLatestRuntimeRun(session.row.id);
@@ -40,6 +64,7 @@ export async function POST(
         status: latest?.status ?? "completed",
       });
     }
+    requireEnabled();
     const runtime = getAgentRuntimeByKind(session.runtimeKind);
     markStatus(session, "stopping");
     // The turn, the terminal command it started and the visualizer it opened

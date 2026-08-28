@@ -1,5 +1,7 @@
 "use client";
 
+import { externalRunStartedAtMs } from "./external-run-clock";
+
 // The Meeting Notes run card.
 //
 // A run is three steps with wildly different durations — finding the recording
@@ -139,7 +141,8 @@ export default function InlineMeetingNotesRun({
 
   useEffect(() => {
     reportedRef.current = false;
-    startedRef.current = Date.now();
+    startedRef.current = externalRunStartedAtMs(runId);
+    setElapsed(Math.max(0, (Date.now() - startedRef.current) / 1_000));
   }, [runId]);
 
   const reportTerminal = useCallback(

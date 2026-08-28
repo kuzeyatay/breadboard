@@ -3963,9 +3963,11 @@ fn expected_acquire_error(error: &DurableServiceStoreError) -> Option<RuntimeSer
         )
         | DurableServiceStoreError::DuplicateLease(_) => Some(RuntimeServiceControlError::Conflict),
         DurableServiceStoreError::Store(StoreError::AdmissionClosed)
-        | DurableServiceStoreError::Lease(ServiceLeaseError::AcquisitionClosed(_)) => {
-            Some(RuntimeServiceControlError::Unavailable)
-        }
+        | DurableServiceStoreError::Lease(
+            ServiceLeaseError::AcquisitionClosed(_)
+            | ServiceLeaseError::RestartForbidden(_)
+            | ServiceLeaseError::RestartLimitReached { .. },
+        ) => Some(RuntimeServiceControlError::Unavailable),
         _ => None,
     }
 }
@@ -4197,6 +4199,24 @@ fn system_time_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_service_restart_failures_are_expected_unavailability() {
+        for error in [
+            DurableServiceStoreError::Lease(ServiceLeaseError::RestartForbidden(
+                "mem0-semantic-engine".to_owned(),
+            )),
+            DurableServiceStoreError::Lease(ServiceLeaseError::RestartLimitReached {
+                service_id: "mem0-semantic-engine".to_owned(),
+                maximum: 2,
+            }),
+        ] {
+            assert_eq!(
+                expected_acquire_error(&error),
+                Some(RuntimeServiceControlError::Unavailable),
+            );
+        }
+    }
 
     #[test]
     fn worker_dependency_reply_preserves_owner_lost_as_a_private_typed_outcome() {

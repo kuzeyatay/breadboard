@@ -46,6 +46,7 @@ import {
   getRuntimeSessionById,
 } from "@/lib/hermes/runtime-store.ts";
 import { resolveConversationRuntime } from "@/lib/hermes/session-service.ts";
+import { startSessionEventPump } from "@/lib/hermes/event-stream.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -197,6 +198,7 @@ export async function POST(request: Request) {
         reasoningEffort: body.reasoningEffort,
         retry: body.retry === true,
       });
+      if (result.accepted) startSessionEventPump(result.session);
       return NextResponse.json(
         {
           sessionId: conversation.public_id,
@@ -327,6 +329,7 @@ export async function POST(request: Request) {
         modelIdentity: { modelID: engine.selectedModelID },
         variant: engine.variant,
       });
+      startSessionEventPump(session);
       return NextResponse.json(
         { sessionId: session.row.id, accepted: true },
         { headers: cors },
@@ -440,6 +443,7 @@ export async function POST(request: Request) {
       modelIdentity: { modelID: engine.selectedModelID },
       variant: engine.variant,
     });
+    startSessionEventPump(created);
 
     return NextResponse.json(
       {

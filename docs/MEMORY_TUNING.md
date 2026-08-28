@@ -50,7 +50,8 @@ tighten after launch; the dashboard is the sole profile allowed to expand as
 system headroom returns and the sole tree sacrificed when the shared reserve is
 crossed. Other trees still obey their manifest hard limits, but they do not all
 terminate from the same global pressure sample. Finite workers still exit after
-one job.
+one job. Resource classes do not create a separate one-heavyweight-at-a-time
+admission limit; overlapping bounded work is decided by live commit headroom.
 
 ## Postiz container limits
 

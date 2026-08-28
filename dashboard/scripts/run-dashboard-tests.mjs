@@ -7,9 +7,9 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DASHBOARD_ROOT = path.resolve(path.dirname(SCRIPT_PATH), "..");
 const TESTS_ROOT = path.join(DASHBOARD_ROOT, "tests");
 
-/** These files open a real Chromium/Edge process. Runtime V2 admits browser
- * automation through its one-heavyweight-at-a-time governor, so the local QA
- * lane mirrors that production topology instead of weakening cleanup proof. */
+/** These files open a real Chromium/Edge process. Keep the local QA lane
+ * serial so each test retains deterministic browser cleanup proof; production
+ * admission now permits independently bounded heavyweight classes to overlap. */
 export const SERIAL_BROWSER_TEST_FILES = Object.freeze([
   "generated-visual-presentation-convergence.test.mjs",
   "interactive-visualizer.test.mjs",

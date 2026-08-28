@@ -1,5 +1,9 @@
 const userPref = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"
-const currentTheme = localStorage.getItem("theme") ?? userPref
+const requestedTheme = new URLSearchParams(window.location.search).get("theme")
+const currentTheme =
+  requestedTheme === "light" || requestedTheme === "dark"
+    ? requestedTheme
+    : (localStorage.getItem("theme") ?? userPref)
 document.documentElement.setAttribute("saved-theme", currentTheme)
 
 const emitThemeChangeEvent = (theme: "light" | "dark") => {

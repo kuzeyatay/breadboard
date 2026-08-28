@@ -17,6 +17,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
@@ -561,6 +562,14 @@ export default function DashboardAgentTerminal({
     status: "checking",
     mode: "required",
   });
+  // Once this renderer has accepted a chat, a later health downgrade must not
+  // replace the whole Hermes tree with the legacy terminal. Doing so unmounts
+  // the live session and looks exactly like the terminal restarted mid-send.
+  const [runtimeSurfaceEngaged, setRuntimeSurfaceEngaged] = useState(false);
+  const markRuntimeSurfaceEngaged = useCallback(
+    () => setRuntimeSurfaceEngaged(true),
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -636,20 +645,27 @@ export default function DashboardAgentTerminal({
         backdropImage={backdropImage}
         runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
+        onConversationEngaged={markRuntimeSurfaceEngaged}
       />
     );
   }
 
   // A health check in progress is not a failure. The runtime session can begin
   // connecting immediately while the explicit health probe finishes.
-  if (health.status === "runtime" || health.status === "checking") {
+  if (
+    health.status === "runtime" ||
+    health.status === "checking" ||
+    runtimeSurfaceEngaged
+  ) {
     return (
       <RuntimeTerminal
         scope={scope}
         restoreOwnerKey={restoreOwnerKey}
         initialPanel={initialPanel}
         backdropImage={backdropImage}
+        runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
+        onConversationEngaged={markRuntimeSurfaceEngaged}
       />
     );
   }
@@ -662,6 +678,7 @@ export default function DashboardAgentTerminal({
         backdropImage={backdropImage}
         runtimeUnavailable
         onRefreshRuntime={refreshRuntimeHealth}
+        onConversationEngaged={markRuntimeSurfaceEngaged}
       />
     );
   }
@@ -686,9 +703,11 @@ function RuntimeTerminal({
   backdropImage = null,
   runtimeUnavailable = false,
   onRefreshRuntime,
+  onConversationEngaged,
 }: Props & {
   runtimeUnavailable?: boolean;
   onRefreshRuntime: () => Promise<boolean>;
+  onConversationEngaged: () => void;
 }) {
   const resizeStartRef = useRef<{
     startY: number;
@@ -699,6 +718,7 @@ function RuntimeTerminal({
   const openStatePersistenceReadyRef = useRef(false);
   const activeChatRestoreStartedRef = useRef(false);
   const activeChatPersistenceReadyRef = useRef(false);
+  const activeChatSnapshotRef = useRef<ActiveTerminalChatSnapshot | null>(null);
   const [height, setHeight] = useState(COLLAPSED_HEIGHT);
 
   useEffect(() => {
@@ -1050,6 +1070,11 @@ function RuntimeTerminal({
     [temporaryChat],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
+  useEffect(() => {
+    if (session.sessionId || session.messages.length > 0) {
+      onConversationEngaged();
+    }
+  }, [onConversationEngaged, session.messages.length, session.sessionId]);
   const openTerminalSession = session.openSession;
   // A fresh app window intentionally starts on New chat, but a renderer reload
   // is not a new visit. Keep the selected conversation in sessionStorage so a
@@ -1121,6 +1146,36 @@ function RuntimeTerminal({
     restoreOwnerKey,
     temporaryChat,
   ]);
+  useLayoutEffect(() => {
+    activeChatSnapshotRef.current =
+      activeChatPersistenceReadyRef.current &&
+      !temporaryChat &&
+      !session.loadingSession &&
+      session.sessionId &&
+      session.messages.length > 0
+        ? {
+            ownerKey: restoreOwnerKey,
+            sessionId: session.sessionId,
+            messages: session.messages,
+          }
+        : null;
+  }, [restoreOwnerKey, session.loadingSession, session.messages, session.sessionId, temporaryChat]);
+  useEffect(
+    () => () => {
+      // Client-side route changes unmount the terminal without firing
+      // `pagehide`. Persist the last committed rows synchronously, especially
+      // for the first 150 ms after Send when the debounce has not landed.
+      const snapshot = activeChatSnapshotRef.current;
+      if (snapshot?.ownerKey === restoreOwnerKey) {
+        writeActiveTerminalChatSnapshot(
+          snapshot.ownerKey,
+          snapshot.sessionId,
+          snapshot.messages,
+        );
+      }
+    },
+    [restoreOwnerKey],
+  );
   // A half-written message survives a reload, and stays with the chat it was
   // written in. A temporary chat is excluded: it keeps no record anywhere else,
   // so it may not leave one here either.
@@ -7651,20 +7706,24 @@ function RuntimeTerminal({
                   }
                   className="neu-button inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--danger)_32%,var(--line))] bg-[var(--paper-raised)] p-0 text-[var(--danger)] transition-[transform,background-color,opacity] duration-150 hover:bg-[var(--paper-strong)] active:scale-[0.97] disabled:cursor-wait disabled:opacity-65"
                 >
-                  <svg
-                    aria-hidden="true"
-                    className={`h-3.5 w-3.5 ${refreshingTerminal ? "animate-spin" : ""}`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={1.8}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M16.023 9.348h4.992V4.356m-1.291 5.001a8.25 8.25 0 10.219 5.062M7.977 14.652H2.985v4.992m1.291-5.001a8.25 8.25 0 0015.485-2.288"
-                    />
-                  </svg>
+                  {refreshingTerminal ? (
+                    <BreadboardLoader className="h-3.5 w-3.5" />
+                  ) : (
+                    <svg
+                      aria-hidden="true"
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.8}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M16.023 9.348h4.992V4.356m-1.291 5.001a8.25 8.25 0 10.219 5.062M7.977 14.652H2.985v4.992m1.291-5.001a8.25 8.25 0 0015.485-2.288"
+                      />
+                    </svg>
+                  )}
                 </button>
               ) : null}
             </div>
@@ -7849,6 +7908,7 @@ function RuntimeTerminal({
               ) : null}
               <AgentRuntimePanel
                 sessionId={session.sessionId}
+                createdSessionId={session.createdSessionId}
                 surface="dashboard_terminal"
                 messages={session.messages}
                 connection={session.connection}

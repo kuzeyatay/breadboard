@@ -444,6 +444,12 @@ button:hover {
   filter: brightness(1.06);
 }
 
+.failure button:disabled {
+  cursor: wait;
+  filter: none;
+  opacity: 0.62;
+}
+
 @media (max-width: 700px), (max-height: 560px) {
   :root {
     --welcome-size: clamp(2rem, 8.4vw, 3.4rem);

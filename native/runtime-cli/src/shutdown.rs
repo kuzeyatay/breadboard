@@ -99,7 +99,7 @@ impl ShutdownCoordinator {
         self.lock().accepting_work
     }
 
-    /// Linearizes the sole worker CreateProcess boundary against shutdown.
+    /// Linearizes every worker CreateProcess boundary against shutdown.
     /// Trusted launch preparation may happen before this call, but both the
     /// durable claim and process creation must occur inside `operation`.
     /// `request_shutdown` uses this same mutex, so it either closes acceptance

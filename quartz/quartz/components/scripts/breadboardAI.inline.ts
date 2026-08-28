@@ -16,7 +16,14 @@ interface QuartzSessionItem {
   id: string | number
   title: string
   updatedAt: string
-  messages: Array<{ role?: unknown; content?: unknown }>
+  active: boolean
+  responseStartedAt?: string
+  messages: Array<{
+    role?: unknown
+    content?: unknown
+    status?: unknown
+    createdAt?: unknown
+  }>
 }
 
 interface QuartzCommandItem {
@@ -103,6 +110,12 @@ function setupPanel(root: HTMLElement) {
   let activeCommandTab: QuartzCommandItem["kind"] = "skill"
   let intelligenceLoaded = false
   let activeTextSelection: QuartzTextSelection | null = null
+  // Every async viewer belongs to the page/session selection that created it.
+  // Quartz SPA navigation replaces the DOM without stopping server work, so a
+  // generation prevents the old viewer from repainting the new page when its
+  // next buffered event arrives.
+  let viewGeneration = 0
+  let disposed = false
   const activityEntries = new Map<string, { label: string; detail?: string; status: string }>()
 
   function loadState(): SessionState {
@@ -725,7 +738,7 @@ function setupPanel(root: HTMLElement) {
     el.innerHTML = markdownToHtml(text)
   }
 
-  function renderTranscript(entries: Array<{ role?: unknown; content?: unknown }>) {
+  function renderTranscript(entries: QuartzSessionItem["messages"]) {
     clearSelectionQuestion()
     messages!.replaceChildren()
     // One rail build for the whole transcript rather than one per message.
@@ -734,9 +747,10 @@ function setupPanel(root: HTMLElement) {
       for (const entry of entries) {
         const role = entry.role === "user" ? "user" : "assistant"
         const content = typeof entry.content === "string" ? entry.content : ""
-        if (!content) continue
-        const el = addMessage(role, content)
-        if (role === "assistant") renderAssistantContent(el, content)
+        const pending = role === "assistant" && entry.status === "pending"
+        if (!content && !pending) continue
+        const el = addMessage(role, content || "…")
+        if (role === "assistant" && content) renderAssistantContent(el, content)
       }
     } finally {
       railSuspended = false
@@ -767,6 +781,11 @@ function setupPanel(root: HTMLElement) {
               id: record.id as string | number,
               title: typeof record.title === "string" ? record.title : "New chat",
               updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : "",
+              active: record.active === true,
+              responseStartedAt:
+                typeof record.responseStartedAt === "string"
+                  ? record.responseStartedAt
+                  : undefined,
               messages: Array.isArray(record.messages)
                 ? (record.messages as QuartzSessionItem["messages"])
                 : [],
@@ -780,8 +799,10 @@ function setupPanel(root: HTMLElement) {
   // for the page session comes back from the dashboard.
   async function restoreTranscript() {
     if (!state.sessionId) return
+    const generation = viewGeneration
     try {
       const sessions = await fetchSessions()
+      if (disposed || generation !== viewGeneration) return
       const current = sessions.find((item) => item.id === state.sessionId)
       if (!current) {
         // Older builds could persist an unrelated Terminal/Garden id here
@@ -794,6 +815,7 @@ function setupPanel(root: HTMLElement) {
         return
       }
       if (current.messages.length) renderTranscript(current.messages)
+      if (current.active) void reconnectActiveSession(current, generation)
     } catch {
       /* keep the empty view */
     }
@@ -831,11 +853,15 @@ function setupPanel(root: HTMLElement) {
           : date.toLocaleDateString([], { month: "short", day: "numeric" })
         button.append(title, when)
         button.addEventListener("click", () => {
+          viewGeneration += 1
+          abortController?.abort()
+          abortController = null
           state.sessionId = item.id
           saveState()
           renderTranscript(item.messages)
           clearError()
           closeHistory()
+          if (item.active) void reconnectActiveSession(item, viewGeneration)
         })
         entry.appendChild(button)
         historyList.appendChild(entry)
@@ -846,6 +872,11 @@ function setupPanel(root: HTMLElement) {
   }
 
   function startNewChat() {
+    viewGeneration += 1
+    // Detach this page's SSE viewer only. The dashboard's detached event pump
+    // remains the owner of the run and will persist its answer in the old chat.
+    abortController?.abort()
+    abortController = null
     state.sessionId = null
     state.clientToken = null
     saveState()
@@ -854,6 +885,7 @@ function setupPanel(root: HTMLElement) {
     refreshRail()
     clearError()
     if (activity) activity.hidden = true
+    setBusy(false)
     closeHistory()
   }
 
@@ -1055,26 +1087,32 @@ function setupPanel(root: HTMLElement) {
   async function streamEvents(
     sessionId: string | number,
     assistantEl: HTMLElement,
-    dispatch: () => Promise<void>,
+    dispatch: (() => Promise<void>) | undefined,
+    generation: number,
   ) {
-    abortController = new AbortController()
+    const controller = new AbortController()
+    abortController = controller
     const params = new URLSearchParams({ sessionId: String(sessionId) })
     if (state.clientToken) params.set("clientToken", state.clientToken)
     const response = await fetch(`${dashboard}/api/quartz-ai/events?${params.toString()}`, {
       method: "GET",
       headers: { Accept: "text/event-stream" },
       credentials: "include",
-      signal: abortController.signal,
+      signal: controller.signal,
     })
     if (!response.ok || !response.body) throw new Error("Could not open the AI stream.")
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ""
     let text = ""
-    let dispatched = false
+    let dispatched = dispatch === undefined
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
+      if (disposed || generation !== viewGeneration) {
+        controller.abort()
+        return
+      }
       buffer += decoder.decode(value, { stream: true })
       const frames = buffer.split("\n\n")
       buffer = frames.pop() || ""
@@ -1083,9 +1121,9 @@ function setupPanel(root: HTMLElement) {
           if (!dispatched) {
             dispatched = true
             try {
-              await dispatch()
+              await dispatch!()
             } catch (error) {
-              abortController?.abort()
+              controller.abort()
               throw error
             }
           }
@@ -1159,6 +1197,54 @@ function setupPanel(root: HTMLElement) {
     }
   }
 
+  /** Reattach a replaced/reloaded Quartz page to its server-owned run. */
+  async function reconnectActiveSession(
+    session: QuartzSessionItem,
+    generation: number,
+  ) {
+    if (
+      disposed ||
+      generation !== viewGeneration ||
+      state.sessionId !== session.id ||
+      !session.active
+    ) return
+    let assistantEl = messages!.querySelector<HTMLElement>(
+      ".breadboard-ai-assistant:last-of-type",
+    )
+    if (!assistantEl) assistantEl = addMessage("assistant", "…")
+    setBusy(true)
+    clearError()
+    try {
+      // No dispatch callback: the durable turn already exists. This viewer is
+      // only replaying/continuing its event stream.
+      await streamEvents(session.id, assistantEl, undefined, generation)
+    } catch (error) {
+      if ((error as Error).name !== "AbortError" && generation === viewGeneration) {
+        showError(
+          error instanceof Error ? error.message : "The assistant stream could not reconnect.",
+          () => void restoreTranscript(),
+        )
+      }
+    } finally {
+      if (!disposed && generation === viewGeneration) {
+        abortController = null
+        // The persisted transcript is authoritative for the terminal frame —
+        // it also covers a run that finished between the history read and SSE
+        // attachment without emitting another delta to this viewer.
+        try {
+          const sessions = await fetchSessions()
+          if (generation === viewGeneration) {
+            const current = sessions.find((item) => item.id === state.sessionId)
+            if (current?.messages.length) renderTranscript(current.messages)
+          }
+        } catch {
+          /* the next open/restore retries the authoritative read */
+        }
+        if (generation === viewGeneration) setBusy(false)
+      }
+    }
+  }
+
   async function send(
     promptText: string,
     clientMessageId = crypto.randomUUID(),
@@ -1167,6 +1253,7 @@ function setupPanel(root: HTMLElement) {
   ) {
     const trimmed = promptText.trim()
     if (!trimmed) return
+    const generation = ++viewGeneration
     const selectedText = selectedTextOverride ?? activeTextSelection?.text
     if (activeTextSelection) clearSelectionQuestion()
     clearError()
@@ -1203,28 +1290,39 @@ function setupPanel(root: HTMLElement) {
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data.error || "The assistant is unavailable.")
+      if (disposed || generation !== viewGeneration) return
       state.sessionId = data.sessionId ?? state.sessionId
       if (data.clientToken) state.clientToken = data.clientToken
       saveState()
       assistantEl.textContent = ""
-      await streamEvents(state.sessionId!, assistantEl, async () => {
-        const dispatchResponse = await fetch(`${dashboard}/api/quartz-ai/chat`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            ...turn,
-            sessionId: state.sessionId,
-            clientToken: state.clientToken,
-          }),
-        })
-        if (!dispatchResponse.ok) {
-          const dispatchData = await dispatchResponse.json().catch(() => ({}))
-          throw new Error(dispatchData.error || "The assistant could not accept the message.")
-        }
+      // Dispatch reserves the user + pending assistant rows and starts the
+      // server-owned event pump before this viewer attaches. A Quartz page can
+      // now navigate away at any point after this response without losing the
+      // prompt or cancelling its answer.
+      const dispatchResponse = await fetch(`${dashboard}/api/quartz-ai/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          ...turn,
+          sessionId: state.sessionId,
+          clientToken: state.clientToken,
+        }),
       })
+      const dispatchData = await dispatchResponse.json().catch(() => ({}))
+      if (!dispatchResponse.ok || dispatchData.accepted === false) {
+        throw new Error(
+          dispatchData.error ||
+            (dispatchData.blocked
+              ? "The assistant needs permission before it can continue."
+              : "The assistant could not accept the message."),
+        )
+      }
+      if (disposed || generation !== viewGeneration) return
+      await streamEvents(state.sessionId!, assistantEl, undefined, generation)
     } catch (error) {
       if ((error as Error).name === "AbortError") {
+        if (generation !== viewGeneration || disposed) return
         assistantEl.textContent = assistantEl.textContent || "(stopped)"
       } else {
         showError(
@@ -1234,8 +1332,10 @@ function setupPanel(root: HTMLElement) {
         assistantEl.remove()
       }
     } finally {
-      setBusy(false)
-      abortController = null
+      if (!disposed && generation === viewGeneration) {
+        setBusy(false)
+        abortController = null
+      }
     }
   }
 
@@ -1286,6 +1386,17 @@ function setupPanel(root: HTMLElement) {
       void send(btn.dataset.prompt || btn.textContent || "")
     })
   }
+
+  // Quartz's SPA swaps the page body in place. Release only this viewer when
+  // that happens; the dashboard event pump deliberately keeps the task alive
+  // and the next instance reconnects from sessionStorage. Without this cleanup
+  // every visited page retained a stream closure and its detached DOM tree.
+  window.addCleanup(() => {
+    disposed = true
+    viewGeneration += 1
+    abortController?.abort()
+    abortController = null
+  })
 
   // Restore the persisted transcript of the page session after a reload.
   if (state.sessionId) void restoreTranscript()

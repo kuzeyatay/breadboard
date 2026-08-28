@@ -265,6 +265,12 @@ interface Props {
   statusMessage?: string;
   compact?: boolean;
   sessionId?: string | null;
+  /**
+   * The id assigned to the blank conversation currently on screen. Artifact
+   * readiness must not turn that already-visible optimistic turn back into a
+   * loading screen merely because its first send has just made it durable.
+   */
+  createdSessionId?: string | null;
   surface?: HermesSurface;
   /** Garden this panel belongs to; scheduled chats open inside it. */
   gardenSlug?: string | null;
@@ -617,6 +623,7 @@ export default function AgentRuntimePanel({
   statusMessage,
   compact,
   sessionId,
+  createdSessionId = null,
   surface = "dashboard_terminal",
   gardenSlug = null,
   browserAgent,
@@ -721,7 +728,7 @@ export default function AgentRuntimePanel({
   const stopRequestPendingRef = useRef(false);
   // Ask for this chat's artifacts as soon as it is selected, not after its
   // transcript has rendered, so the cards arrive with the messages.
-  useInlineArtifactPrefetch({
+  const artifactsReady = useInlineArtifactPrefetch({
     conversationId: surface !== "quartz_ai" ? sessionId : null,
   });
   const [branchGroups, setBranchGroups] = useState<
@@ -763,7 +770,11 @@ export default function AgentRuntimePanel({
   // A transcript still being restored holds follow-ups too. Keeping this
   // separate from `runInFlight` avoids offering Stop for a history request,
   // while the queue remains visible and drains as soon as loading settles.
-  const queueHeld = loadingTranscript || runInFlight;
+  const visibleConversationJustCreated =
+    Boolean(sessionId) && sessionId === createdSessionId;
+  const conversationLoading =
+    loadingTranscript || (!visibleConversationJustCreated && !artifactsReady);
+  const queueHeld = conversationLoading || runInFlight;
   // Messages typed while the conversation is working queue here; each can be
   // applied to the active chat turn as a course correction, and whatever is
   // still queued when the run settles is sent as ordinary follow-ups.
@@ -783,7 +794,7 @@ export default function AgentRuntimePanel({
   // the arriving one would overwrite whatever a direct turn had already put on
   // screen. Destructive/direct actions stay locked; the composer instead adds
   // typed messages to the held queue above it.
-  const conversationLocked = Boolean(disabled) || loadingTranscript;
+  const conversationLocked = Boolean(disabled) || conversationLoading;
   // The composer's stop has to reach whatever is actually working. A Hermes
   // turn is stopped through the session; an external agent runs outside that
   // state machine and is stopped at its own endpoint. Both can be true when a
@@ -970,8 +981,12 @@ export default function AgentRuntimePanel({
     [messages],
   );
   const spotifyPlayerOwner = useMemo(
-    () => spotifyPlayerAssistantIndex(messages),
-    [messages],
+    () =>
+      spotifyPlayerAssistantIndex(
+        messages,
+        runInFlight ? lastAssistantIndex : -1,
+      ),
+    [lastAssistantIndex, messages, runInFlight],
   );
   const inlinedCourseCorrections = useMemo(() => {
     const byAssistantIndex = new Map<number, CourseCorrectionBoundary[]>();
@@ -1740,7 +1755,7 @@ export default function AgentRuntimePanel({
   function submitComposer() {
     // Voice mode submits through here without going near the send button, so
     // the lock is re-checked rather than left to the disabled control.
-    if (loadingTranscript) return;
+    if (conversationLoading) return;
     if (!composerSelection || !onAskSelection) {
       onSubmit();
       return;
@@ -1833,17 +1848,17 @@ export default function AgentRuntimePanel({
         className="bb-chat-scroller min-h-0 flex-1 overflow-y-auto"
       >
         <div className="bb-chat-scroll-tail mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 py-5">
-          {messages.length === 0 ? (
+          {conversationLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <BreadboardLoader
+                label="Loading this chat"
+                className="h-5 w-5 text-gray-400"
+              />
+            </div>
+          ) : messages.length === 0 ? (
             // The suggestion cards invite a new chat, so showing them over a
             // transcript that is still arriving reads as "this chat is empty".
-            loadingTranscript ? (
-              <div className="flex items-center justify-center py-12">
-                <BreadboardLoader
-                  label="Loading this chat"
-                  className="h-5 w-5 text-gray-400"
-                />
-              </div>
-            ) : failureText ? (
+            failureText ? (
               // A turn that died before it wrote anything — a preflight that
               // could not be granted, say — leaves an empty transcript with a
               // reason attached. Greeting someone under the reason their last
@@ -3043,7 +3058,7 @@ export default function AgentRuntimePanel({
                           responseStartedAt={
                             delegatedAgentActive || isAgentContinuationResponse
                               ? undefined
-                              : message.createdAt
+                              : message.responseStartedAt ?? message.createdAt
                           }
                           // The delegation's own clock. Without it the timer
                           // restarts from zero when the worker phase begins,
@@ -3331,7 +3346,7 @@ export default function AgentRuntimePanel({
           // and not in the box, where it looked like the field was dead.
           placeholder={placeholder ?? "Ask the agent…"}
           disabled={conversationLocked}
-          loading={loadingTranscript}
+          loading={conversationLoading}
           queueDisabled={Boolean(disabled)}
           isSending={streaming}
           canSubmit={Boolean(input.trim() || (!streaming && attachments?.length))}

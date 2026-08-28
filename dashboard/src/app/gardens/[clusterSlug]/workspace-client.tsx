@@ -30,6 +30,7 @@ import {
 } from "@/lib/conversations/unread";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
 import {
   restoreQueuedFollowUpDraft,
@@ -910,27 +911,7 @@ function displayLearnError(message?: string): string {
 }
 
 function Spinner({ className = "w-4 h-4" }: { className?: string }) {
-  return (
-    <svg
-      className={`${className} animate-spin`}
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
-  );
+  return <BreadboardLoader className={className} />;
 }
 
 function isGardenSaveCommand(text: string): boolean {
@@ -1387,6 +1368,17 @@ const ChatTranscript = memo(function ChatTranscript({
     onDeleteMessage(messageIndex);
   }
 
+  // The artifact query is part of opening a chat. Keeping this cover outside
+  // the provider prevents any message row from painting before its file cards
+  // can mount from the warmed cache in that same reveal.
+  if (loadingChats) {
+    return (
+      <div className="flex items-center justify-center py-28 text-gray-700">
+        <Spinner className="h-5 w-5" />
+      </div>
+    );
+  }
+
   return (
     <InlineArtifactCardsProvider
       legacyChatSessionId={chatSessionId}
@@ -1400,32 +1392,26 @@ const ChatTranscript = memo(function ChatTranscript({
         zero and each message is drawn at its min-content width, one word per
         line, down the middle of the pane. */}
       <div className="w-full max-w-5xl mx-auto flex flex-col gap-6">
-        {loadingChats ? (
-          <div className="flex items-center justify-center py-28 text-gray-700">
-            <Spinner className="w-5 h-5" />
+        {messages.length === 0 ? (
+          // The same greeting empty state the terminals draw, with this
+          // garden's name in its questions and openers. The Save page hint —
+          // the one thing the old heading said that mattered — survives as
+          // the footnote.
+          <div className="py-16">
+            <ChatGreetingEmptyState
+              greeting={greeting}
+              suggestions={greetingSuggestions}
+              onSelectSuggestion={onSelectSuggestion}
+              footnote={
+                <>
+                  After the conversation, hit{" "}
+                  <span className="text-gray-500">Save page</span> to keep the
+                  answer in your lessons
+                </>
+              }
+            />
           </div>
-        ) : (
-          messages.length === 0 && (
-            // The same greeting empty state the terminals draw, with this
-            // garden's name in its questions and openers. The Save page hint —
-            // the one thing the old heading said that mattered — survives as
-            // the footnote.
-            <div className="py-16">
-              <ChatGreetingEmptyState
-                greeting={greeting}
-                suggestions={greetingSuggestions}
-                onSelectSuggestion={onSelectSuggestion}
-                footnote={
-                  <>
-                    After the conversation, hit{" "}
-                    <span className="text-gray-500">Save page</span> to keep the
-                    answer in your lessons
-                  </>
-                }
-              />
-            </div>
-          )
-        )}
+        ) : null}
 
         {transcriptRows.length > 0 ? (
           <VirtualizedMessageList
@@ -2803,6 +2789,18 @@ export default function WorkspaceClient({
   // stale by definition. Dropping them prevents a slow refresh from briefly
   // restoring the old title over the optimistic one.
   const chatHistoryEpoch = useRef(0);
+  // A full-history response is allowed to refresh every idle transcript, but
+  // never the one this tab is actively streaming. The server only has the
+  // durable checkpoint until the detached runtime finishes, so replacing the
+  // local copy here would make a live answer disappear while it is arriving.
+  const inFlightChatMessagesRef = useRef<Map<number, Message[]>>(new Map());
+  // Transcript PATCHes replace the whole legacy message list. Serialize them
+  // per chat and version their UI commits so an older edit/save cannot land
+  // after a newer turn and roll the visible transcript backwards.
+  const chatPersistenceChainsRef = useRef<Map<number, Promise<boolean>>>(
+    new Map(),
+  );
+  const chatPersistenceVersionsRef = useRef<Map<number, number>>(new Map());
   // Chats whose delete has been sent but not yet acknowledged. The epoch guard
   // above only drops answers to requests that were already in flight; a reload
   // that starts while a delete is working would still list the chat and put its
@@ -2975,7 +2973,10 @@ export default function WorkspaceClient({
   const setChatStreaming = useCallback((sessionId: number, active: boolean) => {
     const next = new Set(streamingChatIdsRef.current);
     if (active) next.add(sessionId);
-    else next.delete(sessionId);
+    else {
+      next.delete(sessionId);
+      inFlightChatMessagesRef.current.delete(sessionId);
+    }
     streamingChatIdsRef.current = next;
     setStreamingChatIds(next);
   }, []);
@@ -3581,9 +3582,11 @@ export default function WorkspaceClient({
         const cached = new Map(previous.map((item) => [item.id, item]));
         return sessions.map((session) => ({
           ...session,
+          messages:
+            inFlightChatMessagesRef.current.get(session.id) ?? session.messages,
           pinned: cached.get(session.id)?.pinned ?? false,
           highlight: cached.get(session.id)?.highlight ?? null,
-          active: cached.get(session.id)?.active ?? false,
+          active: session.active ?? cached.get(session.id)?.active ?? false,
         }));
       });
       // Landing on the newest chat because the list loaded is not a creation:
@@ -3601,6 +3604,45 @@ export default function WorkspaceClient({
       setLoadingChats(false);
     }
   }, [addToast, canViewPublicChats, clusterSlug, viewPublicChats]);
+
+  /**
+   * Re-read one server-owned transcript without loading every chat in the
+   * garden. This is the return/reload path for a detached Garden run: its user
+   * checkpoint is visible immediately, and its finalized answer replaces that
+   * checkpoint as soon as the background pump persists it.
+   */
+  const refreshChatSession = useCallback(async (sessionId: number) => {
+    try {
+      const params = new URLSearchParams({
+        clusterSlug,
+        sessionId: String(sessionId),
+      });
+      if (canViewPublicChats && viewPublicChats)
+        params.set("includePublicChats", "1");
+      const res = await fetch(`/api/chat-sessions?${params.toString()}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { sessions?: ChatSession[] };
+      const refreshed = data.sessions?.[0];
+      if (!refreshed || deletingChatIds.current.has(refreshed.id)) return;
+      setChatSessions((previous) =>
+        previous.map((session) => {
+          if (session.id !== refreshed.id) return session;
+          const inFlight = inFlightChatMessagesRef.current.get(refreshed.id);
+          return {
+            ...refreshed,
+            messages: inFlight ?? refreshed.messages,
+            pinned: session.pinned ?? false,
+            highlight: session.highlight ?? null,
+          };
+        }),
+      );
+    } catch {
+      // The rail keeps polling. A transient reconciliation failure must not
+      // turn a healthy background run into a visible chat error.
+    }
+  }, [canViewPublicChats, clusterSlug, viewPublicChats]);
 
   /**
    * The rail's own feed: rows only, polled.
@@ -3810,8 +3852,28 @@ export default function WorkspaceClient({
   // The draft only ever stands in for an empty transcript, so a real message
   // arriving retires it without a frame where both could be on screen.
   const showingDraft = persistedMessages.length === 0 && draftMessages !== null;
-  const messages =
-    showingDraft && draftMessages ? draftMessages : persistedMessages;
+  const messages = useMemo(() => {
+    const selectedMessages =
+      showingDraft && draftMessages ? draftMessages : persistedMessages;
+    // On a reopened tab the browser no longer owns the original response
+    // stream, but the rail can prove the durable runtime is still active. Draw
+    // the same pending assistant row from the last user's original timestamp
+    // so Thinking continues instead of looking interrupted or restarting.
+    const lastSelectedMessage = selectedMessages.at(-1);
+    const recoveredAssistantMessage: Message | null =
+      activeChat?.active === true && lastSelectedMessage?.role === "user"
+        ? {
+            role: "assistant",
+            content: "",
+            createdAt: lastSelectedMessage.createdAt,
+            sources: [],
+            thinking: "",
+          }
+        : null;
+    return recoveredAssistantMessage
+      ? [...selectedMessages, recoveredAssistantMessage]
+      : selectedMessages;
+  }, [activeChat?.active, draftMessages, persistedMessages, showingDraft]);
   useEffect(() => {
     retryBranchRef.current = null;
     if (activeChatId === null) {
@@ -3837,15 +3899,16 @@ export default function WorkspaceClient({
 
   // Selecting a chat is enough to ask for its artifacts; waiting for the
   // transcript to mount its cards is what made them appear a beat late.
-  useInlineArtifactPrefetch({
+  const inlineArtifactsReady = useInlineArtifactPrefetch({
     legacyChatSessionId: activeChatId,
     gardenSlug: clusterSlug,
   });
+  const visibleChatJustCreated =
+    activeChatId !== null && activeChatId === createdChatId;
+  const chatContentLoading =
+    loadingChats || (!visibleChatJustCreated && !inlineArtifactsReady);
   const hasRunningExternalAgentInActiveChat = messages.some(
     hasRunningExternalAgent,
-  );
-  const hasRunningExternalAgentInAnyChat = chatSessions.some((session) =>
-    session.messages.some(hasRunningExternalAgent),
   );
   // Agent selection/health checks happen before the concrete launcher's flag
   // rises. Keep the originating assistant turn active across that whole gap.
@@ -3856,7 +3919,12 @@ export default function WorkspaceClient({
   const isStreaming =
     showingDraft ||
     (activeChatId !== null && streamingChatIds.has(activeChatId)) ||
+    activeChat?.active === true ||
     hasRunningExternalAgentInActiveChat;
+  const visibleAgentConnection: ConnectionState =
+    activeChat?.active === true && agentActivity.connection === "idle"
+      ? "streaming"
+      : agentActivity.connection;
   const transcriptVirtual = useChatVirtualBridge();
   const composerInset = useComposerInset();
   const {
@@ -4199,7 +4267,7 @@ export default function WorkspaceClient({
   // callback which Super Agent turn is waiting. A result already persisted
   // before refresh is sent straight into the hidden continuation instead.
   useLayoutEffect(() => {
-    if (loadingChats || pendingLaunchContinuation) return;
+    if (chatContentLoading || pendingLaunchContinuation) return;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
       if (message?.role !== "assistant" || message.delegatedAgentRun !== true) {
@@ -4237,7 +4305,7 @@ export default function WorkspaceClient({
       );
       return;
     }
-  }, [loadingChats, messages, pendingLaunchContinuation]);
+  }, [chatContentLoading, messages, pendingLaunchContinuation]);
 
   // The result of a finished run, handed back as a new turn. It has to wait for
   // the surface to go idle: React has not yet cleared the streaming flags when
@@ -4268,21 +4336,35 @@ export default function WorkspaceClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingLaunchContinuation, isStreaming, launchingExternalAgent]);
 
-  // External coding runs are server-owned. On return from another browser/app
-  // tab, reload their durable state so a completed result replaces the running
-  // card even if the browser suspended its EventSource while hidden.
+  // Garden runtime and external-agent turns are server-owned. Reconcile only
+  // the active transcripts while visible; this keeps background work alive
+  // across page/chat switches without repeatedly loading every chat in a large
+  // garden.
+  const activeServerChatIds = chatSessions
+    .filter((session) => session.active === true)
+    .map((session) => session.id);
+  const activeServerChatKey = activeServerChatIds.join(",");
   useEffect(() => {
-    if (!hasRunningExternalAgentInAnyChat) return;
+    if (!activeServerChatKey) return;
     const reconcile = () => {
-      if (document.visibilityState === "visible") void fetchChatSessions();
+      if (document.visibilityState !== "visible") return;
+      for (const sessionId of activeServerChatIds) {
+        void refreshChatSession(sessionId);
+      }
     };
+    reconcile();
+    const timer = window.setInterval(reconcile, 2_000);
     document.addEventListener("visibilitychange", reconcile);
     window.addEventListener("focus", reconcile);
     return () => {
+      window.clearInterval(timer);
       document.removeEventListener("visibilitychange", reconcile);
       window.removeEventListener("focus", reconcile);
     };
-  }, [fetchChatSessions, hasRunningExternalAgentInAnyChat]);
+    // The key is the stable identity of the active set. Depending on the array
+    // itself would tear down this poll on every transcript delta.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeServerChatKey, refreshChatSession]);
 
   // Tick an elapsed-time counter while an upload is in progress.
   useEffect(() => {
@@ -5165,6 +5247,9 @@ export default function WorkspaceClient({
         if (session.id !== sessionId) return session;
         const nextMessages =
           typeof updater === "function" ? updater(session.messages) : updater;
+        if (streamingChatIdsRef.current.has(sessionId)) {
+          inFlightChatMessagesRef.current.set(sessionId, nextMessages);
+        }
         return {
           ...session,
           messages: nextMessages,
@@ -5203,35 +5288,56 @@ export default function WorkspaceClient({
     sessionId: number,
     nextMessages: Message[],
     title?: string,
-  ) {
+    options: { updateLocal?: boolean } = {},
+  ): Promise<boolean> {
     const body: { messages: Message[]; title?: string } = {
       messages: nextMessages,
     };
     if (title) body.title = title;
-    try {
-      const res = await fetch(`/api/chat-sessions/${sessionId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error("Failed to save chat");
-      setChatSessions((previous) =>
-        previous
-          .map((session) =>
-            session.id === sessionId
-              ? {
-                  ...session,
-                  title: title ?? session.title,
-                  messages: nextMessages,
-                  updated_at: new Date().toISOString(),
-                }
-              : session,
-          )
-          .sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
-      );
-    } catch {
-      addToast("Chat was not saved");
-    }
+    const version = (chatPersistenceVersionsRef.current.get(sessionId) ?? 0) + 1;
+    chatPersistenceVersionsRef.current.set(sessionId, version);
+    const previous = chatPersistenceChainsRef.current.get(sessionId) ??
+      Promise.resolve(true);
+    const write = previous.catch(() => false).then(async () => {
+      try {
+        const res = await fetch(`/api/chat-sessions/${sessionId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error("Failed to save chat");
+        if (
+          options.updateLocal !== false &&
+          chatPersistenceVersionsRef.current.get(sessionId) === version
+        ) {
+          setChatSessions((previous) =>
+            previous
+              .map((session) =>
+                session.id === sessionId
+                  ? {
+                      ...session,
+                      title: title ?? session.title,
+                      messages: nextMessages,
+                      updated_at: new Date().toISOString(),
+                    }
+                  : session,
+              )
+              .sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
+          );
+        }
+        return true;
+      } catch {
+        addToast("Chat was not saved");
+        return false;
+      }
+    });
+    chatPersistenceChainsRef.current.set(sessionId, write);
+    void write.finally(() => {
+      if (chatPersistenceChainsRef.current.get(sessionId) === write) {
+        chatPersistenceChainsRef.current.delete(sessionId);
+      }
+    });
+    return write;
   }
 
   function handleNewChat() {
@@ -10721,7 +10827,27 @@ export default function WorkspaceClient({
     setInput("");
     setChatAttachments([]);
     setChatStreaming(sessionId, true);
+    chatHistoryEpoch.current += 1;
     updateChatMessages(sessionId, finalMessages);
+    // The user's half of the turn must exist durably before any runtime work
+    // begins. If the page is replaced a millisecond after dispatch, the
+    // detached server pump can still finish and append its answer to this
+    // checkpoint; without it the prompt simply vanishes from Garden history.
+    const checkpointSaved = await persistChatSession(
+      sessionId,
+      nextMessages,
+      title,
+      { updateLocal: false },
+    );
+    if (!checkpointSaved) {
+      setChatStreaming(sessionId, false);
+      updateChatMessages(sessionId, history);
+      if (activeSteerContextRef.current === steerContext) {
+        activeSteerContextRef.current = null;
+      }
+      abandonTurn();
+      return;
+    }
     try {
       onTurnStarted?.();
     } catch {
@@ -14325,10 +14451,10 @@ export default function WorkspaceClient({
                 onSelectSuggestion={fillComposerWithPrompt}
                 chatSessionId={activeChatId}
                 isStreaming={isStreaming || delegationInFlight}
-                loadingChats={loadingChats}
+                loadingChats={chatContentLoading}
                 messages={messages}
                 activities={agentActivity.activities}
-                connection={agentActivity.connection}
+                connection={visibleAgentConnection}
                 pendingPermission={agentActivity.pendingPermission}
                 onPermissionDecision={(decision) =>
                   void agentActivity.respondToPermission(decision)
@@ -14439,7 +14565,7 @@ export default function WorkspaceClient({
               onPaste={handleChatPaste}
               textareaRef={textareaRef}
               placeholder="Ask about your documents…"
-              disabled={loadingChats}
+              disabled={chatContentLoading}
               isSending={isStreaming || launchingExternalAgent !== null}
               externalRunActive={externalRunHoldsQueue}
               headerContent={queuedFollowUpsHeader}
@@ -14461,9 +14587,9 @@ export default function WorkspaceClient({
               runState={
                 !isStreaming
                   ? "idle"
-                  : agentActivity.connection === "waiting"
+                  : visibleAgentConnection === "waiting"
                     ? "waiting_for_permission"
-                    : agentActivity.connection === "connecting"
+                    : visibleAgentConnection === "connecting"
                       ? "connecting"
                       : "running"
               }

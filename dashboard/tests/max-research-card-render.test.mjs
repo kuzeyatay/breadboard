@@ -123,20 +123,36 @@ test("a failed run is coloured as a failure rather than as prose", () => {
   assert.match(markup, /var\(--danger\)/, "failure should read as failure");
 });
 
-test("with no roster yet, the card says what it is doing instead of showing an empty box", () => {
-  const markup = render({});
-  assert.match(markup, /Commissioning all five/);
+test("a stopped run moves its state above the card without duplicate stopped copy", () => {
+  const markup = render({
+    persistedOutcome: "aborted",
+    persistedContent: "Stopped.",
+  });
+  const cardStart = markup.indexOf('class="bb-agent-run-card');
+
+  assert.ok(cardStart > 0, "the response metadata should precede the run card");
+  assert.match(markup.slice(0, cardStart), />Stopped</);
+  assert.doesNotMatch(markup.slice(cardStart), /Stopped/);
+  assert.match(markup.slice(cardStart), /bg-\[var\(--danger\)\]/);
+  assert.match(markup.slice(cardStart), /justify-self-start/);
+  assert.doesNotMatch(markup, />Thinking</);
 });
 
-test("the stage is stated once, in the card, not repeated above it", () => {
+test("with no roster yet, the card does not claim agents that have not passed availability", () => {
   const markup = render({});
-  // "Starting" appeared twice: once as the meta row's summary, on its own line
-  // between the thinking row and the card, and once in the card header where
-  // it belongs next to the clock.
+  assert.match(markup, /Checking which research agents are available/);
+  assert.doesNotMatch(markup, /all five|Commissioning/i);
+});
+
+test("the stage is stated once and does not carry a duplicate elapsed counter", () => {
+  const markup = render({});
+  // The shared response meta owns elapsed time. The card header only owns its
+  // stage, so the same timer is not shown twice in one response.
   const occurrences = markup.split(/starting/i).length - 1;
   assert.equal(
     occurrences,
     1,
-    "the stage should appear only in the card header, beside the elapsed time",
+    "the stage should appear only in the card header",
   );
+  assert.doesNotMatch(markup, /starting\s*·\s*\d/i);
 });

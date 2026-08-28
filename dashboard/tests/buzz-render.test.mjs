@@ -374,8 +374,9 @@ test("opening Chat paints Buzz's own surface, not a bare window", () => {
   // nothing changes colour under the reader when the page arrives.
   assert.match(html, /buzz-theme-gradient-layer-light/);
   assert.match(html, /class="buzz-root/);
-  // A mark that moves and a line that says where you are going.
-  assert.match(html, /animate-spin/);
+  // The shared hand-drawn ring and a line that says where you are going.
+  assert.match(html, /class="bb-loader /);
+  assert.match(html, /bb-loader-sketch-3/);
   assert.match(html, /Opening Chat/);
   assert.match(html, /role="status"/);
 });
@@ -387,7 +388,8 @@ test("the shared route loader names its destination", () => {
       hint: "Reading your events.",
     }),
   );
-  assert.match(html, /animate-spin/);
+  assert.match(html, /class="bb-loader /);
+  assert.match(html, /bb-loader-sketch-3/);
   assert.match(html, /Opening your calendar/);
   assert.match(html, /Reading your events\./);
   assert.match(html, /aria-live="polite"/);

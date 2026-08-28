@@ -153,6 +153,11 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     const textSelection = normalizeChatTextSelectionReference(
       metadata.textSelection,
     );
+    const responseStartedAt =
+      typeof metadata.responseStartedAt === "string" &&
+      Number.isFinite(Date.parse(metadata.responseStartedAt))
+        ? metadata.responseStartedAt
+        : undefined;
     const normalizeModelChangeLabel = (value: unknown) =>
       typeof value === "string"
         ? value
@@ -247,6 +252,8 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
           }
         : {}),
       proposal: metadata.proposal,
+      pending: presented.status === "pending",
+      failed: presented.status === "failed",
       interrupted: presented.status === "aborted",
       // A turn that paused for permission before dispatch is only actionable
       // while its approval card is on screen — client state that navigation
@@ -285,6 +292,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(modelChangesAfter.length ? { modelChangesAfter } : {}),
       ...(modelChangeAfter ? { modelChangeAfter } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
+      ...(responseStartedAt ? { responseStartedAt } : {}),
     };
   });
 

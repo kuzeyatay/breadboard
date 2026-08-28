@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Heart,
-  Loader2,
   Music2,
   Pause,
   Play,
@@ -11,6 +10,7 @@ import {
   SkipBack,
   SkipForward,
 } from "lucide-react";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 
 interface SpotifyTrack {
   id: string;
@@ -1090,7 +1090,7 @@ export default function InlineSpotifyPlayer({
           onClick={togglePlayback}
         >
           {busy ? (
-            <Loader2 className="size-5 animate-spin" />
+            <BreadboardLoader className="size-5" />
           ) : isPlaying ? (
             <Pause className="size-5 fill-current" />
           ) : (

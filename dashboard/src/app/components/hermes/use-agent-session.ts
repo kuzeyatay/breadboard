@@ -63,6 +63,7 @@ import type {
 } from "@/lib/conversations/external-agent-runs";
 import { externalAgentAbortUrl } from "@/lib/conversations/external-agent-runs";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
+import { rememberExternalRunStartedAt } from "./external-run-clock";
 import {
   AgentStreamDisconnectedError,
   AgentStreamReportedError,
@@ -206,6 +207,8 @@ export interface AgentMessage {
   artifactMessageId?: string;
   clientMessageId?: string;
   createdAt?: string;
+  /** Durable instant the user-visible response began, retained across views. */
+  responseStartedAt?: string;
   role: "user" | "assistant";
   content: string;
   /** Presentation-only row derived from `modelChangeAfter`. */
@@ -253,6 +256,10 @@ export interface AgentMessage {
   };
   /** Result of the standing local rewrite, including candidates kept original. */
   humanizerReview?: HumanizerReviewPresentation;
+  /** The canonical assistant row exists but its background turn is not done. */
+  pending?: boolean;
+  /** The canonical turn ended without an answer. */
+  failed?: boolean;
   interrupted?: boolean;
   courseCorrection?: boolean;
   /** Assistant turn this mid-run correction was inserted into. */
@@ -836,11 +843,80 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
       ) {
         delete normalized.createdAt;
       }
+      if (
+        typeof message.responseStartedAt !== "string" ||
+        !Number.isFinite(Date.parse(message.responseStartedAt))
+      ) {
+        delete normalized.responseStartedAt;
+      }
       if (message.internalAgentContinuation !== true) {
         delete normalized.internalAgentContinuation;
       }
+      const externalRunId = externalAgentRunIdForMessage(normalized);
+      if (externalRunId) {
+        rememberExternalRunStartedAt(
+          externalRunId,
+          normalized.externalAgentStartedAt ??
+            normalized.responseStartedAt ??
+            normalized.createdAt,
+        );
+      }
       return normalized;
     });
+}
+
+function pendingRestoredTurn(messages: AgentMessage[]): {
+  assistant: AgentMessage;
+  instruction: string;
+} | null {
+  const assistant = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant");
+  if (!assistant?.pending) return null;
+  const user = [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === "user" &&
+        Boolean(message.clientMessageId) &&
+        message.clientMessageId === assistant.clientMessageId,
+    );
+  const instruction = user?.content.trim();
+  return instruction ? { assistant, instruction } : null;
+}
+
+/**
+ * The same pair before the server has had time to mark its assistant pending.
+ * This is only trusted when the caller also has a local in-flight send or a
+ * renderer-recovery snapshot; an arbitrary empty historical answer is not a
+ * signal that work is still running.
+ */
+function optimisticPendingTurn(messages: AgentMessage[]): {
+  assistant: AgentMessage;
+  instruction: string;
+} | null {
+  const assistant = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant");
+  if (
+    !assistant ||
+    assistant.content.trim() ||
+    assistant.failed ||
+    assistant.interrupted ||
+    assistant.pendingPermissions?.length
+  ) {
+    return null;
+  }
+  const user = [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === "user" &&
+        Boolean(message.clientMessageId) &&
+        message.clientMessageId === assistant.clientMessageId,
+    );
+  const instruction = user?.content.trim();
+  return instruction ? { assistant, instruction } : null;
 }
 
 export type ConnectionState =
@@ -942,6 +1018,16 @@ type UnmappedRunKind = Exclude<
 // from the construct that caused it.
 const _everyRunKindIsMapped: readonly never[] = [] as readonly UnmappedRunKind[];
 void _everyRunKindIsMapped;
+
+function externalAgentRunIdForMessage(message: AgentMessage): string | null {
+  for (const [field] of EXTERNAL_AGENT_RUN_FIELDS) {
+    const run = message[field] as { runId?: unknown } | undefined;
+    if (typeof run?.runId === "string" && run.runId.trim()) {
+      return run.runId;
+    }
+  }
+  return null;
+}
 
 /**
  * An assistant message that renders as an external agent's inline run card —
@@ -1109,6 +1195,7 @@ async function ensureSession(
   initialTurn?: {
     clientMessageId: string;
     text: string;
+    responseStartedAt?: string;
     attachments?: ChatAttachment[];
     branchGroupId?: string;
     textSelection?: ChatTextSelectionReference;
@@ -1233,8 +1320,19 @@ export function useAgentSession(
     [],
   );
   const resumedRunIdRef = useRef<string | null>(null);
+  const stoppedDirectTurnIdsRef = useRef(new Set<string>());
   const blockedTurnRef = useRef<BlockedTurn | null>(null);
   const pendingHistoryOverrideRef = useRef<AgentMessage[] | null>(null);
+  // A send remains owned by its conversation while another conversation is on
+  // screen. This small registry bridges the pre-reservation gap where neither
+  // SQLite nor the runtime can yet tell a reopened view that the turn exists.
+  const localInFlightTurnsRef = useRef(new Map<
+    string,
+    {
+      clientMessageId: string;
+      messages: AgentMessage[];
+    }
+  >());
   const viewEpochRef = useRef(0);
   const latestSendOptionsRef = useRef<{
     model?: string;
@@ -1344,12 +1442,187 @@ export function useAgentSession(
     [transition],
   );
 
+  /**
+   * A direct-provider turn has no Hermes run id to attach to, and an agent turn
+   * has a brief reserved-before-dispatch window where its run id does not exist
+   * yet. In both cases the pending assistant row is the durable live signal.
+   * Keep the restored view in Thinking and revalidate until it either exposes
+   * an attachable run or reaches a terminal stored answer.
+   */
+  const resumePendingConversation = useCallback(
+    (
+      id: string,
+      restoredMessages: AgentMessage[],
+      viewEpoch: number,
+      options: { allowOptimistic?: boolean } = {},
+    ): boolean => {
+      const initial =
+        pendingRestoredTurn(restoredMessages) ??
+        (options.allowOptimistic
+          ? optimisticPendingTurn(restoredMessages)
+          : null);
+      if (!initial) return false;
+      const expectedClientMessageId = initial.assistant.clientMessageId;
+      const persistenceGraceUntil = Date.now() + 30_000;
+
+      setActiveInstruction(initial.instruction);
+      setActivities([
+        {
+          id: "reasoning",
+          kind: "reasoning",
+          label: "Thinking",
+          status: "running",
+          startedAt:
+            initial.assistant.responseStartedAt ??
+            initial.assistant.createdAt ??
+            new Date().toISOString(),
+        },
+      ]);
+      transition("running");
+
+      void (async () => {
+        let delayMs = 600;
+        while (
+          viewEpochRef.current === viewEpoch &&
+          sessionRef.current === id
+        ) {
+          await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, delayMs);
+          });
+          if (
+            viewEpochRef.current !== viewEpoch ||
+            sessionRef.current !== id
+          ) {
+            return;
+          }
+
+          const restored = await loadHermesSessionDetail(surface, id).catch(
+            () => null,
+          );
+          if (
+            !restored ||
+            restored.id !== id ||
+            viewEpochRef.current !== viewEpoch ||
+            sessionRef.current !== id
+          ) {
+            delayMs = Math.min(2_500, Math.round(delayMs * 1.5));
+            continue;
+          }
+
+          const nextMessages = normalizeRestoredMessages(restored.messages);
+          const restoredRun =
+            restored.activeRun && typeof restored.activeRun === "object"
+              ? (restored.activeRun as Record<string, unknown>)
+              : null;
+          if (
+            restoredRun &&
+            typeof restoredRun.id === "string" &&
+            typeof restoredRun.instruction === "string"
+          ) {
+            pendingHistoryOverrideRef.current = null;
+            setMessages(nextMessages);
+            activeRunIdRef.current = restoredRun.id;
+            setActiveRunId(restoredRun.id);
+            setActiveInstruction(restoredRun.instruction);
+            transition("connecting");
+            setRunToResume({
+              sessionId: id,
+              runId: restoredRun.id,
+              instruction: restoredRun.instruction,
+              startedAt:
+                typeof restoredRun.startedAt === "string"
+                  ? restoredRun.startedAt
+                  : undefined,
+              clientMessageId:
+                typeof restoredRun.clientMessageId === "string"
+                  ? restoredRun.clientMessageId
+                  : undefined,
+              superAgent: restoredRun.superAgent === true,
+              viewEpoch,
+            });
+            return;
+          }
+
+          const expectedTurnVisible = expectedClientMessageId
+            ? nextMessages.some(
+                (message) =>
+                  message.clientMessageId === expectedClientMessageId,
+              )
+            : true;
+          if (!expectedTurnVisible) {
+            const localTurn = localInFlightTurnsRef.current.get(id);
+            const localSendStillRunning =
+              localTurn?.clientMessageId === expectedClientMessageId;
+            if (localSendStillRunning || Date.now() < persistenceGraceUntil) {
+              delayMs = Math.min(2_500, Math.round(delayMs * 1.25));
+              continue;
+            }
+            pendingHistoryOverrideRef.current = null;
+            setError("This message could not be restored. Please try sending it again.");
+            transition("error");
+            return;
+          }
+
+          pendingHistoryOverrideRef.current = null;
+          setMessages(nextMessages);
+          if (rehydrateAwaitingPermission(nextMessages)) return;
+          const pending = pendingRestoredTurn(nextMessages);
+          if (pending) {
+            setActiveInstruction(pending.instruction);
+            delayMs = Math.min(2_500, Math.round(delayMs * 1.25));
+            continue;
+          }
+
+          const finalAssistant = [...nextMessages]
+            .reverse()
+            .find(
+              (message) =>
+                message.role === "assistant" &&
+                (!expectedClientMessageId ||
+                  message.clientMessageId === expectedClientMessageId),
+            );
+          const completedAt = new Date().toISOString();
+          setActivities((current) =>
+            current.map((item) =>
+              item.status === "running"
+                ? {
+                    ...item,
+                    status: finalAssistant?.interrupted
+                      ? "cancelled"
+                      : finalAssistant?.failed
+                        ? "failed"
+                        : "completed",
+                    completedAt,
+                  }
+                : item,
+            ),
+          );
+          if (finalAssistant?.interrupted) {
+            transition("cancelled");
+          } else if (finalAssistant?.failed) {
+            setError("The answer could not be completed.");
+            transition("error");
+          } else {
+            transition("completed");
+            if (surface !== "quartz_ai") {
+              notifyTaskCompleted(initial.instruction);
+            }
+          }
+          if (surface !== "quartz_ai") notifyHermesSessionsChanged(surface);
+          return;
+        }
+      })();
+      return true;
+    },
+    [rehydrateAwaitingPermission, surface, transition],
+  );
+
   useEffect(() => {
     messagesRef.current = messages;
     if (sessionRef.current) {
       updateCachedHermesSessionMessages(surface, sessionRef.current, messages);
     }
-  }, [messages, surface]);
+  }, [messages, sessionId, surface]);
 
   useEffect(() => {
     if (!sessionId || sessionRef.current !== sessionId) return;
@@ -1401,8 +1674,12 @@ export function useAgentSession(
           },
         );
         if (!selected) return;
-        primeInlineArtifacts({ conversationId: selected.id });
+        primeInlineArtifacts(
+          { conversationId: selected.id },
+          { revalidate: true },
+        );
         const restored = await loadHermesSessionDetail(surface, selected.id, {
+          revalidateAfterPending: true,
           signal: restoreController.signal,
         });
         if (superseded()) return;
@@ -1452,8 +1729,8 @@ export function useAgentSession(
             superAgent: restoredRun.superAgent === true,
             viewEpoch: viewEpochRef.current,
           });
-        } else {
-          rehydrateAwaitingPermission(restoredMessages);
+        } else if (!rehydrateAwaitingPermission(restoredMessages)) {
+          resumePendingConversation(selected.id, restoredMessages, bootEpoch);
         }
       })
       .catch(() => undefined)
@@ -1474,6 +1751,7 @@ export function useAgentSession(
     createOptions?.pageSlug,
     markLoadingSession,
     rehydrateAwaitingPermission,
+    resumePendingConversation,
     restoreLastConversation,
     storageKey,
     transition,
@@ -2750,20 +3028,20 @@ export function useAgentSession(
       viewEpoch: number;
       currentLocation?: CurrentLocationSnapshot;
     }): Promise<void> => {
-      const controller = new AbortController();
-      // Stop belongs to the chat on screen. A turn whose reader has already
-      // moved on still runs, but it must not take the abort handle with it.
-      if (input.viewEpoch === viewEpochRef.current) abortRef.current = controller;
       let assistant = input.assistant;
+      const clientMessageId = assistant.clientMessageId ?? "";
+      const stopWasRequestedForTurn = () =>
+        Boolean(clientMessageId) &&
+        stoppedDirectTurnIdsRef.current.has(clientMessageId);
       const response = await fetch(
         `/api/hermes/sessions/${input.sessionId}/direct`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
           body: JSON.stringify({
             clientMessageId: assistant.clientMessageId,
             text: input.text,
+            responseStartedAt: assistant.responseStartedAt,
             surface,
             model: input.options?.model,
             reasoningEffort: input.options?.reasoningEffort,
@@ -2778,6 +3056,12 @@ export function useAgentSession(
           }),
         },
       );
+      if (!response.ok && stopWasRequestedForTurn()) {
+        // Stop can land while the server is still opening the provider stream.
+        // Its 409 is the acknowledgement of that stop, not a failed answer.
+        stoppedDirectTurnIdsRef.current.delete(clientMessageId);
+        return;
+      }
       if (!response.ok || !response.body) {
         const body = await response.json().catch(() => ({}));
         throw new Error(
@@ -2787,7 +3071,11 @@ export function useAgentSession(
         );
       }
       input.onTurnPersisted();
-      if (input.viewEpoch === viewEpochRef.current) {
+      if (stopWasRequestedForTurn()) {
+        await fetch(`/api/hermes/sessions/${input.sessionId}/abort`, {
+          method: "POST",
+        }).catch(() => undefined);
+      } else if (input.viewEpoch === viewEpochRef.current) {
         transition("running");
         setActivities((current) =>
           current.map((item) =>
@@ -2835,12 +3123,19 @@ export function useAgentSession(
           } else if (event.type === "error" && typeof event.message === "string") {
             failure = event.message;
           }
-          if (input.viewEpoch !== viewEpochRef.current) return;
-          input.commit(assistant);
+          if (input.viewEpoch === viewEpochRef.current) {
+            input.commit(assistant);
+          }
         }
       }
 
-      if (input.viewEpoch !== viewEpochRef.current) return;
+      if (
+        input.viewEpoch !== viewEpochRef.current ||
+        stopWasRequestedForTurn()
+      ) {
+        stoppedDirectTurnIdsRef.current.delete(clientMessageId);
+        return;
+      }
       const completedAt = new Date().toISOString();
       input.commit({
         ...assistant,
@@ -2863,6 +3158,7 @@ export function useAgentSession(
         notifyHermesSessionsChanged(surface);
         notifyTaskCompleted(input.text);
       }
+      stoppedDirectTurnIdsRef.current.delete(clientMessageId);
     },
     [surface, transition],
   );
@@ -2981,9 +3277,11 @@ export function useAgentSession(
           : {}),
       };
       userMessage.clientMessageId = userMessage.id;
+      stoppedDirectTurnIdsRef.current.delete(userMessage.id ?? "");
       const assistant: AgentMessage = {
         id: resumedBlockedTurn?.assistantMessageId ?? crypto.randomUUID(),
         createdAt: turnCreatedAt,
+        responseStartedAt: turnCreatedAt,
         role: "assistant",
         content: "",
         sources: [],
@@ -2998,6 +3296,18 @@ export function useAgentSession(
       assistant.clientMessageId = userMessage.id;
       const baseline = [...transcript, userMessage, assistant];
       setMessages(baseline);
+      const startingSessionId = sessionRef.current;
+      const localInFlightTurn = {
+        clientMessageId: userMessage.id!,
+        messages: baseline,
+      };
+      let activeSessionIdForTurn = startingSessionId;
+      if (startingSessionId) {
+        localInFlightTurnsRef.current.set(
+          startingSessionId,
+          localInFlightTurn,
+        );
+      }
       try {
         options?.onTurnStarted?.();
       } catch {
@@ -3033,7 +3343,6 @@ export function useAgentSession(
       > | null = null;
       let streamController: AbortController | null = null;
       try {
-        const startingSessionId = sessionRef.current;
         const initialCreation = {
           viewEpoch,
           promise: ensureSession(
@@ -3044,6 +3353,7 @@ export function useAgentSession(
             {
               clientMessageId: userMessage.id!,
               text: trimmed,
+              responseStartedAt: turnCreatedAt,
               attachments: options?.attachments,
               branchGroupId: options?.branchGroupId,
               textSelection: options?.textSelection,
@@ -3064,6 +3374,16 @@ export function useAgentSession(
           }
         }
         const activeSessionId = ensured.id;
+        activeSessionIdForTurn = activeSessionId;
+        if (
+          startingSessionId &&
+          startingSessionId !== activeSessionId &&
+          localInFlightTurnsRef.current.get(startingSessionId) ===
+            localInFlightTurn
+        ) {
+          localInFlightTurnsRef.current.delete(startingSessionId);
+        }
+        localInFlightTurnsRef.current.set(activeSessionId, localInFlightTurn);
         if (ensured.initialTurnReserved) {
           markTurnPersisted(activeSessionId);
         }
@@ -3147,6 +3467,7 @@ export function useAgentSession(
             {
               clientMessageId: userMessage.id,
               text: trimmed,
+              responseStartedAt: turnCreatedAt,
               surface,
               surfaceContext: {
                 activeGardenSlug: createOptions?.gardenSlug,
@@ -3387,6 +3708,15 @@ export function useAgentSession(
         setActiveRunId(null);
         transition("error");
       } finally {
+        for (const id of new Set(
+          [startingSessionId, activeSessionIdForTurn].filter(
+            (value): value is string => Boolean(value),
+          ),
+        )) {
+          if (localInFlightTurnsRef.current.get(id) === localInFlightTurn) {
+            localInFlightTurnsRef.current.delete(id);
+          }
+        }
         if (abortRef.current === streamController) {
           abortRef.current = null;
         }
@@ -3758,6 +4088,18 @@ export function useAgentSession(
     stopRequestedRef.current = true;
     transition("stopping");
     if (!activeSessionId || !activeRunIdRef.current) {
+      const clientMessageId = [...messagesRef.current]
+        .reverse()
+        .find((message) => message.role === "assistant")
+        ?.clientMessageId;
+      if (clientMessageId) {
+        stoppedDirectTurnIdsRef.current.add(clientMessageId);
+      }
+      if (activeSessionId) {
+        await fetch(`/api/hermes/sessions/${activeSessionId}/abort`, {
+          method: "POST",
+        }).catch(() => undefined);
+      }
       abortRef.current?.abort();
       transition("cancelled");
       setPendingPermission(null);
@@ -3960,10 +4302,16 @@ export function useAgentSession(
       setSessionId(id);
       // Alongside the transcript, not after it: the artifact cards belong to
       // the same chat and should arrive in the same paint as its messages.
-      primeInlineArtifacts({ conversationId: id });
+      primeInlineArtifacts(
+        { conversationId: id },
+        { revalidate: true },
+      );
       const cached = cachedHermesSessionDetail(surface, id);
+      const localInFlightTurn = localInFlightTurnsRef.current.get(id);
       const normalizedOptimistic = normalizeRestoredMessages(
-        optimisticMessages.length > 0 ? optimisticMessages : cached?.messages,
+        optimisticMessages.length > 0
+          ? optimisticMessages
+          : localInFlightTurn?.messages ?? cached?.messages,
       );
       setMessages(normalizedOptimistic);
       // An empty placeholder is the absence of a history, not a history that is
@@ -3976,11 +4324,12 @@ export function useAgentSession(
       window.localStorage.setItem("breadboard-active-conversation", id);
 
       try {
+        // A working chat can change between hover and click. Join a prefetch
+        // that is still in flight, but never adopt an already-settled snapshot
+        // as the authoritative reopen: it may predate the run or its terminal
+        // result and reconstruct a false interruption.
         const restored = await loadHermesSessionDetail(surface, id, {
-          // A history-row prefetch is already an authoritative no-store read.
-          // Reuse it for this click instead of immediately issuing the same
-          // request again; older working-set entries still revalidate.
-          reuseRecentPrefetch: true,
+          revalidateAfterPending: true,
         });
         if (viewEpochRef.current !== viewEpoch) return;
         if (restored.id !== id) {
@@ -3997,6 +4346,35 @@ export function useAgentSession(
           restored.filesystemMode === "full" ? "full" : "restricted",
         );
         const restoredMessages = normalizeRestoredMessages(restored.messages);
+        const restoredRun =
+          restored.activeRun && typeof restored.activeRun === "object"
+            ? (restored.activeRun as Record<string, unknown>)
+            : null;
+        const optimisticPending = optimisticPendingTurn(normalizedOptimistic);
+        const optimisticClientMessageId =
+          optimisticPending?.assistant.clientMessageId;
+        const optimisticTurnPersisted = optimisticClientMessageId
+          ? restoredMessages.some(
+              (message) =>
+                message.clientMessageId === optimisticClientMessageId,
+            )
+          : true;
+        if (
+          optimisticPending &&
+          !optimisticTurnPersisted &&
+          !restoredRun
+        ) {
+          // The person returned faster than the send route could reserve its
+          // rows. Keep the pair that was already shown and revalidate until the
+          // background dispatch becomes a durable pending turn or active run.
+          setMessages(normalizedOptimistic);
+          pendingHistoryOverrideRef.current = normalizedOptimistic;
+          resumePendingConversation(id, normalizedOptimistic, viewEpoch, {
+            allowOptimistic: true,
+          });
+          return;
+        }
+
         setMessages(restoredMessages);
         // The restore is authoritative and the runtime re-seeds itself from the
         // same durable rows, so the placeholder override has nothing left to
@@ -4004,10 +4382,6 @@ export function useAgentSession(
         // branch. Anything still holding it would only contradict both.
         pendingHistoryOverrideRef.current = null;
 
-        const restoredRun =
-          restored.activeRun && typeof restored.activeRun === "object"
-            ? (restored.activeRun as Record<string, unknown>)
-            : null;
         if (
           restoredRun &&
           typeof restoredRun.id === "string" &&
@@ -4033,8 +4407,8 @@ export function useAgentSession(
             superAgent: restoredRun.superAgent === true,
             viewEpoch,
           });
-        } else {
-          rehydrateAwaitingPermission(restoredMessages);
+        } else if (!rehydrateAwaitingPermission(restoredMessages)) {
+          resumePendingConversation(id, restoredMessages, viewEpoch);
         }
       } catch (openError) {
         if (viewEpochRef.current !== viewEpoch) return;
@@ -4052,6 +4426,7 @@ export function useAgentSession(
     [
       markLoadingSession,
       rehydrateAwaitingPermission,
+      resumePendingConversation,
       reset,
       storageKey,
       surface,

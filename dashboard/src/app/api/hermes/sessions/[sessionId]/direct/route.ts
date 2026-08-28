@@ -69,13 +69,17 @@ export async function POST(
         resolveDocumentAttachments(userId, parseChatAttachments(body.attachments)),
         requireString(body.text, "text", 100_000),
         process.env,
-        request.signal,
       ),
       retry: body.retry === true,
       adhdMode: body.adhdMode === true,
       currentLocation:
         parseCurrentLocationPayload(body.currentLocation) ?? undefined,
       internalAgentContinuation: body.internalAgentContinuation === true,
+      responseStartedAt:
+        typeof body.responseStartedAt === "string" &&
+        Number.isFinite(Date.parse(body.responseStartedAt))
+          ? body.responseStartedAt
+          : undefined,
       ...(typeof body.branchGroupId === "string"
         ? { branchGroupId: body.branchGroupId.slice(0, 128) }
         : {}),

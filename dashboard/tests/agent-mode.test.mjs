@@ -136,8 +136,16 @@ test("the direct turn keeps the transcript and claims no tools", () => {
   assert.match(directService, /reserveConversationTurn\(/);
   assert.match(directService, /completeAssistantMessage\(/);
   assert.match(directService, /failAssistantMessage\(/);
-  // A browser that stops reading must not leave a pending assistant message.
-  assert.match(directService, /cancel\(\) \{[\s\S]{0,400}?finish\("aborted"/);
+  // Losing a browser viewer no longer cancels the provider. The server drains
+  // and finishes the durable row; only the explicit Stop API owns abort.
+  const responseCancel = directService.slice(
+    directService.indexOf("cancel() {"),
+    directService.indexOf("return new Response(body"),
+  );
+  assert.doesNotMatch(responseCancel, /finish\("aborted"/);
+  assert.doesNotMatch(responseCancel, /providerAbort\.abort\(/);
+  assert.match(directService, /export function abortDirectProviderTurn/);
+  assert.match(directService, /activeDirectTurn\.stopRequested[\s\S]*?"aborted"/);
   // No runtime, and the prompt says so rather than letting the model imply it.
   assert.doesNotMatch(directService, /startRun|applyCapabilityDecision/);
   assert.match(directService, /direct_provider_turn/);

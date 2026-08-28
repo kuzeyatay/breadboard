@@ -11,11 +11,11 @@ use breadboard_runtime_core::{
     RuntimePaths, StoreError, TrustedWorkerEnvironmentSet, WorkerClaimOutcome,
     WorkerCompletionProof, WorkerLaunchNotCreated, WorkerLaunchNotCreatedCleanup,
     WorkerLaunchOutcome, WorkerLaunchUncertain, WorkerResidencyAuthority,
-    WorkerServiceDependencyFailureDisposition, WorkerTreeExitAuthority,
+    WorkerServiceDependencyFailureDisposition, WorkerTreeExitAuthority, MAX_DISPATCH_CANDIDATES,
 };
 use breadboard_runtime_protocol::{RuntimeMode, WorkerDefinition, WorkerEvent, WorkerIdentity};
 use std::io;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -26,6 +26,7 @@ const WORKER_INSTANCE_RANDOM_BYTES: usize = 16;
 const ONLINE_EXPIRED_UPLOAD_CLEANUP_BATCH: usize = 8;
 const ONLINE_EXPIRED_IDEMPOTENCY_CANCELLATION_CLEANUP_BATCH: usize = 8;
 const ONLINE_EXPIRED_UPLOAD_CLEANUP_INTERVAL: Duration = Duration::from_secs(5);
+const MAX_ACTIVE_WORKER_LANES: usize = MAX_DISPATCH_CANDIDATES;
 
 /// Sanitized dispatcher failures. The source chain remains available to the
 /// native host, but path, job, process, and manifest details never become a
@@ -56,11 +57,10 @@ pub(crate) enum WorkerDispatcherError {
     ServiceDependencyControl,
 }
 
-/// One native scheduler thread owns FIFO admission, one live disposable worker
-/// at a time, and every authority transition for that worker. The deliberate
-/// single-live-worker first slice is stricter than manifest concurrency and is
-/// consistent with the global one-heavyweight policy; it can be generalized
-/// later without creating a second dispatcher or durable ledger.
+/// One native scheduler thread owns FIFO admission while bounded owner lanes
+/// independently drive live disposable workers. SQLite remains the sole
+/// durable ledger; per-definition concurrency and live system-commit admission
+/// decide which jobs may overlap.
 pub(crate) struct WorkerDispatcherConfig {
     pub(crate) mode: RuntimeMode,
     pub(crate) registry: Registry,
@@ -79,13 +79,50 @@ pub(crate) struct WorkerDispatcher {
     // authority, keeping both fenced until the host is already in its shutdown
     // epilogue and the process is committed to exit (the generation Job is
     // deliberately process-lifetime and closes only at process termination).
-    thread: Option<JoinHandle<Result<(), DispatchLoopError>>>,
-    retained_authority: Option<FatalDispatchAuthority>,
+    thread: Option<JoinHandle<Result<(), DispatchLoopFailure>>>,
+    retained_authorities: Vec<FatalDispatchAuthority>,
 }
 
 enum DispatchLoopError {
     Fatal(WorkerDispatcherError),
     Authority(FatalDispatchAuthority),
+}
+
+struct DispatchLoopFailure {
+    primary: WorkerDispatcherError,
+    authorities: Vec<FatalDispatchAuthority>,
+}
+
+impl DispatchLoopFailure {
+    fn from_errors(errors: Vec<DispatchLoopError>) -> Option<Self> {
+        let mut fatal = None;
+        let mut authorities = Vec::new();
+        let mut uncertain = false;
+        for error in errors {
+            match error {
+                DispatchLoopError::Fatal(error) => {
+                    if fatal.is_none() {
+                        fatal = Some(error);
+                    }
+                }
+                DispatchLoopError::Authority(authority) => {
+                    uncertain |= matches!(&authority, FatalDispatchAuthority::Uncertain(_));
+                    authorities.push(authority);
+                }
+            }
+        }
+        let primary = fatal.or_else(|| {
+            (!authorities.is_empty()).then_some(if uncertain {
+                WorkerDispatcherError::UncertainLaunch
+            } else {
+                WorkerDispatcherError::AuthorityRetained
+            })
+        })?;
+        Some(Self {
+            primary,
+            authorities,
+        })
+    }
 }
 
 /// Authority-bearing failures are deliberately not ordinary errors. The
@@ -175,7 +212,7 @@ impl WorkerDispatcher {
         Ok(Self {
             shutdown,
             thread: Some(thread),
-            retained_authority: None,
+            retained_authorities: Vec::new(),
         })
     }
 
@@ -185,7 +222,7 @@ impl WorkerDispatcher {
     }
 
     fn join(&mut self) -> Result<(), WorkerDispatcherError> {
-        if self.retained_authority.is_some() {
+        if !self.retained_authorities.is_empty() {
             return Err(WorkerDispatcherError::AuthorityRetained);
         }
         let Some(thread) = self.thread.take() else {
@@ -196,20 +233,16 @@ impl WorkerDispatcher {
             .map_err(|_| WorkerDispatcherError::ThreadPanicked)?
         {
             Ok(()) => Ok(()),
-            Err(DispatchLoopError::Fatal(error)) => Err(error),
-            Err(DispatchLoopError::Authority(mut authority)) => {
+            Err(mut failure) => {
                 // Admission is already closed and the control listener is
-                // leaving. Request cleanup without consuming any opaque value,
-                // then retain it until `run_after_bootstrap` returns an error
-                // and `main` terminates the process-lifetime generation.
-                authority.request_generation_shutdown();
-                let uncertain = matches!(&authority, FatalDispatchAuthority::Uncertain(_));
-                self.retained_authority = Some(authority);
-                Err(if uncertain {
-                    WorkerDispatcherError::UncertainLaunch
-                } else {
-                    WorkerDispatcherError::AuthorityRetained
-                })
+                // leaving. Request cleanup without consuming opaque values,
+                // then retain every authority until `main` terminates the
+                // process-lifetime generation.
+                for authority in &mut failure.authorities {
+                    authority.request_generation_shutdown();
+                }
+                self.retained_authorities = failure.authorities;
+                Err(failure.primary)
             }
         }
     }
@@ -219,15 +252,22 @@ impl Drop for WorkerDispatcher {
     fn drop(&mut self) {
         self.shutdown.request_shutdown();
         // Every process-owner wait used by the dispatcher is bounded. A drop
-        // during host error handling therefore still joins the sole owner and
-        // runs the same authority-retention path instead of detaching it.
+        // during host error handling therefore still joins every owner lane
+        // and runs the same authority-retention path instead of detaching it.
         let _ = self.join();
     }
 }
 
-fn run_dispatch_loop(config: &WorkerDispatcherConfig) -> Result<(), DispatchLoopError> {
+fn run_dispatch_loop(config: &WorkerDispatcherConfig) -> Result<(), DispatchLoopFailure> {
+    let mut lanes = Vec::new();
+    let mut failures = Vec::new();
     let mut next_expired_upload_cleanup = Instant::now();
     while !config.shutdown.is_requested() {
+        failures.extend(reap_finished_worker_lanes(&mut lanes));
+        if !failures.is_empty() {
+            config.shutdown.request_shutdown();
+            break;
+        }
         if !config.shutdown.is_accepting_work() {
             config
                 .shutdown
@@ -237,41 +277,93 @@ fn run_dispatch_loop(config: &WorkerDispatcherConfig) -> Result<(), DispatchLoop
 
         let now = Instant::now();
         if now >= next_expired_upload_cleanup {
-            config
+            if let Err(error) = config
                 .store
                 .reconcile_expired_job_input_uploads_online(
                     &config.paths,
                     ONLINE_EXPIRED_UPLOAD_CLEANUP_BATCH,
                 )
-                .map_err(WorkerDispatcherError::Store)?;
-            config
+                .map_err(WorkerDispatcherError::Store)
+            {
+                failures.push(error.into());
+                config.shutdown.request_shutdown();
+                break;
+            }
+            if let Err(error) = config
                 .store
                 .reconcile_expired_idempotency_cancellations_online(
                     ONLINE_EXPIRED_IDEMPOTENCY_CANCELLATION_CLEANUP_BATCH,
                 )
-                .map_err(WorkerDispatcherError::Store)?;
+                .map_err(WorkerDispatcherError::Store)
+            {
+                failures.push(error.into());
+                config.shutdown.request_shutdown();
+                break;
+            }
             next_expired_upload_cleanup = now + ONLINE_EXPIRED_UPLOAD_CLEANUP_INTERVAL;
         }
 
+        if lanes.len() >= MAX_ACTIVE_WORKER_LANES {
+            config
+                .shutdown
+                .wait_for_dispatch_tick(DISPATCH_POLL_INTERVAL);
+            continue;
+        }
+
         // Existing admitted work always precedes new reservation creation.
-        // Querying a single row keeps this first single-owner slice bounded and
-        // avoids building an in-memory queue that can drift from SQLite.
-        if !dispatch_one(
+        let dispatch = match dispatch_one(
+            &config.registry,
+            Arc::clone(&config.store),
+            config.paths.clone(),
+            config.generation.clone(),
+            &config.environments,
+            config.service_dependencies.clone(),
+            Arc::clone(&config.shutdown),
+        ) {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                failures.push(error);
+                config.shutdown.request_shutdown();
+                break;
+            }
+        };
+        match dispatch {
+            DispatchOneOutcome::Spawned(lane) => {
+                lanes.push(lane);
+                continue;
+            }
+            DispatchOneOutcome::Handled => continue,
+            DispatchOneOutcome::Idle => {}
+        }
+
+        match admit_one(
+            config.mode,
             &config.registry,
             &config.store,
             &config.paths,
-            &config.generation,
-            &config.environments,
-            &config.service_dependencies,
-            &config.shutdown,
-        )? && !admit_one(config.mode, &config.registry, &config.store, &config.paths)?
-        {
+            &lanes,
+        ) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => {
+                failures.push(error.into());
+                config.shutdown.request_shutdown();
+                break;
+            }
+        }
+
+        if failures.is_empty() {
             config
                 .shutdown
                 .wait_for_dispatch_tick(DISPATCH_POLL_INTERVAL);
         }
     }
-    Ok(())
+
+    failures.extend(join_worker_lanes(lanes));
+    match DispatchLoopFailure::from_errors(failures) {
+        Some(failure) => Err(failure),
+        None => Ok(()),
+    }
 }
 
 fn admit_one(
@@ -279,16 +371,28 @@ fn admit_one(
     registry: &Registry,
     store: &JobStore,
     paths: &RuntimePaths,
+    active_lanes: &[ActiveWorkerLane],
 ) -> Result<bool, WorkerDispatcherError> {
-    let mut candidates = store
-        .queued_admission_candidates(1)
+    let candidates = store
+        .queued_admission_candidates(MAX_DISPATCH_CANDIDATES)
         .map_err(WorkerDispatcherError::Store)?;
-    let Some(candidate) = candidates.pop() else {
+    let mut selected = None;
+    for candidate in candidates {
+        let admission = registry
+            .admission_for_job_type(candidate.job_type())
+            .map_err(WorkerDispatcherError::Registry)?;
+        if definition_has_capacity(
+            active_lanes.iter().map(|lane| lane.definition_key.as_str()),
+            admission.definition_key(),
+            admission.maximum_concurrency(),
+        ) {
+            selected = Some((candidate, admission));
+            break;
+        }
+    }
+    let Some((candidate, admission)) = selected else {
         return Ok(false);
     };
-    let admission = registry
-        .admission_for_job_type(candidate.job_type())
-        .map_err(WorkerDispatcherError::Registry)?;
     let result = AdmissionGovernor::for_runtime_mode(store, mode)
         .try_admit_job(candidate.job_id(), &admission)
         .map_err(WorkerDispatcherError::Store)?;
@@ -300,20 +404,57 @@ fn admit_one(
     Ok(true)
 }
 
+fn definition_has_capacity<'a>(
+    active_definition_keys: impl Iterator<Item = &'a str>,
+    definition_key: &str,
+    maximum_concurrency: u32,
+) -> bool {
+    active_definition_keys
+        .filter(|active| *active == definition_key)
+        .take(maximum_concurrency as usize)
+        .count()
+        < maximum_concurrency as usize
+}
+
+struct ActiveWorkerLane {
+    definition_key: String,
+    thread: JoinHandle<Result<(), DispatchLoopError>>,
+}
+
+struct WorkerDriveTask {
+    process: ClaimedWorkerProcess,
+    store: Arc<JobStore>,
+    paths: RuntimePaths,
+    definition: WorkerDefinition,
+    service_dependencies: WorkerServiceDependencyControl,
+    dependency_leases: Vec<WorkerServiceDependencyLease>,
+}
+
+struct StandbyWorkerLane {
+    sender: mpsc::SyncSender<WorkerDriveTask>,
+    lane: ActiveWorkerLane,
+}
+
+enum DispatchOneOutcome {
+    Idle,
+    Handled,
+    Spawned(ActiveWorkerLane),
+}
+
 fn dispatch_one(
     registry: &Registry,
-    store: &JobStore,
-    paths: &RuntimePaths,
-    generation: &CurrentGenerationMembership,
+    store: Arc<JobStore>,
+    paths: RuntimePaths,
+    generation: CurrentGenerationMembership,
     environments: &TrustedWorkerEnvironmentSet,
-    service_dependencies: &WorkerServiceDependencyControl,
-    shutdown: &ShutdownCoordinator,
-) -> Result<bool, DispatchLoopError> {
+    service_dependencies: WorkerServiceDependencyControl,
+    shutdown: Arc<ShutdownCoordinator>,
+) -> Result<DispatchOneOutcome, DispatchLoopError> {
     let mut candidates = store
         .dispatch_candidates(1)
         .map_err(WorkerDispatcherError::Store)?;
     let Some(candidate) = candidates.pop() else {
-        return Ok(false);
+        return Ok(DispatchOneOutcome::Idle);
     };
 
     let definition = registry
@@ -323,7 +464,7 @@ fn dispatch_one(
     let worker_instance_id = fresh_worker_instance_id()?;
     let required_services = registry
         .required_service_dependency_admissions_for_job(
-            store,
+            &store,
             candidate.job_id(),
             candidate.worker_kind(),
         )
@@ -335,11 +476,11 @@ fn dispatch_one(
         match service_dependencies.acquire(dependency, &worker_instance_id) {
             Ok(lease) => dependency_leases.push(lease),
             Err(WorkerServiceDependencyAcquireError::OwnerLost) => {
-                release_worker_dependencies(service_dependencies, dependency_leases)?;
-                return Ok(true);
+                release_worker_dependencies(&service_dependencies, dependency_leases)?;
+                return Ok(DispatchOneOutcome::Handled);
             }
             Err(WorkerServiceDependencyAcquireError::Control(error)) => {
-                release_worker_dependencies(service_dependencies, dependency_leases)?;
+                release_worker_dependencies(&service_dependencies, dependency_leases)?;
                 let disposition = store
                     .worker_service_dependency_unavailable_before_assignment(
                         candidate.job_id(),
@@ -351,15 +492,15 @@ fn dispatch_one(
                     WorkerServiceDependencyFailureDisposition::Finalized(_)
                 ) {
                     store
-                        .cleanup_unstarted_terminal_job_inputs(paths, candidate.job_id())
+                        .cleanup_unstarted_terminal_job_inputs(&paths, candidate.job_id())
                         .map_err(WorkerDispatcherError::Store)?;
                 }
-                return Ok(true);
+                return Ok(DispatchOneOutcome::Handled);
             }
         }
     }
     let environment = environments.prepare_for_source(definition.environment_source);
-    let request = match registry.prepare_worker_launch(paths, &definition.kind, environment) {
+    let request = match registry.prepare_worker_launch(&paths, &definition.kind, environment) {
         Ok(request) => request,
         Err(error) => {
             // No claim or process identity exists yet, so the attempt-zero
@@ -368,10 +509,17 @@ fn dispatch_one(
                 .worker_start_failed_before_assignment(candidate.job_id(), false)
                 .map_err(WorkerDispatcherError::Store)?;
             store
-                .cleanup_unstarted_terminal_job_inputs(paths, candidate.job_id())
+                .cleanup_unstarted_terminal_job_inputs(&paths, candidate.job_id())
                 .map_err(WorkerDispatcherError::Store)?;
-            release_worker_dependencies(service_dependencies, dependency_leases)?;
+            release_worker_dependencies(&service_dependencies, dependency_leases)?;
             return Err(WorkerDispatcherError::Registry(error).into());
+        }
+    };
+    let standby = match start_standby_worker_lane(&definition.kind, Arc::clone(&shutdown)) {
+        Ok(standby) => standby,
+        Err(error) => {
+            release_worker_dependencies(&service_dependencies, dependency_leases)?;
+            return Err(error.into());
         }
     };
     // Claim and CreateProcess are one shutdown-linearized boundary. Trusted
@@ -386,40 +534,46 @@ fn dispatch_one(
                 WorkerClaimOutcome::Claimed(claim) => claim,
                 WorkerClaimOutcome::NotClaimable => return Ok(None),
             };
-            Ok(Some(
-                store.launch_claimed_worker(claim, generation, request),
-            ))
+            Ok(Some(store.launch_claimed_worker(
+                claim,
+                &generation,
+                request,
+            )))
         });
     let Some(launch) = launch else {
-        release_worker_dependencies(service_dependencies, dependency_leases)?;
-        return Ok(false);
+        cancel_standby_worker_lane(standby);
+        release_worker_dependencies(&service_dependencies, dependency_leases)?;
+        return Ok(DispatchOneOutcome::Idle);
     };
     let launch = match launch {
         Ok(launch) => launch,
         Err(error) => {
-            release_worker_dependencies(service_dependencies, dependency_leases)?;
+            cancel_standby_worker_lane(standby);
+            release_worker_dependencies(&service_dependencies, dependency_leases)?;
             return Err(error.into());
         }
     };
     let Some(launch) = launch else {
-        release_worker_dependencies(service_dependencies, dependency_leases)?;
-        return Ok(true);
+        cancel_standby_worker_lane(standby);
+        release_worker_dependencies(&service_dependencies, dependency_leases)?;
+        return Ok(DispatchOneOutcome::Handled);
     };
 
     match launch {
         WorkerLaunchOutcome::NotCreated(authority) => {
+            cancel_standby_worker_lane(standby);
             match store.finish_worker_not_created(authority) {
                 Ok((_job, cleanup)) => {
                     if store
-                        .cleanup_job_inputs_after_worker_not_created(paths, &cleanup)
+                        .cleanup_job_inputs_after_worker_not_created(&paths, &cleanup)
                         .is_err()
                     {
                         Err(DispatchLoopError::Authority(
                             FatalDispatchAuthority::NotCreatedCleanup(Box::new(cleanup)),
                         ))
                     } else {
-                        release_worker_dependencies(service_dependencies, dependency_leases)?;
-                        Ok(true)
+                        release_worker_dependencies(&service_dependencies, dependency_leases)?;
+                        Ok(DispatchOneOutcome::Handled)
                     }
                 }
                 Err(error) => {
@@ -431,6 +585,7 @@ fn dispatch_one(
             }
         }
         WorkerLaunchOutcome::Uncertain(mut authority) => {
+            cancel_standby_worker_lane(standby);
             // No release is persisted: the launch may have crossed
             // CreateProcess. Returning the authority places it inside the
             // completed JoinHandle while the thread requests host shutdown.
@@ -440,11 +595,101 @@ fn dispatch_one(
             ))
         }
         WorkerLaunchOutcome::Running(process) => {
-            drive_claimed_process(process, store, paths, &definition, shutdown)?;
-            release_worker_dependencies(service_dependencies, dependency_leases)?;
-            Ok(true)
+            let task = WorkerDriveTask {
+                process,
+                store,
+                paths,
+                definition,
+                service_dependencies,
+                dependency_leases,
+            };
+            match standby.sender.send(task) {
+                Ok(()) => Ok(DispatchOneOutcome::Spawned(standby.lane)),
+                Err(error) => {
+                    let task = error.0;
+                    let _ = standby.lane.thread.join();
+                    Err(DispatchLoopError::Authority(
+                        FatalDispatchAuthority::Claimed(Box::new(task.process)),
+                    ))
+                }
+            }
         }
     }
+}
+
+fn start_standby_worker_lane(
+    definition_key: &str,
+    shutdown: Arc<ShutdownCoordinator>,
+) -> Result<StandbyWorkerLane, WorkerDispatcherError> {
+    let (sender, receiver) = mpsc::sync_channel::<WorkerDriveTask>(1);
+    let thread = thread::Builder::new()
+        .name("runtime-worker-owner".into())
+        .spawn(move || {
+            let Ok(task) = receiver.recv() else {
+                return Ok(());
+            };
+            let WorkerDriveTask {
+                process,
+                store,
+                paths,
+                definition,
+                service_dependencies,
+                dependency_leases,
+            } = task;
+            let result = drive_claimed_process(process, &store, &paths, &definition, &shutdown);
+            let result = match result {
+                Ok(()) => release_worker_dependencies(&service_dependencies, dependency_leases)
+                    .map_err(DispatchLoopError::from),
+                Err(error) => Err(error),
+            };
+            if result.is_err() {
+                shutdown.request_shutdown();
+            }
+            result
+        })
+        .map_err(WorkerDispatcherError::ThreadStart)?;
+    Ok(StandbyWorkerLane {
+        sender,
+        lane: ActiveWorkerLane {
+            definition_key: definition_key.to_owned(),
+            thread,
+        },
+    })
+}
+
+fn cancel_standby_worker_lane(standby: StandbyWorkerLane) {
+    drop(standby.sender);
+    let _ = standby.lane.thread.join();
+}
+
+fn reap_finished_worker_lanes(lanes: &mut Vec<ActiveWorkerLane>) -> Vec<DispatchLoopError> {
+    let mut failures = Vec::new();
+    let mut index = 0;
+    while index < lanes.len() {
+        if lanes[index].thread.is_finished() {
+            let lane = lanes.swap_remove(index);
+            match lane.thread.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => failures.push(error),
+                Err(_) => failures.push(WorkerDispatcherError::ThreadPanicked.into()),
+            }
+        } else {
+            index += 1;
+        }
+    }
+    failures
+}
+
+fn join_worker_lanes(lanes: Vec<ActiveWorkerLane>) -> Vec<DispatchLoopError> {
+    let mut failures = Vec::new();
+    for lane in lanes {
+        match lane.thread.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => failures.push(error),
+            Err(_) => failures.push(WorkerDispatcherError::ThreadPanicked.into()),
+        }
+    }
+    failures
 }
 
 fn release_worker_dependencies(
@@ -781,7 +1026,7 @@ fn drive_resident_process(
                     }
                     Err(_) => {
                         // Database/fence/invariant ambiguity retains both the
-                        // only live process owner and the exact parsed event.
+                        // exact live process owner and the parsed event.
                         // The generation now exits instead of reading ahead or
                         // guessing whether persistence committed.
                         return Err(DispatchLoopError::Authority(
@@ -969,6 +1214,51 @@ fn cleanup_terminal_job_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capacity_is_per_definition_instead_of_global() {
+        let active = ["learn-node", "background-task-node"];
+        assert!(!definition_has_capacity(
+            active.iter().copied(),
+            "learn-node",
+            1
+        ));
+        assert!(definition_has_capacity(
+            active.iter().copied(),
+            "outer-max-research-node",
+            1
+        ));
+        assert!(definition_has_capacity(
+            active.iter().copied(),
+            "background-task-node",
+            2
+        ));
+    }
+
+    #[test]
+    fn finished_owner_lane_is_reaped_without_joining_a_live_peer() {
+        let finished = ActiveWorkerLane {
+            definition_key: "finished-node".into(),
+            thread: thread::spawn(|| Ok(())),
+        };
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let live = ActiveWorkerLane {
+            definition_key: "live-node".into(),
+            thread: thread::spawn(move || {
+                release_rx.recv().unwrap();
+                Ok(())
+            }),
+        };
+        while !finished.thread.is_finished() {
+            thread::yield_now();
+        }
+        let mut lanes = vec![finished, live];
+        assert!(reap_finished_worker_lanes(&mut lanes).is_empty());
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].definition_key, "live-node");
+        release_tx.send(()).unwrap();
+        assert!(join_worker_lanes(lanes).is_empty());
+    }
 
     #[test]
     fn worker_instance_ids_are_fresh_bounded_protocol_identifiers() {

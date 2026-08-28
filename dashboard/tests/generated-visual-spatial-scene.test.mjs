@@ -1324,6 +1324,48 @@ test("spatial runtime mounts accessibly at browser viewports and captures every 
   }
 });
 
+test("desktop-only browser validation omits mobile mounts and preview gates", async () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-desktop-only-browser-"));
+  const invokedSlugs = [];
+  try {
+    const result = await runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir,
+      browserExecutable: "fake-edge",
+      requireMobileValidation: false,
+      browserMountRetryBackoff: () => {},
+      previewCaptureRetryBackoff: () => {},
+      browserRunner: ({ args, slug }) => {
+        invokedSlugs.push(slug);
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "desktop png");
+          return observedBrowserSuccess("observed_capture", "<body></body>");
+        }
+        return observedBrowserSuccess(
+          "observed_dom",
+          '<body data-breadboard-runtime-tests="passed"></body>',
+        );
+      },
+    });
+
+    assert.equal(invokedSlugs.some((slug) => slug.includes("375x667")), false);
+    assert.deepEqual(result.browser?.viewports, [
+      "1280x800 dark",
+      "1280x800 reduced-motion",
+    ]);
+    assert.equal(result.browser?.previewCount, 3);
+    assert.equal(result.browser?.previewMatrixComplete, true);
+    assert.equal(
+      result.tests.some((entry) => entry.name === "mobile primary spatial preview frame"),
+      false,
+    );
+    assert.equal(result.tests.every((entry) => entry.passed), true);
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
 test("browser self-test rejects unsafe authored spatial camera framing with a scale repair hint", async (t) => {
   if (!browserPath()) return t.skip("Chromium or Edge is not installed");
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-spatial-camera-frame-"));

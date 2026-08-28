@@ -791,7 +791,15 @@ export default function ArtifactPanel({
         <ArtifactViewer
           artifact={openArtifact}
           onClose={() => setOpenId(null)}
-          onUpdated={() => { void refresh(); }}
+          onUpdated={(updated) => {
+            // Keep the open viewer on the new version immediately. Waiting for
+            // the archive refresh can briefly make the artifact disappear and
+            // knock a live document editor back to its preview.
+            setArtifacts((current) => current.map((item) =>
+              item.id === updated.id ? updated : item
+            ));
+            void refresh();
+          }}
           onEditImage={(artifact) => {
             setOpenId(null);
             setImagePromptSource(null);

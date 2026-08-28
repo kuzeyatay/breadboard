@@ -14,6 +14,7 @@ import {
   runtimeSessionTitle,
   type RuntimeSessionRow,
 } from "@/lib/hermes/runtime-store.ts";
+import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
 import {
   listConversationMessages,
   listConversationsForUser,
@@ -41,12 +42,17 @@ export async function OPTIONS(request: Request) {
 }
 
 function presentSession(row: RuntimeSessionRow) {
+  const activeRun = getActiveRuntimeRun(row.id);
   return {
     id: row.id,
     title: runtimeSessionTitle(row),
     gardenId: row.garden_id,
     pageSlug: row.page_slug,
     updatedAt: row.updated_at,
+    active: activeRun !== null || row.last_runtime_status === "busy",
+    responseStartedAt:
+      activeRun?.started_at ??
+      (row.last_runtime_status === "busy" ? row.updated_at : undefined),
     messages: listRuntimeMessages(row.id).map(presentRuntimeMessage),
   };
 }
@@ -95,11 +101,19 @@ export async function GET(request: Request) {
           ) {
             return [];
           }
+          const activeRun = getActiveRuntimeRun(runtime.id);
           return [
             {
               ...presentConversation(conversation),
               gardenId,
               pageSlug,
+              active:
+                activeRun !== null || runtime.last_runtime_status === "busy",
+              responseStartedAt:
+                activeRun?.started_at ??
+                (runtime.last_runtime_status === "busy"
+                  ? runtime.updated_at
+                  : undefined),
               messages: listConversationMessages(conversation.id).map(
                 presentConversationMessage,
               ),

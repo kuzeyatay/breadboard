@@ -366,6 +366,7 @@ function renderStartupState(state: StartupStateViewLocal): void {
 
   if (state.failure) {
     failedServiceId = state.failure.serviceId;
+    retryButton.disabled = false;
     failureTitle.textContent = `${state.failure.displayName} could not start`;
     failureReason.textContent = state.failure.reason;
     failureLog.textContent = state.failure.logTail.join("\n") || "(no log output captured)";
@@ -384,8 +385,18 @@ welcomeContinue.addEventListener("click", (event) => {
     keyboardActivated ? null : event.clientY,
   );
 });
-retryButton.addEventListener("click", () => {
-  if (failedServiceId !== null) void api.retryService(failedServiceId);
+retryButton.addEventListener("click", async () => {
+  const serviceId = failedServiceId;
+  if (serviceId === null || retryButton.disabled) return;
+  retryButton.disabled = true;
+  try {
+    const accepted = await api.retryService(serviceId);
+    // A rejected retry leaves the same failure card in place. Restore its
+    // action even when no new startup-state event was needed to redraw it.
+    if (!accepted && failedServiceId === serviceId) retryButton.disabled = false;
+  } catch {
+    if (failedServiceId === serviceId) retryButton.disabled = false;
+  }
 });
 openLogsButton.addEventListener("click", () => void api.openLogsFolder());
 copyDiagnosticsButton.addEventListener("click", () => void api.copyDiagnostics());

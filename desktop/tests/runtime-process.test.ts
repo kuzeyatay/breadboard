@@ -263,7 +263,7 @@ test("the native hot dashboard heap bound is trusted and mode-scoped", async () 
   );
   assert.match(
     nativeSource,
-    /const HOT_DASHBOARD_NODE_OPTIONS: &str = "--max-old-space-size=4096";/u,
+    /const HOT_DASHBOARD_NODE_OPTIONS: &str = "--max-old-space-size=6144";/u,
   );
   assert.match(
     nativeSource,

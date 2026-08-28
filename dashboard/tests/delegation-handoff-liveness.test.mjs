@@ -26,7 +26,7 @@ test("delegation hand-backs remain pending until a continuation turn starts", ()
   assert.match(session, /onTurnStarted\?: \(\) => void/);
   assert.match(
     session,
-    /setMessages\(baseline\);\s*try \{\s*options\?\.onTurnStarted\?\.\(\)/,
+    /setMessages\(baseline\);[\s\S]{0,700}try \{\s*options\?\.onTurnStarted\?\.\(\)/,
   );
 
   for (const [name, source] of [

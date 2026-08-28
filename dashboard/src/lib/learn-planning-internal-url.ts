@@ -3,6 +3,7 @@ const COUNCIL_RECOVERY_PATHS = new Set([
   "/internal/council-results/resolve",
   "/internal/council-results/legacy-resolve",
   "/internal/council-results/legacy-inventory",
+  "/internal/council-results/legacy-outcome",
 ]);
 
 /** Build only the local, uncredentialed HTTP URLs used by promptless Learn

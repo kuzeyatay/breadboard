@@ -138,7 +138,7 @@ interface GeneratedVisualCouncilClient {
     completions: {
       create: (
         request: Record<string, unknown>,
-        options: { signal?: AbortSignal; maxRetries: 0 },
+        options: { signal?: AbortSignal; timeout?: number; maxRetries: 0 },
       ) => Promise<unknown>;
     };
   };
@@ -162,6 +162,10 @@ export interface RunGeneratedVisualCouncilRequestInput {
   /** Enable only with a ChatMock build whose strict direct_council path keeps
    * image_url parts on the exact provider request and redacts ledger copies. */
   allowImageUrlParts?: boolean;
+  /** After an ambiguous transport failure, keep observing an exact `started`
+   * durable receipt for this bounded interval. Observation never authorizes a
+   * second POST. The caller's AbortSignal remains the outer deadline. */
+  startedReceiptObservationTimeoutMs?: number;
   signal?: AbortSignal;
   fetchImpl?: RecoveryFetch;
   requestIdFactory?: () => string;
@@ -1557,6 +1561,7 @@ async function resolveReceipt(
   binding: { requestId: string; requestHash: string },
   prepared: PreparedGeneratedVisualCouncilRequest,
   fetchImpl: RecoveryFetch,
+  signal?: AbortSignal,
 ): Promise<ReceiptLookup> {
   let url: URL;
   try {
@@ -1571,12 +1576,13 @@ async function resolveReceipt(
   url.searchParams.set("requestHash", binding.requestHash);
   let response: Pick<Response, "ok" | "status" | "json">;
   try {
+    const timeoutSignal = AbortSignal.timeout(10_000);
     response = await fetchImpl(url, {
       method: "GET",
       cache: "no-store",
       redirect: "error",
       headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(10_000),
+      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
     });
   } catch (error) {
     return { state: "started", code: "receipt_unobservable", cause: error };
@@ -1644,6 +1650,77 @@ async function resolveReceipt(
     return { state: "corrupt", code };
   }
   return { state: "corrupt", code };
+}
+
+const STARTED_RECEIPT_POLL_INTERVAL_MS = 250;
+const MAX_STARTED_RECEIPT_OBSERVATION_MS = 60 * 60_000;
+
+function startedReceiptObservationTimeoutMs(
+  input: RunGeneratedVisualCouncilRequestInput,
+): number {
+  const requested = input.startedReceiptObservationTimeoutMs;
+  if (typeof requested !== "number" || !Number.isFinite(requested) || requested <= 0) {
+    return 0;
+  }
+  return Math.min(Math.floor(requested), MAX_STARTED_RECEIPT_OBSERVATION_MS);
+}
+
+async function waitForReceiptObservation(
+  delayMs: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  assertReceiptContinuationActive(signal);
+  await new Promise<void>((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      reject(signal?.reason ?? new Error("Generated-visual receipt observation aborted."));
+    };
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    const timer = setTimeout(finish, delayMs);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+  });
+  assertReceiptContinuationActive(signal);
+}
+
+async function observeStartedReceiptUntilTerminal(
+  input: RunGeneratedVisualCouncilRequestInput,
+  prepared: PreparedGeneratedVisualCouncilRequest,
+  entry: BindingEntry,
+  fetchImpl: RecoveryFetch,
+  initialLookup: ReceiptLookup,
+): Promise<ReceiptLookup> {
+  let lookup = initialLookup;
+  const timeoutMs = startedReceiptObservationTimeoutMs(input);
+  if (lookup.state !== "started" || timeoutMs === 0) return lookup;
+
+  const deadline = Date.now() + timeoutMs;
+  while (lookup.state === "started") {
+    assertReceiptContinuationActive(input.signal);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return lookup;
+    await waitForReceiptObservation(
+      Math.min(STARTED_RECEIPT_POLL_INTERVAL_MS, remainingMs),
+      input.signal,
+    );
+    lookup = await resolveReceipt(
+      input.client,
+      entry.binding,
+      prepared,
+      fetchImpl,
+      input.signal,
+    );
+    assertReceiptContinuationActive(input.signal);
+  }
+  return lookup;
 }
 
 function throwLookup(
@@ -1889,7 +1966,20 @@ async function resolveExisting(
   },
 ): Promise<GeneratedVisualCouncilReceiptResult> {
   assertReceiptContinuationActive(input.signal);
-  const lookup = await resolveReceipt(input.client, entry.binding, prepared, fetchImpl);
+  let lookup = await resolveReceipt(
+    input.client,
+    entry.binding,
+    prepared,
+    fetchImpl,
+    input.signal,
+  );
+  lookup = await observeStartedReceiptUntilTerminal(
+    input,
+    prepared,
+    entry,
+    fetchImpl,
+    lookup,
+  );
   assertReceiptContinuationActive(input.signal);
   if (lookup.state !== "completed") {
     if (entry.state === "completed") {
@@ -1975,13 +2065,31 @@ async function postClaimedRequest(
   let response: unknown;
   try {
     recordDispatch(execution);
+    const sdkTimeoutMs = startedReceiptObservationTimeoutMs(input);
     response = await input.client.chat.completions.create(dispatchedRequest, {
       ...(input.signal ? { signal: input.signal } : {}),
+      // OpenAI's SDK otherwise installs its own 10-minute default timeout,
+      // which can sever a healthy Ultra request before Learn's configured
+      // receipt-aware deadline. Bind both layers to the same caller budget.
+      ...(sdkTimeoutMs > 0 ? { timeout: sdkTimeoutMs } : {}),
       maxRetries: 0,
     });
   } catch (error) {
     assertReceiptContinuationActive(input.signal);
-    const lookup = await resolveReceipt(input.client, entry.binding, prepared, fetchImpl);
+    let lookup = await resolveReceipt(
+      input.client,
+      entry.binding,
+      prepared,
+      fetchImpl,
+      input.signal,
+    );
+    lookup = await observeStartedReceiptUntilTerminal(
+      input,
+      prepared,
+      entry,
+      fetchImpl,
+      lookup,
+    );
     assertReceiptContinuationActive(input.signal);
     if (lookup.state === "completed") {
       persistCompletion(entry, lookup.result, input.now);
@@ -2042,7 +2150,20 @@ async function postClaimedRequest(
     proof = httpCompletionProof(response, prepared);
   } catch (error) {
     entry = persistHttpResponse(entry, null, input.now);
-    const lookup = await resolveReceipt(input.client, entry.binding, prepared, fetchImpl);
+    let lookup = await resolveReceipt(
+      input.client,
+      entry.binding,
+      prepared,
+      fetchImpl,
+      input.signal,
+    );
+    lookup = await observeStartedReceiptUntilTerminal(
+      input,
+      prepared,
+      entry,
+      fetchImpl,
+      lookup,
+    );
     assertReceiptContinuationActive(input.signal);
     if (lookup.state === "completed") {
       persistCompletion(entry, lookup.result, input.now);
@@ -2193,7 +2314,20 @@ async function recoverStarted(
   execution: InvocationExecution,
 ): Promise<GeneratedVisualCouncilReceiptResult> {
   assertReceiptContinuationActive(input.signal);
-  const lookup = await resolveReceipt(input.client, entry.binding, prepared, fetchImpl);
+  let lookup = await resolveReceipt(
+    input.client,
+    entry.binding,
+    prepared,
+    fetchImpl,
+    input.signal,
+  );
+  lookup = await observeStartedReceiptUntilTerminal(
+    input,
+    prepared,
+    entry,
+    fetchImpl,
+    lookup,
+  );
   assertReceiptContinuationActive(input.signal);
   if (lookup.state === "completed") {
     if (entry.response) {
@@ -2360,7 +2494,20 @@ async function runGeneratedVisualCouncilRequestWithReceiptInternal(
     }
     if (ambiguous.length === 1) {
       const origin = ambiguous[0];
-      let lookup = await resolveReceipt(input.client, origin.binding, prepared, fetchImpl);
+      let lookup = await resolveReceipt(
+        input.client,
+        origin.binding,
+        prepared,
+        fetchImpl,
+        input.signal,
+      );
+      lookup = await observeStartedReceiptUntilTerminal(
+        input,
+        prepared,
+        origin,
+        fetchImpl,
+        lookup,
+      );
       assertReceiptContinuationActive(input.signal);
       let recoveredHttpCompletionObserved = false;
       if (lookup.state !== "completed") {
@@ -2379,6 +2526,7 @@ async function runGeneratedVisualCouncilRequestWithReceiptInternal(
             origin.binding,
             prepared,
             fetchImpl,
+            input.signal,
           );
           assertReceiptContinuationActive(input.signal);
         }
@@ -2402,7 +2550,20 @@ async function runGeneratedVisualCouncilRequestWithReceiptInternal(
           lookup.state === "failed" ? lookup.proof : undefined,
         );
         recoveredHttpCompletionObserved = redispatched.httpCompletionObserved;
-        lookup = await resolveReceipt(input.client, origin.binding, prepared, fetchImpl);
+        lookup = await resolveReceipt(
+          input.client,
+          origin.binding,
+          prepared,
+          fetchImpl,
+          input.signal,
+        );
+        lookup = await observeStartedReceiptUntilTerminal(
+          input,
+          prepared,
+          origin,
+          fetchImpl,
+          lookup,
+        );
         assertReceiptContinuationActive(input.signal);
       }
       if (lookup.state !== "completed") {
@@ -2496,7 +2657,20 @@ async function runGeneratedVisualCouncilRequestWithReceiptInternal(
     }
   }
 
-  const preflight = await resolveReceipt(input.client, current.binding, prepared, fetchImpl);
+  let preflight = await resolveReceipt(
+    input.client,
+    current.binding,
+    prepared,
+    fetchImpl,
+    input.signal,
+  );
+  preflight = await observeStartedReceiptUntilTerminal(
+    input,
+    prepared,
+    current,
+    fetchImpl,
+    preflight,
+  );
   assertReceiptContinuationActive(input.signal);
   if (preflight.state === "completed") {
     persistCompletion(current, preflight.result, input.now);

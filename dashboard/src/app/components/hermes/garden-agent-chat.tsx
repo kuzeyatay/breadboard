@@ -1043,6 +1043,7 @@ export default function GardenAgentChat({
         <AgentRuntimePanel
           compact
           sessionId={session.sessionId}
+          createdSessionId={session.createdSessionId}
           surface="garden_chat"
           gardenSlug={gardenSlug}
           messages={session.messages}

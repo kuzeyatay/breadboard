@@ -219,6 +219,8 @@ export interface StartConversationTurnInput {
   branchContextId?: string;
   /** Internal result hand-back from a delegated agent, not a person's message. */
   internalAgentContinuation?: boolean;
+  /** Client-observed beginning of the response, persisted for restored clocks. */
+  responseStartedAt?: string;
   /**
    * The user had Super agent on for this message: the turn is planned with the
    * inventory classes, every reviewed skill and connection is selected for it,
@@ -325,6 +327,9 @@ export async function startConversationTurn(
         activePageSlug: context.activePageSlug ?? null,
         attachmentNames: (input.attachments ?? []).map((attachment) => attachment.name),
         attachments: chatMessageAttachments(input.attachments),
+        ...(input.responseStartedAt
+          ? { responseStartedAt: input.responseStartedAt }
+          : {}),
         ...(input.branchGroupId ? { branchGroupId: input.branchGroupId } : {}),
         ...(input.textSelection ? { textSelection: input.textSelection } : {}),
         ...(input.internalAgentContinuation

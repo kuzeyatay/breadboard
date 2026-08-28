@@ -66,7 +66,11 @@ function usablePython(command) {
     command,
     [
       "-c",
-      "import backend.main",
+      [
+        "import importlib.util, sys",
+        "required = ('backend.main', 'fastapi', 'torch', 'uvicorn')",
+        "sys.exit(0 if all(importlib.util.find_spec(name) for name in required) else 1)",
+      ].join("; "),
     ],
     { cwd: voiceboxRoot, stdio: "ignore", timeout: 30_000 },
   );
@@ -118,16 +122,32 @@ if (!python) {
 }
 
 writeStatus("starting", "Voicebox is installed and starting on this machine.");
+let stderrTail = "";
 const child = spawn(
   python,
   ["-m", "backend.main", "--host", "127.0.0.1", "--port", port, "--data-dir", dataDir],
   {
     cwd: voiceboxRoot,
     env: { ...process.env, VOICEBOX_MODELS_DIR: modelsDir },
-    stdio: "inherit",
+    stdio: ["inherit", "inherit", "pipe"],
     windowsHide: true,
   },
 );
+
+child.stderr?.on("data", (chunk) => {
+  const text = chunk.toString();
+  process.stderr.write(text);
+  stderrTail = `${stderrTail}${text}`.slice(-4_096);
+});
+
+function lastStderrLine() {
+  const lines = stderrTail
+    .replaceAll(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.at(-1)?.slice(0, 800) || null;
+}
 
 const readinessTimer = setInterval(async () => {
   try {
@@ -150,7 +170,15 @@ child.on("error", (error) => {
 });
 child.on("exit", (code, signal) => {
   clearInterval(readinessTimer);
-  if (code && code !== 0) writeStatus("error", `Voicebox stopped with exit code ${code}.`);
+  if (code && code !== 0) {
+    const detail = lastStderrLine();
+    writeStatus(
+      "error",
+      detail
+        ? `Voicebox stopped with exit code ${code}: ${detail}`
+        : `Voicebox stopped with exit code ${code}.`,
+    );
+  }
   else writeStatus("stopped", "The local speech service is stopped.");
   if (signal) process.stderr.write(`[voicebox] Stopped by ${signal}.\n`);
   process.exit(code ?? 0);

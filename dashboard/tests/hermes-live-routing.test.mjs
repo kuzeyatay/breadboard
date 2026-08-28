@@ -412,12 +412,19 @@ test("garden turn context states real capability instead of asserting none exist
 test("Quartz graph emits bounded map context consumed only by dashboard proxy chat", () => {
   const graph = read("quartz/quartz/components/scripts/graph.inline.ts");
   const ai = read("quartz/quartz/components/scripts/breadboardAI.inline.ts");
+  const chatRoute = read("dashboard/src/app/api/quartz-ai/chat/route.ts");
   assert.match(graph, /breadboard:graph-context/);
   assert.match(graph, /visibleNodeSlugs:[\s\S]*slice\(0, 24\)/);
   assert.match(ai, /__breadboardGraphContext/);
   assert.match(ai, /\/api\/quartz-ai\/chat/);
   assert.match(ai, /prepareOnly: true/);
-  assert.match(ai, /: connected[\s\S]*await dispatch\(\)/);
+  // The dashboard pump now starts with the durable dispatch, so navigation in
+  // the old GET-connected/POST gap cannot lose the prompt. The page viewer
+  // attaches only after that server-owned pump exists.
+  assert.match(chatRoute, /startSessionEventPump/);
+  const dispatchAt = ai.indexOf("const dispatchResponse = await fetch");
+  const viewerAt = ai.indexOf("await streamEvents(state.sessionId!");
+  assert.ok(dispatchAt >= 0 && viewerAt > dispatchAt);
 });
 
 test("production code contains no placeholder skill registry or fabricated manifest fallback", () => {

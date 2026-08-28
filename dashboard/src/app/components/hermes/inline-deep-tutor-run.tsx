@@ -1,5 +1,7 @@
 "use client";
 
+import { externalRunStartedAtMs } from "./external-run-clock";
+
 // One Deep Tutor turn, live in the transcript.
 //
 // The card leads with the thing that is easy to get wrong about this agent:
@@ -176,7 +178,8 @@ export default function InlineDeepTutorRun({
 
   useEffect(() => {
     reportedRef.current = false;
-    startedRef.current = Date.now();
+    startedRef.current = externalRunStartedAtMs(runId);
+    setElapsed(Math.max(0, (Date.now() - startedRef.current) / 1_000));
   }, [runId]);
 
   const applyEvent = useCallback(
