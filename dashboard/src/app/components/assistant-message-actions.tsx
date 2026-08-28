@@ -13,6 +13,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import EvidencePanel from "@/app/components/hermes/evidence-panel";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import { playSpeechBlob, stopSpeechPlayback } from "@/lib/speech/playback";
@@ -469,10 +470,7 @@ export default function AssistantMessageActions({
           aria-pressed={speechState === "playing"}
         >
           {speechState === "loading" ? (
-            <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <circle className="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" />
-              <path className="opacity-80" fill="currentColor" d="M12 3a9 9 0 0 1 9 9h-3a6 6 0 0 0-6-6V3Z" />
-            </svg>
+            <BreadboardLoader className="h-4 w-4" />
           ) : speechState === "playing" ? (
             <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
               <rect x="7" y="7" width="10" height="10" rx="1.5" />
@@ -596,10 +594,7 @@ export default function AssistantMessageActions({
               }
             >
               {dictationState === "preparing" ? (
-                <svg className="h-3.5 w-3.5 shrink-0 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <circle className="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" />
-                  <path className="opacity-80" fill="currentColor" d="M12 3a9 9 0 0 1 9 9h-3a6 6 0 0 0-6-6V3Z" />
-                </svg>
+                <BreadboardLoader className="h-3.5 w-3.5 shrink-0" />
               ) : null}
               <span>
                 {dictationState === "preparing" ? "Preparing dictation…" : "Download dictation"}

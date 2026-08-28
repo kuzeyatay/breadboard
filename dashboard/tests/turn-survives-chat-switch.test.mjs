@@ -6,6 +6,21 @@ const hookSource = fs.readFileSync(
   new URL("../src/app/components/hermes/use-agent-session.ts", import.meta.url),
   "utf8",
 );
+const directServiceSource = fs.readFileSync(
+  new URL("../src/lib/conversations/direct-turn-service.ts", import.meta.url),
+  "utf8",
+);
+const messageRouteSource = fs.readFileSync(
+  new URL(
+    "../src/app/api/hermes/sessions/[sessionId]/messages/route.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const sessionPresentationSource = fs.readFileSync(
+  new URL("../src/lib/hermes/session-presentation.ts", import.meta.url),
+  "utf8",
+);
 
 const sendSource = hookSource.slice(
   hookSource.indexOf("const send = useCallback("),
@@ -61,12 +76,22 @@ test("an abandoned turn writes to the server and to nothing else", () => {
   );
   assert.match(
     directSource,
-    /if \(input\.viewEpoch === viewEpochRef\.current\) abortRef\.current = controller;/,
-    "Stop belongs to the chat on screen, never to the turn that left with the reader",
+    /if \(input\.viewEpoch === viewEpochRef\.current\) \{\s*input\.commit\(assistant\);\s*\}/,
+    "a hidden direct turn must keep draining while withholding only its view updates",
+  );
+  assert.doesNotMatch(
+    directSource,
+    /signal: controller\.signal/,
+    "view teardown must not own the direct provider request",
   );
   assert.match(
     directSource,
-    /if \(input\.viewEpoch === viewEpochRef\.current\) \{\s*transition\("running"\);/,
+    /if \(!response\.ok && stopWasRequestedForTurn\(\)\) \{[\s\S]*?return;/,
+    "a provider handshake stopped by the user must stay Cancelled",
+  );
+  assert.match(
+    directSource,
+    /else if \(input\.viewEpoch === viewEpochRef\.current\) \{\s*transition\("running"\);/,
     "run state and activity belong to the chat on screen",
   );
   const sendUpdates = sendSource.slice(
@@ -77,5 +102,66 @@ test("an abandoned turn writes to the server and to nothing else", () => {
     sendUpdates,
     /if \(stillViewing\(\)\) \{\s*sessionRef\.current = activeSessionId;/,
     "the selected chat must not be pulled back to the one the turn belongs to",
+  );
+});
+
+test("transport loss is viewer detachment, never an interrupted answer", () => {
+  assert.doesNotMatch(
+    messageRouteSource,
+    /status: request\.signal\.aborted \? "aborted" : "failed"/,
+  );
+  assert.doesNotMatch(
+    messageRouteSource,
+    /retrieveDocumentAttachments\([\s\S]*?request\.signal/,
+  );
+  assert.doesNotMatch(
+    directServiceSource,
+    /input\.request\.signal\.addEventListener/,
+  );
+  const cancelBody = directServiceSource.slice(
+    directServiceSource.indexOf("cancel() {"),
+    directServiceSource.indexOf("return new Response(body"),
+  );
+  assert.doesNotMatch(cancelBody, /providerAbort\.abort\(\)/);
+  assert.doesNotMatch(cancelBody, /finish\("aborted"/);
+  assert.match(directServiceSource, /export function abortDirectProviderTurn/);
+});
+
+test("a restored pending answer returns to Thinking until it settles", () => {
+  assert.match(
+    sessionPresentationSource,
+    /pending: presented\.status === "pending"/,
+  );
+  assert.match(hookSource, /function pendingRestoredTurn/);
+  assert.match(hookSource, /const resumePendingConversation = useCallback/);
+  assert.match(hookSource, /label: "Thinking"/);
+  assert.match(
+    hookSource,
+    /loadHermesSessionDetail\(surface, id, \{\s*revalidateAfterPending: true/,
+  );
+  assert.match(hookSource, /resumePendingConversation\(id, restoredMessages, viewEpoch\)/);
+});
+
+test("reopening during the pre-reservation gap keeps the local turn visible", () => {
+  assert.match(hookSource, /const localInFlightTurnsRef = useRef\(new Map</);
+  assert.match(
+    sendSource,
+    /localInFlightTurnsRef\.current\.set\(\s*startingSessionId,\s*localInFlightTurn/,
+  );
+  const openSource = hookSource.slice(
+    hookSource.indexOf("const openSession = useCallback("),
+    hookSource.indexOf("const refreshSession = useCallback("),
+  );
+  assert.match(
+    openSource,
+    /localInFlightTurn\?\.messages \?\? cached\?\.messages/,
+  );
+  assert.match(
+    openSource,
+    /!optimisticTurnPersisted &&\s*!restoredRun[\s\S]*resumePendingConversation\(id, normalizedOptimistic, viewEpoch, \{\s*allowOptimistic: true/,
+  );
+  assert.match(
+    hookSource,
+    /localSendStillRunning \|\| Date\.now\(\) < persistenceGraceUntil/,
   );
 });

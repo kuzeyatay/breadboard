@@ -54,13 +54,6 @@ const STATE_TEXT: Record<ParticipantState, string> = {
   aborted: "stopped",
 };
 
-function elapsed(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-}
-
 export default function InlineMaxResearchRun({
   runId,
   query,
@@ -240,6 +233,7 @@ export default function InlineMaxResearchRun({
       <AssistantResponseMeta
         active={!done}
         failed={done && status !== "completed"}
+        label={status === "aborted" ? "Stopped" : undefined}
         totalTokens={
           persistedUsage ? persistedUsage.inputTokens + persistedUsage.outputTokens : undefined
         }
@@ -253,12 +247,16 @@ export default function InlineMaxResearchRun({
         {/* The question is the user's own message directly above this card, so
             the header carries the agent and its state rather than repeating it. */}
         <header className="bb-agent-run-header">
-          <p className="bb-agent-run-title min-w-0 truncate" title={query}>
+          <p
+            className="bb-agent-run-title min-w-0 justify-self-start truncate text-left"
+            title={query}
+          >
             Max Research
           </p>
           <div className="flex shrink-0 items-center gap-[8px]">
             <span className="bb-agent-run-label inline-flex items-center gap-1.5 capitalize">
               <span
+                aria-hidden="true"
                 className={`bb-agent-run-led h-1.5 w-1.5 ${
                   status === "completed"
                     ? "bg-[var(--botanical)]"
@@ -267,9 +265,13 @@ export default function InlineMaxResearchRun({
                       : "animate-pulse bg-[var(--botanical-2)]"
                 }`}
               />
-              {done
-                ? STATE_TEXT[status as ParticipantState] ?? status
-                : `${stage.toLowerCase()} · ${elapsed(seconds)}`}
+              {status !== "aborted" ? (
+                <>
+                {done
+                  ? STATE_TEXT[status as ParticipantState] ?? status
+                  : stage.toLowerCase()}
+                </>
+              ) : null}
             </span>
             {/* No Stop here. One conversation has one stop control and it is
                 the composer's, which already knows about every run in the
@@ -325,9 +327,10 @@ export default function InlineMaxResearchRun({
               </ol>
             ) : (
               <p className="bb-agent-run-text text-[var(--ink-muted)]">
-                {/* All five are commissioned; the only thing being established
-                    here is which of them the machine can actually reach. */}
-                Commissioning all five…
+                {/* The usable roster is not known until every candidate's live
+                    runtime check finishes. Name no agent before that result;
+                    plan.completed replaces this with the exact selected roster. */}
+                Checking which research agents are available…
               </p>
             )}
           </section>
@@ -336,7 +339,7 @@ export default function InlineMaxResearchRun({
             <section className="bb-agent-run-text border-t border-[color-mix(in_srgb,var(--line)_55%,transparent)] pt-[21px]">
               <ChatMarkdown content={answer} compact />
             </section>
-          ) : failure ? (
+          ) : failure && status !== "aborted" ? (
             <p className="bb-agent-run-text text-[var(--danger)]">{failure}</p>
           ) : null}
         </div>

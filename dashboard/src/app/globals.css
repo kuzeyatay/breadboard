@@ -1,5 +1,76 @@
 @import "tailwindcss";
 
+/* Shared loading mark. The imperfect paths stay still while short ink strokes
+   trace them. This reads as a hand repeatedly following the circle instead of
+   a finished icon rotating as one rigid object. */
+.bb-loader {
+  display: block;
+  flex: none;
+  overflow: visible;
+}
+
+.bb-loader-settled {
+  opacity: 0.18;
+}
+
+.bb-loader-sketch {
+  opacity: 0.52;
+  stroke-dasharray: 28 72;
+  stroke-dashoffset: 0;
+  animation: bb-loader-trace 1680ms linear var(--bb-loader-sketch-delay, 0ms) infinite;
+}
+
+.bb-loader-sketch-1 {
+  opacity: 0.86;
+  stroke-dasharray: 34 66;
+}
+
+.bb-loader-sketch-2 {
+  opacity: 0.68;
+  stroke-dasharray: 30 70;
+}
+
+.bb-loader-sketch-3 {
+  opacity: 0.54;
+  stroke-dasharray: 26 74;
+}
+
+.bb-loader-sketch-4 {
+  opacity: 0.42;
+  stroke-dasharray: 22 78;
+}
+
+@keyframes bb-loader-trace {
+  to {
+    stroke-dashoffset: -100;
+  }
+}
+
+/* Tracing is not required to understand the state. With reduced motion the ink
+   stays in place and changes strength slowly, preserving a living loading
+   signal without spatial movement. */
+@media (prefers-reduced-motion: reduce) {
+  .bb-loader-sketch {
+    animation: bb-loader-soft 2.1s cubic-bezier(0.77, 0, 0.175, 1) infinite;
+  }
+
+  .bb-loader-sketch-2,
+  .bb-loader-sketch-3,
+  .bb-loader-sketch-4 {
+    display: none;
+  }
+}
+
+@keyframes bb-loader-soft {
+  0%,
+  100% {
+    opacity: 0.38;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 :root {
   /* Reading-first light theme: pale green / warm paper surfaces, dark
      charcoal-green text, muted botanical accents. */
@@ -4848,7 +4919,10 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
   position: absolute;
   inset-inline: 0;
   bottom: 0;
-  z-index: 20;
+  /* Rail resize handles use layer 20. The composer's menus can overflow into
+     those rails, so the whole popup-owning overlay must paint one layer above
+     them or the divider hairline cuts through the menu surface. */
+  z-index: 30;
 }
 
 /* The transcript scroller. A classic scrollbar steals ~15px of the scroller's

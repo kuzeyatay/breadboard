@@ -13,6 +13,7 @@ import { memo, useState } from "react";
 import { MessageSquareText, Pencil, SmilePlus, Trash2 } from "lucide-react";
 
 import { cn } from "@/app/buzz/lib/cn";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import {
   MessageAuthorText,
   MessageHeaderRow,
@@ -151,7 +152,7 @@ function MessageRowImpl({
                 <MessageMarkdown body={message.body} members={roomMembers} />
               ) : live ? (
                 <span className="inline-flex items-center gap-1.5 py-0.5 text-muted-foreground">
-                  <span className="sprout-arc-spinner size-3" aria-hidden="true" />
+                  <BreadboardLoader className="size-3" />
                   <span className="text-2xs">{message.authorName} is thinking…</span>
                 </span>
               ) : null}

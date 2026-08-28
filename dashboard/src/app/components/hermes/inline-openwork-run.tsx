@@ -1,5 +1,7 @@
 "use client";
 
+import { externalRunStartedAtMs } from "./external-run-clock";
+
 // The OpenWork run card.
 //
 // Unlike the video and film cards, an OpenWork run's payoff is usually the
@@ -128,7 +130,8 @@ export default function InlineOpenworkRun({
 
   useEffect(() => {
     reportedRef.current = false;
-    startedRef.current = Date.now();
+    startedRef.current = externalRunStartedAtMs(runId);
+    setElapsed(Math.max(0, (Date.now() - startedRef.current) / 1_000));
   }, [runId]);
 
   const reportTerminal = useCallback(

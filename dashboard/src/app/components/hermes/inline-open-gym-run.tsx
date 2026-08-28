@@ -1,5 +1,7 @@
 "use client";
 
+import { externalRunStartedAtMs } from "./external-run-clock";
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
@@ -82,7 +84,8 @@ export default function InlineOpenGymRun({
   }, []);
   useEffect(() => {
     reportedRef.current = false;
-    startedRef.current = Date.now();
+    startedRef.current = externalRunStartedAtMs(runId);
+    setElapsed(Math.max(0, (Date.now() - startedRef.current) / 1_000));
   }, [runId]);
 
   const applyEvent = useCallback((event: RunEvent) => {

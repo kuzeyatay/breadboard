@@ -78,6 +78,34 @@ import { renderCurrentLocationContext } from "../hermes/current-location-context
 
 export const DIRECT_BACKEND = "direct-provider";
 
+interface ActiveDirectProviderTurn {
+  clientMessageId: string;
+  controller: AbortController;
+  stopRequested: boolean;
+}
+
+const directProviderGlobal = globalThis as typeof globalThis & {
+  __breadboardActiveDirectProviderTurns?: Map<number, ActiveDirectProviderTurn>;
+};
+const activeDirectProviderTurns =
+  directProviderGlobal.__breadboardActiveDirectProviderTurns ??=
+    new Map<number, ActiveDirectProviderTurn>();
+
+/**
+ * Stop is the one operation that owns provider cancellation. Closing a page or
+ * its response stream only removes a viewer; the server keeps consuming and
+ * persisting the turn so another view can observe it later.
+ */
+export function abortDirectProviderTurn(
+  conversationId: number,
+): { clientMessageId: string } | null {
+  const active = activeDirectProviderTurns.get(conversationId);
+  if (!active) return null;
+  active.stopRequested = true;
+  active.controller.abort(new DOMException("Stopped by the user.", "AbortError"));
+  return { clientMessageId: active.clientMessageId };
+}
+
 /** History depth sent to the provider. The store caps this at 30. */
 const HISTORY_MESSAGES = 20;
 
@@ -95,6 +123,8 @@ export interface StartDirectTurnInput {
   branchGroupId?: string;
   /** Internal result hand-back from a delegated agent, not a person's message. */
   internalAgentContinuation?: boolean;
+  /** Client-observed beginning of the response, persisted for restored clocks. */
+  responseStartedAt?: string;
   /**
    * The user had Concise on for this message. The legacy transport field
    * keeps older clients compatible while the product name changes.
@@ -293,6 +323,9 @@ export async function startDirectProviderTurn(
         backend: DIRECT_BACKEND,
         attachmentNames: attachments.map((attachment) => attachment.name),
         attachments: chatMessageAttachments(attachments),
+        ...(input.responseStartedAt
+          ? { responseStartedAt: input.responseStartedAt }
+          : {}),
         ...(input.branchGroupId ? { branchGroupId: input.branchGroupId } : {}),
         ...(input.internalAgentContinuation
           ? { internalAgentContinuation: true }
@@ -394,15 +427,20 @@ export async function startDirectProviderTurn(
     }
   };
 
-  // One abort for the provider call, fired when the browser stops reading or the
-  // request itself is cut. Without it a cancelled turn keeps generating tokens
-  // nobody will ever see.
+  // This controller is server-owned. A browser response is merely one viewer;
+  // only the explicit session abort route is allowed to stop the provider.
   const providerAbort = new AbortController();
-  input.request.signal.addEventListener(
-    "abort",
-    () => providerAbort.abort(),
-    { once: true },
-  );
+  const activeDirectTurn: ActiveDirectProviderTurn = {
+    clientMessageId: input.clientMessageId,
+    controller: providerAbort,
+    stopRequested: false,
+  };
+  activeDirectProviderTurns.set(input.conversation.id, activeDirectTurn);
+  const releaseDirectTurn = () => {
+    if (activeDirectProviderTurns.get(input.conversation.id) === activeDirectTurn) {
+      activeDirectProviderTurns.delete(input.conversation.id);
+    }
+  };
 
   let stream: AsyncIterable<ResponseStreamEvent>;
   try {
@@ -447,11 +485,13 @@ export async function startDirectProviderTurn(
       signal: providerAbort.signal,
     })) as AsyncIterable<ResponseStreamEvent>;
   } catch (error) {
+    const stopped = activeDirectTurn.stopRequested;
     const message =
       error instanceof Error
         ? error.message
         : "The model provider could not be reached.";
-    finish("failed", "", null, message);
+    finish(stopped ? "aborted" : "failed", "", null, stopped ? "cancelled_by_user" : message);
+    releaseDirectTurn();
     recordAuditEvent({
       eventType: "direct_provider.failed",
       userId: input.conversation.user_id,
@@ -461,7 +501,11 @@ export async function startDirectProviderTurn(
         model,
       },
     });
-    throw new ApiError(502, "direct_provider_unavailable", message);
+    throw new ApiError(
+      stopped ? 409 : 502,
+      stopped ? "direct_provider_stopped" : "direct_provider_unavailable",
+      stopped ? "The answer was stopped." : message,
+    );
   }
 
   recordAuditEvent({
@@ -553,10 +597,12 @@ export async function startDirectProviderTurn(
           }
         }
       } catch (error) {
-        failure =
-          error instanceof Error
-            ? error.message
-            : "The response stream ended unexpectedly.";
+        if (!activeDirectTurn.stopRequested) {
+          failure =
+            error instanceof Error
+              ? error.message
+              : "The response stream ended unexpectedly.";
+        }
       }
 
       const held = emDash.flush();
@@ -580,12 +626,19 @@ export async function startDirectProviderTurn(
         // not a lost turn: it is stored as what arrived so a reload shows the
         // same transcript the user just read.
         finish(
-          failure && !answer.trim() ? "failed" : "complete",
+          activeDirectTurn.stopRequested
+            ? "aborted"
+            : failure && !answer.trim()
+              ? "failed"
+              : "complete",
           answer,
           usage,
-          failure ?? undefined,
+          activeDirectTurn.stopRequested
+            ? "cancelled_by_user"
+            : failure ?? undefined,
         );
       }
+      releaseDirectTurn();
       if (!writable) return;
       try {
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -595,14 +648,10 @@ export async function startDirectProviderTurn(
       }
     },
     cancel() {
-      // The browser stopped reading (Stop, navigation, reload). Nothing further
-      // will be delivered, so the provider call is dropped and the turn is closed
-      // here rather than left pending forever.
+      // The browser stopped reading because its viewer navigated or reloaded.
+      // `start()` keeps draining the provider and writing the durable answer.
+      // Explicit Stop reaches `abortDirectProviderTurn` through the abort API.
       writable = false;
-      providerAbort.abort();
-      if (settled) return;
-      settled = true;
-      finish("aborted", answer, usage, "aborted");
     },
   });
 

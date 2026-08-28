@@ -537,7 +537,7 @@ function validateHotDashboardLaunch(services) {
   const expectedArguments = [
     { kind: "app-path", path: HOT_DASHBOARD_LAUNCHER },
     { kind: "literal", value: "dev" },
-    { kind: "literal", value: "--webpack" },
+    { kind: "literal", value: "--turbopack" },
     { kind: "literal", value: "--port" },
     { kind: "runtime-value", value: "service-port" },
     { kind: "literal", value: "--hostname" },
@@ -548,10 +548,10 @@ function validateHotDashboardLaunch(services) {
   }
   if (JSON.stringify(hot.resourceLimits) !== JSON.stringify({
     estimatedColdStartCommitMb: 3072,
-    softCommitLimitMb: 6144,
-    hardCommitLimitMb: 8192,
+    softCommitLimitMb: 9216,
+    hardCommitLimitMb: 11264,
   })) {
-    fail("dashboard Hot launch must retain the reviewed bounded Webpack memory envelope");
+    fail("dashboard Hot launch must retain the reviewed bounded Turbopack memory envelope");
   }
   if (
     JSON.stringify(hot.workingDirectory) !==

@@ -85,6 +85,56 @@ test("chat detail prefetch reuses cached and in-flight transcripts", async () =>
   }
 });
 
+test("selecting a chat revalidates an older in-flight intent prefetch", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  let releasePrefetch;
+  globalThis.fetch = () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Promise((resolve) => {
+        releasePrefetch = () => resolve(
+          new Response(
+            JSON.stringify({ session: { id: "pending-selection", activeRun: null } }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      });
+    }
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          session: { id: "pending-selection", activeRun: { id: "run_live" } },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+  };
+
+  try {
+    const client = await import(
+      "../src/lib/hermes/session-client.ts?pending-selection-regression"
+    );
+    const prefetch = client.prefetchHermesSessionDetail(
+      "dashboard_terminal",
+      "pending-selection",
+    );
+    const selected = client.loadHermesSessionDetail(
+      "dashboard_terminal",
+      "pending-selection",
+      { revalidateAfterPending: true },
+    );
+    assert.equal(calls, 1);
+    releasePrefetch();
+    await prefetch;
+    const restored = await selected;
+    assert.equal(calls, 2, "selection needs a request newer than the intent prefetch");
+    assert.equal(restored.activeRun?.id, "run_live");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("local development defaults to Turbopack and history rows prefetch details", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),

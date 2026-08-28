@@ -24,7 +24,10 @@ const MAX_ENVIRONMENT_VALUE_BYTES: usize = 16 * 1024;
 // units. Counting Rust's platform encoding bytes is conservative for the
 // ASCII names and ordinary Windows paths used here.
 const MAX_ENVIRONMENT_BLOCK_BYTES: usize = 32 * 1024 - 1;
-const HOT_DASHBOARD_NODE_OPTIONS: &str = "--max-old-space-size=4096";
+// Next dev recycles its server child at roughly 80% of this V8 old-space cap.
+// The dashboard's large route graph repeatedly crossed the old 4 GiB cap before
+// Runtime V2's outer process-tree limit, producing user-visible restarts.
+const HOT_DASHBOARD_NODE_OPTIONS: &str = "--max-old-space-size=6144";
 
 const REQUIRED_OS_ENVIRONMENT_NAME: &str = "SystemRoot";
 const OPTIONAL_ELECTRON_GATED_OS_ENVIRONMENT_NAMES: [&str; 7] = [
@@ -7149,7 +7152,7 @@ fn build_dashboard_environment(
     )?;
     builder.insert(
         "BREADBOARD_DASHBOARD_BUNDLER",
-        if is_hot { "webpack" } else { "standalone" },
+        if is_hot { "turbopack" } else { "standalone" },
     )?;
     builder.insert(
         "PORT",
@@ -9805,7 +9808,7 @@ mod tests {
         assert!(!solidworks.contains_key("OPENAI_API_KEY"));
         assert!(!solidworks.contains_key("BREADBOARD_SUPERVISOR_CONTROL_TOKEN"));
         assert_eq!(dashboard["NODE_OPTIONS"], HOT_DASHBOARD_NODE_OPTIONS);
-        assert_eq!(dashboard["BREADBOARD_DASHBOARD_BUNDLER"], "webpack");
+        assert_eq!(dashboard["BREADBOARD_DASHBOARD_BUNDLER"], "turbopack");
         assert_eq!(dashboard["OPENAI_BASE_URL"], "http://127.0.0.1:7737/v1");
         assert_eq!(dashboard["HERMES_BASE_URL"], "http://127.0.0.1:7740");
         assert_eq!(dashboard["GBRAIN_MODE"], "preferred");
@@ -9849,7 +9852,7 @@ mod tests {
         assert!(!OPTIONAL_ELECTRON_GATED_PRODUCT_ENVIRONMENT_NAMES.contains(&"NODE_OPTIONS"));
 
         for (mode, expected_node_options, expected_bundler) in [
-            (RuntimeMode::Hot, HOT_DASHBOARD_NODE_OPTIONS, "webpack"),
+            (RuntimeMode::Hot, HOT_DASHBOARD_NODE_OPTIONS, "turbopack"),
             (RuntimeMode::Lean, "", "standalone"),
             (RuntimeMode::Packaged, "", "standalone"),
         ] {

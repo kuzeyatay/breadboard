@@ -18,6 +18,7 @@ import {
 } from 'react';
 import dynamic from 'next/dynamic';
 import SettingsDialog, { type SettingsTab } from '@/app/components/settings-dialog';
+import BreadboardLoader from '@/app/components/breadboard-loader';
 import SpeechDictationButton from '@/app/components/speech-dictation-button';
 import VoiceConversationOverlay from '@/app/components/voice-conversation-overlay';
 import type { VoiceMessage } from '@/lib/speech/voice-conversation';
@@ -407,12 +408,7 @@ function CheckIcon() {
 }
 
 function Spinner() {
-  return (
-    <svg className="h-4 w-4 animate-spin motion-reduce:animate-none" viewBox="0 0 24 24" fill="none">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z" />
-    </svg>
-  );
+  return <BreadboardLoader className="h-4 w-4" />;
 }
 
 // How far the field may grow before it starts scrolling instead. Pasting a page

@@ -51,12 +51,6 @@ interface SaveResult {
 const MAX_CHAT_ENTRIES = 30
 const MAX_DOCUMENT_HTML = 96_000
 const SAVE_EVENT = 'breadboard:genoffice-save-complete'
-const WORD_ACTIONS = [
-  { label: 'Proofread', prompt: 'Proofread this document and fix spelling or grammar mistakes.' },
-  { label: 'Rewrite', prompt: 'Improve the writing while preserving the meaning and useful styles.' },
-  { label: 'Summarize', prompt: 'Summarize this document.' },
-  { label: 'Format', prompt: 'Improve the document formatting and hierarchy without changing its meaning.' },
-]
 
 function messageId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -68,6 +62,14 @@ function artifactIdFromLocation(): string {
 
 function conversationIdFromLocation(): string {
   return new URLSearchParams(window.location.search).get('conversationId')?.trim() ?? ''
+}
+
+function ComposerArrow() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 19.5v-15m0 0-6 6m6-6 6 6" />
+    </svg>
+  )
 }
 
 function chatStorageKey(): string {
@@ -249,7 +251,6 @@ export function AiPanel({
   preset,
   open = true,
   onExpand,
-  onCollapse,
 }: AiPanelProps) {
   const [input, setInput] = useState('')
   const [chat, setChat] = useState<ChatEntry[]>(readStoredChat)
@@ -366,47 +367,6 @@ export function AiPanel({
 
   return (
     <aside className="ai-panel" style={{ width: '100%' }} aria-label="Bread document chat">
-      <div
-        className="ai-panel-header-actions"
-        style={{ position: 'absolute', top: 8, right: 9, zIndex: 2 }}
-      >
-        {chat.length > 0 ? (
-          <button
-            className="ai-header-btn"
-            aria-label="Start a new document chat"
-            title="New chat"
-            disabled={busy}
-            onClick={() => setChat([])}
-          >
-            <span aria-hidden="true">＋</span>
-          </button>
-        ) : null}
-        {onCollapse ? (
-          <button
-            className="ai-header-btn bread-ai-panel-collapse"
-            aria-label="Collapse AI panel"
-            title="Collapse"
-            onClick={onCollapse}
-          >
-            <span aria-hidden="true">‹</span>
-          </button>
-        ) : null}
-      </div>
-
-      <div className="bread-ai-word-actions" aria-label="Word document actions">
-        <span className="bread-ai-document-scope"><span aria-hidden="true">●</span> Word document</span>
-        {WORD_ACTIONS.map((action) => (
-          <button
-            key={action.label}
-            type="button"
-            disabled={busy}
-            onClick={() => setInput(action.prompt)}
-          >
-            {action.label}
-          </button>
-        ))}
-      </div>
-
       <div ref={logRef} className="ai-chat" aria-live="polite">
         {chat.length === 0 ? (
           <div className="ai-chat-empty">
@@ -453,7 +413,10 @@ export function AiPanel({
         <AiComposer
           value={input}
           busy={busy}
-          placeholder={selectionPreview ? 'Ask Bread to edit the selection…' : 'Ask Bread to write, rewrite, or format…'}
+          iconOnly
+          sendIconEnabled={<ComposerArrow />}
+          sendIconDisabled={<ComposerArrow />}
+          placeholder={selectionPreview ? 'Ask Bread about the selection…' : 'Ask Bread about this document…'}
           hintIdle="Enter to send · Shift+Enter for a new line"
           hintBusy="Bread is working…"
           hintIdleTitle="Send inside this document editor"

@@ -11,10 +11,12 @@
  * durable inputs (sources, stable config, approved non-learning files) are
  * seeded in; the old generated `learning/` tree and every disposable projection
  * are deliberately left behind. The finished, validated staging tree is later
- * promoted atomically (see learn-atomic-promotion.ts).
+ * promoted atomically (see learn-atomic-promotion.ts). A workspace is disposable
+ * only after success, explicit cancellation, or supersession. Ordinary failures
+ * retain the exact staged candidate for diagnosis and continuation.
  */
 
-import type { Stats } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import os from "node:os";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import crypto from "node:crypto";
@@ -50,6 +52,20 @@ export interface LearnBuildWorkspace {
   authoritativeSourceAnchorLedger?: AuthoritativeSourceAnchorLedgerSnapshot;
 
   createdAt: string;
+
+  /** Active while a worker owns the build. A non-cancelled generation failure
+   * changes this to `retained_after_failure` instead of deleting the candidate. */
+  lifecycle: "active" | "retained_after_failure";
+  retainedAt?: string;
+  retentionReason?: "generation_failure" | "abandoned_worker";
+  retentionStage?: string;
+
+  /** Present only on a new active workspace cloned from a compatible retained
+   * candidate. The retained source tree remains immutable and available for
+   * audit while this job continues its exact staged checkpoints. */
+  resumedFromBuildId?: string;
+  resumedFromJobId?: string;
+  resumedFromWorkspaceRoot?: string;
 }
 
 export interface AuthoritativeSourceAnchorLedgerSnapshot {
@@ -156,7 +172,69 @@ function temporaryBuildsBaseDir(): string {
   return path.join(os.tmpdir(), "breadboard-learn");
 }
 
+function runtimeWorkerBuildsBaseDir(): string | null {
+  const runtimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR?.trim();
+  return runtimeRoot && path.isAbsolute(runtimeRoot)
+    ? path.join(runtimeRoot, "builds")
+    : null;
+}
+
+function configuredDataBuildsBaseDir(): string | null {
+  const dataRoot = process.env.BREADBOARD_DATA_DIR?.trim();
+  return dataRoot && path.isAbsolute(dataRoot)
+    ? path.join(dataRoot, "runtime", "learn-workers", "builds")
+    : null;
+}
+
+function developmentWorkerBuildsBaseDir(): string | null {
+  const configuredDashboard =
+    process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR?.trim();
+  const dashboardRoot = configuredDashboard && path.isAbsolute(configuredDashboard)
+    ? configuredDashboard
+    : path.basename(process.cwd()).toLowerCase() === "dashboard"
+      ? process.cwd()
+      : null;
+  return dashboardRoot
+    ? path.join(path.dirname(dashboardRoot), "runtime", "learn-workers", "builds")
+    : null;
+}
+
+function systemTemporaryBuildsBaseDir(): string | null {
+  if (process.platform !== "win32") return null;
+  const systemRoot = process.env.SystemRoot?.trim();
+  return systemRoot && path.isAbsolute(systemRoot)
+    ? path.join(systemRoot, "Temp", "breadboard-learn")
+    : null;
+}
+
+function retainedBuildsBaseDir(): string | null {
+  const localAppData = process.env.LOCALAPPDATA?.trim();
+  return localAppData
+    ? path.join(localAppData, "Breadboard", "retained-builds")
+    : null;
+}
+
+function learnWorkspaceBaseCandidates(): string[] {
+  const candidateBases = [
+    buildsBaseDir(),
+    runtimeWorkerBuildsBaseDir(),
+    configuredDataBuildsBaseDir(),
+    developmentWorkerBuildsBaseDir(),
+    process.env.LOCALAPPDATA?.trim()
+      ? path.join(process.env.LOCALAPPDATA.trim(), "Breadboard", "builds")
+      : null,
+    retainedBuildsBaseDir(),
+    temporaryBuildsBaseDir(),
+    systemTemporaryBuildsBaseDir(),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  return [...new Set(candidateBases.map((base) => path.resolve(base)))];
+}
+
 function buildsBaseDir(): string {
+  const runtimeWorkerRoot = runtimeWorkerBuildsBaseDir();
+  if (runtimeWorkerRoot) return runtimeWorkerRoot;
+  const configuredDataRoot = configuredDataBuildsBaseDir();
+  if (configuredDataRoot) return configuredDataRoot;
   const localAppData = process.env.LOCALAPPDATA;
   if (localAppData && localAppData.trim()) {
     return path.join(localAppData, "Breadboard", "builds");
@@ -178,16 +256,16 @@ export function temporaryWorkspaceRoot(gardenSlug: string, jobId: string): strin
   return path.join(temporaryBuildsBaseDir(), gardenSlug, jobId);
 }
 
-/** All known disposable roots for a job, in preference order. Recovery uses
- * this only for best-effort cleanup; neither location is authoritative. */
+/** All known isolated roots for a job, in preference order. A root is only
+ * disposable after the caller has established success, cancellation, or
+ * supersession; failed candidates may be retained at either location. */
 export function learnWorkspaceRootCandidates(
   gardenSlug: string,
   jobId: string,
 ): string[] {
-  return [...new Set([
-    defaultWorkspaceRoot(gardenSlug, jobId),
-    temporaryWorkspaceRoot(gardenSlug, jobId),
-  ].map((candidate) => path.resolve(candidate)))];
+  return [...new Set(learnWorkspaceBaseCandidates().map((base) =>
+    path.resolve(base, gardenSlug, jobId)
+  ))];
 }
 
 function workspaceRootUnavailable(error: unknown): boolean {
@@ -271,8 +349,9 @@ export function prepareLearnWorkspaceRoot(
   const reset = (workspaceRoot: string): void => {
     const stagingGardenDir = path.join(workspaceRoot, options.stagingDirectoryName);
     assertIsolatedWorkspaceRoot(workspaceRoot, options.repositoryGardenDir);
-    // The workspace is entirely disposable. Retry only transient filesystem
-    // boundaries; durable source seeding below remains fail-closed.
+    // This new job identity cannot already own a retained failed candidate.
+    // Retry only transient filesystem boundaries; durable source seeding below
+    // remains fail-closed.
     withTransientFileOpenRetry(() => {
       fileSystem.rmSync(workspaceRoot, { recursive: true, force: true });
       fileSystem.mkdirSync(stagingGardenDir, { recursive: true });
@@ -485,6 +564,18 @@ export function createLearnBuildWorkspace(input: {
   const durableInputFingerprint = fingerprintDurableGardenState(
     input.repositoryGardenDir,
   );
+  const resumableWorkspace = input.workspaceRoot === undefined
+    ? findLatestCompatibleRetainedLearnBuildWorkspace({
+        gardenSlug: input.gardenSlug,
+        excludeJobId: input.jobId,
+        mode: input.mode,
+        repositoryGardenDir: input.repositoryGardenDir,
+        contractFingerprint: input.contractFingerprint,
+        sourceSetFingerprint: input.sourceSetFingerprint,
+        requireAuthoritativeSourceAnchorLedger:
+          input.requireAuthoritativeSourceAnchorLedger === true,
+      })
+    : null;
   const preparedWorkspaceRoot = prepareLearnWorkspaceRoot({
     workspaceRoot: requestedWorkspaceRoot,
     fallbackWorkspaceRoot: temporaryWorkspaceRoot(input.gardenSlug, input.jobId),
@@ -498,7 +589,12 @@ export function createLearnBuildWorkspace(input: {
     | undefined;
 
   try {
-    seedDurableInputs(input.repositoryGardenDir, stagingGardenDir);
+    if (resumableWorkspace) {
+      copyTree(resumableWorkspace.stagingGardenDir, stagingGardenDir);
+      synchronizeDurableInputs(input.repositoryGardenDir, stagingGardenDir);
+    } else {
+      seedDurableInputs(input.repositoryGardenDir, stagingGardenDir);
+    }
     const copiedInputFingerprint = fingerprintDurableGardenState(stagingGardenDir);
     const currentInputFingerprint = fingerprintDurableGardenState(
       input.repositoryGardenDir,
@@ -537,6 +633,14 @@ export function createLearnBuildWorkspace(input: {
     durableInputFingerprint,
     authoritativeSourceAnchorLedger,
     createdAt: new Date().toISOString(),
+    lifecycle: "active",
+    ...(resumableWorkspace
+      ? {
+          resumedFromBuildId: resumableWorkspace.buildId,
+          resumedFromJobId: resumableWorkspace.jobId,
+          resumedFromWorkspaceRoot: resumableWorkspace.workspaceRoot,
+        }
+      : {}),
   };
   try {
     writeWorkspaceDescriptor(workspace);
@@ -592,6 +696,95 @@ export function seedDurableInputs(repositoryGardenDir: string, stagingGardenDir:
     seeded.push(entry.name);
   }
   return { seeded, skipped };
+}
+
+/** Overlay the repository's current durable inputs onto a cloned retained
+ * candidate while leaving generated lessons and disposable projections intact.
+ * This permits safe continuation when operational ledgers evolved after the
+ * failed build, without carrying stale source inputs into the resumed job. */
+function synchronizeDurableInputs(
+  repositoryGardenDir: string,
+  stagingGardenDir: string,
+): void {
+  const removeExactStagedEntry = (entryPath: string): void => {
+    if (!pathIsWithinOrEqual(entryPath, stagingGardenDir)) {
+      throw new Error("Retained Learn durable-input synchronization escaped staging.");
+    }
+    fs.rmSync(entryPath, { recursive: true, force: true });
+  };
+  for (const entry of fs.readdirSync(stagingGardenDir, { withFileTypes: true })) {
+    const normalizedName = normalizedEntryName(entry.name);
+    if (
+      normalizedName !== ".breadboard" &&
+      !DISPOSABLE_TOP_LEVEL.has(normalizedName)
+    ) {
+      removeExactStagedEntry(path.join(stagingGardenDir, entry.name));
+    }
+  }
+
+  const repositoryBreadboard = path.join(repositoryGardenDir, ".breadboard");
+  const stagingBreadboard = path.join(stagingGardenDir, ".breadboard");
+  const breadboardNames = new Set<string>();
+  for (const directory of [repositoryBreadboard, stagingBreadboard]) {
+    try {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        breadboardNames.add(entry.name);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  for (const name of breadboardNames) {
+    const normalizedName = normalizedEntryName(name);
+    const seededDurableEntry =
+      DURABLE_BREADBOARD_ENTRIES.has(normalizedName) ||
+      !DISPOSABLE_BREADBOARD_ENTRIES.has(normalizedName);
+    // Preserve the retained append-only history. Promotion already performs
+    // the authoritative events.jsonl union with events added after retention.
+    if (seededDurableEntry && normalizedName !== "events.jsonl") {
+      removeExactStagedEntry(path.join(stagingBreadboard, name));
+    }
+  }
+
+  const topLevel = fs.readdirSync(repositoryGardenDir, { withFileTypes: true });
+  for (const entry of topLevel) {
+    const normalizedName = normalizedEntryName(entry.name);
+    if (normalizedName === ".breadboard") {
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Learn durable input contains unsupported symbolic link: ${entry.name}`);
+      }
+      if (!entry.isDirectory()) continue;
+      for (const breadboardEntry of fs.readdirSync(repositoryBreadboard, {
+        withFileTypes: true,
+      })) {
+        const normalizedBreadboardName = normalizedEntryName(breadboardEntry.name);
+        const seededDurableEntry =
+          DURABLE_BREADBOARD_ENTRIES.has(normalizedBreadboardName) ||
+          !DISPOSABLE_BREADBOARD_ENTRIES.has(normalizedBreadboardName);
+        if (!seededDurableEntry || normalizedBreadboardName === "events.jsonl") {
+          continue;
+        }
+        const source = path.join(repositoryBreadboard, breadboardEntry.name);
+        const destination = path.join(stagingBreadboard, breadboardEntry.name);
+        if (breadboardEntry.isDirectory()) copyTree(source, destination);
+        else if (breadboardEntry.isFile()) copyFileResilient(source, destination);
+        else if (breadboardEntry.isSymbolicLink()) {
+          throw new Error(
+            `Learn durable input contains unsupported symbolic link: .breadboard/${breadboardEntry.name}`,
+          );
+        }
+      }
+      continue;
+    }
+    if (DISPOSABLE_TOP_LEVEL.has(normalizedName)) continue;
+    const source = path.join(repositoryGardenDir, entry.name);
+    const destination = path.join(stagingGardenDir, entry.name);
+    if (entry.isDirectory()) copyTree(source, destination);
+    else if (entry.isFile()) copyFileResilient(source, destination);
+    else if (entry.isSymbolicLink()) {
+      throw new Error(`Learn durable input contains unsupported symbolic link: ${entry.name}`);
+    }
+  }
 }
 
 function seedDurableBreadboardEntries(
@@ -673,6 +866,11 @@ export function fingerprintDurableGardenState(gardenDir: string): string {
 
 const WORKSPACE_DESCRIPTOR = "build-workspace.json";
 
+function normalizedRetentionStage(value: string | undefined): string | undefined {
+  const normalized = value?.replace(/\s+/g, " ").trim();
+  return normalized ? normalized.slice(0, 240) : undefined;
+}
+
 function writeWorkspaceDescriptor(workspace: LearnBuildWorkspace): void {
   // This descriptor contains local repository/workspace paths and is useful
   // only while diagnosing the isolated build. Keep it beside the staging
@@ -682,7 +880,204 @@ function writeWorkspaceDescriptor(workspace: LearnBuildWorkspace): void {
   fs.writeFileSync(abs, `${JSON.stringify(workspace, null, 2)}\n`);
 }
 
-/** Best-effort cleanup of a finished/abandoned workspace. Never throws. */
+/**
+ * Mark an exact staged candidate as retained. This function never moves the
+ * tree and never copies it into the published garden; it only makes the local
+ * failure lifecycle durable beside the already-isolated build.
+ */
+export function retainLearnBuildWorkspace(
+  workspace: LearnBuildWorkspace,
+  input: {
+    reason: "generation_failure" | "abandoned_worker";
+    failureStage?: string;
+    retainedAt?: string;
+  },
+): void {
+  workspace.lifecycle = "retained_after_failure";
+  workspace.retainedAt = input.retainedAt ?? new Date().toISOString();
+  workspace.retentionReason = input.reason;
+  workspace.retentionStage = normalizedRetentionStage(input.failureStage);
+  writeWorkspaceDescriptor(workspace);
+}
+
+function sameResolvedWorkspacePath(left: string, right: string): boolean {
+  const resolvedLeft = path.resolve(left);
+  const resolvedRight = path.resolve(right);
+  return process.platform === "win32"
+    ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
+    : resolvedLeft === resolvedRight;
+}
+
+function workspaceDescriptorAt(workspaceRoot: string): LearnBuildWorkspace | null {
+  const descriptorPath = path.join(workspaceRoot, WORKSPACE_DESCRIPTOR);
+  let candidate: unknown;
+  try {
+    const descriptorStat = fs.lstatSync(descriptorPath);
+    if (!descriptorStat.isFile() || descriptorStat.isSymbolicLink()) return null;
+    candidate = JSON.parse(fs.readFileSync(descriptorPath, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return null;
+  }
+  const record = candidate as Partial<LearnBuildWorkspace>;
+  if (
+    typeof record.jobId !== "string" ||
+    typeof record.gardenSlug !== "string" ||
+    !sameResolvedWorkspacePath(record.workspaceRoot ?? "", workspaceRoot) ||
+    typeof record.stagingGardenDir !== "string" ||
+    typeof record.stagingLearningDir !== "string" ||
+    !pathIsWithinOrEqual(record.stagingGardenDir, workspaceRoot) ||
+    !sameResolvedWorkspacePath(
+      record.stagingLearningDir,
+      path.resolve(record.stagingGardenDir, "learning"),
+    ) ||
+    typeof record.buildId !== "string" ||
+    typeof record.repositoryGardenDir !== "string" ||
+    typeof record.contractFingerprint !== "string" ||
+    typeof record.sourceSetFingerprint !== "string" ||
+    typeof record.durableInputFingerprint !== "string" ||
+    typeof record.createdAt !== "string" ||
+    !["generate", "regenerate", "update"].includes(record.mode ?? "")
+  ) {
+    return null;
+  }
+  // Descriptors written before lifecycle retention was introduced represent
+  // active candidates and remain eligible for crash recovery.
+  record.lifecycle = record.lifecycle === "retained_after_failure"
+    ? "retained_after_failure"
+    : "active";
+  return record as LearnBuildWorkspace;
+}
+
+function retainedWorkspaceDescriptorAt(
+  workspaceRoot: string,
+  gardenSlug: string,
+  jobId: string,
+): LearnBuildWorkspace | null {
+  const workspace = workspaceDescriptorAt(workspaceRoot);
+  return workspace?.jobId === jobId && workspace.gardenSlug === gardenSlug
+    ? workspace
+    : null;
+}
+
+/** Select the newest exact retained candidate whose immutable generation
+ * contract and repository inputs still match. A candidate with stale sources,
+ * a different mode, or an unsafe/missing staging tree is never resumed. */
+export function findLatestCompatibleRetainedLearnBuildWorkspace(input: {
+  gardenSlug: string;
+  excludeJobId: string;
+  mode: "generate" | "regenerate" | "update";
+  repositoryGardenDir: string;
+  contractFingerprint: string;
+  sourceSetFingerprint: string;
+  requireAuthoritativeSourceAnchorLedger: boolean;
+}): LearnBuildWorkspace | null {
+  const candidates: Array<{ workspace: LearnBuildWorkspace; retainedAt: number }> = [];
+  const seenRoots = new Set<string>();
+  for (const baseDir of learnWorkspaceBaseCandidates()) {
+    const gardenRoot = path.resolve(baseDir, input.gardenSlug);
+    if (!sameResolvedWorkspacePath(path.dirname(gardenRoot), baseDir)) continue;
+    let entries: Dirent[];
+    try {
+      entries = fs.readdirSync(gardenRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const workspaceRoot = path.resolve(gardenRoot, entry.name);
+      const rootKey = process.platform === "win32"
+        ? workspaceRoot.toLowerCase()
+        : workspaceRoot;
+      if (seenRoots.has(rootKey)) continue;
+      seenRoots.add(rootKey);
+      const workspace = workspaceDescriptorAt(workspaceRoot);
+      if (
+        !workspace ||
+        workspace.lifecycle !== "retained_after_failure" ||
+        workspace.jobId === input.excludeJobId ||
+        workspace.gardenSlug !== input.gardenSlug ||
+        workspace.mode !== input.mode ||
+        !sameResolvedWorkspacePath(
+          workspace.repositoryGardenDir,
+          input.repositoryGardenDir,
+        ) ||
+        workspace.contractFingerprint !== input.contractFingerprint ||
+        workspace.sourceSetFingerprint !== input.sourceSetFingerprint
+      ) {
+        continue;
+      }
+      if (input.requireAuthoritativeSourceAnchorLedger) {
+        const expectedLedger = workspace.authoritativeSourceAnchorLedger;
+        if (!expectedLedger) continue;
+        try {
+          const currentLedger = readRequiredRegularFile(
+            sourceAnchorLedgerPath(input.repositoryGardenDir),
+            "Authoritative source-anchor ledger",
+          );
+          if (
+            currentLedger.byteLength !== expectedLedger.byteLength ||
+            crypto.createHash("sha256").update(currentLedger).digest("hex") !==
+              expectedLedger.sha256
+          ) {
+            continue;
+          }
+        } catch {
+          continue;
+        }
+      }
+      try {
+        const stagingStat = fs.lstatSync(workspace.stagingGardenDir);
+        const learningStat = fs.lstatSync(workspace.stagingLearningDir);
+        if (
+          !stagingStat.isDirectory() ||
+          stagingStat.isSymbolicLink() ||
+          !learningStat.isDirectory() ||
+          learningStat.isSymbolicLink()
+        ) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      const retainedAt = Date.parse(workspace.retainedAt ?? workspace.createdAt);
+      if (!Number.isFinite(retainedAt)) continue;
+      candidates.push({ workspace, retainedAt });
+    }
+  }
+  candidates.sort((left, right) => right.retainedAt - left.retainedAt);
+  return candidates[0]?.workspace ?? null;
+}
+
+/** Mark every exact known staging root for an abandoned non-cancelled job as
+ * retained. An unreadable descriptor is left untouched rather than deleted. */
+export function retainFailedLearnWorkspacesForJob(input: {
+  gardenSlug: string;
+  jobId: string;
+  reason: "generation_failure" | "abandoned_worker";
+  failureStage?: string;
+  retainedAt?: string;
+}): string[] {
+  const retainedRoots: string[] = [];
+  for (const workspaceRoot of learnWorkspaceRootCandidates(
+    input.gardenSlug,
+    input.jobId,
+  )) {
+    const workspace = retainedWorkspaceDescriptorAt(
+      workspaceRoot,
+      input.gardenSlug,
+      input.jobId,
+    );
+    if (!workspace) continue;
+    retainLearnBuildWorkspace(workspace, input);
+    retainedRoots.push(workspaceRoot);
+  }
+  return retainedRoots;
+}
+
+/** Best-effort cleanup after success, cancellation, or supersession. Never throws. */
 export function disposeLearnBuildWorkspace(workspace: LearnBuildWorkspace): void {
   disposeWorkspaceRootBestEffort(workspace.workspaceRoot);
 }

@@ -31,6 +31,7 @@ import {
   visibleFolderRows,
 } from "@/lib/cluster-folders";
 import NavBar from "@/app/components/navbar";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import type { NavbarShortcuts } from "@/lib/profile/navbar-shortcuts.ts";
 import LazyDashboardAgentTerminal from "@/app/components/hermes/lazy-dashboard-agent-terminal";
 import type { TerminalPanel } from "@/app/components/hermes/terminal-sidebar";
@@ -176,27 +177,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function Spinner({ className = "w-4 h-4" }: { className?: string }) {
-  return (
-    <svg
-      className={`${className} animate-spin`}
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
-  );
+  return <BreadboardLoader className={className} />;
 }
 
 export default function DashboardClient({

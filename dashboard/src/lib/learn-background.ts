@@ -764,8 +764,8 @@ async function handOffWindowsDedicatedLearnWorker<T>(
 /**
  * Start long development Learn work outside Next's route process.
  *
- * `next dev --webpack` retains compiled route bundles and can recycle or OOM
- * independently of the learning pipeline. A detached worker owns its own V8
+ * The Next development compiler can recycle or OOM independently of the
+ * learning pipeline. A detached worker owns its own V8
  * heap while the existing SQLite job heartbeat and fenced garden lease remain
  * the authority. If Next restarts, the worker keeps running and the replacement
  * server merely resumes status polling. If the worker itself dies, the existing

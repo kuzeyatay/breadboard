@@ -219,11 +219,6 @@ export class MemoryGovernor extends EventEmitter {
         : this.policy.minFreeCommitMb,
     );
     const required = reserve + estimate;
-    const activeHeavyConflict = Boolean(
-      request.concurrencyGroup &&
-        request.activeConcurrencyGroups &&
-        request.activeConcurrencyGroups.size > 0,
-    );
     const localPressureActive = performance.now() < this.localPressureUntil;
     const pressureDenial =
       this.currentState === "emergency" ||
@@ -233,13 +228,11 @@ export class MemoryGovernor extends EventEmitter {
         request.reserveFloor !== "critical" &&
         !request.required &&
         request.priority < 80);
-    const denialReason = activeHeavyConflict
-      ? "active_heavyweight"
-      : pressureDenial
-        ? "pressure"
-        : available < required
-          ? "headroom"
-          : null;
+    const denialReason = pressureDenial
+      ? "pressure"
+      : available < required
+        ? "headroom"
+        : null;
     if (denialReason) {
       throw new ResourceExhaustionError({
         code: "BREADBOARD_RESOURCE_EXHAUSTED",

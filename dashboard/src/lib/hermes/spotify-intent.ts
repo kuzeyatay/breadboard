@@ -79,32 +79,26 @@ function isSpotifyPlaybackToolName(toolName: string): boolean {
  * would create several controls for the same device. Keeping it only on the
  * latest row was also wrong: a new message made the player unmount, and
  * contextual requests such as "another one" do not contain Spotify keywords.
- * Keep the last confirmed music row instead. A first explicit request can own
- * its loading state immediately; later requests advance only while a Spotify
- * tool is active or after it succeeds. If that tool fails, the previous player
- * returns instead of disappearing with the failed turn.
+ * Keep the last confirmed music row instead. The currently-running assistant
+ * row can be excluded so a retry or follow-up does not move the player while
+ * its response still says "Thinking". Once the turn settles, a successful
+ * playback tool advances ownership; a failed tool leaves the previous player
+ * in place.
  */
 export function spotifyPlayerAssistantIndex(
   messages: SpotifyPlayerPlacementMessage[],
+  excludedAssistantIndex = -1,
 ): number {
   let owner = -1;
-  let previousUserIndex = -1;
 
   messages.forEach((message, index) => {
-    if (message.role === "user") {
-      previousUserIndex = index;
-      return;
-    }
-
-    const explicitRequest =
-      previousUserIndex >= 0 &&
-      isSpotifyPlaybackRequest(messages[previousUserIndex]?.content ?? "");
+    if (message.role !== "assistant" || index === excludedAssistantIndex) return;
     const usedSpotify = message.tools?.some(
       (tool) =>
         tool.status !== "failed" &&
         isSpotifyPlaybackToolName(tool.toolName),
     );
-    if (usedSpotify || (explicitRequest && owner < 0)) owner = index;
+    if (usedSpotify) owner = index;
   });
 
   return owner;

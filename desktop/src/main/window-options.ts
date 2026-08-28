@@ -12,9 +12,16 @@ export const BREADBOARD_DARK_TITLE_BAR = {
   height: 32,
 } as const;
 
-/** Voice mode paints the whole window terracotta, chrome included. */
+/**
+ * Voice mode paints the whole window terracotta, chrome included.
+ *
+ * Windows can only give its native caption-button cluster one flat colour.
+ * Match that colour to the stable top-right edge of the voice wash rather than
+ * to the darker base underneath it; otherwise the cluster reads as a pasted-on
+ * rectangle even though the renderer and native frame are in the same mode.
+ */
 export const BREADBOARD_VOICE_TITLE_BAR = {
-  color: "#c1543c",
+  color: "#c85b42",
   symbolColor: "#fdeade",
   height: 32,
 } as const;

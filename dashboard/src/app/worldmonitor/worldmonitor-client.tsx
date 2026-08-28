@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import { hubActivityFrom } from "@/lib/worldmonitor/hub-activity.ts";
 import type {
   ClimateSnapshot,
@@ -184,12 +185,7 @@ const FullscreenIcon = () => (
 );
 
 function Spinner({ className }: { className?: string }) {
-  return (
-    <svg className={`animate-spin ${className ?? ""}`} viewBox="0 0 24 24" fill="none">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-    </svg>
-  );
+  return <BreadboardLoader className={className ?? "h-4 w-4"} />;
 }
 
 interface AnalystTurn {

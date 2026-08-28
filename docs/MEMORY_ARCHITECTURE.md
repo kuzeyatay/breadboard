@@ -37,7 +37,8 @@ loopback diagnostic route.
    predefined service or capability lease. The per-launch bearer is available
    only in server environment variables.
 4. The governor considers the cold-start estimate, required/optional status,
-   priority, current headroom, active leases, and heavyweight concurrency group.
+   priority, and current headroom. Active resource-class labels do not create a
+   separate one-heavyweight-at-a-time denial.
 5. Admission either returns a lease or a structured non-retryable
    `BREADBOARD_RESOURCE_EXHAUSTED` result.
 6. Concurrent first uses share one `ensureService()` promise. The active lease
@@ -93,8 +94,8 @@ the feature that requested them.
 
 ## Soft and hard containment
 
-A process-tree soft crossing first closes low-priority heavyweight admission
-and stops idle optional trees. A hot dashboard waits for all heavyweight leases
+A process-tree soft crossing first closes low-priority admission and stops idle
+optional trees. A hot dashboard waits for active bounded work
 to reach a safe boundary and for the system reserve plus its cold-start estimate
 to be available; it may then recycle once, with a 30-minute anti-loop window.
 Standalone/packaged dashboards are not recycled by this development policy.

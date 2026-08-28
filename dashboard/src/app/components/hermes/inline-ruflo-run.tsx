@@ -1,5 +1,7 @@
 "use client";
 
+import { externalRunStartedAtMs } from "./external-run-clock";
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
@@ -143,7 +145,7 @@ export default function InlineRufloRun({
   );
   const [elapsed, setElapsed] = useState(0);
   const [usage, setUsage] = useState<ChatTokenUsage | null>(null);
-  const startedAtRef = useRef<number | null>(null);
+  const startedAtRef = useRef<number | null>(externalRunStartedAtMs(runId));
   const reportedRef = useRef(false);
   const onTerminalRef = useRef(onTerminal);
   const [edits, setEdits] = useState<ExternalAgentEdits | null>(persistedEdits ?? null);
@@ -152,6 +154,13 @@ export default function InlineRufloRun({
   useEffect(() => {
     onTerminalRef.current = onTerminal;
   }, [onTerminal]);
+
+  useEffect(() => {
+    const remembered = externalRunStartedAtMs(runId);
+    if (startedAtRef.current === null || remembered < startedAtRef.current) {
+      startedAtRef.current = remembered;
+    }
+  }, [runId]);
 
   /**
    * Close the run's undo bracket before reporting it, so the snapshot pair is

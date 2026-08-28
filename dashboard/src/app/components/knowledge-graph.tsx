@@ -13,6 +13,12 @@ import Link from 'next/link';
 import RailDivider from './hermes/rail-divider';
 import { useRailResize } from './hermes/use-rail-resize';
 import { useQuartzViewLease } from '@/app/garden/use-quartz-view-lease';
+import {
+  APP_THEME_CHANGE_EVENT,
+  getStoredAppTheme,
+  isAppTheme,
+  type AppTheme,
+} from '@/lib/app-theme';
 
 interface GraphNode {
   slug: string;
@@ -101,10 +107,16 @@ function hashString(value: string): string {
   return (hash >>> 0).toString(36);
 }
 
-function quartzMapPreviewUrl(clusterSlug: string, refreshKey: string): string {
+function quartzMapPreviewUrl(
+  clusterSlug: string,
+  refreshKey: string,
+  theme: AppTheme,
+): string {
   const params = new URLSearchParams({
     clusterSlug,
     refresh: hashString(refreshKey),
+    embed: 'graph',
+    theme,
   });
   return `/api/quartz-graph-preview?${params.toString()}`;
 }
@@ -141,6 +153,7 @@ function KnowledgeGraph({
   const panelWidth = map.width;
   const sidebarOpen = !map.collapsed;
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const [previewTheme, setPreviewTheme] = useState<AppTheme | null>(null);
   const [previewState, setPreviewState] = useState<PreviewState>({
     url: '',
     status: 'loading',
@@ -148,7 +161,7 @@ function KnowledgeGraph({
   const graph = data ?? emptyResponse;
   const loading = data === null;
   const quartzLease = useQuartzViewLease(
-    sidebarOpen && !loading && graph.nodes.length > 0,
+    sidebarOpen && !loading && graph.nodes.length > 0 && previewTheme !== null,
   );
 
   // The edge sits on the panel's own left border rather than beside it in the
@@ -168,6 +181,21 @@ function KnowledgeGraph({
   );
 
   useEffect(() => {
+    const syncTheme = (event?: Event) => {
+      const announcedTheme = (event as CustomEvent<unknown> | undefined)?.detail;
+      setPreviewTheme(
+        isAppTheme(announcedTheme)
+          ? announcedTheme
+          : getStoredAppTheme(window.localStorage),
+      );
+    };
+
+    syncTheme();
+    window.addEventListener(APP_THEME_CHANGE_EVENT, syncTheme);
+    return () => window.removeEventListener(APP_THEME_CHANGE_EVENT, syncTheme);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     const params = new URLSearchParams({ clusterSlug });
     if (showInternalConceptGraph) params.set('includeInternalConcepts', '1');
@@ -179,8 +207,8 @@ function KnowledgeGraph({
   }, [clusterSlug, refreshKey, showInternalConceptGraph]);
 
   const quartzPreviewUrl = useMemo(
-    () => quartzMapPreviewUrl(clusterSlug, refreshKey),
-    [clusterSlug, refreshKey],
+    () => quartzMapPreviewUrl(clusterSlug, refreshKey, previewTheme ?? 'light'),
+    [clusterSlug, previewTheme, refreshKey],
   );
 
   const previewStatus: PreviewStatus = quartzLease.failed
@@ -260,7 +288,7 @@ function KnowledgeGraph({
 
           {/* Quartz graph preview */}
           <div
-            className="bb-neu-recessed group relative block h-52 overflow-hidden rounded-lg border border-gray-800 bg-gray-900/30 mb-3"
+            className="bb-neu-recessed group relative mb-3 block h-64 overflow-hidden rounded-lg border border-gray-800 bg-gray-900/30"
           >
             {loading ? (
               <div className="h-full flex items-center justify-center text-xs text-gray-700">
@@ -280,6 +308,10 @@ function KnowledgeGraph({
                   className={`pointer-events-none h-full w-full border-0 bg-gray-950 transition-opacity duration-300 ${
                     previewStatus === 'ready' ? 'opacity-100' : 'opacity-0'
                   }`}
+                  style={{
+                    colorScheme: previewTheme ?? 'light',
+                    backgroundColor: 'var(--paper-bg)',
+                  }}
                   loading="eager"
                   tabIndex={-1}
                   aria-hidden="true"

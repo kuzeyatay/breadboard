@@ -488,13 +488,16 @@ test("fullscreen shortcuts handle F11 directly with a keyboard fallback", () => 
 
 test("a full-screen surface takes the window chrome with it", () => {
   // Voice mode paints the whole window terracotta; a cream caption strip across
-  // the top of it reads as a bug rather than as the app frame.
+  // the top of it reads as a bug rather than as the app frame. The native
+  // cluster is matched to the wash at that corner, not the darker base colour
+  // beneath the rest of the stage, so it does not leave a flat rectangle.
   assert.deepEqual(titleBarForSurface("voice"), BREADBOARD_VOICE_TITLE_BAR);
   assert.deepEqual(BREADBOARD_VOICE_TITLE_BAR, {
-    color: "#c1543c",
+    color: "#c85b42",
     symbolColor: "#fdeade",
     height: 32,
   });
+  // The hidden window sheet still uses the stage's actual base colour.
   assert.equal(backgroundColorForSurface("voice"), "#c1543c");
 
   // The themes still resolve the way they did.

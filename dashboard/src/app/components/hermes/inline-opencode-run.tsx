@@ -1,5 +1,7 @@
 "use client";
 
+import { externalRunStartedAtMs } from "./external-run-clock";
+
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
@@ -172,7 +174,7 @@ export default function InlineOpenCodeRun({
   // When the run started, in this browser's clock. A reload has no memory of
   // it, so it is recovered from the timestamp on the first replayed event
   // rather than restarted — a resumed card keeps counting from the real start.
-  const startedAtRef = useRef<number | null>(null);
+  const startedAtRef = useRef<number | null>(externalRunStartedAtMs(runId));
   const reportedRef = useRef(false);
   const onTerminalRef = useRef(onTerminal);
   // The timeline and usage are reported with the terminal result, so they have
@@ -186,6 +188,13 @@ export default function InlineOpenCodeRun({
   useEffect(() => {
     onTerminalRef.current = onTerminal;
   }, [onTerminal]);
+
+  useEffect(() => {
+    const remembered = externalRunStartedAtMs(runId);
+    if (startedAtRef.current === null || remembered < startedAtRef.current) {
+      startedAtRef.current = remembered;
+    }
+  }, [runId]);
 
   /**
    * Close the run's undo bracket before reporting it, so the snapshot pair is

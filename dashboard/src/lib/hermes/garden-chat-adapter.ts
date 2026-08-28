@@ -1080,6 +1080,13 @@ function legacyGardenEventStream(
             emitAgentLaunchRequests();
             emit({ type: "verification", verification });
             if (assistantText.trim() || toolCalls.length) {
+              const runtimeRun = getRuntimeRun(runId);
+              const runtimeStartedAt = runtimeRun
+                ? Date.parse(runtimeRun.started_at)
+                : Number.NaN;
+              const responseDurationMs = Number.isFinite(runtimeStartedAt)
+                ? Math.max(0, Date.now() - runtimeStartedAt)
+                : undefined;
               const last = db
                 .prepare(
                   "SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY order_index DESC LIMIT 1",
@@ -1096,7 +1103,13 @@ function legacyGardenEventStream(
                   role: "assistant",
                   content: assistantText,
                   tokenUsage,
-                  toolCalls: { calls: toolCalls, verification },
+                  toolCalls: {
+                    calls: toolCalls,
+                    verification,
+                    ...(responseDurationMs !== undefined
+                      ? { responseDurationMs }
+                      : {}),
+                  },
                   runtimeStatus: "idle",
                 });
               }

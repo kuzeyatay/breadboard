@@ -5,6 +5,7 @@ import { gardenDocumentHref } from "@/lib/garden-document-route";
 import { useRouter } from "next/navigation";
 import { releaseCanvasPixels } from "@/app/components/canvas-resource";
 import FastReadReader from "@/app/components/fastread-reader";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
 import PdfToolsPanel, { type PendingStamp } from "@/app/components/pdf-tools-panel";
@@ -126,23 +127,7 @@ interface Props {
 }
 
 function Spinner({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={`${className} animate-spin`} viewBox="0 0 24 24" fill="none">
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
-  );
+  return <BreadboardLoader className={className} />;
 }
 
 function ensurePdfJsRuntime() {

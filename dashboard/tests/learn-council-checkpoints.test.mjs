@@ -19,6 +19,7 @@ import {
   exactLearnCouncilRetryJobBinding,
   hasNativeLearnCouncilCheckpoint,
   isExactLegacyLearnCouncilFailureShape,
+  legacyLearnCouncilLineageQuiescenceDelayMs,
   legacyLearnCouncilLineageIsQuiescent,
   learnCouncilDispatchGenerationOwners,
   learnCouncilRetryJob,
@@ -373,6 +374,29 @@ describe("ordinary Learn Council checkpoints", () => {
         Date.parse("2026-01-01T01:00:00.000Z"),
       ),
       false,
+    );
+    assert.equal(
+      legacyLearnCouncilLineageQuiescenceDelayMs(
+        [base],
+        Date.parse("2026-01-01T00:46:59.999Z"),
+      ),
+      1,
+      "the recovery loop can wait exactly to the safe boundary",
+    );
+    assert.equal(
+      legacyLearnCouncilLineageQuiescenceDelayMs(
+        [base],
+        Date.parse("2026-01-01T00:47:00.000Z"),
+      ),
+      0,
+    );
+    assert.equal(
+      legacyLearnCouncilLineageQuiescenceDelayMs(
+        [{ ...base, status: "generating_learning_pages" }],
+        Date.parse("2026-01-01T01:00:00.000Z"),
+      ),
+      null,
+      "time alone cannot make a non-terminal predecessor safe",
     );
   });
 

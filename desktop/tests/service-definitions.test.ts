@@ -318,9 +318,9 @@ test("dev dashboard retains the historical dashboard/db data layout", () => {
   assert.equal(dashboard.env["BREADBOARD_BACKGROUND_COORDINATOR_HEAP_MB"], "1024");
   assert.equal(dashboard.env["BREADBOARD_MEMORY_TELEMETRY_INTERVAL_MS"], "15000");
   assert.equal(dashboard.env["BREADBOARD_MEMORY_TELEMETRY_SAMPLES"], "240");
-  assert.ok(dashboard.args.includes("--webpack"));
-  assert.ok(!dashboard.args.includes("--turbopack"));
-  assert.equal(dashboard.env["BREADBOARD_DASHBOARD_BUNDLER"], "webpack");
+  assert.ok(dashboard.args.includes("--turbopack"));
+  assert.ok(!dashboard.args.includes("--webpack"));
+  assert.equal(dashboard.env["BREADBOARD_DASHBOARD_BUNDLER"], "turbopack");
 });
 
 test("fast dev dashboard uses an existing standalone build", () => {

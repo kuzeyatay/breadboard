@@ -54,6 +54,7 @@ interface ChatSessionRow {
   title: string;
   created_at: string;
   updated_at: string;
+  conversation_id?: number | null;
   owner_username?: string | null;
 }
 
@@ -278,37 +279,54 @@ function readSessions(
   filterUserId: number | null,
   includeUsername: boolean,
   historySurface: ChatHistorySurface,
+  sessionId?: number,
 ) {
   let rows: ChatSessionRow[];
+  const sessionFilter = sessionId === undefined ? "" : " AND cs.id = ?";
 
   if (includeUsername) {
     rows = db
       .prepare(
-        `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at, u.username AS owner_username
+        `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
+                cs.conversation_id, u.username AS owner_username
          FROM chat_sessions cs
          JOIN users u ON u.id = cs.user_id
-         WHERE cs.cluster_id = ? AND cs.history_surface = ?
+         WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
-      .all(clusterId, historySurface) as ChatSessionRow[];
+      .all(
+        ...(sessionId === undefined
+          ? [clusterId, historySurface]
+          : [clusterId, historySurface, sessionId]),
+      ) as ChatSessionRow[];
   } else if (filterUserId !== null) {
     rows = db
       .prepare(
-        `SELECT id, user_id, title, created_at, updated_at
-         FROM chat_sessions
-         WHERE cluster_id = ? AND user_id = ? AND history_surface = ?
-         ORDER BY updated_at DESC, id DESC`,
+        `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
+                cs.conversation_id
+         FROM chat_sessions cs
+         WHERE cs.cluster_id = ? AND cs.user_id = ? AND cs.history_surface = ?${sessionFilter}
+         ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
-      .all(clusterId, filterUserId, historySurface) as ChatSessionRow[];
+      .all(
+        ...(sessionId === undefined
+          ? [clusterId, filterUserId, historySurface]
+          : [clusterId, filterUserId, historySurface, sessionId]),
+      ) as ChatSessionRow[];
   } else {
     rows = db
       .prepare(
-        `SELECT id, user_id, title, created_at, updated_at
-         FROM chat_sessions
-         WHERE cluster_id = ? AND history_surface = ?
-         ORDER BY updated_at DESC, id DESC`,
+        `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
+                cs.conversation_id
+         FROM chat_sessions cs
+         WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}
+         ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
-      .all(clusterId, historySurface) as ChatSessionRow[];
+      .all(
+        ...(sessionId === undefined
+          ? [clusterId, historySurface]
+          : [clusterId, historySurface, sessionId]),
+      ) as ChatSessionRow[];
   }
 
   if (rows.length === 0) return [];
@@ -360,11 +378,34 @@ function readSessions(
     bySession.set(message.session_id, existing);
   }
 
+  const running = new Set(
+    (
+      db
+        .prepare(
+          `SELECT DISTINCT rs.chat_session_id AS chat_session_id
+           FROM hermes_runs r
+           JOIN hermes_runtime_sessions rs ON rs.id = r.runtime_session_id
+           WHERE r.status = 'active' AND rs.chat_session_id IN (${placeholders})`,
+        )
+        .all(...ids) as Array<{ chat_session_id: number }>
+    ).map((row) => row.chat_session_id),
+  );
+  const externalActivity = summarizeConversationMessages(
+    rows
+      .map((row) => row.conversation_id)
+      .filter((id): id is number => id !== null && id !== undefined),
+  );
+
   return rows.map((row) => ({
     ...row,
     ownerUsername: row.owner_username ?? undefined,
     isOwn: row.user_id === currentUserId,
     messages: bySession.get(row.id) ?? [],
+    active:
+      running.has(row.id) ||
+      (row.conversation_id !== null &&
+        row.conversation_id !== undefined &&
+        externalActivity.get(row.conversation_id)?.externalAgentActive === true),
   }));
 }
 
@@ -480,6 +521,16 @@ export async function GET(request: Request) {
     searchParams.get("includePublicChats") === "1" &&
     access.visibility === "public" &&
     access.chatAccessible;
+  const requestedSessionId = searchParams.get("sessionId");
+  const sessionId = requestedSessionId === null
+    ? undefined
+    : Number(requestedSessionId);
+  if (
+    requestedSessionId !== null &&
+    (!Number.isInteger(sessionId) || Number(sessionId) <= 0)
+  ) {
+    return NextResponse.json({ error: "Invalid session id" }, { status: 400 });
+  }
 
   if (!isOwner && !access.chatAccessible) {
     return NextResponse.json({ error: "Garden not found" }, { status: 404 });
@@ -505,6 +556,7 @@ export async function GET(request: Request) {
     includePublicChats ? null : userId,
     includePublicChats,
     historySurface,
+    sessionId,
   );
   return NextResponse.json({ sessions });
 }

@@ -199,7 +199,13 @@ export default function VoiceConversationOverlay({
           return;
         }
         if (!response.ok) {
-          setNote(await responseMessage(response, 'That could not be transcribed.'));
+          const message = await responseMessage(response, 'That could not be transcribed.');
+          setNote(message);
+          if (response.status === 503) {
+            releaseMicrophone();
+            enterStage('unavailable');
+            return;
+          }
           beginTurn();
           return;
         }
@@ -235,16 +241,18 @@ export default function VoiceConversationOverlay({
       } catch {
         if (session !== sessionRef.current) return;
         setNote('That could not be transcribed.');
-        beginTurn();
+        releaseMicrophone();
+        enterStage('unavailable');
       } finally {
         requestAbortRef.current.delete(controller);
       }
     },
-    [beginTurn, clearWatchdog, enterStage, onSend],
+    [beginTurn, clearWatchdog, enterStage, onSend, releaseMicrophone],
   );
 
   const openMicrophone = useCallback(async () => {
     const session = sessionRef.current;
+    let serviceReady = false;
     setBlocked(null);
     enterStage('opening');
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -262,6 +270,24 @@ export default function VoiceConversationOverlay({
     let openingStream: MediaStream | null = null;
     let openingContext: AudioContext | null = null;
     try {
+      setNote('Preparing local speech…');
+      const prepareController = new AbortController();
+      requestAbortRef.current.add(prepareController);
+      try {
+        const response = await fetch('/api/speech/prepare', {
+          method: 'POST',
+          signal: prepareController.signal,
+        });
+        if (session !== sessionRef.current) return;
+        if (!response.ok) {
+          throw new Error(await responseMessage(response, 'Local speech could not start.'));
+        }
+        serviceReady = true;
+        setNote(null);
+      } finally {
+        requestAbortRef.current.delete(prepareController);
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
@@ -329,6 +355,10 @@ export default function VoiceConversationOverlay({
       releaseMicrophone();
       if (caught instanceof DOMException && caught.name === 'NotAllowedError') {
         setBlocked(await describeMicrophoneBlock(caught));
+      } else if (!serviceReady) {
+        setNote(caught instanceof Error ? caught.message : 'Local speech could not start.');
+        enterStage('unavailable');
+        return;
       } else {
         setNote(caught instanceof Error ? caught.message : 'The microphone could not be opened.');
       }
@@ -552,7 +582,7 @@ export default function VoiceConversationOverlay({
       beginTurn();
       return;
     }
-    if (stage === 'blocked') {
+    if (stage === 'blocked' || stage === 'unavailable') {
       void openMicrophone();
     }
   }

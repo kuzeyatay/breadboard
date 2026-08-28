@@ -1,5 +1,7 @@
 "use client";
 
+import { externalRunStartedAtMs } from "./external-run-clock";
+
 // In-chat run card for a Deep Research run. Mirrors the Agent TARS / Agent
 // Browser inline cards: the host creates the run before this mounts, and this
 // component only observes /api/deep-research/runs/<id>/events.
@@ -8,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import type {
   ExternalAgentOutcome,
   ExternalAgentTerminalResult,
@@ -31,17 +34,7 @@ import { notifyTaskCompleted } from "@/lib/task-completion-notification";
 const ChatMarkdown = dynamic(() => import("@/app/components/chat-markdown"), { ssr: false });
 
 function StopSpinner() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-3 w-3 animate-spin motion-reduce:animate-none"
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z" />
-    </svg>
-  );
+  return <BreadboardLoader className="h-3 w-3" />;
 }
 
 interface RunEvent {
@@ -341,13 +334,14 @@ export default function InlineDeepResearchRun({
   // Runs take minutes; a counter is the difference between "working" and "stuck".
   useEffect(() => {
     if (TERMINAL_STATUSES.has(status)) return;
-    const started = Date.now();
+    const started = externalRunStartedAtMs(runId);
+    setElapsedSeconds(Math.max(0, Math.round((Date.now() - started) / 1_000)));
     const timer = setInterval(
       () => setElapsedSeconds(Math.round((Date.now() - started) / 1000)),
       1_000,
     );
     return () => clearInterval(timer);
-  }, [status]);
+  }, [runId, status]);
 
   const stop = async () => {
     if (stopPendingRef.current) return;

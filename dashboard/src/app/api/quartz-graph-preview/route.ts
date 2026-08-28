@@ -66,12 +66,37 @@ const PREVIEW_THEME_SCRIPT = `
 <script>
 (() => {
   try {
+    const requestedTheme = new URLSearchParams(window.location.search).get("theme");
     const parentTheme = window.parent.document.documentElement.dataset.theme;
-    const theme = parentTheme === "dark" ? "dark" : "light";
+    const theme = requestedTheme === "dark" || requestedTheme === "light"
+      ? requestedTheme
+      : parentTheme === "dark" ? "dark" : "light";
+    document.documentElement.classList.add("quartz-graph-preview");
+    document.documentElement.style.colorScheme = theme;
+    document.documentElement.style.backgroundColor = theme === "dark" ? "#0b0c0a" : "#f5f3ee";
     window.localStorage.setItem("theme", theme);
     document.documentElement.setAttribute("saved-theme", theme);
   } catch {}
 })();
+</script>
+`;
+
+// The full Quartz graph is tuned for a reading surface, not this compact card.
+// Apply the preview overrides before Quartz dispatches its initial `nav` event,
+// so the first simulation already has enough repulsion and appropriately sized
+// labels instead of visibly rearranging itself after load.
+const PREVIEW_LAYOUT_SCRIPT = `
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const graph = document.querySelector(".graph.home-knowledge-graph .graph-container");
+  if (!graph) return;
+  try {
+    const config = JSON.parse(graph.dataset.cfg || "{}");
+    config.repelForce = Math.max(Number(config.repelForce) || 0, 4);
+    config.fontSize = Math.min(Number(config.fontSize) || 0.72, 0.72);
+    graph.dataset.cfg = JSON.stringify(config);
+  } catch {}
+});
 </script>
 `;
 
@@ -80,14 +105,27 @@ const PREVIEW_READY_SCRIPT = `
 (() => {
   const messageType = "breadboard:quartz-graph-preview";
   let settled = false;
+  let readyScheduled = false;
   const post = (status, message) => {
     window.parent.postMessage({ type: messageType, status, message }, window.location.origin);
   };
   const announceWhenReady = () => {
-    if (!document.querySelector(".graph.home-knowledge-graph > .graph-outer canvas")) return false;
-    settled = true;
-    observer.disconnect();
-    post("ready");
+    const canvas = document.querySelector(".graph.home-knowledge-graph > .graph-outer canvas");
+    if (!canvas) return false;
+    if (readyScheduled) return true;
+    readyScheduled = true;
+    // Pixi inserts its canvas before its first render. Reveal only after that
+    // render has reached the compositor, otherwise a light map briefly exposes
+    // the graphics surface's black initialization frame.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!canvas.isConnected) {
+        readyScheduled = false;
+        return;
+      }
+      settled = true;
+      observer.disconnect();
+      post("ready");
+    }));
     return true;
   };
   const observer = new MutationObserver(announceWhenReady);
@@ -157,6 +195,7 @@ function injectPreviewShell(
   const postscriptUrl = proxyUrl(origin, 'postscript', refresh, clusterSlug);
   const headInjection = [
     PREVIEW_THEME_SCRIPT,
+    PREVIEW_LAYOUT_SCRIPT,
     `<base href="${baseHref}">`,
     `<style>${PREVIEW_STYLE}</style>`,
     PREVIEW_READY_SCRIPT,
@@ -236,7 +275,19 @@ function filterContentIndex(contentIndexText: string, clusterSlug: string): stri
   const prefix = `${clusterSlug}/`;
   const parsed = JSON.parse(contentIndexText) as Record<string, unknown>;
   const filtered = Object.fromEntries(
-    Object.entries(parsed).filter(([slug]) => slug === clusterSlug || slug.startsWith(prefix)),
+    Object.entries(parsed)
+      .filter(([slug]) => slug === clusterSlug || slug.startsWith(prefix))
+      .map(([slug, value]) => {
+        if (!value || typeof value !== 'object') return [slug, value];
+        const title = (value as { title?: unknown }).title;
+        if (typeof title !== 'string' || title.length <= 30) return [slug, value];
+        const extension = title.match(/\.[a-z0-9]{2,5}$/i)?.[0] ?? '';
+        const leadingLength = Math.max(12, 29 - extension.length);
+        return [
+          slug,
+          { ...value, title: `${title.slice(0, leadingLength)}…${extension}` },
+        ];
+      }),
   );
 
   return JSON.stringify(filtered);

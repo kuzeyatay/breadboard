@@ -152,7 +152,7 @@ test("hot dashboard uses the physical source tree while mutable data stays indep
   assert.deepEqual(hot?.arguments, [
     { kind: "app-path", path: "dashboard/scripts/runtime-v2-hot-dashboard.mjs" },
     { kind: "literal", value: "dev" },
-    { kind: "literal", value: "--webpack" },
+    { kind: "literal", value: "--turbopack" },
     { kind: "literal", value: "--port" },
     { kind: "runtime-value", value: "service-port" },
     { kind: "literal", value: "--hostname" },
@@ -160,8 +160,8 @@ test("hot dashboard uses the physical source tree while mutable data stays indep
   ]);
   assert.deepEqual(hot?.resourceLimits, {
     estimatedColdStartCommitMb: 3072,
-    softCommitLimitMb: 6144,
-    hardCommitLimitMb: 8192,
+    softCommitLimitMb: 9216,
+    hardCommitLimitMb: 11264,
   });
   assert.deepEqual(hot?.installProbe, {
     kind: "files-present",
@@ -182,7 +182,7 @@ test("hot dashboard uses the physical source tree while mutable data stays indep
   });
   assert.match(validator, /validateHotDashboardLaunch\(services\)/u);
   assert.match(validator, /dashboard Hot launch must enter Next dev through the dotenv-shadow launcher/u);
-  assert.match(validator, /dashboard Hot launch must retain the reviewed bounded Webpack memory envelope/u);
+  assert.match(validator, /dashboard Hot launch must retain the reviewed bounded Turbopack memory envelope/u);
   assert.match(validator, /dashboard Hot install probe must prove only Node, its Hot launcher, and Next/u);
 });
 

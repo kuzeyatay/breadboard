@@ -522,6 +522,34 @@ export function exactFailedLearnCouncilLineage(
 
 export const LEARN_COUNCIL_LEGACY_QUIESCENCE_MS = 37 * 60_000;
 
+/** Returns the remaining safe-observation delay for an exact legacy lineage.
+ * Null means the lineage cannot become authoritative through time alone. */
+export function legacyLearnCouncilLineageQuiescenceDelayMs(
+  lineage: readonly LearnCouncilRetryJobRow[],
+  observedAtMs: number,
+): number | null {
+  if (!Number.isFinite(observedAtMs)) return null;
+  let remainingMs = 0;
+  for (const job of lineage) {
+    const createdAt = Date.parse(job.created_at);
+    const updatedAt = Date.parse(job.updated_at);
+    if (
+      job.status !== "failed" ||
+      !Number.isFinite(createdAt) ||
+      !Number.isFinite(updatedAt) ||
+      createdAt > updatedAt ||
+      observedAtMs < updatedAt
+    ) {
+      return null;
+    }
+    remainingMs = Math.max(
+      remainingMs,
+      updatedAt + LEARN_COUNCIL_LEGACY_QUIESCENCE_MS - observedAtMs,
+    );
+  }
+  return Math.max(0, remainingMs);
+}
+
 /** A legacy 404 is only meaningful after every exact predecessor is far past
  * both the Learn client deadline and the provider deadline. This prevents a
  * non-atomic ledger glob from racing a late pre-receipt writer. */
@@ -529,16 +557,7 @@ export function legacyLearnCouncilLineageIsQuiescent(
   lineage: readonly LearnCouncilRetryJobRow[],
   observedAtMs: number,
 ): boolean {
-  return Number.isFinite(observedAtMs) && lineage.every((job) => {
-    const createdAt = Date.parse(job.created_at);
-    const updatedAt = Date.parse(job.updated_at);
-    return job.status === "failed" &&
-      Number.isFinite(createdAt) &&
-      Number.isFinite(updatedAt) &&
-      createdAt <= updatedAt &&
-      observedAtMs >= updatedAt &&
-      observedAtMs - updatedAt >= LEARN_COUNCIL_LEGACY_QUIESCENCE_MS;
-  });
+  return legacyLearnCouncilLineageQuiescenceDelayMs(lineage, observedAtMs) === 0;
 }
 
 function checkpointRowsForReceipt(

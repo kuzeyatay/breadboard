@@ -114,7 +114,6 @@ try {
   })}`;
   await page.goto(editorUrl, { waitUntil: "domcontentloaded", timeout: 90_000 });
   await page.getByText(originalText, { exact: true }).first().waitFor({ timeout: 90_000 });
-  await page.getByRole("button", { name: "Proofread" }).waitFor();
   await page.getByLabel("Message Bread about this document").fill("Correct the document title.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("The changes are applied and saved in this document.", { exact: false })
@@ -132,6 +131,21 @@ try {
   );
   if (panelColor !== "rgb(250, 247, 239)") {
     throw new Error(`The AI pane is not using the warm Quartz paper surface (${panelColor}).`);
+  }
+  if (await page.locator(".bread-ai-word-actions").count()) {
+    throw new Error("The removed document-action header is still mounted.");
+  }
+  const userBubbleColor = await page.locator(".ai-msg-user").first().evaluate(
+    (element) => getComputedStyle(element).backgroundColor,
+  );
+  if (userBubbleColor === "rgb(236, 227, 210)") {
+    throw new Error("The document conversation still uses the old tan user bubble.");
+  }
+  const composerRadius = await page.locator(".ai-input-box").evaluate(
+    (element) => getComputedStyle(element).borderRadius,
+  );
+  if (composerRadius !== "30px") {
+    throw new Error(`The document composer is not using the shared 30px shell (${composerRadius}).`);
   }
   if (!page.url().includes("/genoffice-editor/index.html")) {
     throw new Error("The AI request navigated away from the Office editor.");
@@ -156,4 +170,3 @@ try {
 } finally {
   await browser.close();
 }
-

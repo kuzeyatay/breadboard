@@ -1,5 +1,7 @@
 "use client";
 
+import { externalRunStartedAtMs } from "./external-run-clock";
+
 // The OpenMontage run card.
 //
 // A production is a long job with one payoff, so the card leads with the
@@ -204,7 +206,8 @@ export default function InlineOpenMontageRun({
 
   useEffect(() => {
     reportedRef.current = false;
-    startedRef.current = Date.now();
+    startedRef.current = externalRunStartedAtMs(runId);
+    setElapsed(Math.max(0, (Date.now() - startedRef.current) / 1_000));
   }, [runId]);
 
   const reportTerminal = useCallback(

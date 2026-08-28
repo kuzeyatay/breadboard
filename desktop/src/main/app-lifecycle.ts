@@ -70,6 +70,8 @@ import {
 import type { QaServiceProfile } from "./startup-options";
 import {
   RuntimeProcess,
+  type RuntimeLaunchMode,
+  type RuntimeProcessOptions,
   type RuntimeReadySnapshot,
   type RuntimeServiceStatus,
   type RuntimeStatusSnapshot,
@@ -109,6 +111,13 @@ export interface UnhandledRejectionActions {
   killAllNow(): void;
   exit(code: number): void;
 }
+
+/**
+ * The runtime root is not one of the services returned by Runtime status. Give
+ * its startup-card Retry action a distinct target so it cannot be rejected by
+ * service-level validation (or confused with a failed data-preparation step).
+ */
+export const RUNTIME_ROOT_RETRY_ID = "desktop-runtime";
 
 /**
  * Install the fatal unhandled-rejection path through injectable actions so the
@@ -166,6 +175,7 @@ export class AppLifecycle {
   private allowedOrigins!: AllowedOrigins;
   private runtimeStatusTimer: NodeJS.Timeout | null = null;
   private runtimeStatusRefreshInFlight = false;
+  private runtimeRestartInFlight: Promise<boolean> | null = null;
   private lastRuntimeStatusSignature: string | null = null;
   private dashboardShown = false;
   private startupState: StartupState = {
@@ -303,20 +313,8 @@ export class AppLifecycle {
 
     if (hotCheckoutFailure === null) {
       this.runtime = new RuntimeProcess({
-        binDir: this.paths.binDir,
-        bootstrap: {
-          mode: launchMode,
-          appRoot: this.paths.appRoot,
-          runtimeRoot: this.paths.runtimeRoot,
-          dataRoot: this.paths.dataRoot,
-          configRoot: this.paths.configDir,
-        },
+        ...this.runtimeProcessOptions(launchMode),
         startupTimeoutMs: runtimeInitialStartupTimeoutMs(this.paths.runtimeRoot, launchMode),
-        gracefulShutdownTimeoutMs: 60_000,
-        forcedShutdownTimeoutMs: 10_000,
-        onLog: (source, line) =>
-          supervisorLog.write(`[runtime:${source}] ${line}`),
-        onUnexpectedExit: (exit) => this.handleUnexpectedRuntimeExit(exit),
       });
     }
 
@@ -391,6 +389,36 @@ export class AppLifecycle {
       "icon.ico",
     );
     return icon;
+  }
+
+  /** A RuntimeProcess owns one OS process exactly once; retries get a new owner. */
+  private createRuntimeProcess(): RuntimeProcess {
+    const launchMode = runtimeLaunchMode(this.paths.mode);
+    return new RuntimeProcess({
+      ...this.runtimeProcessOptions(launchMode),
+      startupTimeoutMs: runtimeInitialStartupTimeoutMs(this.paths.runtimeRoot, launchMode),
+    });
+  }
+
+  private runtimeProcessOptions(
+    launchMode: RuntimeLaunchMode,
+  ): Omit<RuntimeProcessOptions, "startupTimeoutMs"> {
+    const supervisorLog = this.logs.forService("desktop");
+    return {
+      binDir: this.paths.binDir,
+      bootstrap: {
+        mode: launchMode,
+        appRoot: this.paths.appRoot,
+        runtimeRoot: this.paths.runtimeRoot,
+        dataRoot: this.paths.dataRoot,
+        configRoot: this.paths.configDir,
+      },
+      gracefulShutdownTimeoutMs: 60_000,
+      forcedShutdownTimeoutMs: 10_000,
+      onLog: (source, line) =>
+        supervisorLog.write(`[runtime:${source}] ${line}`),
+      onUnexpectedExit: (exit) => this.handleUnexpectedRuntimeExit(exit),
+    };
   }
 
   private async prepareDataLayer(): Promise<void> {
@@ -487,6 +515,46 @@ export class AppLifecycle {
         .write(`[desktop] Runtime startup failed: ${reason}`);
       this.failRuntimeStartup(reason);
     }
+  }
+
+  private retryRuntimeRoot(): Promise<boolean> {
+    if (this.runtimeRestartInFlight) return this.runtimeRestartInFlight;
+    const retry = this.retryRuntimeRootOnce();
+    this.runtimeRestartInFlight = retry;
+    const clearRetry = () => {
+      if (this.runtimeRestartInFlight === retry) {
+        this.runtimeRestartInFlight = null;
+      }
+    };
+    // Observe both outcomes without creating the rejected promise that
+    // `finally()` would return and leave detached from the IPC invocation.
+    void retry.then(clearRetry, clearRetry);
+    return retry;
+  }
+
+  private async retryRuntimeRootOnce(): Promise<boolean> {
+    if (this.quitting) return false;
+    const previousRuntime = this.runtime;
+    if (!previousRuntime) return false;
+
+    this.stopRuntimeStatusPolling();
+    const stopped = await previousRuntime.stop();
+    if (!stopped.exited) {
+      this.failRuntimeStartup(
+        "The previous Runtime process could not be stopped safely. Quit Breadboard before trying again.",
+      );
+      return false;
+    }
+
+    if (this.runtimeDashboardUrl) {
+      this.allowedOrigins.origins.delete(new URL(this.runtimeDashboardUrl).origin);
+    }
+    this.runtimeDashboardUrl = null;
+    this.dashboardShown = false;
+    this.lastRuntimeStatusSignature = null;
+    this.runtime = this.createRuntimeProcess();
+    await this.startRuntime();
+    return this.runtime.state === "ready";
   }
 
   private allowDashboardOrigin(dashboardUrl: string): void {
@@ -602,7 +670,7 @@ export class AppLifecycle {
       message: "Breadboard Runtime could not start",
       services: snapshot ? this.runtimeServices(snapshot) : [],
       failure: {
-        serviceId: "desktop",
+        serviceId: RUNTIME_ROOT_RETRY_ID,
         displayName: "Breadboard Runtime",
         reason,
         logTail: this.logs.forService("desktop").readTail(20),
@@ -642,6 +710,12 @@ export class AppLifecycle {
     ipcMain.handle(
       IPC_CHANNELS.retryService,
       async (_event, serviceId: unknown) => {
+        if (
+          serviceId === RUNTIME_ROOT_RETRY_ID &&
+          this.startupState.failure?.serviceId === RUNTIME_ROOT_RETRY_ID
+        ) {
+          return this.retryRuntimeRoot();
+        }
         const runtime = this.runtime;
         const snapshot = runtime?.snapshot();
         if (typeof serviceId !== "string" || !runtime || !snapshot)

@@ -39,6 +39,7 @@ const speechMediaExecutor = source("../scripts/runtime-v2-speech-media-executor.
 const speechMediaJob = source("../src/lib/runtime-v2/speech-media-job.ts");
 const sampleUpload = source("../src/app/api/speech/profiles/[profileId]/samples/route.ts");
 const transcribe = source("../src/app/api/speech/transcribe/route.ts");
+const prepare = source("../src/app/api/speech/prepare/route.ts");
 const status = source("../src/app/api/speech/status/route.ts");
 const voiceboxClient = source("../src/lib/speech/voicebox-client.ts");
 const speechStore = source("../src/lib/speech/settings.ts");
@@ -93,6 +94,19 @@ test("every shared assistant composer receives recording and transcription", () 
   assert.match(dictation, /aria-label=\{label\}/);
   assert.match(dictation, /<MicrophonePermissionHelp/);
   assert.match(permissionHelp, /openSystemMicrophoneSettings/);
+});
+
+test("voice mode can warm Voicebox before recording the first turn", () => {
+  assert.match(prepare, /export async function POST\(\)/);
+  assert.match(prepare, /requireUserId\(\)/);
+  assert.match(prepare, /voiceboxJson<\{ models: unknown\[\] \}>\("\/models\/status"/);
+  assert.match(voiceboxClient, /startupFailureMessage\(\)/);
+
+  const launcher = source("../../scripts/start-voicebox.mjs");
+  assert.doesNotMatch(launcher, /["']import backend\.main["']/);
+  assert.match(launcher, /importlib\.util\.find_spec/);
+  assert.match(launcher, /stderrTail/);
+  assert.match(launcher, /lastStderrLine\(\)/);
 });
 
 test("live dictation sends Voicebox-native WAV and revises only its own draft", async () => {

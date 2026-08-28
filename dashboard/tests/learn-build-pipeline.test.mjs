@@ -8,8 +8,12 @@ import test from "node:test";
 
 import {
   createLearnBuildWorkspace,
+  defaultWorkspaceRoot,
+  disposeLearnBuildWorkspace,
   fingerprintDurableGardenState,
   prepareLearnWorkspaceRoot,
+  retainFailedLearnWorkspacesForJob,
+  retainLearnBuildWorkspace,
   seedDurableInputs,
   temporaryWorkspaceRoot,
   verifyAuthoritativeSourceAnchorLedger,
@@ -245,6 +249,216 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
       false,
       `${name} must not seed a fresh staging run`,
     );
+  }
+});
+
+test("1/2a. a failed workspace retains its exact staged candidate and lifecycle receipt", () => {
+  const repo = tmp("repo-retained-workspace");
+  fs.writeFileSync(path.join(repo, "durable.md"), "durable input\n");
+  const workspaceRoot = path.join(tmp("retained-workspace-root"), "workspace");
+  const ws = createLearnBuildWorkspace({
+    gardenSlug: "g-retained",
+    jobId: "job-retained",
+    mode: "generate",
+    repositoryGardenDir: repo,
+    contractFingerprint: "cf-retained",
+    sourceSetFingerprint: "sf-retained",
+    workspaceRoot,
+  });
+  const stagedCandidate = path.join(ws.stagingGardenDir, "learning", "1.1 Candidate.md");
+  fs.mkdirSync(path.dirname(stagedCandidate), { recursive: true });
+  fs.writeFileSync(stagedCandidate, "# Exact generated candidate\n");
+
+  retainLearnBuildWorkspace(ws, {
+    reason: "generation_failure",
+    failureStage: "  Running   final semantic critic  ",
+    retainedAt: "2026-08-28T08:00:00.000Z",
+  });
+
+  assert.equal(fs.readFileSync(stagedCandidate, "utf8"), "# Exact generated candidate\n");
+  const descriptor = JSON.parse(
+    fs.readFileSync(path.join(workspaceRoot, "build-workspace.json"), "utf8"),
+  );
+  assert.equal(descriptor.lifecycle, "retained_after_failure");
+  assert.equal(descriptor.retentionReason, "generation_failure");
+  assert.equal(descriptor.retentionStage, "Running final semantic critic");
+  assert.equal(descriptor.retainedAt, "2026-08-28T08:00:00.000Z");
+
+  disposeLearnBuildWorkspace(ws);
+  assert.equal(fs.existsSync(workspaceRoot), false);
+});
+
+test("1/2b. abandoned-worker retention recognizes the exact default root", () => {
+  const repo = tmp("repo-abandoned-retention");
+  fs.writeFileSync(path.join(repo, "durable.md"), "durable input\n");
+  const localAppData = tmp("local-app-data-abandoned-retention");
+  const originalLocalAppData = process.env.LOCALAPPDATA;
+  const gardenSlug = `g-retained-${crypto.randomUUID()}`;
+  const jobId = `job-retained-${crypto.randomUUID()}`;
+  try {
+    process.env.LOCALAPPDATA = localAppData;
+    const ws = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId,
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-abandoned-retained",
+      sourceSetFingerprint: "sf-abandoned-retained",
+    });
+    const stagedCandidate = path.join(ws.stagingGardenDir, "learning", "candidate.md");
+    fs.mkdirSync(path.dirname(stagedCandidate), { recursive: true });
+    fs.writeFileSync(stagedCandidate, "retained\n");
+
+    const retained = retainFailedLearnWorkspacesForJob({
+      gardenSlug,
+      jobId,
+      reason: "abandoned_worker",
+      failureStage: "Reconciling visuals",
+      retainedAt: "2026-08-28T08:01:00.000Z",
+    });
+
+    assert.deepEqual(retained, [path.resolve(ws.workspaceRoot)]);
+    assert.equal(fs.readFileSync(stagedCandidate, "utf8"), "retained\n");
+    const descriptor = JSON.parse(
+      fs.readFileSync(path.join(ws.workspaceRoot, "build-workspace.json"), "utf8"),
+    );
+    assert.equal(descriptor.lifecycle, "retained_after_failure");
+    assert.equal(descriptor.retentionReason, "abandoned_worker");
+    roots.push(ws.workspaceRoot);
+  } finally {
+    if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = originalLocalAppData;
+  }
+});
+
+test("1/2c. a compatible retained candidate is cloned into the next job without resetting staged progress", () => {
+  const repo = tmp("repo-retained-resume");
+  fs.writeFileSync(path.join(repo, "durable.md"), "durable input\n");
+  const runtimeRoot = tmp("retained-resume-runtime");
+  const originalRuntimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+  const originalDataRoot = process.env.BREADBOARD_DATA_DIR;
+  const gardenSlug = `g-resume-${crypto.randomUUID()}`;
+  try {
+    process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = runtimeRoot;
+    delete process.env.BREADBOARD_DATA_DIR;
+    const retained = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-failed",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-resume",
+      sourceSetFingerprint: "sf-resume",
+    });
+    const stagedPage = path.join(
+      retained.stagingGardenDir,
+      "learning",
+      "3. Preserved",
+      "3.1 Checkpoint.md",
+    );
+    const stagedCheckpoint = path.join(
+      retained.stagingGardenDir,
+      ".breadboard",
+      "learn-run-snapshots",
+      "checkpoint.json",
+    );
+    fs.mkdirSync(path.dirname(stagedPage), { recursive: true });
+    fs.mkdirSync(path.dirname(stagedCheckpoint), { recursive: true });
+    fs.writeFileSync(stagedPage, "# Preserved staged page\n");
+    fs.writeFileSync(stagedCheckpoint, '{"progress":96}\n');
+    retainLearnBuildWorkspace(retained, {
+      reason: "generation_failure",
+      failureStage: "Final critic",
+      retainedAt: "2026-08-28T08:02:00.000Z",
+    });
+    fs.writeFileSync(
+      path.join(repo, "durable.md"),
+      "current durable input after retention\n",
+    );
+
+    const resumed = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-resumed",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-resume",
+      sourceSetFingerprint: "sf-resume",
+    });
+
+    assert.notEqual(resumed.workspaceRoot, retained.workspaceRoot);
+    assert.equal(resumed.lifecycle, "active");
+    assert.equal(resumed.resumedFromBuildId, retained.buildId);
+    assert.equal(resumed.resumedFromJobId, retained.jobId);
+    assert.equal(resumed.resumedFromWorkspaceRoot, retained.workspaceRoot);
+    assert.equal(
+      fs.readFileSync(path.join(resumed.stagingGardenDir, "durable.md"), "utf8"),
+      "current durable input after retention\n",
+      "current durable inputs must overlay the preserved generated candidate",
+    );
+    assert.equal(
+      fs.readFileSync(
+        path.join(
+          resumed.stagingGardenDir,
+          "learning",
+          "3. Preserved",
+          "3.1 Checkpoint.md",
+        ),
+        "utf8",
+      ),
+      "# Preserved staged page\n",
+    );
+    assert.equal(
+      fs.readFileSync(
+        path.join(
+          resumed.stagingGardenDir,
+          ".breadboard",
+          "learn-run-snapshots",
+          "checkpoint.json",
+        ),
+        "utf8",
+      ),
+      '{"progress":96}\n',
+    );
+    assert.equal(fs.readFileSync(stagedPage, "utf8"), "# Preserved staged page\n");
+    assert.equal(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(retained.workspaceRoot, "build-workspace.json"),
+          "utf8",
+        ),
+      ).lifecycle,
+      "retained_after_failure",
+    );
+    roots.push(retained.workspaceRoot, resumed.workspaceRoot);
+  } finally {
+    if (originalRuntimeRoot === undefined) {
+      delete process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+    } else {
+      process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = originalRuntimeRoot;
+    }
+    if (originalDataRoot === undefined) delete process.env.BREADBOARD_DATA_DIR;
+    else process.env.BREADBOARD_DATA_DIR = originalDataRoot;
+  }
+});
+
+test("1/2d. a supervised Learn worker uses its durable runtime root instead of OS temp", () => {
+  const runtimeRoot = tmp("learn-worker-runtime-root");
+  const originalRuntimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+  const originalDataRoot = process.env.BREADBOARD_DATA_DIR;
+  try {
+    process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = runtimeRoot;
+    delete process.env.BREADBOARD_DATA_DIR;
+    assert.equal(
+      defaultWorkspaceRoot("g-runtime", "job-runtime"),
+      path.join(runtimeRoot, "builds", "g-runtime", "job-runtime"),
+    );
+  } finally {
+    if (originalRuntimeRoot === undefined) {
+      delete process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+    } else {
+      process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = originalRuntimeRoot;
+    }
+    if (originalDataRoot === undefined) delete process.env.BREADBOARD_DATA_DIR;
+    else process.env.BREADBOARD_DATA_DIR = originalDataRoot;
   }
 });
 

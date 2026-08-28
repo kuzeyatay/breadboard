@@ -130,6 +130,15 @@ test("a healthy startup ends on a welcome that is dismissed by hand", () => {
   assert.match(css, /@keyframes bloom-out/);
 });
 
+test("the failure Retry action waits for an answer and can recover from rejection", () => {
+  assert.match(script, /retryButton\.addEventListener\("click", async \(\) =>/);
+  assert.match(script, /retryButton\.disabled = true;/);
+  assert.match(script, /const accepted = await api\.retryService\(serviceId\)/);
+  assert.match(script, /if \(!accepted && failedServiceId === serviceId\) retryButton\.disabled = false;/);
+  assert.match(script, /if \(state\.failure\) \{\s*failedServiceId = state\.failure\.serviceId;\s*retryButton\.disabled = false;/);
+  assert.match(css, /\.failure button:disabled \{[\s\S]{0,120}cursor: wait;/);
+});
+
 test("the welcome waits for the dashboard so the click has nothing left to wait for", () => {
   // Healthy services are not enough: the loading field holds until the hidden
   // dashboard has painted, and only then does the greeting appear.

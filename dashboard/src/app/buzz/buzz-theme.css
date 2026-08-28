@@ -239,9 +239,6 @@
 
 
 /* ── animations.css ─────────────────────────────────────────── */
-.buzz-root .sprout-arc-spinner {
-  animation: sprout-arc-spinner-spin 500ms linear infinite;
-}
 
 @keyframes buzz-qr-cell-reveal {
   0% {
@@ -306,11 +303,6 @@
   }
 }
 
-@keyframes sprout-arc-spinner-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 
 .buzz-root .buzz-wave-hand {
   display: inline-block;

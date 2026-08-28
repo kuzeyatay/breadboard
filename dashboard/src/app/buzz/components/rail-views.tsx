@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Bot, Hash, Inbox, MailPlus, MessagesSquare, RefreshCw } from "lucide-react";
 
 import { cn } from "@/app/buzz/lib/cn";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import type {
   BuzzAgentSeat,
   BuzzInvite,
@@ -92,7 +93,7 @@ function ViewHeader({
         aria-label={`Refresh ${title.toLowerCase()}`}
         className="ml-auto flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
-        <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+        {loading ? <BreadboardLoader className="size-3.5" /> : <RefreshCw className="size-3.5" />}
       </button>
     </header>
   );

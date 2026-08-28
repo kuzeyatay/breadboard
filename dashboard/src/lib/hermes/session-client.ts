@@ -219,11 +219,25 @@ export function cachedHermesSessionDetail(
 export async function loadHermesSessionDetail(
   surface: HermesSurface,
   id: string,
-  options: { reuseRecentPrefetch?: boolean; signal?: AbortSignal } = {},
+  options: {
+    reuseRecentPrefetch?: boolean;
+    /**
+     * A selected chat must be newer than a speculative hover/focus request.
+     * Join that request so it is not orphaned, then fetch the authoritative
+     * snapshot that decides whether a run is still active.
+     */
+    revalidateAfterPending?: boolean;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<HermesSessionSnapshot> {
   const key = detailKey(surface, id);
   const pending = detailRequests.get(key);
-  if (pending) return followSharedRequest(pending, options.signal);
+  if (pending) {
+    const shared = await followSharedRequest(pending, options.signal);
+    if (!options.revalidateAfterPending) return shared;
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    return loadHermesSessionDetail(surface, id, { signal: options.signal });
+  }
   if (options.signal?.aborted) throw abortReason(options.signal);
   const prefetchedUntil = recentPrefetches.get(key) ?? 0;
   const prefetched = details.get(key);

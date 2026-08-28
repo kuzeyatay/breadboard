@@ -81,7 +81,6 @@ export async function POST(
         resolveDocumentAttachments(userId, parseChatAttachments(body.attachments)),
         text,
         process.env,
-        request.signal,
       ),
       // Super agent is a per-message flag, never a stored session property: the
       // switch the user had on when they pressed send governs that turn only.
@@ -108,6 +107,11 @@ export async function POST(
       branchHistory,
       branchContextId: stringValue(body.branchContextId)?.slice(0, 128),
       internalAgentContinuation: body.internalAgentContinuation === true,
+      responseStartedAt:
+        typeof body.responseStartedAt === "string" &&
+        Number.isFinite(Date.parse(body.responseStartedAt))
+          ? body.responseStartedAt
+          : undefined,
     });
 
     if (!result.accepted) {
@@ -139,7 +143,11 @@ export async function POST(
         failAssistantMessage({
           conversationId: conversation.id,
           clientMessageId,
-          status: request.signal.aborted ? "aborted" : "failed",
+          // Losing the browser request means its viewer went away; it is not a
+          // Stop action. Only the explicit abort route is allowed to persist an
+          // interrupted answer. Retrieval and dispatch deliberately outlive
+          // this request's signal so navigation cannot manufacture one here.
+          status: "failed",
           error: error instanceof Error ? error.message : "turn_failed",
         });
       } catch {

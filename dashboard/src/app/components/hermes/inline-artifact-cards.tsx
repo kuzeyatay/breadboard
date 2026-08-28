@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import { shouldRenderInteractiveVisualizerInline } from "@/lib/hermes/interactive-visualizer-skills";
 import ArtifactViewer, {
   ARTIFACT_BROWSER_EVENT,
@@ -44,8 +45,10 @@ interface ArtifactScopeProps {
  * so the provider can paint its cards in the same commit the messages do.
  */
 const artifactCache = new Map<string, PresentedArtifact[]>();
+const artifactFreshUntil = new Map<string, number>();
 const artifactRequests = new Map<string, Promise<PresentedArtifact[]>>();
 const MAX_CACHED_ARTIFACT_QUERIES = 32;
+const ARTIFACT_FRESH_MS = 2_000;
 
 function cacheArtifacts(query: string, artifacts: PresentedArtifact[]): void {
   artifactCache.delete(query);
@@ -54,6 +57,7 @@ function cacheArtifacts(query: string, artifacts: PresentedArtifact[]): void {
     const oldest = artifactCache.keys().next().value;
     if (oldest === undefined) break;
     artifactCache.delete(oldest);
+    artifactFreshUntil.delete(oldest);
   }
 }
 
@@ -82,6 +86,7 @@ async function requestArtifacts(
     ? (data.artifacts as PresentedArtifact[])
     : [];
   cacheArtifacts(query, artifacts);
+  artifactFreshUntil.set(query, Date.now() + ARTIFACT_FRESH_MS);
   return artifacts;
 }
 
@@ -90,23 +95,68 @@ async function requestArtifacts(
  * it as early as the conversation id is known, next to the transcript load.
  * Safe to call repeatedly; one request per query is in flight at a time.
  */
-export function primeInlineArtifacts(scope: ArtifactScopeProps): void {
+export function primeInlineArtifacts(
+  scope: ArtifactScopeProps,
+  options: { revalidate?: boolean } = {},
+): Promise<PresentedArtifact[]> {
   const query = inlineArtifactQuery(scope);
-  if (!query || artifactRequests.has(query)) return;
+  if (!query) return Promise.resolve([]);
+  if (!options.revalidate && artifactCache.has(query)) {
+    return Promise.resolve(artifactCache.get(query) ?? []);
+  }
+  const pending = artifactRequests.get(query);
+  if (pending) return pending;
   const request = requestArtifacts(query)
     // A failed prefetch is not worth reporting: the provider refreshes on
     // mount, and the full Artifacts panel remains available either way.
     .catch(() => [] as PresentedArtifact[])
     .finally(() => artifactRequests.delete(query));
   artifactRequests.set(query, request);
+  return request;
 }
 
-/** `primeInlineArtifacts` for a transcript that renders the conversation. */
-export function useInlineArtifactPrefetch(scope: ArtifactScopeProps): void {
+/**
+ * `primeInlineArtifacts` for a transcript that renders the conversation.
+ * False means the chat must keep its loading cover up: message rows and their
+ * artifact cards are one visible snapshot, never two staggered paints.
+ */
+export function useInlineArtifactPrefetch(scope: ArtifactScopeProps): boolean {
   const { conversationId, legacyChatSessionId, gardenSlug } = scope;
+  const query = inlineArtifactQuery({
+    conversationId,
+    legacyChatSessionId,
+    gardenSlug,
+  });
+  const [readiness, setReadiness] = useState(() => ({
+    query,
+    ready: !query,
+  }));
+  const queryChanged = readiness.query !== query;
+  if (queryChanged) {
+    // React immediately retries this render with the new query state. Returning
+    // false below means a chat revisited from cache cannot paint a stale
+    // artifact list for one frame before the effect starts its revalidation.
+    setReadiness({ query, ready: !query });
+  }
+
   useEffect(() => {
-    primeInlineArtifacts({ conversationId, legacyChatSessionId, gardenSlug });
-  }, [conversationId, legacyChatSessionId, gardenSlug]);
+    let cancelled = false;
+    if (!query) return;
+    void primeInlineArtifacts({
+      conversationId,
+      legacyChatSessionId,
+      gardenSlug,
+    }, {
+      revalidate: true,
+    }).then(() => {
+      if (!cancelled) setReadiness({ query, ready: true });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, legacyChatSessionId, gardenSlug, query]);
+
+  return !query || (!queryChanged && readiness.query === query && readiness.ready);
 }
 
 interface Props extends ArtifactScopeProps {
@@ -207,22 +257,7 @@ function ArtifactBloomLoader() {
       aria-hidden="true"
     >
       <span className="absolute h-8 w-8 rounded-full bg-[var(--botanical)]/10 blur-md motion-safe:animate-pulse" />
-      <svg className="relative h-8 w-8 text-[var(--botanical)]" viewBox="0 0 32 32" fill="none">
-        <g className="origin-center motion-safe:animate-spin [animation-duration:3.8s]">
-          <ellipse cx="16" cy="7" rx="2.7" ry="5" fill="currentColor" fillOpacity=".72" />
-          <ellipse cx="16" cy="25" rx="2.7" ry="5" fill="currentColor" fillOpacity=".38" />
-          <ellipse cx="7" cy="16" rx="5" ry="2.7" fill="currentColor" fillOpacity=".52" />
-          <ellipse cx="25" cy="16" rx="5" ry="2.7" fill="currentColor" fillOpacity=".9" />
-        </g>
-        <g className="origin-center motion-safe:animate-spin [animation-direction:reverse] [animation-duration:5.4s]">
-          <circle cx="10" cy="10" r="1.6" fill="currentColor" fillOpacity=".45" />
-          <circle cx="22" cy="22" r="1.6" fill="currentColor" fillOpacity=".7" />
-          <circle cx="22" cy="10" r="1.2" fill="currentColor" fillOpacity=".35" />
-          <circle cx="10" cy="22" r="1.2" fill="currentColor" fillOpacity=".55" />
-        </g>
-        <circle cx="16" cy="16" r="3.25" fill="var(--paper-raised)" stroke="currentColor" strokeWidth="1.35" />
-        <circle cx="16" cy="16" r="1.15" fill="currentColor" />
-      </svg>
+      <BreadboardLoader className="relative h-8 w-8 text-[var(--botanical)]" />
     </span>
   );
 }
@@ -418,6 +453,10 @@ export function InlineArtifactCardsProvider({
       });
       return () => controller.abort();
     }
+    if ((artifactFreshUntil.get(query) ?? 0) > Date.now()) {
+      setSnapshot({ query, artifacts: artifactCache.get(query) ?? [] });
+      return () => controller.abort();
+    }
     const timer = window.setTimeout(() => void refresh(controller.signal), 0);
     return () => {
       window.clearTimeout(timer);
@@ -575,7 +614,10 @@ export function InlineArtifactCardsProvider({
       <ArtifactViewer
         artifact={openArtifact}
         onClose={() => setOpenId(null)}
-        onUpdated={() => { void refresh(); }}
+        // Register the returned version before the background refresh. The
+        // editor must stay mounted while an AI-applied document save becomes
+        // visible to the surrounding transcript.
+        onUpdated={registerArtifact}
         onEditImage={(artifact) => openImageStudio({ sourceArtifact: artifact })}
         onCreateImage={(artifact) => openImageStudio({ promptArtifact: artifact })}
         onEditVideo={openVideoStudio}

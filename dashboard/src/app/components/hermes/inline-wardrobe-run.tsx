@@ -1,4 +1,6 @@
 "use client";
+
+import { externalRunStartedAtMs } from "./external-run-clock";
 //
 // The Wardrobe run card.
 //
@@ -138,7 +140,8 @@ export default function InlineWardrobeRun({
 
   useEffect(() => {
     reportedRef.current = false;
-    startedRef.current = Date.now();
+    startedRef.current = externalRunStartedAtMs(runId);
+    setElapsed(Math.max(0, (Date.now() - startedRef.current) / 1_000));
   }, [runId]);
 
   const reportTerminal = useCallback(

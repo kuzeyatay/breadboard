@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import { backLabelFor } from "@/lib/nav-history";
 import { consumeWorkflowReturnPath, peekWorkflowReturnPath } from "@/lib/workflows/navigation";
 import { CanvasEditor } from "./components/canvas-editor";
@@ -411,7 +412,7 @@ export default function WorkflowsClient({ workflowId }: { workflowId: string | n
           />
         ) : (
           <div className="flex flex-1 items-center justify-center">
-            <span className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--line-strong)] border-t-[var(--botanical)]" />
+            <BreadboardLoader className="h-5 w-5 text-[var(--botanical)]" />
           </div>
         )}
       </div>

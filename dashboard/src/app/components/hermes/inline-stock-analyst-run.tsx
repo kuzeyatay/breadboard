@@ -1,5 +1,7 @@
 "use client";
 
+import { externalRunStartedAtMs } from "./external-run-clock";
+
 // One Stock Analyst turn, as it happens.
 //
 // The clone reports two different kinds of progress and the card keeps them
@@ -126,7 +128,8 @@ export default function InlineStockAnalystRun({
 
   useEffect(() => {
     reportedRef.current = false;
-    startedRef.current = Date.now();
+    startedRef.current = externalRunStartedAtMs(runId);
+    setElapsed(Math.max(0, (Date.now() - startedRef.current) / 1_000));
   }, [runId]);
 
   const applyEvent = useCallback(

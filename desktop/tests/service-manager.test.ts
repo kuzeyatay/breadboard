@@ -325,20 +325,7 @@ test("every overlapping capability holds a reclaimed service in either release o
       await manager.startAll();
       runtime.setFreeCommitMb(6_500);
       originalLease = await manager.acquireCapabilityLease("original-job", "forces reclaim");
-      // Strict production policy excludes simultaneous heavyweight starts.
-      // This unit isolates the ServiceManager bookkeeping by representing a
-      // capability that an alternate policy has already admitted.
-      const governor = memoryGovernorOf(manager);
-      const originalAdmit = governor.admit.bind(governor);
-      governor.admit = async (
-        request: AdmissionRequest,
-        refresh: MemoryRefreshOptions = {},
-      ): Promise<void> => {
-        if (request.id === "overlap-job") return;
-        await originalAdmit(request, refresh);
-      };
       overlapLease = await manager.acquireCapabilityLease("overlap-job", "overlaps reclaim");
-      governor.admit = originalAdmit;
       assert.equal(manager.status("reclaimable").state, "stopped");
 
       const first = releaseFirst === "original" ? originalLease : overlapLease;
@@ -590,7 +577,7 @@ test("failed post-reclaim admission restores despite a pre-existing capability l
   }
 });
 
-test("active-heavyweight denial never sheds an unrelated pressure-sheddable service", async () => {
+test("overlapping heavyweight leases coexist without shedding an unrelated service", async () => {
   const runtime = mutableGovernedManager(20_000);
   const { manager, logsDir } = runtime;
   manager.register(nodeService("reclaimable", "setInterval(()=>{},1000)", {
@@ -613,22 +600,28 @@ test("active-heavyweight denial never sheds an unrelated pressure-sheddable serv
   }
 
   let activeLease: Awaited<ReturnType<ServiceManager["acquireCapabilityLease"]>> | null = null;
+  let overlappingLease: Awaited<ReturnType<ServiceManager["acquireCapabilityLease"]>> | null = null;
   try {
     await manager.startAll();
     const pid = manager.status("reclaimable").pid;
-    activeLease = await manager.acquireCapabilityLease("active-job", "exclusive owner");
-    await assert.rejects(
-      () => manager.acquireCapabilityLease("rejected-job", "must not reclaim"),
-      /Another heavyweight operation is already active/,
+    activeLease = await manager.acquireCapabilityLease("active-job", "first bounded owner");
+    overlappingLease = await manager.acquireCapabilityLease(
+      "rejected-job",
+      "overlapping bounded owner",
     );
     assert.equal(manager.status("reclaimable").state, "healthy");
     assert.equal(manager.status("reclaimable").pid, pid);
+    assert.deepEqual(manager.activeLeaseSummary(), [
+      { targetId: "active-job", count: 1 },
+      { targetId: "rejected-job", count: 1 },
+    ]);
     assert.equal(
       manager.tailLog("reclaimable").some((line) => line.includes("reclaiming pressure-sheddable")),
       false,
     );
   } finally {
     activeLease?.release();
+    overlappingLease?.release();
     await manager.stopAll();
     fs.rmSync(logsDir, { recursive: true, force: true });
   }

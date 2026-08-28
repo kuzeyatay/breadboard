@@ -182,15 +182,17 @@ export type VoiceStage =
   | 'thinking'
   | 'speaking'
   | 'paused'
+  | 'unavailable'
   | 'blocked';
 
 const STAGE_LABELS: Record<VoiceStage, string> = {
-  opening: 'Opening the microphone',
+  opening: 'Getting voice ready',
   listening: 'Listening',
   transcribing: 'Catching that',
   thinking: 'Thinking',
   speaking: 'Answering',
   paused: 'Paused',
+  unavailable: 'Voice unavailable',
   blocked: 'Microphone blocked',
 };
 

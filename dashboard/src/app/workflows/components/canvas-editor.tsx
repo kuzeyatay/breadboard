@@ -21,6 +21,7 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { BLOCK_DIMENSIONS } from "@/lib/sim/workflow-renderer";
+import BreadboardLoader from "@/app/components/breadboard-loader";
 import { BlockPalette, PALETTE_DRAG_MIME } from "./block-palette";
 import { ConfigPanel } from "./config-panel";
 import { RunDrawer } from "./run-drawer";
@@ -218,7 +219,7 @@ export function CanvasEditor({
   if (!hydrated || currentId !== workflowId) {
     return (
       <div className="flex flex-1 items-center justify-center">
-        <span className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--line-strong)] border-t-[var(--botanical)]" />
+        <BreadboardLoader className="h-5 w-5 text-[var(--botanical)]" />
       </div>
     );
   }

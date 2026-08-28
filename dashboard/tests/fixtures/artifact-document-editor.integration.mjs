@@ -353,6 +353,9 @@ test("artifact UI exposes editors and contains no Revise control", () => {
   assert.match(genofficeEntry, /autoSaveDefaultVersionKey/);
   const ribbon = fs.readFileSync(path.resolve(process.cwd(), "src/vendor-overrides/genoffice/docs/src/renderer/components/Ribbon.tsx"), "utf8");
   const aiPanel = fs.readFileSync(path.resolve(process.cwd(), "src/vendor-overrides/genoffice/docs/src/renderer/ai/AiPanel.tsx"), "utf8");
+  const aiHostCss = fs.readFileSync(path.resolve(process.cwd(), "src/app/genoffice-docs/genoffice-host.css"), "utf8");
+  const artifactPanel = fs.readFileSync(path.resolve(process.cwd(), "src/app/components/hermes/artifact-panel.tsx"), "utf8");
+  const inlineCards = fs.readFileSync(path.resolve(process.cwd(), "src/app/components/hermes/inline-artifact-cards.tsx"), "utf8");
   assert.doesNotMatch(ribbon, /Genspark AI/);
   assert.match(ribbon, /<span>Bread<\/span>/);
   assert.doesNotMatch(aiPanel, /<span className="ai-panel-title">Breadboard AI<\/span>/);
@@ -360,6 +363,14 @@ test("artifact UI exposes editors and contains no Revise control", () => {
   assert.match(aiPanel, /AiComposer/);
   assert.match(aiPanel, /executeTool/);
   assert.match(aiPanel, /The conversation and document stay in this editor/);
+  assert.match(aiPanel, /Bread is working in this document/);
+  assert.match(aiPanel, /iconOnly/);
+  assert.doesNotMatch(aiPanel, /bread-ai-word-actions|WORD_ACTIONS|Start a new document chat|Collapse AI panel/);
+  assert.match(aiHostCss, /--bread-chat-user/);
+  assert.match(aiHostCss, /border-radius: 30px/);
+  assert.match(aiHostCss, /\.ai-input-footer \.ai-send-btn/);
+  assert.match(artifactPanel, /onUpdated=\{\(updated\)/);
+  assert.match(inlineCards, /onUpdated=\{registerArtifact\}/);
   assert.doesNotMatch(genoffice, /onAskAi/);
   assert.match(aiRoute, /parseGenOfficeAiReply/);
   assert.equal(fs.existsSync(path.resolve(process.cwd(), "public/genoffice-editor/index.html")), true);

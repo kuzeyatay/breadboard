@@ -178,6 +178,15 @@ queued -> admitted -> starting -> running <-> checkpointing
                          `-----------+-> uncertain
 ```
 
+The native dispatcher keeps FIFO admission in one coordinator but drives each
+admitted attempt in an independent, bounded process-owner lane. Jobs from
+different worker definitions may therefore run together when live Windows
+commit headroom permits; each definition's `maximumConcurrency` remains an
+independent ceiling. A job waiting for its definition's slot stays queued while
+an eligible job behind it may start. If any owner lane encounters an ambiguous
+process or persistence transition, admission closes, every lane is stopped and
+joined, and all opaque authorities are retained until generation teardown.
+
 Terminal states never transition. Cancellation is first persisted as
 `cancelling`; `cancelled` is persisted only after the process owner confirms
 that the complete worker tree is gone. Restart recovery uses durable
@@ -367,12 +376,12 @@ requires strictly more than:
 mode-selected reserve + estimated cold-start commit
 ```
 
-The decision also accounts for pending reservation estimates, active job and
-service resource classes, per-definition concurrency, and the product-wide
-heavyweight concurrency rule. Admission is serialized with durable reservation
-creation, so two cold starts cannot both spend the same sampled headroom. The
-first policy is one heavyweight class at a time until measurements justify a
-narrower matrix.
+The decision also accounts for pending reservation estimates and
+per-definition concurrency. Admission is serialized with durable reservation
+creation, so two cold starts cannot both spend the same sampled headroom.
+Resource classes select containment profiles but do not impose a product-wide
+one-heavyweight-at-a-time exhaustion limit; independently bounded work may
+overlap whenever live commit headroom fits.
 
 A denial is structured and non-retryable by default. It reports the resource,
 required headroom, available headroom, and reason. An HTTP retry loop must not

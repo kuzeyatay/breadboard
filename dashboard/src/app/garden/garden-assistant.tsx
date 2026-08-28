@@ -100,6 +100,25 @@ interface ChatSession {
   isOwn?: boolean;
   ownerUsername?: string;
   messages: ChatMessage[];
+  /** A server-owned Garden turn is still running for this chat. */
+  active?: boolean;
+}
+
+function withRecoveredAssistant(
+  messages: ChatMessage[],
+  active: boolean,
+): ChatMessage[] {
+  const last = messages.at(-1);
+  if (!active || last?.role !== 'user') return messages;
+  return [
+    ...messages,
+    {
+      role: 'assistant',
+      content: '',
+      createdAt: last.createdAt,
+      sources: [],
+    },
+  ];
 }
 
 /**
@@ -556,6 +575,9 @@ export default function GardenAssistant({
   );
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const activeChat = chatSessions.find((session) => session.id === activeChatId) ?? null;
+  const chatIsStreaming = isStreaming || activeChat?.active === true;
   // The chat this assistant minted out of its own blank state, so an unsent
   // draft can follow it there and nowhere else. See useChatDraft.
   const [createdChatId, setCreatedChatId] = useState<number | null>(null);
@@ -563,22 +585,27 @@ export default function GardenAssistant({
   // transcript is put up before the chat row that will hold it exists, so the
   // empty session arriving must not be allowed to wipe it.
   const localTurnRef = useRef(false);
+  const persistenceChainsRef = useRef<Map<number, Promise<boolean>>>(new Map());
+  const persistenceVersionsRef = useRef<Map<number, number>>(new Map());
   const [showHistory, setShowHistory] = useState(false);
-  const [isStreaming, setIsStreaming] = useState(false);
   // The newest answer's text is revealed at a readable pace rather than drawn
   // straight from the buffer, so a reply that arrives in bursts (or whole)
   // still reads as a stream. Older messages render their content directly.
   const newestMessage = visibleMessages[visibleMessages.length - 1];
   const streamingInlineSelection = Boolean(
-    isStreaming && messages[messages.length - 1]?.inlineSelection,
+    chatIsStreaming && messages[messages.length - 1]?.inlineSelection,
   );
   const revealedAssistantContent = useSmoothStreamText(
     newestMessage?.role === 'assistant' ? newestMessage.content : '',
-    isStreaming && !streamingInlineSelection,
+    chatIsStreaming && !streamingInlineSelection,
   );
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
   const [approvingPermission, setApprovingPermission] = useState(false);
   const agentActivity = useLegacyAgentActivity();
+  const visibleAgentConnection =
+    chatIsStreaming && agentActivity.connection === 'idle'
+      ? 'streaming'
+      : agentActivity.connection;
   // The turn a mid-run correction may join. Corrections are kept beside the
   // turn's own message list so the streaming loop re-renders them in place
   // instead of clobbering them with its next delta.
@@ -591,7 +618,7 @@ export default function GardenAssistant({
   const { queueFollowUp, headerContent: queuedFollowUpsHeader } =
     useQueuedFollowUps({
       conversationKey: activeChatId === null ? null : String(activeChatId),
-      runInFlight: isStreaming,
+      runInFlight: chatIsStreaming,
       steerableRunActive:
         agentActivity.connection === 'connecting' ||
         agentActivity.connection === 'streaming' ||
@@ -636,7 +663,6 @@ export default function GardenAssistant({
 
   const hasActiveCluster = Boolean(activeClusterSlug);
   const clusterLabel = activeClusterName || activeClusterSlug || 'Open a garden';
-  const activeChat = chatSessions.find((session) => session.id === activeChatId) ?? null;
   useEffect(() => {
     const savedWidth = Number(window.localStorage.getItem(PANEL_WIDTH_KEY));
     if (Number.isFinite(savedWidth)) setPanelWidth(clampPanelWidth(savedWidth));
@@ -674,7 +700,7 @@ export default function GardenAssistant({
   // completed inline turns from canonical chat history after a reload or page
   // navigation so a fresh Quartz document can rebuild that local association.
   useEffect(() => {
-    if (isStreaming || !onInlineAnswerUpdate) return;
+    if (chatIsStreaming || !onInlineAnswerUpdate) return;
     const questions = new Map<string, string>();
     for (const message of messages) {
       const selection = message.inlineSelection;
@@ -694,7 +720,7 @@ export default function GardenAssistant({
           : {}),
       });
     }
-  }, [isStreaming, messages, onInlineAnswerUpdate]);
+  }, [chatIsStreaming, messages, onInlineAnswerUpdate]);
 
   // Unsent text outlives a reload, filed under the chat it was typed in — and
   // under the cluster, since that is what the chats themselves are kept by.
@@ -742,9 +768,20 @@ export default function GardenAssistant({
           const reconciled = serverSessions
             .map((session) => ({
               ...session,
-              messages: session.messages?.length
-                ? session.messages
-                : (cachedById.get(session.id)?.messages ?? []),
+              // While the detached runtime is active, the server holds the
+              // durable user checkpoint but this tab may have newer streamed
+              // text. Once active clears, the finalized server transcript is
+              // authoritative and replaces the cache.
+              messages: withRecoveredAssistant(
+                session.active === true &&
+                    (cachedById.get(session.id)?.messages.length ?? 0) >=
+                      (session.messages?.length ?? 0)
+                  ? (cachedById.get(session.id)?.messages ?? [])
+                  : session.messages?.length
+                    ? session.messages
+                    : (cachedById.get(session.id)?.messages ?? []),
+                session.active === true,
+              ),
             }))
             .slice(0, MAX_QUARTZ_CHAT_SESSIONS);
           persistQuartzChatSessions(activeClusterSlug, reconciled);
@@ -766,6 +803,64 @@ export default function GardenAssistant({
     if (localTurnRef.current) return;
     setMessages(activeChat?.messages ?? []);
   }, [activeChat?.id, activeChat?.messages]);
+
+  const activeChatIdsKey = chatSessions
+    .filter((session) => session.active === true)
+    .map((session) => session.id)
+    .join(',');
+  useEffect(() => {
+    if (!activeClusterSlug || !activeChatIdsKey) return;
+    const ids = activeChatIdsKey.split(',').map(Number).filter(Number.isInteger);
+    const reconcile = () => {
+      if (document.visibilityState !== 'visible') return;
+      for (const sessionId of ids) {
+        const params = new URLSearchParams({
+          clusterSlug: activeClusterSlug,
+          historySurface: 'assistant',
+          sessionId: String(sessionId),
+        });
+        void fetch(`/api/chat-sessions?${params.toString()}`, { cache: 'no-store' })
+          .then(async (response) => {
+            if (!response.ok) return null;
+            const body = (await response.json()) as { sessions?: ChatSession[] };
+            return body.sessions?.[0] ?? null;
+          })
+          .then((refreshed) => {
+            if (!refreshed) return;
+            setChatSessions((previous) => {
+              const current = previous.find((session) => session.id === refreshed.id);
+              if (!current) return previous;
+              const keepLocal =
+                (localTurnRef.current && activeChatId === refreshed.id) ||
+                (refreshed.active === true &&
+                  current.messages.length >= refreshed.messages.length);
+              const merged = {
+                ...refreshed,
+                messages: withRecoveredAssistant(
+                  keepLocal ? current.messages : refreshed.messages,
+                  refreshed.active === true,
+                ),
+              };
+              const next = previous.map((session) =>
+                session.id === refreshed.id ? merged : session,
+              );
+              persistQuartzChatSessions(activeClusterSlug, next);
+              return next;
+            });
+          })
+          .catch(() => undefined);
+      }
+    };
+    reconcile();
+    const timer = window.setInterval(reconcile, 2_000);
+    window.addEventListener('focus', reconcile);
+    document.addEventListener('visibilitychange', reconcile);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', reconcile);
+      document.removeEventListener('visibilitychange', reconcile);
+    };
+  }, [activeChatId, activeChatIdsKey, activeClusterSlug]);
 
   const fetchLearnStatus = useCallback((): Promise<AssistantLearnState | null> => {
     if (!activeClusterSlug) {
@@ -896,7 +991,7 @@ export default function GardenAssistant({
     awayFromBottom: transcriptAwayFromBottom,
     scrollToBottom: jumpToNewestMessage,
   } = useChatAutoScroll<HTMLDivElement>({
-    isResponding: isStreaming && !streamingInlineSelection,
+    isResponding: chatIsStreaming && !streamingInlineSelection,
     responseKey: chatAutoScrollResponseKey(visibleMessages),
     contentKey: chatAutoScrollContentKey(visibleMessages),
     enabled: chatOpen,
@@ -995,12 +1090,52 @@ export default function GardenAssistant({
     }
   }
 
-  async function persistChatSession(sessionId: number, nextMessages: ChatMessage[], title?: string) {
-    updateSessionMessages(sessionId, nextMessages, title);
+  async function persistChatSession(
+    sessionId: number,
+    nextMessages: ChatMessage[],
+    title?: string,
+    options: { updateLocal?: boolean } = {},
+  ): Promise<boolean> {
+    if (options.updateLocal !== false) {
+      updateSessionMessages(sessionId, nextMessages, title);
+    }
+    const version = (persistenceVersionsRef.current.get(sessionId) ?? 0) + 1;
+    persistenceVersionsRef.current.set(sessionId, version);
+    const previous = persistenceChainsRef.current.get(sessionId) ?? Promise.resolve(true);
+    const write = previous.catch(() => false).then(async () => {
+      try {
+        const response = await fetch(`/api/chat-sessions/${sessionId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: nextMessages, ...(title ? { title } : {}) }),
+        });
+        if (!response.ok) throw new Error('Chat was not saved.');
+        // A newer optimistic write owns the visible cache. The serialized
+        // request still lands on the server, but this older completion cannot
+        // roll the panel back to its snapshot.
+        if (
+          options.updateLocal !== false &&
+          persistenceVersionsRef.current.get(sessionId) === version
+        ) {
+          updateSessionMessages(sessionId, nextMessages, title);
+        }
+        return true;
+      } catch {
+        setAttachmentStatus('Chat history could not be saved. Your message was not sent.');
+        return false;
+      }
+    });
+    persistenceChainsRef.current.set(sessionId, write);
+    void write.finally(() => {
+      if (persistenceChainsRef.current.get(sessionId) === write) {
+        persistenceChainsRef.current.delete(sessionId);
+      }
+    });
+    return write;
   }
 
   async function startNewChat() {
-    if (isStreaming) return;
+    if (chatIsStreaming) return;
     localTurnRef.current = false;
     const session = await createChatSession();
     if (session) {
@@ -1010,7 +1145,7 @@ export default function GardenAssistant({
   }
 
   function openChatSession(session: ChatSession) {
-    if (isStreaming) return;
+    if (chatIsStreaming) return;
     localTurnRef.current = false;
     setActiveChatId(session.id);
     // An existing chat, so nothing typed in the blank composer belongs to it.
@@ -1020,7 +1155,7 @@ export default function GardenAssistant({
   }
 
   function deleteChatSession(sessionId: number) {
-    if (isStreaming) return;
+    if (chatIsStreaming) return;
     forgetChatDrafts(window.localStorage, draftSurface, [String(sessionId)]);
     setChatSessions((previous) => {
       const sessions = previous.filter((session) => session.id !== sessionId);
@@ -1102,7 +1237,7 @@ export default function GardenAssistant({
       : textOverride === undefined
         ? chatAttachments
         : [];
-    if ((!text && pendingAttachments.length === 0) || isStreaming || !activeClusterSlug) return;
+    if ((!text && pendingAttachments.length === 0) || chatIsStreaming || !activeClusterSlug) return;
 
     const history = historyOverride ?? messages;
     const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
@@ -1187,6 +1322,36 @@ export default function GardenAssistant({
         }
         return;
       }
+    }
+
+    updateSessionMessages(
+      session.id,
+      [...nextMessages, assistantMessage],
+      sessionTitle,
+    );
+
+    // The Garden adapter appends the server-owned assistant response, but it
+    // cannot reconstruct a browser-only user row. Commit the prompt before
+    // either markdown work or agent dispatch so navigation can never erase it.
+    const checkpointSaved = await persistChatSession(
+      session.id,
+      nextMessages,
+      sessionTitle,
+      { updateLocal: false },
+    );
+    if (!checkpointSaved) {
+      setMessages(history);
+      setInput(text);
+      setChatAttachments(pendingAttachments);
+      publishInlineAnswer('error', 'Chat history could not be saved.');
+      agentActivity.finish(true, turnSignal);
+      activityStarted = false;
+      setIsStreaming(false);
+      localTurnRef.current = false;
+      if (activeSteerContextRef.current === steerContext) {
+        activeSteerContextRef.current = null;
+      }
+      return;
     }
 
     let agentFailed = false;
@@ -1577,7 +1742,7 @@ export default function GardenAssistant({
   }
 
   function retryAssistantMessage(messageIndex: number) {
-    if (isStreaming) return;
+    if (chatIsStreaming) return;
     let userIndex = messageIndex - 1;
     while (userIndex >= 0 && messages[userIndex]?.role !== 'user') userIndex -= 1;
     const previousUser = messages[userIndex];
@@ -1617,10 +1782,10 @@ export default function GardenAssistant({
           messageKey={chatRowKey(message, index)}
           separatorLabel={timeSeparators[index] ?? null}
           activities={isNewest ? agentActivity.activities : NO_ACTIVITIES}
-          connection={isNewest ? agentActivity.connection : 'idle'}
+          connection={isNewest ? visibleAgentConnection : 'idle'}
           pendingPermission={isNewest ? agentActivity.pendingPermission : null}
           onPermissionDecision={handlePermissionDecision}
-          showActions={!(isStreaming && !streamingInlineSelection && isNewest)}
+          showActions={!(chatIsStreaming && !streamingInlineSelection && isNewest)}
           onRetry={
             isNewest && storedIndex >= 0
               ? () => retryAssistantMessage(storedIndex)
@@ -1637,10 +1802,10 @@ export default function GardenAssistant({
       visibleMessages.length,
       timeSeparators,
       agentActivity.activities,
-      agentActivity.connection,
+      visibleAgentConnection,
       agentActivity.pendingPermission,
       handlePermissionDecision,
-      isStreaming,
+      chatIsStreaming,
       streamingInlineSelection,
       revealedAssistantContent,
     ],
@@ -1955,7 +2120,7 @@ export default function GardenAssistant({
                   type="button"
                   key={prompt}
                   onClick={() => void sendMessage(prompt)}
-                  disabled={isStreaming || !hasActiveCluster}
+                  disabled={chatIsStreaming || !hasActiveCluster}
                   className="neu-button block w-full rounded-md border border-gray-800 bg-gray-950/50 px-3 py-2 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {prompt}
@@ -1988,7 +2153,7 @@ export default function GardenAssistant({
         />
         <ChatJumpToBottom
           visible={transcriptAwayFromBottom}
-          busy={isStreaming}
+          busy={chatIsStreaming}
           onJump={jumpToNewestMessage}
         />
       </div>
@@ -2095,13 +2260,13 @@ export default function GardenAssistant({
           history={sentMessages}
           placeholder={hasActiveCluster ? 'Ask about a topic, page, source, or link...' : 'Open a garden first...'}
           disabled={!hasActiveCluster}
-          isSending={isStreaming}
+          isSending={chatIsStreaming}
           runState={
-            !isStreaming
+            !chatIsStreaming
               ? 'idle'
-              : agentActivity.connection === 'waiting'
+              : visibleAgentConnection === 'waiting'
                 ? 'waiting_for_permission'
-                : agentActivity.connection === 'connecting'
+                : visibleAgentConnection === 'connecting'
                   ? 'connecting'
                   : 'running'
           }
@@ -2151,7 +2316,7 @@ export default function GardenAssistant({
             <button
               type="button"
               onClick={() => void startNewChat()}
-              disabled={isStreaming || !activeClusterSlug}
+              disabled={chatIsStreaming || !activeClusterSlug}
               className="neu-button-primary rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950 disabled:opacity-50"
             >
               New chat
@@ -2180,7 +2345,7 @@ export default function GardenAssistant({
                     <button
                       type="button"
                       onClick={() => openChatSession(session)}
-                      disabled={isStreaming}
+                      disabled={chatIsStreaming}
                       className={`min-w-0 flex-1 rounded-md px-3 py-2 text-left transition ${
                         session.id === activeChatId ? 'bg-gray-800 text-white' : 'text-gray-300'
                       }`}
@@ -2196,7 +2361,7 @@ export default function GardenAssistant({
                     <button
                       type="button"
                       onClick={() => deleteChatSession(session.id)}
-                      disabled={isStreaming}
+                      disabled={chatIsStreaming}
                       className="neu-button-icon mr-1 mt-2 rounded-full p-1 text-red-300 opacity-0 group-hover:opacity-100 disabled:opacity-30"
                       aria-label="Delete chat"
                       title="Delete chat"

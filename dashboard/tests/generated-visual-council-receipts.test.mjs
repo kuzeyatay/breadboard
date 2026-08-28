@@ -165,6 +165,7 @@ function jsonResponse(status, value) {
 class FakeCouncilBoundary {
   receipts = new Map();
   posts = [];
+  requestOptions = [];
   resolves = [];
   resolveOverride = null;
   createOverride = null;
@@ -176,6 +177,7 @@ class FakeCouncilBoundary {
         completions: {
           create: async (body, options) => {
             this.posts.push(structuredClone(body));
+            this.requestOptions.push(options);
             assert.equal(options.maxRetries, 0);
             if (this.createOverride) return this.createOverride(body, options);
             const result = this.complete(body);
@@ -428,6 +430,7 @@ test("fresh dispatch is durably bound, receipt-validated, and same invocation re
   const first = await runGeneratedVisualCouncilRequestWithReceipt(input);
   assert.equal(first.recovered, false);
   assert.equal(first.dispatched, true);
+  assert.equal(fake.requestOptions[0].timeout, undefined);
   assert.equal(first.dispatchCount, 1);
   assert.equal(first.httpCompletionObserved, true);
   assert.equal(first.requestId, "lrq_fixture_author_0001");
@@ -462,6 +465,18 @@ test("fresh dispatch is durably bound, receipt-validated, and same invocation re
   assert.equal(second.httpCompletionObserved, false);
   assert.equal(second.requestId, first.requestId);
   assert.equal(fake.posts.length, 1);
+});
+
+test("receipt-aware dispatch binds the SDK timeout to the configured observation budget", async (t) => {
+  const root = fixtureRoot(t);
+  const fake = new FakeCouncilBoundary();
+  const result = await runGeneratedVisualCouncilRequestWithReceipt(
+    runInput(root, fake, { startedReceiptObservationTimeoutMs: 1_234 }),
+  );
+
+  assert.equal(result.dispatched, true);
+  assert.equal(fake.requestOptions.length, 1);
+  assert.equal(fake.requestOptions[0].timeout, 1_234);
 });
 
 test("a server-completed receipt is recovered during preflight before any local dispatch", async (t) => {
@@ -531,6 +546,61 @@ test("a completed receipt is recovered when the transport fails after provider c
   assert.equal(result.httpCompletionObserved, false);
   assert.equal(fake.posts.length, 1);
   await runGeneratedVisualCouncilRequestWithReceipt(runInput(root, fake));
+  assert.equal(fake.posts.length, 1);
+});
+
+test("a started receipt is observed to durable completion after a transport timeout without another POST", async (t) => {
+  const root = fixtureRoot(t);
+  const fake = new FakeCouncilBoundary();
+  fake.createOverride = async (body) => {
+    fake.receipts.set(body.clientRequestId, {
+      state: "started",
+      requestHash: body.clientRequestHash,
+    });
+    setTimeout(() => fake.complete(body), 10);
+    throw new Error("SDK transport timed out while the provider kept running");
+  };
+
+  const result = await runGeneratedVisualCouncilRequestWithReceipt(
+    runInput(root, fake, { startedReceiptObservationTimeoutMs: 100 }),
+  );
+
+  assert.equal(result.recovered, true);
+  assert.equal(result.dispatched, true);
+  assert.equal(result.dispatchCount, 1);
+  assert.equal(result.httpCompletionObserved, false);
+  assert.equal(fake.posts.length, 1);
+  assert.ok(fake.resolves.length >= 3);
+
+  await runGeneratedVisualCouncilRequestWithReceipt(
+    runInput(root, fake, { startedReceiptObservationTimeoutMs: 100 }),
+  );
+  assert.equal(fake.posts.length, 1);
+});
+
+test("started-receipt observation is abort-aware and never duplicates the request", async (t) => {
+  const root = fixtureRoot(t);
+  const fake = new FakeCouncilBoundary();
+  const controller = new AbortController();
+  const abortReason = new Error("outer generated-visual deadline reached");
+  fake.createOverride = async (body) => {
+    fake.receipts.set(body.clientRequestId, {
+      state: "started",
+      requestHash: body.clientRequestHash,
+    });
+    setTimeout(() => controller.abort(abortReason), 10);
+    throw new Error("SDK transport timed out while the provider kept running");
+  };
+
+  await assert.rejects(
+    runGeneratedVisualCouncilRequestWithReceipt(
+      runInput(root, fake, {
+        signal: controller.signal,
+        startedReceiptObservationTimeoutMs: 1_000,
+      }),
+    ),
+    (error) => error === abortReason,
+  );
   assert.equal(fake.posts.length, 1);
 });
 

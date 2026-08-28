@@ -79,7 +79,7 @@ test("ready video artifacts stay compact until the artifact is opened", () => {
   assert.match(viewer, /artifact\.kind === "video" && onEditVideo/);
 });
 
-test("in-progress artifact builds reserve their finished card with an animated bloom", () => {
+test("in-progress artifact builds reserve their finished card with the shared loader", () => {
   assert.match(agentSession, /kind: "artifact"/);
   assert.match(agentSession, /`Building \$\{title\}…`/);
   assert.match(activityPanel, /item\.kind === "artifact"/);
@@ -88,7 +88,7 @@ test("in-progress artifact builds reserve their finished card with an animated b
     /stateLabel \?\?[\s\S]*?artifactState\?\.label \?\?[\s\S]*?responseActive/,
   );
   assert.match(cards, /function ArtifactBloomLoader\(\)/);
-  assert.match(cards, /motion-safe:animate-spin/);
+  assert.match(cards, /<BreadboardLoader className="relative h-8 w-8 text-\[var\(--botanical\)\]" \/>/);
   assert.match(cards, /Your artifact is taking shape/);
   assert.match(
     cards,
@@ -149,20 +149,27 @@ test("a chat's artifacts are asked for with its messages, not after they render"
   // The provider only mounts once the transcript has messages to wrap, so the
   // request used to start a full round trip late and the cards popped in after
   // the chat looked finished. The prefetch runs whether or not messages exist.
-  assert.match(cards, /export function primeInlineArtifacts/);
+  assert.match(cards, /export function primeInlineArtifacts[\s\S]{0,120}Promise<PresentedArtifact\[\]>/);
   assert.match(
     runtimePanel,
-    /useInlineArtifactPrefetch\(\{\s*conversationId: surface !== "quartz_ai" \? sessionId : null,\s*\}\)/,
+    /const artifactsReady = useInlineArtifactPrefetch\(\{\s*conversationId: surface !== "quartz_ai" \? sessionId : null,\s*\}\)/,
   );
   // Opening or restoring a chat asks for both at once, rather than waiting for
   // the transcript to arrive before the artifacts are even requested.
   assert.match(
     agentSession,
-    /primeInlineArtifacts\(\{ conversationId: id \}\);[\s\S]*loadHermesSessionDetail\(surface, id,[\s\S]*reuseRecentPrefetch: true/,
+    /primeInlineArtifacts\(\s*\{ conversationId: id \},\s*\{ revalidate: true \},\s*\);[\s\S]*loadHermesSessionDetail\(surface, id/,
+  );
+  assert.doesNotMatch(
+    agentSession.slice(
+      agentSession.indexOf("const openSession = useCallback("),
+      agentSession.indexOf("const refreshSession = useCallback("),
+    ),
+    /reuseRecentPrefetch:\s*true/,
   );
   assert.match(
     agentSession,
-    /primeInlineArtifacts\(\{ conversationId: selected\.id \}\);\s*const restored = await loadHermesSessionDetail/,
+    /primeInlineArtifacts\(\s*\{ conversationId: selected\.id \},\s*\{ revalidate: true \},\s*\);\s*const restored = await loadHermesSessionDetail/,
   );
   // Answers are kept per query so a mounting provider paints from them at once,
   // and joins a request already in flight instead of asking again.
@@ -172,6 +179,40 @@ test("a chat's artifacts are asked for with its messages, not after they render"
   assert.match(cards, /while \(artifactCache\.size > MAX_CACHED_ARTIFACT_QUERIES\)/);
   assert.match(cards, /artifactCache\.delete\(oldest\);/);
   assert.match(cards, /const pending = artifactRequests\.get\(query\);/);
+});
+
+test("chat rows stay covered until their artifact snapshot is ready", () => {
+  assert.match(
+    cards,
+    /export function useInlineArtifactPrefetch[\s\S]{0,120}?boolean/,
+  );
+  assert.match(cards, /const queryChanged = readiness\.query !== query;/);
+  assert.match(cards, /revalidate: true/);
+  assert.match(
+    cards,
+    /return !query \|\| \(!queryChanged && readiness\.query === query && readiness\.ready\);/,
+  );
+
+  assert.match(
+    runtimePanel,
+    /const conversationLoading =\s*loadingTranscript \|\| \(!visibleConversationJustCreated && !artifactsReady\);/,
+  );
+  const runtimeGate = runtimePanel.slice(
+    runtimePanel.indexOf("{conversationLoading ? ("),
+    runtimePanel.indexOf("<InlineArtifactCardsProvider"),
+  );
+  assert.match(runtimeGate, /<BreadboardLoader/);
+  assert.match(runtimeGate, /messages\.length === 0/);
+
+  assert.match(
+    gardenWorkspace,
+    /const chatContentLoading =\s*loadingChats \|\| \(!visibleChatJustCreated && !inlineArtifactsReady\);/,
+  );
+  assert.match(
+    gardenWorkspace,
+    /if \(loadingChats\) \{[\s\S]{0,220}?<Spinner className="h-5 w-5"/,
+  );
+  assert.match(gardenWorkspace, /loadingChats=\{chatContentLoading\}/);
 });
 
 test("gadgets use the standard artifact placeholder until opened", () => {

@@ -1,5 +1,7 @@
 "use client";
 
+import { externalRunStartedAtMs } from "./external-run-clock";
+
 // In-chat run card for a Socials Manager run — the whole agent surface.
 //
 // There is no standalone page on purpose: the composer only creates this
@@ -442,13 +444,14 @@ export default function InlineSocialsManagerRun({
 
   useEffect(() => {
     if (TERMINAL_STATUSES.has(status)) return;
-    const started = Date.now();
+    const started = externalRunStartedAtMs(runId);
+    setElapsedSeconds(Math.max(0, Math.round((Date.now() - started) / 1_000)));
     const timer = setInterval(
       () => setElapsedSeconds(Math.round((Date.now() - started) / 1000)),
       1_000,
     );
     return () => clearInterval(timer);
-  }, [status]);
+  }, [runId, status]);
 
   const stop = async () => {
     try {
