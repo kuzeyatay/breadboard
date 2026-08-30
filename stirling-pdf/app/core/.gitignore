@@ -172,7 +172,8 @@ out/
 
 # test-cert
 !**/test/resources/certs/test-cert.*
-!**/test/resources/certs/test-key.*
+# Breadboard's integrated snapshot intentionally excludes private-key fixtures.
+# !**/test/resources/certs/test-key.*
 
 # SSH Keys
 *.pub
