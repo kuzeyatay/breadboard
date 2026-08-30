@@ -2,4 +2,5 @@
 quartz/public/** linguist-generated=true
 
 # Vvveb is synchronized third-party editor output served by the dashboard.
-dashboard/public/vvveb-editor/** linguist-vendored=true
+# Preserve its upstream formatting without treating it as authored whitespace.
+dashboard/public/vvveb-editor/** linguist-vendored=true -whitespace

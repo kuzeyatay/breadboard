@@ -19,6 +19,7 @@ import {
   resetMaxResearchRuns,
   startRun as startLocalWorkerRun,
 } from "../src/lib/max-research/run-manager.ts";
+import { terminalResultFromEvents } from "../src/lib/max-research/runtime-run-manager.ts";
 
 const dashboardRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = (relativePath) =>
@@ -165,6 +166,51 @@ test("the adapter preserves request context through real completion and cancella
   assert.ok(!aborted.events.some((event) => event.type === "run.completed"));
 });
 
+test("terminal projection preserves the runtime clock and every terminal outcome", () => {
+  const completedAt = "2026-08-30T08:14:00.173Z";
+  assert.deepEqual(
+    terminalResultFromEvents([
+      {
+        sequenceNumber: 1,
+        type: "run.completed",
+        payload: { result: "The evidence-backed report." },
+        at: completedAt,
+      },
+    ]),
+    {
+      outcome: "completed",
+      content: "The evidence-backed report.",
+      terminalAtMs: Date.parse(completedAt),
+    },
+  );
+  assert.deepEqual(
+    terminalResultFromEvents([
+      {
+        sequenceNumber: 1,
+        type: "run.failed",
+        payload: { error: "Sources could not be fetched." },
+        at: completedAt,
+      },
+    ]),
+    {
+      outcome: "failed",
+      content: "Sources could not be fetched.",
+      terminalAtMs: Date.parse(completedAt),
+    },
+  );
+  assert.equal(
+    terminalResultFromEvents([
+      {
+        sequenceNumber: 1,
+        type: "run.aborted",
+        payload: {},
+        at: completedAt,
+      },
+    ]).outcome,
+    "aborted",
+  );
+});
+
 test("worker cancellation waits until active nested participants acknowledge stop", async () => {
   resetMaxResearchRuns();
   let nestedStops = 0;
@@ -262,6 +308,9 @@ test("Next routes are durable facades with no local execution fallback", () => {
   const eventsRoute = source("src/app/api/max-research/runs/[runId]/events/route.ts");
   const abortRoute = source("src/app/api/max-research/runs/[runId]/abort/route.ts");
   const cancellation = source("src/lib/conversations/external-agent-cancel.ts");
+  const persistence = source("src/lib/max-research/conversation-persistence.ts");
+  const sessionRoute = source("src/app/api/hermes/sessions/[sessionId]/route.ts");
+  const runtimePanel = source("src/app/components/hermes/agent-runtime-panel.tsx");
 
   assert.match(facade, /startOuterAgentRun\(/);
   assert.match(facade, /kind: "max-research"/);
@@ -270,10 +319,21 @@ test("Next routes are durable facades with no local execution fallback", () => {
   assert.match(worker, /getRuntimeWorkerEventsSince/);
   assert.match(startRoute, /runtime-run-manager\.ts/);
   assert.match(startRoute, /await startRun\(/);
+  assert.match(startRoute, /observeMaxResearchConversationTurn\(/);
   assert.doesNotMatch(startRoute, /max-research\/run-manager\.ts/);
   assert.match(eventsRoute, /outerAgentEventsResponse/);
   assert.doesNotMatch(eventsRoute, /setInterval\(/);
   assert.match(abortRoute, /await abortRun\(/);
+  assert.match(abortRoute, /reconcileMaxResearchRun\(/);
+  assert.match(persistence, /setRunTerminalHandler\(/);
+  assert.match(persistence, /terminalAtMs: result\.terminalAtMs/);
+  assert.match(sessionRoute, /await reconcileMaxResearchConversation\(/);
+  assert.match(runtimePanel, /const direct = \(payload as \{/);
+  assert.match(runtimePanel, /externalAgentAbortTerminalResult\(payload\)/);
+  assert.doesNotMatch(
+    runtimePanel,
+    /url\.startsWith\("\/api\/deep-research\/"\) && clientMessageId/,
+  );
   assert.match(cancellation, /max-research\/runtime-run-manager\.ts/);
   assert.match(
     source("scripts/runtime-v2-max-research-worker.mjs"),

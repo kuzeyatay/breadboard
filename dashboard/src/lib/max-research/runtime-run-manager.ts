@@ -7,6 +7,7 @@
 
 import {
   abortOuterAgentRun,
+  observeOuterAgentRun,
   readOuterAgentRunView,
   startOuterAgentRun,
   type OuterAgentEvent,
@@ -24,6 +25,12 @@ import { runtimeAvailability as openscienceRuntimeAvailability } from "../opensc
 import { prepareService as prepareOpenscienceService } from "../openscience/service-profile.ts";
 
 export type MaxResearchEvent = OuterAgentEvent;
+
+export interface MaxResearchTerminalResult {
+  outcome: "completed" | "failed" | "aborted";
+  content: string;
+  terminalAtMs: number;
+}
 
 const PARTICIPANTS = new Set<MaxResearchParticipant>([
   "deep_research",
@@ -125,6 +132,44 @@ function summaryFromEvents(
   };
 }
 
+function terminalTimeMs(event: OuterAgentEvent | undefined): number {
+  const parsed = event ? Date.parse(event.at) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+export function terminalResultFromEvents(
+  events: readonly OuterAgentEvent[],
+): MaxResearchTerminalResult {
+  const terminal = events.findLast((event) =>
+    ["run.completed", "run.failed", "run.aborted"].includes(event.type),
+  );
+  if (terminal?.type === "run.completed") {
+    return {
+      outcome: "completed",
+      content:
+        typeof terminal.payload.result === "string" && terminal.payload.result.trim()
+          ? terminal.payload.result
+          : "Max Research completed.",
+      terminalAtMs: terminalTimeMs(terminal),
+    };
+  }
+  if (terminal?.type === "run.aborted") {
+    return {
+      outcome: "aborted",
+      content: "Stopped.",
+      terminalAtMs: terminalTimeMs(terminal),
+    };
+  }
+  return {
+    outcome: "failed",
+    content:
+      typeof terminal?.payload.error === "string" && terminal.payload.error.trim()
+        ? terminal.payload.error
+        : "Max Research failed.",
+    terminalAtMs: terminalTimeMs(terminal),
+  };
+}
+
 /**
  * The worker's canonical request allows this many characters of question;
  * the route truncates to it and the worker refuses anything longer. An
@@ -201,6 +246,29 @@ export async function isTerminal(userId: number, runId: string): Promise<boolean
     if (error instanceof Error && error.message === "run_not_found") return true;
     throw error;
   }
+}
+
+export async function getTerminalResult(
+  userId: number,
+  runId: string,
+): Promise<MaxResearchTerminalResult | null> {
+  try {
+    const view = await readOuterAgentRunView("max-research", userId, runId, 0);
+    return view.terminal ? terminalResultFromEvents(view.events) : null;
+  } catch (error) {
+    if (error instanceof Error && error.message === "run_not_found") return null;
+    throw error;
+  }
+}
+
+export function setRunTerminalHandler(
+  userId: number,
+  runId: string,
+  handler: (result: MaxResearchTerminalResult) => void | Promise<void>,
+): void {
+  observeOuterAgentRun("max-research", userId, runId, async (view) => {
+    await handler(terminalResultFromEvents(view.events));
+  });
 }
 
 export async function abortRun(userId: number, runId: string): Promise<boolean> {

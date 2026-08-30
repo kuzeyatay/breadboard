@@ -93,9 +93,20 @@ export const finalize = tool({
 })
 
 export const list = tool({
-  description: "List artifacts and supported real renderers in this conversation so an existing artifact can be revised instead of duplicated.",
+  description: "List artifacts and supported real renderers in the active artifact scope (all Terminal chats, or all chats in the active Garden) so an existing artifact can be revised instead of duplicated.",
   args: {},
   async execute(args, ctx) { return call(ctx.sessionID, (ctx as { callID?: string }).callID, "artifact_list", args) },
+})
+
+export const search = tool({
+  description: "Search artifact IDs, titles, filenames, types, provenance, metadata, and current contents in the active artifact scope. Use this to locate an existing artifact before artifact_read or artifact_update. If contentSearchTruncated is true, repeat with nextContentOffset as contentOffset.",
+  args: {
+    query: tool.schema.string(),
+    limit: tool.schema.number().int().min(1).max(50).default(20),
+    includeContent: tool.schema.boolean().default(true),
+    contentOffset: tool.schema.number().int().min(0).max(100000).default(0),
+  },
+  async execute(args, ctx) { return call(ctx.sessionID, (ctx as { callID?: string }).callID, "artifact_search", args) },
 })
 
 export const fork = tool({

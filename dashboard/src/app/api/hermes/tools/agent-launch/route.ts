@@ -40,6 +40,7 @@ import {
   abortRun as abortMaxResearchRun,
   startRun as startMaxResearchRun,
 } from "@/lib/max-research/runtime-run-manager.ts";
+import { observeMaxResearchConversationTurn } from "@/lib/max-research/conversation-persistence.ts";
 import {
   findCapabilityConflict,
   modelLaunchableRuntimeAgents,
@@ -235,6 +236,12 @@ export async function POST(request: Request) {
           conversation,
           clientMessageId: originClientMessageId,
           run: startedRun,
+        });
+        observeMaxResearchConversationTurn({
+          userId: session.user_id,
+          conversationId: conversation.id,
+          clientMessageId: originClientMessageId,
+          runId: maxRun.runId,
         });
       } catch (error) {
         await abortMaxResearchRun(session.user_id, maxRun.runId).catch(

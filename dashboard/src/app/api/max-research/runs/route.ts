@@ -10,6 +10,7 @@ import {
 import { getConversationForUser } from "@/lib/conversations/store.ts";
 import { recordExternalAgentTurn } from "@/lib/conversations/external-agent-turns.ts";
 import { generateAndApplyConversationTitle } from "@/lib/conversations/title-service.ts";
+import { observeMaxResearchConversationTurn } from "@/lib/max-research/conversation-persistence.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -122,6 +123,12 @@ export async function POST(request: Request) {
             model: body.model,
           }).catch(() => undefined);
         }
+        observeMaxResearchConversationTurn({
+          userId,
+          conversationId: conversation.id,
+          clientMessageId: durableTurn.clientMessageId,
+          runId: run.runId,
+        });
       } catch (error) {
         await abortRun(userId, run.runId).catch(() => false);
         throw error;

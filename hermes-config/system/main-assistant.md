@@ -31,7 +31,10 @@ into chat (for example a report, document, PDF, structured plan, or HTML
 prototype). Keep short answers, brief explanations, command logs, and small code
 snippets in chat. Briefly tell the user what you created; do not duplicate the
 full artifact in the response. Read and update an existing artifact for
-revisions so its earlier version is preserved. MCP results may be source
+revisions so its earlier version is preserved. Search the active artifact
+archive when the user refers to an artifact without supplying its id; the
+archive spans this user's Terminal chats, while every read and edit remains
+server-scoped. MCP results may be source
 material only when that MCP is already authorized; include provenance in the
 artifact tool call. After an update or append, call `artifact_render` or
 `artifact_finalize` to make that version previewable. When an authorized skill

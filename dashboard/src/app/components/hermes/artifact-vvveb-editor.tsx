@@ -46,6 +46,10 @@ export default function ArtifactVvvebEditor({ artifact, onSaved }: Props) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const onSavedRef = useRef(onSaved);
   const retryRef = useRef<() => void>(() => undefined);
+  const initialArtifactRef = useRef(artifact);
+  if (initialArtifactRef.current.id !== artifact.id) initialArtifactRef.current = artifact;
+  const artifactId = artifact.id;
+  const conversationId = artifact.conversationId;
   const [status, setStatus] = useState<SaveStatus>({
     phase: "loading",
     message: "Opening visual editor…",
@@ -56,20 +60,21 @@ export default function ArtifactVvvebEditor({ artifact, onSaved }: Props) {
   }, [onSaved]);
 
   useEffect(() => {
+    const initialArtifact = initialArtifactRef.current;
     let disposed = false;
     let frameReady = false;
     let editorLoaded = false;
     let loadPosted = false;
     let loadedPayload: EditorPayload | null = null;
-    let latestArtifact = artifact;
+    let latestArtifact = initialArtifact;
     let pendingHtml: string | null = null;
     let saveTimer: ReturnType<typeof setTimeout> | null = null;
     let saving = false;
-    const editEndpoint = endpoint(artifact);
+    const editEndpoint = endpoint({ id: artifactId, conversationId });
 
     const postToEditor = (message: Record<string, unknown>) => {
       frameRef.current?.contentWindow?.postMessage(
-        { ...message, artifactId: artifact.id },
+        { ...message, artifactId },
         window.location.origin,
       );
     };
@@ -152,7 +157,7 @@ export default function ArtifactVvvebEditor({ artifact, onSaved }: Props) {
         event.origin !== window.location.origin ||
         event.source !== frameRef.current?.contentWindow ||
         !event.data ||
-        event.data.artifactId !== artifact.id
+        event.data.artifactId !== artifactId
       ) return;
 
       if (event.data.type === "breadboard:vvveb-ready") {
@@ -164,7 +169,7 @@ export default function ArtifactVvvebEditor({ artifact, onSaved }: Props) {
         editorLoaded = true;
         setStatus({
           phase: "ready",
-          message: `Visual editing · changes autosave · version ${latestArtifact.version}`,
+          message: `Double-click text · click elements for controls · autosaves · version ${latestArtifact.version}`,
         });
         return;
       }
@@ -193,7 +198,7 @@ export default function ArtifactVvvebEditor({ artifact, onSaved }: Props) {
       })
       .then((body) => {
         if (disposed) return;
-        if (body.artifact?.id !== artifact.id || typeof body.content !== "string") {
+        if (body.artifact?.id !== artifactId || typeof body.content !== "string") {
           throw new Error("The visual editor received an invalid HTML document.");
         }
         loadedPayload = body;
@@ -228,7 +233,7 @@ export default function ArtifactVvvebEditor({ artifact, onSaved }: Props) {
         }).catch(() => undefined);
       }
     };
-  }, [artifact.id, artifact.conversationId]);
+  }, [artifactId, conversationId]);
 
   const frameSource = `/vvveb-editor/index.html?${new URLSearchParams({
     artifactId: artifact.id,

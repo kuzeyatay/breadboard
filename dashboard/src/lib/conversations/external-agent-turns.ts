@@ -53,6 +53,9 @@ function metadataFor(
     externalAgent: EXTERNAL_AGENT_MARKER,
     ...(run ? { externalAgentRun: run } : {}),
     externalAgentOutcome: outcome,
+    ...(run && outcome === "running"
+      ? { externalAgentStartedAt: new Date().toISOString() }
+      : {}),
     ...(branchGroupId ? { branchGroupId } : {}),
     ...(attachments.length
       ? {
@@ -399,6 +402,8 @@ export function finishExternalAgentTurn(input: {
   edits?: ExternalAgentEdits;
   /** Card presentation state that must survive after the in-memory run expires. */
   state?: Record<string, unknown>;
+  /** Runtime-owned completion time, used when no browser was present to report it. */
+  terminalAtMs?: number;
 }, database: Database.Database = db): ConversationMessageRow {
   // Set inside the transaction when this is a replayed terminal event, so the
   // board is not told twice about a run that finished once.
@@ -439,7 +444,12 @@ export function finishExternalAgentTurn(input: {
     const state = parseExternalAgentState(
       input.state ?? metadata.externalAgentState,
     );
-    const completedAtMs = Date.now();
+    const completedAtMs =
+      typeof input.terminalAtMs === "number" &&
+      Number.isFinite(input.terminalAtMs) &&
+      input.terminalAtMs >= 0
+        ? Math.trunc(input.terminalAtMs)
+        : Date.now();
     const responseDurationMs = externalAgentResponseDurationMs({
       baseDurationMs:
         typeof metadata.responseDurationMs === "number"

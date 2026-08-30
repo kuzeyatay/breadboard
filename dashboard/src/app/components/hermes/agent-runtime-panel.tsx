@@ -493,10 +493,23 @@ function loadBranchGroups(sessionId: string): Record<string, ConversationBranchG
  */
 type TranscriptRow = { index: number; message: AgentMessage };
 
-function deepResearchAbortTerminalResult(
+function externalAgentAbortTerminalResult(
   payload: unknown,
 ): ExternalAgentTerminalResult | null {
   if (!payload || typeof payload !== "object") return null;
+  const direct = (payload as {
+    terminal?: { outcome?: unknown; content?: unknown };
+  }).terminal;
+  if (
+    direct &&
+    ["completed", "failed", "aborted"].includes(String(direct.outcome)) &&
+    typeof direct.content === "string"
+  ) {
+    return {
+      outcome: direct.outcome as ExternalAgentTerminalResult["outcome"],
+      content: direct.content,
+    };
+  }
   const run = (payload as {
     run?: {
       status?: unknown;
@@ -834,11 +847,13 @@ export default function AgentRuntimePanel({
           ) {
             return false;
           }
-          // Deep Research returns its terminal snapshot from abort. Consume it
-          // here so a hidden delegated card is not the only thing capable of
-          // persisting the stop (or an already-failed stale run).
-          if (url.startsWith("/api/deep-research/") && clientMessageId) {
-            const terminal = deepResearchAbortTerminalResult(payload);
+          // Agents may return their authoritative terminal snapshot from
+          // abort. Consume it here so a hidden delegated card is not the only
+          // thing capable of releasing Stop and persisting an already-settled
+          // run. The legacy Deep Research response is normalized by the same
+          // helper below.
+          if (clientMessageId) {
+            const terminal = externalAgentAbortTerminalResult(payload);
             if (terminal) onExternalAgentTerminal?.(clientMessageId, terminal);
           }
           return true;
@@ -888,9 +903,9 @@ export default function AgentRuntimePanel({
     }
   }, [
     activeRun,
+    abortExternalRuns,
     externalStops,
     onAbort,
-    onExternalAgentTerminal,
     onStopRequested,
   ]);
   useEffect(() => {
@@ -2249,6 +2264,7 @@ export default function AgentRuntimePanel({
                           persistedContent={message.content}
                           persistedOutcome={message.externalAgentOutcome}
                           persistedUsage={message.usage}
+                          persistedDurationMs={message.responseDurationMs}
                           onRetry={
                             onRetryMessage &&
                             !activeRun &&

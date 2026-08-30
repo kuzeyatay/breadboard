@@ -168,6 +168,13 @@ test("external agent launches are durable, adjacent, and idempotent", () => {
     store.presentConversationMessage(stored[1]).metadata.externalAgentOutcome,
     "running",
   );
+  assert.ok(
+    Number.isFinite(
+      Date.parse(
+        store.presentConversationMessage(stored[1]).metadata.externalAgentStartedAt,
+      ),
+    ),
+  );
   assert.deepEqual(
     store.presentConversationMessage(stored[0]).metadata.attachmentNames,
     ["inbox.png"],
@@ -732,6 +739,40 @@ test("terminal external agent results survive replay and cannot be overwritten b
   assert.equal(replayedExpiry.status, "complete");
   assert.match(replayedExpiry.content, /Durable report/);
   assert.doesNotMatch(replayedExpiry.content, /no longer available/);
+});
+
+test("a background terminal event uses runtime time instead of the later chat reopen", () => {
+  const chat = conversation();
+  const clientMessageId = "max-research-background-clock";
+  const recorded = turns.recordExternalAgentTurn({
+    conversation: chat,
+    clientMessageId,
+    surface: "dashboard_terminal",
+    userContent: "/agents:max-research investigate muscle hypertrophy",
+    run: {
+      kind: "max_research",
+      runId: "max-research-background-clock-run",
+      query: "investigate muscle hypertrophy",
+    },
+  });
+  const startedAt = Date.parse(
+    store.presentConversationMessage(recorded.assistantMessage).metadata
+      .externalAgentStartedAt,
+  );
+  const runtimeDurationMs = 21 * 60_000 + 45_000;
+  const finished = turns.finishExternalAgentTurn({
+    conversationId: chat.id,
+    clientMessageId,
+    outcome: "failed",
+    content: "Sources could not be fetched.",
+    // This can be persisted much later, when the person reopens the chat.
+    terminalAtMs: startedAt + runtimeDurationMs,
+  });
+
+  assert.equal(
+    store.presentConversationMessage(finished).metadata.responseDurationMs,
+    runtimeDurationMs,
+  );
 });
 
 test("launch failures are also canonical history turns", () => {

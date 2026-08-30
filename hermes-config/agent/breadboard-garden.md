@@ -37,6 +37,7 @@ tools:
   artifact_render: true
   artifact_finalize: true
   artifact_list: true
+  artifact_search: true
   artifact_fork: true
   artifact_image_generate: true
   interactive_visualizer_create: true
