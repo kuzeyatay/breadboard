@@ -1,0 +1,21 @@
+{
+  "name": "watch",
+  "metadata": {
+    "description": "Analyze a video with timestamped captions, optional Whisper transcription, and representative frames."
+  },
+  "owner": {
+    "name": "Bradley Bonanno"
+  },
+  "plugins": [
+    {
+      "name": "watch",
+      "description": "Watch a video (URL or local path). Downloads with yt-dlp, extracts frames with ffmpeg, transcribes via captions or Whisper.",
+      "author": {
+        "name": "Bradley Bonanno"
+      },
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/bradautomates/claude-video"
+    }
+  ]
+}

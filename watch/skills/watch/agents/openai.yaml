@@ -1,0 +1,8 @@
+interface:
+  display_name: "Watch"
+  short_description: "Analyze video speech and visuals with timestamps"
+  default_prompt: "Use $watch to summarize this video and cite the important moments."
+  brand_color: "#E11D48"
+
+policy:
+  allow_implicit_invocation: true

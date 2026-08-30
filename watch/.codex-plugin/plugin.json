@@ -1,0 +1,43 @@
+{
+  "name": "watch",
+  "version": "0.2.0",
+  "description": "Analyze video URLs and local files with timestamped captions, optional Whisper transcription, and representative frames.",
+  "author": {
+    "name": "Bradley Bonanno"
+  },
+  "homepage": "https://github.com/bradautomates/claude-video",
+  "repository": "https://github.com/bradautomates/claude-video",
+  "license": "MIT",
+  "keywords": [
+    "video",
+    "watch",
+    "youtube",
+    "vimeo",
+    "tiktok",
+    "transcription",
+    "whisper",
+    "yt-dlp",
+    "ffmpeg",
+    "multimodal",
+    "frames"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "watch",
+    "shortDescription": "Analyze a video URL or path with grounded speech and visual evidence.",
+    "longDescription": "Watch downloads a video with yt-dlp, extracts representative frames with ffmpeg, obtains a timestamped transcript from captions or an optional Whisper provider, and gives the active model evidence grounded in both the audio and visuals. Breadboard uses its guarded ChatMock-compatible runtime; other skill hosts use the bundled scripts.",
+    "developerName": "Bradley Bonanno",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Video analysis"
+    ],
+    "websiteURL": "https://github.com/bradautomates/claude-video",
+    "defaultPrompt": [
+      "/watch https://youtu.be/dQw4w9WgXcQ what happens at the 30 second mark?",
+      "/watch ~/Movies/screen-recording.mp4 when does the UI break?",
+      "/watch https://youtu.be/<long-talk> summarize this"
+    ],
+    "brandColor": "#E11D48"
+  }
+}
