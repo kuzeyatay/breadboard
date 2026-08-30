@@ -1,0 +1,12 @@
+{
+  "name": "watch",
+  "version": "0.2.0",
+  "description": "Analyze video URLs and local files with timestamped captions, optional Whisper transcription, and representative frames.",
+  "author": {
+    "name": "Bradley Bonanno"
+  },
+  "homepage": "https://github.com/bradautomates/claude-video",
+  "repository": "https://github.com/bradautomates/claude-video",
+  "license": "MIT",
+  "keywords": ["video", "watch", "youtube", "vimeo", "tiktok", "transcription", "whisper", "yt-dlp", "ffmpeg", "multimodal", "frames"]
+}
