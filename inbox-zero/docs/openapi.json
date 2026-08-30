@@ -1,0 +1,529 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Inbox Zero API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://www.getinboxzero.com/api/v1",
+      "description": "Production server"
+    },
+    {
+      "url": "http://localhost:3000/api/v1",
+      "description": "Local development"
+    }
+  ],
+  "security": [
+    {
+      "ApiKeyAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "API-Key"
+      }
+    },
+    "schemas": {
+      "ActionType": {
+        "type": "string",
+        "enum": [
+          "LABEL",
+          "ARCHIVE",
+          "MARK_READ",
+          "STAR",
+          "DRAFT_EMAIL",
+          "DRAFT_MESSAGING_CHANNEL",
+          "REPLY",
+          "FORWARD",
+          "SEND_EMAIL",
+          "MARK_SPAM",
+          "DIGEST",
+          "CALL_WEBHOOK",
+          "MOVE_FOLDER",
+          "NOTIFY_MESSAGING_CHANNEL",
+          "NOTIFY_SENDER",
+          "DELETE"
+        ]
+      },
+      "RuleCondition": {
+        "type": "object",
+        "properties": {
+          "conditionalOperator": {
+            "type": "string",
+            "enum": ["AND", "OR"],
+            "nullable": true
+          },
+          "aiInstructions": {
+            "type": "string",
+            "nullable": true
+          },
+          "static": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "from": { "type": "string", "nullable": true },
+              "to": { "type": "string", "nullable": true },
+              "subject": { "type": "string", "nullable": true }
+            }
+          }
+        }
+      },
+      "RuleActionFields": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "string", "nullable": true },
+          "to": { "type": "string", "nullable": true },
+          "cc": { "type": "string", "nullable": true },
+          "bcc": { "type": "string", "nullable": true },
+          "subject": { "type": "string", "nullable": true },
+          "content": { "type": "string", "nullable": true },
+          "webhookUrl": { "type": "string", "nullable": true },
+          "folderName": { "type": "string", "nullable": true }
+        }
+      },
+      "RuleAction": {
+        "type": "object",
+        "properties": {
+          "type": { "$ref": "#/components/schemas/ActionType" },
+          "messagingChannelId": { "type": "string", "nullable": true },
+          "fields": { "$ref": "#/components/schemas/RuleActionFields" },
+          "delayInMinutes": { "type": "number", "nullable": true }
+        },
+        "required": ["type"]
+      },
+      "Rule": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "runOnThreads": { "type": "boolean" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "condition": { "$ref": "#/components/schemas/RuleCondition" },
+          "actions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RuleAction" }
+          }
+        },
+        "required": ["id", "name", "enabled", "runOnThreads", "createdAt", "updatedAt", "condition", "actions"]
+      },
+      "RuleRequestBody": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "runOnThreads": { "type": "boolean", "default": true },
+          "condition": { "$ref": "#/components/schemas/RuleCondition" },
+          "actions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RuleAction" },
+            "minItems": 1
+          }
+        },
+        "required": ["name", "condition", "actions"]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/stats/by-period": {
+      "get": {
+        "description": "Get email statistics grouped by time period. Returns counts of emails by status (all, sent, read, unread, archived, unarchived) for each period.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["day", "week", "month", "year"],
+              "default": "week"
+            },
+            "required": false,
+            "name": "period",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "number",
+              "nullable": true
+            },
+            "required": false,
+            "name": "fromDate",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "number",
+              "nullable": true
+            },
+            "required": false,
+            "name": "toDate",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "startOfPeriod": {
+                            "type": "string"
+                          },
+                          "All": {
+                            "type": "number"
+                          },
+                          "Sent": {
+                            "type": "number"
+                          },
+                          "Read": {
+                            "type": "number"
+                          },
+                          "Unread": {
+                            "type": "number"
+                          },
+                          "Unarchived": {
+                            "type": "number"
+                          },
+                          "Archived": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "startOfPeriod",
+                          "All",
+                          "Sent",
+                          "Read",
+                          "Unread",
+                          "Unarchived",
+                          "Archived"
+                        ]
+                      }
+                    },
+                    "allCount": {
+                      "type": "number"
+                    },
+                    "inboxCount": {
+                      "type": "number"
+                    },
+                    "readCount": {
+                      "type": "number"
+                    },
+                    "sentCount": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "result",
+                    "allCount",
+                    "inboxCount",
+                    "readCount",
+                    "sentCount"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rules": {
+      "get": {
+        "description": "List automation rules for the scoped inbox account.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rules": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Rule" }
+                    }
+                  },
+                  "required": ["rules"]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "description": "Create an automation rule for the scoped inbox account.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RuleRequestBody" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rule": { "$ref": "#/components/schemas/Rule" }
+                  },
+                  "required": ["rule"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rules/{id}": {
+      "get": {
+        "description": "Get a single automation rule for the scoped inbox account.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "schema": { "type": "string" },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rule": { "$ref": "#/components/schemas/Rule" }
+                  },
+                  "required": ["rule"]
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "description": "Replace an automation rule for the scoped inbox account.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "schema": { "type": "string" },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RuleRequestBody" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rule": { "$ref": "#/components/schemas/Rule" }
+                  },
+                  "required": ["rule"]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "description": "Delete an automation rule for the scoped inbox account.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "schema": { "type": "string" },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Rule deleted"
+          }
+        }
+      }
+    },
+    "/stats/response-time": {
+      "get": {
+        "description": "Get email response time statistics. Returns summary stats, distribution, and trend data showing how quickly you respond to emails.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "number",
+              "nullable": true
+            },
+            "required": false,
+            "name": "fromDate",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "number",
+              "nullable": true
+            },
+            "required": false,
+            "name": "toDate",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "medianResponseTime": {
+                          "type": "number"
+                        },
+                        "averageResponseTime": {
+                          "type": "number"
+                        },
+                        "within1Hour": {
+                          "type": "number"
+                        },
+                        "previousPeriodComparison": {
+                          "type": "object",
+                          "nullable": true,
+                          "properties": {
+                            "medianResponseTime": {
+                              "type": "number"
+                            },
+                            "percentChange": {
+                              "type": "number"
+                            }
+                          },
+                          "required": ["medianResponseTime", "percentChange"]
+                        }
+                      },
+                      "required": [
+                        "medianResponseTime",
+                        "averageResponseTime",
+                        "within1Hour",
+                        "previousPeriodComparison"
+                      ]
+                    },
+                    "distribution": {
+                      "type": "object",
+                      "properties": {
+                        "lessThan1Hour": {
+                          "type": "number"
+                        },
+                        "oneToFourHours": {
+                          "type": "number"
+                        },
+                        "fourTo24Hours": {
+                          "type": "number"
+                        },
+                        "oneToThreeDays": {
+                          "type": "number"
+                        },
+                        "threeToSevenDays": {
+                          "type": "number"
+                        },
+                        "moreThan7Days": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "lessThan1Hour",
+                        "oneToFourHours",
+                        "fourTo24Hours",
+                        "oneToThreeDays",
+                        "threeToSevenDays",
+                        "moreThan7Days"
+                      ]
+                    },
+                    "trend": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "period": {
+                            "type": "string"
+                          },
+                          "periodDate": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "medianResponseTime": {
+                            "type": "number"
+                          },
+                          "count": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "period",
+                          "periodDate",
+                          "medianResponseTime",
+                          "count"
+                        ]
+                      }
+                    },
+                    "emailsAnalyzed": {
+                      "type": "number"
+                    },
+                    "maxEmailsCap": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "summary",
+                    "distribution",
+                    "trend",
+                    "emailsAnalyzed",
+                    "maxEmailsCap"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

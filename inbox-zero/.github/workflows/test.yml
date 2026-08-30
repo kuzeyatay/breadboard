@@ -1,0 +1,106 @@
+name: Run Tests
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "**/*.mdx"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "**/*.mdx"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - uses: actions/cache@v4
+        name: Setup pnpm cache
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run lint check
+        run: pnpm check
+
+      - name: Check structural conventions
+        run: pnpm konsistent
+
+      - name: Check Prisma enum imports
+        run: pnpm -F inbox-zero-ai check-enums
+
+      - name: Check server action exports
+        run: pnpm -F inbox-zero-ai check-server-actions
+
+      - name: Check client redirects
+        run: pnpm -F inbox-zero-ai check-client-redirects
+
+      - name: Check test fixture hygiene
+        run: pnpm -F inbox-zero-ai check-test-fixtures
+
+      - name: Run tests
+        run: pnpm -F inbox-zero-ai test
+        env:
+          RUN_AI_TESTS: false
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/postgres"
+          AUTH_SECRET: "secret"
+          GOOGLE_CLIENT_ID: "client_id"
+          GOOGLE_CLIENT_SECRET: "client_secret"
+          MICROSOFT_CLIENT_ID: "client_id"
+          MICROSOFT_CLIENT_SECRET: "client_secret"
+          GOOGLE_PUBSUB_TOPIC_NAME: "topic"
+          EMAIL_ENCRYPT_SECRET: "secret"
+          EMAIL_ENCRYPT_SALT: "salt"
+          INTERNAL_API_KEY: "secret"
+          NEXT_PUBLIC_BASE_URL: "http://localhost:3000"
+
+      - name: Run package tests
+        run: pnpm test:packages
+
+      - name: Run integration tests
+        run: pnpm -F inbox-zero-ai test-integration
+        env:
+          RUN_INTEGRATION_TESTS: true
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/postgres"
+          AUTH_SECRET: "secret"
+          GOOGLE_CLIENT_ID: "client_id"
+          GOOGLE_CLIENT_SECRET: "client_secret"
+          MICROSOFT_CLIENT_ID: "client_id"
+          MICROSOFT_CLIENT_SECRET: "client_secret"
+          GOOGLE_PUBSUB_TOPIC_NAME: "topic"
+          EMAIL_ENCRYPT_SECRET: "secret"
+          EMAIL_ENCRYPT_SALT: "salt"
+          INTERNAL_API_KEY: "secret"
+          NEXT_PUBLIC_BASE_URL: "http://localhost:3000"

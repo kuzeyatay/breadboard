@@ -1,0 +1,391 @@
+import { startTransition, useMemo, useState, useRef, useEffect } from "react";
+import { useTheme } from "next-themes";
+import DOMPurify from "dompurify";
+import { env } from "@/env";
+import { decodeHtmlEntities } from "@/utils/gmail/decode";
+import { getImageProxyBaseUrl } from "@/utils/email/image-proxy-config";
+
+const IMAGE_PROXY_BASE_URL = getImageProxyBaseUrl({
+  baseUrl: env.NEXT_PUBLIC_BASE_URL,
+  externalProxyBaseUrl: env.NEXT_PUBLIC_IMAGE_PROXY_BASE_URL,
+  useAppRoute: env.NEXT_PUBLIC_IMAGE_PROXY_USE_APP_ROUTE,
+});
+const IMAGE_PROXY_ORIGIN = IMAGE_PROXY_BASE_URL
+  ? new URL(IMAGE_PROXY_BASE_URL).origin
+  : null;
+const IMAGE_PROXY_ENABLED = Boolean(IMAGE_PROXY_BASE_URL);
+const IMAGE_PROXY_RENDER_ROUTE = "/api/email/render-html";
+const SANS_FONT_STACK = `ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif`;
+/**
+ * Reading size for a message body that brought no styling of its own. Shared by
+ * both paths: Tailwind classes can't reach inside the iframe, so plain text has
+ * to restate it or the two drift apart on screen.
+ */
+const BODY_TYPE = { fontSize: "14.5px", lineHeight: 1.65 } as const;
+
+export function HtmlEmail({ html }: { html: string }) {
+  const sanitizedHtml = useMemo(() => sanitize(html), [html]);
+  const [showReplies, setShowReplies] = useState(false);
+  const [renderHtml, setRenderHtml] = useState(() => sanitizedHtml);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const { theme } = useTheme();
+  const isDarkMode = theme === "dark";
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+
+    setRenderHtml(sanitizedHtml);
+
+    if (!IMAGE_PROXY_ENABLED) {
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
+
+    rewriteHtmlWithProxy(sanitizedHtml, controller.signal).then(
+      (rewrittenHtml) => {
+        if (cancelled) return;
+        startTransition(() => setRenderHtml(rewrittenHtml));
+      },
+      () => {
+        if (cancelled) return;
+        startTransition(() => setRenderHtml(sanitizedHtml));
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [sanitizedHtml]);
+
+  const { mainContent, hasReplies } = useMemo(
+    () => getEmailContent(renderHtml),
+    [renderHtml],
+  );
+
+  const srcDoc = useMemo(
+    () =>
+      getIframeHtml(
+        showReplies ? renderHtml : mainContent,
+        isDarkMode,
+        IMAGE_PROXY_BASE_URL,
+        IMAGE_PROXY_ORIGIN,
+      ),
+    [renderHtml, mainContent, showReplies, isDarkMode],
+  );
+
+  const iframeHeight = useIframeHeight(iframeRef);
+
+  return (
+    <div className="relative min-w-0 overflow-x-hidden">
+      <iframe
+        ref={iframeRef}
+        srcDoc={srcDoc}
+        className="min-h-0 w-full"
+        style={{ height: `${iframeHeight + 3}px` }}
+        title="Email content preview"
+        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+        referrerPolicy="no-referrer"
+      />
+      {hasReplies && (
+        <button
+          type="button"
+          className="absolute bottom-0 left-0 text-muted-foreground hover:text-foreground"
+          onClick={() => setShowReplies(!showReplies)}
+        >
+          ...
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function PlainEmail({ text }: { text: string }) {
+  return (
+    // `pre` keeps the sender's line breaks; the font stack keeps it readable.
+    <pre
+      className="whitespace-pre-wrap font-sans text-foreground"
+      style={BODY_TYPE}
+    >
+      {decodeHtmlEntities(text)}
+    </pre>
+  );
+}
+
+function getEmailContent(html: string) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const quoteContainer = doc.querySelector(".gmail_quote_container");
+
+  if (!quoteContainer) {
+    return { mainContent: html, hasReplies: false };
+  }
+
+  // Clone the document and remove the quote container
+  const mainDoc = doc.cloneNode(true) as Document;
+  const mainQuoteContainer = mainDoc.querySelector(".gmail_quote_container");
+  mainQuoteContainer?.remove();
+
+  return {
+    mainContent: mainDoc.body.innerHTML,
+    hasReplies: true,
+  };
+}
+
+function getIframeHtml(
+  html: string,
+  isDarkMode: boolean,
+  imageProxyBaseUrl: string | null,
+  imageProxyOrigin: string | null,
+) {
+  // Count style attributes safely
+  const styleAttributeCount = (html.match(/style=/g) || []).length;
+
+  // Check for heavy styling that would indicate a rich HTML email
+  const hasHeavyStyling =
+    html.includes("bgcolor") ||
+    html.includes("background") ||
+    html.includes("<style") ||
+    // Look for multiple style attributes or font styling
+    styleAttributeCount > 1 ||
+    html.includes("font-family") ||
+    html.includes("font-size");
+
+  // Check for basic text styling that shouldn't prevent dark mode
+  const hasMinimalStyling =
+    !hasHeavyStyling &&
+    (html.includes("color:") ||
+      html.includes("text-decoration") ||
+      // Single style attribute is ok (probably just a link)
+      styleAttributeCount === 1);
+
+  const defaultFontStyles = hasHeavyStyling
+    ? `
+    <style>
+      :root {
+        color-scheme: light;
+        background-color: white;
+      }
+      body {
+        background-color: white;
+        font-family: ${SANS_FONT_STACK};
+      }
+      table { max-width: 100% !important; overflow-x: auto; }
+      img { max-width: 100% !important; height: auto; }
+    </style>
+  `
+    : `
+    <style>
+      :root {
+        color-scheme: light;
+        --foreground: 222.2 47.4% 11.2%;
+        --muted-foreground: 215.4 16.3% 46.9%;
+        --background: 0 0% 100%;
+      }
+
+      .dark {
+        color-scheme: dark;
+        --foreground: 0 0% 98%;
+        --muted-foreground: 240 5% 64.9%;
+        --background: 240 10% 3.9%;
+      }
+
+      /* Contain wide content within the pane */
+      table { max-width: 100% !important; overflow-x: auto; }
+      img { max-width: 100% !important; height: auto; }
+
+      /* Base styles - apply our font as a baseline; inline styles on inner elements still win */
+      body {
+        font-family: ${SANS_FONT_STACK};
+      }
+      body:not([style]):not([bgcolor]) {
+        margin: 0;
+        font-size: ${BODY_TYPE.fontSize};
+        line-height: ${BODY_TYPE.lineHeight};
+        color: hsl(var(--foreground));
+        background-color: hsl(var(--background));
+      }
+
+      /* Only style unstyled blockquotes and quoted text */
+      blockquote:not([style]), .gmail_quote:not([style]) {
+        color: hsl(var(--muted-foreground));
+        border-left: 3px solid hsl(var(--muted-foreground) / 0.2);
+        margin: 0;
+        padding-left: 1rem;
+      }
+
+      /* Style links - allow minimal styling to persist */
+      a {
+        color: ${hasMinimalStyling ? "inherit" : "hsl(var(--foreground))"};
+        text-decoration: underline;
+      }
+
+      /* Only style unstyled quoted text */
+      .gmail_quote:not([style]), .gmail_quote:not([style]) * {
+        color: hsl(var(--muted-foreground));
+      }
+
+      /* Preserve colors for minimally styled elements */
+      ${
+        hasMinimalStyling
+          ? `
+      [style*="color"] {
+        color: inherit !important;
+      }
+      `
+          : ""
+      }
+    </style>
+  `;
+
+  // The server can fail closed to the original HTML when proxy signing is unavailable,
+  // so only lock CSP to the proxy after the rendered markup actually points at it.
+  const imageSourceDirective =
+    imageProxyBaseUrl && imageProxyOrigin && html.includes(imageProxyBaseUrl)
+      ? imageProxyOrigin
+      : "https:";
+
+  const securityHeaders = `
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'none';
+      style-src 'unsafe-inline';
+      img-src data: ${imageSourceDirective};
+      font-src 'none';
+      media-src 'none';
+      connect-src 'none';
+      manifest-src 'none';
+      prefetch-src 'none';
+      worker-src 'none';
+      child-src 'none';
+      script-src 'none';
+      frame-src 'none';
+      object-src 'none';
+      base-uri 'none';
+      form-action 'none';
+    ">
+    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  `;
+
+  const headContent = `${securityHeaders}${defaultFontStyles}<base target="_blank" rel="noopener noreferrer">`;
+
+  function wrapWithProperStructure(content: string) {
+    if (content.indexOf("<html") === -1) {
+      return `
+        <html>
+          <head>${headContent}</head>
+          <body>${content}</body>
+        </html>`;
+    }
+
+    if (content.indexOf("<head") === -1) {
+      return content.replace(
+        /<html([^>]*)>/i,
+        `<html$1><head>${headContent}</head>`,
+      );
+    }
+
+    return content.replace(/<head([^>]*)>/i, `<head$1>${headContent}`);
+  }
+
+  const htmlWithHead = wrapWithProperStructure(html);
+  return addDarkModeClass(htmlWithHead, isDarkMode);
+}
+
+const sanitize = (html: string) =>
+  DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+
+async function rewriteHtmlWithProxy(html: string, signal: AbortSignal) {
+  const response = await fetch(IMAGE_PROXY_RENDER_ROUTE, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ html }),
+    signal,
+  });
+
+  if (!response.ok) return html;
+
+  const data = await response.json();
+  return typeof data?.html === "string" ? data.html : html;
+}
+
+function addDarkModeClass(html: string, isDarkMode: boolean) {
+  try {
+    const darkClass = isDarkMode ? "dark" : "";
+
+    // Handle empty or invalid HTML
+    if (!html || typeof html !== "string") {
+      return `<body class="${darkClass}"></body>`;
+    }
+
+    if (html.indexOf("<body") === -1) {
+      return `<body class="${darkClass}">${html}</body>`;
+    }
+
+    return html.replace(/<body([^>]*)>/i, (match, attributes = "") => {
+      try {
+        const existingClass = attributes.match(/class=["']([^"']*)["']/);
+        if (existingClass) {
+          const combinedClass =
+            `${existingClass[1].trim()} ${darkClass}`.trim();
+          return match.replace(
+            /class=["']([^"']*)["']/i,
+            `class="${combinedClass}"`,
+          );
+        }
+        return `<body${attributes} class="${darkClass}">`;
+      } catch {
+        // If regex matching fails, just add the class
+        return `<body${attributes} class="${darkClass}">`;
+      }
+    });
+  } catch {
+    // If all else fails, return a safe fallback
+    return `<body class="${isDarkMode ? "dark" : ""}"></body>`;
+  }
+}
+
+function useIframeHeight(iframeRef: React.RefObject<HTMLIFrameElement | null>) {
+  const [height, setHeight] = useState(0);
+
+  useEffect(() => {
+    let attempts = 0;
+    const maxAttempts = 5;
+    const initialDelay = 100;
+
+    const updateHeight = () => {
+      try {
+        if (iframeRef.current?.contentWindow) {
+          const newHeight =
+            iframeRef.current.contentWindow.document.documentElement
+              ?.scrollHeight;
+          if (newHeight) {
+            setHeight(newHeight);
+            return true;
+          }
+        }
+      } catch (error) {
+        console.error("Failed to get iframe height:", error);
+      }
+      return false;
+    };
+
+    const attemptUpdate = () => {
+      if (attempts >= maxAttempts) return;
+
+      const success = updateHeight();
+      if (!success) {
+        attempts++;
+        setTimeout(attemptUpdate, initialDelay * 2 ** attempts);
+      }
+    };
+
+    const initialTimeoutId = setTimeout(attemptUpdate, initialDelay);
+    return () => clearTimeout(initialTimeoutId);
+  }, [iframeRef?.current?.contentWindow]);
+
+  return height;
+}

@@ -1,0 +1,3 @@
+{"id": "psa-ncr-001", "P07_AGE": 41, "P05_SEX": "Female", "RSTR": "NCR", "URBAN": 1, "P12_REL": "Roman Catholic", "P10_MSTAT": 2, "P13_HGC": "College graduate", "MOTHER_TONGUE": "Tagalog", "EMPSTAT": "Employed", "NCHILD": 3}
+{"id": "psa-visayas-001", "AGE": 8, "SEX": 1, "REGION": "Region VII (Central Visayas)", "URB": 2, "RELIGION": "Islam", "MSTAT": 1, "HGC": 3, "MTONGUE": "Cebuano"}
+{"id": "psa-luzon-urban-001", "AGE": 30, "SEX": 2, "REGION": "Region III", "URB": 1, "RELIGION": "Iglesia ni Cristo", "MSTAT": 5, "HGC": "College undergraduate", "MTONGUE": "Kapampangan"}

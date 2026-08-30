@@ -1,0 +1,10 @@
+dist
+my_resources
+node_modules
+src/**/*.js
+.envrc
+
+# This package is pinned with pnpm-lock.yaml. Other package-manager metadata
+# is local resolver output and must not enter the packaged MCP source closure.
+/package-lock.json
+/pnpm-workspace.yaml
