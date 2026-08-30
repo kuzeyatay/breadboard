@@ -75,16 +75,10 @@ export interface MaxResearchInvocation {
 /**
  * Whether the chat host should launch a visible Max Research run.
  *
- * The same rule as Deep Research, and for the same reason. Under Super Agent
- * the model owns the turn: it decides what to delegate and it writes the answer,
- * so a surface that launched its own visible run behind that would produce two
- * turns for one request — the model's, and a card it knows nothing about.
- * Returning null here hands plain language back to the model, which reaches the
- * same agent through `agent_launch` and keeps the run inside its own turn.
- *
- * The explicit slash command still launches directly, under Super Agent or not.
- * Someone who typed the command named the agent themselves, and that is not a
- * decision to route around.
+ * Under Super Agent the model owns the turn and delegates privately through
+ * `agent_launch`; starting a visible run here would expose the worker card and
+ * create a second answer path. The explicit slash command remains a direct,
+ * user-selected launch even when Super Agent is enabled.
  */
 export function maxResearchInvocation(
   value: string,

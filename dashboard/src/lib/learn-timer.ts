@@ -3,6 +3,26 @@ export interface LearnTimerState {
   startedAt?: string;
 }
 
+function boundedLearnProgress(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+/**
+ * Learn progress is a durable high-water mark. A resumed worker may replay
+ * idempotent preparation stages, but doing so must never make the UI imply that
+ * accepted work was lost.
+ */
+export function monotonicLearnProgress(
+  currentProgress: number,
+  requestedProgress: number,
+): number {
+  return Math.max(
+    boundedLearnProgress(currentProgress),
+    boundedLearnProgress(requestedProgress),
+  );
+}
+
 const RUNNING_STATUSES = new Set([
   'idle',
   'planning',

@@ -87,6 +87,11 @@ import {
 } from "./source-visuals.ts";
 import { selectedSourceArtifactInventorySnapshot } from "./learn-source-artifact-inventory.ts";
 import {
+  learnSourceBindingRecord,
+  writeLearnSourceNormalizationReceipt,
+  type LearnSourceBindingRecord,
+} from "./learn-source-normalization-receipt.ts";
+import {
   syllabusCoverageRecoveryReceiptProblems,
   type SyllabusCoverageEvidenceRecoveryReceipt,
 } from "./learn-syllabus-coverage-recovery.ts";
@@ -162,6 +167,30 @@ function fmSetArray(rawFm: string, key: string, values: string[]): string {
   const line = `${key}: [${cleaned.map((item) => jsonScalar(item)).join(", ")}]`;
   if (singleLine.test(rawFm)) return rawFm.replace(singleLine, line);
   return `${rawFm.replace(/\s+$/, "")}\n${line}`;
+}
+
+function selectedSourceBindingRecords(
+  gardenDir: string,
+  sourceIds: readonly string[],
+): LearnSourceBindingRecord[] {
+  return sourceIds.map((sourceId) => {
+    const relPath = `sources/${sourceId}.md`;
+    const sourcePath = path.join(gardenDir, ...relPath.split("/"));
+    const stat = fs.lstatSync(sourcePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`Selected Learn source is not a regular file: ${relPath}.`);
+    }
+    const parsed = parseFrontmatter(readFileSyncWithRetry(sourcePath, "utf8"));
+    return learnSourceBindingRecord({
+      slug: sourceId,
+      relPath,
+      title: fmGetScalar(parsed.rawFrontmatter, "title") || sourceId,
+      description: fmGetScalar(parsed.rawFrontmatter, "description"),
+      sourceFile: fmGetScalar(parsed.rawFrontmatter, "source_file"),
+      date: fmGetScalar(parsed.rawFrontmatter, "date") || stat.mtime.toISOString(),
+      body: parsed.body,
+    });
+  });
 }
 
 export interface FinalizeFormulaEntry {
@@ -2150,7 +2179,36 @@ export function finalizeGardenExport({
   const learnerPages = loadLearnerPages(gardenDir);
 
   // --- Pass C: source wikilink normalization ---------------------------------
+  // Source notes are part of the confirmed map's byte-derived source binding,
+  // while this pass intentionally removes stale generated navigation targets.
+  // Persist the exact before/after projection so later status and generation
+  // reads can prove this deterministic mutation without mistaking it for a user
+  // source edit.
+  const sourceNormalizationBefore = expectedSourceFormulaReviewContext
+    ? selectedSourceBindingRecords(
+        gardenDir,
+        expectedSourceFormulaReviewContext.sourceIds,
+      )
+    : null;
   normalizeSourceWikilinks(gardenDir, report);
+  if (sourceNormalizationBefore && expectedSourceFormulaReviewContext) {
+    const sourceNormalizationAfter = selectedSourceBindingRecords(
+      gardenDir,
+      expectedSourceFormulaReviewContext.sourceIds,
+    );
+    const receipt = writeLearnSourceNormalizationReceipt({
+      gardenDir,
+      expectedCombinedSourceSetHash:
+        expectedSourceFormulaReviewContext.combinedSourceSetHash,
+      sourceIds: expectedSourceFormulaReviewContext.sourceIds,
+      before: sourceNormalizationBefore,
+      after: sourceNormalizationAfter,
+    });
+    if (receipt) {
+      const receiptPath = ".breadboard/source-normalization-receipt.json";
+      if (!report.changed.includes(receiptPath)) report.changed.push(receiptPath);
+    }
+  }
 
   // --- Pass D: stale caveat sanitation (visible + planning) ------------------
   if (!preserveModelAuthoredContent) {
@@ -2593,6 +2651,7 @@ function fallbackUnitForPage(page: LearnerPage): LearningUnitContract {
     sourceFigures: [],
     sourceFormulas: [],
     sourceTables: [],
+    sourceQuestions: [],
     zettelNotes: fmGetArray(page.rawFm, "tags").map((tag) => ({
       handle: tag,
       claim: tag.replace(/-/g, " "),

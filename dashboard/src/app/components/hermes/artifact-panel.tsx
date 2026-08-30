@@ -12,7 +12,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
-import { filterArtifactsForSearch } from "@/lib/hermes/artifact-search";
+import {
+  filterArtifactsForArchive,
+  filterArtifactsForSearch,
+} from "@/lib/hermes/artifact-search";
 import { CHAT_HIGHLIGHTS, chatHighlight } from "@/lib/conversations/highlights";
 import ArtifactViewer, {
   ARTIFACT_BROWSER_EVENT,
@@ -24,7 +27,10 @@ import ArtifactViewer, {
 } from "./artifact-viewer";
 import ArtifactImageStudio from "./artifact-image-studio";
 import ArtifactVideoStudio from "./artifact-video-studio";
-import { ArtifactDockHostProvider } from "./artifact-dock-host";
+import {
+  ArtifactDockHostProvider,
+  useArtifactDockHost,
+} from "./artifact-dock-host";
 
 // Re-exported so existing importers (garden-agent-chat, inline cards) keep a
 // single stable import site even though the definitions now live in the viewer.
@@ -67,17 +73,6 @@ function menuPositionFor(
     top: Math.max(8, Math.min(anchor.bottom + 4, viewport.height - MENU_HEIGHT - 8)),
     left: Math.max(8, Math.min(anchor.right - MENU_WIDTH + 8, viewport.width - MENU_WIDTH - 8)),
   };
-}
-
-function artifactStatusLabel(artifact: PresentedArtifact): string {
-  if (artifact.status === "failed") return "Failed";
-  const lifecycle = typeof artifact.metadata.lifecycleStatus === "string"
-    ? artifact.metadata.lifecycleStatus
-    : "";
-  if (lifecycle === "validating" || lifecycle === "browser_testing") return "Validating";
-  if (lifecycle === "repairing") return "Repairing";
-  if (lifecycle === "cancelled") return "Cancelled";
-  return "Generating";
 }
 
 function MoreIcon({ className = "h-4 w-4" }: { className?: string }) {
@@ -363,8 +358,11 @@ export default function ArtifactPanel({
   const [artifacts, setArtifacts] = useState<PresentedArtifact[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
-  // The element the viewer opens into: this panel's own body, so an opened
-  // artifact replaces the archive instead of docking beside it.
+  // A surface can offer a proper artifact lane around this archive. The
+  // Terminal uses one beside its transcript; the Garden learning map uses one
+  // over its complete right rail. Only archives without a surface-owned lane
+  // fall back to replacing their own body.
+  const inheritedViewerHost = useArtifactDockHost();
   const [viewerHost, setViewerHost] = useState<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -440,10 +438,14 @@ export default function ArtifactPanel({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mode, stopWorking]);
 
-  const openArtifact = openId ? artifacts.find((item) => item.id === openId) ?? null : null;
+  const archiveArtifacts = useMemo(
+    () => filterArtifactsForArchive(artifacts),
+    [artifacts],
+  );
+  const openArtifact = openId ? archiveArtifacts.find((item) => item.id === openId) ?? null : null;
   const filteredArtifacts = useMemo(
-    () => filterArtifactsForSearch(artifacts, searchQuery),
-    [artifacts, searchQuery],
+    () => filterArtifactsForSearch(archiveArtifacts, searchQuery),
+    [archiveArtifacts, searchQuery],
   );
   const searching = Boolean(searchQuery.trim());
 
@@ -582,7 +584,7 @@ export default function ArtifactPanel({
           <div>
             <h3 className="text-sm font-semibold text-[var(--ink-heading)]">Artifacts</h3>
             <p className="text-[10px] text-[var(--ink-muted)]">
-              {searching ? `${filteredArtifacts.length} of ${artifacts.length}` : artifacts.length} {scopeLabel}
+              {searching ? `${filteredArtifacts.length} of ${archiveArtifacts.length}` : archiveArtifacts.length} {scopeLabel}
             </p>
           </div>
           {mode === "idle" ? menuButton : null}
@@ -655,13 +657,13 @@ export default function ArtifactPanel({
       {error ? <p className="m-3 rounded-md bg-red-50 p-2 text-xs text-red-700">{error}</p> : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {loading && artifacts.length === 0 ? (
+        {loading && archiveArtifacts.length === 0 ? (
           <p className="p-3 text-xs text-[var(--ink-muted)]">Loading…</p>
         ) : null}
-        {artifacts.length === 0 && !loading ? (
+        {archiveArtifacts.length === 0 && !loading ? (
           <p className="p-3 text-xs text-[var(--ink-muted)]">No artifacts yet.</p>
         ) : null}
-        {artifacts.length > 0 && filteredArtifacts.length === 0 && !loading ? (
+        {archiveArtifacts.length > 0 && filteredArtifacts.length === 0 && !loading ? (
           <div className="px-3 py-8 text-center">
             <p className="text-xs text-[var(--ink-muted)]">No artifacts match “{searchQuery.trim()}”.</p>
             <button
@@ -690,7 +692,6 @@ export default function ArtifactPanel({
         ) : null}
 
         {filteredArtifacts.map((artifact) => {
-          const ready = artifact.status === "ready";
           const pdfHref = artifactPdfHref(artifact);
           const checked = selectedIds.has(artifact.id);
           const highlight = chatHighlight(artifact.highlight);
@@ -707,15 +708,9 @@ export default function ArtifactPanel({
                   {artifactDescription(artifact)}
                 </span>
               </span>
-              {!ready ? (
-                <span
-                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${
-                    artifact.status === "failed"
-                      ? "bg-red-50 text-[var(--danger)]"
-                      : "bg-[var(--paper-strong)] text-[var(--ink-muted)]"
-                  }`}
-                >
-                  {artifactStatusLabel(artifact)}
+              {artifact.status === "failed" ? (
+                <span className="shrink-0 rounded-full bg-red-50 px-2 py-0.5 text-[10px] text-[var(--danger)]">
+                  Failed
                 </span>
               ) : null}
             </>
@@ -776,18 +771,18 @@ export default function ArtifactPanel({
         })}
       </div>
 
-      {/* Opening a row from the archive is a change of view, not a second
-          panel: the viewer takes over the rail the list is sitting in rather
-          than opening its own dock beside it. The list stays mounted
-          underneath, so closing the artifact comes back to the same scroll
-          position and the same search. */}
+      {/* Keep a local fallback for compact archives that do not live inside a
+          surface-owned artifact lane. The list stays mounted underneath, so
+          closing the artifact returns to the same scroll position and search. */}
       <div
         ref={setViewerHost}
-        aria-hidden={openArtifact ? undefined : true}
-        className={`absolute inset-0 z-20 ${openArtifact ? "" : "pointer-events-none invisible"}`}
+        aria-hidden={openArtifact && !inheritedViewerHost ? undefined : true}
+        className={`absolute inset-0 z-20 ${
+          openArtifact && !inheritedViewerHost ? "" : "pointer-events-none invisible"
+        }`}
       />
 
-      <ArtifactDockHostProvider host={viewerHost}>
+      <ArtifactDockHostProvider host={inheritedViewerHost ?? viewerHost}>
         <ArtifactViewer
           artifact={openArtifact}
           onClose={() => setOpenId(null)}

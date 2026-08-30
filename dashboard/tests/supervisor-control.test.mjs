@@ -1553,6 +1553,7 @@ test("Runtime V2 snapshots accept only runtime-owned failure classifications", a
       ["resource_exhausted", "BREADBOARD_RESOURCE_EXHAUSTED"],
       ["interrupted", "JOB_INTERRUPTED"],
       ["uncertain", "JOB_UNCERTAIN"],
+      ["failed", "SERVICE_DEPENDENCY_UNAVAILABLE"],
     ]) {
       failure = {
         state: accepted[0],

@@ -343,6 +343,67 @@ test("a delegated worker keeps its Super Agent message while storing the result 
   assert.equal(replayedFields.externalAgentResult, "The verified recommendation.");
 });
 
+test("a server-started Max Research run preserves a later Super Agent hand-off", () => {
+  const chat = conversation();
+  const clientMessageId = "delegated-max-research-pending-origin";
+  const run = {
+    kind: "max_research",
+    runId: "max-research-server-started-1",
+    query: "Compare the evidence for hypertrophy programming",
+  };
+  const reserved = store.reserveConversationTurn({
+    conversation: chat,
+    clientMessageId,
+    surface: "dashboard_terminal",
+    content: run.query,
+  });
+
+  // The tool route owns Max Research and can attach it before the parent model
+  // has finished writing its immediate hand-off message.
+  const attached = turns.attachExternalAgentRun({
+    conversation: store.getConversationById(chat.id),
+    clientMessageId,
+    run,
+  });
+  const attachedFields = runs.externalAgentMessageFields(
+    store.presentConversationMessage(attached).metadata,
+  );
+  assert.equal(attached.status, "pending");
+  assert.equal(attached.content, "");
+  assert.equal(attachedFields.delegatedAgentRun, true);
+  assert.equal(attachedFields.delegatedAgentPreamble, undefined);
+  assert.deepEqual(attachedFields.maxResearchRun, {
+    runId: run.runId,
+    query: run.query,
+  });
+
+  const completed = store.completeAssistantMessage({
+    conversationId: chat.id,
+    clientMessageId,
+    content: "I’m researching this thoroughly and will return with the verified result.",
+    metadata: { responseDurationMs: 1_200 },
+  });
+  const completedFields = runs.externalAgentMessageFields(
+    store.presentConversationMessage(completed).metadata,
+  );
+  assert.equal(completed.status, "complete");
+  assert.equal(
+    completed.content,
+    "I’m researching this thoroughly and will return with the verified result.",
+  );
+  assert.equal(completedFields.delegatedAgentRun, true);
+  assert.equal(completedFields.delegatedAgentPreamble, completed.content);
+  assert.equal(completedFields.externalAgentOutcome, "running");
+  assert.deepEqual(completedFields.maxResearchRun, {
+    runId: run.runId,
+    query: run.query,
+  });
+  assert.deepEqual(
+    store.listConversationMessages(chat.id).map((message) => message.id),
+    [reserved.userMessage.id, attached.id],
+  );
+});
+
 test("a delegated start failure also leaves its Super Agent hand-off intact", () => {
   const chat = conversation();
   const clientMessageId = "delegated-failed-origin";

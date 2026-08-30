@@ -3,7 +3,6 @@
 // does not run in the dashboard process.
 
 import path from "node:path";
-import { resolveCodexLauncher } from "../codex/run-manager.ts";
 import { externalRuntimeReadUtf8 } from "../external-runtime-filesystem.ts";
 import {
   resolveHyperframesRoot,
@@ -27,6 +26,11 @@ export interface ToolchainStatus {
   targetVersion: string;
 }
 
+export interface HyperframesCodexStatus {
+  found: boolean;
+  version: string;
+}
+
 /** The CLI version this clone ships, so an install matches the skills. */
 export function targetCliVersion(env: NodeJS.ProcessEnv = process.env): string {
   const root = resolveHyperframesRoot(env);
@@ -42,16 +46,19 @@ export function targetCliVersion(env: NodeJS.ProcessEnv = process.env): string {
   }
 }
 
-export function toolchainStatus(env: NodeJS.ProcessEnv = process.env): ToolchainStatus {
+/** Build the dashboard projection from filesystem-only checks plus Runtime-owned Codex evidence. */
+export function toolchainStatus(
+  codex: HyperframesCodexStatus,
+  env: NodeJS.ProcessEnv = process.env,
+): ToolchainStatus {
   const availability = runtimeAvailability(env);
   const toolchain = resolveToolchain(env);
-  const codex = resolveCodexLauncher(env);
   const skills = skillsRoot(env);
   return {
-    ready: availability.available && Boolean(codex),
+    ready: availability.available && codex.found,
     reason: !availability.available
       ? (availability.reason ?? "")
-      : codex
+      : codex.found
         ? ""
         : "The coding runtime that drives HyperFrames was not found. Install Codex or set CODEX_BIN.",
     clone: {
@@ -75,7 +82,7 @@ export function toolchainStatus(env: NodeJS.ProcessEnv = process.env): Toolchain
       path: toolchain.browser.path,
       source: toolchain.browser.source,
     },
-    codex: { found: Boolean(codex), version: codex?.version ?? "" },
+    codex: { found: codex.found, version: codex.version },
     targetVersion: targetCliVersion(env),
   };
 }

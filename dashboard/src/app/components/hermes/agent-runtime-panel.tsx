@@ -1085,15 +1085,16 @@ export default function AgentRuntimePanel({
     });
     return rows;
   }, [messages, inlinedCourseCorrections, lastAssistantIndex, runInFlight]);
-  // One tick per question asked, for the rail down the right edge. Numbered off
+  // One tick per visible chat message, for the rail down the right edge. Numbered off
   // the rows rather than off `messages`, because everything dropped above —
   // continuations, inline selections and folded corrections — is exactly what makes
   // the two differ, and the rail has to speak the virtualizer's indices.
   const railItems = useMemo<ChatMessageRailItem[]>(
     () =>
       transcriptRows.flatMap((row, rowIndex) =>
-        row.message.role === "user"
-          ? [{ rowIndex, label: row.message.content }]
+        (row.message.role === "user" || row.message.role === "assistant") &&
+        row.message.content.trim()
+          ? [{ rowIndex, label: row.message.content, role: row.message.role }]
           : [],
       ),
     [transcriptRows],
@@ -1929,7 +1930,11 @@ export default function AgentRuntimePanel({
                 // otherwise empty status line.
                 const visibleAssistantContent =
                   index === lastAssistantIndex
-                    ? revealedAssistantContent || continuationPreamble
+                    ? revealedAssistantContent ||
+                      // A restored or finished reply must show its stored text
+                      // even when the paced reveal has nothing queued.
+                      (!streaming ? message.content : "") ||
+                      continuationPreamble
                     : message.content || continuationPreamble;
                 const inlineMapKind =
                   message.role === "assistant" &&
@@ -3278,9 +3283,17 @@ export default function AgentRuntimePanel({
       </div>
         <ChatMessageRail
           surface={surface === "quartz_ai" ? "quartz-ai" : "hermes-chat"}
+          conversationKey={sessionId}
           items={railItems}
           scrollRef={transcriptScrollRef}
           bridge={transcriptVirtual}
+          onReply={(text) => {
+            if (queueHeld) {
+              queueFollowUp(text);
+              return;
+            }
+            return onSendQueued(text);
+          }}
         />
         <ChatJumpToBottom
           visible={transcriptAwayFromBottom}

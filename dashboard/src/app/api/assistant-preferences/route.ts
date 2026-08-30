@@ -11,6 +11,7 @@ import {
   getHermesUserSettings,
   setHermesUserSettings,
 } from "@/lib/hermes/runtime-store";
+import { pickComposerSwitches } from "@/lib/hermes/composer-switches";
 import { corsHeaders } from "@/lib/hermes/quartz-support";
 import {
   ApiError,
@@ -33,6 +34,7 @@ function defaults() {
     reasoningEffortByModel: {} as Record<string, string>,
     userPreference: false,
     humanizerAuto: false,
+    switches: {} as Record<string, boolean>,
   };
 }
 
@@ -50,6 +52,11 @@ function payload(userId: number | null) {
     // control, but the server needs it too: an artifact and a garden note are
     // written server-side, where no localStorage exists.
     humanizerAuto: settings.humanizerAuto,
+    // The Intelligence-menu switches (YOLO, Agent mode, Super agent, Direct
+    // mode, Personalize). The browser stores hydrate from this on load, since
+    // their localStorage copy belongs to an origin the desktop changes on
+    // every launch.
+    switches: settings.composerSwitches,
   };
 }
 
@@ -92,10 +99,20 @@ export async function PATCH(request: Request) {
     }
     const humanizerAuto =
       body.humanizerAuto === undefined ? undefined : body.humanizerAuto === true;
+    const switches =
+      body.switches === undefined ? undefined : pickComposerSwitches(body.switches);
+    if (switches === null) {
+      throw new ApiError(
+        400,
+        "invalid_switches",
+        "switches must map known composer switches to booleans.",
+      );
+    }
     if (
       model === undefined &&
       reasoningEffort === undefined &&
-      humanizerAuto === undefined
+      humanizerAuto === undefined &&
+      switches === undefined
     ) {
       throw new ApiError(400, "preference_required", "A model or intelligence level is required.");
     }
@@ -105,6 +122,9 @@ export async function PATCH(request: Request) {
       // Sent on its own by the "Rewrite naturally" switch, which is not an
       // intelligence preference and must not mark one as set.
       ...(humanizerAuto !== undefined ? { humanizerAuto } : {}),
+      // Sent alone by a switch store's write-through; not an intelligence
+      // preference either.
+      ...(switches !== undefined ? { composerSwitches: switches } : {}),
     });
     return NextResponse.json(payload(userId), { headers: cors });
   } catch (error) {

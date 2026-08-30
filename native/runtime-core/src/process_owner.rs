@@ -4096,6 +4096,23 @@ impl ProcessTreeExit {
     }
 
     #[cfg(test)]
+    pub(crate) fn service_classified_exit_after_started_for_test_in_scope(
+        scope: RuntimeGenerationScope,
+        service_id: &str,
+        generation: u64,
+        classification: ProcessExitClassification,
+    ) -> Self {
+        let mut receipt = Self::service_release_for_test_in_scope(scope, service_id, generation);
+        receipt.started_boundary_accepted = true;
+        receipt.classification = classification;
+        receipt.failure = (classification == ProcessExitClassification::SupervisorFailure)
+            .then(|| safe_supervisor_failure("WAIT_FAILED", "test-only service failure"));
+        receipt.stop_outcome = (classification == ProcessExitClassification::Stopped)
+            .then_some(ProcessStopOutcome::Forced);
+        receipt
+    }
+
+    #[cfg(test)]
     pub(crate) fn service_stopped_after_started_for_test_in_scope(
         scope: RuntimeGenerationScope,
         service_id: &str,

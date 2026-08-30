@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { hydrateComposerSwitches } from "@/app/components/composer-switch-preferences";
 import {
   APP_THEME_CHANGE_EVENT,
   APP_THEME_MESSAGE,
@@ -9,6 +10,7 @@ import {
   APP_THEME_MODE_STORAGE_KEY,
   APP_THEME_STORAGE_KEY,
   appThemeForMoment,
+  appThemeScheduleForShell,
   getStoredAppTheme,
   getStoredAppThemeLocation,
   getStoredAppThemeMode,
@@ -16,10 +18,14 @@ import {
   nextAppThemeTransition,
   rememberEffectiveAppTheme,
   type AppTheme,
+  type AppThemeSchedule,
 } from "@/lib/app-theme";
 
 interface DesktopThemeBridge {
-  setTheme?: (theme: AppTheme) => Promise<boolean>;
+  setTheme?: (
+    theme: AppTheme,
+    schedule?: AppThemeSchedule,
+  ) => Promise<boolean>;
 }
 
 function desktopThemeBridge(): DesktopThemeBridge | undefined {
@@ -34,7 +40,11 @@ function postThemeToFrame(frame: HTMLIFrameElement, theme: AppTheme): void {
 
 function synchronizeTheme(theme: AppTheme): void {
   document.documentElement.dataset.theme = theme;
-  void desktopThemeBridge()?.setTheme?.(theme).catch(() => false);
+  // The shell paints the next launch's loading scene from what it is told
+  // here, so it hears how the theme was chosen, not only which one it is.
+  void desktopThemeBridge()
+    ?.setTheme?.(theme, appThemeScheduleForShell(window.localStorage))
+    .catch(() => false);
   for (const frame of document.querySelectorAll("iframe")) {
     postThemeToFrame(frame, theme);
   }
@@ -103,6 +113,11 @@ export default function AppThemeRuntime() {
     };
 
     refreshFromPreference(false, true);
+    // The "Sunrise to sunset" switch lives on the account (see
+    // lib/app-theme.ts). This runtime is in the root layout, so every page
+    // brings it back, not only the ones with a composer. The request is shared
+    // with the composer's own hydration when both are mounted.
+    void hydrateComposerSwitches();
 
     const handleThemeChange = (event: Event) => {
       const nextTheme = (event as CustomEvent<unknown>).detail;

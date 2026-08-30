@@ -41,6 +41,7 @@ import { usePersonalize } from '@/app/components/use-personalize';
 import { useHumanizerMode } from '@/app/components/use-humanizer-mode';
 import { useYoloMode } from '@/app/components/use-yolo-mode';
 import { useAgentMode, useSuperAgent } from '@/app/components/use-agent-mode';
+import { useComposerSwitchHydration } from '@/app/components/composer-switch-preferences';
 import type { ModelFailoverNotice } from '@/app/components/use-assistant-intelligence';
 import type { CommandHubItem } from '@/lib/hermes/commands.ts';
 import type { HermesSurface } from '@/lib/hermes/config.ts';
@@ -610,6 +611,9 @@ export default function AssistantComposer({
   const [yoloMode, setYoloMode] = useYoloMode();
   const [agentMode, setAgentMode] = useAgentMode();
   const [superAgent, setSuperAgent] = useSuperAgent();
+  // The switches above are read from localStorage, which belongs to this
+  // origin; the account copy is what survives a Breadboard restart.
+  useComposerSwitchHydration();
   const [voiceOpen, setVoiceOpen] = useState(false);
 
   // Migrate a Super Agent preference saved by an older build, before the two
@@ -2190,7 +2194,7 @@ export default function AssistantComposer({
                         className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${humanizerEnabled ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
                       >
                         <span
-                          className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${humanizerEnabled ? 'translate-x-5' : 'translate-x-0'}`}
+                          className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--paper-raised)] shadow transition-transform duration-200 ${humanizerEnabled ? 'translate-x-5' : 'translate-x-0'}`}
                         />
                       </span>
                     </button>
@@ -2215,7 +2219,7 @@ export default function AssistantComposer({
                         className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${personalize ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
                       >
                         <span
-                          className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${personalize ? 'translate-x-5' : 'translate-x-0'}`}
+                          className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--paper-raised)] shadow transition-transform duration-200 ${personalize ? 'translate-x-5' : 'translate-x-0'}`}
                         />
                       </span>
                     </button>
@@ -2238,7 +2242,7 @@ export default function AssistantComposer({
                         className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${directMode ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
                       >
                         <span
-                          className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${directMode ? 'translate-x-5' : 'translate-x-0'}`}
+                          className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--paper-raised)] shadow transition-transform duration-200 ${directMode ? 'translate-x-5' : 'translate-x-0'}`}
                         />
                       </span>
                     </button>
@@ -2261,7 +2265,7 @@ export default function AssistantComposer({
                         className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${yoloMode ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
                       >
                         <span
-                          className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${yoloMode ? 'translate-x-5' : 'translate-x-0'}`}
+                          className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--paper-raised)] shadow transition-transform duration-200 ${yoloMode ? 'translate-x-5' : 'translate-x-0'}`}
                         />
                       </span>
                     </button>
@@ -2286,7 +2290,7 @@ export default function AssistantComposer({
                         className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${agentMode ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
                       >
                         <span
-                          className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${agentMode ? 'translate-x-5' : 'translate-x-0'}`}
+                          className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--paper-raised)] shadow transition-transform duration-200 ${agentMode ? 'translate-x-5' : 'translate-x-0'}`}
                         />
                       </span>
                     </button>
@@ -2309,7 +2313,7 @@ export default function AssistantComposer({
                         className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${superAgent ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
                       >
                         <span
-                          className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${superAgent ? 'translate-x-5' : 'translate-x-0'}`}
+                          className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--paper-raised)] shadow transition-transform duration-200 ${superAgent ? 'translate-x-5' : 'translate-x-0'}`}
                         />
                       </span>
                     </button>

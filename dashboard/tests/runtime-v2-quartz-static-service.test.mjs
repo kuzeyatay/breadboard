@@ -52,6 +52,11 @@ test("Quartz Runtime service serves only prebuilt output and exits cleanly", asy
     "<p>FIREFLY-COPPER-17</p>",
     "utf8",
   );
+  fs.writeFileSync(
+    path.join(publicRoot, "garden", "sources", "1.1-numbered-lesson.html"),
+    "<p>NUMBERED-LESSON-19</p>",
+    "utf8",
+  );
   fs.writeFileSync(path.join(temporaryRoot, "secret.txt"), "secret", "utf8");
   const port = await freePort();
   const child = spawn(process.execPath, [servicePath, "--port", String(port)], {
@@ -94,6 +99,20 @@ test("Quartz Runtime service serves only prebuilt output and exits cleanly", asy
     const article = await fetch(`${origin}${cleanUrlRedirect.headers.get("location")}`);
     assert.equal(article.status, 200);
     assert.equal(await article.text(), "<p>FIREFLY-COPPER-17</p>");
+    const numberedLesson = await fetch(
+      `${origin}/garden/sources/1.1-numbered-lesson`,
+    );
+    assert.equal(numberedLesson.status, 200);
+    assert.equal(await numberedLesson.text(), "<p>NUMBERED-LESSON-19</p>");
+    const numberedLessonRedirect = await fetch(
+      `${origin}/garden/sources/1.1-numbered-lesson/?refresh=x`,
+      { redirect: "manual" },
+    );
+    assert.equal(numberedLessonRedirect.status, 302);
+    assert.equal(
+      numberedLessonRedirect.headers.get("location"),
+      "/garden/sources/1.1-numbered-lesson?refresh=x",
+    );
     const traversal = await fetch(`${origin}/%2e%2e/secret.txt`);
     assert.equal(traversal.status, 404);
     const source = fs.readFileSync(servicePath, "utf8");

@@ -391,6 +391,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "artifact_render",
       "artifact_finalize",
       "artifact_list",
+      "artifact_search",
       "artifact_fork",
       "artifact_image_generate",
       "interactive_visualizer_create",

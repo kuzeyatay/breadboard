@@ -47,7 +47,10 @@ test("garden adapter opens the event stream before prompting without aborting a 
   const adapter = read("dashboard/src/lib/hermes/garden-chat-adapter.ts");
   assert.match(
     adapter,
-    /const firstEvent = events\.next\(\);[\s\S]*await Promise\.race[\s\S]*await sendMessage\(\);/,
+    // The prompt is submitted only after the subscription is live; `dispatch`
+    // takes the session it submits on, because a Hermes restart is recovered
+    // by re-dispatching onto a recreated session.
+    /const firstEvent = events\.next\(\);[\s\S]*await Promise\.race[\s\S]*await dispatch\(target\);/,
   );
   assert.match(
     adapter,
@@ -55,7 +58,7 @@ test("garden adapter opens the event stream before prompting without aborting a 
   );
   assert.match(adapter, /return pump\.response\(requestSignal/);
   assert.doesNotMatch(adapter, /requestSignal\.addEventListener\("abort"/);
-  assert.match(adapter, /getAgentRuntimeByKind\(session\.runtimeKind\)/);
+  assert.match(adapter, /getAgentRuntimeByKind\(initialSession\.runtimeKind\)/);
   assert.match(adapter, /runtime\s*\.streamSession/);
   assert.doesNotMatch(adapter, /const disconnectSubscription/);
   assert.match(

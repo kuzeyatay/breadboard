@@ -38,7 +38,11 @@ import {
 import { freezeActiveGenerationByVersion } from "@/lib/learn-structure-reconciliation";
 import { makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
 import { createLearnFinalCriticProviders } from "@/lib/learn-final-critic";
-import { LearnCouncilTerminalReceiptError } from "@/lib/learn-council-semantic-recovery";
+import {
+  LearnCouncilExpiredStartedReceiptError,
+  LearnCouncilTerminalReceiptError,
+  expiredStartedLearnCouncilReceiptProof,
+} from "@/lib/learn-council-semantic-recovery";
 import {
   appendGardenEvent,
   pruneVisualArtifacts,
@@ -96,6 +100,18 @@ import {
   sourceMapArtifactKind,
   sourceMapPlanningEvidenceTransition,
 } from "@/lib/learn-source-artifact-inventory";
+import {
+  learnSourceBindingRecord,
+  matchingLearnSourceNormalizationReceipt,
+  sourceSetHashForBindingRecords,
+} from "@/lib/learn-source-normalization-receipt";
+import {
+  buildSourceQuestionEvidenceCatalog,
+  projectSourceQuestions,
+  sourceQuestionAssignmentProblems,
+  sourceQuestionPlanProblems,
+  type SourceQuestionPlan,
+} from "@/lib/learn-source-questions";
 import {
   assessLessonQuality,
   buildLearningPageFrontmatter,
@@ -228,7 +244,10 @@ import {
   expectedStrictLearnModelRoute,
   planningReceiptProvesOneExactModelCall,
 } from "@/lib/learn-planning-route-proof";
-import { transitionLearnTimer } from "@/lib/learn-timer";
+import {
+  monotonicLearnProgress,
+  transitionLearnTimer,
+} from "@/lib/learn-timer";
 import { getLearnStatusSnapshot as projectLearnStatusSnapshot } from "@/lib/learn-status-projection";
 import {
   authoredSyllabusLocatorCatalog,
@@ -804,6 +823,19 @@ const LEARN_PLANNING_TIMEOUT_MS = envPositiveInt(
   "LEARN_PLANNING_TIMEOUT_MS",
   25 * 60 * 1000,
 );
+/**
+ * A ChatMock provider generation has a finite total websocket lifetime. Once
+ * that deadline plus a small final-receipt grace has elapsed, a receipt still
+ * in `started` cannot belong to a live provider call. This lets a later Learn
+ * retry cross a process-crash orphan without replaying an in-flight request.
+ */
+const LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS =
+  envClampedPositiveInt(
+    "CHATMOCK_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT",
+    1_800,
+    901,
+    21_600,
+  ) * 1_000 + 60_000;
 const LEARN_VISUAL_MAX_REPEATED_INTERACTION_SIGNATURE = 1;
 /** Explicit full-generation attempts per page. This loop is never entered by
  * scoped repair; only generate/full_rebuild may create fresh page drafts. */
@@ -887,11 +919,35 @@ Return ONLY JSON with this exact top-level shape:
     "title": "short anchor title",
     "summary": "concise supported content"
   }],
+  "sourceQuestions": [{
+    "id": "Q1",
+    "sourceId": "exact supplied source id",
+    "label": "source label such as Problem 6.21",
+    "prompt": "verbatim source-authored question text",
+    "sourceAnchorIds": ["exact canonical source anchor id containing the question"],
+    "relatedFigureIds": ["exact registered figure/graph id required by the question"],
+    "syllabusAssignments": [{
+      "unitId": "exact syllabus unit id",
+      "reference": "exact question reference copied from that syllabus unit"
+    }],
+    "teachingValue": "what solving this question lets the learner practice"
+  }],
+  "unresolvedSyllabusQuestionReferences": [{
+    "unitId": "exact syllabus unit id",
+    "reference": "exact assigned question reference",
+    "reason": "why the selected sources do not provide this question"
+  }],
   "missingOrUnclear": ["only genuinely missing or unclear content"]
 }
 Return exactly one sources entry for every supplied source id and no unknown source. Keep the map concise: at most 30 central concepts, at most 40 selected sourceAnchors per source, and at most 20 entries in each other per-source list.
 sourceContext.sourceVisuals is the authoritative normalized Source Map artifact catalog. The figures array is its complete registry projection: return exactly one entry for every supplied sourceVisuals record, and copy each id, sourceId, and kind verbatim. figures is exempt from the 20-entry concision cap. Its only valid kinds are figure, graph, table, and formula; never return detector labels such as diagram, photo, unknown, or equation.
 Every sourceAnchors id must be copied verbatim from supplied canonicalSourceAnchors and must retain its matching sourceId. The catalog records structural Markdown pages and registered source artifacts; you decide which evidence matters, while code only verifies and projects your choices. Never invent, rewrite, or fuzzy-match an anchor id.
+Question mapping rules (hard):
+- sourceQuestionEvidence contains exact source pages selected mechanically because a registered figure caption points to a problem/question/exercise or because the syllabus explicitly assigns one. It is evidence, not a semantic decision: identify the actual question and its teaching section yourself.
+- For every registered figure or graph whose caption names a problem/question/exercise, create sourceQuestions records for the named question(s), copy each complete prompt verbatim from the source, and put that artifact's exact id in relatedFigureIds. Never separate a figure-dependent question from its figure.
+- A syllabus unit's questionReferences are exact assignments. Map every reference to the relevant sourceQuestions record(s) through exact syllabusAssignments pairs when the selected source contains it; otherwise put that exact pair in one unresolvedSyllabusQuestionReferences record with a specific reason. Never silently drop or guess an assigned question.
+- sourceQuestions is a selected practice registry, not a duplicate concept summary. Include figure-linked and syllabus-assigned source questions; do not turn ordinary rhetorical prose into exercises.
+- sourceAnchorIds must identify the exact source page(s) that contain the prompt. prompt must be copied verbatim, including the given values, subparts, and notation.
 Availability rule (hard): any formula, equation, figure, table, or graph that has an extracted anchor or caption IS available source material. Never place it in missingOrUnclear, and never write caveats saying formulas/equations/notation/definitions/tables/figures are unavailable, "caption-only", "captions but not exact", or "not present" — pages will ground on those anchors. Caveat ONLY about content that has no extracted anchor at all.
 Stay source-aware. If source-only mode is true, do not add outside facts.`;
 
@@ -937,6 +993,13 @@ Return ONLY JSON with this shape:
           "teachingGoal": "what the comparison/result table teaches",
           "rowsOrColumnsToExplain": ["row or column"],
           "placement": "inside_comparison | inside_result_interpretation"
+        }
+      ],
+      "sourceQuestions": [
+        {
+          "id": "exact id copied from sourceMap.sourceQuestions",
+          "placement": "inside_worked_example | guided_practice | end_of_page_check",
+          "teachingGoal": "what the learner practices by solving it"
         }
       ],
       "semanticConcepts": [
@@ -997,6 +1060,7 @@ Contract rules:
 - IDs in sourceFigures, sourceTables, and sourceFormulas may ONLY be copied verbatim from extractedSourceArtifacts. A figure-like ID mentioned in source prose is not a registered artifact and must never be used unless that exact ID is present in extractedSourceArtifacts.
 - Every structured artifact ID (Sx.Py.Fn, Sx.Py.Gn, Sx.Py.Tn, or Sx.Py.En) used anywhere in a unit, including sourceAnchors and evidenceAnchors, must be present in extractedSourceArtifacts with the matching kind.
 - Source figures must be planned for inline placement near their interpretation. Never plan a generic "Source Figures" dump.
+- Partition every sourceMap.sourceQuestions record exactly once across learningUnits.sourceQuestions. Assign each question to the unit that teaches the concepts needed to solve it. The unit must also own every source anchor and related figure named by that question and must retain every syllabus unit attached to it.
 - Do not assign an interactiveVisual or visualType in this response. A separate whole-garden AI review authors visual necessity, alternative-medium choice, and a typed learner-control contract after this learning spine passes validation.
 - Describe each unit's learning question, dynamic behavior, comparisons, parameters, source figures, formulas, tables, and prerequisites precisely enough for that source-grounded model review. Code validates its evidence and behavior but never invents a pedagogical visual decision.
 - Concepts are reusable identities, never complete claims, page-title summaries, filenames, locations, or planner phrases. Reuse an existing canonical slug or alias whenever possible.
@@ -1020,6 +1084,7 @@ Return ONLY JSON with this shape:
       "title": "what this unit teaches",
       "objectives": ["a learning objective or outcome exactly as the syllabus states it"],
       "topics": ["a topic this unit covers"],
+      "questionReferences": ["an exact assigned problem/question/exercise identifier, such as 'Problem 6.21'"],
       "materialIds": ["ids of the referencedMaterials this unit assigns"]
     }
   ],
@@ -1041,6 +1106,7 @@ Extraction rules:
 - Put the work's own title in "title" and the assigned part in "locator". "Smith, Neural Dynamics, ch. 3" has title "Neural Dynamics" and locator "ch. 3".
 - A reference with no identifiable work ("Readings TBD", "Lecture 4 slides") still belongs in the list; leave "title" empty.
 - Link each unit to its readings through materialIds. A unit that assigns nothing gets an empty list.
+- Copy every explicitly assigned problem, question, exercise, drill, or problem range into that unit's questionReferences. Keep the syllabus's exact wording (for example "Problems 6.21-6.24"). Do not mistake chapter/section reading ranges for question assignments. A unit that assigns no questions gets an empty list.
 - If the document has no unit/week structure, return one unit covering the whole course.
 - If the document is not a syllabus or study guide at all, return empty units and referencedMaterials.`;
 
@@ -1077,6 +1143,7 @@ Hard rules:
 - "generic" is only for a reference that identifies no checkable work, such as "Readings TBD". Use an empty sourceIds array.
 - Preserve each citation exactly as supplied. In each unit, missingCitations must contain exactly its assigned materials resolved "missing", in syllabus material order. Distinct assigned material IDs can copy the same exact citation: retain one occurrence for every such missing material ID and never de-duplicate it. Generic references are not missing citations.
 - For each unit, independently author whether the selected sources genuinely support its objectives and topics in full. teachable is the sole authorization for the planner to generate lessons. If true, select every source the planner should ground it in.
+- Treat questionReferences as part of the unit's required coverage: check whether the selected source actually contains those assigned questions and their required figures. Describe missing or partial question evidence in coverageReason rather than pretending the assignment is present.
 - An unteachable unit may still have partial or direct source support. When an assigned material is available, list at least one exact selected source for that material in availableSourceIds, keep teachable false if the evidence cannot support the unit in full, and explain that limitation in coverageReason. Use an empty availableSourceIds array only when no selected source directly supports an assigned available material. Never flip teachable merely to satisfy an array condition.
 - A missing REQUIRED material is strong evidence against teachability, but another uploaded source may support the unit if its supplied content directly covers the objectives and topics; explain that evidence. A missing OPTIONAL material does not by itself make the unit unteachable. Required/optional is semantic input for your verdict, never a code rule.
 - If an assigned material is available, the unit's availableSourceIds must include at least one source selected for that material.
@@ -1110,6 +1177,7 @@ Syllabus:
 - \`dossier.syllabus\` is the course study guide. Use it only to judge what this page must cover and how deep to go.
 - Never mention, quote, cite, or describe the syllabus in the lesson. The learner reads a lesson on the subject, not a walkthrough of their course outline.
 - \`dossier.syllabusUnits[].objectives\` are what the learner must be able to do after this page. Teach to them.
+- \`dossier.syllabusUnits[].questionReferences\` are explicit course assignments. The page dossier's requiredSourceQuestions resolves the ones present in the selected sources; include those questions on the mapped page and never invent the text of an unresolved assignment.
 - \`dossier.unavailableCitations\` lists works the course assigns that are NOT in this garden. You have never read them. Never name, quote, summarize, paraphrase, or state the findings of anything on that list, and never imply the page is based on one. Teach only from the source material provided in this dossier.`;
 
 /** Append syllabus rules to a base prompt only when a syllabus is present, so
@@ -1158,6 +1226,7 @@ ${PLACEHOLDER_FREE_PROSE_RULES}
 Mechanics:
 - One flowing lesson, not disconnected mini-sections; avoid over-segmentation and excessive headings.
 - Treat dossier.learningUnit as the contract for this page: answer its learningQuestion, introduce its newConcepts, respect mustNotRepeat, use only its planned source artifacts, and use its zettelNotes as conceptual anchors.
+- dossier.requiredSourceQuestions contains source-authored practice assigned to this page. Include EVERY entry using a **Question.** block whose prompt is copied verbatim, followed by an **Answer.** block that teaches a worked or guided solution matching its teachingGoal. When it has relatedFigureIds, keep the matching assigned source visual directly beside that question and use it in the solution. If no source questions are assigned, write the usual 1-2 learner questions yourself.
 - The first paragraph must connect to prior ideas unless this is the first unit; later pages must not restart the whole motivation.
 - If assignedSourceVisuals are provided, embed EACH one inline exactly where it supports the prose using its provided markdown snippet, with an interpretation of what the figure shows directly beside it. Never dump images at the end and never repeat a caption without interpreting it.
 - dossier.requiredSourceFormulas is an exact-copy checklist. For every entry, reproduce its exactText verbatim in its own visible $$...$$ displayed equation; preserve every command, sign, bound, term, and aligned-row separator. Do not substitute an equivalent formula, combine equations, or invent different notation. Then teach the model-authored teachingGoal and define every listed term.
@@ -1165,7 +1234,7 @@ Mechanics:
 - Never create a generic "## Source Figures" section. Every source figure/table/formula belongs inside the explanation where the contract placed it.
 - Do NOT write any \`\`\`breadboard-visual code block yourself — interactive visuals are attached by the pipeline afterwards.
 - Never leave [Interactive visual: ...] or any bracketed placeholder, and never write instructions to yourself (e.g. "use the page 10 materials").
-- Include 1-2 real questions a learner would ask, using exactly:
+- Include 1-2 real questions a learner would ask (or every assigned source question), using exactly:
   **Question.** ...
   **Answer.** ...
 - Do not generate arbitrary executable JavaScript.`;
@@ -1183,6 +1252,7 @@ Task:
 - If a failure says the page is too short, lacks a concrete example, or lacks a **Question.** / **Answer.** pair, add the missing depth in the same flowing, beginner-friendly voice: motivate before mechanism, define terms as they appear, put a concrete example right after the idea it illustrates, and keep at least ~700 words of real explanatory prose.
 - If failedProblems includes placeholder or empty-bullet-scaffold, replace the offending scaffold with finished explanatory sentences. Do not merely delete it unless the surrounding paragraph remains coherent and complete.
 - If failedProblems includes missing-source-formula, copy each matching exactText from dossier.requiredSourceFormulas into its own visible $$...$$ displayed equation verbatim. Preserve every command, sign, bound, term, and aligned-row separator; do not substitute, shorten, combine, or restyle the equation. The literal replacement block overrides any instruction to preserve the old malformed formula: replace it rather than retaining or duplicating an equivalent variant.
+- If failedProblems includes missing-source-question, copy the matching prompt from dossier.requiredSourceQuestions verbatim into a **Question.** block and add its **Answer.** directly after it. Keep every related source figure beside the question.
 - The user message begins with a VERBATIM SOURCE FORMULA COPY SHEET when formulas are required. Those blocks are literal Markdown, not JSON-escaped examples. Copy every required block character-for-character into the repaired lesson.
 - Rewrite any sentence that comments on "the paper", "the source", "source-derived", or similar document framing so it teaches the concept directly.
 - Keep every embedded image markdown where it is and keep any \`\`\`breadboard-visual block byte-for-byte unchanged.
@@ -1985,6 +2055,10 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
   const next = {
     ...current,
     ...updates,
+    progressPercent: monotonicLearnProgress(
+      current.progressPercent,
+      updates.progressPercent ?? current.progressPercent,
+    ),
     // The status to resume into exists only while the row is paused. Any
     // transition off "paused" — Resume, Cancel, or a worker that raced past the
     // gate — drops it so a later pause can never resume into a stale phase.
@@ -2825,7 +2899,7 @@ export function collectLearnSourceContext(
     visuals: sourceVisualLedger,
   }).sourceArtifactInventoryHash;
 
-  const baseSourceSetHash = sourceSetHashWithSyllabus(
+  const rawBaseSourceSetHash = sourceSetHashWithSyllabus(
     sourceSetHashForSources(sources),
     syllabus,
   );
@@ -2835,6 +2909,36 @@ export function collectLearnSourceContext(
     .map((visual) => visual.sourceVisualId)
     .sort();
   const reviewManifest = loadSourceFormulaReviewSetManifest(contentPath, gardenId);
+  let baseSourceSetHash = rawBaseSourceSetHash;
+  if (reviewManifest && reviewManifest.baseSourceSetHash !== rawBaseSourceSetHash) {
+    const currentBindingRecords = sources.map((source) =>
+      learnSourceBindingRecord({
+        slug: source.slug,
+        relPath: source.relPath,
+        title: source.title,
+        description: source.description,
+        sourceFile: source.sourceFile,
+        date: source.date,
+        wordCount: source.wordCount,
+        body: source.body,
+      }),
+    );
+    const normalizationReceipt = matchingLearnSourceNormalizationReceipt({
+      gardenDir: path.join(contentPath, gardenId),
+      expectedCombinedSourceSetHash: reviewManifest.combinedSourceSetHash,
+      sourceIds: selectedSourceOrder,
+      current: currentBindingRecords,
+    });
+    if (normalizationReceipt) {
+      const receiptBaseSourceSetHash = sourceSetHashWithSyllabus(
+        sourceSetHashForBindingRecords(normalizationReceipt.before),
+        syllabus,
+      );
+      if (receiptBaseSourceSetHash === reviewManifest.baseSourceSetHash) {
+        baseSourceSetHash = receiptBaseSourceSetHash;
+      }
+    }
+  }
   let sourceFormulaReviewSetHash: string | undefined;
   let sourceSetHash = baseSourceSetHash;
   if (
@@ -4639,6 +4743,99 @@ async function observeOrdinaryCouncilReceipt(input: {
   }
 }
 
+function learnCouncilDispatchStartedAt(
+  source: LearnCouncilCheckpointRow,
+): string {
+  if (source.receipt_request_id) {
+    const owner = learnCouncilDispatchGenerationOwners(
+      db,
+      source.receipt_request_id,
+    ).find(
+      (candidate) =>
+        Number(candidate.dispatch_generation) === source.dispatch_attempt_count,
+    );
+    if (owner && Number.isFinite(Date.parse(owner.claimed_at))) {
+      return owner.claimed_at;
+    }
+  }
+  return Number.isFinite(Date.parse(source.updated_at))
+    ? source.updated_at
+    : source.created_at;
+}
+
+async function observeOrdinaryCouncilCheckpointReceipt(input: {
+  client: OpenAI;
+  jobId: string;
+  gardenId: string;
+  source: LearnCouncilCheckpointRow;
+  requestHash: string;
+  observationTimeoutMs: number;
+}): Promise<Awaited<ReturnType<typeof promptlessCouncilResultGet>>> {
+  if (!input.source.receipt_request_id) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Started ordinary Learn checkpoint has no strict receipt id.",
+    );
+  }
+  const startedAtMs = Date.parse(learnCouncilDispatchStartedAt(input.source));
+  const remainingLifetimeMs = Number.isFinite(startedAtMs)
+    ? startedAtMs + LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS - Date.now()
+    : input.observationTimeoutMs;
+  if (remainingLifetimeMs <= 0) {
+    assertExactOrdinaryCouncilAuthority(input.jobId, input.gardenId);
+    const lookup = await promptlessCouncilResultGet(
+      input.client,
+      "/internal/council-results/resolve",
+      {
+        requestId: input.source.receipt_request_id,
+        requestHash: input.requestHash,
+      },
+    );
+    assertExactOrdinaryCouncilAuthority(input.jobId, input.gardenId);
+    return lookup;
+  }
+  return observeOrdinaryCouncilReceipt({
+    client: input.client,
+    jobId: input.jobId,
+    gardenId: input.gardenId,
+    requestId: input.source.receipt_request_id,
+    requestHash: input.requestHash,
+    observationTimeoutMs: Math.max(
+      1,
+      Math.min(input.observationTimeoutMs, remainingLifetimeMs),
+    ),
+  });
+}
+
+function expiredStartedOrdinaryCouncilReceiptError(input: {
+  source: LearnCouncilCheckpointRow;
+  requestHash: string;
+  lookup: Awaited<ReturnType<typeof promptlessCouncilResultGet>>;
+}): LearnCouncilExpiredStartedReceiptError | null {
+  if (
+    input.lookup.status !== 409 ||
+    input.lookup.code !== "request_started" ||
+    !input.lookup.receipt ||
+    !input.source.receipt_request_id
+  ) {
+    return null;
+  }
+  const proof = expiredStartedLearnCouncilReceiptProof({
+    requestId: input.source.receipt_request_id,
+    requestHash: input.requestHash,
+    dispatchGeneration: input.lookup.receipt.dispatchGeneration,
+    dispatchCount: input.lookup.receipt.dispatchCount,
+    redispatchCount: input.lookup.receipt.redispatchCount,
+    redispatchAllowed: input.lookup.receipt.redispatchAllowed,
+    attemptCount: input.lookup.receipt.attempts.length,
+    checkpointDispatchCount: input.source.dispatch_attempt_count,
+    checkpointRedispatchCount: input.source.redispatch_count,
+    startedAt: learnCouncilDispatchStartedAt(input.source),
+    observedAt: nowIso(),
+    maxStartedAgeMs: LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS,
+  });
+  return proof ? new LearnCouncilExpiredStartedReceiptError(proof) : null;
+}
+
 async function promptlessLegacyCouncilOutcomeGet(
   client: OpenAI,
   query: {
@@ -5255,6 +5452,7 @@ function terminalOrdinaryCouncilReceiptError(
     redispatchCount: receipt.redispatchCount,
     redispatchAllowed: receipt.redispatchAllowed,
     failureCode: receipt.failureCode,
+    proofKind: "terminal_receipt",
   });
 }
 
@@ -5471,6 +5669,31 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
           lookup.receipt,
         );
       }
+      const expiredStarted = expiredStartedOrdinaryCouncilReceiptError({
+        source,
+        requestHash,
+        lookup,
+      });
+      if (expiredStarted) {
+        appendLearnEvent(
+          input.checkpoint.contentPath,
+          gardenId,
+          "learn_council_started_receipt_expired",
+          {
+            jobId: input.checkpoint.jobId,
+            originJobId: source.origin_job_id,
+            stageKey: input.checkpoint.stageKey,
+            semanticAttempt: input.checkpoint.semanticAttempt,
+            receiptRequestId: source.receipt_request_id,
+            dispatchCount: expiredStarted.receipt.dispatchCount,
+            startedAt: expiredStarted.receipt.startedAt,
+            observedAt: expiredStarted.receipt.observedAt,
+            maxStartedAgeMs: expiredStarted.receipt.maxStartedAgeMs,
+            nextSemanticAttemptRequired: true,
+          },
+        );
+        throw expiredStarted;
+      }
       throw new LearnPlanningRecoveryConflictError(
         `Ordinary Learn Council dispatch ended as ${lookup.code ?? `HTTP ${lookup.status}`}; no further model request was authorized (${errorMessage(dispatchError)}).`,
       );
@@ -5497,11 +5720,11 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
         "Started ordinary Learn checkpoint is not a strict receipt.",
       );
     }
-    const lookup = await observeOrdinaryCouncilReceipt({
+    const lookup = await observeOrdinaryCouncilCheckpointReceipt({
       client: input.client,
       jobId: input.checkpoint.jobId,
       gardenId,
-      requestId: source.receipt_request_id,
+      source,
       requestHash,
       observationTimeoutMs: input.timeoutMs ?? LEARN_PLANNING_TIMEOUT_MS,
     });
@@ -5628,6 +5851,31 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
         lookup.receipt,
       );
     }
+    const expiredStarted = expiredStartedOrdinaryCouncilReceiptError({
+      source,
+      requestHash,
+      lookup,
+    });
+    if (expiredStarted) {
+      appendLearnEvent(
+        input.checkpoint.contentPath,
+        gardenId,
+        "learn_council_started_receipt_expired",
+        {
+          jobId: input.checkpoint.jobId,
+          originJobId: source.origin_job_id,
+          stageKey: input.checkpoint.stageKey,
+          semanticAttempt: input.checkpoint.semanticAttempt,
+          receiptRequestId: source.receipt_request_id,
+          dispatchCount: expiredStarted.receipt.dispatchCount,
+          startedAt: expiredStarted.receipt.startedAt,
+          observedAt: expiredStarted.receipt.observedAt,
+          maxStartedAgeMs: expiredStarted.receipt.maxStartedAgeMs,
+          nextSemanticAttemptRequired: true,
+        },
+      );
+      throw expiredStarted;
+    }
     throw new LearnPlanningRecoveryConflictError(
       `Ordinary Learn Council checkpoint is ${lookup.code ?? `HTTP ${lookup.status}`}; no model request was authorized.`,
     );
@@ -5700,11 +5948,11 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
             "Prior ordinary Learn native checkpoint has no receipt id.",
           );
         }
-        const lookup = await observeOrdinaryCouncilReceipt({
+        const lookup = await observeOrdinaryCouncilCheckpointReceipt({
           client: input.client,
           jobId: input.checkpoint.jobId,
           gardenId,
-          requestId: source.receipt_request_id,
+          source,
           requestHash,
           observationTimeoutMs: input.timeoutMs ?? LEARN_PLANNING_TIMEOUT_MS,
         });
@@ -6790,8 +7038,10 @@ async function resolvePriorPlanningResult({
 function sourceMapPlanProblems(input: {
   value: unknown;
   sourceIds: readonly string[];
-  registeredArtifacts: readonly Pick<SourceFigure, "figureId" | "sourceId" | "kind" | "page">[];
+  sourceBodies: readonly { sourceId: string; body: string }[];
+  registeredArtifacts: readonly Pick<SourceFigure, "figureId" | "sourceId" | "kind" | "page" | "caption">[];
   canonicalAnchors: readonly { id: string; sourceId: string }[];
+  syllabusUnits: readonly { id: string; questionReferences: readonly string[] }[];
 }): string[] {
   const record = planningRecord(input.value);
   const problems: string[] = [];
@@ -6953,6 +7203,17 @@ function sourceMapPlanProblems(input: {
   ) {
     problems.push("Source Map contradicts the registry by claiming later source pages are unavailable");
   }
+  problems.push(...sourceQuestionPlanProblems({
+    value: input.value,
+    sourceIds: input.sourceIds,
+    sourceBodies: input.sourceBodies,
+    canonicalAnchors: input.canonicalAnchors,
+    registeredFigures: input.registeredArtifacts.filter((artifact) => {
+      const kind = sourceMapArtifactKind(artifact.kind);
+      return kind === "figure" || kind === "graph";
+    }),
+    syllabusUnits: input.syllabusUnits,
+  }));
   return [...new Set(problems)];
 }
 
@@ -7811,6 +8072,9 @@ function writeLearningUnitContractArtifacts({
       .filter((assignment) => assignment.assignedLearningUnitId === unit.id)
       .map((assignment) => `${assignment.sourceArtifactId} -> ${assignment.placement}`);
     if (artifacts.length > 0) lines.push(`  - Artifacts: ${artifacts.join(", ")}`);
+    if (unit.sourceQuestions.length > 0) {
+      lines.push(`  - Source questions: ${unit.sourceQuestions.map((question) => question.id).join(", ")}`);
+    }
     if (unit.interactiveVisual) {
       lines.push(`  - Interactive: ${unit.interactiveVisual.visualType} (${unit.interactiveVisual.uniqueConcept})`);
     }
@@ -8035,6 +8299,7 @@ function learningMapWithConfirmedUnitContracts(
           sourceFigureContracts: unit.sourceFigures,
           sourceFormulaContracts: unit.sourceFormulas,
           sourceTableContracts: unit.sourceTables,
+          sourceQuestionContracts: unit.sourceQuestions,
           sourceArtifactAssignments: projectModelAuthoredSourceArtifactAssignments([unit]),
           interactiveVisualContract: unit.interactiveVisual,
           interactiveVisualPlan: unit.interactiveVisualPlan,
@@ -8797,6 +9062,18 @@ export async function runLearnPlanning({
       promptSourceContext = promptSources(context, { sourceMapArtifactKinds: true });
       planningSourceMeta.sourceSetHash = context.sourceSetHash;
       planningSourceMeta.sourceArtifactInventoryHash = context.sourceArtifactInventoryHash;
+      const syllabusQuestionUnits = (syllabusCoverage?.units ?? []).map((unit) => ({
+        id: unit.unitId,
+        questionReferences: unit.questionReferences ?? [],
+      }));
+      const sourceQuestionEvidence = buildSourceQuestionEvidenceCatalog({
+        anchors: structuralSourceAnchors,
+        figures: context.sourceFigures.filter((figure) => {
+          const kind = sourceMapArtifactKind(figure.kind);
+          return kind === "figure" || kind === "graph";
+        }),
+        syllabusUnits: syllabusQuestionUnits,
+      });
       const call = await callValidatedPlanningJson({
         client,
         model,
@@ -8809,6 +9086,7 @@ export async function runLearnPlanning({
           syllabusCoverage: syllabusCoveragePayload(),
           sourceContext: promptSourceContext,
           canonicalSourceAnchors: canonicalSourceAnchorCatalog,
+          sourceQuestionEvidence,
         }),
         sourceContext: { ...planningSourceMeta, taskType: "source_map" },
         contentPath,
@@ -8818,11 +9096,16 @@ export async function runLearnPlanning({
         validate: (value) => sourceMapPlanProblems({
           value,
           sourceIds: context.sources.map((source) => source.slug),
+          sourceBodies: context.sources.map((source) => ({
+            sourceId: source.slug,
+            body: source.body ?? "",
+          })),
           registeredArtifacts: context.sourceFigures,
           canonicalAnchors: canonicalSourceAnchorCatalog.map((anchor) => ({
             id: String(anchor.id),
             sourceId: String(anchor.sourceId),
           })),
+          syllabusUnits: syllabusQuestionUnits,
         }),
       });
       return { call, artifactInventory, sourceSetHash };
@@ -8981,10 +9264,18 @@ export async function runLearnPlanning({
     const currentSourceMapArtifactProblems = sourceMapPlanProblems({
       value: sourceMap,
       sourceIds: context.sources.map((source) => source.slug),
+      sourceBodies: context.sources.map((source) => ({
+        sourceId: source.slug,
+        body: source.body ?? "",
+      })),
       registeredArtifacts: context.sourceFigures,
       canonicalAnchors: canonicalSourceAnchorCatalog.map((anchor) => ({
         id: String(anchor.id),
         sourceId: String(anchor.sourceId),
+      })),
+      syllabusUnits: (syllabusCoverage?.units ?? []).map((unit) => ({
+        id: unit.unitId,
+        questionReferences: unit.questionReferences ?? [],
       })),
     });
     if (currentSourceMapArtifactProblems.length > 0) {
@@ -8992,6 +9283,7 @@ export async function runLearnPlanning({
         `The accepted Source Map is not valid against the current selected source-artifact inventory: ${currentSourceMapArtifactProblems.join("; ")}`,
       );
     }
+    const sourceQuestions = projectSourceQuestions(sourceMap);
     const sourceMapBoundArtifactInventoryHash =
       sourceMapArtifactInventory.sourceArtifactInventoryHash;
     appendLearnEvent(contentPath, gardenId, "learn_source_map_created", {
@@ -9179,6 +9471,7 @@ export async function runLearnPlanning({
       ...latestSourceArtifactProblems,
       ...canonicalSourceAnchorProblems(clusterPath(contentPath, gardenId), learningUnits),
       ...syllabusUnitAssignmentProblems(learningUnits, syllabusCoverage ?? null),
+      ...sourceQuestionAssignmentProblems(learningUnits, sourceQuestions),
       ...conceptRegistryAlignmentProblems({
         clusterDir: clusterPath(contentPath, gardenId),
         sourceSetHash: context.sourceSetHash,
@@ -9258,6 +9551,7 @@ export async function runLearnPlanning({
         ...latestSourceArtifactProblems,
         ...canonicalSourceAnchorProblems(clusterPath(contentPath, gardenId), retryUnits),
         ...syllabusUnitAssignmentProblems(retryUnits, syllabusCoverage ?? null),
+        ...sourceQuestionAssignmentProblems(retryUnits, sourceQuestions),
         ...conceptRegistryAlignmentProblems({
           clusterDir: clusterPath(contentPath, gardenId),
           sourceSetHash: context.sourceSetHash,
@@ -9388,6 +9682,7 @@ export async function runLearnPlanning({
             ...candidateArtifactProblems,
             ...canonicalSourceAnchorProblems(clusterPath(contentPath, gardenId), candidateUnits),
             ...syllabusUnitAssignmentProblems(candidateUnits, syllabusCoverage ?? null),
+            ...sourceQuestionAssignmentProblems(candidateUnits, sourceQuestions),
             ...conceptRegistryAlignmentProblems({
               clusterDir: clusterPath(contentPath, gardenId),
               sourceSetHash: context.sourceSetHash,
@@ -9679,6 +9974,15 @@ export async function runLearnPlanning({
     learningUnits = executabilityReview.learningUnits;
     let visualizationPlan = executabilityReview.plan;
     learningUnits = applyVisualizationRoutesToLearningUnits(learningUnits, visualizationPlan);
+    const finalSourceQuestionProblems = sourceQuestionAssignmentProblems(
+      learningUnits,
+      sourceQuestions,
+    );
+    if (finalSourceQuestionProblems.length > 0) {
+      throw new Error(
+        `Model-authored source-question mapping remained invalid: ${finalSourceQuestionProblems.join("; ")}`,
+      );
+    }
     visualizationPlan = buildFinalVisualizationPlanFromRoutedContracts({
       gardenId,
       learningMap,
@@ -10304,6 +10608,10 @@ function normalizedFormulaForFrontmatter(text: string): string {
     .trim();
 }
 
+function normalizedSourceQuestionText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function formulaGroundingEntries(
   contracts: readonly NonNullable<LearningSubsectionPlan["sourceFormulaContracts"]>[number][],
   canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>>,
@@ -10337,6 +10645,7 @@ function assessModelAuthoredLessonQuality(
     unavailableCitations?: { detect: (prose: string) => string[] };
     subsection: LearningSubsectionPlan;
     canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>>;
+    requiredSourceQuestions: PageDossier["requiredSourceQuestions"];
   },
 ): ReturnType<typeof assessLessonQuality> {
   const base = assessLessonQuality(body, {
@@ -10364,7 +10673,16 @@ function assessModelAuthoredLessonQuality(
         ...(formula.termsToDefine ?? []),
       ].filter(Boolean),
     }));
-  const problems = [...base.problems, ...formulaProblems];
+  const normalizedBody = normalizedSourceQuestionText(body);
+  const questionProblems: QualityProblem[] = options.requiredSourceQuestions
+    .filter((question) => !normalizedBody.includes(normalizedSourceQuestionText(question.prompt)))
+    .map((question) => ({
+      code: "missing-source-question",
+      message: `required source question ${question.id} is not reproduced verbatim in the lesson`,
+      hard: true,
+      evidence: [question.label, question.prompt, question.teachingGoal],
+    }));
+  const problems = [...base.problems, ...formulaProblems, ...questionProblems];
   return {
     ok: problems.length === 0,
     hardFail: problems.some((problem) => problem.hard),
@@ -11394,6 +11712,7 @@ async function reconcileInteractiveVisuals({
   sourceFigures,
   visualizationPlan,
   visualizationOutcomes,
+  reusePublishedVisualsFromRetainedWorkspace,
 }: {
   client: OpenAI;
   model: string;
@@ -11414,6 +11733,9 @@ async function reconcileInteractiveVisuals({
   sourceFigures: SourceFigure[];
   visualizationPlan: VisualizationPlan;
   visualizationOutcomes: VisualizationPublicationOutcome[];
+  /** True only when the isolated build was cloned from an exact compatible
+   * failed workspace. It never changes deliberate regeneration semantics. */
+  reusePublishedVisualsFromRetainedWorkspace: boolean;
 }): Promise<{ markdown: string; visualIds: string[] }> {
   const keptIds: string[] = [];
   const opportunity = visualizationPlan.opportunities.find(
@@ -11492,6 +11814,8 @@ async function reconcileInteractiveVisuals({
         path.join(durableEventContentPath ?? contentPath, gardenId),
       ),
       recoveryOwnerId: jobId,
+      reusePublishedArtifactOnRecovery:
+        reusePublishedVisualsFromRetainedWorkspace,
       opportunity,
       pageMarkdown: nextMarkdown,
       sourceContext,
@@ -11683,6 +12007,7 @@ type PageDossier = {
     sourceFigures?: LearningSubsectionPlan["sourceFigureContracts"];
     sourceFormulas?: LearningSubsectionPlan["sourceFormulaContracts"];
     sourceTables?: LearningSubsectionPlan["sourceTableContracts"];
+    sourceQuestions?: LearningSubsectionPlan["sourceQuestionContracts"];
     sourceArtifactAssignments?: SourceArtifactAssignment[];
     interactiveVisual?: LearningSubsectionPlan["interactiveVisualContract"];
     interactiveVisualPlan?: LearningSubsectionPlan["interactiveVisualPlan"];
@@ -11704,6 +12029,19 @@ type PageDossier = {
     placement: string;
   }>;
 
+  /** Exact source-authored practice prompts assigned by the Learning Unit Contract. */
+  requiredSourceQuestions: Array<{
+    id: string;
+    label: string;
+    prompt: string;
+    sourceAnchorIds: string[];
+    relatedFigureIds: string[];
+    syllabusAssignments: SourceQuestionPlan["syllabusAssignments"];
+    teachingValue: string;
+    placement: string;
+    teachingGoal: string;
+  }>;
+
   mustCover: string[];
   avoid: string[];
 
@@ -11721,6 +12059,7 @@ type PageDossier = {
     title: string;
     objectives: string[];
     topics: string[];
+    questionReferences: string[];
   }>;
 
   /** Works the course assigns that this garden does not contain. The page must
@@ -11816,6 +12155,7 @@ function buildPageDossier({
   syllabus,
   syllabusCoverage,
   assignedVisuals,
+  sourceQuestions,
   sourceArtifactAssignments,
   canonicalSourceAnchors,
   sourceOnly,
@@ -11830,6 +12170,7 @@ function buildPageDossier({
   syllabus?: LearnSourceSummary | null;
   syllabusCoverage?: SyllabusCoverage | null;
   assignedVisuals: SourceVisual[];
+  sourceQuestions: SourceQuestionPlan[];
   sourceArtifactAssignments?: SourceArtifactAssignment[];
   canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>>;
   sourceOnly: boolean;
@@ -11845,6 +12186,20 @@ function buildPageDossier({
   const matchedSyllabusUnits = (subsection.syllabusUnitIds ?? [])
     .map((unitId) => syllabusCoverageById.get(unitId))
     .filter((unit): unit is NonNullable<typeof unit> => Boolean(unit));
+  const sourceQuestionById = new Map(sourceQuestions.map((question) => [question.id, question]));
+  const requiredSourceQuestions = (subsection.sourceQuestionContracts ?? []).map((contract) => {
+    const question = sourceQuestionById.get(contract.id);
+    if (!question) {
+      throw new Error(
+        `Page dossier cannot project source question ${contract.id} because it is missing from the confirmed Source Map registry.`,
+      );
+    }
+    return {
+      ...question,
+      placement: contract.placement,
+      teachingGoal: contract.teachingGoal,
+    };
+  });
   const dossierSourceAnchorIds = [...new Set([
     ...anchors,
     ...(subsection.semanticConcepts ?? []).flatMap((concept) => concept.evidenceAnchors),
@@ -11855,6 +12210,7 @@ function buildPageDossier({
     ...(subsection.sourceFigureContracts ?? []).map((figure) => figure.id),
     ...(subsection.sourceFormulaContracts ?? []).map((formula) => formula.id),
     ...(subsection.sourceTableContracts ?? []).map((table) => table.id),
+    ...requiredSourceQuestions.flatMap((question) => question.sourceAnchorIds),
   ])];
   return {
     gardenTitle,
@@ -11873,6 +12229,7 @@ function buildPageDossier({
           sourceFigures: subsection.sourceFigureContracts,
           sourceFormulas: subsection.sourceFormulaContracts,
           sourceTables: subsection.sourceTableContracts,
+          sourceQuestions: subsection.sourceQuestionContracts,
           sourceArtifactAssignments: assignedArtifactsForUnit,
           interactiveVisual: subsection.interactiveVisualContract,
           interactiveVisualPlan: subsection.interactiveVisualPlan,
@@ -11888,6 +12245,7 @@ function buildPageDossier({
       subsection.sourceFormulaContracts ?? [],
       canonicalSourceAnchors,
     ),
+    requiredSourceQuestions,
     mustCover: (subsection.conceptTags ?? [])
       .map((tag) => tag.split("/").at(-1)?.replace(/-/g, " ") ?? "")
       .filter(Boolean)
@@ -11906,6 +12264,7 @@ function buildPageDossier({
           title: unit.title,
           objectives: unit.objectives,
           topics: unit.topics,
+          questionReferences: unit.questionReferences ?? [],
         }))
       : undefined,
     unavailableCitations: matchedSyllabusUnits.some((unit) => unit.missingCitations.length > 0)
@@ -12471,8 +12830,13 @@ export async function runTextbookGeneration({
       requireAuthoritativeSourceAnchorLedger: true,
     });
     if (workspace.resumedFromJobId) {
+      const resumedJob = getLearnJobById(workspace.resumedFromJobId);
       updateLearnJob(job.id, {
         currentStep: "Resuming retained lesson workspace",
+        // The new job replays idempotent preflight work, but its visible
+        // progress starts at the durable high-water mark of the workspace it
+        // cloned. Cap below 100 because completed jobs are not resumable.
+        progressPercent: Math.min(99, resumedJob?.progressPercent ?? 0),
       });
       appendLearnEvent(contentPath, gardenId, "learn_build_workspace_resumed", {
         jobId: job.id,
@@ -12673,6 +13037,7 @@ export async function runTextbookGeneration({
     ? { detect: (prose: string) => detectUnavailableCitations(prose, missingCitationProbes) }
     : undefined;
   let confirmedLearningUnits: LearningUnitContract[] = [];
+  let confirmedSourceQuestions: SourceQuestionPlan[] = [];
   let confirmedSourceArtifactAssignments: SourceArtifactAssignment[] = [];
   let confirmedSourceArtifactOmissions: SourceArtifactOmission[] = [];
   // Version ids are learning_* so nothing named "textbook" can leak into a
@@ -12690,6 +13055,7 @@ export async function runTextbookGeneration({
 
   try {
     confirmedLearningUnits = learningUnitsFromCoveragePlan(map.coveragePlan);
+    confirmedSourceQuestions = projectSourceQuestions(map.sourceMap);
     confirmedSourceArtifactAssignments = sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan);
     confirmedSourceArtifactOmissions = sourceArtifactOmissionsFromCoveragePlan(map.coveragePlan);
     const storedSyllabusAssignmentProblems = syllabusUnitAssignmentProblems(
@@ -12699,6 +13065,16 @@ export async function runTextbookGeneration({
     if (storedSyllabusAssignmentProblems.length > 0) {
       throw new LearnPipelineConflictError(
         `The confirmed Learning Unit Contract needs model replanning before generation: ${storedSyllabusAssignmentProblems.join("; ")}`,
+        { requiresReplan: true },
+      );
+    }
+    const storedSourceQuestionProblems = sourceQuestionAssignmentProblems(
+      confirmedLearningUnits,
+      confirmedSourceQuestions,
+    );
+    if (storedSourceQuestionProblems.length > 0) {
+      throw new LearnPipelineConflictError(
+        `The confirmed Learning Unit Contract needs source-question replanning before generation: ${storedSourceQuestionProblems.join("; ")}`,
         { requiresReplan: true },
       );
     }
@@ -13254,6 +13630,7 @@ export async function runTextbookGeneration({
           syllabus: context.syllabus,
           syllabusCoverage: map.syllabusCoverage,
           assignedVisuals,
+          sourceQuestions: confirmedSourceQuestions,
           sourceArtifactAssignments: confirmedSourceArtifactAssignments,
           canonicalSourceAnchors: selectedCanonicalSourceAnchors,
           sourceOnly,
@@ -13379,6 +13756,7 @@ export async function runTextbookGeneration({
             unavailableCitations: unavailableCitationGate,
             subsection,
             canonicalSourceAnchors: selectedCanonicalSourceAnchors,
+            requiredSourceQuestions: pageDossier.requiredSourceQuestions,
           });
 
           // Hard-fail-only repair: one focused call that fixes the listed
@@ -13451,6 +13829,7 @@ export async function runTextbookGeneration({
               unavailableCitations: unavailableCitationGate,
               subsection,
               canonicalSourceAnchors: selectedCanonicalSourceAnchors,
+              requiredSourceQuestions: pageDossier.requiredSourceQuestions,
             });
           }
           lastQuality = quality;
@@ -13512,6 +13891,9 @@ export async function runTextbookGeneration({
           sourceFigures: interactiveSourceFigures,
           visualizationPlan,
           visualizationOutcomes,
+          reusePublishedVisualsFromRetainedWorkspace: Boolean(
+            workspace.resumedFromJobId,
+          ),
         });
         pageBody = visualized.markdown;
         throwIfLearnCancelled(job.id);
@@ -14088,6 +14470,7 @@ export async function runTextbookGeneration({
                 kind,
                 semanticAttempt,
                 nextSemanticAttempt,
+                proofKind: receipt.proofKind ?? "terminal_receipt",
                 failureCode: receipt.failureCode,
                 dispatchCount: receipt.dispatchCount,
                 redispatchCount: receipt.redispatchCount,

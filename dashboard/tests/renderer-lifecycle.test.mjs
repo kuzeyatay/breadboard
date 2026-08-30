@@ -79,6 +79,16 @@ test("garden-card resize drags are owned and disposed by the dashboard", () => {
   assert.match(dashboard, /resizeCleanupRef\.current = detach;/);
 });
 
+test("garden-card controls stay right-anchored without colliding with titles", () => {
+  const dashboard = source("src/app/dashboard/dashboard-client.tsx");
+  const styles = source("src/app/globals.css");
+
+  assert.match(dashboard, /dashboard-garden-card-controls absolute flex items-center gap-2/);
+  assert.match(dashboard, /dashboard-garden-card-heading-managed/);
+  assert.match(styles, /\.dashboard-garden-card-controls\s*\{[^}]*inset-inline-end:\s*1\.25rem/s);
+  assert.match(styles, /\.dashboard-garden-card-heading-managed\s*\{[^}]*padding-inline-end:/s);
+});
+
 test("Terminal and Garden history polls clean up timers and global listeners", () => {
   for (const relativePath of [
     "src/app/components/hermes/dashboard-agent-terminal.tsx",

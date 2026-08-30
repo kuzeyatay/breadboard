@@ -4,7 +4,9 @@ import { pathToFileURL } from "node:url";
 
 import { captureAgentEditsSnapshot } from "./runtime-v2-agent-edits-executor.mjs";
 
-const EFFORTS = new Set(["none", "low", "medium", "high", "xhigh"]);
+// The canonical assistant efforts (lib/assistant-reasoning.ts) include "max";
+// a user whose account default is "max" must not crash every worker at startup.
+const EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const OPENCODE_EFFORTS = new Set([...EFFORTS, "max"]);
 const IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const TUTOR_CAPABILITIES = new Set([
@@ -564,12 +566,14 @@ export function validateRuntimeV2MaxResearchRequest(value) {
       "reasoningEffort",
       "baseUrl",
       "conversationContext",
+      "openscienceEnabled",
     ]) ||
     !boundedText(value.question, 16 * 1024) ||
-    value.question.length > 4_000 ||
+    value.question.length > 8_000 ||
     !boundedString(value.model, 256) ||
     !EFFORTS.has(value.reasoningEffort) ||
     !baseUrl(value.baseUrl) ||
+    typeof value.openscienceEnabled !== "boolean" ||
     !boundedText(value.conversationContext, 80 * 1024, { empty: true }) ||
     value.conversationContext.length > 20_000
   ) fail("The canonical Max Research Runtime request is invalid.");
@@ -2342,6 +2346,7 @@ export async function executeRuntimeV2OuterAgentAdapter({
       reasoningEffort: request.reasoningEffort,
       baseUrl: request.baseUrl,
       conversationContext: request.conversationContext,
+      openscienceEnabled: request.openscienceEnabled,
     });
   } else if (adapterId === "wardrobe") {
     local = manager.startRuntimeWorkerRun({

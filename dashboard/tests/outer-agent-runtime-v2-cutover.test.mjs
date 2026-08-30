@@ -1410,12 +1410,12 @@ test("Codex launcher consumers used by HyperFrames and OpenMontage remain compat
   assert.match(codex, /export function resolveCodexLauncher/);
   for (const consumer of [
     "src/lib/hyperframes/run-manager.ts",
-    "src/lib/hyperframes/setup.ts",
     "src/lib/openmontage/run-manager.ts",
     "src/lib/openmontage/setup.ts",
   ]) {
     assert.match(source(consumer), /resolveCodexLauncher/);
   }
+  assert.doesNotMatch(source("src/lib/hyperframes/setup.ts"), /resolveCodexLauncher/);
 });
 
 test("Deep Tutor consumes only a ready index inside its disposable run worker", () => {

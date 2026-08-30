@@ -45,6 +45,21 @@ test("the composer does not carry its own copy of the line", () => {
   assert.ok(!composer.includes("can make mistakes"));
 });
 
+test("the garden and terminal reserve the same composer inset", () => {
+  const overlayClasses = (code) =>
+    code.match(
+      /<div\s+ref=\{composerInset\.ref\}\s+className="([^"]*\bbb-composer-overlay\b[^"]*)"/,
+    )?.[1];
+  const terminal = source(
+    "../src/app/components/hermes/agent-runtime-panel.tsx",
+  );
+  const garden = source(
+    "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+  );
+
+  assert.equal(overlayClasses(garden), overlayClasses(terminal));
+});
+
 test("the line itself", () => {
   const disclaimer = source("../src/app/components/chat/chat-disclaimer.tsx");
   assert.ok(

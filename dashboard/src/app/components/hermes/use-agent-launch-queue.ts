@@ -22,6 +22,10 @@ import {
   parseAgentLaunchRequest,
   type AgentLaunchRequestPayload,
 } from "@/lib/hermes/agent-launch.ts";
+import {
+  claimUnscopedAgentLaunchRequests,
+  type AgentLaunchScopeKey,
+} from "./agent-launch-scope.ts";
 
 export {
   MAX_AGENT_LAUNCH_HOPS,
@@ -58,13 +62,16 @@ export interface AgentLaunchQueue {
   reset: () => void;
 }
 
+interface ScopedAgentLaunchRequest {
+  request: AgentLaunchRequestPayload;
+  scopeKey: AgentLaunchScopeKey;
+}
+
 export function useAgentLaunchQueue(
   options: AgentLaunchQueueOptions,
 ): AgentLaunchQueue {
   const { submit, scopeKey = null, ready, onLaunched, onDismissed } = options;
-  const [queue, setQueue] = useState<
-    Array<{ request: AgentLaunchRequestPayload; scopeKey: string | number | null }>
-  >([]);
+  const [queue, setQueue] = useState<ScopedAgentLaunchRequest[]>([]);
   const [yoloMode] = useYoloMode();
   // Requests already acted on. A stream that replays on reconnect re-delivers
   // them, and starting a second video because the socket blinked is the one
@@ -82,11 +89,26 @@ export function useAgentLaunchQueue(
     dismissedRef.current = onDismissed;
   });
 
+  useEffect(() => {
+    // A renderer can restore messages one paint before it restores their
+    // session id. Older builds queued that launch under `null`, marked it seen,
+    // and filtered it out forever when the real scope appeared. Claiming it
+    // here also repairs such an item during Fast Refresh.
+    setQueue((current) => claimUnscopedAgentLaunchRequests(current, scopeKey));
+  }, [scopeKey]);
+
   const handleEvent = useCallback((value: unknown): boolean => {
     const request = parseAgentLaunchRequest(value);
     if (!request) return false;
+    // A request rebuilt from a finished turn's evidence and the live request
+    // the stream delivered for the same turn and agent are one hand-off.
+    const originKey = request.originClientMessageId
+      ? `origin:${request.originClientMessageId}:${request.agentId}`
+      : null;
     if (seenRef.current.has(request.requestId)) return true;
+    if (originKey && seenRef.current.has(originKey)) return true;
     seenRef.current.add(request.requestId);
+    if (originKey) seenRef.current.add(originKey);
     setQueue((current) => [...current, { request, scopeKey }]);
     return true;
   }, [scopeKey]);

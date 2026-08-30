@@ -104,3 +104,15 @@ test("startup subscriptions receive state and unsubscribe cleanly", () => {
   publish(undefined, { phase: "ready", message: "Ready", services: [] });
   assert.deepEqual(received, [failed]);
 });
+
+test("setTheme sends the sun schedule only when the page has one", async () => {
+  const ipc = new FakeIpcRenderer();
+  const api = createDesktopApi(ipc);
+  const schedule = { mode: "sun", sunriseMinutes: 390, sunsetMinutes: 1185 } as const;
+  assert.equal(await api.setTheme("light", schedule), true);
+  assert.equal(await api.setTheme("voice"), true);
+  assert.deepEqual(
+    ipc.calls.map((call) => call.args),
+    [["light", schedule], ["voice"]],
+  );
+});

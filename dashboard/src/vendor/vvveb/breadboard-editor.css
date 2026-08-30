@@ -1,0 +1,30 @@
+/* Breadboard embeds one artifact, not a website directory. Keep Vvveb's
+   editing tools and remove controls that imply unsupported file operations. */
+.pages-tab,
+#pages-tabs,
+#toggle-file-manager-btn,
+.btn-preview-url,
+#showChangesBtn,
+#save-offcanvas,
+#new-page-btn,
+.sidebar .nav-item.heading,
+.sidebar .nav-item.heading ~ .nav-item {
+  display: none !important;
+}
+
+#top-panel .save-btn:first-child {
+  border-radius: var(--bs-border-radius-sm) !important;
+}
+
+#iframe-wrapper > iframe {
+  background: #fff;
+}
+
+@media (max-width: 900px) {
+  #top-panel .responsive-btns,
+  #designer-mode-btn,
+  #toggle-hidden,
+  #toggle-tree-list {
+    display: none !important;
+  }
+}

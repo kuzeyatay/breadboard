@@ -25,6 +25,7 @@ import {
   recordOuterAgentRuntimeRun,
   type OuterAgentKind,
 } from "./outer-agent-run-store.ts";
+import { outerAgentFailureMessage } from "./outer-agent-failure.ts";
 
 export type { OuterAgentKind } from "./outer-agent-run-store.ts";
 
@@ -701,11 +702,7 @@ function synthesizedTerminalEvent(
     sequenceNumber,
     type: "run.failed",
     payload: {
-      error: job?.failureMessage ?? (adapter.kind === "agent-tars"
-        ? "Agent TARS could not complete the task."
-        : adapter.kind === "openwork"
-          ? "OpenWork could not recover its Runtime job."
-          : `${adapter.kind} could not recover its Runtime job.`),
+      error: outerAgentFailureMessage(job, adapter.kind),
     },
     at,
   };

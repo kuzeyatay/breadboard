@@ -31,6 +31,7 @@ function request(overrides = {}) {
     reasoningEffort: "high",
     baseUrl: "http://127.0.0.1:8765/v1",
     conversationContext: "Earlier context that must survive the boundary.",
+    openscienceEnabled: false,
     ...overrides,
   };
 }
@@ -49,7 +50,7 @@ test("Max Research has one exact sealed zero-blob worker contract", () => {
     request({ argv: ["python", "anything.py"] }),
     request({ env: { CHATMOCK_API_KEY: "renderer-secret" } }),
     request({ apiKey: "renderer-secret" }),
-    request({ question: "x".repeat(4_001) }),
+    request({ question: "x".repeat(8_001) }),
     request({ baseUrl: "http://user:password@127.0.0.1:8765/v1" }),
   ]) {
     assert.throws(() => validateRuntimeV2MaxResearchRequest(invalid));
@@ -73,6 +74,7 @@ export function startRuntimeWorkerRun(input) {
       reasoningEffort: input.reasoningEffort,
       baseUrl: input.baseUrl,
       conversationContext: input.conversationContext,
+      openscienceEnabled: input.openscienceEnabled,
       runId: input.runtimeJobId,
       userId: input.userId,
     },

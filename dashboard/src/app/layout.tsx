@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { IBM_Plex_Mono, Schibsted_Grotesk, Source_Sans_3 } from "next/font/google";
 import { Suspense } from "react";
 import AppThemeRuntime from "@/app/components/app-theme-runtime";
+import CurrentLocationAutoRefresh from "@/app/components/current-location-autorefresh";
 import DesktopTitleBar from "@/app/components/desktop-title-bar";
 import { interactionHydrationBootstrapScript } from "@/app/components/interaction-hydration-bridge";
 import InteractionHydrationGate from "@/app/components/interaction-hydration-gate";
@@ -76,6 +77,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col">
         <AppThemeRuntime />
+        <CurrentLocationAutoRefresh />
         <RecallAutoStart />
         <DesktopTitleBar />
         <Suspense fallback={null}>

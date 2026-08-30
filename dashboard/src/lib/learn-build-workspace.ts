@@ -66,6 +66,9 @@ export interface LearnBuildWorkspace {
   resumedFromBuildId?: string;
   resumedFromJobId?: string;
   resumedFromWorkspaceRoot?: string;
+  /** True when workspace creation removed the source job's acceptance receipt
+   * after cloning. Any later receipt therefore belongs to this job. */
+  inheritedAcceptanceStatusCleared?: true;
 }
 
 export interface AuthoritativeSourceAnchorLedgerSnapshot {
@@ -179,10 +182,24 @@ function runtimeWorkerBuildsBaseDir(): string | null {
     : null;
 }
 
+function runtimeWorkerRetainedBuildsBaseDir(): string | null {
+  const runtimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR?.trim();
+  return runtimeRoot && path.isAbsolute(runtimeRoot)
+    ? path.join(runtimeRoot, "retained-builds")
+    : null;
+}
+
 function configuredDataBuildsBaseDir(): string | null {
   const dataRoot = process.env.BREADBOARD_DATA_DIR?.trim();
   return dataRoot && path.isAbsolute(dataRoot)
     ? path.join(dataRoot, "runtime", "learn-workers", "builds")
+    : null;
+}
+
+function configuredDataRetainedBuildsBaseDir(): string | null {
+  const dataRoot = process.env.BREADBOARD_DATA_DIR?.trim();
+  return dataRoot && path.isAbsolute(dataRoot)
+    ? path.join(dataRoot, "runtime", "learn-workers", "retained-builds")
     : null;
 }
 
@@ -218,7 +235,9 @@ function learnWorkspaceBaseCandidates(): string[] {
   const candidateBases = [
     buildsBaseDir(),
     runtimeWorkerBuildsBaseDir(),
+    runtimeWorkerRetainedBuildsBaseDir(),
     configuredDataBuildsBaseDir(),
+    configuredDataRetainedBuildsBaseDir(),
     developmentWorkerBuildsBaseDir(),
     process.env.LOCALAPPDATA?.trim()
       ? path.join(process.env.LOCALAPPDATA.trim(), "Breadboard", "builds")
@@ -592,6 +611,14 @@ export function createLearnBuildWorkspace(input: {
     if (resumableWorkspace) {
       copyTree(resumableWorkspace.stagingGardenDir, stagingGardenDir);
       synchronizeDurableInputs(input.repositoryGardenDir, stagingGardenDir);
+      // Acceptance is evidence about the exact candidate that produced it.
+      // A resumed workspace may reuse pages and visual checkpoints, but it must
+      // earn its own deterministic/critic decision before that receipt can
+      // influence future recovery ranking.
+      fs.rmSync(
+        path.join(stagingGardenDir, ".breadboard", "acceptance-status.json"),
+        { force: true },
+      );
     } else {
       seedDurableInputs(input.repositoryGardenDir, stagingGardenDir);
     }
@@ -639,6 +666,7 @@ export function createLearnBuildWorkspace(input: {
           resumedFromBuildId: resumableWorkspace.buildId,
           resumedFromJobId: resumableWorkspace.jobId,
           resumedFromWorkspaceRoot: resumableWorkspace.workspaceRoot,
+          inheritedAcceptanceStatusCleared: true as const,
         }
       : {}),
   };
@@ -974,7 +1002,11 @@ export function findLatestCompatibleRetainedLearnBuildWorkspace(input: {
   sourceSetFingerprint: string;
   requireAuthoritativeSourceAnchorLedger: boolean;
 }): LearnBuildWorkspace | null {
-  const candidates: Array<{ workspace: LearnBuildWorkspace; retainedAt: number }> = [];
+  const candidates: Array<{
+    workspace: LearnBuildWorkspace;
+    retainedAt: number;
+    checkpointRank: number;
+  }> = [];
   const seenRoots = new Set<string>();
   for (const baseDir of learnWorkspaceBaseCandidates()) {
     const gardenRoot = path.resolve(baseDir, input.gardenSlug);
@@ -1044,10 +1076,47 @@ export function findLatestCompatibleRetainedLearnBuildWorkspace(input: {
       }
       const retainedAt = Date.parse(workspace.retainedAt ?? workspace.createdAt);
       if (!Number.isFinite(retainedAt)) continue;
-      candidates.push({ workspace, retainedAt });
+      // Prefer the nearest safe durable checkpoint over a newer candidate whose
+      // own final receipt proves deterministic corruption. The rejected tree is
+      // still retained for diagnosis and remains the fallback when it is the
+      // only compatible checkpoint.
+      let checkpointRank = 1;
+      try {
+        const statusPath = path.join(
+          workspace.stagingGardenDir,
+          ".breadboard",
+          "acceptance-status.json",
+        );
+        const statusStat = fs.statSync(statusPath);
+        const workspaceCreatedAt = Date.parse(workspace.createdAt);
+        // Fresh workspaces start without an acceptance receipt, and current
+        // resumed workspaces explicitly remove the inherited one. The mtime
+        // comparison remains only for descriptors created before that reset
+        // marker existed.
+        const receiptBelongsToWorkspace =
+          !workspace.resumedFromBuildId ||
+          workspace.inheritedAcceptanceStatusCleared === true ||
+          (Number.isFinite(workspaceCreatedAt) &&
+            statusStat.mtimeMs >= workspaceCreatedAt);
+        if (receiptBelongsToWorkspace) {
+          const status = JSON.parse(fs.readFileSync(statusPath, "utf8")) as Record<string, unknown>;
+          if (status.deterministicPass === false) checkpointRank = 0;
+          // A deterministic-valid semantic-repair checkpoint is safe to resume
+          // even when its critic receipt still has a blocker. Rank it alongside
+          // a publish-ready checkpoint so recency preserves later successful
+          // repairs; only deterministically corrupt candidates fall behind.
+          else if (status.deterministicPass === true) checkpointRank = 2;
+        }
+      } catch {
+        // Missing/partial acceptance state is an ordinary resumable checkpoint.
+      }
+      candidates.push({ workspace, retainedAt, checkpointRank });
     }
   }
-  candidates.sort((left, right) => right.retainedAt - left.retainedAt);
+  candidates.sort((left, right) =>
+    right.checkpointRank - left.checkpointRank ||
+    right.retainedAt - left.retainedAt,
+  );
   return candidates[0]?.workspace ?? null;
 }
 

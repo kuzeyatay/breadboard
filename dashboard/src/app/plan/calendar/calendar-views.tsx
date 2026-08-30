@@ -200,7 +200,14 @@ function MonthWeekRow({
     <div
       ref={rowRef}
       className="relative grid min-h-0 grid-cols-7"
-      style={{ gridTemplateRows: `auto repeat(${laneCount}, auto) minmax(0, 1fr)` }}
+      style={{
+        // Keep the calendar's essential geometry local to the component. If a
+        // generated utility stylesheet is stale during a desktop hot reload,
+        // implicit grid tracks size themselves from event text and the whole
+        // month shears apart.
+        gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
+        gridTemplateRows: `auto repeat(${laneCount}, auto) minmax(0, 1fr)`,
+      }}
     >
       {/* Cell backgrounds sit under everything and carry the click-to-create
           target, so any empty space in a day opens a new event at 09:00. */}
@@ -376,7 +383,10 @@ function MonthView(props: ViewProps) {
     <div className="flex h-full min-h-0 flex-col">
       <div
         className="grid shrink-0 grid-cols-7 border-b"
-        style={{ borderColor: "var(--neu-border)" }}
+        style={{
+          borderColor: "var(--neu-border)",
+          gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
+        }}
       >
         {WEEKDAY_ABBREVIATIONS.map((label) => (
           <div

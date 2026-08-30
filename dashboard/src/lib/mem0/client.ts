@@ -73,6 +73,8 @@ const MAX_RESPONSE_BYTES = 256 * 1024;
 const MIN_TOKEN_BYTES = 32;
 const MAX_TOKEN_BYTES = 1024;
 const REQUEST_TIMEOUT_MS = 65_000;
+/** A turn waits this long for a starting engine before answering without it. */
+const SEMANTIC_MEMORY_LEASE_WAIT_MS = 15_000;
 
 function serviceEndpoint(env: NodeJS.ProcessEnv): ServiceEndpoint | null {
   const raw = env.BREADBOARD_MEM0_SERVICE_URL?.trim();
@@ -361,7 +363,16 @@ export async function withSemanticMemoryClient<T>(
   if (!client) return null;
   let lease;
   try {
-    lease = await acquireServiceLease("mem0-semantic-engine", `semantic-memory:${reason}`, env);
+    // Semantic memory is optional for a turn. Wait a few seconds for a
+    // starting engine, not its whole startup budget: a reply held for two
+    // minutes because memory was still booting is worse than a reply without
+    // that memory, and the engine keeps starting for the next turn.
+    lease = await acquireServiceLease(
+      "mem0-semantic-engine",
+      `semantic-memory:${reason}`,
+      env,
+      { timeoutMs: SEMANTIC_MEMORY_LEASE_WAIT_MS },
+    );
     return await operation(client);
   } catch (error) {
     if (error instanceof SupervisorResourceExhaustedError) throw error;

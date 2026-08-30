@@ -206,7 +206,7 @@ export default ((userOpts?: Partial<Options>) => {
               >
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
-              <div>
+              <div class="folder-title-clip">
                 <button class="folder-button">
                   <span class="folder-title"></span>
                 </button>

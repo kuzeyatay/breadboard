@@ -179,7 +179,12 @@ describe("source document ingest path", () => {
     assert.match(linksRoute, /sourceType: "url"/);
     assert.match(linksRoute, /original_url: converted\.originalUrl/);
     assert.match(linksRoute, /content_hash: converted\.contentHash/);
+    assert.match(linksRoute, /captureUrlSourceImages/);
+    assert.match(linksRoute, /sourceAssets: captured\.images\.map/);
+    assert.match(linksRoute, /source_image_urls: captured\.images\.map/);
     assert.match(knowledgeSource, /sourceMetadata\?: Record<string, string \| string\[\]>/);
+    assert.match(knowledgeSource, /sourceAssets\?: KnowledgeSourceAsset\[\]/);
+    assert.match(knowledgeSource, /writeKnowledgeBinaryFile\(assetFilePath, asset\.bytes, transaction\)/);
   });
 
   test("snapshot-only fallback ingest does not create numbered source-snapshot lessons", () => {

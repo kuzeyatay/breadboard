@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -594,7 +595,22 @@ function artifactFixture() {
     CREATE TABLE conversation_messages(
       id INTEGER PRIMARY KEY,
       conversation_id INTEGER,
-      client_message_id TEXT
+      client_message_id TEXT,
+      role TEXT NOT NULL DEFAULT 'assistant',
+      content TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT '2025-01-01T00:00:00.000Z'
+    );
+    CREATE TABLE chat_sessions(
+      id INTEGER PRIMARY KEY,
+      conversation_id INTEGER
+    );
+    CREATE TABLE chat_messages(
+      id INTEGER PRIMARY KEY,
+      session_id INTEGER,
+      role TEXT,
+      content TEXT,
+      created_at TEXT,
+      canonical_message_id INTEGER
     );
     INSERT INTO users VALUES (1), (2);
     INSERT INTO clusters VALUES (7, 'physics', 1), (8, 'chemistry', 1);
@@ -607,7 +623,7 @@ function artifactFixture() {
     INSERT INTO conversations VALUES (16, 'conv_other_user', 2, 'dashboard_terminal', NULL);
     INSERT INTO hermes_runtime_sessions VALUES (20);
     INSERT INTO hermes_runs VALUES ('run_one', 20), ('run_two', 20);
-    INSERT INTO conversation_messages VALUES
+    INSERT INTO conversation_messages(id, conversation_id, client_message_id) VALUES
       (100, 10, 'client_visualizer'),
       (101, 10, 'client_visualizer_revision');
   `);
@@ -738,6 +754,52 @@ test("required artifact completion is exact to the run, renderer, source skill, 
       UPDATE hermes_artifacts SET preview_location = NULL WHERE id = ?
     `).run(artifact.id);
     assert.equal(hasReadyArtifactForRun(requirement), false);
+  } finally {
+    fixture.database.close();
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Garden artifacts follow the visible compatibility response after an old binding was duplicated", () => {
+  const fixture = artifactFixture();
+  try {
+    fixture.database.exec(`
+      INSERT INTO conversation_messages
+        (id, conversation_id, client_message_id, role, content, created_at)
+      VALUES
+        (102, 10, 'garden-turn', 'assistant', 'The diagram is attached.', '2025-01-01T12:00:01.000Z'),
+        (103, 10, 'legacy-chat-1', 'assistant', 'The diagram is attached.', '2025-01-01T12:00:00.000Z');
+      INSERT INTO chat_sessions(id, conversation_id) VALUES (1, 10);
+      INSERT INTO chat_messages
+        (id, session_id, role, content, created_at, canonical_message_id)
+      VALUES
+        (1, 1, 'assistant', 'The diagram is attached.', '2025-01-01T12:00:00.000Z', 103);
+    `);
+    createArtifact(createInput(fixture, {
+      assistantMessageId: 102,
+      title: "Garden diagram",
+    }));
+
+    const [artifact] = listArtifactsForUser({
+      userId: 1,
+      conversationPublicId: "conv_garden",
+      database: fixture.database,
+    });
+    assert.equal(
+      presentArtifact(artifact).assistantMessageId,
+      "msg_103",
+      "the inline card follows the response id currently rendered by Garden Chat",
+    );
+
+    fixture.database.prepare(
+      "UPDATE chat_messages SET canonical_message_id = 102 WHERE id = 1",
+    ).run();
+    const [repaired] = listArtifactsForUser({
+      userId: 1,
+      conversationPublicId: "conv_garden",
+      database: fixture.database,
+    });
+    assert.equal(presentArtifact(repaired).assistantMessageId, "msg_102");
   } finally {
     fixture.database.close();
     fs.rmSync(fixture.root, { recursive: true, force: true });
@@ -969,6 +1031,61 @@ test("DOCX, PDF, and sandbox-source HTML renderers produce real files", async ()
     }
   } finally {
     officeRuntime.cleanup();
+    fixture.database.close();
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+// The desktop stack hands the dashboard a supervisor control endpoint. That
+// control plane serves service leases but no /v1/capabilities/<id>/lease route
+// (native/runtime-cli/src/control.rs routes only /v1/services and /v1/leases),
+// so any capability lease is answered 404. A local render is a file write and
+// must never ask for one: with the lease in place every HTML artifact stayed
+// "generating" behind an opaque 500 from artifact_render.
+test("HTML renders locally without consulting the supervisor control plane", async () => {
+  const fixture = artifactFixture();
+  const controlRequests = [];
+  const controlPlane = http.createServer((request, response) => {
+    controlRequests.push(`${request.method} ${request.url}`);
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end('{"error":"not-found"}');
+  });
+  await new Promise((resolve) => controlPlane.listen(0, "127.0.0.1", resolve));
+  const previousUrl = process.env.BREADBOARD_SUPERVISOR_CONTROL_URL;
+  const previousToken = process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN;
+  process.env.BREADBOARD_SUPERVISOR_CONTROL_URL = `http://127.0.0.1:${controlPlane.address().port}`;
+  process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN = "test-control-token-0123456789-abcdefghijklmnop";
+  try {
+    let artifact = createArtifact(createInput(fixture, {
+      kind: "html",
+      rendererId: "html",
+      filename: "diagram.html",
+      mimeType: "text/html; charset=utf-8",
+      title: "Architecture diagram",
+      content: "<!doctype html><main><svg viewBox=\"0 0 10 10\"><rect width=\"10\" height=\"10\"/></svg></main>",
+    }));
+    artifact = await renderArtifact({
+      artifact,
+      runId: "run_one",
+      assistantMessageId: null,
+      database: fixture.database,
+      storageRoot: fixture.storage,
+    });
+    assert.equal(artifact.status, "ready");
+    assert.equal(artifact.error_json, null);
+    const output = artifactFile({ artifact, version: 1, purpose: "download", database: fixture.database, storageRoot: fixture.storage });
+    assert.match(fs.readFileSync(output.path, "utf8"), /<svg viewBox="0 0 10 10">/);
+    const events = listArtifactEventsAfter({ runId: "run_one", afterId: 0, database: fixture.database });
+    assert.deepEqual(events.map((event) => event.type), [
+      "artifact.created", "artifact.rendering", "artifact.preview_ready", "artifact.completed",
+    ]);
+    assert.deepEqual(controlRequests, []);
+  } finally {
+    if (previousUrl === undefined) delete process.env.BREADBOARD_SUPERVISOR_CONTROL_URL;
+    else process.env.BREADBOARD_SUPERVISOR_CONTROL_URL = previousUrl;
+    if (previousToken === undefined) delete process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN;
+    else process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN = previousToken;
+    await new Promise((resolve) => controlPlane.close(resolve));
     fixture.database.close();
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }

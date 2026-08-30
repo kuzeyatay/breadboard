@@ -14,6 +14,10 @@
 // chat, and conflating the two would make one of them a lie.
 
 import { useCallback, useSyncExternalStore } from "react";
+import {
+  persistComposerSwitch,
+  registerComposerSwitch,
+} from "./composer-switch-preferences.ts";
 
 export const PERSONALIZE_STORAGE_KEY = "breadboard:personalize";
 export const PERSONALIZE_CHANGE_EVENT = "breadboard:personalize-change";
@@ -62,13 +66,22 @@ export function usePersonalize(): readonly [boolean, (enabled: boolean) => void]
     () => DEFAULT_ENABLED,
   );
   const setEnabled = useCallback((next: boolean) => {
-    memoryValue = next;
-    try {
-      window.localStorage.setItem(PERSONALIZE_STORAGE_KEY, String(next));
-    } catch {
-      // Kept in memory only; the change event below still updates this tab.
-    }
-    window.dispatchEvent(new Event(PERSONALIZE_CHANGE_EVENT));
+    applyPersonalize(next);
+    persistComposerSwitch("personalize", next);
   }, []);
   return [enabled, setEnabled] as const;
 }
+
+function applyPersonalize(next: boolean): void {
+  memoryValue = next;
+  try {
+    window.localStorage.setItem(PERSONALIZE_STORAGE_KEY, String(next));
+  } catch {
+    // Kept in memory only; the change event below still updates this tab.
+  }
+  window.dispatchEvent(new Event(PERSONALIZE_CHANGE_EVENT));
+}
+
+// Hydrated from the account on load: the localStorage copy belongs to one
+// origin, and the desktop dashboard's origin changes on every launch.
+registerComposerSwitch("personalize", applyPersonalize);

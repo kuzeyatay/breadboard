@@ -169,6 +169,37 @@ test("an uncommitted ingestion transaction restores merged and singleton knowled
   }
 });
 
+test("captured URL figures are written and rolled back with their source", async () => {
+  const fixture = createGardenFixture();
+  const previousPublish = process.env.QUARTZ_AUTO_PUBLISH;
+  process.env.QUARTZ_AUTO_PUBLISH = "0";
+  try {
+    const transaction = createKnowledgeWriteTransaction(
+      fixture.contentPath,
+      fixture.clusterSlug,
+    );
+    const bytes = Buffer.from("captured-web-figure");
+    const relativePath = "assets/url-sources/fixture/figure.png";
+    await writeFixtureKnowledge(fixture, {
+      knowledgeWriteTransaction: transaction,
+      sourceAssets: [{ relativePath, bytes }],
+    });
+
+    const assetPath = path.join(
+      fixture.clusterDir,
+      ...relativePath.split("/"),
+    );
+    assert.deepEqual(fs.readFileSync(assetPath), bytes);
+
+    transaction.rollback();
+    assertGardenRestored(fixture.clusterDir);
+  } finally {
+    if (previousPublish === undefined) delete process.env.QUARTZ_AUTO_PUBLISH;
+    else process.env.QUARTZ_AUTO_PUBLISH = previousPublish;
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("a legitimate Garden edit cannot race rollback and is preserved after the transaction releases", async () => {
   const fixture = createGardenFixture();
   const targetPath = path.join(

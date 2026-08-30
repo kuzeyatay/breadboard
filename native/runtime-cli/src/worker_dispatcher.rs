@@ -11,7 +11,8 @@ use breadboard_runtime_core::{
     RuntimePaths, StoreError, TrustedWorkerEnvironmentSet, WorkerClaimOutcome,
     WorkerCompletionProof, WorkerLaunchNotCreated, WorkerLaunchNotCreatedCleanup,
     WorkerLaunchOutcome, WorkerLaunchUncertain, WorkerResidencyAuthority,
-    WorkerServiceDependencyFailureDisposition, WorkerTreeExitAuthority, MAX_DISPATCH_CANDIDATES,
+    WorkerServiceDependencyFailure, WorkerServiceDependencyFailureDisposition,
+    WorkerTreeExitAuthority, MAX_DISPATCH_CANDIDATES,
 };
 use breadboard_runtime_protocol::{RuntimeMode, WorkerDefinition, WorkerEvent, WorkerIdentity};
 use std::io;
@@ -481,10 +482,23 @@ fn dispatch_one(
             }
             Err(WorkerServiceDependencyAcquireError::Control(error)) => {
                 release_worker_dependencies(&service_dependencies, dependency_leases)?;
+                // A memory denial keeps its headroom numbers on the job so the
+                // dashboard can say what was missing instead of only that the
+                // job failed; every other refusal is a plain unavailable verdict.
+                let failure = match error {
+                    RuntimeServiceControlError::ResourceExhausted {
+                        required_headroom_mb,
+                        available_headroom_mb,
+                    } => WorkerServiceDependencyFailure::ResourceExhausted {
+                        required_headroom_mb,
+                        available_headroom_mb,
+                    },
+                    _ => WorkerServiceDependencyFailure::Unavailable,
+                };
                 let disposition = store
                     .worker_service_dependency_unavailable_before_assignment(
                         candidate.job_id(),
-                        matches!(error, RuntimeServiceControlError::ResourceExhausted { .. }),
+                        failure,
                     )
                     .map_err(WorkerDispatcherError::Store)?;
                 if matches!(

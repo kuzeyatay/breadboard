@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import {
+  getDefaultEnvironment,
+  StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
@@ -192,6 +196,82 @@ async function connect(
   connections.set(connectionKey, connection);
   statuses.set(connectionKey, { status: "connected" });
   return connection;
+}
+
+export interface StdioProxyServer {
+  command: string;
+  args: string[];
+  cwd?: string;
+  /** Added on top of the SDK's default environment, never replacing it. */
+  env?: Record<string, string>;
+}
+
+/**
+ * A Breadboard-owned MCP server spoken to over stdio — today the graft code
+ * index of a Garden's connected repository. It is deliberately not a saved MCP
+ * connection: the command is chosen by Breadboard from the repository the user
+ * connected, never typed by anyone, so it needs no renderer approval, and the
+ * mcp route admits it by its own rule rather than by a stored row.
+ *
+ * Keyed like every other proxy connection, so discovery lists its tools and
+ * `callProxyMcpTool` reaches it unchanged. Reconnects only when the command
+ * changes; a repeat call for the same server is a lookup.
+ */
+export async function addStdioProxyConnection(
+  userId: number,
+  name: string,
+  server: StdioProxyServer,
+  timeoutMs = 60_000,
+): Promise<{ status: RuntimeMcpStatus; tools: Array<{ name: string; description?: string }> }> {
+  const slug = safeSlug(name);
+  const connectionKey = key(userId, slug);
+  const signature = crypto
+    .createHash("sha256")
+    .update(JSON.stringify({ type: "stdio", ...server, timeoutMs }))
+    .digest("hex");
+  const existing = connections.get(connectionKey);
+  if (existing?.signature === signature) {
+    return {
+      status: statuses.get(connectionKey) ?? { status: "connected" },
+      tools: existing.tools.map((tool) => ({ name: tool.name, description: tool.description })),
+    };
+  }
+  await closeConnection(existing);
+  const client = new Client(
+    { name: "breadboard-mcp-proxy", version: "1.0.0" },
+    { capabilities: {} },
+  );
+  try {
+    const transport = new StdioClientTransport({
+      command: server.command,
+      args: server.args,
+      cwd: server.cwd,
+      env: { ...getDefaultEnvironment(), ...(server.env ?? {}) },
+      stderr: "ignore",
+    });
+    await client.connect(transport, { timeout: timeoutMs });
+    const listed = await client.listTools({}, { timeout: timeoutMs });
+    const connection: ProxyConnection = {
+      userId,
+      slug,
+      signature,
+      client,
+      transport,
+      tools: listed.tools as ProxyTool[],
+      timeoutMs,
+    };
+    connections.set(connectionKey, connection);
+    statuses.set(connectionKey, { status: "connected" });
+    return {
+      status: { status: "connected" },
+      tools: connection.tools.map((tool) => ({ name: tool.name, description: tool.description })),
+    };
+  } catch (error) {
+    await client.close().catch(() => undefined);
+    const status = safeErrorStatus(error);
+    statuses.set(connectionKey, status);
+    return { status, tools: [] };
+  }
 }
 
 export async function addProxyMcpConnection(

@@ -62,7 +62,10 @@ import type {
   ExternalAgentTerminalResult,
 } from "@/lib/conversations/external-agent-runs";
 import { externalAgentAbortUrl } from "@/lib/conversations/external-agent-runs";
-import { notifyTaskCompleted } from "@/lib/task-completion-notification";
+import {
+  notifyChatResponseFailed,
+  notifyChatResponseReady,
+} from "@/lib/task-completion-notification";
 import { rememberExternalRunStartedAt } from "./external-run-clock";
 import {
   AgentStreamDisconnectedError,
@@ -97,6 +100,9 @@ import {
 } from "@/lib/hermes/super-agent-activity";
 import { scrubbed } from "@/lib/watermarks/scrub-text";
 import { formatAssistantModelChangeName } from "@/lib/ai-models";
+
+import { settleReplayedTurn } from "./replayed-turn.ts";
+import { undeliveredLaunchRequests } from "./undelivered-launches.ts";
 
 export type AgentSurface = "dashboard_terminal" | "garden_chat" | "quartz_ai";
 
@@ -919,6 +925,87 @@ function optimisticPendingTurn(messages: AgentMessage[]): {
   return instruction ? { assistant, instruction } : null;
 }
 
+const backgroundChatMonitors = new Set<string>();
+const BACKGROUND_CHAT_MONITOR_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * A Hermes run belongs to its chat after the viewer leaves. Poll the durable
+ * transcript instead of keeping an event stream attached to the wrong view,
+ * then notify only if that chat is still in the background when it settles.
+ */
+function monitorBackgroundChatResponse(input: {
+  surface: AgentSurface;
+  sessionId: string;
+  instruction: string;
+  clientMessageId?: string;
+  getActiveChatId: () => string | null;
+}): void {
+  if (input.surface === "quartz_ai") return;
+  const monitorKey = `${input.surface}:${input.sessionId}:${input.clientMessageId ?? input.instruction}`;
+  if (backgroundChatMonitors.has(monitorKey)) return;
+  backgroundChatMonitors.add(monitorKey);
+
+  void (async () => {
+    const startedAt = Date.now();
+    let delayMs = 800;
+    try {
+      while (Date.now() - startedAt < BACKGROUND_CHAT_MONITOR_TIMEOUT_MS) {
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, delayMs);
+        });
+        const restored = await loadHermesSessionDetail(
+          input.surface,
+          input.sessionId,
+        ).catch(() => null);
+        if (!restored || restored.id !== input.sessionId) {
+          delayMs = Math.min(5_000, Math.round(delayMs * 1.5));
+          continue;
+        }
+
+        const assistant = normalizeRestoredMessages(restored.messages)
+          .reverse()
+          .find(
+            (message) =>
+              message.role === "assistant" &&
+              (!input.clientMessageId ||
+                message.clientMessageId === input.clientMessageId),
+          );
+        if (!assistant) {
+          delayMs = Math.min(5_000, Math.round(delayMs * 1.35));
+          continue;
+        }
+        const activeRun =
+          restored.activeRun && typeof restored.activeRun === "object"
+            ? (restored.activeRun as Record<string, unknown>)
+            : null;
+        const monitoredRunIsActive = Boolean(
+          activeRun &&
+            (!input.clientMessageId ||
+              activeRun.clientMessageId === input.clientMessageId),
+        );
+        if (assistant.pending || monitoredRunIsActive) {
+          delayMs = Math.min(5_000, Math.round(delayMs * 1.25));
+          continue;
+        }
+        if (assistant.pendingPermissions?.length || assistant.interrupted) return;
+
+        const options = {
+          chatId: input.sessionId,
+          activeChatId: input.getActiveChatId(),
+        };
+        if (assistant.failed || !assistant.content.trim()) {
+          notifyChatResponseFailed(input.instruction, options);
+        } else {
+          notifyChatResponseReady(input.instruction, options);
+        }
+        return;
+      }
+    } finally {
+      backgroundChatMonitors.delete(monitorKey);
+    }
+  })();
+}
+
 export type ConnectionState =
   "idle" | "connecting" | "streaming" | "waiting" | "error";
 
@@ -1493,6 +1580,13 @@ export function useAgentSession(
             viewEpochRef.current !== viewEpoch ||
             sessionRef.current !== id
           ) {
+            monitorBackgroundChatResponse({
+              surface,
+              sessionId: id,
+              instruction: initial.instruction,
+              clientMessageId: expectedClientMessageId,
+              getActiveChatId: () => sessionRef.current,
+            });
             return;
           }
 
@@ -1500,11 +1594,19 @@ export function useAgentSession(
             () => null,
           );
           if (
-            !restored ||
-            restored.id !== id ||
             viewEpochRef.current !== viewEpoch ||
             sessionRef.current !== id
           ) {
+            monitorBackgroundChatResponse({
+              surface,
+              sessionId: id,
+              instruction: initial.instruction,
+              clientMessageId: expectedClientMessageId,
+              getActiveChatId: () => sessionRef.current,
+            });
+            return;
+          }
+          if (!restored || restored.id !== id) {
             delayMs = Math.min(2_500, Math.round(delayMs * 1.5));
             continue;
           }
@@ -1602,10 +1704,19 @@ export function useAgentSession(
           } else if (finalAssistant?.failed) {
             setError("The answer could not be completed.");
             transition("error");
+            if (surface !== "quartz_ai") {
+              notifyChatResponseFailed(initial.instruction, {
+                chatId: id,
+                activeChatId: sessionRef.current,
+              });
+            }
           } else {
             transition("completed");
             if (surface !== "quartz_ai") {
-              notifyTaskCompleted(initial.instruction);
+              notifyChatResponseReady(initial.instruction, {
+                chatId: id,
+                activeChatId: sessionRef.current,
+              });
             }
           }
           if (surface !== "quartz_ai") notifyHermesSessionsChanged(surface);
@@ -1623,6 +1734,28 @@ export function useAgentSession(
       updateCachedHermesSessionMessages(surface, sessionRef.current, messages);
     }
   }, [messages, sessionId, surface]);
+
+  // A hand-off the model made while this page had no live stream (it had
+  // navigated away, refreshed, or its stream had closed) is rebuilt from the
+  // finished turn's evidence so the run still starts. The launch queue treats a
+  // rebuilt request and the live one for the same turn as a single hand-off.
+  useEffect(() => {
+    if (runStateRef.current !== "idle" && runStateRef.current !== "completed") return;
+    const restored = undeliveredLaunchRequests(messages);
+    if (restored.length === 0) return;
+    setAgentLaunchRequests((current) =>
+      restored.every((request) =>
+        current.some((item) => item.requestId === request.requestId),
+      )
+        ? current
+        : [
+            ...current,
+            ...restored.filter(
+              (request) => !current.some((item) => item.requestId === request.requestId),
+            ),
+          ],
+    );
+  }, [messages]);
 
   useEffect(() => {
     if (!sessionId || sessionRef.current !== sessionId) return;
@@ -2389,7 +2522,16 @@ export function useAgentSession(
     ) => {
       await activeStreamRef.current?.catch(() => undefined);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      if (viewEpochRef.current !== viewEpoch) return;
+      if (viewEpochRef.current !== viewEpoch) {
+        monitorBackgroundChatResponse({
+          surface,
+          sessionId: activeSessionId,
+          instruction,
+          clientMessageId,
+          getActiveChatId: () => sessionRef.current,
+        });
+        return;
+      }
 
       const parsedStartedAt = startedAt ? Date.parse(startedAt) : Number.NaN;
       const responseStartedAtMs = Number.isFinite(parsedStartedAt)
@@ -2475,6 +2617,13 @@ export function useAgentSession(
         ]);
         if (viewEpochRef.current !== viewEpoch) {
           streamController?.abort();
+          monitorBackgroundChatResponse({
+            surface,
+            sessionId: activeSessionId,
+            instruction,
+            clientMessageId,
+            getActiveChatId: () => sessionRef.current,
+          });
           return;
         }
         if (activeRunIdRef.current === runId) transition("running");
@@ -2483,6 +2632,13 @@ export function useAgentSession(
           viewEpochRef.current !== viewEpoch ||
           activeRunIdRef.current !== runId
         ) {
+          monitorBackgroundChatResponse({
+            surface,
+            sessionId: activeSessionId,
+            instruction,
+            clientMessageId,
+            getActiveChatId: () => sessionRef.current,
+          });
           return;
         }
         activeRunIdRef.current = null;
@@ -2491,13 +2647,35 @@ export function useAgentSession(
           setError(null);
           transition("cancelled");
         }
-        else if (outcome === "failed") transition("error");
+        else if (outcome === "failed") {
+          transition("error");
+          if (surface !== "quartz_ai") {
+            notifyChatResponseFailed(instruction, {
+              chatId: activeSessionId,
+              activeChatId: sessionRef.current,
+            });
+          }
+        }
         else {
           transition("completed");
-          if (surface !== "quartz_ai") notifyTaskCompleted(instruction);
+          if (surface !== "quartz_ai") {
+            notifyChatResponseReady(instruction, {
+              chatId: activeSessionId,
+              activeChatId: sessionRef.current,
+            });
+          }
         }
       } catch (streamError) {
-        if (viewEpochRef.current !== viewEpoch) return;
+        if (viewEpochRef.current !== viewEpoch) {
+          monitorBackgroundChatResponse({
+            surface,
+            sessionId: activeSessionId,
+            instruction,
+            clientMessageId,
+            getActiveChatId: () => sessionRef.current,
+          });
+          return;
+        }
         if ((streamError as Error).name !== "AbortError") {
           setError(
             streamError instanceof Error
@@ -2505,6 +2683,12 @@ export function useAgentSession(
               : "The follow-up event stream failed.",
           );
           transition("error");
+          if (surface !== "quartz_ai") {
+            notifyChatResponseFailed(instruction, {
+              chatId: activeSessionId,
+              activeChatId: sessionRef.current,
+            });
+          }
         }
       } finally {
         if (activeStreamRef.current === adoptedStream) {
@@ -3129,10 +3313,20 @@ export function useAgentSession(
         }
       }
 
-      if (
-        input.viewEpoch !== viewEpochRef.current ||
-        stopWasRequestedForTurn()
-      ) {
+      if (input.viewEpoch !== viewEpochRef.current) {
+        if (!stopWasRequestedForTurn() && surface !== "quartz_ai") {
+          const options = {
+            chatId: input.sessionId,
+            activeChatId: sessionRef.current,
+          };
+          if (failure) notifyChatResponseFailed(input.text, options);
+          else notifyChatResponseReady(input.text, options);
+          notifyHermesSessionsChanged(surface);
+        }
+        stoppedDirectTurnIdsRef.current.delete(clientMessageId);
+        return;
+      }
+      if (stopWasRequestedForTurn()) {
         stoppedDirectTurnIdsRef.current.delete(clientMessageId);
         return;
       }
@@ -3156,7 +3350,12 @@ export function useAgentSession(
       transition("completed");
       if (surface !== "quartz_ai") {
         notifyHermesSessionsChanged(surface);
-        notifyTaskCompleted(input.text);
+        const options = {
+          chatId: input.sessionId,
+          activeChatId: sessionRef.current,
+        };
+        if (failure) notifyChatResponseFailed(input.text, options);
+        else notifyChatResponseReady(input.text, options);
       }
       stoppedDirectTurnIdsRef.current.delete(clientMessageId);
     },
@@ -3499,10 +3698,27 @@ export function useAgentSession(
           return dispatched;
         };
 
+        const trackBackgroundDispatch = (response: Response) => {
+          if (response.ok) {
+            monitorBackgroundChatResponse({
+              surface,
+              sessionId: activeSessionId,
+              instruction: trimmed,
+              clientMessageId: userMessage.id,
+              getActiveChatId: () => sessionRef.current,
+            });
+          } else if (surface !== "quartz_ai") {
+            notifyChatResponseFailed(trimmed, {
+              chatId: activeSessionId,
+              activeChatId: sessionRef.current,
+            });
+          }
+        };
+
         // Already looking at another chat: send it without a viewer rather than
         // opening this chat's event stream over the one on screen.
         if (!stillViewing()) {
-          await dispatchTurn();
+          trackBackgroundDispatch(await dispatchTurn());
           return;
         }
         transition("connecting");
@@ -3550,7 +3766,7 @@ export function useAgentSession(
         }
         if (!stillViewing()) {
           streamController?.abort();
-          await dispatchTurn();
+          trackBackgroundDispatch(await dispatchTurn());
           return;
         }
         if (stopRequestedRef.current) {
@@ -3561,17 +3777,55 @@ export function useAgentSession(
         const sendResponse = await dispatchTurn();
         if (viewEpochRef.current !== viewEpoch) {
           streamController?.abort();
+          trackBackgroundDispatch(sendResponse);
           return;
         }
         if (!sendResponse.ok) {
           const body = await sendResponse.json().catch(() => ({}));
+          if (
+            sendResponse.status === 409 &&
+            body.code === "conversation_turn_active"
+          ) {
+            // The previous reply is still being written server-side (a
+            // reply this page lost sight of while it was away). That is not
+            // a failed turn to report and not a turn to redo: drop the
+            // unsent message and attach to the live one instead.
+            const restored = await loadHermesSessionDetail(surface, activeSessionId).catch(
+              () => null,
+            );
+            if (
+              restored &&
+              restored.id === activeSessionId &&
+              viewEpochRef.current === viewEpoch
+            ) {
+              const restoredMessages = normalizeRestoredMessages(restored.messages);
+              pendingHistoryOverrideRef.current = null;
+              setMessages(restoredMessages);
+              setError(null);
+              if (resumePendingConversation(activeSessionId, restoredMessages, viewEpoch)) {
+                return;
+              }
+              // The earlier turn finished between the refusal and this reload;
+              // the transcript above already shows its answer.
+              transition("idle");
+              return;
+            }
+          }
           throw new Error(
             typeof body.error === "string"
               ? body.error
               : "The agent could not accept the message.",
           );
         }
-        const responseBody = await sendResponse.json().catch(() => ({}));
+        // A replay of a turn still being prepared carries no run id yet: the
+        // first attempt timed out client-side while the server was still in
+        // preflight. The turn is alive and the stream is attached, so wait for
+        // its run instead of marking the reply interrupted.
+        const responseBody = await settleReplayedTurn(
+          await sendResponse.json().catch(() => ({})),
+          dispatchTurn,
+          { signal: abortRef.current?.signal },
+        );
         if (
           responseBody.clarified === true &&
           typeof responseBody.message === "string" &&
@@ -3596,6 +3850,10 @@ export function useAgentSession(
           transition("completed");
           if (surface !== "quartz_ai") {
             notifyHermesSessionsChanged(surface);
+            notifyChatResponseReady(trimmed, {
+              chatId: activeSessionId,
+              activeChatId: sessionRef.current,
+            });
           }
           abortRef.current?.abort();
           await streamPromise.catch((streamError) => {
@@ -3682,21 +3940,63 @@ export function useAgentSession(
           transition("running");
         }
         const outcome = await streamPromise;
-        if (viewEpochRef.current !== viewEpoch) return;
+        if (viewEpochRef.current !== viewEpoch) {
+          if (surface !== "quartz_ai") {
+            const notificationOptions = {
+              chatId: activeSessionId,
+              activeChatId: sessionRef.current,
+            };
+            if (outcome === "completed") {
+              notifyChatResponseReady(trimmed, notificationOptions);
+            } else if (outcome === "failed") {
+              notifyChatResponseFailed(trimmed, notificationOptions);
+            }
+          }
+          return;
+        }
         activeRunIdRef.current = null;
         setActiveRunId(null);
         if (outcome === "cancelled") {
           setError(null);
           transition("cancelled");
         }
-        else if (outcome === "failed") transition("error");
+        else if (outcome === "failed") {
+          transition("error");
+          if (surface !== "quartz_ai") {
+            notifyChatResponseFailed(trimmed, {
+              chatId: activeSessionId,
+              activeChatId: sessionRef.current,
+            });
+          }
+        }
         else {
           transition("completed");
-          if (surface !== "quartz_ai") notifyTaskCompleted(trimmed);
+          if (surface !== "quartz_ai") {
+            notifyChatResponseReady(trimmed, {
+              chatId: activeSessionId,
+              activeChatId: sessionRef.current,
+            });
+          }
         }
       } catch (err) {
         streamController?.abort();
-        if (viewEpochRef.current !== viewEpoch) return;
+        if (viewEpochRef.current !== viewEpoch) {
+          if (activeSessionIdForTurn && turnPersisted) {
+            monitorBackgroundChatResponse({
+              surface,
+              sessionId: activeSessionIdForTurn,
+              instruction: trimmed,
+              clientMessageId: userMessage.id,
+              getActiveChatId: () => sessionRef.current,
+            });
+          } else if ((err as Error).name !== "AbortError" && surface !== "quartz_ai") {
+            notifyChatResponseFailed(trimmed, {
+              chatId: activeSessionIdForTurn,
+              activeChatId: sessionRef.current,
+            });
+          }
+          return;
+        }
         if ((err as Error).name === "AbortError") {
           if (runStateRef.current !== "cancelled") transition("idle");
           return;
@@ -3707,6 +4007,12 @@ export function useAgentSession(
         activeRunIdRef.current = null;
         setActiveRunId(null);
         transition("error");
+        if (surface !== "quartz_ai") {
+          notifyChatResponseFailed(trimmed, {
+            chatId: activeSessionIdForTurn,
+            activeChatId: sessionRef.current,
+          });
+        }
       } finally {
         for (const id of new Set(
           [startingSessionId, activeSessionIdForTurn].filter(
@@ -3735,6 +4041,7 @@ export function useAgentSession(
       streamDirectTurn,
       streamEvents,
       surface,
+      resumePendingConversation,
       transition,
     ],
   );

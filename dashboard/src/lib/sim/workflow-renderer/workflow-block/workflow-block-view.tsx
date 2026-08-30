@@ -241,6 +241,7 @@ export function WorkflowTypeTag({
   const typeAccent = getWorkflowTypeAccent(type)
   const sharedClassName = cn(
     'flex-shrink-0 justify-center transition-opacity duration-150 [transition-timing-function:cubic-bezier(0.23,1,0.32,1)]',
+    !typeLabel && 'size-5 p-0',
     !isEnabled && 'opacity-50'
   )
   /*
@@ -259,25 +260,33 @@ export function WorkflowTypeTag({
         brandColor={iconBgColor}
         brandForeground={isLightTileColor(iconBgColor) ? 'dark' : 'light'}
         className={sharedClassName}
+        aria-label={typeLabel || `${humanizeBlockName(type)} block`}
         data-workflow-type-accent={type}
+        data-workflow-type-icon-only={label ? undefined : ''}
         data-workflow-brand-tag=''
       >
-        <Icon className='size-[14px] flex-shrink-0' />
+        <Icon className={cn(label ? 'size-[14px]' : 'size-[12px]', 'flex-shrink-0')} />
         {label}
       </ChipTag>
     )
   }
 
   return (
-    <ChipTag
-      variant={typeAccent.variant}
-      tone={typeAccent.tone}
-      className={sharedClassName}
-      data-workflow-type-accent={type}
-    >
-      <Icon className='size-[14px] flex-shrink-0' />
-      {label}
-    </ChipTag>
+      <ChipTag
+        variant={typeAccent.variant}
+        tone={typeAccent.tone}
+        className={sharedClassName}
+        style={{
+          backgroundColor: iconBgColor,
+          color: isLightTileColor(iconBgColor) ? '#1A1A1A' : '#F8F8F8',
+        }}
+        aria-label={typeLabel || `${humanizeBlockName(type)} block`}
+        data-workflow-type-accent={type}
+        data-workflow-type-icon-only={label ? undefined : ''}
+      >
+        <Icon className={cn(typeLabel ? 'size-[14px]' : 'size-[12px]', 'flex-shrink-0')} />
+        {label}
+      </ChipTag>
   )
 }
 
@@ -954,7 +963,7 @@ export function WorkflowBlockView({
             <OverflowSpan
               value={humanizeBlockName(name)}
               className={cn(
-                'truncate text-[17px]',
+                'workflow-block-title truncate font-medium text-[15px]',
                 !isEnabled && runPathStatus !== 'success' && 'text-[var(--text-muted)]'
               )}
             />

@@ -163,6 +163,33 @@ const noopRepair = () => ({ attempted: 0, resolved: 0 });
 /** Repair that reports it attempted the requests but resolved none. */
 const countingRepair = (calls) => (dir, slug, requests) => { calls.push(requests); return { attempted: requests.length, resolved: 0 }; };
 
+test("default critic budget repairs blockers revealed after the third audit", async () => {
+  const dir = mkTinyGarden("bb-progressive-critic-budget-");
+  const { pageRel } = writeTinyModelPage(dir);
+  const repairs = [];
+  const progressiveBlockers = Array.from({ length: 4 }, (_, index) => [issue({
+    id: `progressive-blocker-${index + 1}`,
+    type: "other",
+    pagePath: pageRel,
+    repairTarget: "unit_page",
+    problem: `Generic semantic blocker ${index + 1}`,
+  })]);
+
+  const result = await runCriticLoop({
+    gardenDir: dir,
+    gardenSlug: "test-2",
+    critic: statefulCritic([...progressiveBlockers, []]),
+    repair: countingRepair(repairs),
+    writeReports: false,
+  });
+
+  assert.equal(DEFAULT_CRITIC_LOOP_OPTIONS.maxRounds, 8);
+  assert.equal(repairs.length, 4, "each newly exposed blocker receives a repair round");
+  assert.equal(result.rounds.length, 5, "the repaired state receives a clean acceptance audit");
+  assert.equal(result.finalBlockingIssues.length, 0);
+  assert.equal(result.status.criticPass, true);
+});
+
 describe("critic request fail-closed boundaries", () => {
   test("prose critic propagates ambiguous provider failures by exact identity after one call", async () => {
     for (const [label, providerError] of ambiguousModelFailures()) {
@@ -673,6 +700,63 @@ Original body.
     assert.match(provenance.modelFailureReason ?? "", /returned model candidate failed target or safety validation/);
     assert.equal(read(dir, pageRel), original);
   });
+
+  test("model repair candidate cannot introduce a contract-excluded source anchor", async () => {
+    const dir = mkTinyGarden("bb-critic-contract-anchor-");
+    const pageRel = "learning/1. Metrics/1.1 Contract.md";
+    const anchorId = "S1.P9.E1";
+    fs.writeFileSync(path.join(dir, ".breadboard", "learning-unit-contract.json"), JSON.stringify({
+      learningUnits: [{
+        id: "U1",
+        title: "Contract boundary",
+        sourceAnchors: [],
+        sourceFigures: [],
+        sourceFormulas: [],
+        sourceTables: [],
+      }],
+    }, null, 2) + "\n");
+    fs.writeFileSync(path.join(dir, ".breadboard", "source-anchors.json"), JSON.stringify({
+      sourceTextConceptAnchors: [],
+      sourceStructuralAnchors: [{
+        id: anchorId,
+        kind: "formula",
+        sourceId: "S1",
+        page: 9,
+        title: "Excluded formula",
+      }],
+    }, null, 2) + "\n");
+    const original = `---
+title: "Contract"
+knowledge_type: "learning-page"
+breadboardType: "learning_page"
+generated_by: "learn_button"
+learningUnitId: "U1"
+sourceAnchors: []
+sourceFormulaAnchors: []
+tags: []
+visualIds: []
+---
+
+Original contract-backed body.
+`;
+    fs.writeFileSync(path.join(dir, ...pageRel.split("/")), original);
+    const revised = original.replace("sourceAnchors: []", `sourceAnchors: ["${anchorId}"]`);
+    const bad = issue({ id: "contract-boundary", type: "other", repairTarget: "unit_page", pagePath: pageRel });
+    const repair = makeCriticArtifactRepair({
+      allowDeterministicRepairs: false,
+      modelRepair: (input) => ({ targetPath: input.repairRequest.targetPath, revisedMarkdown: revised }),
+    });
+
+    const outcome = await repair(dir, "test-2", criticIssuesToRepairRequests([bad]), {
+      round: 1,
+      issuesById: new Map([[bad.id, bad]]),
+    });
+    const provenance = outcome.provenance.find((p) => p.targetPath === pageRel);
+    assert.equal(provenance.executorUsed, "none");
+    assert.equal(provenance.changed, false);
+    assert.match(provenance.modelFailureReason ?? "", /returned model candidate failed target or safety validation/);
+    assert.equal(read(dir, pageRel), original, "the whole invalid candidate must be rolled back");
+  });
 });
 
 describe("strict ChatMock critic response parsing", () => {
@@ -1068,6 +1152,7 @@ describe("Fix 2: ChatMock model repair", { skip }, () => {
     const out = await modelRepair({ issue: { type: "repeated_opening", problem: "p", evidence: "e", expected: "x" }, repairRequest: { id: "r", issueIds: ["i"], targetKind: "unit_page", targetPath: "learning/a.md", instructions: ["reframe"], evidence: [] }, finalGardenStateExcerpt: {}, currentMarkdown: "---\ntitle: x\n---\n\nold" });
     assert.match(out.revisedMarkdown, /revised body/);
     assert.ok(sent.messages[0].content.includes("repair one file"));
+    assert.ok(sent.messages[0].content.includes("absent from the target page's Learning Unit Contract"));
     assert.ok(sent.messages[1].content.includes("reframe"));
   });
 });

@@ -180,25 +180,28 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   run.status = "planning";
   emit(run, "plan.started", {});
 
-  // Availability is checked before the plan is fixed, so a participant whose
-  // runtime is down is left out of the plan rather than reported as a failure
-  // forty minutes later. This is the only place the plan touches the world.
-  const candidates = planMaxResearch({ question: run.question });
-  const unavailable: MaxResearchParticipant[] = [];
-  for (const assignment of candidates.assignments) {
-    const state = await runtimeFor(assignment.participant)
-      .available()
-      .catch(() => ({ available: false, reason: "The runtime is unreachable." }));
-    if (!state.available) {
-      unavailable.push(assignment.participant);
-      emit(run, "participant.unavailable", {
-        participant: assignment.participant,
-        reason: state.reason ?? "unavailable",
-      });
-    }
-  }
-
-  const plan = planMaxResearch({ question: run.question, unavailable });
+  // Max Research has a fixed five-member roster. Availability decides whether
+  // a member can start, never whether it existed: silently deleting an
+  // unavailable service made a three-agent run present itself as Max Research.
+  // Probe in parallel, then emit the plan before any unavailable outcome so a
+  // streaming observer always has the row that outcome belongs to.
+  const plan = planMaxResearch({ question: run.question });
+  const availability = new Map<
+    MaxResearchParticipant,
+    { available: boolean; reason?: string }
+  >(
+    await Promise.all(
+      plan.assignments.map(async (assignment) => {
+        const state = await runtimeFor(assignment.participant)
+          .available()
+          .catch(() => ({
+            available: false,
+            reason: "The runtime is unreachable.",
+          }));
+        return [assignment.participant, state] as const;
+      }),
+    ),
+  );
   run.plan = plan;
   emit(run, "plan.completed", {
     intent: plan.research.intent,
@@ -208,18 +211,14 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
       wave: assignment.wave,
     })),
   });
-
-  if (
-    !plan.assignments.some((assignment) =>
-      RETRIEVAL_PARTICIPANTS.includes(assignment.participant),
-    )
-  ) {
-    run.status = "failed";
-    emit(run, "run.failed", {
-      error:
-        "No research runtime is available, so there is nothing to gather evidence with.",
-    });
-    return;
+  for (const assignment of plan.assignments) {
+    const state = availability.get(assignment.participant);
+    if (state?.available === false) {
+      emit(run, "participant.unavailable", {
+        participant: assignment.participant,
+        reason: state.reason ?? "unavailable",
+      });
+    }
   }
 
   // --- research ----------------------------------------------------------
@@ -234,6 +233,22 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
 
     const settled = await Promise.all(
       wave.map(async (assignment) => {
+        const state = availability.get(assignment.participant);
+        if (state?.available === false) {
+          const result: ParticipantResult = {
+            participant: assignment.participant,
+            status: "unavailable",
+            output: "",
+            reason: state.reason ?? "The runtime is unavailable.",
+          };
+          emit(run, "participant.settled", {
+            participant: result.participant,
+            status: result.status,
+            reason: result.reason!,
+            characters: 0,
+          });
+          return { assignment, result };
+        }
         emit(run, "participant.started", {
           participant: assignment.participant,
           rationale: assignment.rationale,

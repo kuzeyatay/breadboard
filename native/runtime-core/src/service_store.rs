@@ -2110,6 +2110,9 @@ fn service_snapshot_tx(
     {
         return Err(DurableServiceStoreError::CorruptService(service.service_id));
     }
+    let bounded_restart_pending = service.lifecycle_state == ServiceLifecycleState::Failed
+        && service.retry_required
+        && service.restart_attempts_in_window < service.max_restarts;
     let state = match (service.lifecycle_state, admission_denial.is_some()) {
         (ServiceLifecycleState::AvailableButStopped | ServiceLifecycleState::Failed, true) => {
             RuntimeServiceState::ResourceBlocked
@@ -2122,6 +2125,9 @@ fn service_snapshot_tx(
             RuntimeServiceState::Ready
         }
         (ServiceLifecycleState::Ready, false) => RuntimeServiceState::Busy,
+        (ServiceLifecycleState::Failed, false) if bounded_restart_pending => {
+            RuntimeServiceState::Starting
+        }
         (ServiceLifecycleState::Failed, false) => RuntimeServiceState::Failed,
         (ServiceLifecycleState::Stopping, false) => RuntimeServiceState::Stopping,
         (
@@ -2775,7 +2781,12 @@ fn service_exit_disposition(
         ),
         (ProcessExitClassification::ResourceExhausted, _, _) => (
             ServiceLifecycleState::Failed,
-            false,
+            // A hard limit protects the host; it is not evidence that the
+            // service can never run again. Let the existing bounded restart
+            // policy recycle the process tree and stop after its configured
+            // window budget instead of making the entire desktop require an
+            // explicit Retry after the first memory spike.
+            true,
             ServiceLeaseReleaseReason::Failure,
             Some("Service process exhausted its enforced resource limit"),
         ),
@@ -3087,6 +3098,21 @@ pub(crate) fn reconcile_services_after_runtime_restart_tx(
              last_error=NULL, last_observed_at=?1, updated_at=?1
          WHERE lifecycle_state IN ('starting','ready','stopping')",
         params![now_ms],
+    )?;
+    // A launch that never created a process because its prerequisites were
+    // missing carries no evidence that they are still missing after a runtime
+    // restart. Return those services to plain on-demand starts so the next
+    // dependent job re-probes the install instead of failing on a stale
+    // verdict. Rows written before preparation failures became retryable are
+    // covered by the same clause.
+    transaction.execute(
+        "UPDATE runtime_services
+         SET lifecycle_state='available_but_stopped', retry_required=0,
+             idle_due_at=NULL, last_error=NULL,
+             restart_window_started_at=NULL, restart_attempts_in_window=0,
+             next_restart_at=NULL, last_observed_at=?1, updated_at=?1
+         WHERE lifecycle_state='failed' AND last_error=?2",
+        params![now_ms, SERVICE_PREPARATION_FAILURE_MESSAGE],
     )?;
     transaction.execute(
         "UPDATE runtime_services
@@ -3964,7 +3990,10 @@ mod tests {
         assert_eq!(active_service_leases(&store, "core_dependency"), 0);
 
         let disposition = store
-            .worker_service_dependency_unavailable_before_assignment(&fixture.job_id, false)
+            .worker_service_dependency_unavailable_before_assignment(
+                &fixture.job_id,
+                crate::WorkerServiceDependencyFailure::Unavailable,
+            )
             .unwrap();
         assert!(matches!(
             disposition,
@@ -4834,17 +4863,91 @@ mod tests {
         let failed = store
             .finish_claimed_durable_service_start_preparation_failure(current, 112)
             .unwrap();
-        assert_eq!(failed.status.state, RuntimeServiceState::Failed);
+        // A bounded restart is pending, which the public projection reports
+        // as starting: the next demand re-probes the launch prerequisites.
+        assert_eq!(failed.status.state, RuntimeServiceState::Starting);
         assert_eq!(
             failed.status.last_error.as_deref(),
             Some(SERVICE_PREPARATION_FAILURE_MESSAGE)
         );
         assert_eq!(failed.pending_leases, 0);
         assert_eq!(failed.active_leases, 0);
-        assert_eq!(failed.restart, DurableServiceRestartStatus::Disabled);
+        assert_eq!(
+            failed.restart,
+            DurableServiceRestartStatus::Deferred(DurableServiceRestartSchedule {
+                eligible_at_ms: 122,
+                window_ends_at_ms: 1_112,
+                attempts_in_window: 0,
+                maximum_restarts: 2,
+                window_exhausted: false,
+            })
+        );
         assert_eq!(active_service_reservations(&store), 0);
         assert_eq!(outbox_count(&store, Some("superseded")), 1);
         assert_eq!(outbox_count(&store, Some("acked")), 0);
+
+        // Once the backoff elapses, the next demand mints a fresh start intent
+        // instead of failing on the stale verdict.
+        let _retry = acquire(&store, &registration, "lease_2", 130);
+        let retrying = store.durable_service_snapshot("search").unwrap();
+        assert_eq!(retrying.status.state, RuntimeServiceState::Starting);
+        assert_eq!(retrying.pending_leases, 1);
+        assert_eq!(outbox_count(&store, Some("pending")), 1);
+    }
+
+    #[test]
+    fn runtime_restart_returns_preparation_failed_service_to_on_demand_start() {
+        let (_directory, store) = store();
+        let registration = registration("search");
+        let _lease = acquire(&store, &registration, "lease_1", 100);
+        let claim = store
+            .claim_next_durable_service_intent(100, 101)
+            .unwrap()
+            .unwrap();
+        let failed = store
+            .finish_claimed_durable_service_start_preparation_failure(claim, 102)
+            .unwrap();
+        assert_eq!(
+            failed.status.last_error.as_deref(),
+            Some(SERVICE_PREPARATION_FAILURE_MESSAGE)
+        );
+        // Older runtimes persisted this verdict as permanent; the restart
+        // reconcile must recover those rows too.
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute(
+                    "UPDATE runtime_services SET retry_required=0, next_restart_at=NULL
+                     WHERE service_id='search'",
+                    [],
+                )
+                .unwrap();
+        }
+        let stale = store.durable_service_snapshot("search").unwrap();
+        assert_eq!(stale.status.state, RuntimeServiceState::Failed);
+        assert_eq!(stale.restart, DurableServiceRestartStatus::Disabled);
+
+        {
+            let mut connection = store.connection.lock().unwrap();
+            let transaction = connection.transaction().unwrap();
+            reconcile_services_after_runtime_restart_tx(&transaction, 150).unwrap();
+            transaction.commit().unwrap();
+        }
+        let reset = store.durable_service_snapshot("search").unwrap();
+        assert_eq!(reset.status.state, RuntimeServiceState::AvailableButStopped);
+        assert_eq!(reset.status.last_error, None);
+        assert_eq!(
+            reset.restart,
+            DurableServiceRestartStatus::Idle {
+                attempts_in_window: 0,
+                window_ends_at_ms: None,
+            }
+        );
+
+        let _lease = acquire(&store, &registration, "lease_2", 200);
+        let restarted = store.durable_service_snapshot("search").unwrap();
+        assert_eq!(restarted.status.state, RuntimeServiceState::Starting);
+        assert_eq!(outbox_count(&store, Some("pending")), 1);
     }
 
     #[test]
@@ -4982,12 +5085,62 @@ mod tests {
         let snapshot = store
             .finish_durable_service_tree_exit_inner(&start, &exit, None, 105)
             .unwrap();
-        assert_eq!(snapshot.status.state, RuntimeServiceState::Failed);
+        assert_eq!(snapshot.status.state, RuntimeServiceState::Starting);
         assert_eq!(
             snapshot.status.last_error.as_deref(),
             Some("Service process tree supervision failed")
         );
         assert_eq!(active_service_reservations(&store), 0);
+    }
+
+    #[test]
+    fn resource_exhausted_service_exit_uses_bounded_restart_policy() {
+        let (_directory, store) = store();
+        let registration = registration_with_policy_and_class(
+            "dashboard",
+            ServiceStartupPolicy::Eager,
+            ResourceClass::Core,
+        );
+        let profile = admission_profile("dashboard", RuntimeMode::Lean, 64);
+        store.register_durable_service(&registration, 100).unwrap();
+        assert_eq!(
+            store
+                .begin_eager_durable_service_start(
+                    &registration,
+                    &profile,
+                    101,
+                    AdmissionPolicy::default(),
+                    commit_sample,
+                )
+                .unwrap(),
+            DurableServiceStartResult::Queued
+        );
+        let start = acknowledge_next_start(&store, 102, 103);
+        let exit = ProcessTreeExit::service_classified_exit_after_started_for_test_in_scope(
+            store.generation_scope.clone(),
+            "dashboard",
+            1,
+            ProcessExitClassification::ResourceExhausted,
+        );
+        let failed = store
+            .finish_durable_service_tree_exit_inner(&start, &exit, None, 104)
+            .unwrap();
+
+        assert_eq!(failed.status.state, RuntimeServiceState::Starting);
+        assert_eq!(
+            failed.status.last_error.as_deref(),
+            Some("Service process exhausted its enforced resource limit")
+        );
+        assert_eq!(
+            failed.restart,
+            DurableServiceRestartStatus::Deferred(DurableServiceRestartSchedule {
+                eligible_at_ms: 114,
+                window_ends_at_ms: 1_104,
+                attempts_in_window: 0,
+                maximum_restarts: 2,
+                window_exhausted: false,
+            })
+        );
     }
 
     #[test]
@@ -5401,7 +5554,7 @@ mod tests {
         let snapshot = unbound_store
             .finish_durable_service_tree_exit_inner(&start, &stopped, None, 103)
             .unwrap();
-        assert_eq!(snapshot.status.state, RuntimeServiceState::Failed);
+        assert_eq!(snapshot.status.state, RuntimeServiceState::Starting);
         assert_eq!(
             snapshot.status.last_error.as_deref(),
             Some("Service process stopped without matching durable StopTree authority")
@@ -5519,7 +5672,7 @@ mod tests {
         let failed = store
             .finish_durable_service_tree_exit_inner(&start, &stopped, Some(stop.cause()), 108)
             .unwrap();
-        assert_eq!(failed.status.state, RuntimeServiceState::Failed);
+        assert_eq!(failed.status.state, RuntimeServiceState::Starting);
         assert_eq!(
             failed.status.last_error.as_deref(),
             Some(SERVICE_READINESS_TIMEOUT_MESSAGE)
@@ -5602,7 +5755,7 @@ mod tests {
                 103,
             )
             .unwrap();
-        assert_eq!(snapshot.status.state, RuntimeServiceState::Failed);
+        assert_eq!(snapshot.status.state, RuntimeServiceState::Starting);
         assert_eq!(
             snapshot.status.last_error.as_deref(),
             Some("Authoritative service process ownership is unsupported on this platform")
@@ -6709,13 +6862,20 @@ impl JobStore {
                     to_i64(now_ms, "service preparation failure time")?,
                 ],
             )?;
-            let restart_terminal = durable_restart_terminal_state(&service, false, now_ms)?;
+            // Missing launch prerequisites are re-probed on the next demand
+            // instead of being recorded as a permanent verdict. A missing
+            // install is routinely repaired later by a managed-setup job, and a
+            // permanent row failed every dependent job (and survived runtime
+            // restarts) until someone issued an explicit retry. The bounded
+            // restart window still keeps a prerequisite that stays missing
+            // from being probed more than a few times per window.
+            let restart_terminal = durable_restart_terminal_state(&service, true, now_ms)?;
             let changed = transaction.execute(
-                "UPDATE runtime_services SET lifecycle_state='failed', retry_required=0,
+                "UPDATE runtime_services SET lifecycle_state='failed', retry_required=?7,
                  idle_due_at=NULL, last_error=?3, last_exited_generation=?2,
                  last_observed_at=?4, updated_at=?4,
                  restart_window_started_at=?5, restart_attempts_in_window=?6,
-                 next_restart_at=NULL
+                 next_restart_at=?8
                  WHERE service_id=?1 AND generation=?2 AND lifecycle_state='starting'",
                 params![
                     service_id,
@@ -6727,6 +6887,15 @@ impl JobStore {
                         .map(|value| to_i64(value, "service restart window start"))
                         .transpose()?,
                     i64::from(restart_terminal.attempts_in_window),
+                    if restart_terminal.retry_required {
+                        1_i64
+                    } else {
+                        0_i64
+                    },
+                    restart_terminal
+                        .next_restart_at_ms
+                        .map(|value| to_i64(value, "next service restart"))
+                        .transpose()?,
                 ],
             )?;
             if changed != 1 || !release_service_reservation_tx(&transaction, service_id, now_ms)? {

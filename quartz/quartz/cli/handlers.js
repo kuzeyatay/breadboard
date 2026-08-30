@@ -228,6 +228,51 @@ See the [documentation](https://quartz.jzhao.xyz) for how to get started.
 `)
 }
 
+export async function compileInlineScript(filePath) {
+  let text = await promises.readFile(filePath, "utf8")
+
+  // remove default exports that we manually inserted
+  text = text.replace("export default", "")
+  text = text.replace("export", "")
+
+  const sourcefile = path.relative(path.resolve("."), filePath)
+  const resolveDir = path.dirname(sourcefile)
+  const transpiled = await esbuild.build({
+    stdin: {
+      contents: text,
+      loader: "ts",
+      resolveDir,
+      sourcefile,
+    },
+    write: false,
+    bundle: true,
+    minify: true,
+    platform: "browser",
+    // These bundles are returned as text and later emitted in classic
+    // <script> elements. Compiling them as ESM left esbuild's top-level
+    // bindings in the global scope once the text was embedded, so independently
+    // minified runtimes could overwrite one another before deferred handlers
+    // ran. An IIFE gives the emitted code the isolated scope esbuild assumes.
+    format: "iife",
+    plugins: [
+      {
+        name: "raw-source-loader",
+        setup(innerBuild) {
+          innerBuild.onResolve({ filter: /\?raw$/ }, (args) => ({
+            path: path.resolve(args.resolveDir, args.path.slice(0, -4)),
+            namespace: "raw-source",
+          }))
+          innerBuild.onLoad({ filter: /.*/, namespace: "raw-source" }, async (args) => ({
+            contents: `export default ${JSON.stringify(await promises.readFile(args.path, "utf8"))}`,
+            loader: "js",
+          }))
+        },
+      },
+    ],
+  })
+  return transpiled.outputFiles[0].text
+}
+
 /**
  * Handles `npx quartz build`
  * @param {*} argv arguments for `build`
@@ -267,45 +312,8 @@ export async function handleBuild(argv) {
         name: "inline-script-loader",
         setup(build) {
           build.onLoad({ filter: /\.inline\.(ts|js)$/ }, async (args) => {
-            let text = await promises.readFile(args.path, "utf8")
-
-            // remove default exports that we manually inserted
-            text = text.replace("export default", "")
-            text = text.replace("export", "")
-
-            const sourcefile = path.relative(path.resolve("."), args.path)
-            const resolveDir = path.dirname(sourcefile)
-            const transpiled = await esbuild.build({
-              stdin: {
-                contents: text,
-                loader: "ts",
-                resolveDir,
-                sourcefile,
-              },
-              write: false,
-              bundle: true,
-              minify: true,
-              platform: "browser",
-              format: "esm",
-              plugins: [
-                {
-                  name: "raw-source-loader",
-                  setup(innerBuild) {
-                    innerBuild.onResolve({ filter: /\?raw$/ }, (args) => ({
-                      path: path.resolve(args.resolveDir, args.path.slice(0, -4)),
-                      namespace: "raw-source",
-                    }))
-                    innerBuild.onLoad({ filter: /.*/, namespace: "raw-source" }, async (args) => ({
-                      contents: `export default ${JSON.stringify(await promises.readFile(args.path, "utf8"))}`,
-                      loader: "js",
-                    }))
-                  },
-                },
-              ],
-            })
-            const rawMod = transpiled.outputFiles[0].text
             return {
-              contents: rawMod,
+              contents: await compileInlineScript(args.path),
               loader: "text",
             }
           })

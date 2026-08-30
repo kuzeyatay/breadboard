@@ -950,6 +950,19 @@ pub enum WorkerServiceDependencyFailureDisposition {
     OwnerAlreadySettled,
 }
 
+/// Why a required service dependency could not be leased before a worker
+/// existed. A memory denial carries the admission headroom so the job keeps
+/// the same closed evidence a direct job admission denial records; without it
+/// the dashboard can only repeat the sanitized failure message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerServiceDependencyFailure {
+    Unavailable,
+    ResourceExhausted {
+        required_headroom_mb: u64,
+        available_headroom_mb: u64,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreResidencyClaimDisposition {
     #[cfg(test)]
@@ -2748,9 +2761,28 @@ impl JobStore {
     pub fn worker_service_dependency_unavailable_before_assignment(
         &self,
         job_id: &str,
-        resource_exhausted: bool,
+        failure: WorkerServiceDependencyFailure,
     ) -> Result<WorkerServiceDependencyFailureDisposition, StoreError> {
         validate_identifier("jobId", job_id)?;
+        let resource_exhausted = matches!(
+            failure,
+            WorkerServiceDependencyFailure::ResourceExhausted { .. }
+        );
+        // The service denial is runtime-owned admission output, but the
+        // evidence row has a closed domain; anything outside it is dropped
+        // rather than allowed to fail the finalizer and strand the reservation.
+        let evidence = match failure {
+            WorkerServiceDependencyFailure::ResourceExhausted {
+                required_headroom_mb,
+                available_headroom_mb,
+            } if required_headroom_mb > 0
+                && required_headroom_mb <= MAX_COMMIT_LIMIT_MB
+                && available_headroom_mb <= MAX_COMMIT_LIMIT_MB =>
+            {
+                Some((required_headroom_mb, available_headroom_mb))
+            }
+            _ => None,
+        };
         let target = if resource_exhausted {
             JobState::ResourceExhausted
         } else {
@@ -2786,13 +2818,29 @@ impl JobStore {
              updated_at=?5, finished_at=?5 WHERE job_id=?1",
             params![job_id, state_name(target), code, message, now],
         )?;
+        let mut event_payload = serde_json::json!({ "code": code, "message": message });
+        if let Some((required_headroom_mb, available_headroom_mb)) = evidence {
+            transaction.execute(
+                "INSERT INTO runtime_job_resource_exhaustion (
+                    job_id, resource, required_headroom_mb, available_headroom_mb, denied_at
+                 ) VALUES (?1, 'windows_commit', ?2, ?3, ?4)",
+                params![job_id, required_headroom_mb, available_headroom_mb, now],
+            )?;
+            event_payload["admissionDenial"] = serde_json::json!({
+                "code": ADMISSION_RESOURCE_EXHAUSTED_FAILURE_CODE,
+                "resource": "windows_commit",
+                "requiredHeadroomMb": required_headroom_mb,
+                "availableHeadroomMb": available_headroom_mb,
+                "retryable": false,
+            });
+        }
         append_event_tx(
             &transaction,
             job_id,
             current.attempt,
             None,
             state_name(target),
-            &serde_json::json!({ "code": code, "message": message }),
+            &event_payload,
             now,
         )?;
         release_active_job_reservation_tx(&transaction, job_id, now)?;
@@ -5242,8 +5290,11 @@ fn validate_persisted_job_record(job: &JobRecord) -> Result<(), String> {
         (None, None, None) => {}
         (Some(resource), Some(required), Some(available))
             if job.state == JobState::ResourceExhausted
-                && job.failure_code.as_deref()
-                    == Some(ADMISSION_RESOURCE_EXHAUSTED_FAILURE_CODE)
+                && matches!(
+                    job.failure_code.as_deref(),
+                    Some(ADMISSION_RESOURCE_EXHAUSTED_FAILURE_CODE)
+                        | Some("SERVICE_DEPENDENCY_RESOURCE_EXHAUSTED")
+                )
                 && matches!(
                     resource,
                     "windows_commit_critical"
@@ -9691,7 +9742,13 @@ mod tests {
         admit(&store, "job_failed", &default_admission());
 
         let finalized = store
-            .worker_service_dependency_unavailable_before_assignment("job_failed", true)
+            .worker_service_dependency_unavailable_before_assignment(
+                "job_failed",
+                WorkerServiceDependencyFailure::ResourceExhausted {
+                    required_headroom_mb: 9_193,
+                    available_headroom_mb: 8_531,
+                },
+            )
             .unwrap();
         let WorkerServiceDependencyFailureDisposition::Finalized(job) = finalized else {
             panic!("admitted owner must be finalized exactly once")
@@ -9701,6 +9758,24 @@ mod tests {
             job.failure_code.as_deref(),
             Some("SERVICE_DEPENDENCY_RESOURCE_EXHAUSTED")
         );
+        // The service denial keeps the same closed headroom evidence a direct
+        // job admission denial records, so the public snapshot can say how much
+        // memory was missing instead of only the sanitized message.
+        assert_eq!(job.resource_exhaustion_resource.as_deref(), Some("windows_commit"));
+        assert_eq!(job.resource_exhaustion_required_headroom_mb, Some(9_193));
+        assert_eq!(job.resource_exhaustion_available_headroom_mb, Some(8_531));
+        let replayed = store.get(&context(1), "job_failed").unwrap();
+        assert_eq!(replayed.resource_exhaustion_required_headroom_mb, Some(9_193));
+        assert_eq!(replayed.resource_exhaustion_available_headroom_mb, Some(8_531));
+        let public = crate::control_views::runtime_job_response(&replayed).unwrap();
+        let breadboard_runtime_protocol::RuntimeJobResponse::RuntimeJob {
+            job: public_job, ..
+        } = public;
+        let evidence = public_job
+            .resource_exhaustion
+            .expect("service denial evidence must cross the control boundary");
+        assert_eq!(evidence.required_headroom_mb, 9_193);
+        assert_eq!(evidence.available_headroom_mb, 8_531);
         assert_eq!(latest_reservation_state(&store, "job_failed"), "released");
 
         store
@@ -9712,7 +9787,10 @@ mod tests {
             .unwrap();
         assert_eq!(cancelled.state, JobState::Cancelled);
         let raced = store
-            .worker_service_dependency_unavailable_before_assignment("job_cancelled", false)
+            .worker_service_dependency_unavailable_before_assignment(
+                "job_cancelled",
+                WorkerServiceDependencyFailure::Unavailable,
+            )
             .unwrap();
         assert!(matches!(
             raced,

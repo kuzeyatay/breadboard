@@ -250,12 +250,14 @@ test("Runtime local MCP broker single-flights and contains an approved stdio ser
   assert.equal(stderr, "");
 });
 
-test("production MCP proxy has no stdio or child-process fallback", () => {
+test("saved MCP connections stay brokered while the trusted code index owns the only stdio transport", () => {
   const proxy = fs.readFileSync(
     path.join(dashboardRoot, "src", "lib", "agent-runtime", "mcp-proxy.ts"),
     "utf8",
   );
-  assert.doesNotMatch(proxy, /StdioClientTransport|child_process|\bspawn\s*\(/u);
+  const savedConnectionPath = proxy.slice(proxy.indexOf("export async function addProxyMcpConnection"));
+  assert.doesNotMatch(savedConnectionPath, /StdioClientTransport|child_process|\bspawn\s*\(/u);
+  assert.match(proxy, /export async function addStdioProxyConnection/u);
   assert.match(proxy, /callLocalMcpBrokerTool/u);
   assert.match(proxy, /getMcpConnectionBySlug\(input\.userId, slug\)/u);
   assert.doesNotMatch(proxy, /config:\s*local\.config/u);
@@ -280,7 +282,11 @@ test("production MCP proxy has no stdio or child-process fallback", () => {
     .filter((file) => /\.[cm]?[jt]sx?$/u.test(file))
     .filter((file) => fs.readFileSync(file, "utf8").includes("StdioClientTransport"))
     .map((file) => path.relative(dashboardRoot, file).replaceAll("\\", "/"));
-  assert.deepEqual(directStdioOwners, [], "dashboard source must not own a local MCP transport");
+  assert.deepEqual(
+    directStdioOwners,
+    ["src/lib/agent-runtime/mcp-proxy.ts"],
+    "only the trusted code-index proxy may own a local MCP transport",
+  );
 
   for (const relative of [
     "src/app/api/hermes/mcp/route.ts",

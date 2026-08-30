@@ -574,7 +574,12 @@ export default function CalendarClient({
                 </button>
               </span>
             </div>
-            <div className="grid grid-cols-7 gap-px text-center">
+            <div
+              className="grid grid-cols-7 gap-px text-center"
+              // This is structural rather than decorative: without seven
+              // explicit tracks the mini month becomes a tall date rail.
+              style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}
+            >
               {WEEKDAY_ABBREVIATIONS.map((day) => (
                 <span key={day} className="py-1 text-[10px] text-gray-500">
                   {day.slice(0, 1)}

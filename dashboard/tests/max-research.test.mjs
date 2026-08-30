@@ -20,6 +20,7 @@ import {
   RETRIEVAL_PARTICIPANTS,
 } from "../src/lib/max-research/plan.ts";
 import {
+  maxResearchLiteratureQuery,
   summarizeEvents,
   terminalStatusFromEvents,
 } from "../src/lib/max-research/participants.ts";
@@ -166,15 +167,15 @@ test("retrieval runs together, and what reads it waits", () => {
   assert.ok(waves.length >= 2);
 });
 
-test("an unavailable runtime is left out of the plan, not failed later", () => {
+test("availability cannot shrink the five-agent plan", () => {
   const plan = planMaxResearch({
     question: "what percentage of startups survive five years",
-    unavailable: ["get_doc", "aris"],
   });
   const chosen = plan.assignments.map((a) => a.participant);
-  assert.ok(!chosen.includes("get_doc"));
-  assert.ok(!chosen.includes("aris"));
-  assert.ok(chosen.includes("deep_research"));
+  assert.deepEqual(
+    [...chosen].sort(),
+    ["agent_reach", "aris", "deep_research", "get_doc", "openscience"],
+  );
 });
 
 /* ---------------------------------------------------------------- */
@@ -557,11 +558,8 @@ test("a run manager's health is asked, not assumed from its import", () => {
   assert.match(body, /agent-reach\/runtime\.ts/);
 });
 
-test("a participant that cannot start is dropped from the plan, not from the answer", async () => {
-  // The behaviour those two guard: an unavailable runtime is left out during
-  // planning, so the run reconciles what it actually has instead of failing
-  // minutes later on something it could have known at the start.
-  const { summary } = await runToCompletion({
+test("a participant that cannot start remains visible and is not invoked", async () => {
+  const { summary, events } = await runToCompletion({
     question: "what percentage of relationships survive",
     runtimeFor: (participant) => ({
       available: async () =>
@@ -580,7 +578,23 @@ test("a participant that cannot start is dropped from the plan, not from the ans
     synthesize: async () => "Reconciled without the literature.",
   });
   assert.equal(summary.status, "completed");
-  assert.ok(!summary.participants.includes("get_doc"));
+  assert.ok(summary.participants.includes("get_doc"));
+  assert.equal(summary.participants.length, 5);
+  assert.ok(
+    summary.results.some(
+      (result) =>
+        result.participant === "get_doc" && result.status === "unavailable",
+    ),
+  );
+  const planEvent = events.find((event) => event.type === "plan.completed");
+  assert.equal(planEvent.payload.participants.length, 5);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "participant.unavailable" &&
+        event.payload.participant === "get_doc",
+    ),
+  );
 });
 
 test("a run that stopped is not a run that succeeded", () => {
@@ -714,9 +728,11 @@ test("a search query is the question, never the question plus instructions", () 
   assert.equal(getDoc.question, "what percentage of relationships survive");
   assert.ok(getDoc.guidance.length > 40, "it still gets guidance");
   assert.ok(!getDoc.question.includes(getDoc.guidance));
-  // And the runtime sends the bare question as the query, guidance as context.
+  // And the runtime sends a catalog-safe form of the bare question as the
+  // query, while guidance remains context. Short user questions are unchanged.
+  assert.equal(maxResearchLiteratureQuery(getDoc.question), getDoc.question);
   const body = source("src/lib/max-research/participants.ts");
-  assert.match(body, /query: brief\.question,/);
+  assert.match(body, /query: maxResearchLiteratureQuery\(brief\.question\),/);
   assert.match(body, /conversationContext: \[context\.conversationContext, brief\.guidance\]/);
 });
 

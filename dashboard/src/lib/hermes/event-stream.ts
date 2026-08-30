@@ -537,6 +537,7 @@ function driveSessionEventPump(
               ...(request.originClientMessageId
                 ? { originClientMessageId: request.originClientMessageId }
                 : {}),
+              ...(request.startedRun ? { startedRun: request.startedRun } : {}),
             },
           });
         }

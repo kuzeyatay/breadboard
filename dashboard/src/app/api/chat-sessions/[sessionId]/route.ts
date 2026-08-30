@@ -26,6 +26,7 @@ import {
 } from "@/lib/conversations/external-agent-runs";
 import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-agent-cancel";
 import {
+  completeAssistantMessage,
   deleteConversation,
   ensureConversationForLegacyChatSession,
   getConversationById,
@@ -48,6 +49,8 @@ interface QuartzInlineSelectionReference {
 }
 
 interface ChatMessage {
+  id?: string;
+  clientMessageId?: string;
   role: ChatRole;
   content: string;
   internalAgentContinuation?: boolean;
@@ -297,6 +300,13 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
         ? record.createdAt
         : undefined;
     messages.push({
+      ...(typeof record.id === "string" && /^msg_\d+$/u.test(record.id)
+        ? { id: record.id }
+        : {}),
+      ...(typeof record.clientMessageId === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/u.test(record.clientMessageId)
+        ? { clientMessageId: record.clientMessageId }
+        : {}),
       role,
       content,
       ...(role === "user" && record.internalAgentContinuation === true
@@ -405,10 +415,42 @@ export async function PATCH(
   // row the Terminal rail marks — one chat cannot be pinned in one view and
   // loose in the other.
   const needsConversation =
-    Boolean(title) || body.pinned !== undefined || body.highlight !== undefined;
+    Boolean(title) || messages !== undefined || body.pinned !== undefined ||
+    body.highlight !== undefined;
   let conversation = needsConversation
     ? ensureConversationForLegacyChatSession(sessionAccess.id, userId)
     : null;
+  const assistantCompletions: Array<{
+    conversationId: number;
+    clientMessageId: string;
+    content: string;
+  }> = [];
+  const canonicalByClientRole = new Map<string, {
+    id: number;
+    client_message_id: string;
+  }>();
+  const canonicalById = new Map<number, {
+    id: number;
+    client_message_id: string;
+  }>();
+  if (conversation) {
+    const rows = db.prepare(`
+      SELECT id, client_message_id, role
+      FROM conversation_messages
+      WHERE conversation_id = ?
+    `).all(conversation.id) as Array<{
+      id: number;
+      client_message_id: string;
+      role: ChatRole;
+    }>;
+    for (const row of rows) {
+      canonicalById.set(row.id, row);
+      canonicalByClientRole.set(
+        `${row.client_message_id}\u0000${row.role}`,
+        row,
+      );
+    }
+  }
   const update = db.transaction(() => {
     if (title && conversation) {
       // Garden Chat and Terminal are two views of the same canonical
@@ -438,9 +480,13 @@ export async function PATCH(
         created_at: string;
       }>;
       const metadataByMessage = new Map<string, typeof runtimeMetadata>();
+      const metadataByCanonicalId = new Map<number, (typeof runtimeMetadata)[number]>();
       for (const metadata of runtimeMetadata) {
         const key = `${metadata.role}\u0000${metadata.content}`;
         metadataByMessage.set(key, [...(metadataByMessage.get(key) ?? []), metadata]);
+        if (metadata.canonical_message_id !== null) {
+          metadataByCanonicalId.set(metadata.canonical_message_id, metadata);
+        }
       }
       db.prepare("DELETE FROM chat_messages WHERE session_id = ?").run(
         sessionAccess.id,
@@ -452,7 +498,22 @@ export async function PATCH(
       );
       messages.forEach((message, index) => {
         const key = `${message.role}\u0000${message.content}`;
-        const prior = metadataByMessage.get(key)?.shift();
+        const publicCanonicalId = message.id?.startsWith("msg_")
+          ? Number(message.id.slice(4))
+          : Number.NaN;
+        const canonical =
+          (Number.isSafeInteger(publicCanonicalId)
+            ? canonicalById.get(publicCanonicalId)
+            : undefined) ??
+          (message.clientMessageId
+            ? canonicalByClientRole.get(
+                `${message.clientMessageId}\u0000${message.role}`,
+              )
+            : undefined);
+        const canonicalId = canonical?.id ?? null;
+        const prior = canonicalId !== null
+          ? metadataByCanonicalId.get(canonicalId)
+          : metadataByMessage.get(key)?.shift();
         insert.run(
           sessionAccess.id,
           message.role,
@@ -467,13 +528,36 @@ export async function PATCH(
           prior?.runtime_status ?? null,
           index,
           message.createdAt ?? prior?.created_at ?? new Date().toISOString(),
-          prior?.canonical_message_id ?? null,
+          canonicalId ?? prior?.canonical_message_id ?? null,
         );
+        if (
+          conversation &&
+          message.role === "assistant" &&
+          message.content.trim() &&
+          canonical?.client_message_id
+        ) {
+          assistantCompletions.push({
+            conversationId: conversation.id,
+            clientMessageId: canonical.client_message_id,
+            content: message.content,
+          });
+        }
       });
     }
   });
 
   update();
+
+  // Browser-local branches and the legacy fallback still finish through this
+  // compatibility save. Reflect their non-empty answer into the canonical
+  // placeholder so those paths obey the same crash/reload contract as Hermes.
+  for (const completion of assistantCompletions) {
+    try {
+      completeAssistantMessage(completion, db);
+    } catch {
+      // A detached runtime pump may have won the race and finalized it first.
+    }
+  }
 
   // Outside the transaction above, which owns the transcript rewrite: a mark is
   // not activity and must not be able to fail a message save, or be undone by

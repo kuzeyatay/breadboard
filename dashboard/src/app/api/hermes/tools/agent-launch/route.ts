@@ -6,11 +6,10 @@
 // the choice while leaving the launch itself where it has always been: the chat
 // surface performs it through its structured delegation path.
 //
-// Nothing here starts anything. It validates that this turn may launch, that the
-// agent exists on this surface and can be started from a brief at all, and that
-// the brief will not be re-parsed as some other command; then it queues the
-// request for the client. Super Agent implies YOLO, so the worker runs privately
-// and its result always returns to the Super Agent for the visible response.
+// Most agents are validated here and queued for their surface launcher. Max
+// Research is the deliberate exception: it is read-only and long-running, so
+// this authenticated boundary starts and attaches it durably before returning.
+// The client then observes that run rather than owning whether it exists.
 
 import { NextResponse } from "next/server";
 import {
@@ -34,6 +33,13 @@ import {
   getActiveRuntimeRun,
   parseRuntimeRunDispatch,
 } from "@/lib/hermes/run-store.ts";
+import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
+import { getConversationById } from "@/lib/conversations/store.ts";
+import { attachExternalAgentRun } from "@/lib/conversations/external-agent-turns.ts";
+import {
+  abortRun as abortMaxResearchRun,
+  startRun as startMaxResearchRun,
+} from "@/lib/max-research/runtime-run-manager.ts";
 import {
   findCapabilityConflict,
   modelLaunchableRuntimeAgents,
@@ -82,9 +88,9 @@ export async function POST(request: Request) {
         "Agent launch session scope is invalid.",
       );
     }
-    // The queued request is addressed to the client watching this run. Without a
-    // live run there is nobody to deliver it to, so it would be accepted and
-    // then never happen — the one outcome worth refusing outright.
+    // The active parent run supplies the authenticated origin and the assistant
+    // row a private worker belongs to. Surface-launched agents also need it for
+    // delivery; server-started Max Research needs it for durable attachment.
     const run = getActiveRuntimeRun(session.id);
     if (!run) {
       throw new ApiError(
@@ -192,6 +198,52 @@ export async function POST(request: Request) {
       );
     }
 
+    // Max Research is read-only, approval-free, and commonly takes close to an
+    // hour. Start it at the authenticated tool boundary instead of asking the
+    // current page to start it after the parent turn: if the user navigates
+    // away two seconds after Send, this request still completes and the run is
+    // already attached to the originating assistant row when they return.
+    let startedRun:
+      | { kind: "max_research"; runId: string; query: string }
+      | undefined;
+    if (agent.id === "max-research") {
+      const conversation = getConversationById(session.conversation_id);
+      if (!conversation || conversation.user_id !== session.user_id) {
+        throw new ApiError(
+          409,
+          "agent_launch_conversation_missing",
+          "The conversation for this delegated run could not be found.",
+        );
+      }
+      const dispatch = parseRuntimeRunDispatch(run);
+      const maxRun = await startMaxResearchRun({
+        userId: session.user_id,
+        requestId: originClientMessageId,
+        question: brief,
+        model:
+          dispatch.model?.modelID ?? dispatch.modelIdentity?.modelID ?? "",
+        reasoningEffort: dispatch.variant ?? "high",
+        baseUrl: resolveChatmockBaseUrl(request).baseURL,
+      });
+      startedRun = {
+        kind: "max_research",
+        runId: maxRun.runId,
+        query: brief,
+      };
+      try {
+        attachExternalAgentRun({
+          conversation,
+          clientMessageId: originClientMessageId,
+          run: startedRun,
+        });
+      } catch (error) {
+        await abortMaxResearchRun(session.user_id, maxRun.runId).catch(
+          () => false,
+        );
+        throw error;
+      }
+    }
+
     const queued = recordAgentLaunchRequest({
       runId: run.id,
       agentId: agent.id,
@@ -202,6 +254,7 @@ export async function POST(request: Request) {
       awaitResult,
       requiresApproval: agent.requiresLaunchApproval,
       originClientMessageId,
+      ...(startedRun ? { startedRun } : {}),
     });
     if (!queued) {
       throw new ApiError(
@@ -231,7 +284,9 @@ export async function POST(request: Request) {
         agentId: agent.id,
         requestId: queued.requestId,
         confirmationRequired: agent.requiresLaunchApproval,
-        effect: `${agent.name} starts privately after this turn. Its card is not shown to the user.`,
+        effect: startedRun
+          ? `${agent.name} is running privately. Its card is not shown to the user.`
+          : `${agent.name} starts privately after this turn. Its card is not shown to the user.`,
         continuation:
           "You will be given its result as a new internal turn. Summarize it in your own response and present any artifact or file it produced.",
         instruction: `Do not ask for approval, mention a run card, or invent output. Briefly say that you are checking with ${agent.name}; when its result returns, speak as the Super Agent and summarize it.`,

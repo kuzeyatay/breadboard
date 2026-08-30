@@ -41,7 +41,7 @@ test("SolidWorks has separate sealed development and packaged Runtime profiles",
   assert.equal(matches.length, 1);
   const service = matches[0];
   assert.equal(service.startupPolicy, "on-demand");
-  assert.equal(service.requirement, "optional");
+  assert.equal(service.requirement, "required");
   assert.deepEqual(service.dependencies, []);
   assert.equal(service.launchProfiles.length, 2);
   const development = service.launchProfiles.find((profile) => profile.modes.includes("lean"));

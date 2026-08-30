@@ -2232,6 +2232,7 @@ for (const entry of [
   "runtime-v2-agent-edits-worker.mjs",
   "runtime-v2-agent-edits-executor.mjs",
   "runtime-v2-codex-worker.mjs",
+  "runtime-v2-codex-probe-worker.mjs",
   "runtime-v2-ruflo-worker.mjs",
   "runtime-v2-deep-tutor-worker.mjs",
   "runtime-v2-opencode-worker.mjs",

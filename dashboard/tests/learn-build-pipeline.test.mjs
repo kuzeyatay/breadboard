@@ -440,7 +440,349 @@ test("1/2c. a compatible retained candidate is cloned into the next job without 
   }
 });
 
-test("1/2d. a supervised Learn worker uses its durable runtime root instead of OS temp", () => {
+test("1/2d. a Runtime-archived retained candidate remains resumable after leaving the active builds root", () => {
+  const repo = tmp("repo-runtime-archived-resume");
+  fs.writeFileSync(path.join(repo, "durable.md"), "durable input\n");
+  const runtimeRoot = tmp("runtime-archived-resume-root");
+  const originalRuntimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+  const originalDataRoot = process.env.BREADBOARD_DATA_DIR;
+  const gardenSlug = `g-runtime-archived-${crypto.randomUUID()}`;
+  try {
+    process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = runtimeRoot;
+    delete process.env.BREADBOARD_DATA_DIR;
+    const retained = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-runtime-archived-failed",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-runtime-archived",
+      sourceSetFingerprint: "sf-runtime-archived",
+      stagingDirectoryName: gardenSlug,
+    });
+    const checkpointPath = path.join(
+      retained.stagingGardenDir,
+      ".breadboard",
+      "learn-run-snapshots",
+      "checkpoint.json",
+    );
+    const stagedPage = path.join(
+      retained.stagingGardenDir,
+      "learning",
+      "1. Preserved",
+      "1.1 Checkpoint.md",
+    );
+    fs.mkdirSync(path.dirname(checkpointPath), { recursive: true });
+    fs.mkdirSync(path.dirname(stagedPage), { recursive: true });
+    fs.writeFileSync(checkpointPath, '{"progress":96}\n');
+    fs.writeFileSync(stagedPage, "# Preserved at 96%\n");
+    retainLearnBuildWorkspace(retained, {
+      reason: "generation_failure",
+      failureStage: "Final critic",
+      retainedAt: "2026-08-28T08:03:00.000Z",
+    });
+
+    const archivedRoot = path.join(
+      runtimeRoot,
+      "retained-builds",
+      gardenSlug,
+      retained.jobId,
+    );
+    fs.mkdirSync(path.dirname(archivedRoot), { recursive: true });
+    fs.renameSync(retained.workspaceRoot, archivedRoot);
+    const archivedDescriptorPath = path.join(
+      archivedRoot,
+      "build-workspace.json",
+    );
+    const archivedDescriptor = JSON.parse(
+      fs.readFileSync(archivedDescriptorPath, "utf8"),
+    );
+    archivedDescriptor.workspaceRoot = archivedRoot;
+    archivedDescriptor.stagingGardenDir = path.join(archivedRoot, gardenSlug);
+    archivedDescriptor.stagingLearningDir = path.join(
+      archivedDescriptor.stagingGardenDir,
+      "learning",
+    );
+    fs.writeFileSync(
+      archivedDescriptorPath,
+      `${JSON.stringify(archivedDescriptor, null, 2)}\n`,
+    );
+
+    const resumed = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-runtime-archived-resumed",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-runtime-archived",
+      sourceSetFingerprint: "sf-runtime-archived",
+    });
+
+    assert.equal(resumed.resumedFromJobId, retained.jobId);
+    assert.equal(resumed.resumedFromWorkspaceRoot, archivedRoot);
+    assert.equal(
+      fs.readFileSync(
+        path.join(
+          resumed.stagingGardenDir,
+          ".breadboard",
+          "learn-run-snapshots",
+          "checkpoint.json",
+        ),
+        "utf8",
+      ),
+      '{"progress":96}\n',
+    );
+    assert.equal(
+      fs.readFileSync(
+        path.join(archivedRoot, gardenSlug, ".breadboard", "learn-run-snapshots", "checkpoint.json"),
+        "utf8",
+      ),
+      '{"progress":96}\n',
+      "the archived source candidate must remain immutable after cloning",
+    );
+    roots.push(archivedRoot, resumed.workspaceRoot);
+  } finally {
+    if (originalRuntimeRoot === undefined) {
+      delete process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+    } else {
+      process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = originalRuntimeRoot;
+    }
+    if (originalDataRoot === undefined) delete process.env.BREADBOARD_DATA_DIR;
+    else process.env.BREADBOARD_DATA_DIR = originalDataRoot;
+  }
+});
+
+test("1/2e. resume prefers an older publish-ready checkpoint over a newer deterministically invalid candidate", () => {
+  const repo = tmp("repo-safe-retained-resume");
+  fs.writeFileSync(path.join(repo, "durable.md"), "durable input\n");
+  const runtimeRoot = tmp("safe-retained-resume-runtime");
+  const originalRuntimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+  const originalDataRoot = process.env.BREADBOARD_DATA_DIR;
+  const gardenSlug = `g-safe-resume-${crypto.randomUUID()}`;
+  try {
+    process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = runtimeRoot;
+    delete process.env.BREADBOARD_DATA_DIR;
+
+    const safe = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-safe-99",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-safe-resume",
+      sourceSetFingerprint: "sf-safe-resume",
+    });
+    fs.mkdirSync(path.join(safe.stagingGardenDir, ".breadboard"), { recursive: true });
+    fs.mkdirSync(safe.stagingLearningDir, { recursive: true });
+    fs.writeFileSync(path.join(safe.stagingGardenDir, ".breadboard", "acceptance-status.json"), JSON.stringify({
+      deterministicPass: true,
+      accepted: true,
+      publishReady: true,
+    }) + "\n");
+    fs.writeFileSync(path.join(safe.stagingLearningDir, "checkpoint.txt"), "safe-99\n");
+    retainLearnBuildWorkspace(safe, {
+      reason: "generation_failure",
+      failureStage: "Publishing",
+      retainedAt: "2026-08-28T08:04:00.000Z",
+    });
+
+    const invalid = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-invalid-newer",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-safe-resume",
+      sourceSetFingerprint: "sf-safe-resume",
+    });
+    fs.mkdirSync(path.join(invalid.stagingGardenDir, ".breadboard"), { recursive: true });
+    fs.mkdirSync(invalid.stagingLearningDir, { recursive: true });
+    fs.writeFileSync(path.join(invalid.stagingGardenDir, ".breadboard", "acceptance-status.json"), JSON.stringify({
+      deterministicPass: false,
+      accepted: false,
+      publishReady: false,
+    }) + "\n");
+    fs.writeFileSync(path.join(invalid.stagingLearningDir, "checkpoint.txt"), "invalid-newer\n");
+    retainLearnBuildWorkspace(invalid, {
+      reason: "generation_failure",
+      failureStage: "Semantic critic",
+      retainedAt: "2026-08-28T08:05:00.000Z",
+    });
+
+    const resumed = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-safe-resumed",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-safe-resume",
+      sourceSetFingerprint: "sf-safe-resume",
+    });
+
+    assert.equal(resumed.resumedFromJobId, safe.jobId);
+    assert.equal(fs.readFileSync(path.join(resumed.stagingLearningDir, "checkpoint.txt"), "utf8"), "safe-99\n");
+    assert.equal(
+      fs.readFileSync(path.join(invalid.stagingLearningDir, "checkpoint.txt"), "utf8"),
+      "invalid-newer\n",
+      "the rejected candidate remains retained for audit",
+    );
+    roots.push(safe.workspaceRoot, invalid.workspaceRoot, resumed.workspaceRoot);
+  } finally {
+    if (originalRuntimeRoot === undefined) delete process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+    else process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = originalRuntimeRoot;
+    if (originalDataRoot === undefined) delete process.env.BREADBOARD_DATA_DIR;
+    else process.env.BREADBOARD_DATA_DIR = originalDataRoot;
+  }
+});
+
+test("1/2f. resume prefers a newer deterministic-valid semantic checkpoint over an older publish-ready candidate", () => {
+  const repo = tmp("repo-progress-retained-resume");
+  fs.writeFileSync(path.join(repo, "durable.md"), "durable input\n");
+  const runtimeRoot = tmp("progress-retained-resume-runtime");
+  const originalRuntimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+  const originalDataRoot = process.env.BREADBOARD_DATA_DIR;
+  const gardenSlug = `g-progress-resume-${crypto.randomUUID()}`;
+  try {
+    process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = runtimeRoot;
+    delete process.env.BREADBOARD_DATA_DIR;
+
+    const published = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-published-older",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-progress-resume",
+      sourceSetFingerprint: "sf-progress-resume",
+    });
+    fs.mkdirSync(path.join(published.stagingGardenDir, ".breadboard"), { recursive: true });
+    fs.mkdirSync(published.stagingLearningDir, { recursive: true });
+    fs.writeFileSync(path.join(published.stagingGardenDir, ".breadboard", "acceptance-status.json"), JSON.stringify({
+      deterministicPass: true,
+      accepted: true,
+      publishReady: true,
+    }) + "\n");
+    fs.writeFileSync(path.join(published.stagingLearningDir, "checkpoint.txt"), "published-older\n");
+    retainLearnBuildWorkspace(published, {
+      reason: "generation_failure",
+      failureStage: "Publishing",
+      retainedAt: "2026-08-28T08:04:00.000Z",
+    });
+
+    const repaired = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-semantic-newer",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-progress-resume",
+      sourceSetFingerprint: "sf-progress-resume",
+    });
+    fs.mkdirSync(path.join(repaired.stagingGardenDir, ".breadboard"), { recursive: true });
+    fs.mkdirSync(repaired.stagingLearningDir, { recursive: true });
+    fs.writeFileSync(path.join(repaired.stagingGardenDir, ".breadboard", "acceptance-status.json"), JSON.stringify({
+      deterministicPass: true,
+      accepted: false,
+      publishReady: false,
+    }) + "\n");
+    fs.writeFileSync(path.join(repaired.stagingLearningDir, "checkpoint.txt"), "semantic-newer\n");
+    retainLearnBuildWorkspace(repaired, {
+      reason: "generation_failure",
+      failureStage: "Semantic critic",
+      retainedAt: "2026-08-28T08:05:00.000Z",
+    });
+
+    const resumed = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-progress-resumed",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-progress-resume",
+      sourceSetFingerprint: "sf-progress-resume",
+    });
+
+    assert.equal(resumed.resumedFromJobId, repaired.jobId);
+    assert.equal(fs.readFileSync(path.join(resumed.stagingLearningDir, "checkpoint.txt"), "utf8"), "semantic-newer\n");
+    roots.push(published.workspaceRoot, repaired.workspaceRoot, resumed.workspaceRoot);
+  } finally {
+    if (originalRuntimeRoot === undefined) delete process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+    else process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = originalRuntimeRoot;
+    if (originalDataRoot === undefined) delete process.env.BREADBOARD_DATA_DIR;
+    else process.env.BREADBOARD_DATA_DIR = originalDataRoot;
+  }
+});
+
+test("1/2g. an inherited acceptance receipt cannot make a newer interrupted clone outrank its validated source", () => {
+  const repo = tmp("repo-stale-acceptance-resume");
+  fs.writeFileSync(path.join(repo, "durable.md"), "durable input\n");
+  const runtimeRoot = tmp("stale-acceptance-resume-runtime");
+  const originalRuntimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+  const originalDataRoot = process.env.BREADBOARD_DATA_DIR;
+  const gardenSlug = `g-stale-acceptance-${crypto.randomUUID()}`;
+  try {
+    process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = runtimeRoot;
+    delete process.env.BREADBOARD_DATA_DIR;
+
+    const safe = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-validated-source",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-stale-acceptance",
+      sourceSetFingerprint: "sf-stale-acceptance",
+    });
+    fs.mkdirSync(safe.stagingLearningDir, { recursive: true });
+    fs.mkdirSync(path.join(safe.stagingGardenDir, ".breadboard"), { recursive: true });
+    const safeStatusPath = path.join(safe.stagingGardenDir, ".breadboard", "acceptance-status.json");
+    fs.writeFileSync(safeStatusPath, JSON.stringify({
+      deterministicPass: true,
+      accepted: true,
+      publishReady: true,
+    }) + "\n");
+    fs.writeFileSync(path.join(safe.stagingLearningDir, "checkpoint.txt"), "validated-source\n");
+    retainLearnBuildWorkspace(safe, {
+      reason: "generation_failure",
+      failureStage: "Publishing",
+      retainedAt: "2026-08-28T08:06:00.000Z",
+    });
+
+    const interrupted = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-interrupted-clone",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-stale-acceptance",
+      sourceSetFingerprint: "sf-stale-acceptance",
+    });
+    assert.equal(interrupted.resumedFromJobId, safe.jobId);
+    const inheritedStatusPath = path.join(interrupted.stagingGardenDir, ".breadboard", "acceptance-status.json");
+    assert.equal(interrupted.inheritedAcceptanceStatusCleared, true);
+    assert.equal(
+      fs.existsSync(inheritedStatusPath),
+      false,
+      "a resumed job must not inherit the source job's acceptance authority",
+    );
+    fs.writeFileSync(path.join(interrupted.stagingLearningDir, "checkpoint.txt"), "interrupted-clone\n");
+    retainLearnBuildWorkspace(interrupted, {
+      reason: "abandoned_worker",
+      failureStage: "Semantic repair",
+      retainedAt: "2026-08-28T08:07:00.000Z",
+    });
+
+    const resumed = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-after-interruption",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-stale-acceptance",
+      sourceSetFingerprint: "sf-stale-acceptance",
+    });
+
+    assert.equal(resumed.resumedFromJobId, safe.jobId);
+    assert.equal(fs.readFileSync(path.join(resumed.stagingLearningDir, "checkpoint.txt"), "utf8"), "validated-source\n");
+    roots.push(safe.workspaceRoot, interrupted.workspaceRoot, resumed.workspaceRoot);
+  } finally {
+    if (originalRuntimeRoot === undefined) delete process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+    else process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = originalRuntimeRoot;
+    if (originalDataRoot === undefined) delete process.env.BREADBOARD_DATA_DIR;
+    else process.env.BREADBOARD_DATA_DIR = originalDataRoot;
+  }
+});
+
+test("1/2e. a supervised Learn worker uses its durable runtime root instead of OS temp", () => {
   const runtimeRoot = tmp("learn-worker-runtime-root");
   const originalRuntimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
   const originalDataRoot = process.env.BREADBOARD_DATA_DIR;

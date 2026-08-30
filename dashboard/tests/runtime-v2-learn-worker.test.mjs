@@ -231,7 +231,7 @@ test("Runtime V2 Learn cooperative cancellation accepts one exact stdin record",
   }
 });
 
-test("Runtime V2 Learn is one finite native-owned worker with packaged staging", () => {
+test("Runtime V2 Learn permits two finite native-owned workers with packaged staging", () => {
   const manifest = JSON.parse(
     fs.readFileSync(
       path.join(repoRoot, "desktop", "runtime-v2", "manifests", "workers.json"),
@@ -250,7 +250,7 @@ test("Runtime V2 Learn is one finite native-owned worker with packaged staging",
   const worker = manifest.workers.find(({ kind }) => kind === "learn-node");
   assert.deepEqual(worker.jobTypes, ["learn"]);
   assert.equal(worker.allowedEntrypoint, "dashboard/scripts/runtime-v2-learn-worker.mjs");
-  assert.equal(worker.maximumConcurrency, 1);
+  assert.equal(worker.maximumConcurrency, 2);
   assert.equal(worker.exitAfterJob, true);
 
   const source = fs.readFileSync(

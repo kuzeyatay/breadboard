@@ -44,10 +44,17 @@ fn public_artifact_kind(internal_kind: &str) -> RuntimePublicArtifactKind {
 }
 
 fn public_failure_code(record: &JobRecord) -> Option<RuntimePublicFailureCode> {
-    record.failure_code.as_ref().map(|_| match record.state {
+    record.failure_code.as_ref().map(|code| match record.state {
         JobState::ResourceExhausted => RuntimePublicFailureCode::ResourceExhausted,
         JobState::Interrupted => RuntimePublicFailureCode::Interrupted,
         JobState::Uncertain => RuntimePublicFailureCode::Uncertain,
+        // The durable dependency verdict is closed and runtime-owned and names
+        // no service, so it can cross the boundary as its own public class and
+        // let the dashboard point the user at the agent's service setup rather
+        // than at a worker that never existed.
+        JobState::Failed if code.as_str() == "SERVICE_DEPENDENCY_UNAVAILABLE" => {
+            RuntimePublicFailureCode::ServiceDependencyUnavailable
+        }
         _ => RuntimePublicFailureCode::RuntimeJobFailed,
     })
 }

@@ -339,7 +339,7 @@ test("active conversations show a small spinner beside their row controls", () =
   assert.match(historyControls, /export function ActiveChatIcon/);
   assert.match(historyControls, /return <BreadboardLoader className=\{className\} \/>/);
   assert.match(breadboardLoader, /className=\{`bb-loader \$\{className\}`\}/);
-  assert.match(breadboardLoader, /<g className="bb-loader-rotor">/);
+  assert.match(breadboardLoader, /<circle[\s\S]*className="bb-loader-settled"/);
   assert.match(historyControls, /Boolean\(activeRun\)/);
   assert.match(
     historyControls,
@@ -384,18 +384,19 @@ test("initial transcript and Recents loading use the same multi-pass drawn ring"
   assert.match(breadboardLoader, /LOADER_SKETCH_RINGS\.map/);
   assert.match(breadboardLoader, /bb-loader-settled/);
   assert.match(breadboardLoader, /bb-loader-sketch bb-loader-sketch-/);
-  assert.doesNotMatch(breadboardLoader, /<circle|bb-loader-snake/);
+  assert.match(breadboardLoader, /<circle/);
+  assert.doesNotMatch(breadboardLoader, /bb-loader-snake|bb-loader-rotor/);
   assert.doesNotMatch(breadboardLoader, /animate-spin/);
   assert.match(
     globals,
-    /\.bb-loader-sketch \{[\s\S]{0,260}?animation: bb-loader-turn 2820ms linear var\(--bb-loader-sketch-delay, 0ms\) infinite/,
+    /\.bb-loader-sketch \{[\s\S]{0,320}?stroke-dasharray: 1;[\s\S]{0,160}?animation: bb-loader-trace 2820ms linear var\(--bb-loader-sketch-delay, 0ms\) infinite/,
   );
   assert.match(
     globals,
     /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,220}?\.bb-loader-sketch \{[\s\S]{0,160}?animation: bb-loader-soft 2\.1s cubic-bezier\(0\.77, 0, 0\.175, 1\) infinite/,
   );
-  assert.match(globals, /\.bb-loader \{[\s\S]{0,120}?overflow: hidden;/);
-  assert.match(globals, /\.bb-loader-sketch-3 \{\s*opacity: 0\.48;/);
+  assert.match(globals, /\.bb-loader \{[\s\S]{0,320}?overflow: hidden;/);
+  assert.match(globals, /\.bb-loader-sketch-3 \{\s*--bb-loader-trace-opacity: 0\.54;/);
   assert.doesNotMatch(breadboardLoader, /<rect|HOLES|bb-loader-charge/);
 });
 

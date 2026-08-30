@@ -132,6 +132,11 @@ export type NormalizedAgentEvent =
         awaitResult: boolean;
         requiresApproval: boolean;
         originClientMessageId?: string;
+        startedRun?: {
+          kind: "max_research";
+          runId: string;
+          query: string;
+        };
       };
     }
   | {

@@ -16,15 +16,19 @@ import {
   addArtifactProvenance,
   createArtifact,
   createImportedArtifact,
-  getArtifactById,
-  listArtifactsForUser,
   presentArtifact,
   readArtifactSource,
   renderArtifact,
   updateArtifactContent,
   ArtifactStoreError,
-  type ArtifactRow,
 } from "@/lib/hermes/artifact-store.ts";
+import {
+  describeAgentArtifactScope,
+  getArtifactInAgentScope,
+  listArtifactsInAgentScope,
+  type AgentArtifactScope,
+} from "@/lib/hermes/artifact-agent-scope.ts";
+import { searchArtifactsForAgent } from "@/lib/hermes/artifact-agent-search.ts";
 import { ARTIFACT_KINDS, type ArtifactKind } from "@/lib/hermes/artifact-types.ts";
 import { artifactEditorMode } from "@/lib/hermes/artifact-editor-types.ts";
 import { loadArtifactEditor, saveArtifactEditor, type ArtifactEditorPatch } from "@/lib/hermes/artifact-document-editor.ts";
@@ -48,7 +52,7 @@ import {
 export const dynamic = "force-dynamic";
 const ACTIONS = new Set([
   "artifact_create", "artifact_import", "artifact_read", "artifact_update", "artifact_append",
-  "artifact_render", "artifact_finalize", "artifact_list", "artifact_fork",
+  "artifact_render", "artifact_finalize", "artifact_list", "artifact_search", "artifact_fork",
   "artifact_image_generate",
   "interactive_visualizer_create",
   "interactive_visualizer_plan", "interactive_visualizer_generate",
@@ -86,6 +90,12 @@ export async function POST(request: Request) {
     const activeDecision = getActiveCapabilityDecision(session.id);
     const selectedMcpServers = new Set(activeDecision?.selectedConnections ?? []);
     const selectedSkills = new Set(activeDecision?.selectedConditionalSkills ?? []);
+    const artifactScope: AgentArtifactScope = {
+      userId: session.user_id,
+      surface: session.surface as "dashboard_terminal" | "garden_chat",
+      clusterId: session.cluster_id,
+      gardenSlug: session.garden_id,
+    };
     const assistantMessage = dispatch.clientMessageId
       ? db.prepare(`
           SELECT id FROM conversation_messages
@@ -146,9 +156,7 @@ export async function POST(request: Request) {
     ) {
       const artifact = authorizedArtifact(
         requiredText(args.artifactId, "artifactId", 100),
-        session.user_id,
-        session.conversation_id,
-        session.cluster_id,
+        artifactScope,
       );
       result = await generateInteractiveVisualizer({
         context: visualizerContext,
@@ -160,9 +168,7 @@ export async function POST(request: Request) {
     } else if (action === "interactive_visualizer_rollback") {
       const artifact = authorizedArtifact(
         requiredText(args.artifactId, "artifactId", 100),
-        session.user_id,
-        session.conversation_id,
-        session.cluster_id,
+        artifactScope,
       );
       const version = Number(args.version);
       if (!Number.isInteger(version) || version <= 0) {
@@ -176,9 +182,7 @@ export async function POST(request: Request) {
     } else if (action === "interactive_visualizer_cancel") {
       const artifact = authorizedArtifact(
         requiredText(args.artifactId, "artifactId", 100),
-        session.user_id,
-        session.conversation_id,
-        session.cluster_id,
+        artifactScope,
       );
       result = await cancelInteractiveVisualizer({
         context: visualizerContext,
@@ -226,12 +230,30 @@ export async function POST(request: Request) {
         verified: artifact.status === "ready" && Boolean(artifact.content_hash),
       };
     } else if (action === "artifact_list") {
+      const artifacts = listArtifactsInAgentScope(artifactScope);
       result = {
-        artifacts: listArtifactsForUser({
-          userId: session.user_id,
-          conversationPublicId: dispatch.conversationPublicId,
-        }).map(presentArtifact),
+        scope: describeAgentArtifactScope(artifactScope),
+        artifacts: artifacts.map(presentArtifact),
         renderers: availableArtifactRenderers(),
+      };
+    } else if (action === "artifact_search") {
+      const requestedLimit = args.limit === undefined ? 20 : Number(args.limit);
+      if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 50) {
+        throw new ApiError(
+          400,
+          "artifact_search_limit_invalid",
+          "Artifact search limit must be an integer from 1 to 50.",
+        );
+      }
+      result = {
+        scope: describeAgentArtifactScope(artifactScope),
+        ...(await searchArtifactsForAgent({
+          artifacts: listArtifactsInAgentScope(artifactScope),
+          query: requiredText(args.query, "search_query", 500),
+          limit: requestedLimit,
+          includeContent: args.includeContent !== false,
+          signal: request.signal,
+        })),
       };
     } else if (action === "artifact_create" || action === "artifact_import") {
       const kind = artifactKind(args.kind);
@@ -326,9 +348,7 @@ export async function POST(request: Request) {
     } else {
       const artifact = authorizedArtifact(
         requiredText(args.artifactId, "artifactId", 100),
-        session.user_id,
-        session.conversation_id,
-        session.cluster_id,
+        artifactScope,
       );
       if (action === "artifact_read") {
         const presented = presentArtifact(artifact);
@@ -414,15 +434,8 @@ function generatedImageTitle(prompt: string): string {
   return summary ? `Generated image — ${summary}` : "Generated image";
 }
 
-function authorizedArtifact(id: string, userId: number, conversationId: number, clusterId: number | null): ArtifactRow {
-  const artifact = getArtifactById(id);
-  if (
-    !artifact || artifact.user_id !== userId || artifact.conversation_id !== conversationId ||
-    artifact.cluster_id !== clusterId
-  ) {
-    throw new ApiError(404, "artifact_not_found", "Artifact not found.");
-  }
-  return artifact;
+function authorizedArtifact(id: string, scope: AgentArtifactScope) {
+  return getArtifactInAgentScope(id, scope);
 }
 
 function artifactKind(value: unknown): ArtifactKind {

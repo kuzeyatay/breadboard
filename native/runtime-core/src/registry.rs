@@ -761,6 +761,9 @@ fn worker_dependency_condition_matches_request(
         .and_then(serde_json::Value::as_object)
         .and_then(|meeting_request| meeting_request.get("transcriptOnly"))
         .and_then(serde_json::Value::as_bool);
+    let max_research_openscience_enabled = root
+        .and_then(|object| object.get("openscienceEnabled"))
+        .and_then(serde_json::Value::as_bool);
     match condition {
         WorkerServiceDependencyCondition::DocumentIngestionParseWithVlm => {
             root.and_then(|object| object.get("parseWithVlm"))
@@ -779,6 +782,9 @@ fn worker_dependency_condition_matches_request(
             transcript_only == Some(false)
                 && source_kind != Some("error")
                 && !(source_kind == Some("audio") && engine == Some("none"))
+        }
+        WorkerServiceDependencyCondition::MaxResearchOpenscienceEnabled => {
+            max_research_openscience_enabled == Some(true)
         }
     }
 }
@@ -818,6 +824,13 @@ fn worker_dependency_condition_is_valid(
                     .job_types
                     .iter()
                     .any(|job_type| job_type == "meeting-notes-run")
+        }
+        WorkerServiceDependencyCondition::MaxResearchOpenscienceEnabled => {
+            worker.kind == "outer-max-research-node"
+                && worker
+                    .job_types
+                    .iter()
+                    .any(|job_type| job_type == "max-research-run")
         }
     }
 }
@@ -2511,5 +2524,23 @@ mod tests {
             WorkerServiceDependencyCondition::MeetingNotesNeedsChatmock,
             &request("none", "transcript", false),
         ));
+    }
+
+    #[test]
+    fn max_research_openscience_dependency_is_derived_from_the_sealed_boolean() {
+        assert!(worker_dependency_condition_matches_request(
+            WorkerServiceDependencyCondition::MaxResearchOpenscienceEnabled,
+            &serde_json::json!({ "openscienceEnabled": true }),
+        ));
+        for request in [
+            serde_json::json!({ "openscienceEnabled": false }),
+            serde_json::json!({}),
+            serde_json::json!({ "openscienceEnabled": "true" }),
+        ] {
+            assert!(!worker_dependency_condition_matches_request(
+                WorkerServiceDependencyCondition::MaxResearchOpenscienceEnabled,
+                &request,
+            ));
+        }
     }
 }

@@ -54,6 +54,7 @@ function modelAuthoredSpine() {
       sourceFigures: [],
       sourceFormulas: [],
       sourceTables: [],
+      sourceQuestions: [],
       zettelNotes: [],
       semanticConcepts: [{
         slug: `concept-${index}`,

@@ -49,5 +49,8 @@ test("the live upload can be reopened and reports completion as a success toast"
     workspace,
     /`Added \$\{successCount\}[\s\S]*?"success",\s*"Upload complete"/,
   );
-  assert.match(workspace, /<Toaster toasts=\{toasts\} onDismiss=\{dismissToast\} \/>/);
+  assert.match(
+    workspace,
+    /<Toaster[\s\S]*?toasts=\{toasts\}[\s\S]*?onDismiss=\{dismissToast\}[\s\S]*?onOpenChat=\{openChatById\}[\s\S]*?\/>/,
+  );
 });

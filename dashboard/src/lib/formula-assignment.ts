@@ -510,6 +510,7 @@ function pseudoUnitFromRequirement(requirement: UnitFormulaRequirement): Learnin
     sourceFigures: [],
     sourceFormulas: [],
     sourceTables: [],
+    sourceQuestions: [],
     zettelNotes: [],
     mustNotRepeat: [],
     expectedWordRange: [0, 0],

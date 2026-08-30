@@ -19,7 +19,13 @@
 
 import { randomUUID } from "node:crypto";
 
+import type { ExternalAgentRun } from "../conversations/external-agent-runs.ts";
 import type { ExternalAgentCall } from "./evidence.ts";
+
+type ServerStartedAgentRun = Extract<
+  ExternalAgentRun,
+  { kind: "max_research" }
+>;
 
 /** Requests kept per run. A turn that asks for more than this is looping. */
 const MAX_REQUESTS_PER_RUN = 8;
@@ -50,6 +56,12 @@ export interface AgentLaunchRequest {
   requiresApproval: boolean;
   /** Assistant turn that owns this delegated run card. */
   originClientMessageId?: string;
+  /**
+   * A read-only worker the tool route already started and attached durably.
+   * The surface adopts this descriptor for observation; it must not start a
+   * second run.
+   */
+  startedRun?: ServerStartedAgentRun;
   createdAt: string;
 }
 
@@ -87,6 +99,7 @@ export interface RecordAgentLaunchInput {
   awaitResult: boolean;
   requiresApproval?: boolean;
   originClientMessageId?: string;
+  startedRun?: ServerStartedAgentRun;
 }
 
 /**
@@ -118,6 +131,7 @@ export function recordAgentLaunchRequest(
     ...(input.originClientMessageId
       ? { originClientMessageId: input.originClientMessageId }
       : {}),
+    ...(input.startedRun ? { startedRun: input.startedRun } : {}),
     createdAt: new Date().toISOString(),
   };
   store.byRun.set(input.runId, [...existing, request]);

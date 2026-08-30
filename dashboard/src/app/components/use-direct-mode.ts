@@ -6,6 +6,10 @@
 // or break extensions compiled against them.
 
 import { useCallback, useSyncExternalStore } from "react";
+import {
+  persistComposerSwitch,
+  registerComposerSwitch,
+} from "./composer-switch-preferences.ts";
 
 export const DIRECT_MODE_STORAGE_KEY = "breadboard:direct-mode";
 export const DIRECT_MODE_CHANGE_EVENT = "breadboard:direct-mode-change";
@@ -73,14 +77,23 @@ export function useDirectMode(): readonly [boolean, (enabled: boolean) => void] 
     () => false,
   );
   const setEnabled = useCallback((next: boolean) => {
-    memoryValue = next;
-    try {
-      window.localStorage.setItem(DIRECT_MODE_STORAGE_KEY, String(next));
-      window.localStorage.setItem(LEGACY_STORAGE_KEY, String(next));
-    } catch {
-      // Kept in memory only; the change event below still updates this tab.
-    }
-    window.dispatchEvent(new Event(DIRECT_MODE_CHANGE_EVENT));
+    applyDirectMode(next);
+    persistComposerSwitch("directMode", next);
   }, []);
   return [enabled, setEnabled] as const;
 }
+
+function applyDirectMode(next: boolean): void {
+  memoryValue = next;
+  try {
+    window.localStorage.setItem(DIRECT_MODE_STORAGE_KEY, String(next));
+    window.localStorage.setItem(LEGACY_STORAGE_KEY, String(next));
+  } catch {
+    // Kept in memory only; the change event below still updates this tab.
+  }
+  window.dispatchEvent(new Event(DIRECT_MODE_CHANGE_EVENT));
+}
+
+// Hydrated from the account on load: the localStorage copy belongs to one
+// origin, and the desktop dashboard's origin changes on every launch.
+registerComposerSwitch("directMode", applyDirectMode);

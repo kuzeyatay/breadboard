@@ -48,6 +48,12 @@ struct DurableWorkerResultEnvelope {
     protocol_version: u32,
     identity: WorkerIdentity,
     completion_sequence: u64,
+    // Outer-agent and cinema workers call their bounded projection `run`.
+    // It is the same trusted payload position as the canonical `result`; the
+    // alias preserves the exact four-field envelope while allowing those
+    // established workers to produce completion proof instead of being
+    // downgraded after a successful zero-code exit.
+    #[serde(alias = "run")]
     result: Map<String, Value>,
 }
 
@@ -391,6 +397,40 @@ mod tests {
                 }
             )
         );
+    }
+
+    #[test]
+    fn outer_agent_run_projection_is_a_valid_completion_payload_alias() {
+        let (_directory, paths) = authority();
+        let intent = intent();
+        let result = paths.job_paths(&intent.identity().job_id).unwrap();
+        fs::create_dir_all(result.result().absolute().parent().unwrap()).unwrap();
+        let value = serde_json::json!({
+            "protocolVersion": WIRE_PROTOCOL_VERSION,
+            "identity": intent.identity(),
+            "completionSequence": intent.sequence(),
+            "run": {
+                "adapterId": "max-research",
+                "status": "completed",
+                "events": []
+            }
+        });
+        File::create(result.result().absolute())
+            .unwrap()
+            .write_all(serde_json::to_string(&value).unwrap().as_bytes())
+            .unwrap();
+
+        WorkerCompletionProof::validate_after_authoritative_tree_exit(
+            &paths,
+            &intent,
+            7,
+            42,
+            ProcessTreeAccounting {
+                peak_private_commit_bytes: Some(1024),
+                complete: true,
+            },
+        )
+        .unwrap();
     }
 
     #[cfg(windows)]

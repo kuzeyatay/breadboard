@@ -67,6 +67,25 @@ test("Vibe Trading has one exact sealed zero-input Runtime contract", () => {
   }
 });
 
+test("the hashed Vibe Trading lock cannot acquire unpinned future extras", () => {
+  const lock = source("../Vibe-Trading/requirements-lock.txt");
+  assert.doesNotMatch(
+    lock,
+    /^[A-Za-z0-9_.-]+\[[^\]]+\]==/mu,
+    "resolved extras must be stripped after their dependencies are locked",
+  );
+  assert.match(
+    lock,
+    /^winloop==0\.6\.3 ; sys_platform == "win32" \\/mu,
+    "Windows-only transitive dependencies must be pinned and hashed",
+  );
+  assert.match(
+    lock,
+    /^uvloop==0\.22\.1 ; sys_platform != "win32" \\/mu,
+    "the Unix event loop must not be installed on Windows",
+  );
+});
+
 test("the trusted facade writes configuration before submission and sends no credential", async () => {
   const order = [];
   let submission = null;

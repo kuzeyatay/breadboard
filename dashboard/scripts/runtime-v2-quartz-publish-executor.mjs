@@ -17,6 +17,15 @@ const MAX_BUILD_ENVIRONMENT_BYTES = 16 * 1024;
 const CHILD_TERMINATION_GRACE_MS = 10_000;
 const DEFAULT_LOCK_POLL_MS = 100;
 const DEFAULT_LOCK_STALE_MS = 30_000;
+const DEFAULT_RENAME_RETRY_ATTEMPTS = 12;
+const DEFAULT_RENAME_RETRY_BASE_MS = 25;
+const DEFAULT_RENAME_RETRY_MAX_MS = 1_000;
+const TRANSIENT_FILESYSTEM_CODES = new Set([
+  "EACCES",
+  "EBUSY",
+  "ENOTEMPTY",
+  "EPERM",
+]);
 const LOCK_DIRECTORY_NAME = ".breadboard-quartz-publish.lock";
 const LOCK_OWNER_FILE_NAME = "owner.json";
 const TRANSACTION_FILE_NAME = ".breadboard-quartz-publish.transaction.json";
@@ -304,7 +313,13 @@ function readTransaction(quartzRoot) {
     !IDENTIFIER.test(value.workerInstanceId) ||
     !TRANSACTION_NAME.test(value.stageName) ||
     !TRANSACTION_NAME.test(value.previousName) ||
-    !["building", "prepared", "previous-moved", "published"].includes(
+    ![
+      "building",
+      "prepared",
+      "previous-moved",
+      "in-place-publishing",
+      "published",
+    ].includes(
       value.state,
     )
   ) {
@@ -358,7 +373,163 @@ function assertDirectDirectory(directoryPath, label) {
   }
 }
 
-export function recoverQuartzPublicationTransaction(quartzRootInput) {
+function transactionMarkerMatches(directoryPath, transaction) {
+  const markerPath = path.join(directoryPath, COMPLETE_MARKER_FILE_NAME);
+  if (!fs.existsSync(markerPath)) return false;
+  const marker = readBoundedJson(
+    markerPath,
+    8 * 1024,
+    "The promoted Quartz build marker",
+  );
+  return (
+    hasExactKeys(marker, [
+      "version",
+      "jobId",
+      "attempt",
+      "workerInstanceId",
+    ]) &&
+    marker.version === 1 &&
+    marker.jobId === transaction.jobId &&
+    marker.attempt === transaction.attempt &&
+    marker.workerInstanceId === transaction.workerInstanceId
+  );
+}
+
+async function renameDirectoryWithTransientRetry(sourcePath, targetPath, signal) {
+  for (let attempt = 1; attempt <= DEFAULT_RENAME_RETRY_ATTEMPTS; attempt += 1) {
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error("Quartz publication was canceled.");
+    }
+    try {
+      fs.renameSync(sourcePath, targetPath);
+      return;
+    } catch (error) {
+      const retryable =
+        isRecord(error) && TRANSIENT_FILESYSTEM_CODES.has(String(error.code));
+      if (!retryable || attempt === DEFAULT_RENAME_RETRY_ATTEMPTS) throw error;
+      if (!fs.existsSync(sourcePath) || fs.existsSync(targetPath)) throw error;
+      const backoff = Math.min(
+        DEFAULT_RENAME_RETRY_MAX_MS,
+        DEFAULT_RENAME_RETRY_BASE_MS * 2 ** (attempt - 1),
+      );
+      await delay(backoff, signal);
+    }
+  }
+}
+
+function isTransientFilesystemError(error) {
+  return (
+    isRecord(error) && TRANSIENT_FILESYSTEM_CODES.has(String(error.code))
+  );
+}
+
+async function removePathWithTransientRetry(targetPath, signal) {
+  for (let attempt = 1; attempt <= DEFAULT_RENAME_RETRY_ATTEMPTS; attempt += 1) {
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error("Quartz publication was canceled.");
+    }
+    try {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+      if (!fs.existsSync(targetPath)) return;
+      throw Object.assign(
+        new Error(`Quartz publication could not remove ${targetPath}.`),
+        { code: "EBUSY" },
+      );
+    } catch (error) {
+      if (
+        !isTransientFilesystemError(error) ||
+        attempt === DEFAULT_RENAME_RETRY_ATTEMPTS
+      ) {
+        throw error;
+      }
+      const backoff = Math.min(
+        DEFAULT_RENAME_RETRY_MAX_MS,
+        DEFAULT_RENAME_RETRY_BASE_MS * 2 ** (attempt - 1),
+      );
+      await delay(backoff, signal);
+    }
+  }
+}
+
+async function copyDirectTree(sourceDirectory, targetDirectory, signal) {
+  assertDirectDirectory(sourceDirectory, "The staged Quartz public tree");
+  fs.mkdirSync(targetDirectory, { recursive: true });
+  assertDirectDirectory(targetDirectory, "The Quartz public tree");
+  for (const entry of fs.readdirSync(sourceDirectory, { withFileTypes: true })) {
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error("Quartz publication was canceled.");
+    }
+    if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) {
+      fail("The staged Quartz public tree contains an indirect or unsupported entry.");
+    }
+    const sourcePath = path.join(sourceDirectory, entry.name);
+    const targetPath = path.join(targetDirectory, entry.name);
+    if (entry.isDirectory()) {
+      fs.mkdirSync(targetPath, { recursive: true });
+      await copyDirectTree(sourcePath, targetPath, signal);
+      continue;
+    }
+    const temporaryPath = `${targetPath}.pending.${process.pid}.${randomUUID()}`;
+    try {
+      fs.copyFileSync(sourcePath, temporaryPath);
+      await renameDirectoryWithTransientRetry(
+        temporaryPath,
+        targetPath,
+        signal,
+      );
+    } finally {
+      fs.rmSync(temporaryPath, { force: true });
+    }
+  }
+}
+
+/**
+ * Windows can deny renaming the fixed `public` directory while the read-only
+ * static service has a directory handle open. `public` is a derived artifact,
+ * so after the complete stage is durably journaled we can replace its children
+ * in place. The stage remains untouched until the replacement and marker check
+ * finish; a crash therefore resumes this exact operation instead of rebuilding
+ * Learn or accepting a partial public tree.
+ */
+async function publishCompleteStageInPlace({
+  quartzRoot,
+  publicPath,
+  stagePath,
+  transaction,
+  journalPath,
+  signal,
+}) {
+  transaction.state = "in-place-publishing";
+  atomicWriteJson(journalPath, transaction);
+  if (!validCompleteStage(stagePath, transaction)) {
+    fail("Quartz in-place publication requires a complete fenced stage.");
+  }
+  if (fs.existsSync(publicPath)) {
+    assertDirectDirectory(publicPath, "The Quartz public tree");
+    for (const entry of fs.readdirSync(publicPath, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) {
+        fail("The Quartz public tree contains an indirect entry.");
+      }
+      await removePathWithTransientRetry(
+        path.join(publicPath, entry.name),
+        signal,
+      );
+    }
+  } else {
+    fs.mkdirSync(publicPath);
+  }
+  await copyDirectTree(stagePath, publicPath, signal);
+  if (!transactionMarkerMatches(publicPath, transaction)) {
+    fail("Quartz in-place publication did not reproduce the complete fenced stage.");
+  }
+  fsyncDirectory(publicPath);
+  fsyncDirectory(quartzRoot);
+}
+
+export async function recoverQuartzPublicationTransaction(
+  quartzRootInput,
+  { signal } = {},
+) {
   const quartzRoot = fs.realpathSync.native(path.resolve(quartzRootInput));
   const transaction = readTransaction(quartzRoot);
   if (!transaction) return { recovered: false, outcome: "none" };
@@ -374,21 +545,67 @@ export function recoverQuartzPublicationTransaction(quartzRootInput) {
     transaction.previousName,
     "Quartz previous publication",
   );
-  const publicExists = fs.existsSync(publicPath);
+  let publicExists = fs.existsSync(publicPath);
   const stageComplete = validCompleteStage(stagePath, transaction);
+  let promotedPreparedStage = false;
+  let promotedMarkerPresent = false;
 
   if (publicExists) {
     assertDirectDirectory(publicPath, "The Quartz public tree");
+    promotedMarkerPresent = transactionMarkerMatches(publicPath, transaction);
+    if (stageComplete) {
+      if (fs.existsSync(previousPath)) {
+        fail("Quartz publication recovery found ambiguous previous and public trees.");
+      }
+      try {
+        await renameDirectoryWithTransientRetry(publicPath, previousPath, signal);
+        publicExists = false;
+        transaction.state = "previous-moved";
+        atomicWriteJson(journalPath, transaction);
+      } catch (error) {
+        if (!isTransientFilesystemError(error)) throw error;
+        await publishCompleteStageInPlace({
+          quartzRoot,
+          publicPath,
+          stagePath,
+          transaction,
+          journalPath,
+          signal,
+        });
+        publicExists = true;
+        promotedPreparedStage = true;
+        promotedMarkerPresent = true;
+      }
+    }
+  }
+
+  if (publicExists && !stageComplete && !promotedMarkerPresent) {
+    if (transaction.state === "building") {
+      removeDirectDirectory(stagePath);
+      fs.rmSync(journalPath, { force: true });
+      fsyncDirectory(quartzRoot);
+      return { recovered: true, outcome: "discarded-incomplete-stage" };
+    }
+    if (
+      transaction.state === "prepared" ||
+      transaction.state === "in-place-publishing" ||
+      (transaction.state === "previous-moved" && !fs.existsSync(previousPath))
+    ) {
+      fail("Quartz publication recovery found an incomplete prepared stage.");
+    }
   }
 
   if (!publicExists) {
     if (stageComplete) {
-      fs.renameSync(stagePath, publicPath);
+      await renameDirectoryWithTransientRetry(stagePath, publicPath, signal);
       fsyncDirectory(quartzRoot);
+      publicExists = true;
+      promotedPreparedStage = true;
     } else if (fs.existsSync(previousPath)) {
       assertDirectDirectory(previousPath, "The previous Quartz public tree");
-      fs.renameSync(previousPath, publicPath);
+      await renameDirectoryWithTransientRetry(previousPath, publicPath, signal);
       fsyncDirectory(quartzRoot);
+      publicExists = true;
     } else if (transaction.state === "building") {
       removeDirectDirectory(stagePath);
       fs.rmSync(journalPath, { force: true });
@@ -400,27 +617,9 @@ export function recoverQuartzPublicationTransaction(quartzRootInput) {
   }
 
   const publicMarkerPath = path.join(publicPath, COMPLETE_MARKER_FILE_NAME);
-  if (fs.existsSync(publicMarkerPath)) {
-    const publicMarker = readBoundedJson(
-      publicMarkerPath,
-      8 * 1024,
-      "The promoted Quartz build marker",
-    );
-    if (
-      hasExactKeys(publicMarker, [
-        "version",
-        "jobId",
-        "attempt",
-        "workerInstanceId",
-      ]) &&
-      publicMarker.version === 1 &&
-      publicMarker.jobId === transaction.jobId &&
-      publicMarker.attempt === transaction.attempt &&
-      publicMarker.workerInstanceId === transaction.workerInstanceId
-    ) {
-      fs.rmSync(publicMarkerPath);
-      fsyncDirectory(publicPath);
-    }
+  if (transactionMarkerMatches(publicPath, transaction)) {
+    fs.rmSync(publicMarkerPath);
+    fsyncDirectory(publicPath);
   }
 
   removeDirectDirectory(stagePath);
@@ -429,7 +628,10 @@ export function recoverQuartzPublicationTransaction(quartzRootInput) {
   fsyncDirectory(quartzRoot);
   return {
     recovered: true,
-    outcome: stageComplete ? "published-prepared-stage" : "restored-previous",
+    outcome:
+      promotedPreparedStage || promotedMarkerPresent
+        ? "published-prepared-stage"
+        : "restored-previous",
   };
 }
 
@@ -774,7 +976,9 @@ async function runSealedQuartzPublication(attestation, rawOptions) {
   const lease = await acquireLock(quartzRoot, options.timeoutMs, attestation.signal);
   const startedAt = Date.now();
   try {
-    recoverQuartzPublicationTransaction(quartzRoot);
+    await recoverQuartzPublicationTransaction(quartzRoot, {
+      signal: attestation.signal,
+    });
     const transaction = transactionFor(attestation.identity);
     const journalPath = path.join(quartzRoot, TRANSACTION_FILE_NAME);
     const publicPath = path.join(quartzRoot, "public");
@@ -815,18 +1019,43 @@ async function runSealedQuartzPublication(attestation, rawOptions) {
       });
       transaction.state = "prepared";
       atomicWriteJson(journalPath, transaction);
+      let promotedInPlace = false;
       if (fs.existsSync(publicPath)) {
         assertDirectDirectory(publicPath, "The Quartz public tree");
-        fs.renameSync(publicPath, previousPath);
+        try {
+          await renameDirectoryWithTransientRetry(
+            publicPath,
+            previousPath,
+            attestation.signal,
+          );
+        } catch (error) {
+          if (!isTransientFilesystemError(error)) throw error;
+          await publishCompleteStageInPlace({
+            quartzRoot,
+            publicPath,
+            stagePath,
+            transaction,
+            journalPath,
+            signal: attestation.signal,
+          });
+          promotedInPlace = true;
+        }
       }
-      transaction.state = "previous-moved";
-      atomicWriteJson(journalPath, transaction);
-      fs.renameSync(stagePath, publicPath);
+      if (!promotedInPlace) {
+        transaction.state = "previous-moved";
+        atomicWriteJson(journalPath, transaction);
+        await renameDirectoryWithTransientRetry(
+          stagePath,
+          publicPath,
+          attestation.signal,
+        );
+      }
       fs.rmSync(path.join(publicPath, COMPLETE_MARKER_FILE_NAME));
       fsyncDirectory(publicPath);
       fsyncDirectory(quartzRoot);
       transaction.state = "published";
       atomicWriteJson(journalPath, transaction);
+      if (promotedInPlace) removeDirectDirectory(stagePath);
       removeDirectDirectory(previousPath);
       fs.rmSync(journalPath, { force: true });
       fsyncDirectory(quartzRoot);

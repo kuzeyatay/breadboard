@@ -45,6 +45,13 @@ function semanticRetrySuffix(
   priorTerminalReceipt: LearnCouncilTerminalReceiptProof | undefined,
 ): string {
   if (!priorTerminalReceipt) return "";
+  if (priorTerminalReceipt.proofKind === "expired_started_receipt") {
+    return [
+      "",
+      "A prior Council request for this task was orphaned beyond its finite provider lifetime.",
+      "Start a fresh independent semantic attempt and return the complete requested result.",
+    ].join("\n");
+  }
   return [
     "",
     "A prior complete Council attempt for this task produced no final answer.",
@@ -104,6 +111,9 @@ export function createLearnFinalCriticProviders(input: {
                   priorTerminalReceipt: {
                     failureCode: priorTerminalReceipt.failureCode,
                     dispatchCount: priorTerminalReceipt.dispatchCount,
+                    ...(priorTerminalReceipt.proofKind
+                      ? { proofKind: priorTerminalReceipt.proofKind }
+                      : {}),
                   },
                 }
               : {}),

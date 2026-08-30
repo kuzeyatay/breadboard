@@ -62,7 +62,11 @@ import {
   requiresExclusiveHotCheckout,
 } from "./dev-instance-lock";
 import { openMicrophoneSettings } from "./microphone-settings";
-import { readLastWindowTheme, writeLastWindowTheme } from "./theme-state";
+import {
+  isWindowThemeSchedule,
+  readLastWindowTheme,
+  writeLastWindowTheme,
+} from "./theme-state";
 import {
   readStartupSoundEnabled,
   writeStartupSoundEnabled,
@@ -803,30 +807,40 @@ export class AppLifecycle {
       }
       return true;
     });
-    ipcMain.handle(IPC_CHANNELS.setTheme, (event, surface: unknown) => {
-      if (!isWindowSurface(surface)) return false;
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (!window || window.isDestroyed()) return false;
-      window.setBackgroundColor(backgroundColorForSurface(surface));
-      if (process.platform === "win32") {
-        window.setTitleBarOverlay(titleBarForSurface(surface));
-      }
-      // Windows forgets an overlay's colours whenever it rebuilds the frame, so
-      // the manager keeps what this window asked for and states it again.
-      this.windows.rememberWindowSurface(window, surface);
-      if (surface === "light" || surface === "dark") {
-        this.windows.rememberTheme(surface);
-        try {
-          writeLastWindowTheme(this.paths.configDir, surface);
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          this.logs
-            .forService("desktop")
-            .write(`[desktop] could not persist window theme: ${reason}`);
+    ipcMain.handle(
+      IPC_CHANNELS.setTheme,
+      (event, surface: unknown, schedule: unknown) => {
+        if (!isWindowSurface(surface)) return false;
+        const window = BrowserWindow.fromWebContents(event.sender);
+        if (!window || window.isDestroyed()) return false;
+        window.setBackgroundColor(backgroundColorForSurface(surface));
+        if (process.platform === "win32") {
+          window.setTitleBarOverlay(titleBarForSurface(surface));
         }
-      }
-      return true;
-    });
+        // Windows forgets an overlay's colours whenever it rebuilds the frame, so
+        // the manager keeps what this window asked for and states it again.
+        this.windows.rememberWindowSurface(window, surface);
+        if (surface === "light" || surface === "dark") {
+          this.windows.rememberTheme(surface);
+          try {
+            // The dashboard says how it chose the theme, so the next launch can
+            // open on the right side of sunrise. A malformed schedule is treated
+            // as none: the chrome still follows the page.
+            writeLastWindowTheme(
+              this.paths.configDir,
+              surface,
+              isWindowThemeSchedule(schedule) ? schedule : undefined,
+            );
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            this.logs
+              .forService("desktop")
+              .write(`[desktop] could not persist window theme: ${reason}`);
+          }
+        }
+        return true;
+      },
+    );
     // Asked by two renderers that never meet: the startup screen, which plays
     // the chime, and the Profile page, which is where it is switched off.
     ipcMain.handle(IPC_CHANNELS.getStartupSound, () =>

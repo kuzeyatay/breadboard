@@ -139,10 +139,11 @@ test("a health downgrade cannot swap transports after a chat has engaged", () =>
 });
 
 test("Garden Workspace checkpoints a prompt before runtime dispatch", () => {
-  const checkpointAt = gardenWorkspace.indexOf("const checkpointSaved = await persistChatSession");
+  const checkpointAt = gardenWorkspace.indexOf("await reserveGardenTurnCheckpoint");
   const dispatchAt = gardenWorkspace.indexOf('const res = await fetch("/api/chat"');
   assert.ok(checkpointAt >= 0 && dispatchAt > checkpointAt);
-  assert.match(gardenWorkspace, /\{ updateLocal: false \}/);
+  assert.match(gardenWorkspace, /const clientMessageId = crypto\.randomUUID\(\)/);
+  assert.match(gardenWorkspace, /assistantMsg\.id = checkpoint\.assistantMessageId/);
   assert.match(gardenWorkspace, /chatPersistenceChainsRef/);
   assert.match(gardenWorkspace, /chatPersistenceVersionsRef/);
   assert.match(gardenWorkspace, /inFlightChatMessagesRef/);
@@ -160,11 +161,11 @@ test("Garden Workspace restores active background turns without loading every ch
 
 test("the page-side Garden assistant uses the same durable checkpoint contract", () => {
   const checkpointAt = gardenAssistant.indexOf(
-    "const checkpointSaved = await persistChatSession",
+    "await reserveGardenTurnCheckpoint",
   );
   const dispatchAt = gardenAssistant.indexOf("const response = await fetch('/api/chat'");
   assert.ok(checkpointAt >= 0 && dispatchAt > checkpointAt);
-  assert.match(gardenAssistant, /method: 'PATCH'/);
+  assert.match(gardenAssistant, /const clientMessageId = crypto\.randomUUID\(\)/);
   assert.match(gardenAssistant, /persistenceChainsRef/);
   assert.match(gardenAssistant, /withRecoveredAssistant/);
   assert.match(gardenAssistant, /activeChatIdsKey/);

@@ -12,23 +12,30 @@ import { verifyCriticIssueAgainstFinalState, buildCriticReviewPacket, runCriticL
 
 const ANCHOR = "S1.P4.F1";
 const ASSET = "assets/source-visuals/2510-27379v1-page-4-diagram-f1-architecture.png";
-const EMBED_URL = `/test-2/${ASSET}`;
 
-function buildGarden({ embed = true, asset = true, ledger = true, visualJson = false, prose = true } = {}) {
+function buildGarden({
+  embed = true,
+  asset = true,
+  ledger = true,
+  visualJson = false,
+  prose = true,
+  assetPath = ASSET,
+  embedUrl = `/test-2/${assetPath}`,
+} = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-vis-"));
   const dir = path.join(root, "test-2");
   fs.mkdirSync(path.join(dir, ".breadboard", "planning"), { recursive: true });
   fs.mkdirSync(path.join(dir, ".breadboard", "visuals"), { recursive: true });
   fs.mkdirSync(path.join(dir, "learning", "1. Why SNNs Need Events"), { recursive: true });
-  if (asset) { fs.mkdirSync(path.join(dir, "assets", "source-visuals"), { recursive: true }); fs.writeFileSync(path.join(dir, ...ASSET.split("/")), "PNGDATA"); }
+  if (asset) { fs.mkdirSync(path.join(dir, "assets", "source-visuals"), { recursive: true }); fs.writeFileSync(path.join(dir, ...assetPath.split("/")), "PNGDATA"); }
   fs.writeFileSync(path.join(dir, ".breadboard", "source-anchors.json"), JSON.stringify({ sourceTextConceptAnchors: [], sourceStructuralAnchors: [] }, null, 2) + "\n");
-  fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), JSON.stringify(ledger ? [{ sourceVisualId: ANCHOR, type: "figure", caption: "Conceptual architecture of a spiking neural network", pageNumber: 4, sourceId: "2510-27379v1", conceptUsage: "embedded_and_explained", cropStatus: "embedded", assignedPageId: "learning/1. Why SNNs Need Events/1.4 Input Encoding and SNN Layers", croppedImagePath: EMBED_URL, usageStatus: "assigned" }] : [], null, 2) + "\n");
+  fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), JSON.stringify(ledger ? [{ sourceVisualId: ANCHOR, type: "figure", caption: "Conceptual architecture of a spiking neural network", pageNumber: 4, sourceId: "2510-27379v1", conceptUsage: "embedded_and_explained", cropStatus: "embedded", assignedPageId: "learning/1. Why SNNs Need Events/1.4 Input Encoding and SNN Layers", croppedImagePath: embedUrl, usageStatus: "assigned" }] : [], null, 2) + "\n");
   fs.writeFileSync(path.join(dir, ".breadboard", "learning-unit-contract.json"), JSON.stringify({ learningUnits: [{ id: "U1", title: "Input encoding", sourceAnchors: [], sourceFigures: [{ id: ANCHOR, placement: "inside_concept_explanation" }], sourceFormulas: [], sourceTables: [] }] }, null, 2) + "\n");
   const visualIds = visualJson ? ["arch-visual-1"] : [];
   if (visualJson) fs.writeFileSync(path.join(dir, ".breadboard", "visuals", "arch-visual-1.json"), JSON.stringify({ id: "arch-visual-1", type: "neural_coding", sourceAnchors: [{ figureId: ANCHOR }] }, null, 2) + "\n");
   const body = [
     prose ? "The conceptual architecture below shows how input encoding feeds excitatory and inhibitory layers in a spiking neural network, and why event-driven timing matters for the downstream layers." : "# heading only",
-    embed ? `![Conceptual architecture of spiking neural network with input encoding](${EMBED_URL})` : "",
+    embed ? `![Conceptual architecture of spiking neural network with input encoding](${embedUrl})` : "",
     visualJson ? "```breadboard-visual\n{\"id\":\"arch-visual-1\",\"type\":\"neural_coding\",\"sourceAnchors\":[{\"figureId\":\"S1.P4.F1\"}]}\n```" : "",
   ].filter(Boolean).join("\n\n");
   fs.writeFileSync(path.join(dir, "learning", "1. Why SNNs Need Events", "1.4 Input Encoding and SNN Layers.md"), `---
@@ -54,6 +61,16 @@ const missingVisualIssue = () => ({ id: "c-arch-1", severity: "blocking", type: 
 describe("static source-visual representation (Fix 1)", () => {
   test("1. embedded + explained source figure is represented (static modes)", () => {
     const dir = buildGarden();
+    const rep = verifySourceVisualRepresentation(ANCHOR, buildFinalGardenState(dir, "test-2"));
+    assert.equal(rep.represented, true);
+    assert.ok(rep.representationModes.includes("markdown_source_embed"));
+    assert.ok(rep.representationModes.includes("source_visual_ledger"));
+  });
+
+  test("recovered anchor-slug crop filenames are recognized as the canonical source figure", () => {
+    const dir = buildGarden({
+      assetPath: "assets/source-visuals/s1-p4-f1-recovered-0123456789abcdef.png",
+    });
     const rep = verifySourceVisualRepresentation(ANCHOR, buildFinalGardenState(dir, "test-2"));
     assert.equal(rep.represented, true);
     assert.ok(rep.representationModes.includes("markdown_source_embed"));

@@ -15,6 +15,11 @@ import {
   type AssistantReasoningEffort,
 } from "../assistant-reasoning.ts";
 import { normalizeAutonomyTier, type AutonomyTier } from "./autonomy.ts";
+import {
+  mergeComposerSwitches,
+  parseComposerSwitches,
+  type ComposerSwitches,
+} from "./composer-switches.ts";
 import type { HermesSurface } from "./config.ts";
 import type { RuntimeKind } from "../agent-runtime/contracts.ts";
 import type {
@@ -235,6 +240,13 @@ export interface HermesUserSettings {
    * nobody is looking at a composer.
    */
   humanizerAuto: boolean;
+  /**
+   * The composer's Intelligence-menu switches, kept on the account because the
+   * browser copy is keyed by origin and the desktop dashboard moves to a new
+   * loopback port on every launch. Partial: an absent key means the browser
+   * keeps its own default. See lib/hermes/composer-switches.ts.
+   */
+  composerSwitches: ComposerSwitches;
 }
 
 function parseEffortsByModel(raw: string | null | undefined): Record<string, AssistantReasoningEffort> {
@@ -262,7 +274,7 @@ export function getHermesUserSettings(
     .prepare(
       `SELECT filesystem_mode, last_active_directory, default_model,
               reasoning_effort, reasoning_effort_by_model, intelligence_preference_set,
-              humanizer_auto, autonomy_tier
+              humanizer_auto, autonomy_tier, composer_switches
        FROM hermes_user_settings WHERE user_id = ?`,
     )
     .get(userId) as
@@ -275,6 +287,7 @@ export function getHermesUserSettings(
         intelligence_preference_set: number;
         humanizer_auto: number;
         autonomy_tier: string | null;
+        composer_switches: string | null;
       }
     | undefined;
   return {
@@ -289,6 +302,7 @@ export function getHermesUserSettings(
     intelligencePreferenceSet: row?.intelligence_preference_set === 1,
     humanizerAuto: row?.humanizer_auto === 1,
     autonomyTier: normalizeAutonomyTier(row?.autonomy_tier),
+    composerSwitches: parseComposerSwitches(row?.composer_switches),
   };
 }
 
@@ -321,6 +335,9 @@ export function setHermesUserSettings(
         : current.intelligencePreferenceSet,
     humanizerAuto: input.humanizerAuto ?? current.humanizerAuto,
     autonomyTier: normalizeAutonomyTier(input.autonomyTier ?? current.autonomyTier),
+    composerSwitches: input.composerSwitches
+      ? mergeComposerSwitches(current.composerSwitches, input.composerSwitches)
+      : current.composerSwitches,
   };
   if (input.defaultModel !== undefined || input.reasoningEffort !== undefined) {
     next.reasoningEffortByModel = {
@@ -332,8 +349,8 @@ export function setHermesUserSettings(
     `INSERT INTO hermes_user_settings
        (user_id, filesystem_mode, last_active_directory, default_model,
         reasoning_effort, reasoning_effort_by_model, intelligence_preference_set,
-        humanizer_auto, autonomy_tier, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        humanizer_auto, autonomy_tier, composer_switches, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET
        filesystem_mode = excluded.filesystem_mode,
        last_active_directory = excluded.last_active_directory,
@@ -343,6 +360,7 @@ export function setHermesUserSettings(
        intelligence_preference_set = excluded.intelligence_preference_set,
        humanizer_auto = excluded.humanizer_auto,
        autonomy_tier = excluded.autonomy_tier,
+       composer_switches = excluded.composer_switches,
        updated_at = datetime('now')`,
   ).run(
     userId,
@@ -354,6 +372,7 @@ export function setHermesUserSettings(
     next.intelligencePreferenceSet ? 1 : 0,
     next.humanizerAuto ? 1 : 0,
     next.autonomyTier,
+    JSON.stringify(next.composerSwitches),
   );
   return next;
 }

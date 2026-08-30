@@ -415,13 +415,13 @@ export default function KnowledgeTerminal({ scope }: Props) {
     virtual: transcriptVirtual,
   });
 
-  // One tick per question asked. The terminal hands the virtualizer `messages`
+  // One tick per visible chat message. The terminal hands the virtualizer `messages`
   // untouched, so a message's place in the conversation is also its row.
   const railItems = useMemo<ChatMessageRailItem[]>(
     () =>
       messages.flatMap((message, index) =>
-        message.role === 'user'
-          ? [{ rowIndex: index, label: message.content }]
+        (message.role === 'user' || message.role === 'assistant') && message.content.trim()
+          ? [{ rowIndex: index, label: message.content, role: message.role }]
           : [],
       ),
     [messages],
@@ -1028,9 +1028,17 @@ export default function KnowledgeTerminal({ scope }: Props) {
           </div>
             <ChatMessageRail
               surface="knowledge-terminal"
+              conversationKey={activeId}
               items={railItems}
               scrollRef={transcriptScrollRef}
               bridge={transcriptVirtual}
+              onReply={(text) => {
+                if (isStreaming) {
+                  queueFollowUp(text);
+                  return;
+                }
+                return sendMessage(text);
+              }}
             />
             <ChatJumpToBottom
               visible={transcriptAwayFromBottom}

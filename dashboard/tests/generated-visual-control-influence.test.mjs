@@ -122,6 +122,119 @@ test("all required control types must influence a numeric output or scene expres
   assert.equal(JSON.parse(selectCheck.detail).alternateState, 0);
 });
 
+function resetProtocolFixture({ referenceReset = false, resetOnly = false } = {}) {
+  const gain = {
+    id: "gain",
+    kind: "variable",
+    label: "Gain",
+    type: "slider",
+    min: 0,
+    max: 2,
+    step: 0.1,
+    defaultValue: 1,
+  };
+  const reset = {
+    id: "reset_action",
+    kind: "protocol_action",
+    label: "Reset",
+    type: "button",
+    protocolRole: "reset",
+    defaultValue: 0,
+  };
+  const fixtureControls = resetOnly ? [reset] : [gain, reset];
+  const expression = resetOnly
+    ? { kind: "constant", value: 1 }
+    : referenceReset
+      ? {
+          kind: "binary",
+          op: "add",
+          left: inputExpression("gain"),
+          right: inputExpression("reset_action"),
+        }
+      : inputExpression("gain");
+  return {
+    opportunity: {
+      requiredInputs: structuredClone(fixtureControls),
+      requiredOutputs: [{
+        id: "visible_state",
+        label: "Visible state",
+        representation: "value",
+      }],
+      sourceAnchorIds: [],
+    },
+    definition: {
+      schemaVersion: 1,
+      sdkVersion: "1.0.0",
+      title: "Runtime-owned Reset",
+      description: "A control changes the visual and Reset restores defaults.",
+      accessibilityDescription:
+        "Change Gain, inspect Visible state, then use Reset to restore Gain to its default.",
+      controls: structuredClone(fixtureControls),
+      outputs: [{
+        id: "visible_state",
+        label: "Visible state",
+        representation: "value",
+        expression,
+      }],
+      scenes: [{ kind: "value", outputId: "visible_state", emphasis: "strong" }],
+    },
+  };
+}
+
+test("runtime-owned Reset restores another required control without expression dependence", () => {
+  const fixture = resetProtocolFixture();
+  const result = runGeneratedVisualDeterministicTests({
+    ...fixture,
+    testCases: [],
+  });
+
+  assert.equal(result.passed, true, JSON.stringify(result));
+  const resetCheck = result.semanticTests.find((check) =>
+    /Reset restores a changed visual/.test(check.name),
+  );
+  assert.ok(resetCheck);
+  assert.equal(resetCheck.passed, true, JSON.stringify(resetCheck));
+  assert.deepEqual(JSON.parse(resetCheck.detail), {
+    runtimeOwned: true,
+    authoredResetReference: false,
+    changedControlId: "gain",
+    alternateState: 0,
+    changedExpressionCount: 3,
+  });
+});
+
+test("runtime-owned Reset fails when there is no changed visual state to restore", () => {
+  const fixture = resetProtocolFixture({ resetOnly: true });
+  const result = runGeneratedVisualDeterministicTests({
+    ...fixture,
+    testCases: [],
+  });
+
+  assert.equal(result.passed, false);
+  const resetCheck = result.semanticTests.find((check) =>
+    /Reset restores a changed visual/.test(check.name),
+  );
+  assert.ok(resetCheck);
+  assert.equal(resetCheck.passed, false);
+  assert.match(JSON.parse(resetCheck.detail).reason, /no non-reset required control/i);
+});
+
+test("runtime-owned Reset rejects authored expression references to its control id", () => {
+  const fixture = resetProtocolFixture({ referenceReset: true });
+  const result = runGeneratedVisualDeterministicTests({
+    ...fixture,
+    testCases: [],
+  });
+
+  assert.equal(result.passed, false);
+  const resetCheck = result.semanticTests.find((check) =>
+    /Reset restores a changed visual/.test(check.name),
+  );
+  assert.ok(resetCheck);
+  assert.equal(resetCheck.passed, false);
+  assert.equal(JSON.parse(resetCheck.detail).authoredResetReference, true);
+});
+
 test("timeline progress must use a declared control rather than an invented runtime input", () => {
   const definition = definitionWithExpressions();
   definition.scenes = [{
@@ -216,6 +329,55 @@ const branchOpportunity = {
   }],
   sourceAnchorIds: [],
 };
+
+test("physical path selection does not trigger node-link branch requirements", () => {
+  const physicalOpportunity = {
+    interactionGoal: "explore_structure",
+    learnerAction:
+      "Select path a, b, or c and inspect the highlighted loop and enclosed current in the shared coaxial-conductor diagram.",
+    requiredInputs: [{
+      id: "amperian_path",
+      kind: "select_case",
+      label: "Closed physical path",
+      type: "select",
+      options: ["a", "b", "c"],
+      defaultValue: "a",
+    }],
+    requiredOutputs: [{
+      id: "enclosed_state",
+      label: "Enclosed state",
+      representation: "diagram",
+    }],
+    sourceAnchorIds: [],
+  };
+  const definition = {
+    schemaVersion: 1,
+    sdkVersion: "1.0.0",
+    title: "Physical path selection",
+    description: "The selected closed physical path changes the enclosed state.",
+    accessibilityDescription:
+      "Choose a closed path and inspect the corresponding enclosed state.",
+    controls: structuredClone(physicalOpportunity.requiredInputs),
+    outputs: [{
+      ...physicalOpportunity.requiredOutputs[0],
+      expression: inputExpression("amperian_path"),
+    }],
+    scenes: [{ kind: "value", outputId: "enclosed_state", emphasis: "strong" }],
+  };
+  const result = runGeneratedVisualDeterministicTests({
+    definition,
+    opportunity: physicalOpportunity,
+    testCases: [],
+  });
+
+  assert.equal(result.passed, true, JSON.stringify(result));
+  assert.equal(
+    result.semanticTests.some((check) =>
+      /selected diagram branch/.test(check.name),
+    ),
+    false,
+  );
+});
 
 function strengthWhen(optionIndex, whenTrue = 5, whenFalse = 1) {
   return {

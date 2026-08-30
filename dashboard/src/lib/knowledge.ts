@@ -89,6 +89,11 @@ export interface SavedKnowledge {
   wordCount: number;
 }
 
+export interface KnowledgeSourceAsset {
+  relativePath: string;
+  bytes: Uint8Array;
+}
+
 interface ExistingTopicNote {
   slug: string;
   relPath: string;
@@ -2774,6 +2779,36 @@ function writeKnowledgeTextFile(
   }
 }
 
+let knowledgeBinaryWriteSequence = 0;
+
+function writeKnowledgeBinaryFile(
+  filePath: string,
+  bytes: Uint8Array,
+  transaction?: KnowledgeWriteTransaction,
+): void {
+  transaction?.captureFile(filePath);
+  const temporaryPath = `${filePath}.pending.${process.pid}.${knowledgeBinaryWriteSequence++}`;
+  transaction?.captureFile(temporaryPath);
+  let descriptor: number | undefined;
+  try {
+    const mode = fs.existsSync(filePath)
+      ? fs.statSync(filePath).mode & 0o777
+      : 0o666;
+    descriptor = fs.openSync(temporaryPath, "wx", mode);
+    fs.writeFileSync(descriptor, bytes);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporaryPath, filePath);
+    fsyncKnowledgeFile(filePath);
+    fsyncKnowledgeDirectory(path.dirname(filePath));
+  } catch (error) {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    fs.rmSync(temporaryPath, { force: true });
+    throw error;
+  }
+}
+
 function renameKnowledgeFile(
   sourcePath: string,
   targetPath: string,
@@ -4385,6 +4420,7 @@ export async function writeDocumentKnowledge({
   pages = [],
   extraction,
   sourceMetadata,
+  sourceAssets = [],
   abortSignal,
   createdFilePaths = [],
   knowledgeWriteTransaction,
@@ -4406,6 +4442,7 @@ export async function writeDocumentKnowledge({
   pages?: DocumentPage[];
   extraction: KnowledgeExtraction;
   sourceMetadata?: Record<string, string | string[]>;
+  sourceAssets?: KnowledgeSourceAsset[];
   abortSignal?: AbortSignal;
   createdFilePaths?: string[];
   knowledgeWriteTransaction?: KnowledgeWriteTransaction;
@@ -4440,6 +4477,28 @@ export async function writeDocumentKnowledge({
         ? sourceFileName.trim() || sourceTitle
         : sectionTitle || sourceTitle;
     ensureKnowledgeDirectory(sourcesDir, transaction);
+
+    const seenSourceAssetPaths = new Set<string>();
+    for (const asset of sourceAssets) {
+      const normalizedRelativePath = asset.relativePath.replace(/\\/g, "/").trim();
+      if (
+        !normalizedRelativePath ||
+        normalizedRelativePath.startsWith("/") ||
+        normalizedRelativePath.split("/").some((segment) => segment === "..")
+      ) {
+        throw new Error("Source asset path must stay inside the garden.");
+      }
+      const assetFilePath = path.resolve(clusterDir, ...normalizedRelativePath.split("/"));
+      const resolvedClusterDir = path.resolve(clusterDir);
+      if (!assetFilePath.startsWith(`${resolvedClusterDir}${path.sep}`)) {
+        throw new Error("Source asset path must stay inside the garden.");
+      }
+      if (seenSourceAssetPaths.has(assetFilePath)) continue;
+      seenSourceAssetPaths.add(assetFilePath);
+      ensureKnowledgeDirectory(path.dirname(assetFilePath), transaction);
+      writeKnowledgeBinaryFile(assetFilePath, asset.bytes, transaction);
+      createdFilePaths.push(assetFilePath);
+    }
 
     const usedSlugs = extractExistingSlugs(clusterDir);
     const sourceSlug = uniqueSlug(slugify(sourceTitle), usedSlugs);

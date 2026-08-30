@@ -165,8 +165,12 @@ a {
 }
 
 .page {
-  max-width: calc(#{map.get($breakpoints, desktop)} + 300px);
-  margin: 0 auto;
+  // The Garden is an application workspace, not a centered reading card. Let
+  // the fixed sidebars sit against the viewport edges and give every reclaimed
+  // pixel to the flexible center column on wide desktop windows.
+  max-width: none;
+  margin: 0;
+
   & article {
     & > h1 {
       font-size: 2rem;

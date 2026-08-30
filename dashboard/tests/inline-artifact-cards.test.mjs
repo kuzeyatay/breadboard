@@ -18,6 +18,10 @@ const gardenWorkspace = fs.readFileSync(
   new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
   "utf8",
 );
+const artifactPanel = fs.readFileSync(
+  new URL("../src/app/components/hermes/artifact-panel.tsx", import.meta.url),
+  "utf8",
+);
 const chatSessionsRoute = fs.readFileSync(
   new URL("../src/app/api/chat-sessions/route.ts", import.meta.url),
   "utf8",
@@ -275,7 +279,7 @@ test("Markdown artifacts keep their document reading surface in the dock", () =>
   // pad or scroll around it.
   assert.match(
     viewer,
-    /usesDocumentViewer\s*\?\s*"overflow-hidden p-0"\s*:\s*artifact\.kind === "document" && !editingDocument\s*\?\s*"overflow-auto p-0"\s*:\s*"overflow-auto px-5 py-4"/,
+    /usesDocumentViewer \|\| \(editingDocument && usesVvvebEditor\)[\s\S]*?\?\s*"overflow-hidden p-0"\s*:\s*artifact\.kind === "document" && !editingDocument\s*\?\s*"overflow-auto p-0"\s*:\s*"overflow-auto px-5 py-4"/,
   );
 });
 
@@ -299,6 +303,33 @@ test("an artifact opened in the Terminal fills a lane inside the dock, not the w
   assert.match(
     viewer,
     /useReservedDockWidth\(Boolean\(artifact\) && !dockHost && !expanded, DOCK_WIDTH\)/,
+  );
+});
+
+test("a Garden archive artifact overlays the learning-map rail at reading width", () => {
+  // The archive is one accordion near the bottom of the right rail. Its viewer
+  // inherits the rail-owned host instead of replacing only that accordion.
+  assert.match(artifactPanel, /const inheritedViewerHost = useArtifactDockHost\(\)/);
+  assert.match(
+    artifactPanel,
+    /<ArtifactDockHostProvider host=\{inheritedViewerHost \?\? viewerHost\}>/,
+  );
+  assert.match(
+    gardenWorkspace,
+    /\{\/\* Body \*\/\}\s*<div className="relative flex flex-1 min-h-0">\s*<ArtifactDockHostProvider host=\{artifactDockHost\}>[\s\S]*?<ChatTranscript[\s\S]*?<KnowledgeGraph[\s\S]*?bb-garden-artifact-lane absolute inset-y-0 right-0 z-30 w-\[max\(24rem,50vw\)\]/,
+  );
+
+  // The overlay enters over the map's inner edge and an empty host cannot
+  // intercept resizing or navigation in the learning map.
+  assert.match(gardenWorkspace, /data-artifact-dock-origin="left"/);
+  assert.match(globals, /\.bb-garden-artifact-lane:empty \{\s*display: none;/);
+  assert.match(
+    globals,
+    /\[data-artifact-dock-origin="left"\] > \.bb-artifact-dock \{\s*animation-name: bb-artifact-dock-in-from-left;/,
+  );
+  assert.match(
+    globals,
+    /@keyframes bb-artifact-dock-in-from-left \{[\s\S]*?transform: translateX\(-100%\);[\s\S]*?transform: translateX\(0\);/,
   );
 });
 

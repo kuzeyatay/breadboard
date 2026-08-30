@@ -1038,6 +1038,7 @@ test("legacy recovered initial-invalid then repair-valid stays behind the real v
       title: "Fixture topic",
       objectives: ["Explain the fixture"],
       topics: ["fixture"],
+      questionReferences: [],
       materialIds: ["R1"],
     }],
     referencedMaterials: [{

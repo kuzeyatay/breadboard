@@ -168,6 +168,7 @@ export async function POST(request: Request) {
       job,
       model,
       startedAt,
+      parseWithVlm,
     });
   } catch (error) {
     await upload?.cleanup();

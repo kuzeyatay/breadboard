@@ -89,27 +89,18 @@ test("stopping is offered from the moment a run is asked for", () => {
   assert.match(panel, /void abortExternalRuns\(externalStops\)/);
 });
 
-test("under Super Agent, plain language goes back to the model", () => {
+test("under Super Agent, plain language delegates privately through the model", () => {
   const typed = "which robotics niche has the highest roi, do max research";
 
-  // Off: the surface launches its own visible run.
   assert.equal(maxResearchInvocation(typed, false).selectAgent, false);
-
-  // On: the model owns the turn. It reaches the same agent through
-  // `agent_launch`, and the run lives inside its turn instead of appearing as a
-  // second card the model knows nothing about. This is the Deep Research rule;
-  // Max Research was deliberately exempted from it and that was wrong.
   assert.equal(maxResearchInvocation(typed, true), null);
-
-  // The explicit command still launches directly either way — naming the agent
-  // yourself is not a decision to route around.
   assert.equal(
     maxResearchInvocation(`${MAX_RESEARCH_COMMAND} same question`, true).selectAgent,
     true,
   );
 });
 
-test("both surfaces ask whether Super Agent is on before launching", () => {
+test("both surfaces ask whether Super Agent owns the Max Research request", () => {
   for (const file of [
     "src/app/components/hermes/dashboard-agent-terminal.tsx",
     "src/app/components/hermes/garden-agent-chat.tsx",
@@ -117,7 +108,7 @@ test("both surfaces ask whether Super Agent is on before launching", () => {
     assert.match(
       source(file),
       /maxResearchInvocation\(text, isSuperAgentEnabled\(\)\)/,
-      `${file} must not launch a visible run behind the model's own turn`,
+      `${file} must not launch a visible run behind Super Agent`,
     );
   }
 });
@@ -143,4 +134,27 @@ test("the Super Agent is told to launch it, and the rule is reachable", async ()
       `max-research must be model-launchable on ${surface} for the rule to render`,
     );
   }
+});
+
+test("a direct non-Super-Agent launch is durable before a page callback can be lost", () => {
+  const launcher = source("src/app/components/hermes/launch-max-research.ts");
+  assert.match(
+    launcher,
+    /const conversationId = await session\.ensureConversation\(clientMessageId\);/,
+  );
+  assert.match(launcher, /keepalive: true,/);
+  for (const field of [
+    "conversationId",
+    "clientMessageId",
+    "userContent",
+  ]) {
+    assert.match(launcher, new RegExp(`\\b${field},`));
+  }
+
+  const route = source("src/app/api/max-research/runs/route.ts");
+  assert.match(route, /getConversationForUser\(durableTurn\.conversationId, userId\)/);
+  assert.match(route, /recordExternalAgentTurn\(\{/);
+  assert.match(route, /requestId: durableTurn\.clientMessageId/);
+  assert.match(route, /kind: "max_research",/);
+  assert.match(route, /await abortRun\(userId, run\.runId\)/);
 });

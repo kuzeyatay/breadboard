@@ -147,6 +147,7 @@ import {
   type TerminalGardenGrounding,
 } from "../hermes/terminal-garden-grounding.ts";
 import { connectedAppRegistryForTurn } from "../hermes/unified-tool-registry.ts";
+import { connectedRepositoryForTurn } from "../code-index/chat-turn.ts";
 import {
   loadSuperAgentInventory,
   renderSuperAgentDirective,
@@ -383,7 +384,18 @@ export async function startConversationTurn(
     if (!input.retry && !(input.confirmedPermissionIds?.length)) {
       throw new ApiError(409, "turn_requires_retry", "This failed turn requires an explicit retry.");
     }
-    retryAssistantMessage(input.conversation.id, input.clientMessageId);
+    retryAssistantMessage(
+      input.conversation.id,
+      input.clientMessageId,
+      undefined,
+      {
+        ...(input.responseStartedAt
+          ? { responseStartedAt: input.responseStartedAt }
+          : {}),
+        ...(input.branchGroupId ? { branchGroupId: input.branchGroupId } : {}),
+        ...(input.textSelection ? { textSelection: input.textSelection } : {}),
+      },
+    );
   }
 
   let session =
@@ -1027,10 +1039,22 @@ export async function startConversationTurn(
           // unaffected: each one still pauses for their approval at call time.
           allowAllConnectionTools: superAgent,
         });
+  // The repository connected to the active Garden, if there is one: the same
+  // description and code-index tools Garden Chat gets, so a Terminal turn
+  // with that Garden active can answer questions about its code too. Quartz
+  // has no Garden of its own and gets nothing.
+  const repository =
+    input.surface === "quartz_ai"
+      ? null
+      : await connectedRepositoryForTurn({
+          userId: input.conversation.user_id,
+          gardenSlug: context.activeGardenSlug ?? session.row.garden_id,
+        });
   decision.selectedConnections = [
     ...new Set([
       ...decision.selectedConnections,
       ...connectedApps.connectionNames,
+      ...(repository?.connection ? [repository.connection] : []),
     ]),
   ];
 
@@ -1214,6 +1238,7 @@ export async function startConversationTurn(
   const tools = mergeSelectedTools(prepared.grant.allowedTools, {
     ...resolved.tools,
     ...connectedApps.tools,
+    ...(repository?.tools ?? {}),
     ...(goalMode ? { mcp_call: true } : {}),
   });
   // Whether this turn needs verified map data is decided here, before dispatch,
@@ -1288,6 +1313,9 @@ export async function startConversationTurn(
             }
           : undefined,
       ),
+      // Directly after memory, as in Garden Chat: the repository is something
+      // the assistant knows about the active Garden, not a late tool notice.
+      repository?.systemContext ?? "",
       renderResolvedFilesystemContext(resolvedResources, referenceSource),
       gardenGrounding.context,
       renderGeographicGroundingDirective(geographicGrounding),

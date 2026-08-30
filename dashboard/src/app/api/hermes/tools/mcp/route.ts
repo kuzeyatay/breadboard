@@ -41,6 +41,8 @@ import {
   requireEnabled,
 } from "@/lib/hermes/route-helpers.ts";
 import { connectionToolAllowed } from "@/lib/hermes/capability-policy.ts";
+import { codeIndexConnectionForSession } from "@/lib/code-index/chat-turn.ts";
+import { isCodeIndexConnectionSlug } from "@/lib/code-index/repository-digest.ts";
 import { getConversationById } from "@/lib/conversations/store.ts";
 
 export const dynamic = "force-dynamic";
@@ -280,6 +282,70 @@ export async function POST(request: Request) {
           502,
           "connected_app_action_failed",
           "The connected-app action failed. Provider details were redacted.",
+        );
+      }
+    }
+
+    // The code index of the repository this session's Garden is connected to.
+    // Breadboard-owned like Goal Mode and the connected apps: there is no saved
+    // MCP row because nobody typed the command — it is derived from the
+    // repository the user connected — and the slug is checked against that
+    // repository, so a session cannot reach another repository's index by
+    // naming its connection. Read-only by construction (graft answers
+    // questions about code; it never edits it), so it needs no mode gate.
+    if (isCodeIndexConnectionSlug(slug)) {
+      const index = await codeIndexConnectionForSession({
+        userId: session.user_id,
+        gardenSlug: session.garden_id,
+        slug,
+      });
+      if (!index) {
+        throw new ApiError(
+          409,
+          "code_index_unavailable",
+          "The repository's code index is not available for this session.",
+        );
+      }
+      if (!index.tools.some((candidate) => candidate.name === tool)) {
+        throw new ApiError(403, "mcp_tool_denied", "That MCP tool is not authorized.");
+      }
+      recordAuditEvent({
+        eventType: "mcp.tool_started",
+        runtimeSessionId: session.id,
+        userId: session.user_id,
+        gardenId: session.garden_id,
+        payload: { runId: run.id, connectionId: null, provider: "code-index", slug, tool },
+      });
+      try {
+        const data = await callProxyMcpTool({
+          userId: session.user_id,
+          slug,
+          tool,
+          args,
+          signal: request.signal,
+        });
+        recordAuditEvent({
+          eventType: "mcp.tool_completed",
+          runtimeSessionId: session.id,
+          userId: session.user_id,
+          gardenId: session.garden_id,
+          payload: { runId: run.id, connectionId: null, provider: "code-index", slug, tool, success: true },
+        });
+        return NextResponse.json({ ok: true, data });
+      } catch {
+        recordAuditEvent({
+          eventType: "mcp.tool_completed",
+          runtimeSessionId: session.id,
+          userId: session.user_id,
+          gardenId: session.garden_id,
+          payload: { runId: run.id, connectionId: null, provider: "code-index", slug, tool, success: false },
+        });
+        // Said to the model, not just logged: a bare failure reads as
+        // transient and gets retried until the turn's budget is gone.
+        throw new ApiError(
+          502,
+          "code_index_failed",
+          "The code index could not answer this call. Do not call the code index again this turn; answer from the connected_repository summary and say plainly what needed the code itself.",
         );
       }
     }

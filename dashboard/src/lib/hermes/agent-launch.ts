@@ -6,6 +6,16 @@
 // because both chat surfaces, the session hook, and the tests all need them
 // without dragging a component's imports along. Nothing here performs a launch.
 
+import {
+  parseExternalAgentRun,
+  type ExternalAgentRun,
+} from "../conversations/external-agent-runs.ts";
+
+type ServerStartedAgentRun = Extract<
+  ExternalAgentRun,
+  { kind: "max_research" }
+>;
+
 /** A launch a super-agent turn asked for, as it reaches the chat surface. */
 export interface AgentLaunchRequestPayload {
   requestId: string;
@@ -21,6 +31,8 @@ export interface AgentLaunchRequestPayload {
   requiresApproval: boolean;
   /** Assistant turn that owns this privately observed delegated run. */
   originClientMessageId?: string;
+  /** Run already started and attached by the server-side tool boundary. */
+  startedRun?: ServerStartedAgentRun;
 }
 
 /**
@@ -138,6 +150,9 @@ export function parseAgentLaunchRequest(
   const requestId = text(source.requestId).trim();
   const command = text(source.command).trim();
   const brief = text(source.brief).trim();
+  const parsedStartedRun = parseExternalAgentRun(source.startedRun);
+  const startedRun =
+    parsedStartedRun?.kind === "max_research" ? parsedStartedRun : null;
   // A request missing any of these would submit something other than a launch —
   // the bare command opens a palette entry and runs nothing.
   if (!requestId || !command || !brief) return null;
@@ -157,6 +172,7 @@ export function parseAgentLaunchRequest(
     ...(text(source.originClientMessageId).trim()
       ? { originClientMessageId: text(source.originClientMessageId).trim() }
       : {}),
+    ...(startedRun ? { startedRun } : {}),
   };
 }
 

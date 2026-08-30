@@ -229,7 +229,8 @@ export type RuntimePublicFailureCode =
   | "WORKER_FAILED"
   | "BREADBOARD_RESOURCE_EXHAUSTED"
   | "JOB_INTERRUPTED"
-  | "JOB_UNCERTAIN";
+  | "JOB_UNCERTAIN"
+  | "SERVICE_DEPENDENCY_UNAVAILABLE";
 
 const RUNTIME_PUBLIC_FAILURE_CODES = new Set<RuntimePublicFailureCode>([
   "RUNTIME_JOB_FAILED",
@@ -237,6 +238,7 @@ const RUNTIME_PUBLIC_FAILURE_CODES = new Set<RuntimePublicFailureCode>([
   "BREADBOARD_RESOURCE_EXHAUSTED",
   "JOB_INTERRUPTED",
   "JOB_UNCERTAIN",
+  "SERVICE_DEPENDENCY_UNAVAILABLE",
 ]);
 
 const SANITIZED_RUNTIME_FAILURE_MESSAGE = "Runtime job execution failed.";
@@ -879,6 +881,7 @@ function hasValidRuntimeJobFailure(value: Record<string, unknown>): boolean {
   switch (value.failureCode) {
     case "RUNTIME_JOB_FAILED":
     case "WORKER_FAILED":
+    case "SERVICE_DEPENDENCY_UNAVAILABLE":
       return value.state === "failed";
     case "BREADBOARD_RESOURCE_EXHAUSTED":
       return value.state === "resource_exhausted";
@@ -2221,17 +2224,34 @@ export async function readSupervisedServiceSnapshot(
   return snapshots[0]!;
 }
 
+export interface AcquireServiceLeaseOptions {
+  /**
+   * How long this caller is willing to wait for the lease. The default is the
+   * service's own startup budget, which is right for a run that needs the
+   * service and wrong for a chat turn that would merely like it: optional
+   * memory must never hold a reply for two minutes while a service starts.
+   * A wait that gives up here leaves the Runtime's pending acquire to settle
+   * on its own; the lease it may eventually grant expires unused.
+   */
+  readonly timeoutMs?: number;
+}
+
 export async function acquireServiceLease(
   serviceId: SupervisedServiceId,
   reason: string,
   env: NodeJS.ProcessEnv = process.env,
+  options: AcquireServiceLeaseOptions = {},
 ): Promise<SupervisorLease | null> {
-  const timeoutMs = await serviceLeaseControlTimeoutMs(serviceId, env);
+  const contractTimeoutMs = await serviceLeaseControlTimeoutMs(serviceId, env);
+  const timeoutMs =
+    options.timeoutMs !== undefined
+      ? Math.min(options.timeoutMs, contractTimeoutMs ?? CONTROL_TIMEOUT_MS)
+      : contractTimeoutMs ?? CONTROL_TIMEOUT_MS;
   const result = await control<{ leaseId?: unknown; serviceId?: unknown }>(
     `/v1/services/${serviceId}/lease`,
     { reason },
     env,
-    timeoutMs ?? CONTROL_TIMEOUT_MS,
+    timeoutMs,
   );
   if (!result) return null;
   if (typeof result.leaseId !== "string" || result.serviceId !== serviceId) {
