@@ -1,0 +1,148 @@
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useEffect } from 'react';
+import { useForm } from 'react-hook-form';
+import { z } from 'zod';
+
+import { Button, Card, CardContent, CardHeader, CardTitle, Input } from '@nangohq/design-system';
+
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/Form';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { usePutBillingInvoicingDetails } from '@/hooks/usePlan';
+import { useToast } from '@/hooks/useToast';
+import { useStore } from '@/store';
+import { countryCodes, taxIdTypes } from '../invoicingConstants';
+import { InvoicingAddressFields } from './InvoicingAddressFields';
+import { InvoicingTaxIdFields } from './InvoicingTaxIdFields';
+
+import type { BillingCustomer } from '@nangohq/types';
+
+export const OptionalTag = () => (
+    <span className="bg-surface-page border border-border-strong rounded px-2 py-0.5 text-body-small-regular text-text-muted">Optional</span>
+);
+
+const countryValues = countryCodes.map((c) => c.value) as [string, ...string[]];
+const taxIdTypeValues = taxIdTypes.map((t) => t.value) as [string, ...string[]];
+
+const addressSchema = z.object({
+    line1: z.string().nullable(),
+    line2: z.string().nullable(),
+    city: z.string().nullable(),
+    state: z.string().nullable(),
+    postalCode: z.string().nullable(),
+    country: z.enum(countryValues, { message: 'Valid country required' })
+});
+
+const taxIdSchema = z.object({
+    country: z.enum(countryValues, { message: 'Valid country required' }),
+    type: z.enum(taxIdTypeValues, { message: 'Valid tax ID type required' }),
+    value: z.string().min(1, 'Required')
+});
+
+const schema = z.object({
+    legalEntityName: z.string().min(1, 'Required'),
+    email: z.string().email('Valid email required'),
+    address: addressSchema.nullable(),
+    taxId: taxIdSchema.nullable()
+});
+
+export type InvoicingFormData = z.infer<typeof schema>;
+
+function toFormData(customer: BillingCustomer): InvoicingFormData {
+    return {
+        legalEntityName: customer.invoicingDetails.legalEntityName,
+        email: customer.invoicingDetails.email,
+        address: customer.invoicingDetails.address ? { ...customer.invoicingDetails.address, country: customer.invoicingDetails.address.country ?? '' } : null,
+        taxId: customer.invoicingDetails.taxId
+    };
+}
+
+export const InvoicingDetailsForm: React.FC<{ customer: BillingCustomer | undefined }> = ({ customer }) => {
+    const env = useStore((state) => state.env);
+    const { toast } = useToast();
+    const { mutateAsync: putAsync, isPending } = usePutBillingInvoicingDetails(env);
+
+    const form = useForm<InvoicingFormData>({
+        resolver: zodResolver(schema),
+        defaultValues: customer ? toFormData(customer) : undefined,
+        mode: 'onTouched'
+    });
+
+    useEffect(() => {
+        if (!customer || form.formState.isDirty) return;
+        form.reset(toFormData(customer));
+    }, [customer]);
+
+    const onSubmit = async (data: InvoicingFormData) => {
+        try {
+            await putAsync({ legalEntityName: data.legalEntityName, email: data.email, address: data.address, taxId: data.taxId });
+            toast({ title: 'Invoicing details updated', variant: 'success' });
+        } catch {
+            toast({ title: 'Failed to update invoicing details', variant: 'error' });
+        }
+    };
+
+    if (!customer) {
+        return (
+            <div className="flex flex-col gap-3">
+                <Skeleton className="w-40 h-5" />
+                <Skeleton className="w-full h-9" />
+                <Skeleton className="w-full h-9" />
+            </div>
+        );
+    }
+
+    return (
+        <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-6">
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Billing information</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="flex flex-row items-start gap-5 [&>*]:flex-1">
+                            <FormField
+                                control={form.control}
+                                name="legalEntityName"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel className="flex gap-1 items-center">
+                                            Legal entity name <span className="text-text-danger">*</span>
+                                        </FormLabel>
+                                        <FormControl>
+                                            <Input placeholder="Acme Inc." {...field} />
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
+                            <FormField
+                                control={form.control}
+                                name="email"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel className="flex gap-1 items-center">
+                                            Billing email <span className="text-text-danger">*</span>
+                                        </FormLabel>
+                                        <FormControl>
+                                            <Input type="email" placeholder="billing@company.com" {...field} />
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
+                        </div>
+                    </CardContent>
+                </Card>
+
+                <InvoicingAddressFields />
+                <InvoicingTaxIdFields />
+
+                <div className="flex justify-start">
+                    <Button type="submit" variant="primary" size="md" loading={isPending}>
+                        Save changes
+                    </Button>
+                </div>
+            </form>
+        </Form>
+    );
+};
