@@ -1,0 +1,43 @@
+digraph premortem {
+  graph [
+    rankdir=TB,
+    bgcolor="transparent",
+    pad=0.25,
+    nodesep=0.45,
+    ranksep=0.65,
+    fontname="Helvetica"
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#f0f7f2",
+    color="#428a5f",
+    fontcolor="#1a1a1a",
+    fontname="Helvetica",
+    fontsize=15,
+    margin="0.22,0.15",
+    width=3.5
+  ];
+  edge [
+    color="#428a5f",
+    fontcolor="#56635b",
+    fontname="Helvetica",
+    fontsize=11,
+    penwidth=2,
+    arrowsize=0.8
+  ];
+
+  n001 [label="n001 · ROOT CAUSE\nColgate name makes entrées\nseem unappetizing"];
+  n002 [label="n002 · INTERMEDIATE EFFECT\nHousehold trial remains\nbelow plan"];
+  n003 [label="n003 · INTERMEDIATE EFFECT\nSell-through falls below\nretailer thresholds"];
+  n004 [
+    label="n004 · TERMINAL OUTCOME\nGrocery chains cut facings\nand delist the entrée line",
+    fillcolor="#214d35",
+    color="#214d35",
+    fontcolor="white"
+  ];
+
+  n001 -> n002 [label="brand-category association\nsuppresses first purchase"];
+  n002 -> n003 [label="weak trial reduces\nweekly unit velocity"];
+  n003 -> n004 [label="velocity misses the\nretailer hurdle rate"];
+}
