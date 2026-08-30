@@ -1,0 +1,351 @@
+from __future__ import annotations
+
+from ..ingress import CHAT_SOURCES
+from ..plugin_bundle.omh.awareness import (
+    awareness_generic_tool_checkpoint_payload,
+    awareness_route_hint,
+    awareness_route_hint_context_from_payload,
+)
+from ..plugin_bundle.omh.degradation import degradation_chat_note
+from ..routing.catalog_questions import is_skill_catalog_question
+from ..routing.action_copy import next_action_label
+
+# `contract` never imports this module, so the edge is one-way and cycle-free.
+# Reusing its helpers keeps the route-hint path on the same messenger-safe
+# rendering rules as the main interaction path instead of a second copy.
+from .contract import (
+    RENDER_PROFILE_RICH_MARKDOWN,
+    display_workflow_name,
+    _messenger_chunking_hint,
+    _messenger_safe_body,
+    _render_body_blocks,
+    render_profile_for_source,
+)
+
+CHAT_ROUTE_HINT_SCHEMA_VERSION = "chat_route_hint/v1"
+CHAT_ROUTE_HINT_RESPONSE_SCHEMA_VERSION = "chat_route_hint_response/v1"
+
+
+def build_chat_route_hint_payload(
+    message: str,
+    *,
+    source: str = "generic",
+    max_hints: int = 2,
+    source_metadata: dict[str, str] | None = None,
+    include_prompt_context: bool = False,
+) -> dict[str, object]:
+    """Return a wrapper-facing route hint without storing or echoing raw prompt text."""
+    if source not in CHAT_SOURCES:
+        raise ValueError(f"unsupported chat route hint source: {source}")
+    metadata = dict(source_metadata or {})
+    route_hint = awareness_route_hint(message, max_hints=max_hints)
+    route_hint = _route_hint_with_catalog_picker(route_hint, message)
+    generic_tool_checkpoint = _generic_tool_checkpoint()
+    hints = [hint for hint in route_hint.get("hints", []) if isinstance(hint, dict)]
+    primary_hint = hints[0] if hints else {}
+    response = _response_for_hint(
+        primary_hint,
+        hints,
+        route_hint=route_hint,
+        source=source,
+        render_profile=render_profile_for_source(source, metadata),
+        generic_tool_checkpoint=generic_tool_checkpoint,
+    )
+    payload: dict[str, object] = {
+        "schema_version": CHAT_ROUTE_HINT_SCHEMA_VERSION,
+        "source": source,
+        "message_length": len(message),
+        "source_metadata": metadata,
+        "route_hint": route_hint,
+        "generic_tool_checkpoint": generic_tool_checkpoint,
+        "chat_response": response,
+        "wrapper_contract": {
+            "schema_version": "omh_route_hint_wrapper_contract/v1",
+            "purpose": "Render a lightweight OMH hint before generic chat/tools when plugin context is unavailable or a wrapper wants an explicit preview.",
+            "read_path": "chat_response",
+            "state_path": "chat_response.state.route_hint",
+            "generic_tool_checkpoint_path": "generic_tool_checkpoint",
+            "safe_to_render_without_shell_approval": True,
+            "does_not_require_plugin_load": True,
+            "next_backend_commands": _next_backend_commands(primary_hint),
+        },
+        "privacy": {
+            "mode": "metadata_only",
+            "raw_prompt_stored": False,
+            "raw_prompt_echoed": False,
+            "stored_fields": ["message length", "message hash", "matched cue labels", "workflow hint"],
+        },
+        "claim_boundary": str(route_hint.get("claim_boundary") or ""),
+    }
+    if include_prompt_context:
+        payload["prompt_context"] = awareness_route_hint_context_from_payload(route_hint)
+        payload["prompt_context_boundary"] = (
+            "Prompt context is for Hermes routing guidance only; it is not workflow execution or observed evidence."
+        )
+    return payload
+
+
+def _generic_tool_checkpoint() -> dict[str, object]:
+    return awareness_generic_tool_checkpoint_payload()
+
+
+def _route_hint_with_catalog_picker(route_hint: dict[str, object], message: str) -> dict[str, object]:
+    hints = [hint for hint in route_hint.get("hints", []) if isinstance(hint, dict)]
+    if hints or not is_skill_catalog_question(message):
+        return route_hint
+    hint = {
+        "id": "catalog_question_picker",
+        "workflow": "oh-my-hermes",
+        "lane": "intent_to_plan",
+        "next_action": "choose_skill",
+        "next_action_label": next_action_label("choose_skill"),
+        "reason": "The user is asking which OMH workflows are available; show the workflow picker without shell approval.",
+        "fallback_action": "show_workflow_picker_or_capability_summary",
+        "fallback_action_label": next_action_label("show_workflow_picker"),
+        "matched_cues": ["catalog_question"],
+        "adjacent_workflows": ["deep-interview", "ralplan", "loop", "ultraprocess"],
+        "workflow_context_card": {
+            "id": "intent_to_plan",
+            "label": "Intent to plan",
+            "first_response_shape": "Open the OMH workflow picker, then let the user pick a lane or route the original request.",
+            "not_evidence_until_observed": [
+                "workflow selection",
+                "plan acceptance",
+                "executor dispatch",
+                "verification",
+            ],
+        },
+        "not_evidence_yet": ["workflow selection", "plan acceptance", "executor dispatch", "verification"],
+    }
+    updated = dict(route_hint)
+    updated.update(
+        {
+            "status": "hinted",
+            "selected_workflow": "oh-my-hermes",
+            "primary_workflow": "oh-my-hermes",
+            "primary_next_action": "choose_skill",
+            "primary_next_action_label": next_action_label("choose_skill"),
+            "adjacent_workflows": list(hint["adjacent_workflows"]),
+            "hints": [hint],
+            "catalog_question": True,
+        }
+    )
+    return updated
+
+
+def _checkpoint_body_text(generic_tool_checkpoint: dict[str, object]) -> str:
+    body = str(generic_tool_checkpoint.get("body") or "").strip()
+    if not body:
+        return ""
+    return f"Checkpoint: {body}"
+
+
+def _action_label_with_id(action: str, label: str = "") -> str:
+    normalized = action.strip()
+    if not normalized:
+        return ""
+    resolved_label = label.strip() or next_action_label(normalized)
+    if not resolved_label or resolved_label == normalized:
+        return normalized
+    return f"{resolved_label} (`{normalized}`)"
+
+
+def _response_for_hint(
+    primary_hint: dict[str, object],
+    hints: list[dict[str, object]],
+    *,
+    route_hint: dict[str, object],
+    source: str,
+    render_profile: str,
+    generic_tool_checkpoint: dict[str, object],
+) -> dict[str, object]:
+    checkpoint_body = _checkpoint_body_text(generic_tool_checkpoint)
+    if primary_hint:
+        workflow = str(primary_hint.get("workflow") or "")
+        next_action = str(primary_hint.get("next_action") or "")
+        next_action_label_text = str(primary_hint.get("next_action_label") or next_action_label(next_action)).strip()
+        # `submit_text` stays canonical: it is invocation syntax OMH's own router
+        # has to match. Only the prose the user reads takes the display label.
+        workflow_submit_text = "./omh" if workflow == "oh-my-hermes" and next_action == "choose_skill" else f"./{workflow}"
+        workflow_display = display_workflow_name(workflow)
+        workflow_action_label = "Open omh" if workflow_submit_text == "./omh" else f"Open {workflow_display}"
+        lane = str(primary_hint.get("lane") or "")
+        if workflow == "oh-my-hermes" and next_action == "choose_skill":
+            headline = "[omh] workflow picker is ready."
+            body = (
+                "This looks like an OMH catalog question, so I can open the workflow picker instead of asking "
+                "for shell approval. "
+                f"Next action: {_action_label_with_id(next_action, next_action_label_text)}. "
+                "This is only a route hint until a workflow is selected and observed."
+            )
+        else:
+            headline = f"[omh] {workflow_display} looks relevant."
+            body = (
+                f"I can open `{workflow_display}` first because this request matches the {lane.replace('_', ' ')} lane. "
+                f"Next action: {_action_label_with_id(next_action, next_action_label_text)}. "
+                "This is only a route hint until a workflow is selected and observed."
+            )
+        if checkpoint_body:
+            body = f"{body} {checkpoint_body}"
+        actions = [
+            {
+                "id": "open_workflow",
+                "label": workflow_action_label,
+                "enabled": True,
+                "workflow": workflow,
+                "next_action": next_action,
+                "submit_text": workflow_submit_text,
+            },
+            {
+                "id": "route_for_me",
+                "label": "Route for me",
+                "enabled": True,
+                "backend_command": "omh chat interact --json",
+            },
+        ]
+        if workflow_submit_text != "./omh":
+            actions.append(
+                {
+                    "id": "open_picker",
+                    "label": "Open omh",
+                    "enabled": True,
+                    "submit_text": "./omh",
+                }
+            )
+        render_kind = "workflow_route_hint"
+    else:
+        workflow = ""
+        next_action = "open_picker_or_clarify"
+        next_action_label_text = next_action_label(next_action)
+        headline = "[omh] no strong workflow hint yet."
+        body = (
+            "I do not have a strong OMH workflow hint from this message alone. "
+            "Open the workflow picker or ask Hermes to clarify before choosing a workflow."
+        )
+        if checkpoint_body:
+            body = f"{body} {checkpoint_body}"
+        actions = [
+            {
+                "id": "open_picker",
+                "label": "Open omh",
+                "enabled": True,
+                "submit_text": "./omh",
+            },
+            {
+                "id": "clarify",
+                "label": "Clarify",
+                "enabled": True,
+                "backend_command": "omh chat interact --mode clarify --json",
+            },
+        ]
+        render_kind = "no_route_hint"
+    # Appended after both branches so the note is always the last sentence a
+    # chat reader sees, whichever branch built the body.
+    degradation = route_hint.get("degradation") if isinstance(route_hint, dict) else None
+    degradation_note = degradation_chat_note(degradation)
+    if degradation_note:
+        body = f"{body} {degradation_note}"
+    state_route_hint: dict[str, object] = {
+        "schema_version": "omh_route_hint/v1",
+        "primary_workflow": workflow,
+        "primary_next_action": next_action,
+        "primary_next_action_label": next_action_label_text,
+        "intent_class": str(route_hint.get("intent_class") or ""),
+        "selected_workflow": str(route_hint.get("selected_workflow") or workflow),
+        "mentioned_workflows": list(route_hint.get("mentioned_workflows", [])),
+        "mentioned_runtime_terms": list(route_hint.get("mentioned_runtime_terms", [])),
+        "adjacent_workflows": list(route_hint.get("adjacent_workflows", [])),
+        "not_executed": list(route_hint.get("not_executed", [])),
+        "hints": hints,
+        "catalog_question": bool(route_hint.get("catalog_question", False)),
+    }
+    # This rebuild is an explicit key whitelist, so a key added upstream is
+    # dropped here by default. `degradation` is set conditionally: a healthy
+    # request must keep exactly today's key set.
+    if isinstance(degradation, dict) and degradation:
+        state_route_hint["degradation"] = degradation
+    # Built from the final `body`, so the degradation note (appended above) is
+    # inside the messenger-safe text exactly once instead of being re-added or
+    # dropped by the transform.
+    fallback_body_text, fallback_transforms = _messenger_safe_body(body)
+    if render_profile == RENDER_PROFILE_RICH_MARKDOWN:
+        rendered_body_text = body
+        transforms_applied: list[str] = []
+    else:
+        rendered_body_text = fallback_body_text
+        transforms_applied = fallback_transforms
+    return {
+        "schema_version": CHAT_ROUTE_HINT_RESPONSE_SCHEMA_VERSION,
+        "kind": render_kind,
+        "source": source,
+        "headline": headline,
+        "body": body,
+        "visible_prefix": f"[omh] hint:{workflow}" if workflow else "[omh] hint:none",
+        "actions": actions,
+        "messenger_rendering": {
+            "schema_version": "messenger_route_hint_rendering/v1",
+            # `profile` is the raw source echo kept for backward compatibility.
+            # Deprecated in favour of `render_profile`, which is the resolved
+            # render profile a wrapper should actually render against.
+            "profile": source,
+            "render_profile": render_profile,
+            "title": headline,
+            "body_text": rendered_body_text,
+            "body_blocks": _render_body_blocks(rendered_body_text, render_profile=render_profile),
+            "fallback_body_text": fallback_body_text,
+            "transforms_applied": transforms_applied,
+            # Per-platform, not the old one-size-fits-all number: Discord,
+            # Slack, and Telegram each get their own real ceiling here too,
+            # since a route hint is itself a messenger-rendered reply.
+            "chunking": _messenger_chunking_hint(source),
+            "checkpoint_text": checkpoint_body,
+            "primary_action": actions[0],
+            "secondary_actions": actions[1:],
+        },
+        "state": {
+            "schema_version": "omh_route_hint_state/v1",
+            "selected_workflow": workflow,
+            "next_action": next_action,
+            "next_action_label": next_action_label_text,
+            "route_hint_count": len(hints),
+            "route_hint": state_route_hint,
+        },
+        "claim_boundary": (
+            "This response is a preview hint only. It is not workflow selection, execution, generated output, "
+            "verification, review, CI, merge, or delivery evidence."
+        ),
+    }
+
+
+def _next_backend_commands(primary_hint: dict[str, object]) -> list[dict[str, object]]:
+    workflow = str(primary_hint.get("workflow") or "")
+    commands = [
+        {
+            "id": "route_for_me",
+            "command": "omh chat interact --source <source> --json <message>",
+            "purpose": "Build the full wrapper interaction envelope from the same event.",
+        },
+    ]
+    if workflow != "oh-my-hermes":
+        commands.append(
+            {
+                "id": "open_picker",
+                "command": "omh chat interact --source <source> --json ./omh",
+                "purpose": "Open the compact OMH workflow picker.",
+            }
+        )
+    if workflow:
+        workflow_command = (
+            "omh chat interact --source <source> --json ./omh"
+            if workflow == "oh-my-hermes"
+            else f"omh chat interact --source <source> --json ./{workflow} <message>"
+        )
+        commands.insert(
+            0,
+            {
+                "id": "open_workflow",
+                "command": workflow_command,
+                "purpose": "Open the hinted workflow explicitly when the user chooses it.",
+            },
+        )
+    return commands

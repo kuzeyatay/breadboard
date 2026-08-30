@@ -1,0 +1,483 @@
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+from ..executors import EXECUTOR_PROFILES, executor_label
+from ..local_store import atomic_write_json, read_json_object_result, utc_now
+from ..paths import OmhPaths
+
+
+EXECUTOR_READINESS_SCHEMA_VERSION = "executor_readiness/v1"
+EXECUTOR_READINESS_PROFILES = EXECUTOR_PROFILES
+_PROBE_TIMEOUT_SECONDS = 3
+
+# How many PATH resolutions of one command get their version observed. Users
+# update codex and claude on their own cadence and by more than one installer
+# (npm, standalone, brew), so several binaries of different versions routinely
+# coexist; two or three is the realistic ceiling worth the subprocess cost.
+_MAX_OBSERVED_RESOLUTIONS = 3
+
+# OMH pins no executor version, ever -- a guard test rejects any version
+# literal in this module, including comments. The observed failure that
+# motivates the shadow report was not "the version was wrong": `shutil.which`
+# returns only the FIRST match, so a stale npm codex probed "ready" while the
+# newer standalone the auth session actually required sat one PATH entry
+# later, invisible. Version requirements belong to the executor CLI's own
+# output at run time; OMH's job is to observe every resolution and say when
+# the one that will run is not the only one installed.
+EXECUTOR_VERSION_POLICY = (
+    "OMH pins no executor CLI version. Version requirements come from the executor's own "
+    "output at run time; the probe reports every PATH resolution it observed so a stale "
+    "binary shadowing a newer install is visible instead of silently selected."
+)
+_COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "codex": ("codex", ("--version",)),
+    "claude-code": ("claude", ("--version",)),
+    "omx-runtime": ("omx", ("--version",)),
+    # omo ships as an extension of a host agent CLI, not as its own binary.
+    # This static entry is NEVER read for omo-runtime: `_resolved_command`
+    # always overrides it with the DETECTED host (`omo_runtime_host` in
+    # fanout_dispatch — pi first, then its senpi distribution, then the
+    # opencode plugin host). The entry mirrors OMO_RUNTIME_HOST_CANDIDATES[0]
+    # so a future second consumer of this table sees the same pi-first
+    # default the detector promises — do not repin it to one distribution.
+    # No host on PATH probes the first candidate and truthfully reads
+    # `missing`; the runtime prompt-handoff path never needed a local CLI.
+    "omo-runtime": ("pi", ("--version",)),
+    "omc-runtime": ("omc", ("--version",)),
+}
+
+
+def executor_readiness_contract(profile: str | None) -> dict[str, object]:
+    normalized = _normalize_profile(profile)
+    return _copy_executor_readiness_payload(_executor_readiness_contract_cached(normalized))
+
+
+@lru_cache(maxsize=16)
+def _executor_readiness_contract_cached(normalized: str) -> dict[str, object]:
+    if normalized == "choose":
+        return {
+            "schema_version": EXECUTOR_READINESS_SCHEMA_VERSION,
+            "profile": "choose",
+            "status": "choice_required",
+            "first_use_only": True,
+            "cache_key": "executor_readiness:choose",
+            "next_action": "choose_executor_before_probe",
+            "fallback_policy": {
+                "when_missing": "ask_user_to_choose_executor_or_configure_one",
+                "retry_after_state_change": True,
+                "retry_limit": 1,
+            },
+            "claim_boundary": "Executor readiness is not dispatch, execution, verification, review, CI, or merge evidence.",
+        }
+    command, args = _resolved_command(normalized) or ("", ())
+    probe_kind = "local_command" if command else "wrapper_observed_profile"
+    return {
+        "schema_version": EXECUTOR_READINESS_SCHEMA_VERSION,
+        "profile": normalized,
+        "label": executor_label(normalized),
+        "status": "not_observed",
+        "first_use_only": True,
+        "cache_key": f"executor_readiness:{normalized}",
+        "probe": {
+            "kind": probe_kind,
+            "command": command,
+            "args": list(args),
+            "timeout_seconds": _PROBE_TIMEOUT_SECONDS if command else 0,
+            "captures": ["available", "exit_code", "summary"],
+        },
+        "ready_action": _ready_action(normalized),
+        "fallback_policy": {
+            "when_missing": "ask_user_to_choose_executor_or_configure_one",
+            "retry_after_state_change": True,
+            "retry_limit": 1,
+            "suggested_actions": [
+                "choose_executor",
+                "show_prompt_handoff",
+                "show_runtime_handoff",
+                "continue_in_hermes",
+            ],
+        },
+        "not_evidence": [
+            "executor dispatch",
+            "executor result",
+            "execution",
+            "implementation",
+            "verification",
+            "review",
+            "CI",
+            "merge",
+        ],
+        "claim_boundary": "Readiness is not dispatch, execution, verification, review, CI, or merge evidence; it only checks whether the selected executor path appears available.",
+    }
+
+
+def _copy_executor_readiness_payload(payload: dict[str, object]) -> dict[str, object]:
+    copied = dict(payload)
+    probe = copied.get("probe")
+    if isinstance(probe, dict):
+        copied_probe = dict(probe)
+        copied_probe["args"] = _copy_list(probe.get("args", []))
+        copied_probe["captures"] = _copy_list(probe.get("captures", []))
+        copied["probe"] = copied_probe
+    fallback_policy = copied.get("fallback_policy")
+    if isinstance(fallback_policy, dict):
+        copied_policy = dict(fallback_policy)
+        if "suggested_actions" in copied_policy:
+            copied_policy["suggested_actions"] = _copy_list(copied_policy.get("suggested_actions", []))
+        copied["fallback_policy"] = copied_policy
+    if "not_evidence" in copied:
+        copied["not_evidence"] = _copy_list(copied.get("not_evidence", []))
+    profiles = copied.get("profiles")
+    if isinstance(profiles, list):
+        copied["profiles"] = [
+            _copy_executor_readiness_payload(profile)
+            for profile in profiles
+            if isinstance(profile, dict)
+        ]
+    return copied
+
+
+def executor_readiness_for_selection(
+    selected_profile: str | None,
+    *,
+    choice_required: bool,
+) -> dict[str, object]:
+    if choice_required or not selected_profile:
+        payload = executor_readiness_contract("choose")
+        payload["profiles"] = [executor_readiness_contract(profile) for profile in EXECUTOR_READINESS_PROFILES]
+        return payload
+    return executor_readiness_contract(selected_profile)
+
+
+def with_executor_readiness_options(options: list[dict[str, object]]) -> list[dict[str, object]]:
+    enriched: list[dict[str, object]] = []
+    for option in options:
+        profile = str(option.get("profile", ""))
+        updated = dict(option)
+        updated["readiness_probe"] = executor_readiness_contract(profile)
+        enriched.append(updated)
+    return enriched
+
+
+def probe_executor_readiness(
+    paths: OmhPaths,
+    profile: str,
+    *,
+    force: bool = False,
+    dry_run: bool = False,
+) -> dict[str, object]:
+    normalized = _normalize_profile(profile)
+    if normalized == "choose":
+        return executor_readiness_contract("choose")
+    contract = executor_readiness_contract(normalized)
+    state, state_error = _read_state(paths)
+    cached = _cached_profile(state, normalized)
+    if cached and not force:
+        result = dict(cached)
+        result["cache_status"] = "cached"
+        result["first_use_skipped"] = True
+        result["claim_boundary"] = contract["claim_boundary"]
+        return _with_advisory_signals(paths, normalized, result)
+    if dry_run:
+        result = dict(contract)
+        result.update(
+            {
+                "status": "not_observed",
+                "cache_status": "would_probe",
+                "first_use_skipped": False,
+                "state_error": state_error or "",
+            }
+        )
+        return _with_advisory_signals(paths, normalized, result)
+    result = _run_probe(contract)
+    _write_state(paths, state, normalized, result)
+    return _with_advisory_signals(paths, normalized, result)
+
+
+def _with_advisory_signals(paths: OmhPaths, profile: str, result: dict[str, object]) -> dict[str, object]:
+    """Attach live advisory markers outside the observed_once cache.
+
+    Login and limit markers change whenever the user logs in/out or a dispatch
+    hits a provider limit, so they are recomputed on every call and never
+    persisted with the cached probe (which would freeze them at first use).
+    """
+    from .executor_auth_signals import auth_signal_for_profile, last_limit_signal_for_profile
+
+    result["auth_signal"] = auth_signal_for_profile(profile)
+    result["last_limit_signal"] = last_limit_signal_for_profile(paths, profile)
+    return result
+
+
+def _path_resolutions(command: str) -> list[str]:
+    """Every distinct binary this command resolves to, in PATH order.
+
+    `shutil.which` answers "what will run"; this answers "what else could".
+    Deduplicated by real path so a symlink chain to the same binary does not
+    read as a conflict.
+    """
+    resolutions: list[str] = []
+    seen: set[str] = set()
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        candidate = Path(directory) / command
+        try:
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
+                continue
+            real = str(candidate.resolve())
+        except OSError:
+            continue
+        if real in seen:
+            continue
+        seen.add(real)
+        resolutions.append(str(candidate))
+    return resolutions
+
+
+def _observed_version(binary: str, args: list[str]) -> str:
+    """The binary's own version line, or the failure it printed instead."""
+    try:
+        completed = subprocess.run(
+            [binary, *args],
+            text=True,
+            capture_output=True,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"probe failed: {exc}"[:200]
+    output = (completed.stdout or completed.stderr or "").strip().splitlines()
+    return output[0][:200] if output else f"exited with {completed.returncode}"
+
+
+def _resolution_report(command: str, args: list[str]) -> list[dict[str, str]]:
+    """One row per distinct PATH resolution, each with its observed version."""
+    return [
+        {"path": path, "observed_version": _observed_version(path, args)}
+        for path in _path_resolutions(command)[:_MAX_OBSERVED_RESOLUTIONS]
+    ]
+
+
+def _resolved_command(profile: str) -> tuple[str, tuple[str, ...]] | None:
+    entry = _COMMANDS.get(profile)
+    if profile == "omo-runtime":
+        from .fanout_dispatch import OMO_RUNTIME_HOST_CANDIDATES, omo_runtime_host
+
+        host = omo_runtime_host()
+        return ((host, ("--version",)) if host else (OMO_RUNTIME_HOST_CANDIDATES[0], ("--version",)))
+    return entry
+
+
+def _run_probe(contract: dict[str, object]) -> dict[str, object]:
+    result = dict(contract)
+    probe = result.get("probe")
+    if not isinstance(probe, dict):
+        result.update({"status": "not_applicable", "available": False, "observed_once": True})
+        return result
+    command = str(probe.get("command", ""))
+    args = [str(arg) for arg in probe.get("args", [])] if isinstance(probe.get("args"), list) else []
+    if not command:
+        result.update(
+            {
+                "status": "not_applicable",
+                "available": False,
+                "observed_once": True,
+                "summary": "This executor profile is wrapper-observed rather than command-probed.",
+                "next_action": "ask_wrapper_to_confirm_profile",
+            }
+        )
+        return result
+    resolved = shutil.which(command)
+    if not resolved:
+        result.update(
+            {
+                "status": "missing",
+                "available": False,
+                "observed_once": True,
+                "summary": f"`{command}` was not found on PATH.",
+                "next_action": "choose_executor_or_configure_path",
+            }
+        )
+        return result
+    try:
+        completed = subprocess.run(
+            [resolved, *args],
+            text=True,
+            capture_output=True,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        result.update(
+            {
+                "status": "blocked",
+                "available": False,
+                "observed_once": True,
+                "summary": str(exc),
+                "next_action": "choose_executor_or_configure_path",
+            }
+        )
+        return result
+    output = (completed.stdout or completed.stderr or "").strip().splitlines()
+    summary = output[0][:200] if output else f"`{command}` exited with {completed.returncode}."
+    resolutions = _resolution_report(command, args)
+    versions = {row["observed_version"] for row in resolutions}
+    shadowed = len(resolutions) > 1 and len(versions) > 1
+    if shadowed:
+        others = "; ".join(
+            f"{row['path']} ({row['observed_version']})" for row in resolutions[1:]
+        )
+        summary = f"{summary} — PATH also resolves: {others}"[:400]
+    result.update(
+        {
+            "status": "ready" if completed.returncode == 0 else "blocked",
+            "available": completed.returncode == 0,
+            "observed_once": True,
+            "exit_code": completed.returncode,
+            "command_path": resolved,
+            "path_resolutions": resolutions,
+            # Shadowed means: more than one distinct binary, with differing
+            # observed versions. The first is what will run and status reflects
+            # it honestly; the flag exists so a stale binary hiding a newer
+            # install is a stated fact, not a mid-dispatch surprise.
+            "shadowed": shadowed,
+            "version_policy": EXECUTOR_VERSION_POLICY,
+            "summary": summary,
+            "next_action": _ready_action(str(result.get("profile", ""))) if completed.returncode == 0 else "choose_executor_or_configure_path",
+        }
+    )
+    return result
+
+
+# CLI-backed candidates for the choose-executor question: profiles with a
+# locally probeable agent CLI. omo-runtime joined when the senpi host CLI
+# gained a validated dispatch template — the choice card should offer every
+# surface the user can actually run.
+EXECUTOR_CHOICE_CONTEXT_PROFILES = ("codex", "claude-code", "omo-runtime")
+EXECUTOR_CHOICE_CONTEXT_CLAIM_BOUNDARY = (
+    "Choice context ranks locally-installed executor candidates from cached readiness and local "
+    "markers only. It is not provider quota, entitlement, or login truth, and it never removes a "
+    "candidate the user may still pick."
+)
+
+
+def executor_choice_context(paths: OmhPaths) -> dict[str, object]:
+    """Return per-candidate readiness/auth context for the choose-executor question.
+
+    Reads cached readiness state and cheap local markers only — no subprocess
+    runs — so wrapper cards can embed it as deterministic data. The model
+    inventory hint rides along so Hermes answers the choice from what the user
+    actually has instead of asking blind; the full report stays behind
+    `omh coding model-inventory`.
+    """
+    from .executor_auth_signals import auth_signal_for_profile, last_limit_signal_for_profile
+    from .model_inventory import local_model_inventory
+
+    state, _ = _read_state(paths)
+    candidates: list[dict[str, object]] = []
+    for profile in EXECUTOR_CHOICE_CONTEXT_PROFILES:
+        cached = _cached_profile(state, profile) or {}
+        candidates.append(
+            {
+                "profile": profile,
+                "label": executor_label(profile),
+                "readiness_status": str(cached.get("status", "not_observed")),
+                "auth_signal": auth_signal_for_profile(profile),
+                "last_limit_signal": last_limit_signal_for_profile(paths, profile),
+            }
+        )
+    # Advisory ranking, never a veto: logged-in first, then no fresh limit
+    # signal, then cached-ready, with the fixed profile order as tiebreak so
+    # equal candidates stay deterministic.
+    candidates.sort(key=_choice_context_rank)
+    inventory = local_model_inventory()
+    return {
+        "candidates": candidates,
+        "ranked_by": ("login_marker", "fresh_limit_signal_absent", "readiness_status"),
+        "model_inventory_hint": {
+            "families_present": inventory.get("families_present", []),
+            "model_count": len(inventory.get("available_models", [])),
+            "full_report_command": "omh coding model-inventory",
+            "claim_boundary": str(inventory.get("claim_boundary", "")),
+        },
+        "claim_boundary": EXECUTOR_CHOICE_CONTEXT_CLAIM_BOUNDARY,
+    }
+
+
+def _choice_context_rank(candidate: dict[str, object]) -> tuple[int, int, int, int]:
+    auth = candidate.get("auth_signal")
+    login = str(auth.get("login_marker", "")) if isinstance(auth, dict) else ""
+    limit = candidate.get("last_limit_signal")
+    fresh_limit = isinstance(limit, dict) and bool(limit) and not limit.get("stale", False)
+    ready = str(candidate.get("readiness_status", "")) == "ready"
+    original = EXECUTOR_CHOICE_CONTEXT_PROFILES.index(str(candidate.get("profile", "")))
+    return (0 if login == "present" else 1, 1 if fresh_limit else 0, 0 if ready else 1, original)
+
+
+def _ready_action(profile: str) -> str:
+    if profile == "codex":
+        return "send_to_executor"
+    if profile == "claude-code":
+        return "show_prompt_handoff"
+    if profile in {"omx-runtime", "omo-runtime", "omc-runtime", "hermes"}:
+        return "show_runtime_handoff"
+    return "show_prompt_handoff"
+
+
+def _normalize_profile(profile: str | None) -> str:
+    value = str(profile or "choose").strip()
+    if value == "choose":
+        return value
+    if value not in EXECUTOR_READINESS_PROFILES:
+        raise ValueError(f"unsupported executor readiness profile: {value}")
+    return value
+
+
+def _copy_list(value: object) -> list[object]:
+    if not isinstance(value, list):
+        return []
+    return list(value)
+
+
+def _read_state(paths: OmhPaths) -> tuple[dict[str, Any], str]:
+    state, error = read_json_object_result(paths.executor_readiness_path)
+    return state or {"schema_version": "executor_readiness_cache/v1", "profiles": {}}, error or ""
+
+
+def _cached_profile(state: dict[str, Any], profile: str) -> dict[str, object] | None:
+    profiles = state.get("profiles")
+    if not isinstance(profiles, dict):
+        return None
+    cached = profiles.get(profile)
+    if not isinstance(cached, dict):
+        return None
+    if cached.get("observed_once") is True:
+        return {str(key): value for key, value in cached.items()}
+    return None
+
+
+def _write_state(paths: OmhPaths, state: dict[str, Any], profile: str, result: dict[str, object]) -> None:
+    profiles = state.get("profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+    stored = dict(result)
+    # Advisory markers are recomputed per call; persisting them would freeze
+    # login/limit state at first probe (see _with_advisory_signals).
+    stored.pop("auth_signal", None)
+    stored.pop("last_limit_signal", None)
+    stored["updated_at"] = utc_now()
+    profiles[profile] = stored
+    state.update(
+        {
+            "schema_version": "executor_readiness_cache/v1",
+            "updated_at": stored["updated_at"],
+            "profiles": profiles,
+        }
+    )
+    atomic_write_json(paths.executor_readiness_path, state, private=True)

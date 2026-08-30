@@ -1,0 +1,607 @@
+"""Read-only Hermes configuration advisory lane.
+
+Contract: ``hermes_config_advice/v1``.
+
+Every inspector here is strictly read-only and NON-THROWING. When any parse is
+ambiguous, a file is missing, or a read fails, the inspector returns status
+``unobserved`` rather than guessing ``advice`` or ``ok``. Advisory entries are a
+SEPARATE structure from ``maintenance.doctor``'s ``list[Check]``: they are never
+folded into ``doctor_ok()`` and never change the doctor exit code.
+
+The ``auxiliary:`` reader in this module is intentionally self-contained. The
+codebase reads Hermes ``config.yaml`` with tolerant indentation-based readers
+(see ``install/config_adapter.py``) instead of importing a YAML library, and
+this module matches that convention.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from ..config_adapter import external_dirs, read_config
+from ..paths import default_hermes_home, expand_path, find_project_root
+from ..plugin_bundle.omh import hermes_memory
+
+CONTRACT = "hermes_config_advice/v1"
+
+# Values that mean "no explicit model / provider pin" in a tolerant reader.
+_NULL_MARKERS = frozenset({"", "null", "~"})
+_AUTO_PROVIDER_MARKERS = frozenset({"", "auto", "null", "~", "default"})
+
+# Named Hermes auxiliary task slots (11), locked here for the remediation copy.
+AUXILIARY_TASK_SLOTS = (
+    "vision",
+    "compression",
+    "web_extract",
+    "approval scoring",
+    "skills-hub lookup",
+    "MCP routing",
+    "triage specifier",
+    "kanban decomposer",
+    "profile describer",
+    "curator",
+    "title",
+)
+
+# Hermes memory files and the caps Hermes falls back to when config.yaml does
+# not override them. Sourced from the reader so the cap and the unit it is
+# measured in cannot drift apart; the per-file cap actually in force comes from
+# the reading, not from these.
+DEFAULT_MEMORY_FILE_CAP_CHARS = hermes_memory.DEFAULT_MEMORY_FILE_CAP_CHARS
+DEFAULT_USER_FILE_CAP_CHARS = hermes_memory.DEFAULT_USER_FILE_CAP_CHARS
+MEMORY_STALE_AFTER_DAYS = 30
+
+# Conservative SOUL starter heuristic knobs.
+SOUL_STARTER_MAX_CHARS = 400
+SOUL_STARTER_MARKERS = (
+    "describe who this agent is",
+    "this is a starter soul",
+    "your agent's soul",
+    "placeholder",
+    "todo: define",
+    "<!-- starter -->",
+    "auto-seeded",
+)
+
+# Rough context-weight estimate per installed skill (SKILL.md front-loading).
+APPROX_TOKENS_PER_SKILL = 350
+
+
+@dataclass(frozen=True)
+class AdviceEntry:
+    check_id: str
+    status: str  # "advice" | "ok" | "unobserved"
+    remediation: str
+    evidence_boundary: str
+    observed: str
+    read_only: bool = True
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "check_id": self.check_id,
+            "status": self.status,
+            "read_only": self.read_only,
+            "remediation": self.remediation,
+            "evidence_boundary": self.evidence_boundary,
+            "observed": self.observed,
+        }
+
+
+@dataclass(frozen=True)
+class AdvisoryReport:
+    contract: str = CONTRACT
+    entries: list[AdviceEntry] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "contract": self.contract,
+            "entries": [entry.to_dict() for entry in self.entries],
+        }
+
+
+def _resolve_hermes_home(hermes_home: str | Path | None) -> Path:
+    if hermes_home is None:
+        return default_hermes_home()
+    return Path(hermes_home).expanduser()
+
+
+# ---------------------------------------------------------------------------
+# 1. auxiliary_routing_unset
+# ---------------------------------------------------------------------------
+
+def _parse_auxiliary_slots(config_text: str) -> list[dict[str, str]] | None:
+    """Self-contained tolerant reader for the nested ``auxiliary:`` block.
+
+    Returns a list of slot mappings, or ``None`` when the shape is missing,
+    empty, or ambiguous. Never raises for shape reasons; callers still wrap in
+    try/except as a belt-and-suspenders invariant.
+    """
+    if "\t" in config_text:
+        return None  # tabs make indentation ambiguous
+    lines = config_text.splitlines()
+
+    aux_idx: int | None = None
+    for idx, line in enumerate(lines):
+        if line.startswith(" "):
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped == "auxiliary:":
+            aux_idx = idx
+            break
+        if stripped.startswith("auxiliary:"):
+            # Inline scalar / list on the key -> unexpected shape.
+            return None
+    if aux_idx is None:
+        return None
+
+    block: list[str] = []
+    for line in lines[aux_idx + 1:]:
+        if not line.strip():
+            continue
+        if not line.startswith(" "):
+            break  # dedent to another top-level key ends the block
+        block.append(line)
+    if not block:
+        return None  # declared but empty -> nothing observable
+
+    child_indent = len(block[0]) - len(block[0].lstrip(" "))
+    if child_indent == 0:
+        return None
+
+    slots: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for line in block:
+        indent = len(line) - len(line.lstrip(" "))
+        content = line.strip()
+        if indent == child_indent:
+            if ":" not in content:
+                return None
+            key, _, value = content.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if not key or value != "":
+                return None  # slots must be nested maps, not inline scalars
+            current = {"__name__": key}
+            slots.append(current)
+        elif indent > child_indent:
+            if current is None:
+                return None
+            if ":" not in content:
+                return None
+            key, _, value = content.partition(":")
+            current[key.strip()] = value.strip().strip("'\"")
+        else:
+            return None  # misaligned indentation
+
+    for slot in slots:
+        recognized = (set(slot.keys()) - {"__name__"}) & {"provider", "model"}
+        if not recognized:
+            return None  # bare/truncated slot -> ambiguous
+    return slots
+
+
+def _auxiliary_all_unset(slots: list[dict[str, str]]) -> bool:
+    for slot in slots:
+        provider = slot.get("provider", "").strip().lower()
+        model = slot.get("model", "").strip()
+        model_set = model.lower() not in _NULL_MARKERS
+        provider_set = provider not in _AUTO_PROVIDER_MARKERS
+        if model_set or provider_set:
+            return False
+    return True
+
+
+def check_auxiliary_routing_unset(hermes_home: str | Path | None = None) -> AdviceEntry:
+    home = _resolve_hermes_home(hermes_home)
+    config_path = home / "config.yaml"
+    evidence_boundary = (
+        "Local read of the Hermes config.yaml `auxiliary:` block only; the live "
+        "Hermes routing decisions are not observed."
+    )
+    remediation = (
+        "Hermes routes 11 auxiliary task slots (vision, compression, web_extract, "
+        "approval scoring, skills-hub lookup, MCP routing, triage specifier, "
+        "kanban decomposer, profile describer, curator, title). With every slot on "
+        "provider `auto` and no model pin, the main model can burn premium tokens "
+        "on these auxiliary tasks. Consider pinning a cheaper model per slot in "
+        "`~/.hermes/config.yaml` under `auxiliary:`."
+    )
+    try:
+        if not config_path.exists():
+            return AdviceEntry(
+                "auxiliary_routing_unset",
+                "unobserved",
+                remediation,
+                evidence_boundary,
+                f"{config_path} not found",
+            )
+        config_text = read_config(config_path)
+        slots = _parse_auxiliary_slots(config_text)
+        if slots is None or not slots:
+            return AdviceEntry(
+                "auxiliary_routing_unset",
+                "unobserved",
+                remediation,
+                evidence_boundary,
+                "auxiliary block missing, empty, or ambiguous shape",
+            )
+        if _auxiliary_all_unset(slots):
+            return AdviceEntry(
+                "auxiliary_routing_unset",
+                "advice",
+                remediation,
+                evidence_boundary,
+                f"all {len(slots)} observed auxiliary slot(s) use provider auto with no model pin",
+            )
+        return AdviceEntry(
+            "auxiliary_routing_unset",
+            "ok",
+            remediation,
+            evidence_boundary,
+            f"{len(slots)} observed auxiliary slot(s); at least one pins a provider or model",
+        )
+    except OSError as error:
+        return AdviceEntry(
+            "auxiliary_routing_unset",
+            "unobserved",
+            remediation,
+            evidence_boundary,
+            f"config unreadable: {error}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# 2. soul_missing_or_starter
+# ---------------------------------------------------------------------------
+
+def _looks_like_starter_soul(content: str) -> bool:
+    stripped = content.strip()
+    if not stripped:
+        return True
+    lowered = stripped.lower()
+    if len(stripped) <= SOUL_STARTER_MAX_CHARS and any(
+        marker in lowered for marker in SOUL_STARTER_MARKERS
+    ):
+        return True
+    return False
+
+
+def check_soul_missing_or_starter(hermes_home: str | Path | None = None) -> AdviceEntry:
+    home = _resolve_hermes_home(hermes_home)
+    soul_path = home / "SOUL.md"
+    evidence_boundary = (
+        "Local read of ~/.hermes/SOUL.md contents only; whether Hermes actually "
+        "loads it as system-prompt slot #1 at runtime is not observed."
+    )
+    remediation = (
+        "SOUL.md is Hermes system-prompt slot #1 and shapes every turn. Author a "
+        "real agent persona in `~/.hermes/SOUL.md` instead of leaving it missing or "
+        "on the auto-seeded starter."
+    )
+    try:
+        if not soul_path.exists():
+            return AdviceEntry(
+                "soul_missing_or_starter",
+                "advice",
+                remediation,
+                evidence_boundary,
+                f"{soul_path} not found",
+            )
+        content = soul_path.read_text(encoding="utf-8", errors="replace")
+        if _looks_like_starter_soul(content):
+            return AdviceEntry(
+                "soul_missing_or_starter",
+                "advice",
+                remediation,
+                evidence_boundary,
+                "SOUL.md appears empty or matches the auto-seeded starter heuristic",
+            )
+        return AdviceEntry(
+            "soul_missing_or_starter",
+            "ok",
+            remediation,
+            evidence_boundary,
+            f"SOUL.md present with {len(content.strip())} chars of custom content",
+        )
+    except OSError as error:
+        return AdviceEntry(
+            "soul_missing_or_starter",
+            "unobserved",
+            remediation,
+            evidence_boundary,
+            f"SOUL.md unreadable: {error}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# 3. hermes_memory_staleness
+# ---------------------------------------------------------------------------
+
+def _now_seconds() -> float:
+    import time
+
+    return time.time()
+
+
+def check_hermes_memory_staleness(hermes_home: str | Path | None = None) -> AdviceEntry:
+    home = _resolve_hermes_home(hermes_home)
+    evidence_boundary = (
+        "Local character/entry/mtime read of ~/.hermes/memories/MEMORY.md and USER.md only; "
+        "OMH reports on Hermes memory and cannot change Hermes memory."
+    )
+    remediation = (
+        "OMH reports only and cannot change Hermes memory (memories/MEMORY.md and "
+        "USER.md, each capped by memory.memory_char_limit / memory.user_char_limit in "
+        "Hermes config.yaml). If these look stale, update them from inside Hermes; "
+        "OMH will not write to them."
+    )
+    readings = hermes_memory.read_hermes_memory(home, now=_now_seconds())
+    if not any(reading.exists for reading in readings):
+        return AdviceEntry(
+            "hermes_memory_staleness",
+            "unobserved",
+            remediation,
+            evidence_boundary,
+            "no memories/MEMORY.md or USER.md found",
+        )
+    unreadable = [reading for reading in readings if reading.error]
+    if unreadable:
+        return AdviceEntry(
+            "hermes_memory_staleness",
+            "unobserved",
+            remediation,
+            evidence_boundary,
+            "; ".join(f"{reading.label} unreadable: {reading.error}" for reading in unreadable),
+        )
+    details: list[str] = []
+    flagged = False
+    for reading in readings:
+        if not reading.exists:
+            details.append(f"{reading.label} missing")
+            continue
+        details.append(
+            f"{reading.label} {reading.chars} chars of {reading.cap} in "
+            f"{len(reading.entries)} entries, {reading.age_days:.0f}d since mtime"
+        )
+        # A file at or over the cap is the condition Hermes rejects the next
+        # write on, so it is advice even when the file was touched today.
+        if reading.over_cap or reading.age_days >= MEMORY_STALE_AFTER_DAYS:
+            flagged = True
+    return AdviceEntry(
+        "hermes_memory_staleness",
+        "advice" if flagged else "ok",
+        remediation,
+        evidence_boundary,
+        "; ".join(details),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. legacy_plan_artifacts
+# ---------------------------------------------------------------------------
+
+def check_legacy_plan_artifacts(hermes_home: str | Path | None = None) -> AdviceEntry:
+    """Report plans left in Hermes' home by the pre-relocation writer."""
+    home = _resolve_hermes_home(hermes_home)
+    legacy_dirs = ((home / "plans", "plans"), (home / "context", "context"))
+    evidence_boundary = (
+        "Local file count of ~/.hermes/plans and ~/.hermes/context only; OMH does not read, "
+        "move, or delete them."
+    )
+    remediation = (
+        "OMH used to write plan artifacts into Hermes' own home. It now writes them to "
+        "`<repo>/.omh/plans`, so these older files are no longer read by anything. They are "
+        "plain markdown: `omh hermes plan-accept <path>` still works on one, and they are "
+        "safe to delete or archive by hand. OMH will not touch them."
+    )
+    counts: list[str] = []
+    try:
+        for directory, label in legacy_dirs:
+            if not directory.is_dir():
+                continue
+            found = len([entry for entry in directory.glob("*.md") if entry.is_file()])
+            if found:
+                counts.append(f"{found} file(s) in {label}")
+    except OSError as error:
+        return AdviceEntry(
+            "legacy_plan_artifacts",
+            "unobserved",
+            remediation,
+            evidence_boundary,
+            f"legacy plan directories unreadable: {error}",
+        )
+    if not counts:
+        return AdviceEntry(
+            "legacy_plan_artifacts",
+            "ok",
+            remediation,
+            evidence_boundary,
+            "no plan artifacts left under ~/.hermes",
+        )
+    return AdviceEntry(
+        "legacy_plan_artifacts",
+        "advice",
+        remediation,
+        evidence_boundary,
+        "; ".join(counts),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5. orphaned_project_scope_store
+# ---------------------------------------------------------------------------
+
+def check_orphaned_project_scope_store(
+    hermes_home: str | Path | None = None,
+    *,
+    cwd: str | Path | None = None,
+) -> AdviceEntry:
+    """Report a `--scope project` store stranded below the repository root.
+
+    `--scope project` used to anchor on the literal working directory, so
+    running it from a subdirectory installed into `<subdir>/.omh`. It now
+    anchors at the repository root, which leaves any such install unreachable.
+    This is the exact inverse of that change, not a guess: it looks only between
+    the current directory and the root, so it can fire only for a store the
+    change actually orphaned.
+    """
+    del hermes_home  # this check reads the working directory, not Hermes' home
+    evidence_boundary = (
+        "Local existence check of `.omh/manifest.json` in directories between the working "
+        "directory and the repository root; OMH does not read, move, or delete them."
+    )
+    remediation = (
+        "`--scope project` now anchors at the repository root, so a store installed from a "
+        "subdirectory is no longer found. Re-run `omh --scope project setup` from the "
+        "repository root, then delete the old directory by hand. OMH will not move it."
+    )
+    try:
+        root = find_project_root(cwd)
+        start = expand_path(cwd or Path.cwd())
+        if root is None or start == root:
+            return AdviceEntry(
+                "orphaned_project_scope_store",
+                "ok",
+                remediation,
+                evidence_boundary,
+                "no subdirectory between the working directory and a repository root",
+            )
+        stranded = [
+            str(candidate)
+            for candidate in _ancestors_below(start, root)
+            if (candidate / ".omh" / "manifest.json").is_file()
+        ]
+    except OSError as error:
+        return AdviceEntry(
+            "orphaned_project_scope_store",
+            "unobserved",
+            remediation,
+            evidence_boundary,
+            f"working directory unreadable: {error}",
+        )
+    if not stranded:
+        return AdviceEntry(
+            "orphaned_project_scope_store",
+            "ok",
+            remediation,
+            evidence_boundary,
+            "no project-scope store below the repository root",
+        )
+    return AdviceEntry(
+        "orphaned_project_scope_store",
+        "advice",
+        remediation,
+        evidence_boundary,
+        "; ".join(f"stranded store in {path}" for path in stranded),
+    )
+
+
+def _ancestors_below(start: Path, root: Path) -> list[Path]:
+    """`start` and its parents, stopping before `root`."""
+    below: list[Path] = []
+    for candidate in (start, *start.parents):
+        if candidate == root:
+            break
+        below.append(candidate)
+    return below
+
+
+# ---------------------------------------------------------------------------
+# 6. installed_skill_context_weight
+# ---------------------------------------------------------------------------
+
+def _count_skill_dirs(skills_dir: Path) -> int:
+    count = 0
+    for child in skills_dir.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            continue
+        if (child / "SKILL.md").is_file():
+            count += 1
+    return count
+
+
+def _derive_skill_dirs(hermes_home: Path) -> list[Path]:
+    config_path = hermes_home / "config.yaml"
+    if not config_path.exists():
+        return []
+    config_text = read_config(config_path)
+    dirs: list[Path] = []
+    for raw in external_dirs(config_text):
+        candidate = Path(raw).expanduser()
+        if candidate.is_dir():
+            dirs.append(candidate)
+    return dirs
+
+
+def check_installed_skill_context_weight(
+    hermes_home: str | Path | None = None,
+    skills_dirs: list[Path] | None = None,
+) -> AdviceEntry:
+    home = _resolve_hermes_home(hermes_home)
+    evidence_boundary = (
+        "Local count of OMH-managed SKILL.md directories only; the runtime context "
+        "budget Hermes actually spends is not observed."
+    )
+    remediation = (
+        "Installed skills add up-front context. `tools.tool_search.enabled` already "
+        "defaults to auto (threshold_pct 10), so confirm it stays on rather than "
+        "enabling it anew. To trim always-loaded skills use `hermes skills config` "
+        "and `hermes skills opt-out`."
+    )
+    try:
+        resolved_dirs = skills_dirs if skills_dirs is not None else _derive_skill_dirs(home)
+        if not resolved_dirs:
+            return AdviceEntry(
+                "installed_skill_context_weight",
+                "unobserved",
+                remediation,
+                evidence_boundary,
+                "no registered OMH skill directory found",
+            )
+        skill_count = 0
+        for skills_dir in resolved_dirs:
+            skills_dir = Path(skills_dir)
+            if skills_dir.is_dir():
+                skill_count += _count_skill_dirs(skills_dir)
+        if skill_count == 0:
+            return AdviceEntry(
+                "installed_skill_context_weight",
+                "unobserved",
+                remediation,
+                evidence_boundary,
+                "registered skill directory present but no SKILL.md found",
+            )
+        approx_tokens = skill_count * APPROX_TOKENS_PER_SKILL
+        return AdviceEntry(
+            "installed_skill_context_weight",
+            "advice",
+            remediation,
+            evidence_boundary,
+            f"{skill_count} installed OMH skill(s) ~{approx_tokens} tokens of up-front context",
+        )
+    except OSError as error:
+        return AdviceEntry(
+            "installed_skill_context_weight",
+            "unobserved",
+            remediation,
+            evidence_boundary,
+            f"skill directory unreadable: {error}",
+        )
+
+
+def run_config_advisories(hermes_home: str | Path | None = None) -> AdvisoryReport:
+    """Run every read-only inspector and return the separate advisory report."""
+    return AdvisoryReport(
+        contract=CONTRACT,
+        entries=[
+            check_auxiliary_routing_unset(hermes_home),
+            check_soul_missing_or_starter(hermes_home),
+            check_hermes_memory_staleness(hermes_home),
+            check_legacy_plan_artifacts(hermes_home),
+            check_orphaned_project_scope_store(hermes_home),
+            check_installed_skill_context_weight(hermes_home),
+        ],
+    )
