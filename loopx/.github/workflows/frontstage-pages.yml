@@ -1,0 +1,114 @@
+name: Frontstage Pages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/frontstage-pages.yml"
+      - "apps/presentation/dashboard/**"
+      - "apps/presentation/site/**"
+      - "docs/**"
+      - "mkdocs.yaml"
+      - "docs/showcases/**"
+      - "docs/assets/long-running-loop-openviking-trajectory.png"
+      - "docs/assets/long-running-loop-ml-experiment-trajectory.png"
+      - "examples/export-frontstage-share-bundle.mjs"
+      - "examples/frontstage-share-bundle-smoke.mjs"
+      - "examples/goal-channel-frontstage-fixture.py"
+      - "examples/showcase-catalog-smoke.py"
+      - "examples/status.example.json"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/frontstage-pages.yml"
+      - "apps/presentation/dashboard/**"
+      - "apps/presentation/site/**"
+      - "docs/**"
+      - "mkdocs.yaml"
+      - "docs/showcases/**"
+      - "docs/assets/long-running-loop-openviking-trajectory.png"
+      - "docs/assets/long-running-loop-ml-experiment-trajectory.png"
+      - "examples/export-frontstage-share-bundle.mjs"
+      - "examples/frontstage-share-bundle-smoke.mjs"
+      - "examples/goal-channel-frontstage-fixture.py"
+      - "examples/showcase-catalog-smoke.py"
+      - "examples/status.example.json"
+
+permissions:
+  actions: read
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: frontstage-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/presentation/dashboard/package-lock.json
+
+      - name: Use stable npm
+        run: npm install -g npm@11
+
+      - name: Install dashboard dependencies
+        working-directory: apps/presentation/dashboard
+        run: npm ci --include=dev --no-audit --no-fund --registry=https://registry.npmjs.org
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install docs dependencies
+        run: python -m pip install --disable-pip-version-check -r docs/requirements-docs.txt
+
+      - name: Validate public showcase catalog
+        run: python3 examples/showcase-catalog-smoke.py
+
+      - name: Validate public-safe frontstage bundle
+        working-directory: apps/presentation/dashboard
+        run: npm run smoke:frontstage-share-bundle
+
+      - name: Export Pages frontstage artifact
+        working-directory: apps/presentation/dashboard
+        run: npm run export:frontstage-share -- --base /loopx/ --out-dir ../../../output/frontstage-pages
+
+      - name: Build documentation site
+        run: mkdocs build --strict --site-dir output/frontstage-pages/site/docs
+
+      - name: Configure Pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v6
+        with:
+          enablement: true
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: output/frontstage-pages/site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

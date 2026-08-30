@@ -1,0 +1,76 @@
+---
+title: "Understand compositions"
+sidebarTitle: "Compositions"
+description: "See how a HyperFrames project divides a video into timed, reusable parts."
+---
+
+A composition is a piece of a HyperFrames project with its own size and timeline. The main composition is the finished sequence. Other compositions can be scenes, captions, title systems, or reusable visual parts inside it.
+
+```text
+Main video
+├── Opening
+├── Product demo
+├── Customer quote
+└── Closing
+```
+
+Each part is still HTML. Studio, the agent, and normal code tools all work on the same files.
+
+## What a composition controls
+
+A composition brings three things together:
+
+- **content** — text, shapes, images, video, audio, or another composition;
+- **time** — when each part starts and how long it remains;
+- **motion** — seekable animation tied to the same playhead.
+
+The main composition also defines the output frame and total duration.
+
+## When to create another composition
+
+Separate a part when it has a clear job and can be understood on its own.
+
+Good boundaries include:
+
+- a complete scene;
+- a repeated title or caption treatment;
+- a product-demo sequence;
+- a visual reused in several places;
+- a complex section that is easier to review separately.
+
+Do not split every small element into its own file. Extra nesting makes a simple project harder to follow.
+
+## How nesting works
+
+The main composition gives each nested composition a place on its timeline:
+
+```html
+<div
+  id="product-demo-host"
+  data-composition-id="product-demo"
+  data-composition-src="compositions/product-demo.html"
+  data-start="4"
+  data-duration="6"
+  data-track-index="1"
+  data-width="1920"
+  data-height="1080"
+></div>
+```
+
+`data-composition-src` paths resolve from the project root, even when the referencing composition is inside another folder.
+
+This tells HyperFrames to mount `product-demo.html` at four seconds and show a six-second window of it. The nested source keeps its own content and animation.
+
+If the same source is mounted more than once, each instance can start at a different time or receive different [variables](/concepts/variables).
+
+## Decide where to make a change
+
+- Edit the **nested composition** when the scene itself should change everywhere it is used.
+- Edit the **main composition** when only its placement, duration, or relationship to other scenes should change.
+- Ask the **agent** when a revision changes the story or crosses several compositions.
+
+In Studio, open or expand a nested scene when you need to work inside it, then use the breadcrumb to return to the parent sequence.
+
+## Continue
+
+Use [Variables](/concepts/variables) when the design should stay fixed while approved content changes. Use the [HTML schema](/reference/html-schema) when you need exact element and attribute rules.

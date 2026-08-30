@@ -1,0 +1,107 @@
+---
+title: "Examples"
+description: "Watch finished HyperFrames videos, inspect real production projects, or start from a working template."
+---
+
+import { DocsVideo } from "/snippets/docs-video.jsx";
+
+## Finished films
+
+Each preview links to the complete source project.
+
+<div className="not-prose grid grid-cols-1 md:grid-cols-2 gap-4 my-7">
+  <a className="group overflow-hidden rounded-xl border border-zinc-200 bg-white text-inherit no-underline dark:border-zinc-800 dark:bg-zinc-950" href="https://github.com/heygen-com/hyperframes-launches/tree/main/hyperframes-launch">
+    <video className="aspect-video w-full object-cover" src="https://static.heygen.ai/hyperframes-oss/docs/images/showcase/hyperframes-launch-preview.mp4" poster="https://static.heygen.ai/hyperframes-oss/docs/images/showcase/hyperframes-launch-poster.jpg" autoPlay muted loop playsInline preload="metadata" />
+    <div className="p-4">
+      <strong className="block text-sm">HyperFrames launch</strong>
+      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">Product film · source included</span>
+    </div>
+  </a>
+
+  <a className="group overflow-hidden rounded-xl border border-zinc-200 bg-white text-inherit no-underline dark:border-zinc-800 dark:bg-zinc-950" href="https://github.com/heygen-com/hyperframes-launches/tree/main/timeline-launch">
+    <video className="aspect-video w-full object-cover" src="https://static.heygen.ai/hyperframes-oss/docs/images/showcase/timeline-editor-preview.mp4" poster="https://static.heygen.ai/hyperframes-oss/docs/images/showcase/timeline-editor-poster.jpg" autoPlay muted loop playsInline preload="metadata" />
+    <div className="p-4">
+      <strong className="block text-sm">Timeline editor launch</strong>
+      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">Feature reveal · source included</span>
+    </div>
+  </a>
+
+<a
+  className="group overflow-hidden rounded-xl border border-zinc-200 bg-white text-inherit no-underline dark:border-zinc-800 dark:bg-zinc-950"
+  href="https://github.com/heygen-com/hyperframes-launches/tree/main/website-to-hyperframes"
+>
+  <video
+    className="aspect-video w-full object-cover"
+    src="https://static.heygen.ai/hyperframes-oss/docs/images/showcase/website-to-hyperframes-preview.mp4"
+    poster="https://static.heygen.ai/hyperframes-oss/docs/images/showcase/website-to-hyperframes-poster.jpg"
+    autoPlay
+    muted
+    loop
+    playsInline
+    preload="metadata"
+  />
+  <div className="p-4">
+    <strong className="block text-sm">Website to HyperFrames</strong>
+    <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+      Product story · source included
+    </span>
+  </div>
+</a>
+
+  <a className="group overflow-hidden rounded-xl border border-zinc-200 bg-white text-inherit no-underline dark:border-zinc-800 dark:bg-zinc-950" href="https://github.com/heygen-com/hyperframes-launches/tree/main/texture-launch-video">
+    <video className="aspect-video w-full object-cover" src="https://static.heygen.ai/hyperframes-oss/docs/images/showcase/texture-launch-preview.mp4" poster="https://static.heygen.ai/hyperframes-oss/docs/images/showcase/texture-launch-poster.jpg" autoPlay muted loop playsInline preload="metadata" />
+    <div className="p-4">
+      <strong className="block text-sm">Texture launch</strong>
+      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">Motion design · source included</span>
+    </div>
+  </a>
+</div>
+
+## One project, open end to end
+
+The same ten-second project the Quickstart builds. This is its actual render,
+and the folder behind it is public — not a sealed demo.
+
+<div style={{ maxWidth: "36rem", margin: "1.5rem auto" }}>
+  <DocsVideo
+    title="The verified 10-second Reference Project render"
+    src="https://static.heygen.ai/hyperframes-oss/docs/reference-project/live/reference-project-v2.mp4"
+    poster="https://static.heygen.ai/hyperframes-oss/docs/reference-project/live/poster-v2.jpg"
+  />
+</div>
+
+<Card title="Open the project on GitHub" icon="folder-open" href="https://github.com/heygen-com/hyperframes/tree/main/examples/docs-reference-project" horizontal arrow>
+  Every file exactly as it renders — the composition, the caption overlay, the
+  measured word timings, and the brief the agent worked from.
+</Card>
+
+## Start from a template
+
+Create a project with a working example:
+
+```bash
+npx hyperframes init my-video --example <name>
+```
+
+| Example         | Good starting point for                      |
+| --------------- | -------------------------------------------- |
+| `warm-grain`    | Branding, lifestyle, and editorial work      |
+| `play-mode`     | Energetic social videos and product launches |
+| `swiss-grid`    | Technical, structured, and corporate stories |
+| `kinetic-type`  | Type-led promos, intros, and title cards     |
+| `decision-tree` | Explainable diagrams and tutorials           |
+| `product-promo` | Multi-scene product showcases                |
+| `nyt-graph`     | Editorial charts and data stories            |
+| `vignelli`      | Bold portrait announcements                  |
+| `blank`         | Agent-generated or fully custom work         |
+
+<Tip>
+  Choose a template for its structure and tone, then replace the sample content. If none fits, start
+  with `blank` and let the agent build from the brief.
+</Tip>
+
+## Related topics
+
+- [Make your first video](/quickstart)
+- [Choose a creation workflow](/workflows)
+- [Take more control of an existing project](/go-further)

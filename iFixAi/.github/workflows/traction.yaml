@@ -1,0 +1,48 @@
+name: Update Traction Charts
+
+on:
+  schedule:
+    - cron: "0 12 * * 5"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install matplotlib requests
+
+      - name: Archive PyPI stats
+        run: python scripts/update_pypi_stats.py
+
+      - name: Generate downloads and runs charts
+        env:
+          TELEMETRY_PK: ${{ secrets.TELEMETRY_PK }}
+        run: python scripts/plot_traction.py
+
+      # main is protected, so the refreshed data goes up as a PR rather than a
+      # direct push. The branch is reused and force-pushed, so an unmerged PR is
+      # updated in place instead of a new one piling up each week.
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          add-paths: docs/assets/
+          branch: chore/traction-update
+          delete-branch: true
+          commit-message: "chore: traction chart update"
+          title: "chore: traction chart update"
+          body: Weekly traction refresh.
