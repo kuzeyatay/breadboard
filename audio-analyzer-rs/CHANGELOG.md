@@ -1,0 +1,115 @@
+# Changelog
+
+## [1.0.0] - 2026-03-13
+
+Claude can hear music now.
+
+### Added
+- **Section boundary detection** — multi-feature novelty analysis (energy, spectral, harmonic,
+  texture) with tempo-adaptive checkerboard kernels, median+MAD thresholds, and stronger-peak-wins
+  peak picking. Automatically included in `full_analysis` for full-track calls. Section boundaries
+  enable a summary→zoom workflow: get the structural map first, then dive into interesting moments
+  at high resolution. ~28ms for a 107-second track.
+- **A/B comparison tool** — dedicated `compare` MCP tool that analyses two tracks side-by-side
+  and returns a compact diff table highlighting differences in loudness, dynamics, spectral balance,
+  stereo field, key, and tempo.
+- **Token budget safety** — 800-row auto-cap on all time-series output prevents context window
+  blowouts. Resolution auto-downsample with user notification. Token cost guidance in tool
+  parameter descriptions steers models toward appropriate resolution choices.
+- GitHub Actions CI pipeline — `cargo fmt --check` + `cargo clippy -- -D warnings` + `cargo test`
+  on every push and pull request.
+
+### Changed
+- Improved tool descriptions with token budget awareness, workflow guidance, and stronger
+  emphasis on file path usage (not uploads).
+
+## [1.0.0-rc2] - 2026-03-13
+
+### Added
+- Token budget guidance in resolution parameter descriptions across all tools.
+- 800-row auto-cap on time-series output to prevent context window blowouts.
+
+## [1.0.0-rc1] - 2026-03-13
+
+### Added
+- Section boundary detection, A/B comparison tool, CI pipeline (see 1.0.0 above).
+
+## [0.5.0] - 2026-03-12
+
+### Added
+- Stereo field analysis — phase correlation (mono compatibility), stereo width (mid/side
+  ratio), L/R balance, and mono compatibility score. Per-frame time-series data lets Claude
+  pinpoint exactly where phase issues occur in a mix.
+- Stereo columns in unified time-series table (phase_corr, stereo_w, balance, mono_compat).
+  Table now has 51 columns.
+- `measure_lufs_stereo()` — proper ITU-R BS.1770-4 stereo LUFS measurement that K-weights
+  each channel independently and sums channel powers per block.
+
+### Fixed
+- LUFS loudness was measuring a mono mixdown, underreporting by ~3-4 dB on stereo material.
+  Now matches FabFilter Pro-L 2 exactly (0.0 dB deviation, validated on mastered tracks).
+
+## [0.4.0] - 2026-03-11
+
+### Added
+- Frequency band energy analysis — RMS energy across 7 standard producer bands (sub-bass
+  through brilliance) for mix diagnosis. Available in summary, time-series, and unified table.
+- Spectral contrast — peak vs valley magnitude per band in dB, revealing clarity vs muddiness.
+  High contrast = clear tonal content; low contrast = dense/noisy. Summary + time-series.
+- Dynamic range analysis — crest factor (peak/RMS in dB), loudness range (95th-5th percentile
+  of RMS), peak dBFS. Per-frame crest factor in time-series for tracking dynamics over time.
+- LUFS loudness measurement (EBU R128 / ITU-R BS.1770-4) — K-weighted integrated loudness,
+  true peak (dBTP) via 4x oversampling, loudness range (LRA per EBU Tech 3342), and streaming
+  platform target comparison (Spotify/Apple Music/YouTube).
+- Unified time-series table now has 47 columns (was 32).
+
+### Changed
+- License changed from non-commercial to MIT.
+
+## [0.3.2] - 2026-03-10
+
+### Fixed
+- MCP server hang on `full_analysis` with resolution parameter. Root cause: chromagram
+  (n_fft=8192) produces fewer frames than the spectrogram (n_fft=2048), causing an
+  out-of-bounds panic on the tokio task that silently swallowed the MCP response.
+
+### Added
+- Time slicing on all MCP tools (`start_time`/`end_time` parameters) for zooming into
+  specific sections without re-analysing the entire file.
+- Lenient numeric deserialization — tool calls now accept `"110"` or `110` for numeric
+  parameters, preventing type mismatch failures from LLM tool use.
+- Improved tool descriptions with workflow guidance (summary → low overview → high zoom).
+
+## [0.3.1] - 2026-03-10
+
+### Fixed
+- Key estimation off by one semitone (two bugs: FFT frequency resolution calculation
+  and chromagram rotation direction).
+
+## [0.3.0] - 2026-03-10
+
+### Added
+- Harmonic/percussive source separation (HPSS) via median filtering with soft masking.
+- Percussive features: percussive ratio, attack sharpness, onset density.
+- Percussive columns in the unified time-series table.
+
+## [0.2.0] - 2026-03-09
+
+### Added
+- Non-commercial license.
+- MCPB bundle support for one-click Claude Desktop install.
+- Homebrew tap (`brew tap JuzzyDee/tap && brew install audio-analyzer`).
+- `audio-analyzer-setup` script for automatic Claude Code/Desktop configuration.
+
+## [0.1.0] - 2026-03-09
+
+### Added
+- Initial release: MCP audio analysis server for Claude.
+- Audio decoding (mp3, wav, flac, ogg, aac) via Symphonia.
+- Spectral features: centroid, bandwidth, rolloff, flatness, MFCCs.
+- Harmonic analysis: chromagram, key detection (Krumhansl-Schmuckler), tonnetz.
+- Rhythm analysis: tempo estimation, beat tracking, beat statistics.
+- Temporal features: RMS energy, zero crossing rate.
+- Time-series downsampling with resolution presets (low/medium/high).
+- Unified table format for `full_analysis` — single shared time axis, all columns.
+- CLI tool for standalone analysis.
