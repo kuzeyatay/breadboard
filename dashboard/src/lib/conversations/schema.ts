@@ -275,7 +275,8 @@ function backfillLegacyConversations(database: Database.Database): void {
 
       const messages = database.prepare(`
         SELECT id, role, content, sources, token_usage, order_index, created_at,
-               tool_calls, permission_decisions, runtime_error, runtime_status, proposal
+               tool_calls, permission_decisions, runtime_error, runtime_status, proposal,
+               canonical_message_id
         FROM chat_messages
         WHERE session_id = ?
         ORDER BY order_index, id
@@ -335,7 +336,8 @@ function backfillLegacyConversations(database: Database.Database): void {
 
         const messages = database.prepare(`
           SELECT id, role, content, sources, token_usage, order_index, created_at,
-                 tool_calls, permission_decisions, runtime_error, runtime_status, proposal
+                 tool_calls, permission_decisions, runtime_error, runtime_status, proposal,
+                 canonical_message_id
           FROM hermes_messages
           WHERE runtime_session_id = ?
           ORDER BY order_index, id
@@ -376,6 +378,20 @@ function copyLegacyMessages(
       ).get(conversationId) as { value: number }).value;
 
   for (const message of messages) {
+    // A compatibility writer can replace the legacy row while deliberately
+    // carrying its canonical binding forward. Its new legacy id is not a new
+    // message. Re-copying it under `legacy-chat-<new id>` would move the
+    // binding away from the real turn; artifacts still owned by that turn
+    // would then remain visible in the archive but disappear below its answer.
+    const boundId = Number(message.canonical_message_id);
+    const bound = Number.isSafeInteger(boundId) && boundId > 0
+      ? database.prepare(`
+          SELECT id FROM conversation_messages
+          WHERE id = ? AND conversation_id = ? AND role = ?
+        `).get(boundId, conversationId, message.role) as { id: number } | undefined
+      : undefined;
+    if (bound) continue;
+
     const metadata = legacyMetadata(message);
     const result = database.prepare(`
       INSERT OR IGNORE INTO conversation_messages

@@ -1260,7 +1260,7 @@
               { "authority": "runtime-root", "path": "runtimes/node/node.exe" },
               { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-mem0-service.mjs" },
               { "authority": "app-root", "path": "dashboard/scripts/runtime-v2-gateway-http.mjs" },
-              { "authority": "app-root", "path": "dashboard/node_modules/mem0ai/dist/index.mjs" },
+              { "authority": "app-root", "path": "mem0/mem0-ts/dist/index.mjs" },
               { "authority": "app-root", "path": "dashboard/node_modules/better-sqlite3/build/Release/better_sqlite3.node" }
             ]
           },

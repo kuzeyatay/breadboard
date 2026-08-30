@@ -21,6 +21,7 @@ function unit(id, semanticConcepts) {
     sourceFigures: [],
     sourceFormulas: [],
     sourceTables: [],
+    sourceQuestions: [],
     semanticConcepts,
     knowledgeClaims: [],
     zettelNotes: [],

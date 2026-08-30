@@ -348,12 +348,43 @@ function eventResourceExhaustion(
     : null;
 }
 
+function formatHeadroom(megabytes: number): string {
+  const gigabytes = megabytes / 1024;
+  return `${gigabytes.toFixed(gigabytes >= 10 ? 0 : 1)} GB`;
+}
+
+/**
+ * Runtime deliberately sanitizes its terminal message, and a memory denial
+ * (the job itself, or the local VLM OCR service it leases) would otherwise
+ * reach the upload dialog as "Runtime job execution failed." — nothing a person
+ * can act on. The headroom evidence is closed runtime output, so it is safe to
+ * show, and "Parse with VLM" is the one upload option that leases a multi-GB
+ * local model, so it is named when it was on.
+ */
+function resourceExhaustedUploadMessage(
+  evidence: RuntimeResourceExhaustionEvidence | null,
+  parseWithVlm: boolean,
+): string {
+  const headroom = evidence
+    ? `Windows could not reserve enough memory to process this upload ` +
+      `(${formatHeadroom(evidence.requiredHeadroomMb)} required, ` +
+      `${formatHeadroom(evidence.availableHeadroomMb)} available).`
+    : "The Runtime could not reserve enough memory to process this upload.";
+  const remedy = parseWithVlm
+    ? " The local VLM OCR model needs several GB of free memory on top of the " +
+      "Runtime's reserve — close memory-heavy apps or increase the Windows " +
+      "paging file and retry, or upload again with \"Parse with VLM\" off."
+    : " Close memory-heavy apps or increase the Windows paging file, then retry.";
+  return headroom + remedy;
+}
+
 function terminalErrorEvent(
   job: RuntimeJobSnapshot,
   tokenUsage: IngestTokenUsage,
   elapsedMs: number,
   failure: ParsedCheckpoint["failure"],
   replayResourceExhaustion: RuntimeResourceExhaustionEvidence | null,
+  parseWithVlm: boolean,
 ): Record<string, unknown> {
   if (job.state === "cancelled") {
     return {
@@ -365,9 +396,13 @@ function terminalErrorEvent(
   }
   const resourceExhaustion =
     job.resourceExhaustion ?? replayResourceExhaustion;
+  const error =
+    job.state === "resource_exhausted"
+      ? resourceExhaustedUploadMessage(resourceExhaustion, parseWithVlm)
+      : failure?.error || job.failureMessage || "Upload failed";
   return {
     type: "error",
-    error: failure?.error || job.failureMessage || "Upload failed",
+    error,
     ...(job.state === "resource_exhausted"
       ? {
           code: "BREADBOARD_RESOURCE_EXHAUSTED",
@@ -460,6 +495,8 @@ export function createRuntimeIngestSseResponse(input: {
   readonly job: RuntimeJobSnapshot;
   readonly model: string | null;
   readonly startedAt: number;
+  /** Whether the upload asked for the local VLM OCR service; names it on a memory denial. */
+  readonly parseWithVlm?: boolean;
   readonly control?: {
     readonly replay: typeof replayRuntimeJobEvents;
     readonly inspect: typeof inspectRuntimeJob;
@@ -620,6 +657,7 @@ export function createRuntimeIngestSseResponse(input: {
               Date.now() - input.startedAt,
               failure,
               replayResourceExhaustion,
+              input.parseWithVlm === true,
             ),
           );
         }

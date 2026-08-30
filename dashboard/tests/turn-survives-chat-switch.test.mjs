@@ -54,13 +54,18 @@ test("opening another chat withholds the view, not the turn", () => {
   );
   assert.match(
     dispatchWindow,
-    /if \(!stillViewing\(\)\) \{\s*await dispatchTurn\(\);\s*return;\s*\}/,
+    /if \(!stillViewing\(\)\) \{\s*trackBackgroundDispatch\(await dispatchTurn\(\)\);\s*return;\s*\}/,
     "a turn whose reader left is sent without opening this chat's event stream",
   );
   assert.match(
     dispatchWindow,
-    /if \(!stillViewing\(\)\) \{\s*streamController\?\.abort\(\);\s*await dispatchTurn\(\);\s*return;\s*\}/,
+    /if \(!stillViewing\(\)\) \{\s*streamController\?\.abort\(\);\s*trackBackgroundDispatch\(await dispatchTurn\(\)\);\s*return;\s*\}/,
     "a stream aborted by the chat switch still leaves the send to make",
+  );
+  assert.match(
+    dispatchWindow,
+    /monitorBackgroundChatResponse\(\{[\s\S]*clientMessageId: userMessage\.id/,
+    "a dispatched turn whose reader left must announce its terminal response",
   );
   assert.match(
     dispatchWindow,
@@ -130,7 +135,15 @@ test("transport loss is viewer detachment, never an interrupted answer", () => {
 test("a restored pending answer returns to Thinking until it settles", () => {
   assert.match(
     sessionPresentationSource,
-    /pending: presented\.status === "pending"/,
+    /pending: messagePending/,
+  );
+  assert.match(
+    sessionPresentationSource,
+    /presented\.status === "pending" \|\| recoveringPreDispatch/,
+  );
+  assert.match(
+    sessionPresentationSource,
+    /interrupted: presented\.status === "aborted" && !recoveringPreDispatch/,
   );
   assert.match(hookSource, /function pendingRestoredTurn/);
   assert.match(hookSource, /const resumePendingConversation = useCallback/);

@@ -4359,6 +4359,14 @@ function pageHasExplanatoryProse(body: string): boolean {
 function embedUrlMatchesAnchor(url: string, anchorId: string): boolean {
   const u = url.toLowerCase();
   if (u.includes(anchorId.toLowerCase())) return true;
+  // Recovered crops use a filesystem-safe anchor slug such as
+  // `s1-p148-f1-recovered-<hash>.png`, while canonical anchor ids use dots
+  // (`S1.P148.F1`). Compare their alphanumeric identities as well as the
+  // legacy `page-148-...-f1` filename convention so a recovered, persisted
+  // crop is not misclassified as missing by final coverage/critic checks.
+  const normalizedUrl = u.replace(/[^a-z0-9]+/g, "");
+  const normalizedAnchorId = anchorId.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (normalizedAnchorId && normalizedUrl.includes(normalizedAnchorId)) return true;
   const pageNum = (anchorId.match(/\.P(\d+)\./i) ?? [])[1];
   const code = (anchorId.match(/\.([A-Za-z]\d+)$/i) ?? [])[1]?.toLowerCase();
   if (pageNum && u.includes(`page-${pageNum}`) && (!code || u.includes(code))) return true;

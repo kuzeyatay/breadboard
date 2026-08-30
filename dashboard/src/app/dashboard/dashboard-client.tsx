@@ -39,6 +39,7 @@ import ScheduledChatsDock from "@/app/components/scheduled-chats-dock";
 import PersonProfileDialog from "@/app/components/person-profile-dialog.tsx";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
+import OverflowMarquee from "@/app/components/overflow-marquee";
 import {
   VLM_PARSE_FILE_RE,
   VlmParseOption,
@@ -2656,7 +2657,7 @@ export default function DashboardClient({
                               </div>
                             )}
                             {canManage && confirmDeleteId === cluster.id && (
-                              <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 shadow-lg">
+                              <div className="dashboard-garden-card-overlay absolute top-2.5 flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 shadow-lg">
                                 <span className="text-xs text-gray-400">
                                   Delete?
                                 </span>
@@ -2683,7 +2684,7 @@ export default function DashboardClient({
                             {canManage &&
                               confirmDeleteId !== cluster.id &&
                               confirmVisibilityId === cluster.id && (
-                                <div className="absolute top-2.5 right-2.5 flex w-48 flex-col gap-0.5 rounded-lg border border-gray-700 bg-gray-900 p-1 shadow-lg">
+                                <div className="dashboard-garden-card-overlay absolute top-2.5 flex w-48 flex-col gap-0.5 rounded-lg border border-gray-700 bg-gray-900 p-1 shadow-lg">
                                   {[
                                     {
                                       key: "private",
@@ -2747,7 +2748,7 @@ export default function DashboardClient({
                             {canManage &&
                               confirmDeleteId !== cluster.id &&
                               confirmVisibilityId !== cluster.id && (
-                                <div className="absolute top-3 right-3 flex items-center gap-2">
+                                <div className="dashboard-garden-card-controls absolute flex items-center gap-2">
                                   <button
                                     data-card-action="true"
                                     type="button"
@@ -2890,7 +2891,7 @@ export default function DashboardClient({
                                 </div>
                               )}
                             {!canManage && (
-                              <span className="absolute top-3 right-3 shrink-0 rounded-full border border-gray-700 px-2.5 py-0.5 text-[11px] text-gray-400">
+                              <span className="dashboard-garden-card-controls absolute shrink-0 rounded-full border border-gray-700 px-2.5 py-0.5 text-[11px] text-gray-400">
                                 {cluster.visibility === "organization"
                                   ? (cluster.organizationName ?? "organization")
                                   : cluster.visibility}
@@ -2899,9 +2900,15 @@ export default function DashboardClient({
 
                             <div className="min-h-0 flex min-w-0 flex-1 flex-col overflow-hidden">
                               <div className="shrink-0">
-                                <div className="flex items-start gap-2 pr-28">
-                                  <h2 className="min-w-0 flex-1 text-base font-semibold text-white truncate">
-                                    {cluster.name}
+                                <div
+                                  className={`flex items-start gap-2 ${
+                                    canManage
+                                      ? "dashboard-garden-card-heading-managed"
+                                      : "dashboard-garden-card-heading-shared"
+                                  }`}
+                                >
+                                  <h2 className="min-w-0 flex-1 text-base font-semibold text-white">
+                                    <OverflowMarquee>{cluster.name}</OverflowMarquee>
                                   </h2>
                                 </div>
                                 {cluster.noteCount === 0 ? (

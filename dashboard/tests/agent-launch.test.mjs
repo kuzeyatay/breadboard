@@ -230,6 +230,29 @@ test("a launch request is read from either surface's event shape", async () => {
   assert.equal(delegated.requiresApproval, false);
   assert.equal(delegated.originClientMessageId, "assistant-turn-1");
 
+  const serverStarted = parseAgentLaunchRequest({
+    type: "agent.launch_requested",
+    payload: {
+      requestId: "r-max",
+      agentId: "max-research",
+      agentName: "Max Research",
+      command: "/agents:max-research",
+      brief: "research hypertrophy",
+      requiresApproval: false,
+      originClientMessageId: "assistant-turn-2",
+      startedRun: {
+        kind: "max_research",
+        runId: "mxrun_durable",
+        query: "research hypertrophy",
+      },
+    },
+  });
+  assert.deepEqual(serverStarted.startedRun, {
+    kind: "max_research",
+    runId: "mxrun_durable",
+    query: "research hypertrophy",
+  });
+
   assert.equal(parseAgentLaunchRequest({ type: "tool.completed" }), null);
   // A request with no brief would submit the bare command, which opens a
   // palette entry instead of running anything.
@@ -321,7 +344,7 @@ test("a delegated research hand-back remains one populated assistant field", () 
     assert.match(sourceText, /const continuationPreamble =/);
     assert.match(
       sourceText,
-      /revealedAssistantContent \|\| continuationPreamble/,
+      /revealedAssistantContent[\s\S]{0,300}continuationPreamble/,
       `${surface} must keep the existing text until synthesis starts`,
     );
   }
@@ -516,7 +539,29 @@ test("the tool is super-agent only and revalidated on the route", () => {
   assert.match(route, /agent_launch_origin_required/);
   assert.match(route, /countAgentLaunchRequests\(run\.id\) > 0/);
   assert.match(route, /agent_launch_one_per_turn/);
-  assert.match(route, /worker runs privately/);
+  assert.match(route, /starts privately/);
+});
+
+test("Max Research is durable before its private launch event reaches a page", () => {
+  assert.match(route, /if \(agent\.id === "max-research"\)/);
+  assert.match(route, /await startMaxResearchRun\(\{/);
+  assert.match(route, /requestId: originClientMessageId/);
+  assert.match(route, /attachExternalAgentRun\(\{/);
+  assert.match(route, /\.\.\.\(startedRun \? \{ startedRun \} : \{\}\)/);
+
+  for (const stream of [eventStream, gardenAdapter]) {
+    assert.match(stream, /request\.startedRun \? \{ startedRun: request\.startedRun \}/);
+  }
+  assert.match(terminal, /if \(request\.startedRun\) \{/);
+  assert.match(terminal, /run: request\.startedRun,/);
+  assert.match(terminal, /attachToExistingTurn: true,/);
+  assert.match(garden, /request\.startedRun\?\.kind === "max_research"/);
+
+  const conversationStore = source("../src/lib/conversations/store.ts");
+  assert.match(
+    conversationStore,
+    /mergedMetadata\.delegatedAgentPreamble = content;/,
+  );
 });
 
 test("the broker opens agent_launch for a super-agent turn and nobody else", async () => {

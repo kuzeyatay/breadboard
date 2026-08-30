@@ -362,6 +362,66 @@ button.desktop-explorer {
   }
 }
 
+.folder-title-clip {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+
+  & > .folder-button {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+  }
+}
+
+.folder-title {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .folder-container.garden-root .folder-title[data-marquee="run"] {
+    width: max-content;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+    animation: bb-explorer-title-marquee-shift var(--bb-marquee-duration, 6s) ease-in-out infinite;
+  }
+}
+
+@keyframes bb-explorer-title-marquee-shift {
+  0%,
+  8% {
+    transform: translateX(0);
+  }
+
+  44%,
+  56% {
+    transform: translateX(calc(-1 * var(--bb-marquee-distance, 0px)));
+  }
+
+  92%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .folder-container.garden-root .folder-title[data-marquee="run"] {
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transform: none;
+    animation: none;
+  }
+}
+
 .folder-icon {
   margin-right: 5px;
   color: var(--secondary);

@@ -40,6 +40,49 @@ const GENERATED_GARDEN_ROOTS = new Set([
   "public-quartz",
 ])
 const NON_GARDEN_ROOTS = new Set(["tags", "static", "index", "404"])
+const GARDEN_TITLE_MARQUEE_DELAY_MS = 350
+const GARDEN_TITLE_MARQUEE_SPEED_PX_PER_SEC = 42
+/** Share of the animation spent travelling one way; the rest is the pause at each end. */
+const GARDEN_TITLE_MARQUEE_TRAVEL_SHARE = 0.36
+
+function bindGardenTitleMarquee(trigger: HTMLElement, title: HTMLElement) {
+  const hoverQuery = window.matchMedia("(hover: hover) and (pointer: fine)")
+  const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)")
+  let timer: number | null = null
+
+  const stop = () => {
+    if (timer !== null) {
+      window.clearTimeout(timer)
+      timer = null
+    }
+    title.removeAttribute("data-marquee")
+    title.style.removeProperty("--bb-marquee-distance")
+    title.style.removeProperty("--bb-marquee-duration")
+  }
+
+  const start = () => {
+    if (!hoverQuery.matches || reducedMotionQuery.matches || timer !== null) return
+    timer = window.setTimeout(() => {
+      timer = null
+      const distance = title.scrollWidth - title.clientWidth
+      if (distance < 2) return
+
+      const duration =
+        distance / GARDEN_TITLE_MARQUEE_SPEED_PX_PER_SEC / GARDEN_TITLE_MARQUEE_TRAVEL_SHARE
+      title.style.setProperty("--bb-marquee-distance", `${distance}px`)
+      title.style.setProperty("--bb-marquee-duration", `${duration.toFixed(2)}s`)
+      title.dataset.marquee = "run"
+    }, GARDEN_TITLE_MARQUEE_DELAY_MS)
+  }
+
+  trigger.addEventListener("mouseenter", start)
+  trigger.addEventListener("mouseleave", stop)
+  window.addCleanup(() => {
+    trigger.removeEventListener("mouseenter", start)
+    trigger.removeEventListener("mouseleave", stop)
+    stop()
+  })
+}
 
 function parseJsonArray(value: string | undefined): string[] {
   if (!value) return []
@@ -561,6 +604,11 @@ function createFolderNode(
   const ul = folderOuter.querySelector("ul") as HTMLUListElement
 
   const folderPath = node.slug
+  const { cluster, relFolder } = clusterAndRelFolder(folderPath)
+  const isGardenRoot = relFolder.length === 0
+  // Existing emitted pages may outlive an asset-only rebuild, so apply the
+  // clipping hook at runtime as well as in Explorer's template.
+  titleContainer.classList.add("folder-title-clip")
   folderContainer.dataset.folderpath = folderPath
 
   if (currentSlug === folderPath) {
@@ -570,8 +618,6 @@ function createFolderNode(
   // Allow dropping notes into this folder and creating/deleting sub-folders from the dashboard.
   makeFolderDropTarget(folderContainer, folderPath)
   if (insideDashboard) {
-    const { cluster, relFolder } = clusterAndRelFolder(folderPath)
-
     const addBtn = document.createElement("button")
     addBtn.type = "button"
     addBtn.className = "explorer-folder-add explorer-folder-action"
@@ -606,6 +652,7 @@ function createFolderNode(
     }
   }
 
+  let folderTitle: HTMLElement
   if (opts.folderClickBehavior === "link") {
     // Replace button with link for link behavior
     const button = titleContainer.querySelector(".folder-button") as HTMLElement
@@ -615,9 +662,16 @@ function createFolderNode(
     a.className = "folder-title"
     a.textContent = node.displayName
     button.replaceWith(a)
+    folderTitle = a
   } else {
     const span = titleContainer.querySelector(".folder-title") as HTMLElement
     span.textContent = node.displayName
+    folderTitle = span
+  }
+
+  if (isGardenRoot) {
+    folderContainer.classList.add("garden-root")
+    bindGardenTitleMarquee(titleContainer, folderTitle)
   }
 
   // if the saved state is collapsed or the default state is collapsed

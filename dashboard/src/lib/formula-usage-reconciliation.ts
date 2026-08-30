@@ -986,6 +986,7 @@ function contractUnitFromRawRecord(record: Record<string, unknown>): LearningUni
     sourceFigures: [],
     sourceFormulas: [],
     sourceTables: [],
+    sourceQuestions: [],
     zettelNotes: [],
     mustNotRepeat: [],
     expectedWordRange: [0, 0],

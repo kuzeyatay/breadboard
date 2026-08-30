@@ -305,12 +305,6 @@ body[data-stage="dissolving"] .stage-halo {
   transition: opacity 520ms ease;
 }
 
-/* The white key light behind the scene goes too, or the dashboard arrives
-   into a lit stage instead of onto its own flat background. */
-body[data-stage="dissolving"] .loading-scene::before {
-  opacity: 0;
-}
-
 body[data-stage="dissolving"] .welcome-stage {
   opacity: 0;
   filter: blur(12px);

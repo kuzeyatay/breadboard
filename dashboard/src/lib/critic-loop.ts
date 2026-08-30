@@ -376,7 +376,11 @@ export interface CriticLoopOptions {
 
 export const DEFAULT_CRITIC_LOOP_OPTIONS: CriticLoopOptions = {
   enabled: true,
-  maxRounds: 3,
+  // A repair can legitimately reveal a deeper semantic inconsistency on the
+  // next whole-garden audit. Keep enough bounded rounds to repair a sequence
+  // of newly exposed blockers; maxTotalRepairAttempts remains the hard request
+  // budget and prevents an unconditional retry loop.
+  maxRounds: 8,
   maxIssuesPerRound: 12,
   maxTotalRepairAttempts: 25,
   criticModel: "chatmock",
@@ -1255,6 +1259,7 @@ Hard requirements:
 - Return the ENTIRE target file, not a diff.
 - Preserve the YAML frontmatter block and every required key (title, knowledge_type/breadboardType, learningUnitId, generated_by, tags, sourceAnchors, sourceFormulaAnchors, formulas, visualIds). Change only what the issue requires.
 - Preserve source anchors and formula anchors UNLESS the issue is a source/formula anchor mismatch, in which case ground to the correct one named in the issue.
+- Never add a source or formula anchor that is absent from the target page's Learning Unit Contract. If a critic asks for excluded material, repair the prose within the existing contract instead of expanding the source scope.
 - Preserve every \`\`\`breadboard-visual\`\`\` block verbatim.
 - Preserve contract-backed Zettelkasten tags, unless the issue is a template handle — then replace only the flagged handle with a concrete durable claim.
 - Remove exactly the flagged issue; do not introduce generic scaffold prose ("introduces the core idea", "so the pieces connect into one picture", "one step at a time").
@@ -1425,14 +1430,43 @@ function modelJsonHasInvalidAnchorLabels(value: unknown): boolean {
   return false;
 }
 
+function markdownFrontmatterKeys(markdown: string): Set<string> {
+  const fm = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
+  return new Set(
+    fm
+      .split(/\r?\n/)
+      .map((line) => line.match(/^([A-Za-z_][A-Za-z0-9_-]*):(?:\s|$)/)?.[1])
+      .filter((key): key is string => Boolean(key)),
+  );
+}
+
+function introducedAuditProblems(before: FinalAuditResult | null, after: FinalAuditResult): string[] {
+  if (!before) return [];
+  const existing = new Set(before.problems);
+  return after.problems.filter((problem) => !existing.has(problem));
+}
+
 function applyModelRepairOutput(gardenDir: string, gardenSlug: string, out: ModelRepairOutput): boolean {
   const abs = path.join(gardenDir, out.targetPath);
   if (!fs.existsSync(path.dirname(abs))) return false;
   const before = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : null;
+  let beforeAudit: FinalAuditResult | null = null;
+  try {
+    beforeAudit = auditFinalGardenState(buildFinalGardenState(gardenDir, gardenSlug));
+  } catch {
+    // A partial legacy garden may not yet have an auditable baseline. The
+    // post-write parse boundary below still applies in that case.
+  }
   if (out.revisedMarkdown !== undefined) {
     if (!/^---\r?\n[\s\S]*?\r?\n---/.test(out.revisedMarkdown)) return false; // must keep frontmatter
     if (modelMarkdownHasInvalidAnchorLabels(out.revisedMarkdown)) return false;
     if (before !== null && out.revisedMarkdown.trim() === before.trim()) return false;
+    if (before !== null) {
+      const revisedKeys = markdownFrontmatterKeys(out.revisedMarkdown);
+      for (const key of markdownFrontmatterKeys(before)) {
+        if (!revisedKeys.has(key)) return false;
+      }
+    }
     fs.writeFileSync(abs, out.revisedMarkdown.endsWith("\n") ? out.revisedMarkdown : `${out.revisedMarkdown}\n`, "utf-8");
   } else if (out.revisedJson !== undefined) {
     if (modelJsonHasInvalidAnchorLabels(out.revisedJson)) return false;
@@ -1441,7 +1475,11 @@ function applyModelRepairOutput(gardenDir: string, gardenSlug: string, out: Mode
     return false;
   }
   try {
-    buildFinalGardenState(gardenDir, gardenSlug); // sanity: still parses
+    const afterAudit = auditFinalGardenState(buildFinalGardenState(gardenDir, gardenSlug));
+    if (introducedAuditProblems(beforeAudit, afterAudit).length > 0) {
+      if (before !== null) fs.writeFileSync(abs, before, "utf-8");
+      return false;
+    }
     return true;
   } catch {
     if (before !== null) fs.writeFileSync(abs, before, "utf-8");

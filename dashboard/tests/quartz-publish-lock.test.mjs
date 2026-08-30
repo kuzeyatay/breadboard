@@ -213,7 +213,7 @@ test("publication recovery promotes only a complete fenced stage", async () => {
       "utf8",
     );
     const { recoverQuartzPublicationTransaction } = await import(executorUrl);
-    const recovered = recoverQuartzPublicationTransaction(fixture.quartzRoot);
+    const recovered = await recoverQuartzPublicationTransaction(fixture.quartzRoot);
     assert.equal(recovered.recovered, true);
     assert.equal(recovered.outcome, "published-prepared-stage");
     assert.equal(fs.readFileSync(path.join(fixture.quartzRoot, "public", "new.html"), "utf8"), "new");
@@ -257,7 +257,7 @@ test("publication recovery discards an interrupted first-build stage", async () 
       "utf8",
     );
     const { recoverQuartzPublicationTransaction } = await import(executorUrl);
-    assert.deepEqual(recoverQuartzPublicationTransaction(fixture.quartzRoot), {
+    assert.deepEqual(await recoverQuartzPublicationTransaction(fixture.quartzRoot), {
       recovered: true,
       outcome: "discarded-incomplete-stage",
     });
@@ -275,6 +275,143 @@ test("publication recovery discards an interrupted first-build stage", async () 
     fs.rmSync(temporaryRoot, { recursive: true, force: true });
   }
 });
+
+test("publication recovery retries a transient Windows public-tree rename without rebuilding", async () => {
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-quartz-rename-recovery-test-"),
+  );
+  const originalRenameSync = fs.renameSync;
+  try {
+    const fixture = createQuartzFixture(temporaryRoot);
+    const transaction = {
+      version: 1,
+      jobId: "job_quartz_rename_recovery",
+      attempt: 1,
+      workerInstanceId: "worker_quartz_rename_recovery",
+      stageName:
+        ".breadboard-quartz-publish.stage-job_quartz_rename_recovery-1-worker_quartz_rename_recovery",
+      previousName:
+        ".breadboard-quartz-publish.previous-job_quartz_rename_recovery-1-worker_quartz_rename_recovery",
+      state: "prepared",
+    };
+    const publicPath = path.join(fixture.quartzRoot, "public");
+    const stagePath = path.join(fixture.quartzRoot, transaction.stageName);
+    const previousPath = path.join(fixture.quartzRoot, transaction.previousName);
+    fs.mkdirSync(stagePath);
+    fs.writeFileSync(path.join(stagePath, "new.html"), "new", "utf8");
+    fs.writeFileSync(
+      path.join(stagePath, ".breadboard-quartz-build-complete.json"),
+      `${JSON.stringify({
+        version: 1,
+        jobId: transaction.jobId,
+        attempt: transaction.attempt,
+        workerInstanceId: transaction.workerInstanceId,
+      })}\n`,
+      "utf8",
+    );
+    const journalPath = path.join(
+      fixture.quartzRoot,
+      ".breadboard-quartz-publish.transaction.json",
+    );
+    fs.writeFileSync(journalPath, `${JSON.stringify(transaction)}\n`, "utf8");
+
+    let transientFailures = 0;
+    fs.renameSync = (source, target) => {
+      if (source === publicPath && target === previousPath && transientFailures < 2) {
+        transientFailures += 1;
+        throw Object.assign(new Error("EPERM: simulated open static-file handle"), {
+          code: "EPERM",
+        });
+      }
+      return originalRenameSync(source, target);
+    };
+
+    const { recoverQuartzPublicationTransaction } = await import(executorUrl);
+    assert.deepEqual(
+      await recoverQuartzPublicationTransaction(fixture.quartzRoot),
+      { recovered: true, outcome: "published-prepared-stage" },
+    );
+    assert.equal(transientFailures, 2);
+    assert.equal(fs.readFileSync(path.join(publicPath, "new.html"), "utf8"), "new");
+    assert.equal(fs.existsSync(stagePath), false);
+    assert.equal(fs.existsSync(previousPath), false);
+    assert.equal(fs.existsSync(journalPath), false);
+  } finally {
+    fs.renameSync = originalRenameSync;
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test(
+  "publication recovery completes in place when Windows keeps the public root locked",
+  { timeout: 20_000 },
+  async () => {
+    const temporaryRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "breadboard-quartz-in-place-recovery-test-"),
+    );
+    const originalRenameSync = fs.renameSync;
+    try {
+      const fixture = createQuartzFixture(temporaryRoot);
+      const transaction = {
+        version: 1,
+        jobId: "job_quartz_in_place_recovery",
+        attempt: 1,
+        workerInstanceId: "worker_quartz_in_place_recovery",
+        stageName:
+          ".breadboard-quartz-publish.stage-job_quartz_in_place_recovery-1-worker_quartz_in_place_recovery",
+        previousName:
+          ".breadboard-quartz-publish.previous-job_quartz_in_place_recovery-1-worker_quartz_in_place_recovery",
+        state: "prepared",
+      };
+      const publicPath = path.join(fixture.quartzRoot, "public");
+      const stagePath = path.join(fixture.quartzRoot, transaction.stageName);
+      const previousPath = path.join(fixture.quartzRoot, transaction.previousName);
+      fs.mkdirSync(stagePath);
+      fs.writeFileSync(path.join(stagePath, "new.html"), "new", "utf8");
+      fs.writeFileSync(
+        path.join(stagePath, ".breadboard-quartz-build-complete.json"),
+        `${JSON.stringify({
+          version: 1,
+          jobId: transaction.jobId,
+          attempt: transaction.attempt,
+          workerInstanceId: transaction.workerInstanceId,
+        })}\n`,
+        "utf8",
+      );
+      const journalPath = path.join(
+        fixture.quartzRoot,
+        ".breadboard-quartz-publish.transaction.json",
+      );
+      fs.writeFileSync(journalPath, `${JSON.stringify(transaction)}\n`, "utf8");
+
+      let lockedRootAttempts = 0;
+      fs.renameSync = (source, target) => {
+        if (source === publicPath && target === previousPath) {
+          lockedRootAttempts += 1;
+          throw Object.assign(new Error("EPERM: simulated persistent public-root handle"), {
+            code: "EPERM",
+          });
+        }
+        return originalRenameSync(source, target);
+      };
+
+      const { recoverQuartzPublicationTransaction } = await import(executorUrl);
+      assert.deepEqual(
+        await recoverQuartzPublicationTransaction(fixture.quartzRoot),
+        { recovered: true, outcome: "published-prepared-stage" },
+      );
+      assert.equal(lockedRootAttempts, 12);
+      assert.equal(fs.readFileSync(path.join(publicPath, "new.html"), "utf8"), "new");
+      assert.equal(fs.existsSync(path.join(publicPath, "old.html")), false);
+      assert.equal(fs.existsSync(stagePath), false);
+      assert.equal(fs.existsSync(previousPath), false);
+      assert.equal(fs.existsSync(journalPath), false);
+    } finally {
+      fs.renameSync = originalRenameSync;
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  },
+);
 
 test("sealed worker cancellation never promotes a partial Quartz build", async () => {
   const temporaryRoot = fs.mkdtempSync(

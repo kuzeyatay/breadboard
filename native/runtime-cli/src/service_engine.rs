@@ -26,9 +26,9 @@ use breadboard_runtime_protocol::{
     RuntimeScheduleReconcileResponse, RuntimeScheduleStatusResponse,
     RuntimeServiceLeaseAcquireResponse, RuntimeServiceLeaseContractResponse,
     RuntimeServiceLeaseReleaseResponse, RuntimeServiceRetryResponse, RuntimeServiceState,
-    RuntimeServiceStatus, ServiceStartupPolicy, TrustedServiceEnvironmentSource, MAX_CONCURRENCY,
-    MAX_MANIFEST_ENTRIES, MAX_RECALL_LOG_LINES, MAX_RECALL_LOG_TAIL_BYTES,
-    RUNTIME_CONTROL_PROTOCOL_VERSION, SERVICE_LEASE_RESPONSE_GRACE_MS,
+    RuntimeServiceStatus, ServiceInstallProbeAuthority, ServiceStartupPolicy,
+    TrustedServiceEnvironmentSource, MAX_CONCURRENCY, MAX_MANIFEST_ENTRIES, MAX_RECALL_LOG_LINES,
+    MAX_RECALL_LOG_TAIL_BYTES, RUNTIME_CONTROL_PROTOCOL_VERSION, SERVICE_LEASE_RESPONSE_GRACE_MS,
     SERVICE_LEASE_SETTLEMENT_GRACE_MS,
 };
 use serde::Deserialize;
@@ -1771,7 +1771,8 @@ impl ServiceController {
     ) -> Result<(), ServiceEngineError> {
         let now_ms = self.clock.now_ms();
         let snapshot = self.store.durable_service_snapshot(service_id)?;
-        if service_state_requires_endpoint_reservation(snapshot.status.state)
+        if (service_state_requires_endpoint_reservation(snapshot.status.state)
+            || snapshot_awaits_bounded_restart(&snapshot))
             && !self.try_retain_endpoint_reservation(service_id)?
         {
             self.next_eager_attempt_ms
@@ -2586,7 +2587,15 @@ impl ServiceController {
                     }
                     let request = match self.prepare_launch(&service_id) {
                         Ok(request) => request,
-                        Err(_error) => {
+                        Err(error) => {
+                            // The durable row only records that prerequisites
+                            // were unavailable; the reason lives here so a
+                            // failed dependency is attributable from the log.
+                            eprintln!(
+                                "[runtime-services] service={service_id} generation={generation} \
+                                 launch preparation failed: {error}{}",
+                                self.describe_missing_install_probes(&service_id),
+                            );
                             self.finish_start_preparation_failure(
                                 claim,
                                 &service_id,
@@ -2596,7 +2605,11 @@ impl ServiceController {
                             continue;
                         }
                     };
-                    if self.release_endpoint_for_launch(&service_id).is_err() {
+                    if let Err(error) = self.release_endpoint_for_launch(&service_id) {
+                        eprintln!(
+                            "[runtime-services] service={service_id} generation={generation} \
+                             loopback endpoint release failed: {error}",
+                        );
                         drop(request);
                         self.finish_start_preparation_failure(
                             claim,
@@ -2707,6 +2720,42 @@ impl ServiceController {
         )?)
     }
 
+    /// Best-effort diagnostic naming the manifest install probes that are not
+    /// regular files on disk. Preparation itself stays authoritative; this only
+    /// makes its closed failure message attributable in the runtime log.
+    fn describe_missing_install_probes(&self, service_id: &str) -> String {
+        let Ok(definition) = self.registry.service(service_id) else {
+            return String::new();
+        };
+        let Some(profile) = definition.launch_profile(self.mode) else {
+            return String::new();
+        };
+        let mut missing = Vec::new();
+        for probe in profile.install_probe.files() {
+            let (authority, resolved) = match probe.authority {
+                ServiceInstallProbeAuthority::RuntimeRoot => {
+                    ("runtime-root", self.paths.resolve_runtime(&probe.path))
+                }
+                ServiceInstallProbeAuthority::AppRoot => {
+                    ("app-root", self.paths.resolve_app(&probe.path))
+                }
+                ServiceInstallProbeAuthority::DataRoot => {
+                    ("data-root", self.paths.resolve_data(&probe.path))
+                }
+            };
+            match resolved {
+                Ok(path) if path.absolute().is_file() => {}
+                Ok(path) => missing.push(format!("{authority}:{}", path.absolute().display())),
+                Err(_) => missing.push(format!("{authority}:{}", probe.path)),
+            }
+        }
+        if missing.is_empty() {
+            String::new()
+        } else {
+            format!("; missing install probes: {}", missing.join(", "))
+        }
+    }
+
     fn finish_start_preparation_failure(
         &mut self,
         claim: DurableServiceOutboxClaim,
@@ -2723,6 +2772,13 @@ impl ServiceController {
                     self.bootstrap_generation_failures
                         .insert((service_id.to_owned(), generation));
                 }
+                // The generation ended before a process existed. Waiters must
+                // hear that now: with a bounded retry pending the service
+                // projects as `starting`, and nothing restarts an on-demand
+                // service except a fresh acquire, so an unanswered acquire
+                // would otherwise sit out its whole startup budget. That cost
+                // every chat turn ~2 minutes while mem0 could not launch.
+                self.fail_pending_acquires_for_generation(service_id, generation, now_ms);
                 let _reserved = self.try_retain_endpoint_reservation(service_id)?;
                 Ok(())
             }
@@ -2969,6 +3025,11 @@ impl ServiceController {
                             snapshot.generation,
                             now_ms,
                         )?;
+                        self.fail_pending_acquires_for_generation(
+                            service_id,
+                            snapshot.generation,
+                            now_ms,
+                        );
                         self.clear_generation_tracking(&key);
                         return Ok(());
                     }
@@ -2991,6 +3052,11 @@ impl ServiceController {
                         snapshot.generation,
                         now_ms,
                     )?;
+                    self.fail_pending_acquires_for_generation(
+                        service_id,
+                        snapshot.generation,
+                        now_ms,
+                    );
                     let _reserved = self.try_retain_endpoint_reservation(service_id)?;
                     self.clear_generation_tracking(&key);
                 }
@@ -3075,6 +3141,20 @@ impl ServiceController {
                         held.worker_cold_start_target_exit = true;
                     }
                 }
+                // An on-demand service restarts only through a fresh acquire,
+                // so a waiter on the generation that just exited can never be
+                // satisfied by it; the bounded retry projects the service as
+                // `starting` and the waiter would otherwise sit out its whole
+                // startup budget (a chat turn waited ~2 minutes on a mem0
+                // process that died a second after launch). Worker dependency
+                // acquires flagged above keep their bounded re-acquire; eager
+                // and scheduled services are restarted by this engine and
+                // their waiters may still be served.
+                if self.registry.service(&key.0)?.startup_policy == ServiceStartupPolicy::OnDemand {
+                    self.fail_pending_acquires_for_generation_unless_reacquiring(
+                        &key.0, key.1, now_ms,
+                    );
+                }
                 let _reserved = self.try_retain_endpoint_reservation(&key.0)?;
                 self.clear_generation_tracking(key);
                 Ok(())
@@ -3110,8 +3190,15 @@ impl ServiceController {
                 .ok_or(ServiceEngineError::Invariant(
                     "eager restart snapshot disappeared",
                 ))?;
+            // A bounded retry pending after a crash projects the service as
+            // `starting` (it will start on its next attempt), so the public
+            // state alone would skip exactly the services this loop exists
+            // to restart: the dashboard killed for exceeding its commit cap
+            // sat at `failed, retry due in 1 s` for twenty minutes while the
+            // desktop showed it as starting.
             if self.registry.service(&service_id)?.startup_policy != ServiceStartupPolicy::Eager
-                || !service_state_allows_automatic_eager_restart(snapshot.status.state)
+                || !(service_state_allows_automatic_eager_restart(snapshot.status.state)
+                    || snapshot_awaits_bounded_restart(snapshot))
             {
                 continue;
             }
@@ -3415,6 +3502,75 @@ impl ServiceController {
             true,
             false,
         )
+    }
+
+    /// A generation proven to have created no process can never become ready,
+    /// so every acquire still waiting on it is answered now rather than at its
+    /// deadline. Before this, a launch the supervisor refused left a worker's
+    /// dependency acquire (and the job's other leases) hanging for the full
+    /// readiness budget: the bounded restart projects the service as
+    /// `starting`, but an on-demand restart only begins with a new acquire.
+    /// The store released these lease rows when it finalized the generation;
+    /// only the in-memory waiters remain.
+    fn fail_pending_acquires_for_generation(
+        &mut self,
+        service_id: &str,
+        generation: u64,
+        now_ms: u64,
+    ) {
+        let waiting: Vec<String> = self
+            .held_leases
+            .iter()
+            .filter(|(_, held)| {
+                held.claim.service_id() == service_id
+                    && held.claim.generation() == generation
+                    && held.pending_reply.is_some()
+            })
+            .map(|(lease_id, _)| lease_id.clone())
+            .collect();
+        for lease_id in waiting {
+            let Some(mut held) = self.held_leases.remove(&lease_id) else {
+                continue;
+            };
+            if let Some(reply) = held.pending_reply.take() {
+                let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+            }
+            self.remember_release(lease_id, now_ms);
+        }
+    }
+
+    /// The tree-exit variant of `fail_pending_acquires_for_generation`: a
+    /// worker dependency acquire that was just marked for a bounded cold-start
+    /// re-acquire keeps waiting; every other waiter on the exited generation
+    /// is answered now.
+    fn fail_pending_acquires_for_generation_unless_reacquiring(
+        &mut self,
+        service_id: &str,
+        generation: u64,
+        now_ms: u64,
+    ) {
+        let waiting: Vec<String> = self
+            .held_leases
+            .iter()
+            .filter(|(_, held)| {
+                held.claim.service_id() == service_id
+                    && held.claim.generation() == generation
+                    && held.pending_reply.is_some()
+                    && !(held.worker_cold_start_target_exit
+                        && held.pending_worker_dependency.is_some()
+                        && matches!(&held.owner, HeldLeaseOwner::WorkerInstance { .. }))
+            })
+            .map(|(lease_id, _)| lease_id.clone())
+            .collect();
+        for lease_id in waiting {
+            let Some(mut held) = self.held_leases.remove(&lease_id) else {
+                continue;
+            };
+            if let Some(reply) = held.pending_reply.take() {
+                let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+            }
+            self.remember_release(lease_id, now_ms);
+        }
     }
 
     fn revoke_held_lease(&mut self, lease_id: &str, now_ms: u64) -> Result<(), ServiceEngineError> {
@@ -3937,6 +4093,13 @@ fn worker_cold_start_restart_fits_deadline(
 
 fn service_state_allows_automatic_eager_restart(state: RuntimeServiceState) -> bool {
     state == RuntimeServiceState::Failed
+}
+
+/// A generation that exited with a bounded restart still owed. The store
+/// projects it as `starting` for the public status, so this is read from the
+/// durable restart schedule rather than from that projection.
+fn snapshot_awaits_bounded_restart(snapshot: &DurableServiceSnapshot) -> bool {
+    matches!(snapshot.restart, DurableServiceRestartStatus::Deferred(_))
 }
 
 fn eager_start_requires_fresh_host_retry(

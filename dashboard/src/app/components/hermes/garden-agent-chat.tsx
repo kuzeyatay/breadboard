@@ -456,8 +456,7 @@ export default function GardenAgentChat({
    */
   const routeMaxResearchCommand = useCallback(
     (text: string, options: { branchGroupId?: string } = {}): boolean => {
-      // Same rule as Deep Research directly below: under Super Agent the model
-      // delegates this itself, inside its own turn.
+      // Under Super Agent the model owns the turn and delegates this privately.
       const invocation = maxResearchInvocation(text, isSuperAgentEnabled());
       if (!invocation) return false;
       if (invocation.question && !maxResearchDispatchingRef.current) {

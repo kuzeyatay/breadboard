@@ -1,4 +1,5 @@
 import type { IpcRenderer } from "electron";
+import type { WindowThemeSchedule } from "../shared/ipc-contract";
 
 export const PRELOAD_IPC_CHANNELS = {
   getVersions: "breadboard:get-versions",
@@ -92,8 +93,16 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.allowThemeLocation) as Promise<boolean>,
     // "voice" is not a theme but a full-screen surface that owns the window
     // chrome while it is open; the window goes back to its theme on close.
-    setTheme: (surface: "light" | "dark" | "voice"): Promise<boolean> =>
-      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setTheme, surface) as Promise<boolean>,
+    // The dashboard adds how it chose the theme (see WindowThemeSchedule) so
+    // the next launch opens on the right side of sunrise; the overlay does not.
+    setTheme: (
+      surface: "light" | "dark" | "voice",
+      schedule?: WindowThemeSchedule,
+    ): Promise<boolean> =>
+      ipcRenderer.invoke(
+        PRELOAD_IPC_CHANNELS.setTheme,
+        ...(schedule ? [surface, schedule] : [surface]),
+      ) as Promise<boolean>,
     // Whether the startup screen's chime may sound. Both the startup screen
     // that plays it and the Profile switch that sets it read the same answer
     // from the shell, which is the only place either of them can share.

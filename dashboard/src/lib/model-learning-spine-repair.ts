@@ -307,6 +307,11 @@ Use this complete unit-record schema (optional fields are marked OPTIONAL):
     "rowsOrColumnsToExplain": ["row or column"],
     "placement": "inside_comparison | inside_result_interpretation"
   }],
+  "sourceQuestions": [{
+    "id": "exact sourceMap.sourceQuestions id",
+    "placement": "inside_worked_example | guided_practice | end_of_page_check",
+    "teachingGoal": "what solving it teaches"
+  }],
   "semanticConcepts": [{
     "slug": "canonical-public-concept-slug",
     "preferredLabel": "human-readable label",

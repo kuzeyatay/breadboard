@@ -15,3 +15,18 @@ export const IPC_CHANNELS = {
   startupAwaitDashboard: "breadboard:startup-await-dashboard",
   startupState: "breadboard:startup-state",
 } as const;
+
+/**
+ * How the dashboard is choosing its theme, sent with every theme it applies.
+ *
+ * With "Sunrise to sunset" on, the dashboard follows the sun and the two
+ * times are the local-clock minutes of that day's sunrise and sunset as it
+ * computed them. They are what the shell needs to open the next launch on the
+ * right side of the day before the dashboard has painted, without holding the
+ * coordinates they were computed from. Sunrise moves by a minute or two a day,
+ * so a launch weeks later may be off around the edges; the dashboard settles
+ * the exact answer on its first paint.
+ */
+export type WindowThemeSchedule =
+  | { mode: "manual" }
+  | { mode: "sun"; sunriseMinutes: number; sunsetMinutes: number };

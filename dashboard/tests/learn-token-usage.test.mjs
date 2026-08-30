@@ -898,8 +898,11 @@ test('Learn panel renders live job usage without Council activity', () => {
   assert.match(source, /label: "Output"/);
   assert.match(source, /label: "Reasoning"/);
   assert.match(source, /label: "Total"/);
-  assert.match(source, /learnTokenUsage\.inFlightCalls/);
-  assert.match(source, /learnTokenUsage\.unreportedCalls/);
+  assert.doesNotMatch(
+    usagePanelSource,
+    /inFlightCalls|unreportedCalls|learnUsageCallSummary/,
+    "call availability internals should not appear in the token row",
+  );
   assert.match(source, /Waiting for usage/);
   assert.match(
     source,

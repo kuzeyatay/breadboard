@@ -1,6 +1,10 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import {
+  persistComposerSwitch,
+  registerComposerSwitch,
+} from "./composer-switch-preferences.ts";
 
 const STORAGE_KEY = "breadboard:yolo-mode";
 const CHANGE_EVENT = "breadboard:yolo-mode-change";
@@ -16,7 +20,7 @@ export function isYoloModeEnabled(): boolean {
   }
 }
 
-export function setYoloModeEnabled(next: boolean): void {
+function applyYoloMode(next: boolean): void {
   memoryValue = next;
   try {
     window.localStorage.setItem(STORAGE_KEY, String(next));
@@ -26,6 +30,15 @@ export function setYoloModeEnabled(next: boolean): void {
   }
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
+
+export function setYoloModeEnabled(next: boolean): void {
+  applyYoloMode(next);
+  persistComposerSwitch("yoloMode", next);
+}
+
+// Hydrated from the account on load: the localStorage copy belongs to one
+// origin, and the desktop dashboard's origin changes on every launch.
+registerComposerSwitch("yoloMode", applyYoloMode);
 
 function subscribe(onStoreChange: () => void): () => void {
   const handleStorage = (event: StorageEvent) => {

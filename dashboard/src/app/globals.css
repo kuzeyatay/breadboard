@@ -1,48 +1,62 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
+@source "../**/*.{js,mjs,cjs,ts,tsx,jsx,mdx}";
 
-/* Shared loading mark. The imperfect paths stay still while short ink strokes
-   trace them. This reads as a hand repeatedly following the circle instead of
-   a finished icon rotating as one rigid object. */
+/* Shared loading mark. One geometric guide stays completely still while four
+   imperfect, nearly coincident paths draw themselves over it. This is the
+   circular version of the fresh-chat cards' draw-hold-lift outline: no SVG or
+   line rotates, and no short dash orbits the perimeter. */
 .bb-loader {
   display: block;
   flex: none;
-  overflow: visible;
+  /* A loading mark is paint inside its assigned icon box. Clipping here keeps
+     an oversized stroke or stale intrinsic SVG size from bleeding into the
+     surrounding layout while every caller remains free to choose that box. */
+  overflow: hidden;
 }
 
 .bb-loader-settled {
-  opacity: 0.18;
+  opacity: 0.2;
 }
 
 .bb-loader-sketch {
-  opacity: 0.52;
-  stroke-dasharray: 28 72;
-  stroke-dashoffset: 0;
-  animation: bb-loader-trace 1680ms linear var(--bb-loader-sketch-delay, 0ms) infinite;
+  --bb-loader-trace-opacity: 0.68;
+  opacity: 0;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: bb-loader-trace 2820ms linear var(--bb-loader-sketch-delay, 0ms) infinite;
 }
 
 .bb-loader-sketch-1 {
-  opacity: 0.86;
-  stroke-dasharray: 34 66;
+  --bb-loader-trace-opacity: 0.82;
 }
 
 .bb-loader-sketch-2 {
-  opacity: 0.68;
-  stroke-dasharray: 30 70;
+  --bb-loader-trace-opacity: 0.67;
 }
 
 .bb-loader-sketch-3 {
-  opacity: 0.54;
-  stroke-dasharray: 26 74;
+  --bb-loader-trace-opacity: 0.54;
 }
 
 .bb-loader-sketch-4 {
-  opacity: 0.42;
-  stroke-dasharray: 22 78;
+  --bb-loader-trace-opacity: 0.44;
 }
 
 @keyframes bb-loader-trace {
-  to {
-    stroke-dashoffset: -100;
+  0% {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+  12% {
+    opacity: var(--bb-loader-trace-opacity);
+  }
+  52% {
+    stroke-dashoffset: 0;
+    opacity: var(--bb-loader-trace-opacity);
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
   }
 }
 
@@ -51,6 +65,7 @@
    signal without spatial movement. */
 @media (prefers-reduced-motion: reduce) {
   .bb-loader-sketch {
+    stroke-dashoffset: 0;
     animation: bb-loader-soft 2.1s cubic-bezier(0.77, 0, 0.175, 1) infinite;
   }
 
@@ -1437,6 +1452,13 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
   display: none;
 }
 
+/* The Garden archive lives at the bottom of the learning-map rail, but an
+   opened artifact overlays that rail and extends left over the chat. Its
+   portal host disappears completely while it is empty. */
+.bb-garden-artifact-lane:empty {
+  display: none;
+}
+
 :root {
   --bb-artifact-dock-width: max(24rem, 50vw);
 }
@@ -1485,6 +1507,23 @@ html[data-breadboard-desktop="true"] .bb-artifact-dock-floating {
 @keyframes bb-artifact-dock-in {
   from {
     transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+/* Garden artifacts enter across the map's inner (left) edge and then sit above
+   the complete right rail. Terminal lanes keep their right-edge motion. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-artifact-dock-origin="left"] > .bb-artifact-dock {
+    animation-name: bb-artifact-dock-in-from-left;
+  }
+}
+
+@keyframes bb-artifact-dock-in-from-left {
+  from {
+    transform: translateX(-100%);
   }
   to {
     transform: translateX(0);
@@ -4923,6 +4962,30 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
      those rails, so the whole popup-owning overlay must paint one layer above
      them or the divider hairline cuts through the menu surface. */
   z-index: 30;
+}
+
+/* Garden-card controls belong to the card's right edge, independent of the
+   resizable content column. A dedicated physical inset avoids the toolbar
+   falling back to its static DOM position and colliding with the title when a
+   card is resized or restored from persisted dimensions. */
+.dashboard-garden-card-controls {
+  inset-block-start: 1.25rem;
+  inset-inline-end: 1.25rem;
+  z-index: 10;
+  max-inline-size: calc(100% - 2.5rem);
+}
+
+.dashboard-garden-card-overlay {
+  inset-inline-end: 0.625rem;
+  z-index: 20;
+}
+
+.dashboard-garden-card-heading-managed {
+  padding-inline-end: min(14rem, 62%);
+}
+
+.dashboard-garden-card-heading-shared {
+  padding-inline-end: 7rem;
 }
 
 /* The transcript scroller. A classic scrollbar steals ~15px of the scroller's

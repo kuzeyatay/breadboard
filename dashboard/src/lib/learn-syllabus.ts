@@ -52,6 +52,8 @@ export interface SyllabusUnit {
   title: string;
   objectives: string[];
   topics: string[];
+  /** Exact problem/question/exercise identifiers explicitly assigned here. */
+  questionReferences: string[];
   /** Ids from `referencedMaterials`. */
   materialIds: string[];
 }
@@ -86,6 +88,7 @@ export interface SyllabusUnitCoverage {
   title: string;
   objectives: string[];
   topics: string[];
+  questionReferences: string[];
   /**
    * Exact selected documents that directly support this unit. This may record
    * partial support even when the model judges the full unit unteachable.
@@ -692,6 +695,7 @@ export function normalizeSyllabusPlan(raw: unknown): SyllabusPlan {
       title,
       objectives: asTextList(record.objectives, 15, 400),
       topics: asTextList(record.topics, 25, 200),
+      questionReferences: asTextList(record.questionReferences, 100, 160),
       materialIds: asTextList(record.materialIds, 25, 40).filter((id) =>
         knownMaterialIds.has(id),
       ),
@@ -785,6 +789,7 @@ export function modelAuthoredSyllabusPlanProblems(value: unknown): string[] {
     exactAuthoredString(unit.title, `${prefix}.title`, problems);
     exactAuthoredStringArray(unit.objectives, `${prefix}.objectives`, problems);
     exactAuthoredStringArray(unit.topics, `${prefix}.topics`, problems);
+    exactAuthoredStringArray(unit.questionReferences, `${prefix}.questionReferences`, problems);
     if (exactAuthoredStringArray(unit.materialIds, `${prefix}.materialIds`, problems)) {
       for (const materialId of unit.materialIds) {
         if (!materialIds.has(materialId)) problems.push(`${prefix}.materialIds references unknown ${materialId}`);
@@ -818,6 +823,7 @@ export function projectModelAuthoredSyllabusPlan(value: unknown): SyllabusPlan {
       title: unit.title as string,
       objectives: [...(unit.objectives as string[])],
       topics: [...(unit.topics as string[])],
+      questionReferences: [...(unit.questionReferences as string[])],
       materialIds: [...(unit.materialIds as string[])],
     })),
   };
@@ -1047,6 +1053,10 @@ export function projectModelAuthoredSyllabusCoverage(
       title: unit.title,
       objectives: [...unit.objectives],
       topics: [...unit.topics],
+      // Older persisted syllabus plans predate explicit question references.
+      // Treat the absent field as an empty assignment instead of failing a
+      // recovery/finalization pass while the plan is being upgraded.
+      questionReferences: [...(unit.questionReferences ?? [])],
       availableSourceIds: [...authored.availableSourceIds],
       missingCitations: [...authored.missingCitations],
       teachable: authored.teachable,

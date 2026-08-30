@@ -1,3 +1,13 @@
+// Relative, with extensions: the node tests import this module directly.
+import {
+  persistComposerSwitch,
+  registerComposerSwitch,
+} from "../app/components/composer-switch-preferences.ts";
+import {
+  inDesktopShell,
+  requestCurrentLocationFix,
+} from "./current-location-source.ts";
+
 export const APP_THEME_STORAGE_KEY = "breadboard:theme";
 export const APP_THEME_MODE_STORAGE_KEY = "breadboard:theme-mode";
 export const APP_THEME_LOCATION_STORAGE_KEY = "breadboard:theme-location";
@@ -184,24 +194,62 @@ export function appThemeForMoment(
   now: Date,
   location: AppThemeLocation | null,
 ): AppTheme {
-  const times =
-    (location ? solarTimesForDate(now, location) : null) ?? fallbackSolarTimes(now);
+  const times = effectiveSolarTimes(now, location);
   return now >= times.sunrise && now < times.sunset ? "light" : "dark";
+}
+
+/**
+ * The sunrise and sunset the theme follows on `now`'s calendar day: the
+ * location's when one is stored and the sun rises there that day, otherwise
+ * the 06:00/18:00 fallback.
+ */
+export function effectiveSolarTimes(
+  now: Date,
+  location: AppThemeLocation | null,
+): SolarTimes {
+  return (
+    (location ? solarTimesForDate(now, location) : null) ?? fallbackSolarTimes(now)
+  );
 }
 
 export function nextAppThemeTransition(
   now: Date,
   location: AppThemeLocation | null,
 ): Date {
-  const today =
-    (location ? solarTimesForDate(now, location) : null) ?? fallbackSolarTimes(now);
+  const today = effectiveSolarTimes(now, location);
   if (now < today.sunrise) return today.sunrise;
   if (now < today.sunset) return today.sunset;
   const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 12);
-  return (
-    (location ? solarTimesForDate(tomorrow, location) : null) ??
-    fallbackSolarTimes(tomorrow)
-  ).sunrise;
+  return effectiveSolarTimes(tomorrow, location).sunrise;
+}
+
+/**
+ * What the desktop shell is told alongside every theme, so that it can open
+ * the next launch on the right side of sunrise before this page has painted.
+ *
+ * The shell keeps only the local-clock minutes of today's sunrise and sunset,
+ * never the coordinates they came from; those stay in this origin's storage.
+ * Mirrors `WindowThemeSchedule` in desktop/src/shared/ipc-contract.ts.
+ */
+export type AppThemeSchedule =
+  | { mode: "manual" }
+  | { mode: "sun"; sunriseMinutes: number; sunsetMinutes: number };
+
+function minuteOfDay(date: Date): number {
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+export function appThemeScheduleForShell(
+  storage: Pick<Storage, "getItem">,
+  now: Date = new Date(),
+): AppThemeSchedule {
+  if (getStoredAppThemeMode(storage) !== "sun") return { mode: "manual" };
+  const times = effectiveSolarTimes(now, getStoredAppThemeLocation(storage));
+  return {
+    mode: "sun",
+    sunriseMinutes: minuteOfDay(times.sunrise),
+    sunsetMinutes: minuteOfDay(times.sunset),
+  };
 }
 
 function writeStorage(key: string, value: string): void {
@@ -218,12 +266,50 @@ export function rememberEffectiveAppTheme(theme: AppTheme): void {
   writeStorage(APP_THEME_STORAGE_KEY, theme);
 }
 
-export function applyAppThemeMode(mode: AppThemeMode): void {
+/**
+ * Choose between a fixed theme and following the sun.
+ *
+ * The choice is written to this origin's localStorage for the next paint and
+ * through to the account so it is still there after a restart — the desktop
+ * dashboard opens on a different loopback port each launch, and that port is a
+ * different origin with an empty localStorage. Hydration from the account
+ * passes `persist: false`: it is replaying a choice, not making one.
+ */
+export function applyAppThemeMode(
+  mode: AppThemeMode,
+  options: { persist?: boolean } = {},
+): void {
   writeStorage(APP_THEME_MODE_STORAGE_KEY, mode);
+  if (options.persist !== false) persistComposerSwitch("sunTheme", mode === "sun");
   window.dispatchEvent(
     new CustomEvent<AppThemeMode>(APP_THEME_MODE_CHANGE_EVENT, { detail: mode }),
   );
 }
+
+/**
+ * The account's copy of the switch, arriving on page load.
+ *
+ * The coordinates sunrise and sunset are computed from stay on the device, so
+ * a fresh origin has the switch back but not the fix. Inside the desktop shell
+ * the operating system can answer that without a prompt (the server asks it),
+ * so the fix is fetched again; a browser keeps its origin across restarts and
+ * still has the one it stored, and is never prompted for location unasked.
+ * Until a fix lands, the 06:00/18:00 fallback applies, as it always has.
+ */
+function applyRemoteSunTheme(enabled: boolean): void {
+  applyAppThemeMode(enabled ? "sun" : "manual", { persist: false });
+  if (!enabled || !inDesktopShell()) return;
+  if (getStoredAppThemeLocation(window.localStorage)) return;
+  void requestCurrentLocationFix({ maxAgeMs: 7 * 86_400_000 })
+    .then((attempt) => {
+      if (attempt.ok) rememberAppThemeLocation(attempt.fix);
+    })
+    .catch(() => {
+      // The fallback times stand until the profile asks again.
+    });
+}
+
+registerComposerSwitch("sunTheme", applyRemoteSunTheme);
 
 export function rememberAppThemeLocation(location: AppThemeLocation): void {
   // Three decimal places is ample for sunrise/sunset while avoiding needless

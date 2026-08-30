@@ -19,6 +19,10 @@
 // memory fallback for browsers where storage throws.
 
 import { useCallback, useSyncExternalStore } from "react";
+import {
+  markComposerSwitchTouched,
+  registerComposerSwitch,
+} from "./composer-switch-preferences.ts";
 
 export const HUMANIZER_STORAGE_KEY = "breadboard:humanizer-mode";
 export const HUMANIZER_CHANGE_EVENT = "breadboard:humanizer-mode-change";
@@ -58,13 +62,8 @@ function subscribe(onStoreChange: () => void): () => void {
 export function useHumanizerMode(): readonly [boolean, (enabled: boolean) => void] {
   const enabled = useSyncExternalStore(subscribe, isHumanizerEnabled, () => DEFAULT_ENABLED);
   const setEnabled = useCallback((next: boolean) => {
-    memoryValue = next;
-    try {
-      window.localStorage.setItem(HUMANIZER_STORAGE_KEY, String(next));
-    } catch {
-      // Kept in memory only; the change event below still updates this tab.
-    }
-    window.dispatchEvent(new Event(HUMANIZER_CHANGE_EVENT));
+    applyHumanizer(next);
+    markComposerSwitchTouched("humanizerAuto");
     // The server needs this too. An artifact and a garden note are written
     // server-side, where there is no localStorage to read, so the switch is
     // mirrored onto the account as a standing preference. Best effort: a failed
@@ -78,3 +77,18 @@ export function useHumanizerMode(): readonly [boolean, (enabled: boolean) => voi
   }, []);
   return [enabled, setEnabled] as const;
 }
+
+function applyHumanizer(next: boolean): void {
+  memoryValue = next;
+  try {
+    window.localStorage.setItem(HUMANIZER_STORAGE_KEY, String(next));
+  } catch {
+    // Kept in memory only; the change event below still updates this tab.
+  }
+  window.dispatchEvent(new Event(HUMANIZER_CHANGE_EVENT));
+}
+
+// The account already carries this preference (see above); on load the
+// browser switch follows it, since its localStorage copy belongs to one origin
+// and the desktop dashboard's origin changes on every launch.
+registerComposerSwitch("humanizerAuto", applyHumanizer);

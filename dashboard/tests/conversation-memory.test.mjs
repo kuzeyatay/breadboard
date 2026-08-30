@@ -765,6 +765,44 @@ test("legacy backfill is repeatable and preserves order without duplicates", () 
   legacy.close();
 });
 
+test("legacy backfill preserves canonical bindings carried by rewritten compatibility rows", () => {
+  const legacy = new Database(":memory:");
+  legacy.pragma("foreign_keys = ON");
+  seedLegacySchema(legacy);
+  legacy.prepare("INSERT INTO users VALUES (1, 'alice', 'alice@example.test', 'x')").run();
+  legacy.prepare("INSERT INTO clusters(id, user_id, name, slug, visibility, chat_accessible) VALUES (10, 1, 'A', 'a', 'private', 0)").run();
+  legacy.prepare("INSERT INTO chat_sessions(id, cluster_id, user_id, title, created_at, updated_at) VALUES (20, 10, 1, 'Old chat', '2025-01-01', '2025-01-02')").run();
+  legacy.prepare("INSERT INTO chat_messages(id, session_id, role, content, order_index, created_at) VALUES (30, 20, 'user', 'first', 0, '2025-01-01')").run();
+  legacy.prepare("INSERT INTO chat_messages(id, session_id, role, content, order_index, created_at) VALUES (31, 20, 'assistant', 'second', 1, '2025-01-01')").run();
+  schema.ensureConversationSchema(legacy);
+
+  const bindings = legacy.prepare(
+    "SELECT role, canonical_message_id FROM chat_messages ORDER BY order_index",
+  ).all();
+  legacy.prepare("DELETE FROM chat_messages WHERE session_id = 20").run();
+  const insert = legacy.prepare(`
+    INSERT INTO chat_messages
+      (id, session_id, role, content, order_index, created_at, canonical_message_id)
+    VALUES (?, 20, ?, ?, ?, '2025-01-01', ?)
+  `);
+  insert.run(40, "user", "first", 0, bindings[0].canonical_message_id);
+  insert.run(41, "assistant", "second", 1, bindings[1].canonical_message_id);
+
+  schema.ensureConversationSchema(legacy);
+  assert.equal(
+    legacy.prepare("SELECT COUNT(*) AS count FROM conversation_messages").get().count,
+    2,
+  );
+  assert.deepEqual(
+    legacy.prepare(
+      "SELECT role, canonical_message_id FROM chat_messages ORDER BY order_index",
+    ).all(),
+    bindings,
+  );
+  assert.equal(legacy.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
+  legacy.close();
+});
+
 function seedLegacySchema(database) {
   database.exec(`
     CREATE TABLE users(id INTEGER PRIMARY KEY, username TEXT, email TEXT, password_hash TEXT);

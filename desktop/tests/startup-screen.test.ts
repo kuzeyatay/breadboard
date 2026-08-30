@@ -57,7 +57,9 @@ test("startup paints in the last dashboard theme before its stylesheet loads", (
   assert.match(css, /--background:\s*#171916/);
   assert.match(css, /--app-background:\s*#0b0c0a/);
   assert.doesNotMatch(css, /#e6f0e6/);
-  assert.match(sceneCss, /:root\[data-theme="dark"\] \.loading-scene::before/);
+  // Keep the wait surface flat: a scene-sized radial light reads as a circular
+  // stain behind the moving field, especially in dark mode.
+  assert.doesNotMatch(sceneCss, /\.loading-scene::before/);
   assert.match(css, /:root\[data-theme="dark"\] \.dissolve-bloom/);
 });
 

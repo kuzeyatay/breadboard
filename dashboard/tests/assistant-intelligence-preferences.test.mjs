@@ -37,6 +37,7 @@ test("a selected intelligence mode becomes the durable user default", () => {
     // "Rewrite naturally" as a standing preference. Off until asked for: it
     // rewrites what Breadboard says.
     humanizerAuto: false,
+    composerSwitches: {},
   });
 
   setHermesUserSettings(1, {
@@ -53,6 +54,7 @@ test("a selected intelligence mode becomes the durable user default", () => {
     autonomyTier: "autonomous",
     // Choosing a model or an effort must not disturb the rewriting preference.
     humanizerAuto: false,
+    composerSwitches: {},
   });
 
   setHermesUserSettings(1, { filesystemMode: "full" });

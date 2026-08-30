@@ -854,6 +854,122 @@ test("versioned generated artifacts preserve evidence and support validated roll
   }
 });
 
+test("retained-workspace recovery reuses an exact published visual without a provider call", async () => {
+  const plan = buildVisualizationPlan({ gardenId: "resume-visual", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = {
+    ...plan.opportunities[0],
+    gardenId: "resume-visual",
+    targetPage: "learning/1/resume-visual.md",
+    targetHeading: "Resume visual",
+  };
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-resume-"));
+  const events = [];
+  let candidateCalls = 0;
+  const candidateProvider = async () => {
+    candidateCalls += 1;
+    return {
+      title: "Coupled state intervention",
+      explanation: "A source-grounded intervention explorer.",
+      sourceCode: validSource,
+      testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { coupled_state_propagation_under_intervention: 4 } }],
+      accessibilityDescription: "A gain slider changes both a numeric output and the plotted response.",
+      pedagogicalClaims: ["The propagated state changes with gain."],
+    };
+  };
+  const common = {
+    client: {},
+    model: "test-model",
+    gardenDir,
+    opportunity,
+    pageMarkdown: "A source-grounded explanation.",
+    availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+    candidateProvider,
+    criticProvider: async () => ({
+      approved: true,
+      checkedAt: new Date().toISOString(),
+      reason: "The visual passes every gate.",
+      requestedChanges: [],
+      scores: { pedagogicalValue: 0.9, sourceFidelity: 0.9, usability: 0.9, accessibility: 0.9 },
+    }),
+    runBrowserTests: false,
+  };
+  try {
+    const published = await createGeneratedVisualization(common);
+    const recovered = await createGeneratedVisualization({
+      ...common,
+      reusePublishedArtifactOnRecovery: true,
+      onEvent: (event) => events.push(event),
+    });
+
+    assert.equal(published.manifest?.version, 1, published.errors.join("; "));
+    assert.equal(recovered.manifest?.version, 1, recovered.errors.join("; "));
+    assert.equal(candidateCalls, 1);
+    assert.equal(events.some(({ type }) => type === "visual_generation_started"), false);
+    const reuseEvent = events.find(({ type }) => type === "visual_resume_artifact_reused");
+    assert.equal(reuseEvent?.data.providerInvocations, 0);
+    assert.equal(reuseEvent?.data.publicationGatesRevalidated, true);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("retained-workspace recovery rejects a tampered published visual and regenerates it", async () => {
+  const plan = buildVisualizationPlan({ gardenId: "resume-tamper", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = {
+    ...plan.opportunities[0],
+    gardenId: "resume-tamper",
+    targetPage: "learning/1/resume-tamper.md",
+    targetHeading: "Resume tamper",
+  };
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-resume-tamper-"));
+  let candidateCalls = 0;
+  const common = {
+    client: {},
+    model: "test-model",
+    gardenDir,
+    opportunity,
+    pageMarkdown: "A source-grounded explanation.",
+    availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+    candidateProvider: async () => {
+      candidateCalls += 1;
+      return {
+        title: "Coupled state intervention",
+        explanation: "A source-grounded intervention explorer.",
+        sourceCode: validSource,
+        testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { coupled_state_propagation_under_intervention: 4 } }],
+        accessibilityDescription: "A gain slider changes both a numeric output and the plotted response.",
+        pedagogicalClaims: ["The propagated state changes with gain."],
+      };
+    },
+    criticProvider: async () => ({
+      approved: true,
+      checkedAt: new Date().toISOString(),
+      reason: "The visual passes every gate.",
+      requestedChanges: [],
+      scores: { pedagogicalValue: 0.9, sourceFidelity: 0.9, usability: 0.9, accessibility: 0.9 },
+    }),
+    runBrowserTests: false,
+  };
+  try {
+    const published = await createGeneratedVisualization(common);
+    assert.equal(published.manifest?.version, 1, published.errors.join("; "));
+    fs.writeFileSync(
+      path.join(gardenDir, ".breadboard", "visuals", opportunity.id, "source.tsx"),
+      `${validSource}\n// tampered\n`,
+      "utf8",
+    );
+
+    const recovered = await createGeneratedVisualization({
+      ...common,
+      reusePublishedArtifactOnRecovery: true,
+    });
+    assert.equal(recovered.manifest?.version, 2, recovered.errors.join("; "));
+    assert.equal(candidateCalls, 2);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
 test("a detailed council rejection repairs with its real feedback before approval", async () => {
   const plan = buildVisualizationPlan({ gardenId: "critic-repair", learningMap: learningMap([unit()]), learningUnits: [unit()] });
   const opportunity = {

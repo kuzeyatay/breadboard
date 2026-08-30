@@ -19,6 +19,8 @@ import type {
 } from "./run-manager.ts";
 import type { MaxResearchParticipant } from "./plan.ts";
 import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
+import { ASSISTANT_REASONING_EFFORTS } from "../assistant-reasoning.ts";
+import { runtimeAvailability as openscienceRuntimeAvailability } from "../openscience/runtime.ts";
 import { prepareService as prepareOpenscienceService } from "../openscience/service-profile.ts";
 
 export type MaxResearchEvent = OuterAgentEvent;
@@ -123,19 +125,47 @@ function summaryFromEvents(
   };
 }
 
+/**
+ * The worker's canonical request allows this many characters of question;
+ * the route truncates to it and the worker refuses anything longer. An
+ * `agent_launch` brief runs to ~3.5k characters, so the old 4k ceiling was
+ * one paragraph away from a crashed worker.
+ */
+export const MAX_RESEARCH_QUESTION_MAX_CHARS = 8_000;
+
 /** Submit one sealed coordinator job; there is deliberately no local fallback. */
 export async function startRun(
   input: Omit<StartRunInput, "runtimeFor" | "synthesize"> & { requestId?: string },
 ): Promise<{ runId: string; status: OuterAgentRunStatus }> {
-  // The coordinator may select OpenScience only after Rust admits the job.
-  // Prepare its private provider profile here, while the authenticated facade
-  // still owns the ChatMock capability; the worker receives only the
-  // Runtime-injected OpenScience loopback endpoint and token.
-  await prepareOpenscienceService({
-    baseUrl: input.baseUrl,
-    apiKey: chatmockApiKeyValue(),
-    model: input.model,
-  });
+  // The worker validates the sealed request at startup and aborts on the first
+  // mismatch, which Runtime reports only as a worker that exited. Refuse here,
+  // with a reason, anything the worker would refuse.
+  if (!(ASSISTANT_REASONING_EFFORTS as readonly string[]).includes(input.reasoningEffort)) {
+    throw new Error(
+      `Max Research cannot run at reasoning effort "${input.reasoningEffort}".`,
+    );
+  }
+  if (input.question.trim().length > MAX_RESEARCH_QUESTION_MAX_CHARS) {
+    throw new Error(
+      `The Max Research question is longer than ${MAX_RESEARCH_QUESTION_MAX_CHARS} characters.`,
+    );
+  }
+  // OpenScience is an optional participant. Seal its locally observed
+  // availability into the request so Registry can decide whether this job
+  // needs the service before admitting the worker. Requiring the service
+  // unconditionally made Max Research fail before Get Doc or ARIS could run on
+  // machines where OpenScience had never been installed.
+  const openscienceEnabled = openscienceRuntimeAvailability().available;
+  if (openscienceEnabled) {
+    // Prepare its private provider profile while the authenticated facade
+    // still owns the ChatMock capability; the worker receives only the
+    // Runtime-injected OpenScience loopback endpoint and token.
+    await prepareOpenscienceService({
+      baseUrl: input.baseUrl,
+      apiKey: chatmockApiKeyValue(),
+      model: input.model,
+    });
+  }
   return startOuterAgentRun({
     kind: "max-research",
     userId: input.userId,
@@ -146,6 +176,7 @@ export async function startRun(
       reasoningEffort: input.reasoningEffort,
       baseUrl: input.baseUrl,
       conversationContext: input.conversationContext ?? "",
+      openscienceEnabled,
     },
   });
 }

@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { artifactMatchesSearch, filterArtifactsForSearch } from "../src/lib/hermes/artifact-search.ts";
+import {
+  artifactMatchesSearch,
+  filterArtifactsForArchive,
+  filterArtifactsForSearch,
+} from "../src/lib/hermes/artifact-search.ts";
 
 function source(relativePath) {
   return fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
@@ -89,7 +93,7 @@ test("Artifacts has one shared search field across Terminal and Garden", () => {
   const panel = source("../src/app/components/hermes/artifact-panel.tsx");
   assert.match(panel, /placeholder="Search artifacts"/);
   assert.match(panel, /aria-label="Search artifacts"/);
-  assert.match(panel, /filterArtifactsForSearch\(artifacts, searchQuery\)/);
+  assert.match(panel, /filterArtifactsForSearch\(archiveArtifacts, searchQuery\)/);
   assert.match(panel, /No artifacts match/);
   assert.match(panel, /Clear artifact search/);
 
@@ -124,6 +128,17 @@ test("Artifacts has one shared search field across Terminal and Garden", () => {
   assert.equal(artifactMatchesSearch(image, "quarterly"), false);
   assert.deepEqual(filterArtifactsForSearch([image, report], "pdf report"), [report]);
   assert.equal(filterArtifactsForSearch([image, report], "").length, 2);
+});
+
+test("the archive hides artifacts until generation finishes", () => {
+  const panel = source("../src/app/components/hermes/artifact-panel.tsx");
+  const ready = { id: "ready", status: "ready" };
+  const generating = { id: "generating", status: "generating" };
+  const failed = { id: "failed", status: "failed" };
+
+  assert.deepEqual(filterArtifactsForArchive([ready, generating, failed]), [ready, failed]);
+  assert.match(panel, /filterArtifactsForArchive\(artifacts\)/);
+  assert.doesNotMatch(panel, />\s*Generating\s*</);
 });
 
 test("the archive carries one menu instead of a control on every row", () => {

@@ -1077,19 +1077,20 @@ export function createStartedLearnCouncilCheckpointAfterLegacyFailure(
   }).immediate();
 }
 
-export function recordLegacyLearnCouncilFailureProof(
-  database: Database.Database,
-  input: {
-    proofId: string;
-    originJobId: string;
-    jobId: string;
-    gardenId: string;
-    stageKey: string;
-    semanticAttempt: number;
-    requestHash: string;
-    proof: LegacyLearnCouncilFailureProof;
-    now: string;
-  },
+interface LegacyLearnCouncilFailureProofInput {
+  proofId: string;
+  originJobId: string;
+  jobId: string;
+  gardenId: string;
+  stageKey: string;
+  semanticAttempt: number;
+  requestHash: string;
+  proof: LegacyLearnCouncilFailureProof;
+  now: string;
+}
+
+function assertLegacyLearnCouncilFailureProofInput(
+  input: LegacyLearnCouncilFailureProofInput,
 ): void {
   assertRequestId(input.proofId, "Legacy Learn Council proof id");
   assertRequestId(input.proof.councilRunId, "Legacy Learn Council run id");
@@ -1111,6 +1112,47 @@ export function recordLegacyLearnCouncilFailureProof(
   ) {
     throw new Error("Legacy Learn Council failure proof is invalid.");
   }
+}
+
+function exactLegacyLearnCouncilFailureProofRow(
+  row: Record<string, unknown>,
+  input: LegacyLearnCouncilFailureProofInput,
+  requireCurrentAuthorization: boolean,
+): boolean {
+  return (
+    row.origin_job_id === input.originJobId &&
+    (!requireCurrentAuthorization || row.authorized_job_id === input.jobId) &&
+    row.garden_id === input.gardenId &&
+    row.stage_key === input.stageKey &&
+    Number(row.semantic_attempt) === input.semanticAttempt &&
+    row.request_hash === input.requestHash &&
+    row.council_run_id === input.proof.councilRunId &&
+    row.outcome === "failed" &&
+    Number(row.final_answer_present) === 0 &&
+    Number(row.candidate_count) === 0 &&
+    row.failure_code === input.proof.failureCode &&
+    row.failure_phase === input.proof.failurePhase &&
+    (row.partial_output === null
+      ? input.proof.partialOutput === null
+      : Boolean(row.partial_output) === input.proof.partialOutput) &&
+    (row.replay_safe === null
+      ? input.proof.replaySafe === null
+      : Boolean(row.replay_safe) === input.proof.replaySafe) &&
+    row.council_mode === input.proof.councilMode &&
+    row.requested_model === input.proof.requestedModel &&
+    row.resolved_model === input.proof.resolvedModel &&
+    Number(row.call_count) === input.proof.callCount &&
+    Number(row.reported_call_count) === input.proof.reportedCallCount &&
+    row.outcome_created_at === input.proof.createdAt &&
+    row.outcome_updated_at === input.proof.updatedAt
+  );
+}
+
+export function recordLegacyLearnCouncilFailureProof(
+  database: Database.Database,
+  input: LegacyLearnCouncilFailureProofInput,
+): void {
+  assertLegacyLearnCouncilFailureProofInput(input);
   const existing = database.prepare(
     `SELECT * FROM learn_council_legacy_failure_proofs
      WHERE (authorized_job_id = ? AND stage_key = ? AND semantic_attempt = ?)
@@ -1128,36 +1170,8 @@ export function recordLegacyLearnCouncilFailureProof(
     input.proof.councilRunId,
   ) as Array<Record<string, unknown>>;
   if (existing.length > 0) {
-    const exact = existing.length === 1 && (() => {
-      const row = existing[0];
-      return (
-        row.origin_job_id === input.originJobId &&
-        row.authorized_job_id === input.jobId &&
-        row.garden_id === input.gardenId &&
-        row.stage_key === input.stageKey &&
-        Number(row.semantic_attempt) === input.semanticAttempt &&
-        row.request_hash === input.requestHash &&
-        row.council_run_id === input.proof.councilRunId &&
-        row.outcome === "failed" &&
-        Number(row.final_answer_present) === 0 &&
-        Number(row.candidate_count) === 0 &&
-        row.failure_code === input.proof.failureCode &&
-        row.failure_phase === input.proof.failurePhase &&
-        (row.partial_output === null
-          ? input.proof.partialOutput === null
-          : Boolean(row.partial_output) === input.proof.partialOutput) &&
-        (row.replay_safe === null
-          ? input.proof.replaySafe === null
-          : Boolean(row.replay_safe) === input.proof.replaySafe) &&
-        row.council_mode === input.proof.councilMode &&
-        row.requested_model === input.proof.requestedModel &&
-        row.resolved_model === input.proof.resolvedModel &&
-        Number(row.call_count) === input.proof.callCount &&
-        Number(row.reported_call_count) === input.proof.reportedCallCount &&
-        row.outcome_created_at === input.proof.createdAt &&
-        row.outcome_updated_at === input.proof.updatedAt
-      );
-    })();
+    const exact = existing.length === 1 &&
+      exactLegacyLearnCouncilFailureProofRow(existing[0], input, true);
     if (exact) return;
     throw new Error("Legacy Learn Council failure proof conflicts with durable evidence.");
   }
@@ -1190,6 +1204,93 @@ export function recordLegacyLearnCouncilFailureProof(
     input.proof.reportedCallCount,
     input.proof.createdAt,
     input.proof.updatedAt,
+    input.now,
+  );
+}
+
+/** Reuse one immutable legacy failure observation across an exact failed-job
+ * retry lineage. The proof itself remains unique to the provider outcome; a
+ * successor gets a fenced adoption row instead of attempting to rewrite it. */
+function recordOrAdoptLegacyLearnCouncilFailureProof(
+  database: Database.Database,
+  input: LegacyLearnCouncilFailureProofInput,
+): void {
+  assertLegacyLearnCouncilFailureProofInput(input);
+  const rows = database.prepare(
+    `SELECT * FROM learn_council_legacy_failure_proofs
+     WHERE origin_job_id = ? AND stage_key = ? AND semantic_attempt = ?
+       AND request_hash = ? AND council_run_id = ?
+     ORDER BY rowid`,
+  ).all(
+    input.originJobId,
+    input.stageKey,
+    input.semanticAttempt,
+    input.requestHash,
+    input.proof.councilRunId,
+  ) as Array<Record<string, unknown>>;
+  if (rows.length === 0) {
+    recordLegacyLearnCouncilFailureProof(database, input);
+    return;
+  }
+  const source = rows[0];
+  if (
+    rows.length !== 1 ||
+    !exactLegacyLearnCouncilFailureProofRow(source, input, false)
+  ) {
+    throw new Error("Legacy Learn Council failure proof conflicts with durable evidence.");
+  }
+  if (source.authorized_job_id === input.jobId) {
+    recordLegacyLearnCouncilFailureProof(database, input);
+    return;
+  }
+  const sourceJobId = String(source.authorized_job_id);
+  const sourceJob = learnCouncilRetryJob(database, sourceJobId);
+  const currentJob = learnCouncilRetryJob(database, input.jobId);
+  if (
+    !sourceJob ||
+    !currentJob ||
+    !exactLearnCouncilRetryJobBinding(sourceJob, currentJob)
+  ) {
+    throw new Error("Legacy Learn Council failure proof has no exact failed-job lineage.");
+  }
+  const existing = database.prepare(
+    `SELECT * FROM learn_council_legacy_boundary_adoptions
+     WHERE (authorized_job_id = ? AND stage_key = ? AND semantic_attempt = ?)
+        OR (proof_id = ? AND authorized_job_id = ?)
+     ORDER BY rowid`,
+  ).all(
+    input.jobId,
+    input.stageKey,
+    input.semanticAttempt,
+    source.proof_id,
+    input.jobId,
+  ) as Array<Record<string, unknown>>;
+  if (existing.length > 0) {
+    const exact = existing.length === 1 &&
+      existing[0].proof_id === source.proof_id &&
+      existing[0].source_job_id === sourceJobId &&
+      existing[0].authorized_job_id === input.jobId &&
+      existing[0].garden_id === input.gardenId &&
+      existing[0].stage_key === input.stageKey &&
+      Number(existing[0].semantic_attempt) === input.semanticAttempt &&
+      existing[0].request_hash === input.requestHash;
+    if (exact) return;
+    throw new Error("Learn Council legacy boundary adoption conflicts.");
+  }
+  database.prepare(
+    `INSERT INTO learn_council_legacy_boundary_adoptions (
+       adoption_id, proof_id, source_job_id, authorized_job_id,
+       garden_id, stage_key, semantic_attempt, request_hash, observed_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.proofId,
+    source.proof_id,
+    sourceJobId,
+    input.jobId,
+    input.gardenId,
+    input.stageKey,
+    input.semanticAttempt,
+    input.requestHash,
     input.now,
   );
 }
@@ -1697,7 +1798,7 @@ export function materializeCompletedLegacyLearnCouncilCheckpointAfterFailure(
   },
 ): LearnCouncilCheckpointRow {
   return database.transaction(() => {
-    recordLegacyLearnCouncilFailureProof(database, {
+    recordOrAdoptLegacyLearnCouncilFailureProof(database, {
       proofId: input.proofId,
       originJobId: input.failureOriginJobId,
       jobId: input.jobId,

@@ -42,6 +42,12 @@ export async function patchAssistantPreferences(
   }
 }
 
+/** Test seam: forget the shared preferences between scenarios. */
+export function resetAssistantPreferencesForTest(): void {
+  preferences = null;
+  preferencesRequest = null;
+}
+
 /** Health is live, but all mounted surfaces can share a result for 15 seconds. */
 export async function loadAssistantModelHealth(): Promise<unknown> {
   if (health !== null && healthExpiresAt > Date.now()) return health;

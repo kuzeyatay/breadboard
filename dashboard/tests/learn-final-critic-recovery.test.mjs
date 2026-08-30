@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  LearnCouncilExpiredStartedReceiptError,
   LearnCouncilTerminalReceiptError,
+  expiredStartedLearnCouncilReceiptProof,
   runBoundedLearnCouncilSemanticAttempts,
 } from "../src/lib/learn-council-semantic-recovery.ts";
 import { createLearnFinalCriticProviders } from "../src/lib/learn-final-critic.ts";
@@ -50,6 +52,77 @@ test("an exact terminal receipt permits one new bounded semantic attempt", async
   assert.deepEqual(contexts.map((context) => context.semanticAttempt), [0, 1]);
   assert.equal(contexts[1].priorTerminalReceipt.requestId, "lrq-terminal-1");
   assert.deepEqual(events.map((event) => event.nextSemanticAttempt), [1]);
+});
+
+test("an expired started receipt with an exact incomplete attempt prefix permits one fresh semantic identity", async () => {
+  const proof = expiredStartedLearnCouncilReceiptProof({
+    requestId: "lrq-generic-orphan-1",
+    requestHash: "b".repeat(64),
+    dispatchGeneration: 1,
+    dispatchCount: 1,
+    redispatchCount: 0,
+    redispatchAllowed: false,
+    attemptCount: 0,
+    checkpointDispatchCount: 1,
+    checkpointRedispatchCount: 0,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    observedAt: "2026-01-01T00:31:01.000Z",
+    maxStartedAgeMs: 31 * 60_000,
+  });
+  assert.equal(proof?.proofKind, "expired_started_receipt");
+
+  const contexts = [];
+  const result = await runBoundedLearnCouncilSemanticAttempts({
+    maxAttempts: 2,
+    request: async (context) => {
+      contexts.push(context);
+      if (context.semanticAttempt === 0) {
+        throw new LearnCouncilExpiredStartedReceiptError(proof);
+      }
+      return "completed";
+    },
+  });
+
+  assert.equal(result, "completed");
+  assert.deepEqual(contexts.map((context) => context.semanticAttempt), [0, 1]);
+  assert.equal(
+    contexts[1].priorTerminalReceipt.failureCode,
+    "council_started_receipt_expired",
+  );
+});
+
+test("a live, mismatched, or partially unaccounted started receipt never authorizes a retry", () => {
+  const base = {
+    requestId: "lrq-generic-orphan-2",
+    requestHash: "c".repeat(64),
+    dispatchGeneration: 1,
+    dispatchCount: 1,
+    redispatchCount: 0,
+    redispatchAllowed: false,
+    attemptCount: 0,
+    checkpointDispatchCount: 1,
+    checkpointRedispatchCount: 0,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    observedAt: "2026-01-01T00:30:59.999Z",
+    maxStartedAgeMs: 31 * 60_000,
+  };
+  assert.equal(expiredStartedLearnCouncilReceiptProof(base), null);
+  assert.equal(
+    expiredStartedLearnCouncilReceiptProof({
+      ...base,
+      observedAt: "2026-01-01T00:31:01.000Z",
+      checkpointDispatchCount: 2,
+    }),
+    null,
+  );
+  assert.equal(
+    expiredStartedLearnCouncilReceiptProof({
+      ...base,
+      observedAt: "2026-01-01T00:31:01.000Z",
+      attemptCount: 1,
+    }),
+    null,
+  );
 });
 
 test("ambiguous and arbitrary HTTP failures remain single-shot by exact identity", async () => {

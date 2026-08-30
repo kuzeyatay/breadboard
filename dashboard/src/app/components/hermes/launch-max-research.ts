@@ -54,14 +54,22 @@ export async function launchMaxResearchTurn(input: {
 
   let runStarted = false;
   try {
-    await session.ensureConversation(clientMessageId);
+    const conversationId = await session.ensureConversation(clientMessageId);
     const response = await fetch("/api/max-research/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
+      // The server records the run and its chat turn atomically. Keep the one
+      // request alive if the person leaves immediately; no later browser
+      // callback is required for the run to remain visible on return.
+      keepalive: true,
       body: JSON.stringify({
         question,
         model: input.model,
         reasoningEffort: input.reasoningEffort,
+        conversationId,
+        clientMessageId,
+        userContent,
+        ...(input.branchGroupId ? { branchGroupId: input.branchGroupId } : {}),
       }),
     });
     const data = (await response.json().catch(() => ({}))) as {

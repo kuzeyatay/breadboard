@@ -604,11 +604,122 @@ export function reserveConversationTurn(input: {
     const userMessage = getConversationMessageById(Number(userResult.lastInsertRowid), database)!;
     const assistantMessage = getConversationMessageById(Number(assistantResult.lastInsertRowid), database)!;
     dualWriteUserMessage(current, userMessage, database);
+    // Garden Chat still has two readers while the canonical migration is in
+    // flight. Persist the empty answer beside the user row in the legacy
+    // transcript in the same transaction, otherwise a dashboard crash during
+    // pre-dispatch preparation leaves that reader with a question and no turn
+    // to recover or fail.
+    dualWriteAssistantMessage(current, assistantMessage, database);
     return {
       conversation: getConversationById(current.id, database)!,
       userMessage,
       assistantMessage,
       isNew: true,
+    };
+  });
+  return reserve.immediate();
+}
+
+/**
+ * Complete the canonical half of a Garden workspace turn that was checkpointed
+ * through the legacy chat-session API before the Hermes request began.
+ *
+ * That API has already dual-written the user row, so calling
+ * `reserveConversationTurn` would correctly reject the half-existing turn.
+ * Garden's compatibility adapter still needs the adjacent pending assistant
+ * row, though: the detached recovery pump uses it to finish the answer after a
+ * Next.js reload. Keeping this repair narrow avoids making arbitrary incomplete
+ * canonical turns silently recoverable.
+ */
+export function reserveLegacyGardenAssistantTurn(input: {
+  conversation: ConversationRow;
+  chatSessionId: number;
+  content: string;
+}, database: Database.Database = db): {
+  clientMessageId: string;
+  assistantMessage: ConversationMessageRow;
+} {
+  const content = normalizeMessageContent(input.content);
+  const reserve = database.transaction(() => {
+    const user = database.prepare(`
+      SELECT canonical.*
+      FROM chat_messages legacy
+      JOIN conversation_messages canonical
+        ON canonical.id = legacy.canonical_message_id
+      WHERE legacy.session_id = ?
+        AND legacy.role = 'user'
+        AND canonical.conversation_id = ?
+        AND canonical.role = 'user'
+      ORDER BY legacy.order_index DESC, legacy.id DESC
+      LIMIT 1
+    `).get(
+      input.chatSessionId,
+      input.conversation.id,
+    ) as ConversationMessageRow | undefined;
+    if (!user || user.content !== content) {
+      throw new ConversationStoreError(
+        409,
+        "legacy_turn_not_checkpointed",
+        "The Garden message checkpoint was not found.",
+      );
+    }
+
+    const existing = getMessageByClientRole(
+      input.conversation.id,
+      user.client_message_id,
+      "assistant",
+      database,
+    );
+    if (existing) {
+      dualWriteAssistantMessage(input.conversation, existing, database);
+      return {
+        clientMessageId: user.client_message_id,
+        assistantMessage: existing,
+      };
+    }
+
+    const conversation = getConversationById(input.conversation.id, database);
+    if (!conversation || user.order_index !== conversation.next_order_index - 1) {
+      throw new ConversationStoreError(
+        409,
+        "legacy_turn_not_latest",
+        "The Garden message is no longer the latest conversation turn.",
+      );
+    }
+    const result = database.prepare(`
+      INSERT INTO conversation_messages
+        (conversation_id, client_message_id, role, surface, content, status,
+         order_index, metadata)
+      VALUES (?, ?, 'assistant', 'garden_chat', '', 'pending', ?, ?)
+    `).run(
+      conversation.id,
+      user.client_message_id,
+      conversation.next_order_index,
+      JSON.stringify({
+        legacyGardenAdapter: true,
+        gardenPreDispatch: true,
+      }),
+    );
+    database.prepare(`
+      UPDATE conversations
+      SET next_order_index = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(conversation.next_order_index + 1, conversation.id);
+    const assistantMessage = getConversationMessageById(
+      Number(result.lastInsertRowid),
+      database,
+    );
+    if (!assistantMessage) {
+      throw new ConversationStoreError(
+        500,
+        "legacy_turn_reservation_failed",
+        "The Garden answer checkpoint could not be created.",
+      );
+    }
+    dualWriteAssistantMessage(conversation, assistantMessage, database);
+    return {
+      clientMessageId: user.client_message_id,
+      assistantMessage,
     };
   });
   return reserve.immediate();
@@ -657,18 +768,93 @@ export function retryAssistantMessage(
   conversationId: number,
   clientMessageId: string,
   database: Database.Database = db,
+  metadata: Record<string, unknown> = {},
 ): ConversationMessageRow {
+  const serializedMetadata = Object.keys(metadata).length
+    ? JSON.stringify(metadata)
+    : null;
   const result = database.prepare(`
     UPDATE conversation_messages
-    SET status = 'pending', content = '', metadata = NULL, sources = NULL,
+    SET status = 'pending', content = '', metadata = ?, sources = NULL,
         token_usage = NULL, updated_at = datetime('now')
     WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'
       AND status IN ('failed','aborted')
-  `).run(conversationId, normalizeClientMessageId(clientMessageId));
+  `).run(
+    serializedMetadata,
+    conversationId,
+    normalizeClientMessageId(clientMessageId),
+  );
   if (result.changes !== 1) {
     throw new ConversationStoreError(409, "turn_not_retryable", "The conversation turn cannot be retried.");
   }
-  return getMessageByClientRole(conversationId, clientMessageId, "assistant", database)!;
+  const pending = getMessageByClientRole(
+    conversationId,
+    clientMessageId,
+    "assistant",
+    database,
+  )!;
+  const conversation = getConversationById(conversationId, database);
+  if (conversation) dualWriteAssistantMessage(conversation, pending, database);
+  return pending;
+}
+
+/**
+ * Close pre-dispatch Garden turns whose owner disappeared before it could
+ * create a runtime run. The adapter refreshes `updated_at` while it prepares;
+ * an active run is protected by its own durable heartbeat/recovery path.
+ */
+export function failStaleGardenPreDispatchTurns(input: {
+  chatSessionIds: number[];
+  staleBefore: string;
+}, database: Database.Database = db): number {
+  const ids = [...new Set(input.chatSessionIds)].filter(
+    (id) => Number.isSafeInteger(id) && id > 0,
+  );
+  if (ids.length === 0 || !Number.isFinite(Date.parse(input.staleBefore))) {
+    return 0;
+  }
+  const placeholders = ids.map(() => "?").join(",");
+  const candidates = database.prepare(`
+    SELECT message.*, conversation.id AS owner_conversation_id
+    FROM conversation_messages message
+    JOIN conversations conversation
+      ON conversation.id = message.conversation_id
+    WHERE conversation.legacy_chat_session_id IN (${placeholders})
+      AND message.role = 'assistant'
+      AND message.status = 'pending'
+      AND julianday(message.updated_at) < julianday(?)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM hermes_runs run
+        JOIN hermes_runtime_sessions session
+          ON session.id = run.runtime_session_id
+        WHERE session.conversation_id = conversation.id
+          AND run.status = 'active'
+      )
+  `).all(...ids, input.staleBefore) as Array<
+    ConversationMessageRow & { owner_conversation_id: number }
+  >;
+
+  let failed = 0;
+  for (const candidate of candidates) {
+    const metadata = parseObject(candidate.metadata);
+    if (metadata.gardenPreDispatch !== true) continue;
+    try {
+      failAssistantMessage({
+        conversationId: candidate.owner_conversation_id,
+        clientMessageId: candidate.client_message_id,
+        status: "failed",
+        content:
+          "This response was interrupted before it could finish. Please try again.",
+        error: "garden_dispatch_interrupted",
+        metadata: { runtimeStatus: "failed" },
+      }, database);
+      failed += 1;
+    } catch {
+      // Another request or the runtime pump may have finalized it first.
+    }
+  }
+  return failed;
 }
 
 /** Insert a visible course-correction immediately before the pending answer. */
@@ -869,6 +1055,18 @@ function finishAssistantMessage(input: {
     // out of what Breadboard says without asking each pipeline to remember.
     // Only invisible characters are removed; the wording is untouched.
     const content = scrubbed(input.content);
+    if (
+      mergedMetadata.delegatedAgentRun === true &&
+      !(typeof mergedMetadata.delegatedAgentPreamble === "string" &&
+        mergedMetadata.delegatedAgentPreamble.trim()) &&
+      content.trim()
+    ) {
+      // A server-owned delegation can attach while the assistant placeholder
+      // is still pending. Capture the hand-off once the model's text is known,
+      // so a reload shows that immediate status while keeping the worker card
+      // private.
+      mergedMetadata.delegatedAgentPreamble = content;
+    }
     database.prepare(`
       UPDATE conversation_messages
       SET content = ?, status = ?, metadata = ?, sources = ?, token_usage = ?,
@@ -884,7 +1082,10 @@ function finishAssistantMessage(input: {
     );
     const completed = getConversationMessageById(row.id, database)!;
     const conversation = getConversationById(input.conversationId, database)!;
-    if (input.status === "complete") dualWriteAssistantMessage(conversation, completed, database);
+    // Failed and aborted answers are transcript state too. Keeping only
+    // successful answers in the legacy Garden store is what made a restored
+    // chat look as though its assistant message had been deleted.
+    dualWriteAssistantMessage(conversation, completed, database);
     return completed;
   });
   return finish.immediate();
@@ -1004,14 +1205,41 @@ function dualWriteAssistantMessage(
   database: Database.Database,
 ): void {
   if (conversation.legacy_chat_session_id === null) return;
+  const metadata = parseObject(message.metadata);
+  const runtimeError =
+    typeof metadata.runtimeError === "string"
+      ? metadata.runtimeError
+      : typeof metadata.error === "string"
+        ? metadata.error
+        : null;
+  const updated = database.prepare(`
+    UPDATE chat_messages
+    SET content = ?, sources = ?, token_usage = ?, runtime_status = ?,
+        runtime_error = ?, tool_calls = ?
+    WHERE session_id = ? AND canonical_message_id = ? AND role = 'assistant'
+  `).run(
+    message.content,
+    message.sources,
+    message.token_usage,
+    message.status,
+    runtimeError,
+    message.metadata,
+    conversation.legacy_chat_session_id,
+    message.id,
+  );
+  if (updated.changes > 0) {
+    database.prepare("UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?")
+      .run(conversation.legacy_chat_session_id);
+    return;
+  }
   const order = database.prepare(`
     SELECT COALESCE(MAX(order_index) + 1, 0) AS value FROM chat_messages WHERE session_id = ?
   `).get(conversation.legacy_chat_session_id) as { value: number };
   database.prepare(`
     INSERT OR IGNORE INTO chat_messages
       (session_id, role, content, sources, token_usage, order_index,
-       canonical_message_id, runtime_status, tool_calls)
-    VALUES (?, 'assistant', ?, ?, ?, ?, ?, 'complete', ?)
+       canonical_message_id, runtime_status, runtime_error, tool_calls)
+    VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     conversation.legacy_chat_session_id,
     message.content,
@@ -1019,6 +1247,8 @@ function dualWriteAssistantMessage(
     message.token_usage,
     order.value,
     message.id,
+    message.status,
+    runtimeError,
     message.metadata,
   );
   database.prepare("UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?")

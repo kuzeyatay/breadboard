@@ -17,6 +17,7 @@ import {
 } from "@/lib/conversations/external-agent-runs";
 import {
   ensureConversationForLegacyChatSession,
+  failStaleGardenPreDispatchTurns,
   summarizeConversationMessages,
 } from "@/lib/conversations/store";
 import { isChatHighlight } from "@/lib/conversations/highlights";
@@ -66,7 +67,73 @@ interface ChatMessageRow {
   sources: string | null;
   token_usage: string | null;
   tool_calls: string | null;
+  runtime_status: string | null;
+  runtime_error: string | null;
   created_at: string;
+}
+
+interface LatestAssistantVersionRow {
+  session_id: number;
+  content_length: number;
+  tool_calls_length: number;
+  runtime_status: string | null;
+  has_runtime_error: number;
+  created_at: string;
+  order_index: number;
+}
+
+const GARDEN_PRE_DISPATCH_STALE_MS = 45_000;
+
+/**
+ * A small completion cursor for each Garden transcript. The summary rail can
+ * compare it without downloading assistant responses every time it polls.
+ */
+function readLatestAssistantVersions(
+  sessionIds: readonly number[],
+): ReadonlyMap<number, string> {
+  if (sessionIds.length === 0) return new Map();
+  const placeholders = sessionIds.map(() => "?").join(",");
+  const rows = db.prepare(`
+    SELECT session_id, content_length, tool_calls_length, runtime_status,
+           has_runtime_error,
+           created_at, order_index
+    FROM (
+      SELECT session_id, LENGTH(content) AS content_length,
+             LENGTH(COALESCE(tool_calls, '')) AS tool_calls_length,
+             runtime_status,
+             CASE WHEN runtime_error IS NULL THEN 0 ELSE 1 END AS has_runtime_error,
+             created_at, order_index,
+             ROW_NUMBER() OVER (
+               PARTITION BY session_id ORDER BY order_index DESC
+             ) AS response_rank
+      FROM chat_messages
+      WHERE session_id IN (${placeholders})
+        AND role = 'assistant'
+        AND TRIM(content) <> ''
+    )
+    WHERE response_rank = 1
+  `).all(...sessionIds) as LatestAssistantVersionRow[];
+
+  return new Map(rows.map((row) => [
+    row.session_id,
+    [
+      row.created_at,
+      row.order_index,
+      row.content_length,
+      row.tool_calls_length,
+      row.runtime_status ?? "",
+      row.has_runtime_error,
+    ].join(":"),
+  ]));
+}
+
+function reconcilePreDispatchTurns(chatSessionIds: number[]): void {
+  failStaleGardenPreDispatchTurns({
+    chatSessionIds,
+    staleBefore: new Date(
+      Date.now() - GARDEN_PRE_DISPATCH_STALE_MS,
+    ).toISOString(),
+  });
 }
 
 function cleanTitle(value: unknown): string {
@@ -333,9 +400,11 @@ function readSessions(
 
   const ids = rows.map((row) => row.id);
   const placeholders = ids.map(() => "?").join(",");
+  reconcilePreDispatchTurns(ids);
   const messages = db
     .prepare(
-      `SELECT session_id, canonical_message_id, role, content, sources, token_usage, tool_calls, created_at
+      `SELECT session_id, canonical_message_id, role, content, sources, token_usage,
+              tool_calls, runtime_status, runtime_error, created_at
        FROM chat_messages
        WHERE session_id IN (${placeholders})
        ORDER BY session_id, order_index`,
@@ -390,17 +459,26 @@ function readSessions(
         .all(...ids) as Array<{ chat_session_id: number }>
     ).map((row) => row.chat_session_id),
   );
+  for (const pending of db.prepare(`
+    SELECT DISTINCT session_id AS chat_session_id
+    FROM chat_messages
+    WHERE runtime_status = 'pending' AND session_id IN (${placeholders})
+  `).all(...ids) as Array<{ chat_session_id: number }>) {
+    running.add(pending.chat_session_id);
+  }
   const externalActivity = summarizeConversationMessages(
     rows
       .map((row) => row.conversation_id)
       .filter((id): id is number => id !== null && id !== undefined),
   );
+  const latestAssistantVersions = readLatestAssistantVersions(ids);
 
   return rows.map((row) => ({
     ...row,
     ownerUsername: row.owner_username ?? undefined,
     isOwn: row.user_id === currentUserId,
     messages: bySession.get(row.id) ?? [],
+    latestAssistantVersion: latestAssistantVersions.get(row.id) ?? null,
     active:
       running.has(row.id) ||
       (row.conversation_id !== null &&
@@ -457,6 +535,7 @@ function readSessionSummaries(
   // still-running external-agent turn in the canonical transcript.
   const ids = rows.map((row) => row.id);
   const placeholders = ids.map(() => "?").join(",");
+  reconcilePreDispatchTurns(ids);
   const running = new Set(
     (
       db
@@ -469,11 +548,19 @@ function readSessionSummaries(
         .all(...ids) as Array<{ chat_session_id: number }>
     ).map((row) => row.chat_session_id),
   );
+  for (const pending of db.prepare(`
+    SELECT DISTINCT session_id AS chat_session_id
+    FROM chat_messages
+    WHERE runtime_status = 'pending' AND session_id IN (${placeholders})
+  `).all(...ids) as Array<{ chat_session_id: number }>) {
+    running.add(pending.chat_session_id);
+  }
   const externalActivity = summarizeConversationMessages(
     rows
       .map((row) => row.conversation_row_id)
       .filter((id): id is number => id !== null),
   );
+  const latestAssistantVersions = readLatestAssistantVersions(ids);
 
   return rows.map((row) => ({
     id: row.id,
@@ -487,6 +574,7 @@ function readSessionSummaries(
     // An unknown slug (an older palette, a hand-edited row) presents as no
     // highlight rather than as a color the rail cannot paint.
     highlight: isChatHighlight(row.highlight) ? row.highlight : null,
+    latestAssistantVersion: latestAssistantVersions.get(row.id) ?? null,
     active:
       running.has(row.id) ||
       (row.conversation_row_id !== null &&

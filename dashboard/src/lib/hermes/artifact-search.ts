@@ -1,5 +1,12 @@
 import type { PresentedArtifact } from "./artifact-types.ts";
 
+/** In-progress work belongs in the chat that started it, not in the archive. */
+export function filterArtifactsForArchive(
+  artifacts: PresentedArtifact[],
+): PresentedArtifact[] {
+  return artifacts.filter((artifact) => artifact.status !== "generating");
+}
+
 /**
  * Match the useful, human-facing identity of an artifact without indexing its
  * potentially large generated contents in the browser.
@@ -20,12 +27,14 @@ export function artifactMatchesSearch(
     )
     .slice(0, 20);
   const haystack = [
+    artifact.id,
     artifact.title,
     artifact.filename,
     artifact.kind,
     artifact.renderer,
     artifact.mimeType,
     artifact.status,
+    artifact.version,
     artifact.sourceSkill,
     artifact.sourceMcpServer,
     artifact.sourceMcpTool,

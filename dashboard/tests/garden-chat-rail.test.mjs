@@ -16,6 +16,7 @@ const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
 const workspace = source("../src/app/gardens/[clusterSlug]/workspace-client.tsx");
+const dashboardTerminal = source("../src/app/components/hermes/dashboard-agent-terminal.tsx");
 const sidebar = source("../src/app/components/hermes/terminal-sidebar.tsx");
 const uploadsPanel = source("../src/app/components/hermes/uploads-panel.tsx");
 const hooksPanel = source("../src/app/components/hermes/hooks-panel.tsx");
@@ -59,10 +60,10 @@ test("the Garden workspace mounts the Terminal's own rail, not a list of its own
   assert.doesNotMatch(workspace, /leftSidebarWidth/);
 });
 
-test("the garden rail keeps its green surface; the Terminal's stays paper", () => {
+test("the garden and Terminal rails keep their green surface", () => {
   // The shared rail class paints a green-tinted gradient and is unlayered CSS.
-  // The Terminal overrides it so the rail reads as one sheet with the dock; a
-  // garden's sidebar has always been the green frame around the page.
+  // Both first-party navigation rails opt into that surface explicitly; paper
+  // remains available to embedded callers that should merge into their page.
   assert.match(sidebar, /surface\?: "paper" \| "tinted"/);
   assert.match(sidebar, /surface = "paper"/);
   assert.match(
@@ -70,6 +71,7 @@ test("the garden rail keeps its green surface; the Terminal's stays paper", () =
     /\.\.\.\(surface === "paper" \? \{ background: "var\(--paper-surface\)" \} : null\)/,
   );
   assert.match(workspace, /surface="tinted"/);
+  assert.match(dashboardTerminal, /<TerminalSidebar[\s\S]{0,120}?surface="tinted"/);
 });
 
 test("the rail's panel buttons are the Terminal's, minus the artifact archive", () => {

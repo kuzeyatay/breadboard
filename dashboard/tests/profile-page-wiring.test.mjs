@@ -13,6 +13,8 @@ const navbar = read("src/app/components/navbar.tsx");
 const workTimer = read("src/app/components/work-timer-shortcut.tsx");
 const page = read("src/app/profile/page.tsx");
 const client = read("src/app/profile/profile-client.tsx");
+const rootLayout = read("src/app/layout.tsx");
+const locationAutoRefresh = read("src/app/components/current-location-autorefresh.tsx");
 const navHistory = read("src/lib/nav-history.ts");
 const invitesRoute = read("src/app/api/invites/route.ts");
 const shortcutsRoute = read("src/app/api/profile/navbar-shortcuts/route.ts");
@@ -140,6 +142,24 @@ test("the profile exposes current-location availability without folding it into 
     "the existing theme control remains separate from answer-location consent",
   );
   assert.match(client, /writeStoredCurrentLocationPreference\([\s\S]*?useForAnswers/);
+});
+
+test("an enabled current location is refreshed once when Breadboard initializes", () => {
+  assert.match(rootLayout, /<CurrentLocationAutoRefresh \/>/);
+  assert.match(locationAutoRefresh, /getStoredCurrentLocationPreference\(window\.localStorage\)/);
+  assert.match(
+    locationAutoRefresh,
+    /if \(!preference\.useForAnswers\) return false;/,
+    "startup never opts somebody into location use",
+  );
+  assert.match(locationAutoRefresh, /requestCurrentLocationFix\(\{ maxAgeMs: 0 \}\)/);
+  assert.match(locationAutoRefresh, /writeStoredCurrentLocationPreference\([\s\S]*?useForAnswers: true/);
+  assert.match(locationAutoRefresh, /announceCurrentLocationChange\(\)/);
+  assert.match(
+    locationAutoRefresh,
+    /initializationRefresh \?\?= refreshCurrentLocationAtInitialization\(\)/,
+    "React remount checks cannot duplicate the initialization request",
+  );
 });
 
 test("a shell whose browser cannot locate falls back to the operating system", () => {

@@ -11,6 +11,7 @@ import {
   type SourceArtifactAssignment,
   type SourceFigureContract,
   type SourceFormulaContract,
+  type SourceQuestionContract,
   type SourceTableContract,
   type ZettelNote,
 } from "./learning-unit-contract.ts";
@@ -293,6 +294,7 @@ export interface LearningSubsectionPlan {
   sourceFigureContracts?: SourceFigureContract[];
   sourceFormulaContracts?: SourceFormulaContract[];
   sourceTableContracts?: SourceTableContract[];
+  sourceQuestionContracts?: SourceQuestionContract[];
   sourceArtifactAssignments?: SourceArtifactAssignment[];
   interactiveVisualContract?: InteractiveVisualContract;
   interactiveVisualPlan?: ContractInteractiveVisualPlan;

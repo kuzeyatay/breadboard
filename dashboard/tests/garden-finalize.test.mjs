@@ -102,6 +102,71 @@ describe("source wikilink normalization (C)", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("active Learn records deterministic source normalization instead of reporting a source edit", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-links-receipt-"));
+    try {
+      const dir = path.join(root, "generic-garden");
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "sources", "generic-source.md"),
+        [
+          "---",
+          'title: "Generic Source"',
+          'description: "Generic fixture"',
+          'date: "2026-01-02T03:04:05.000Z"',
+          'source_file: "generic.pdf"',
+          'knowledge_type: "source-document"',
+          'breadboardType: "source_document"',
+          "---",
+          "",
+          "## Textbook coverage",
+          "",
+          "- [[deleted-generated-topic|Visible label]]",
+          "",
+          "## Source material",
+          "",
+          "Stable source prose.",
+          "",
+        ].join("\n"),
+      );
+
+      finalizeGardenExport({
+        gardenDir: dir,
+        gardenSlug: "generic-garden",
+        preserveModelAuthoredContent: true,
+        expectedSourceFormulaReviewContext: {
+          reviewSetHash: "1".repeat(64),
+          combinedSourceSetHash: "2".repeat(64),
+          sourceArtifactInventoryHash: "3".repeat(64),
+          syllabusCoverageEvidenceRecoveryHash: "",
+          formulaIds: [],
+          sourceIds: ["generic-source"],
+          sourceIdentityMap: [
+            { sourceId: "generic-source", sourceIndex: 1 },
+          ],
+          topologyReviewPageReceipts: [],
+          model: "generic-model",
+        },
+      });
+
+      const receipt = JSON.parse(
+        fs.readFileSync(
+          path.join(dir, ".breadboard", "source-normalization-receipt.json"),
+          "utf8",
+        ),
+      );
+      assert.equal(receipt.kind, "learn_source_normalization_receipt");
+      assert.equal(receipt.expectedCombinedSourceSetHash, "2".repeat(64));
+      assert.notEqual(receipt.before[0].bodyHash, receipt.after[0].bodyHash);
+      assert.match(
+        fs.readFileSync(path.join(dir, "sources", "generic-source.md"), "utf8"),
+        /- Visible label/,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

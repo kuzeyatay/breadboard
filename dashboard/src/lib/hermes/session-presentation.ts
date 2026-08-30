@@ -32,6 +32,43 @@ import {
 import { hardwareBlueprintRunCardState } from "../hardware/run-card-state.ts";
 import type { HardwareDesign } from "../hardware/types.ts";
 
+// Creating a brand-new conversation and dispatching its first turn are two
+// requests. The durable placeholder between them is stored as aborted so a
+// process crash cannot leave the conversation permanently busy, but a viewer
+// can legitimately reopen the chat while the original request is still doing
+// title/runtime setup. During that bounded hand-off window it is working, not
+// interrupted. Five minutes is deliberately much longer than a cold runtime
+// start while still converging to the recoverable Retry state after a crash.
+const PRE_DISPATCH_RESTORE_WINDOW_MS = 5 * 60 * 1_000;
+
+function sqliteTimestampMs(value: string): number {
+  return Date.parse(
+    value.includes("T") ? value : `${value.replace(" ", "T")}Z`,
+  );
+}
+
+function isRecoveringPreDispatchTurn(input: {
+  status: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  responseStartedAt?: string;
+  nowMs?: number;
+}): boolean {
+  if (
+    input.status !== "aborted" ||
+    input.metadata.preDispatchReserved !== true ||
+    input.metadata.error !== "turn_dispatch_pending"
+  ) {
+    return false;
+  }
+  const startedAtMs = input.responseStartedAt
+    ? Date.parse(input.responseStartedAt)
+    : sqliteTimestampMs(input.createdAt);
+  if (!Number.isFinite(startedAtMs)) return false;
+  const elapsedMs = (input.nowMs ?? Date.now()) - startedAtMs;
+  return elapsedMs >= -60_000 && elapsedMs <= PRE_DISPATCH_RESTORE_WINDOW_MS;
+}
+
 interface RecoverableHardwareCardSource {
   design?: HardwareDesign;
   enclosureTitle?: string;
@@ -140,6 +177,19 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     const calls = Array.isArray(metadata.toolCalls)
       ? metadata.toolCalls as Array<Record<string, unknown>>
       : [];
+    const responseStartedAt =
+      typeof metadata.responseStartedAt === "string" &&
+      Number.isFinite(Date.parse(metadata.responseStartedAt))
+        ? metadata.responseStartedAt
+        : undefined;
+    const recoveringPreDispatch = isRecoveringPreDispatchTurn({
+      status: presented.status,
+      metadata,
+      createdAt: presented.createdAt,
+      responseStartedAt,
+    });
+    const messagePending =
+      presented.status === "pending" || recoveringPreDispatch;
     const metadataDuration = Number(metadata.responseDurationMs);
     const timestampDuration = Math.max(
       0,
@@ -147,17 +197,12 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     );
     const responseDurationMs = Number.isFinite(metadataDuration) && metadataDuration >= 0
       ? metadataDuration
-      : presented.status !== "pending" && Number.isFinite(timestampDuration)
+      : !messagePending && Number.isFinite(timestampDuration)
         ? timestampDuration
         : undefined;
     const textSelection = normalizeChatTextSelectionReference(
       metadata.textSelection,
     );
-    const responseStartedAt =
-      typeof metadata.responseStartedAt === "string" &&
-      Number.isFinite(Date.parse(metadata.responseStartedAt))
-        ? metadata.responseStartedAt
-        : undefined;
     const normalizeModelChangeLabel = (value: unknown) =>
       typeof value === "string"
         ? value
@@ -252,9 +297,9 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
           }
         : {}),
       proposal: metadata.proposal,
-      pending: presented.status === "pending",
+      pending: messagePending,
       failed: presented.status === "failed",
-      interrupted: presented.status === "aborted",
+      interrupted: presented.status === "aborted" && !recoveringPreDispatch,
       // A turn that paused for permission before dispatch is only actionable
       // while its approval card is on screen — client state that navigation
       // throws away. Surfacing the persisted request lets the transcript

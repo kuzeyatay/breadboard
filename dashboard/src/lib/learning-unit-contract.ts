@@ -54,6 +54,11 @@ import type {
   VisualNecessityDecision,
 } from "./visual-necessity-types.ts";
 import type { VisualizationInteractionGoal } from "./visualization-registry.ts";
+import {
+  SOURCE_QUESTION_PLACEMENTS,
+  type SourceQuestionContract,
+} from "./learn-source-questions.ts";
+export type { SourceQuestionContract } from "./learn-source-questions.ts";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -155,6 +160,7 @@ export interface LearningUnitContract {
   sourceFigures: SourceFigureContract[];
   sourceFormulas: SourceFormulaContract[];
   sourceTables: SourceTableContract[];
+  sourceQuestions: SourceQuestionContract[];
 
   interactiveVisual?: InteractiveVisualContract;
   /** Necessity is decided before renderer/type routing. Only `required` is a hard blocker. */
@@ -1578,6 +1584,21 @@ function normalizeInteractivePedagogyContract(
   };
 }
 
+function normalizeSourceQuestion(raw: unknown): SourceQuestionContract | null {
+  const question = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const id = compact(question.id ?? question.questionId);
+  if (!id) return null;
+  const rawPlacement = compact(question.placement).toLowerCase().replace(/[\s-]+/g, "_");
+  const placement = (SOURCE_QUESTION_PLACEMENTS as readonly string[]).includes(rawPlacement)
+    ? rawPlacement as SourceQuestionContract["placement"]
+    : "guided_practice";
+  return {
+    id,
+    placement,
+    teachingGoal: compact(question.teachingGoal ?? question.goal),
+  };
+}
+
 function normalizedScore(value: unknown, modelAuthoredOnly = false): number {
   const numeric = Number(value);
   if (modelAuthoredOnly) {
@@ -1933,6 +1954,15 @@ export function modelAuthoredLearningUnitParseProblems(raw: unknown): string[] {
         problems.push(`${tableAt}.placement must be an exact source-table placement enum`);
       }
     });
+    if (unit.sourceQuestions !== undefined) {
+      requireObjectArray(unit, "sourceQuestions", at, (question, questionAt) => {
+        requireString(question, "id", questionAt);
+        if (!(SOURCE_QUESTION_PLACEMENTS as readonly unknown[]).includes(question.placement)) {
+          problems.push(`${questionAt}.placement must be an exact source-question placement enum`);
+        }
+        requireString(question, "teachingGoal", questionAt);
+      });
+    }
     requireObjectArray(unit, "zettelNotes", at, (note, noteAt) => {
       requireString(note, "handle", noteAt);
       if (typeof note.handle === "string" && atomicZettelHandle(note.handle) !== note.handle) {
@@ -2125,6 +2155,7 @@ export function normalizeLearningUnits(
       sourceFigures: asArray(record.sourceFigures).map(normalizeFigure).filter(Boolean) as SourceFigureContract[],
       sourceFormulas: asArray(record.sourceFormulas).map(normalizeFormula).filter(Boolean) as SourceFormulaContract[],
       sourceTables: asArray(record.sourceTables).map(normalizeTable).filter(Boolean) as SourceTableContract[],
+      sourceQuestions: asArray(record.sourceQuestions).map(normalizeSourceQuestion).filter(Boolean) as SourceQuestionContract[],
       interactiveVisual,
       interactiveVisualPlan: normalizeContractInteractiveVisualPlan(
         record.interactiveVisualPlan,
@@ -2705,6 +2736,7 @@ function subsectionFromUnit(unit: LearningUnitContract): LearningSubsectionPlan 
     sourceFigureContracts: unit.sourceFigures,
     sourceFormulaContracts: unit.sourceFormulas,
     sourceTableContracts: unit.sourceTables,
+    sourceQuestionContracts: unit.sourceQuestions,
     sourceArtifactAssignments: projectModelAuthoredSourceArtifactAssignments([unit]),
     interactiveVisualContract: unit.interactiveVisual,
     interactiveVisualPlan: unit.interactiveVisualPlan,
@@ -2734,6 +2766,7 @@ function pseudoUnitForTitle(title: string, role: string): LearningUnitContract {
     sourceFigures: [],
     sourceFormulas: [],
     sourceTables: [],
+    sourceQuestions: [],
     zettelNotes: [],
     mustNotRepeat: [],
     expectedWordRange: [0, 0],

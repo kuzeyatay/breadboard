@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   currentLearnElapsedMs,
   learnTimerRunsForStatus,
+  monotonicLearnProgress,
   transitionLearnTimer,
 } from "../src/lib/learn-timer.ts";
 import { LEARN_STATUSES } from "../src/lib/learn-utils.ts";
@@ -86,6 +87,25 @@ test("paused is a Learn status whose stopwatch is stopped", () => {
     elapsedMs: 180_000,
     startedAt: "2026-08-16T11:03:00.000Z",
   });
+});
+
+test("Learn progress is a bounded durable high-water mark", () => {
+  assert.equal(monotonicLearnProgress(96, 2), 96);
+  assert.equal(monotonicLearnProgress(96, 99), 99);
+  assert.equal(monotonicLearnProgress(99, 101), 100);
+  assert.equal(monotonicLearnProgress(-5, 2), 2);
+});
+
+test("a retained workspace inherits the prior job's visible progress", () => {
+  const generationStart = learnSource.indexOf("async function runTextbookGeneration");
+  assert.ok(generationStart >= 0);
+  const generation = learnSource.slice(generationStart);
+  assert.match(
+    generation,
+    /if \(workspace\.resumedFromJobId\)[\s\S]*?getLearnJobById\(workspace\.resumedFromJobId\)[\s\S]*?progressPercent:\s*Math\.min\(99, resumedJob\?\.progressPercent \?\? 0\)/,
+  );
+  const update = namedFunction("updateLearnJob");
+  assert.match(update, /progressPercent:\s*monotonicLearnProgress\(/);
 });
 
 test("the pause gate holds the worker instead of unwinding it, and Cancel still wins", () => {

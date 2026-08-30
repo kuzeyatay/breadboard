@@ -857,12 +857,30 @@ function generatedVisualHighPriorityRepairInstructions(
     );
   }
   if (
+    /\bnode[ -]?link (?:concept map|graph)\b[\s\S]{0,420}\b(?:closed|bounded|surface|cross[ -]?section|enclos(?:e|ed|ing)|physical)\b|\b(?:closed|bounded|surface|cross[ -]?section|enclos(?:e|ed|ing)|physical)\b[\s\S]{0,420}\bnode[ -]?link (?:concept map|graph)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The reviewed selection concerns physical geometry, not a graph branch. Replace the node-link concept map with source-grounded geometry that visibly renders the selected closed path, bounded region or surface, and the physical object it encloses. Use spatial groups/primitives and conditional visibleWhen expressions when appropriate, preserve all reviewed selector options and outputs, and keep any supporting diagram subordinate; circles used as diagram nodes do not count as closed physical paths or surfaces.",
+    );
+  }
+  if (
     /\b(?:selector|select control|control)\b[\s\S]{0,260}\b(?:missing|absent|not (?:shown|visible)|visibly available|before (?:the )?(?:observable|scene))\b|\b(?:missing|absent|not (?:shown|visible)|visibly available)\b[\s\S]{0,260}\b(?:selector|select control|control)\b/i.test(
       feedback,
     )
   ) {
     instructions.push(
       "Preserve the immutable control exactly once in definition.controls. The trusted SDK runtime, not candidate sourceCode, places those controls before outputs and scenes and verifies their rendered visibility; candidate fields cannot author DOM order. Do not duplicate a selector in a scene, invent a replacement control, hide it in prose, or request a CSS/runtime change. Repair the control's promised observable effect in the authored scene expressions and keep the first teaching scene concise.",
+    );
+  }
+  if (
+    /\breset restores a changed visual to defaults through the trusted runtime\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "Reset is a trusted-runtime action, not an authored numeric state. Remove every sourceCode expression reference to the reviewed reset control id. Keep the exact reset control in definition.controls, and make at least one other reviewed non-reset control visibly change a numeric output or scene expression so the runtime has meaningful state to restore.",
     );
   }
   if (
@@ -2985,6 +3003,48 @@ function visualExpressionReferencesInput(
   );
 }
 
+function generatedVisualDefinitionReferencesInput(
+  definition: GeneratedVisualizationDefinition,
+  inputId: string,
+): boolean {
+  if (
+    definition.outputs.some(
+      (output) =>
+        output.expression &&
+        visualExpressionReferencesInput(output.expression, inputId),
+    )
+  ) {
+    return true;
+  }
+  return definition.scenes.some((scene) => {
+    if (scene.kind === "timeline" && scene.progressInput === inputId) {
+      return true;
+    }
+    return expressionFieldsFromScene(
+      scene as unknown as Record<string, unknown>,
+    ).some(
+      ([, expression]) =>
+        isRecord(expression) &&
+        visualExpressionReferencesInput(
+          expression as unknown as VisualExpression,
+          inputId,
+        ),
+    );
+  });
+}
+
+function numericSamplesDiffer(
+  left: readonly number[],
+  right: readonly number[],
+): boolean {
+  return left.some(
+    (value, index) =>
+      Number.isFinite(value) &&
+      Number.isFinite(right[index]) &&
+      Math.abs(right[index] - value) > 1e-9,
+  );
+}
+
 const TIME_DRIVEN_PROCESS_ACTION_RE =
   /\b(?:iterat(?:e|es|ed|ing|ion|ive)|relax(?:ation|ing)?|converg(?:e|es|ed|ing|ence)|settle(?:s|d|ment)?|time[ -]?step(?:s)?|successive(?:ly)?|evolv(?:e|es|ed|ing))\b/i;
 
@@ -3053,7 +3113,8 @@ function timeDrivenProcessDiagnostics(
 const STATE_DEPENDENT_DIAGRAM_BRANCH_ACTION_RE =
   /\b(?:highlight(?:ed|ing|s)?|emphasi[sz](?:e|ed|es|ing)?|distinguish(?:ed|es|ing)?|selected|active)\b/i;
 const DIAGRAM_BRANCH_RE = /\b(?:diagram|node[ -]?link graph)\b/i;
-const BRANCH_OR_PATH_RE = /\b(?:branch|path)\b/i;
+const GRAPH_STRUCTURE_RE =
+  /\b(?:branch|node[ -]?link|dependency|causal|flow)\b/i;
 
 function requiresStateDependentDiagramBranch(
   opportunity: Pick<VisualizationOpportunity, "learnerAction">,
@@ -3062,7 +3123,7 @@ function requiresStateDependentDiagramBranch(
   return (
     STATE_DEPENDENT_DIAGRAM_BRANCH_ACTION_RE.test(action) &&
     DIAGRAM_BRANCH_RE.test(action) &&
-    BRANCH_OR_PATH_RE.test(action)
+    GRAPH_STRUCTURE_RE.test(action)
   );
 }
 
@@ -3719,6 +3780,70 @@ export function runGeneratedVisualDeterministicTests(input: {
       });
       continue;
     }
+    if (control.protocolRole === "reset") {
+      const defaultSamples = numericExpressionSamples(
+        input.definition,
+        defaults,
+      );
+      let restorationWitness:
+        | {
+            changedControlId: string;
+            alternateState: number;
+            changedExpressionCount: number;
+          }
+        | undefined;
+      for (const candidateInput of input.opportunity.requiredInputs) {
+        if (candidateInput.id === control.id) continue;
+        const candidateControl = controlsById.get(candidateInput.id);
+        if (!candidateControl || candidateControl.protocolRole === "reset") {
+          continue;
+        }
+        const candidateState = protocolAwareInfluenceState(
+          input.definition,
+          candidateControl,
+          defaults,
+        );
+        for (const alternateState of alternateControlStates(
+          candidateControl,
+          candidateState[candidateControl.id] ?? 0,
+        )) {
+          const changedSamples = numericExpressionSamples(input.definition, {
+            ...candidateState,
+            [candidateControl.id]: alternateState,
+          });
+          if (!numericSamplesDiffer(defaultSamples, changedSamples)) continue;
+          restorationWitness = {
+            changedControlId: candidateControl.id,
+            alternateState,
+            changedExpressionCount: defaultSamples.filter(
+              (value, index) =>
+                Number.isFinite(value) &&
+                Number.isFinite(changedSamples[index]) &&
+                Math.abs(changedSamples[index] - value) > 1e-9,
+            ).length,
+          };
+          break;
+        }
+        if (restorationWitness) break;
+      }
+      const authoredResetReference = generatedVisualDefinitionReferencesInput(
+        input.definition,
+        control.id,
+      );
+      semanticTests.push({
+        name: `${control.label} restores a changed visual to defaults through the trusted runtime`,
+        passed: Boolean(restorationWitness) && !authoredResetReference,
+        detail: JSON.stringify({
+          runtimeOwned: true,
+          authoredResetReference,
+          ...(restorationWitness ?? {
+            reason:
+              "no non-reset required control produces a visible numeric state for Reset to restore",
+          }),
+        }),
+      });
+      continue;
+    }
     const influenceState = protocolAwareInfluenceState(
       input.definition,
       control,
@@ -3737,12 +3862,7 @@ export function runGeneratedVisualDeterministicTests(input: {
         ...influenceState,
         [control.id]: alternate,
       });
-      return baselineSamples.some(
-        (value, index) =>
-          Number.isFinite(value) &&
-          Number.isFinite(changedSamples[index]) &&
-          Math.abs(changedSamples[index] - value) > 1e-9,
-      );
+      return numericSamplesDiffer(baselineSamples, changedSamples);
     });
     const differs = effectiveAlternate !== undefined;
     semanticTests.push({
@@ -5586,6 +5706,183 @@ export function loadGeneratedVisualDefinition(
   }
 }
 
+function readGeneratedVisualArtifactJson(
+  filePath: string,
+): unknown | null {
+  try {
+    return JSON.parse(externalRuntimeReadUtf8(filePath));
+  } catch {
+    return null;
+  }
+}
+
+function generatedVisualManifestMatchesOpportunity(
+  manifest: GeneratedVisualizationManifest,
+  opportunity: VisualizationOpportunity,
+  model: string,
+): boolean {
+  const same = (left: unknown, right: unknown) =>
+    JSON.stringify(left) === JSON.stringify(right);
+  return (
+    manifest.status === "published" &&
+    manifest.generatorModel === model &&
+    manifest.id === opportunity.id &&
+    manifest.gardenId === opportunity.gardenId &&
+    manifest.learningUnitId === opportunity.learningUnitId &&
+    manifest.learningObjective === opportunity.learningObjective &&
+    manifest.insertionAnchor === opportunity.insertionAnchor &&
+    manifest.targetPage === opportunity.targetPage &&
+    manifest.targetHeading === opportunity.targetHeading &&
+    manifest.similarityFingerprint === opportunity.similarityFingerprint &&
+    same(manifest.conceptIds, opportunity.conceptIds) &&
+    same(manifest.sourceAnchorIds, opportunity.sourceAnchorIds) &&
+    same(manifest.sourceVisualIds, opportunity.sourceVisualIds) &&
+    same(
+      manifest.sourceVisualRelationships,
+      opportunity.sourceVisualRelationships,
+    )
+  );
+}
+
+function generatedVisualPublicationEvidenceIsReusable(input: {
+  artifactDir: string;
+  requireBrowserEvidence: boolean;
+}): boolean {
+  const validation = readGeneratedVisualArtifactJson(
+    path.join(input.artifactDir, "validation.json"),
+  );
+  const tests = readGeneratedVisualArtifactJson(
+    path.join(input.artifactDir, "tests.json"),
+  );
+  const critic = readGeneratedVisualArtifactJson(
+    path.join(input.artifactDir, "critic.json"),
+  );
+  const lifecycle = readGeneratedVisualArtifactJson(
+    path.join(input.artifactDir, "lifecycle.json"),
+  );
+  if (
+    !isRecord(validation) ||
+    validation.valid !== true ||
+    !Array.isArray(validation.errors) ||
+    validation.errors.length !== 0 ||
+    !isRecord(tests) ||
+    tests.passed !== true ||
+    !isRecord(critic) ||
+    critic.approved !== true ||
+    !Array.isArray(lifecycle)
+  ) {
+    return false;
+  }
+  const testGroups = [tests.staticTests, tests.semanticTests, tests.runtimeTests];
+  if (
+    testGroups.some(
+      (group) =>
+        !Array.isArray(group) ||
+        group.some((entry) => !isRecord(entry) || entry.passed !== true),
+    )
+  ) {
+    return false;
+  }
+  const lifecycleStatuses = lifecycle.flatMap((entry) =>
+    isRecord(entry) && typeof entry.status === "string" ? [entry.status] : [],
+  );
+  if (
+    !lifecycleStatuses.includes("critic_approved") ||
+    !lifecycleStatuses.includes("published")
+  ) {
+    return false;
+  }
+  if (!input.requireBrowserEvidence) return true;
+  const browser = tests.browser;
+  return (
+    isRecord(browser) &&
+    browser.screenshotCreated === true &&
+    browser.previewMatrixComplete === true &&
+    Array.isArray(browser.mountReceipts) &&
+    browser.mountReceipts.length > 0 &&
+    browser.mountReceipts.every(
+      (receipt) => isRecord(receipt) && receipt.mounted === true,
+    ) &&
+    isRecord(browser.profileCleanup) &&
+    browser.profileCleanup.confirmed === true
+  );
+}
+
+function loadReusablePublishedGeneratedVisual(input: {
+  gardenDir: string;
+  opportunity: VisualizationOpportunity;
+  model: string;
+  availableSourceAnchorIds?: Set<string>;
+  requireBrowserEvidence: boolean;
+}): GeneratedVisualResult | null {
+  const { gardenDir, opportunity } = input;
+  const manifest = loadGeneratedVisualManifest(gardenDir, opportunity.id);
+  if (
+    !manifest ||
+    !generatedVisualManifestMatchesOpportunity(
+      manifest,
+      opportunity,
+      input.model,
+    ) ||
+    (input.availableSourceAnchorIds &&
+      manifest.sourceAnchorIds.some(
+        (sourceAnchorId) =>
+          !input.availableSourceAnchorIds?.has(sourceAnchorId),
+      ))
+  ) {
+    return null;
+  }
+  const artifactDir = generatedVisualArtifactDir(gardenDir, opportunity.id);
+  const versionDir = path.join(
+    artifactDir,
+    "versions",
+    String(manifest.version),
+  );
+  const current = readGeneratedVisualArtifactJson(
+    path.join(artifactDir, "current.json"),
+  );
+  const versionManifest = loadGeneratedVisualManifest(
+    gardenDir,
+    opportunity.id,
+    manifest.version,
+  );
+  if (
+    !isRecord(current) ||
+    current.id !== opportunity.id ||
+    current.version !== manifest.version ||
+    current.manifest !== `versions/${manifest.version}/manifest.json` ||
+    !versionManifest ||
+    JSON.stringify(versionManifest) !== JSON.stringify(manifest) ||
+    !generatedVisualPublicationEvidenceIsReusable({
+      artifactDir,
+      requireBrowserEvidence: input.requireBrowserEvidence,
+    }) ||
+    !generatedVisualPublicationEvidenceIsReusable({
+      artifactDir: versionDir,
+      requireBrowserEvidence: input.requireBrowserEvidence,
+    })
+  ) {
+    return null;
+  }
+  const definition = loadGeneratedVisualDefinition(
+    gardenDir,
+    opportunity.id,
+  );
+  const versionDefinition = loadGeneratedVisualDefinition(
+    gardenDir,
+    opportunity.id,
+    manifest.version,
+  );
+  if (
+    !definition ||
+    !versionDefinition ||
+    JSON.stringify(versionDefinition) !== JSON.stringify(definition)
+  ) {
+    return null;
+  }
+  return { manifest, definition, errors: [] };
+}
+
 function generatedCandidateSchema() {
   return {
     name: "breadboard_generated_visual_candidate",
@@ -5907,13 +6204,13 @@ export default defineVisualization({
     "Each testCases item represents inputs and expected as arrays of {id,value} pairs and includes tolerance (number or null). " +
     `Every control id must match ${CONTROL_ID_PATTERN.source}; ${[...RESERVED_CONTROL_IDS].join(", ")} are reserved runtime expression variables and cannot be learner controls. ` +
     "Implement opportunity.interactionGoal and opportunity.learnerAction as the artifact's actual interaction sequence, not merely as labels or explanatory prose. When the reviewed action asks to simulate, iterate, relax, converge, evolve, or step through a process, a static closed-form ratio is not the interaction: author definition.animation:{durationMs,loop,autoplay} and use the reserved runtime expression {kind:\"input\",id:\"t\"} in at least one actual numeric output or scene expression so Play and Step reveal distinct source-grounded initial, intermediate, and settled stages. Do not add t as a learner control, invent a solver or hidden history, or claim literal numerical iteration when only illustrative or normalized stages are evidence-supported. For test_prediction, require the learner to commit a prediction before the artifact reveals or evaluates the outcome; use the exact protocolRole fields from the reviewed controls and author the required outcome expression or scene visibleWhen so it is unchanged initially, after prediction input, after unauthorized reveal/evaluate without commitment, and after commit alone; it must change only after valid commit_prediction then reveal_outcome/evaluate_prediction. Gate that observable with both authored action controls, not commit alone or reveal alone. The trusted runtime derives sequencing only from protocolRole: prediction_input stays editable until commit, commitment locks it, reveal/evaluate stays disabled and mutation-guarded until commit, and Reset clears and unlocks the sequence. Every decisive condition named by the reviewed interaction contract must be directly manipulable or evaluated by the artifact. " +
-    "Copy the opportunity.requiredInputs array exactly and in order: same control count, id, kind, label, type, protocolRole, unit, min, max, step, options, and defaultValue. Do not add a control or a field the reviewed contract omits. The trusted runtime renders every exact immutable control before numeric outputs and observable scenes and verifies its DOM order and rendered visibility at mobile; sourceCode cannot and must not duplicate, reposition, or replace those controls. Copy opportunity.requiredOutputs exactly and in order: same output count, id, label, and representation; never add or reorder learner-visible outputs. Keep any runtime-internal derived values inside scene or output expressions rather than declaring extra outputs. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required control must materially change a numeric output or scene expression. Before returning, verify this executable condition for each reviewed required control: from its default protocol-aware state, at least one allowed alternate control state must change by more than 1e-9 the evaluated value of an output.expression or numeric scene expression in sourceCode. A control that only changes labels, static diagram metadata, output representation, prose, accessibility text, or an otherwise constant expression fails; for select controls, use the declared zero-based option index in a numeric scene/output expression, including diagram edge.strength or spatial group or primitive visibleWhen. " +
+    "Copy the opportunity.requiredInputs array exactly and in order: same control count, id, kind, label, type, protocolRole, unit, min, max, step, options, and defaultValue. Do not add a control or a field the reviewed contract omits. The trusted runtime renders every exact immutable control before numeric outputs and observable scenes and verifies its DOM order and rendered visibility at mobile; sourceCode cannot and must not duplicate, reposition, or replace those controls. Copy opportunity.requiredOutputs exactly and in order: same output count, id, label, and representation; never add or reorder learner-visible outputs. Keep any runtime-internal derived values inside scene or output expressions rather than declaring extra outputs. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required non-reset control must materially change a numeric output or scene expression. Before returning, verify this executable condition for each reviewed required non-reset control: from its default protocol-aware state, at least one allowed alternate control state must change by more than 1e-9 the evaluated value of an output.expression or numeric scene expression in sourceCode. A non-reset control that only changes labels, static diagram metadata, output representation, prose, accessibility text, or an otherwise constant expression fails; for select controls, use the declared zero-based option index in a numeric scene/output expression, including diagram edge.strength or spatial group or primitive visibleWhen. A control with protocolRole:\"reset\" is owned by the trusted runtime: preserve it exactly, never reference its id in an authored output or scene expression, and ensure at least one other reviewed control changes the visual so Reset has meaningful state to restore. " +
     "Before returning, perform a complete model-authored consistency check against the supplied evidence and the literal definition. Independently recompute every evaluable numeric or geometric relationship you authored: scalar values, signed directions, units and conversions, vector endpoint deltas and magnitudes, component-wise sums, resultants, and other aggregates. Make every coordinate, label, annotation, explanation, and accessibility statement agree at the authored precision. When a displayed direction is multiplied by an uncontrolled signed scalar, never call the underlying term direction the signed result or contribution direction without source-supported sign authority: either state a fixed-sign assumption visibly and non-visually plus what reverses for the opposite sign, or label only the unsigned/field term and explain the sign-dependent reversal. When a required output, plot series, plot marker, status, formula, or annotation displays a component, resultant, or magnitude of rendered vector contributions, derive it from those same literal endpoint deltas and carry the identical relationship through every representation; never leave a stale scaled or half-magnitude expression in one view. Perform a claim-to-primitive audit: whenever a label, explanation, or accessibility text calls a vector unit or normalized, its evaluated to-from Euclidean norm must be exactly 1 in every rendered state; whenever text identifies a primitive as a named point with coordinates, that primitive's evaluated position and any vector origin explicitly claimed at that point must equal those coordinates in every rendered state. For every named-point normal, tangent, or basis-direction claim about a displayed planar, faceted, or local surface patch, inspect the literal plane or polygon face rather than prose: the point must be in its relative interior, not an edge, vertex, seam, or cap, and the face normal must be parallel or antiparallel to the claimed vector. For every screen-relative left/right/top/bottom claim, perform a projection audit against the exact authored camera and each relevant labelled preview; if it is not proven in every claimed state and viewport, remove it or state a world-coordinate relationship instead. Do not solve a topology, geometry, or projection defect only by relabeling it. If a display vector or anchor is qualitative, do not call it unit/normalized or present it as a named source coordinate. If a total is claimed to be the sum of displayed contributions, its components must equal that displayed sum; do not hide a discrepancy behind rounding or prose. If displayed elements are representative samples of a larger or continuous domain, do not construct or imply the whole-domain aggregate as their exact finite subtotal unless the supplied evidence explicitly establishes that equality; distinguish the sample contribution and whole-domain result in the geometry as well as the labels and non-visual explanation. When the evidence does not supply enough information to evaluate a sign, magnitude, scale, or aggregate, use explicitly qualitative or normalized encoding and do not invent or claim an evaluated value. The compiler and renderer will not infer or repair any of these relationships for you. " +
     "A select control is exposed to expressions as the stable zero-based index of its option in the declared options array (0 for the first option, 1 for the second, and so on), while the interface displays the option label; use conditional expressions against those numeric indices. Group or primitive visibleWhen counts as scene influence, so do not add a meaningless numeric output for the select. " +
     "When repairContext is supplied, return a complete replacement candidate that addresses every exact history entry using only this candidate's six authored fields and the declared SDK. When authorEvidence.highPriorityRepairInstructions is present, follow every instruction by replacing the affected sourceCode structure, not by merely relabelling, describing, or partially editing the rejected module. Before returning, make an internal checklist from every exactErrors and exactHistory entry: revise the actual sourceCode fields implicated by all entries, not merely their labels, explanation, or the newest entry, and re-run the claim-to-primitive audit after those revisions. Its immutableContract controls and outputs are fixed by the reviewed planner: do not add, remove, rename, reorder, or request mutation of them, and do not rely on renderer, runtime, CSS, route, lesson, or planner changes. Use the labelled rendered previews only for the viewport and select state they identify; do not infer an unshown state or viewport. A preview that contradicts a screen-relative placement claim requires an authored geometry or claim correction, never a camera assumption. If previewCoverage.selectStateCoverageTruncated is true, the bounded matrix is not proof of complete or unshown select-state coverage. " +
     "Keep sourceCode below 16,000 bytes and use at most five scenes; prefer the smallest expression tree that teaches the objective. testCases should cover only simple derived outputs with numeric expectations you can compute exactly (an empty testCases array is allowed because Breadboard adds deterministic tests). " +
     "sourceCode must end immediately after the final ASCII semicolon; do not append Markdown fences, commentary, or non-ASCII punctuation. " +
-    "FINAL NON-NEGOTIABLE SELF-CHECK BEFORE THE JSON RESPONSE: verify the literal sourceCode, not just its prose. sourceCode has exactly two top-level statements—the required import and export default defineVisualization({ ...literal definition... })—with no const/let/var/helper/config aliases, property shorthand, or bare JavaScript identifiers as values. Quote every string; represent a variable only through a literal SDK expression object such as {kind:\"input\",id:\"gain\"}. Recheck every authored numeric schema bound, every required control's alternate-state numeric influence, and every textual spatial claim against its evaluated primitive. When repairContext exists, close every exactErrors and exactHistory item by editing the actual sourceCode fields, then repeat this check. " +
+    "FINAL NON-NEGOTIABLE SELF-CHECK BEFORE THE JSON RESPONSE: verify the literal sourceCode, not just its prose. sourceCode has exactly two top-level statements—the required import and export default defineVisualization({ ...literal definition... })—with no const/let/var/helper/config aliases, property shorthand, or bare JavaScript identifiers as values. Quote every string; represent a variable only through a literal SDK expression object such as {kind:\"input\",id:\"gain\"}. Recheck every authored numeric schema bound, every required non-reset control's alternate-state numeric influence, verify that a runtime-owned reset control is not referenced by any authored expression, and check every textual spatial claim against its evaluated primitive. When repairContext exists, close every exactErrors and exactHistory item by editing the actual sourceCode fields, then repeat this check. " +
     `This is a complete syntactically valid scalar/plot module template; follow its schema exactly:\n${validModuleTemplate}\n` +
     `This is a complete syntactically valid spatial module template; replace its generic labels and geometry with source-grounded content:\n${spatialModuleTemplate}`;
   if (
@@ -6564,7 +6861,7 @@ async function requestGeneratedVisualizationCriticRaw(input: {
             "native labelled controls with keyboard focus",
             "exact immutable controls render before numeric outputs and observable scenes, with runtime checks for DOM order and rendered mobile visibility",
             "reset synchronizes state, controls, and readouts",
-            "exact protocolRole values enforce prediction then commit then reveal/evaluate, lock committed prediction inputs, guard premature activation, and Reset the sequence",
+            "exact protocolRole values enforce prediction then commit then reveal/evaluate, lock committed prediction inputs, guard premature activation, and let the trusted runtime Reset the sequence without authored reset-expression state",
             "derived values and textual status use aria-live",
             "light/dark and reduced-motion CSS",
             "mobile and desktop overflow checks",
@@ -6591,7 +6888,7 @@ async function requestGeneratedVisualizationCriticRaw(input: {
               "Compare every rendered primitive's actual topology and domain against its labels, explanation, interaction contract, and source evidence. Explicitly distinguish centered/full from bounded/clipped/one-sided/sector geometry and open from closed geometry. plane(center,normal,size) is a finite centered full rectangular patch and is valid for a full rectangular box face; do not require a polygon merely because that face is finite. Require a polygon only for clipped, one-sided, sector, or non-rectangular boundaries. Cylinder and cone primitives are bounded capped closed solids, so require ordered polygon facets for a claimed open, uncapped, clipped, one-sided, or sector surface. Diagram node.value is optional and must remain an expression object (a constant, input, or shallow one-operation expression), never a bare numeric value; do not request a derived formula or deep expression tree inside a diagram node value. Do not request a long derived formula inside any spatial coordinate either: request simple literal/input/one-operation geometry and put the calculation in an output, plot, status, or formula scene. Never request min or max as a binary expression operator. If the visual needs a longer derivation, request an output, plot, status, or formula scene instead. For every named-point normal, tangent, or basis-direction claim about a displayed planar, faceted, or local surface patch, inspect the literal face: reject a point on an edge, vertex, seam, or cap, and reject a face normal that is not parallel or antiparallel to the claimed vector. A faceted or local tangent approximation is acceptable only when the artifact says so. Reject any mismatch even when a label or prose renames the rendered shape; relabeling does not change topology or domain. When the final learnerAction promises a selected, highlighted, emphasized, or distinguished branch in a persistent diagram, inspect the literal diagram edge.strength expressions for every exact select option. Require every node and edge to remain present, every single option to have an exclusive emphasized branch, every combined/both/all/sum/total/+ option to emphasize their union, and all options to produce pairwise-distinct rendered signatures after abs(strength) is clamped to 0.5-6; node.value, prose, or an unrelated spatial change is not branch highlighting. edge.strength is the supported authored mechanism, so request that candidate repair rather than CSS, runtime, or control-contract changes. " +
               "Independently recompute every evaluable relationship from the literal definition rather than trusting its labels, explanation, pedagogical claims, or screenshot. Check scalar values, signs, directions, units and conversions, every vector's endpoint delta and magnitude, component-wise sums, resultants, rounding, and other aggregates. When a displayed direction is multiplied by an uncontrolled signed scalar, reject a claim that the underlying term direction is the signed result or contribution direction unless source evidence fixes the sign. Accept either a visible and non-visual fixed-sign assumption plus an explicit opposite-sign reversal, or neutral labels for the underlying terms plus the sign-dependent reversal; do not require an invented sign or planner-owned control. A claimed sum must equal the displayed contributions at the authored precision. If displayed elements are representative samples of a larger or continuous domain, reject a whole-domain aggregate that is constructed or implied as their exact finite subtotal unless the source evidence explicitly establishes that equality; require the distinction in geometry, labels, and the non-visual explanation. If source evidence does not establish a sign, magnitude, scale, or aggregate, require explicitly qualitative or normalized encoding and reject unsupported evaluated claims. Treat every such check as part of both sourceClaimsAndUnits and primitiveTopologyAndDomain, and score either below its publication threshold when any check fails. " +
               "For a spatial scene, verify that its explicitly authored orthographic/perspective and fixed/orbit view is pedagogically useful rather than decorative, preserves legibility and truthful geometry, and is explained accessibly when orbit navigation is enabled. Omitted camera fields are the fixed orthographic legacy default; never infer a different mode from the screenshot or subject matter. Treat the supplied narrow mobile preview as a hard camera-framing check: reject a source-essential plane, vector, endpoint, or inline label that is off-center, cropped, or too close to a frame edge because its azimuth, elevation, scale, projection, or geometry envelope is unsuitable, and request an authored view/geometry correction rather than CSS or runtime auto-fit. Trace every learner-facing non-structural numeric literal or symbol in spatial coordinates and formula/output expressions: reject an unexplained physical interval, scale, or constant unless its symbol, value, unit when applicable, and role are visibly defined in a formula/annotation, diagram, plot, or status scene and described non-visually; do not demand labels for pure rendering-only coordinates. Treat every screen-relative left/right/top/bottom statement as a literal rendered claim: reject it when the exact supplied preview for that state and viewport contradicts it, and when such placement is not source-grounded request removal or a world-coordinate relationship rather than a camera assumption. " +
-              "For test_prediction, verify the actual control and output behavior follows the reviewed input, then commit, then reveal/evaluate order; reject an artifact that reveals or evaluates the outcome before commitment, whose outcome changes initially, during prediction, or at commit alone, ignores any protocol stage, or merely describes the sequence in prose. The trusted runtime uses exact protocolRole values (never labels or subject inference) to keep prediction inputs editable until commit, lock them after commit, mutation-guard reveal/evaluate until commitment, and clear/unlock on Reset. There is no retained hidden-state snapshot; the mechanism is a UI/state lock and guard, not a semantic prediction snapshot invented by the runtime. Require the authored outcome expression or visibility to be gated by both commit and reveal/evaluate. " +
+              "For test_prediction, verify the actual control and output behavior follows the reviewed input, then commit, then reveal/evaluate order; reject an artifact that reveals or evaluates the outcome before commitment, whose outcome changes initially, during prediction, or at commit alone, ignores any protocol stage, or merely describes the sequence in prose. The trusted runtime uses exact protocolRole values (never labels or subject inference) to keep prediction inputs editable until commit, lock them after commit, mutation-guard reveal/evaluate until commitment, and clear/unlock on Reset. A reviewed protocolRole:\"reset\" control is runtime-owned and must not appear as an input in authored output or scene expressions; judge it by whether another reviewed control creates meaningful changed state that the runtime can restore. There is no retained hidden-state snapshot; the mechanism is a UI/state lock and guard, not a semantic prediction snapshot invented by the runtime. Require the authored outcome expression or visibility to be gated by both commit and reveal/evaluate. " +
               "The immutableContract controls and outputs are planner-owned and cannot be changed in this candidate loop. The trusted runtime renders every exact immutable control before numeric outputs and observable scenes, and passed runtimeEvidence verifies DOM order and rendered mobile visibility; a candidate cannot author control placement. Do not request a duplicate selector, scene-embedded control, CSS, or runtime ordering change. Reject only with requestedChanges that a complete replacement candidate can make through its six authored fields and sourceCode using the supplied capabilityManifest. Requested changes must be sourceCode/SDK-feasible: never request a contract, planner, lesson, route, renderer, runtime, CSS, or unavailable SDK mutation. Use each labelled rendered preview only as evidence for its stated viewport and select state; do not claim a mobile or alternate-state defect from a different or unshown preview. When previewCoverage.selectStateCoverageTruncated is true, it is bounded representative evidence rather than proof of complete or unshown select-state coverage. Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, matches primitive topology and domain, avoids duplication and unnecessary complexity, and is accessible.",
           },
           {
@@ -7264,6 +7561,11 @@ export type CreateGeneratedVisualizationInput = {
   /** Stable owner for a resumable generation job. Deliberate new jobs use a
    * new owner, while an exact still-ambiguous request can be adopted by hash. */
   recoveryOwnerId?: string;
+  /** Recovery-only fast path. A failed Learn workspace may reuse its own
+   * already-published artifact when the current model and complete visual
+   * contract still match and every persisted publication gate revalidates.
+   * Deliberate generation/regeneration leaves this false. */
+  reusePublishedArtifactOnRecovery?: boolean;
   opportunity: VisualizationOpportunity;
   pageMarkdown: string;
   sourceContext?: unknown;
@@ -7378,6 +7680,36 @@ async function createGeneratedVisualizationWithSlot(
       definition: null,
       errors: ["generated visuals are disabled"],
     };
+  input.checkCancelled?.();
+  if (input.abortSignal?.aborted)
+    throw new Error("generated visualization was cancelled");
+  if (input.reusePublishedArtifactOnRecovery) {
+    const reusable = loadReusablePublishedGeneratedVisual({
+      gardenDir: input.gardenDir,
+      opportunity: input.opportunity,
+      model: input.model,
+      availableSourceAnchorIds: input.availableSourceAnchorIds,
+      requireBrowserEvidence:
+        input.runBrowserTests ??
+        String(process.env.LEARN_GENERATED_VISUAL_BROWSER_TESTS ?? "true") !==
+          "false",
+    });
+    if (reusable) {
+      emit(input.onEvent, "visual_resume_artifact_reused", {
+        gardenId: reusable.manifest!.gardenId,
+        learningUnitId: reusable.manifest!.learningUnitId,
+        visualizationId: reusable.manifest!.id,
+        version: reusable.manifest!.version,
+        sourceHash: reusable.manifest!.sourceHash,
+        compiledHash: reusable.manifest!.compiledHash,
+        generatorModel: reusable.manifest!.generatorModel,
+        contractFingerprint: reusable.manifest!.similarityFingerprint,
+        publicationGatesRevalidated: true,
+        providerInvocations: 0,
+      });
+      return reusable;
+    }
+  }
   const id = input.opportunity.id;
   const version = nextGeneratedVisualVersion(input.gardenDir, id);
   const runId = `${nowIso()

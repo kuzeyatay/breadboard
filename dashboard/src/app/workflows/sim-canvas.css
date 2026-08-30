@@ -55,3 +55,62 @@
 .sim-canvas .react-flow__pane {
   cursor: default;
 }
+
+/* Critical canvas geometry is repeated here as semantic CSS instead of being
+   left solely to generated utility classes. The workflow editor is loaded as
+   a route chunk inside Electron; if that chunk's utility sheet arrives late,
+   React Flow measures intrinsic SVG sizes and caches giant cards and visible
+   black hit targets. These rules are deliberately scoped to the workflow
+   canvas and keep every block type — including blocks added by agents — on
+   the same stable first frame. */
+.sim-canvas .workflow-drag-handle {
+  box-sizing: border-box;
+  width: 250px;
+  border-radius: 16px;
+}
+
+.sim-canvas [data-workflow-type-accent] {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  gap: 3px;
+  border-radius: 6px;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.sim-canvas [data-workflow-type-accent] > svg {
+  display: block;
+  flex: none;
+  width: 12px !important;
+  height: 12px !important;
+}
+
+.sim-canvas [data-workflow-type-icon-only] {
+  width: 20px;
+  padding: 0;
+}
+
+.sim-canvas .workflow-block-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+/* The renderer paints its own compact connection knobs in the card border.
+   React Flow's DOM handles are interaction-only and must never be visible. */
+.sim-canvas .react-flow__handle[data-nodeid][data-handleid] {
+  z-index: 20 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  opacity: 0 !important;
+}

@@ -42,8 +42,12 @@ export function ensureMem0Schema(database: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_mem0_tombstones_user ON mem0_tombstones(user_id);
 
-    DROP TRIGGER IF EXISTS trg_mem0_tombstone_on_durable_delete;
-    CREATE TRIGGER trg_mem0_tombstone_on_durable_delete
+    -- Schema initialization runs in parallel Next.js page-data workers during
+    -- production builds. DROP followed by CREATE is not atomic across their
+    -- separate SQLite connections: two workers can both drop, then race to
+    -- create the same trigger. Keep initialization genuinely idempotent;
+    -- definition changes belong in an explicit, versioned migration.
+    CREATE TRIGGER IF NOT EXISTS trg_mem0_tombstone_on_durable_delete
     BEFORE DELETE ON durable_memories
     FOR EACH ROW
     BEGIN

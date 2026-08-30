@@ -28,25 +28,33 @@ const loadingSurfaces = [
   "buzz/ui/spinner.tsx",
 ];
 
-test("the shared loader redraws the voice interface's wobbly circle", () => {
+test("the shared loader traces several hand-drawn passes over one stationary circle", () => {
   assert.match(sharedLoader, /inkRingPath/);
-  assert.match(sharedLoader, /scribbleRings/);
-  assert.match(sharedLoader, /LOADER_SKETCH_RINGS = scribbleRings\(12, 12, 7\.45, 4\)/);
+  assert.doesNotMatch(sharedLoader, /scribbleRings/);
+  assert.equal((sharedLoader.match(/inkRingPath\(/g) ?? []).length, 4);
   assert.match(sharedLoader, /LOADER_SKETCH_RINGS\.map/);
   assert.match(sharedLoader, /bb-loader-sketch bb-loader-sketch-/);
-  assert.match(sharedLoader, /pathLength=\{100\}/);
-  assert.match(sharedLoader, /index \* -210/);
+  assert.match(sharedLoader, /<circle[\s\S]*className="bb-loader-settled"/);
+  assert.match(sharedLoader, /pathLength=\{1\}/);
+  assert.match(sharedLoader, /index \* -705/);
   assert.match(sharedLoader, /--bb-loader-sketch-delay/);
-  assert.doesNotMatch(sharedLoader, /<circle|bb-loader-snake|bb-loader-rotor/);
+  assert.doesNotMatch(sharedLoader, /bb-loader-snake|bb-loader-rotor/);
 });
 
-test("the hand-drawn paths are traced rather than rotated as rigid rings", () => {
+test("the whole hand-drawn paths draw, hold, and lift without rotating", () => {
   const globalStyles = fs.readFileSync(new URL("globals.css", appRoot), "utf8");
+  const loaderStyles = globalStyles.slice(0, globalStyles.indexOf(":root"));
 
-  assert.match(globalStyles, /@keyframes bb-loader-trace/);
-  assert.match(globalStyles, /stroke-dashoffset:\s*-100/);
-  assert.doesNotMatch(globalStyles, /@keyframes bb-loader-turn/);
-  assert.doesNotMatch(globalStyles, /\.bb-loader-sketch\s*\{[^}]*transform:/s);
+  assert.match(loaderStyles, /\.bb-loader-sketch \{[\s\S]*?stroke-dasharray:\s*1;/);
+  assert.match(loaderStyles, /@keyframes bb-loader-trace/);
+  assert.match(
+    loaderStyles,
+    /@keyframes bb-loader-trace \{[\s\S]*?stroke-dashoffset:\s*1;[\s\S]*?stroke-dashoffset:\s*0;/,
+  );
+  assert.doesNotMatch(loaderStyles, /stroke-dashoffset:\s*-100/);
+  assert.doesNotMatch(loaderStyles, /@keyframes bb-loader-turn/);
+  assert.doesNotMatch(loaderStyles, /\.bb-loader(?:-sketch)?\s*\{[^}]*transform:/s);
+  assert.doesNotMatch(loaderStyles, /rotate\(/);
 });
 
 test("circular loading states use BreadboardLoader instead of local spinning arcs", () => {

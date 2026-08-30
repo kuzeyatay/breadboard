@@ -64,11 +64,13 @@ import {
 } from '@/lib/chat-token-usage';
 import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
 import type { VerificationSummary } from '@/lib/hermes/evidence';
+import { applyGardenStableTextEvent } from '@/lib/hermes/garden-stable-stream';
 import { delegatedAgentCompletedLabelForMessage } from '@/lib/hermes/super-agent-activity';
 import type {
   QuartzAssistantSelectionRequest,
   QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
+import { reserveGardenTurnCheckpoint } from '@/lib/conversations/garden-turn-client';
 
 interface QuartzInlineSelectionReference {
   requestId: string;
@@ -77,6 +79,8 @@ interface QuartzInlineSelectionReference {
 }
 
 interface ChatMessage {
+  id?: string;
+  clientMessageId?: string;
   role: 'user' | 'assistant';
   content: string;
   createdAt?: string;
@@ -999,13 +1003,13 @@ export default function GardenAssistant({
     virtual: transcriptVirtual,
   });
 
-  // One tick per question asked. This panel hands the virtualizer `messages`
+  // One tick per visible chat message. This panel hands the virtualizer `messages`
   // untouched, so a message's place in the conversation is also its row.
   const railItems = useMemo<ChatMessageRailItem[]>(
     () =>
       visibleMessages.flatMap((message, index) =>
-        message.role === 'user'
-          ? [{ rowIndex: index, label: message.content }]
+        (message.role === 'user' || message.role === 'assistant') && message.content.trim()
+          ? [{ rowIndex: index, label: message.content, role: message.role }]
           : [],
       ),
     [visibleMessages],
@@ -1243,7 +1247,9 @@ export default function GardenAssistant({
     const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
     const displayText = text || 'Please review the attached document(s).';
     const turnCreatedAt = new Date().toISOString();
+    const clientMessageId = crypto.randomUUID();
     const userMessage: ChatMessage = {
+      clientMessageId,
       role: 'user',
       content: displayText,
       createdAt: turnCreatedAt,
@@ -1259,6 +1265,7 @@ export default function GardenAssistant({
     const steerContext = { messages: [] as ChatMessage[] };
     activeSteerContextRef.current = steerContext;
     let assistantMessage: ChatMessage = {
+      clientMessageId,
       role: 'assistant',
       content: '',
       createdAt: turnCreatedAt,
@@ -1330,15 +1337,22 @@ export default function GardenAssistant({
       sessionTitle,
     );
 
-    // The Garden adapter appends the server-owned assistant response, but it
-    // cannot reconstruct a browser-only user row. Commit the prompt before
-    // either markdown work or agent dispatch so navigation can never erase it.
-    const checkpointSaved = await persistChatSession(
-      session.id,
-      nextMessages,
-      sessionTitle,
-      { updateLocal: false },
-    );
+    // Reserve the question and its pending answer atomically. This happens
+    // before local markdown work and runtime dispatch alike, so every Garden
+    // agent has a terminalizable turn after a service restart.
+    let checkpointSaved = false;
+    try {
+      const checkpoint = await reserveGardenTurnCheckpoint(
+        session.id,
+        clientMessageId,
+        userMessage,
+      );
+      userMessage.id = checkpoint.userMessageId;
+      assistantMessage.id = checkpoint.assistantMessageId;
+      checkpointSaved = true;
+    } catch {
+      checkpointSaved = false;
+    }
     if (!checkpointSaved) {
       setMessages(history);
       setInput(text);
@@ -1447,6 +1461,7 @@ export default function GardenAssistant({
         body: JSON.stringify({
           clusterSlug: activeClusterSlug,
           chatSessionId: session.id,
+          clientMessageId,
           messages: nextMessages.map(({ role, content }) => ({ role, content })),
           model,
           reasoningEffort,
@@ -1533,25 +1548,32 @@ export default function GardenAssistant({
               updateAssistant();
             }
             if (event.type === 'delta' && typeof event.text === 'string') {
-              assistantMessage = {
-                ...assistantMessage,
-                content: `${assistantMessage.content}${event.text}`,
-              };
+              assistantMessage = applyGardenStableTextEvent(assistantMessage, {
+                type: 'delta',
+                text: event.text,
+              });
+              updateAssistant();
+            }
+            if (event.type === 'provisional' && typeof event.text === 'string') {
+              assistantMessage = applyGardenStableTextEvent(assistantMessage, {
+                type: 'provisional',
+                text: event.text,
+              });
               updateAssistant();
             }
             if (event.type === 'replace' && typeof event.text === 'string') {
-              assistantMessage = { ...assistantMessage, content: event.text };
+              assistantMessage = applyGardenStableTextEvent(assistantMessage, {
+                type: 'replace',
+                text: event.text,
+              });
               updateAssistant();
             }
             if (event.type === 'segment' && typeof event.text === 'string') {
-              // The streamed text so far was tool-call narration, not the
-              // answer. Move it into the thinking strip and let the bubble
-              // restart with the next segment.
-              assistantMessage = {
-                ...assistantMessage,
-                thinking: `${assistantMessage.thinking ?? ''}\n${event.text}`.trim(),
-                ...(event.streamed ? { content: '' } : {}),
-              };
+              assistantMessage = applyGardenStableTextEvent(assistantMessage, {
+                type: 'segment',
+                text: event.text,
+                streamed: event.streamed === true,
+              });
               updateAssistant();
             }
             if (event.type === 'usage') {
@@ -2147,9 +2169,17 @@ export default function GardenAssistant({
       </div>
         <ChatMessageRail
           surface="garden-assistant"
+          conversationKey={activeChatId}
           items={railItems}
           scrollRef={transcriptScrollRef}
           bridge={transcriptVirtual}
+          onReply={(text) => {
+            if (chatIsStreaming) {
+              queueFollowUp(text);
+              return;
+            }
+            return sendMessage(text);
+          }}
         />
         <ChatJumpToBottom
           visible={transcriptAwayFromBottom}

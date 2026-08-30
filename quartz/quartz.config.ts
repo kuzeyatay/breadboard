@@ -108,6 +108,7 @@ const config: QuartzConfig = {
         enableYouTubeEmbed: false,
       }),
       Plugin.BreadboardVideos(),
+      Plugin.BreadboardSourceVisuals(),
       Plugin.BreadboardVisuals(),
       Plugin.BreadboardGeneratedVisuals(),
       Plugin.PenechoBoards(),

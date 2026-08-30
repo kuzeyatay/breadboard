@@ -901,6 +901,12 @@ const AGENT_SERVICE_ENVIRONMENT_NAMES: &[&str] = &[
     "LOCALAPPDATA",
     "PROGRAMDATA",
     "SystemDrive",
+    // Runtime V2 copies every Electron-gated OS variable into every service
+    // environment. Leaving these two out of this base list meant the
+    // supervisor rejected the launch of every agent service (OpenScience,
+    // OpenWork, MoneyPrinter, Wardrobe) before a process existed.
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
     "ComSpec",
     "PATHEXT",
     "NODE_ENV",
@@ -6286,6 +6292,32 @@ mod windows_runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_service_base_profile_admits_the_electron_gated_os_variables() {
+        // runtime-core's build_common_environment copies every Electron-gated
+        // OS variable into every service environment. A base list here that
+        // omits one rejects the launch of every service built on it before a
+        // process exists, and the durable row only says "supervision failed".
+        for (label, names) in [
+            ("service-common", SERVICE_COMMON_ENVIRONMENT_NAMES),
+            ("agent-service", AGENT_SERVICE_ENVIRONMENT_NAMES),
+            ("node-service", NODE_SERVICE_ENVIRONMENT_NAMES),
+        ] {
+            for required in [
+                "SystemRoot",
+                "USERPROFILE",
+                "APPDATA",
+                "LOCALAPPDATA",
+                "PROGRAMDATA",
+                "SystemDrive",
+                "PROGRAMFILES",
+                "PROGRAMFILES(X86)",
+            ] {
+                assert!(names.contains(&required), "{label} must admit {required}");
+            }
+        }
+    }
 
     #[test]
     fn protocol_requires_separator_and_command() {

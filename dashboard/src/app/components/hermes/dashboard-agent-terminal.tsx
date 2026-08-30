@@ -4762,9 +4762,8 @@ function RuntimeTerminal({
    */
   const routeMaxResearchCommand = useCallback(
     (text: string, options: { branchGroupId?: string } = {}): boolean => {
-      // Under Super Agent the model owns the turn and reaches this same agent
-      // through `agent_launch`, so plain language goes back to it rather than
-      // opening a second, visible run alongside the one it is running.
+      // Under Super Agent the model owns the turn and delegates Max Research
+      // privately. Only the explicit slash command bypasses that orchestration.
       const invocation = maxResearchInvocation(text, isSuperAgentEnabled());
       if (!invocation) return false;
       setAttachmentStatus("");
@@ -6255,6 +6254,29 @@ function RuntimeTerminal({
       );
       return;
     }
+    if (request.startedRun) {
+      // Max Research was started and attached at the server-side tool boundary.
+      // This is only the observer hand-off; starting again would create a
+      // duplicate run and make navigation timing authoritative again.
+      setDelegatedAgentLaunching(true);
+      try {
+        await session.appendExternalAgentTurn({
+          clientMessageId: originClientMessageId,
+          userContent: "",
+          run: request.startedRun,
+          attachToExistingTurn: true,
+        });
+      } catch (error) {
+        setAttachmentStatus(
+          error instanceof Error
+            ? error.message
+            : `${request.agentName} started, but this view could not attach its observer.`,
+        );
+      } finally {
+        setDelegatedAgentLaunching(false);
+      }
+      return;
+    }
     session.beginDelegatedExternalAgentTurn(originClientMessageId);
     setDelegatedAgentLaunching(true);
     try {
@@ -6540,10 +6562,22 @@ function RuntimeTerminal({
   // anything itself; this is where they meet the surface that can.
   const handleAgentLaunchEvent = agentLaunchQueue.handleEvent;
   useLayoutEffect(() => {
+    // Restored messages can arrive from the tab snapshot one paint before the
+    // authoritative conversation id. Feeding their recovered launch into the
+    // scoped queue in that paint marks it seen under the null scope; once the
+    // real id arrives the request is still in the queue, but can no longer be
+    // selected or re-enqueued. Wait until the owning conversation is known so
+    // leaving Terminal during agent_launch cannot strand the hand-off.
+    if (session.loadingSession || !session.sessionId) return;
     for (const request of session.agentLaunchRequests) {
       handleAgentLaunchEvent({ type: "agent_launch", ...request });
     }
-  }, [session.agentLaunchRequests, handleAgentLaunchEvent]);
+  }, [
+    session.agentLaunchRequests,
+    session.loadingSession,
+    session.sessionId,
+    handleAgentLaunchEvent,
+  ]);
 
   // The result of a finished run, handed back as a new turn once the surface is
   // idle — a submit made while the run's turn is still settling is dropped.
@@ -7764,6 +7798,7 @@ function RuntimeTerminal({
               actions and its divider; there is no toolbar button to bring it
               back, so it must never leave the layout entirely. */}
             <TerminalSidebar
+              surface="tinted"
               collapsed={rail.collapsed}
               onToggleCollapsed={rail.toggle}
               resize={rail}

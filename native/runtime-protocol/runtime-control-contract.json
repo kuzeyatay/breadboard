@@ -320,7 +320,8 @@
       "WORKER_FAILED",
       "BREADBOARD_RESOURCE_EXHAUSTED",
       "JOB_INTERRUPTED",
-      "JOB_UNCERTAIN"
+      "JOB_UNCERTAIN",
+      "SERVICE_DEPENDENCY_UNAVAILABLE"
     ],
     "failureCodeProvenance": {
       "authority": "runtime-owned-closed-enum",
@@ -520,7 +521,8 @@
       "WORKER_FAILED",
       "BREADBOARD_RESOURCE_EXHAUSTED",
       "JOB_INTERRUPTED",
-      "JOB_UNCERTAIN"
+      "JOB_UNCERTAIN",
+      "SERVICE_DEPENDENCY_UNAVAILABLE"
     ],
     "failureCodeProvenance": {
       "authority": "runtime-owned-closed-enum",

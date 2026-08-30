@@ -15,6 +15,11 @@ import {
   LEARNING_SECTION_TYPES,
 } from "@/lib/learning-garden";
 import { selectedSourceArtifactInventorySnapshot } from "@/lib/learn-source-artifact-inventory";
+import {
+  learnSourceBindingRecord,
+  matchingLearnSourceNormalizationReceipt,
+  sourceSetHashForBindingRecords,
+} from "@/lib/learn-source-normalization-receipt";
 import { failedGenerationRequiresReplanFromEvents } from "@/lib/learn-replan-recovery";
 import type {
   SourceVisual,
@@ -2562,11 +2567,12 @@ export function getLearnStatusSnapshot({
       if (syllabus && teachingSources.length === 0) {
         throw new Error("The saved source selection has no teaching material.");
       }
-      const baseCurrentHash = sourceSetHashWithSyllabus(
+      const rawBaseCurrentHash = sourceSetHashWithSyllabus(
         sourceSetHashForSources(teachingSources),
         syllabus,
       );
-      let currentHash = baseCurrentHash;
+      let baseCurrentHash = rawBaseCurrentHash;
+      let currentHash = rawBaseCurrentHash;
       const sourceOrder = teachingSources.map((source) => source.slug);
       const visuals = loadSourceVisuals(contentPath, gardenId);
       const sourceIdentityMap = resolveSourceIdentityMap(
@@ -2585,6 +2591,36 @@ export function getLearnStatusSnapshot({
         .map((visual) => visual.sourceVisualId)
         .sort();
       const manifest = loadFormulaManifest(contentPath, gardenId);
+      if (manifest && manifest.baseSourceSetHash !== rawBaseCurrentHash) {
+        const currentBindingRecords = teachingSources.map((source) =>
+          learnSourceBindingRecord({
+            slug: source.slug,
+            relPath: source.relPath,
+            title: source.title,
+            description: source.description,
+            sourceFile: source.sourceFile,
+            date: source.date,
+            wordCount: source.wordCount,
+            bodyHash: source.statusBodyHash ?? undefined,
+          }),
+        );
+        const normalizationReceipt = matchingLearnSourceNormalizationReceipt({
+          gardenDir: path.join(contentPath, gardenId),
+          expectedCombinedSourceSetHash: manifest.combinedSourceSetHash,
+          sourceIds: sourceOrder,
+          current: currentBindingRecords,
+        });
+        if (normalizationReceipt) {
+          const receiptBaseCurrentHash = sourceSetHashWithSyllabus(
+            sourceSetHashForBindingRecords(normalizationReceipt.before),
+            syllabus,
+          );
+          if (receiptBaseCurrentHash === manifest.baseSourceSetHash) {
+            baseCurrentHash = receiptBaseCurrentHash;
+            currentHash = receiptBaseCurrentHash;
+          }
+        }
+      }
       if (
         manifest &&
         manifest.baseSourceSetHash === baseCurrentHash &&

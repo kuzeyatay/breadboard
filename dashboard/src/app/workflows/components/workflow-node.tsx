@@ -120,7 +120,7 @@ export const WorkflowNode = memo(function WorkflowNode({ id, data, selected }: N
       wouldCreateConnectionCycle={wouldCreateConnectionCycle}
       onSelect={() => setSelectedBlock(id)}
       rows={rows}
-      typeLabel={config.canvasPresentation?.typeLabel ?? config.name}
+      typeLabel={config.canvasPresentation?.typeLabel}
       hasErrorConnection={edges.some((edge) => edge.source === id && edge.sourceHandle === "error")}
       errorOutputEnabled={Boolean(block.errorEnabled)}
       onToggleErrorOutput={(enabled) => setErrorEnabled(id, enabled)}

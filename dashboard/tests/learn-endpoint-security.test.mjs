@@ -228,6 +228,30 @@ test("Learn validation report remains a private streamed no-store response", asy
   }, contentPath);
 });
 
+test("Learn validation report supports extended Windows content paths", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const contentPath = fs.mkdtempSync(path.join(os.tmpdir(), "bb-learn-report-extended-"));
+  t.after(() => fs.rmSync(contentPath, { recursive: true, force: true }));
+  const reportDir = path.join(contentPath, "canonical-owned-garden", ".breadboard");
+  fs.mkdirSync(reportDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(reportDir, "validation-report.md"),
+    "# Extended-path validation details",
+  );
+  const extendedContentPath = `\\\\?\\${path.resolve(contentPath)}`;
+
+  await withContentPath(async () => {
+    freshState();
+    const response = await reportRoute.GET(new Request("http://local/report"), {
+      params: Promise.resolve({ gardenId: "requested-slug" }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "# Extended-path validation details");
+  }, extendedContentPath);
+});
+
 test("Learn validation report rejects oversized files without reading them", async (t) => {
   const contentPath = fs.mkdtempSync(path.join(os.tmpdir(), "bb-learn-report-limit-"));
   t.after(() => fs.rmSync(contentPath, { recursive: true, force: true }));

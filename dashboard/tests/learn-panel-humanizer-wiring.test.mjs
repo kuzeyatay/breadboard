@@ -25,7 +25,7 @@ test("the Learn panel puts Rewrite naturally at the far right of the token row",
   assert.match(workspace, /useHumanizerMode\(\)/);
   assert.match(tokenRow, /role="switch"[\s\S]*Rewrite naturally/);
   assert.match(tokenRow, /className="ml-auto flex shrink-0/);
-  assert.ok(tokenRow.indexOf("Rewrite naturally") > tokenRow.indexOf("learnUsageCallSummary"));
+  assert.ok(tokenRow.indexOf("Rewrite naturally") > tokenRow.indexOf("formatAssistantModelName"));
 });
 
 test("Learn humanization is a validated post-build pass, never a page-generation step", () => {

@@ -72,6 +72,7 @@ function CanvasSurface({ workflowId }: { workflowId: string }) {
         data: { type: block.type },
         selected: block.id === selectedBlockId,
         width: BLOCK_DIMENSIONS.FIXED_WIDTH,
+        style: { width: BLOCK_DIMENSIONS.FIXED_WIDTH },
         draggable: true,
       })),
     [blocks, selectedBlockId],

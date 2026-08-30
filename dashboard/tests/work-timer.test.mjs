@@ -5,13 +5,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BREAK_TIMER_DEFAULT_MS,
   IDLE_WORK_TIMER,
   WORK_TIMER_DEFAULT_MS,
-  WORK_TIMER_PRESET_MINUTES,
+  advanceWorkTimer,
   formatWorkTimer,
   parseWorkTimerSession,
   pauseWorkTimer,
   resetWorkTimer,
+  setWorkTimerMode,
   setWorkTimerMinutes,
   settleWorkTimer,
   startWorkTimer,
@@ -34,6 +36,9 @@ test("a fresh timer is idle, and shows its full length", () => {
   assert.equal(workTimerPhase(IDLE_WORK_TIMER), "idle");
   assert.equal(workTimerRemainingMs(IDLE_WORK_TIMER, T0), WORK_TIMER_DEFAULT_MS);
   assert.equal(workTimerProgress(IDLE_WORK_TIMER, T0), 0);
+  assert.equal(IDLE_WORK_TIMER.mode, "work");
+  assert.equal(IDLE_WORK_TIMER.workDurationMs, WORK_TIMER_DEFAULT_MS);
+  assert.equal(IDLE_WORK_TIMER.breakDurationMs, BREAK_TIMER_DEFAULT_MS);
 });
 
 test("a running session counts down against the wall clock", () => {
@@ -89,28 +94,47 @@ test("a session that ran out is finished, and starting again begins a new one", 
   assert.equal(formatWorkTimer(workTimerRemainingMs(restarted, T0 + 26 * 60_000)), "25:00");
 });
 
-test("resetting and choosing a length both clear the clock", () => {
+test("work and break lengths are independently configurable", () => {
   const running = startWorkTimer(IDLE_WORK_TIMER, T0);
   assert.equal(workTimerPhase(resetWorkTimer(running)), "idle");
   assert.equal(resetWorkTimer(running).durationMs, WORK_TIMER_DEFAULT_MS, "the length is kept");
 
-  for (const minutes of WORK_TIMER_PRESET_MINUTES) {
-    const chosen = setWorkTimerMinutes(minutes);
-    assert.equal(workTimerPhase(chosen), "idle");
-    assert.equal(formatWorkTimer(workTimerRemainingMs(chosen, T0)), `${minutes}:00`);
-  }
+  const customWork = setWorkTimerMinutes(IDLE_WORK_TIMER, "work", 42);
+  const customBreak = setWorkTimerMinutes(customWork, "break", 9);
+  assert.equal(customBreak.workDurationMs, 42 * 60_000);
+  assert.equal(customBreak.breakDurationMs, 9 * 60_000);
+  assert.equal(formatWorkTimer(workTimerRemainingMs(customBreak, T0)), "42:00");
 
-  const midSession = setWorkTimerMinutes(5);
+  const midSession = setWorkTimerMinutes(IDLE_WORK_TIMER, "work", 5);
   assert.equal(
     workTimerPhase(startWorkTimer(midSession, T0)),
     "running",
     "and the new length is what runs",
   );
   assert.equal(formatWorkTimer(workTimerRemainingMs(startWorkTimer(midSession, T0), T0)), "5:00");
+
+  const breakTimer = setWorkTimerMode(customBreak, "break");
+  assert.equal(breakTimer.mode, "break");
+  assert.equal(formatWorkTimer(workTimerRemainingMs(breakTimer, T0)), "9:00");
+  assert.equal(advanceWorkTimer(breakTimer).mode, "work");
+  assert.equal(formatWorkTimer(workTimerRemainingMs(advanceWorkTimer(breakTimer), T0)), "42:00");
+});
+
+test("editing a future length does not disturb the active countdown", () => {
+  const running = startWorkTimer(IDLE_WORK_TIMER, T0);
+  const configured = setWorkTimerMinutes(running, "work", 50);
+
+  assert.equal(configured.workDurationMs, 50 * 60_000);
+  assert.equal(configured.durationMs, WORK_TIMER_DEFAULT_MS);
+  assert.equal(
+    formatWorkTimer(workTimerRemainingMs(configured, T0 + 60_000)),
+    "24:00",
+  );
+  assert.equal(resetWorkTimer(configured).durationMs, 50 * 60_000);
 });
 
 test("a stored session comes back, and a broken one is ignored rather than kept", () => {
-  const running = startWorkTimer(setWorkTimerMinutes(15), T0);
+  const running = startWorkTimer(setWorkTimerMinutes(IDLE_WORK_TIMER, "work", 15), T0);
   const restored = parseWorkTimerSession(JSON.stringify(running));
   assert.deepEqual(restored, running, "a reload lands mid-session");
   assert.equal(formatWorkTimer(workTimerRemainingMs(restored, T0 + 60_000)), "14:00");
@@ -131,9 +155,32 @@ test("a stored session comes back, and a broken one is ignored rather than kept"
 
   assert.deepEqual(
     parseWorkTimerSession(JSON.stringify({ durationMs: 60_000, endAt: "soon", remainingMs: -3 })),
-    { durationMs: 60_000, endAt: null, remainingMs: null },
+    {
+      mode: "work",
+      durationMs: 60_000,
+      workDurationMs: 60_000,
+      breakDurationMs: BREAK_TIMER_DEFAULT_MS,
+      endAt: null,
+      remainingMs: null,
+    },
     "a usable length survives junk in the other fields, as an idle session",
   );
+});
+
+test("a saved work-only timer migrates with a default break", () => {
+  const legacy = {
+    durationMs: 30 * 60_000,
+    endAt: null,
+    remainingMs: null,
+  };
+  assert.deepEqual(parseWorkTimerSession(JSON.stringify(legacy)), {
+    mode: "work",
+    durationMs: 30 * 60_000,
+    workDurationMs: 30 * 60_000,
+    breakDurationMs: BREAK_TIMER_DEFAULT_MS,
+    endAt: null,
+    remainingMs: null,
+  });
 });
 
 test("a session that ran out while the page was closed lands on finished", () => {

@@ -189,6 +189,40 @@ const BUSY_SERVICE_GRACE_MS = 5 * 60_000;
 const SERVICE_START_GRACE_MS = 45_000;
 
 /**
+ * Turn a commissioned research brief into the query handed to literature
+ * catalogs.
+ *
+ * A Super Agent may expand a short user request into several thousand
+ * characters of scope and evidence instructions before launching Max
+ * Research. That full brief belongs with the research agents, but it is not a
+ * catalog query: Get Doc's sealed Runtime contract allows 4,000 UTF-8 bytes,
+ * and the upstream catalogs work best with the topic rather than the rubric.
+ * Keep the opening question, which is where commissioned briefs state their
+ * subject, and bound it by UTF-16 code units so it is also at most 2,048 UTF-8
+ * bytes even when every character needs four bytes.
+ */
+const MAX_LITERATURE_QUERY_CHARS = 512;
+
+export function maxResearchLiteratureQuery(question: string): string {
+  const original = question.trim();
+  const withoutDirective = original.replace(
+    /^(?:please\s+)?(?:do|run|conduct|perform|use)\s+(?:a\s+)?max\s+research(?:\s+on|\s*:)?\s*/iu,
+    "",
+  );
+  const subject = withoutDirective || original;
+  const openingParagraph = subject.split(/\r?\n\s*\r?\n/u, 1)[0]?.trim() || subject;
+  if (openingParagraph.length <= MAX_LITERATURE_QUERY_CHARS) {
+    return openingParagraph;
+  }
+
+  const bounded = openingParagraph.slice(0, MAX_LITERATURE_QUERY_CHARS);
+  const sentenceEnd = [...bounded.matchAll(/[.!?](?=\s|$)/gu)].at(-1)?.index;
+  return sentenceEnd !== undefined && sentenceEnd >= 40
+    ? bounded.slice(0, sentenceEnd + 1).trim()
+    : bounded.trim();
+}
+
+/**
  * Demote a run that stopped without finding anything.
  *
  * `completed` from a run manager means the process ended, not that it produced
@@ -648,7 +682,7 @@ function getDocRuntime(): ParticipantRuntime {
             // catalog terms; guidance goes to the context it reads as
             // background rather than as words to search for.
             request: {
-              query: brief.question,
+              query: maxResearchLiteratureQuery(brief.question),
               limit: DEFAULT_RESULT_LIMIT,
               openAccessOnly: false,
               yearFrom: null,

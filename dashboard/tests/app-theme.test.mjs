@@ -8,6 +8,7 @@ import {
   APP_THEME_MODE_STORAGE_KEY,
   APP_THEME_STORAGE_KEY,
   appThemeForMoment,
+  appThemeScheduleForShell,
   getStoredAppTheme,
   getStoredAppThemeLocation,
   getStoredAppThemeMode,
@@ -124,7 +125,10 @@ test("the remembered theme initializes before paint and is configurable from the
   assert.match(dashboard, /aria-label="Customize dashboard appearance"/);
   assert.match(dashboard, /applyAppTheme\(theme\)/);
   assert.match(dashboard, /role="radiogroup"/);
-  assert.match(runtime, /setTheme\?\.\(theme\)/);
+  assert.match(
+    runtime,
+    /setTheme\?\.\(theme, appThemeScheduleForShell\(window\.localStorage\)\)/,
+  );
   assert.match(runtime, /document\.querySelectorAll\("iframe"\)/);
   assert.match(runtime, /nextAppThemeTransition/);
   // A timer armed for the exact sunrise instant is a monotonic-clock deadline
@@ -176,4 +180,37 @@ test("the embedded Quartz reader accepts the dashboard theme message", () => {
   assert.match(quartzTheme, /event\.source !== window\.parent/);
   assert.match(quartzTheme, /message\?\.type !== "breadboard:theme"/);
   assert.match(quartzTheme, /applyTheme\(message\.theme\)/);
+});
+
+test("the desktop shell is told the day's sunrise and sunset, never the coordinates", () => {
+  const storage = new Map();
+  const readable = { getItem: (key) => storage.get(key) ?? null };
+  // Off: the shell replays the last theme it was given.
+  assert.deepEqual(appThemeScheduleForShell(readable, new Date(2026, 5, 21, 12)), {
+    mode: "manual",
+  });
+
+  // On without a fix: the 06:00/18:00 fallback, in minutes of the local day.
+  storage.set(APP_THEME_MODE_STORAGE_KEY, "sun");
+  assert.deepEqual(appThemeScheduleForShell(readable, new Date(2026, 5, 21, 12)), {
+    mode: "sun",
+    sunriseMinutes: 6 * 60,
+    sunsetMinutes: 18 * 60,
+  });
+
+  // On with a fix: the same instants appThemeForMoment switches on, and
+  // nothing about where they were computed for.
+  storage.set(
+    APP_THEME_LOCATION_STORAGE_KEY,
+    JSON.stringify({ latitude: 51.5, longitude: -0.12 }),
+  );
+  const noon = new Date(2026, 5, 21, 12);
+  const schedule = appThemeScheduleForShell(readable, noon);
+  assert.equal(schedule.mode, "sun");
+  assert.equal(Object.keys(schedule).sort().join(","), "mode,sunriseMinutes,sunsetMinutes");
+  const minuteOf = (date) => date.getHours() * 60 + date.getMinutes();
+  const times = solarTimesForDate(noon, getStoredAppThemeLocation(readable));
+  assert.equal(schedule.sunriseMinutes, minuteOf(times.sunrise));
+  assert.equal(schedule.sunsetMinutes, minuteOf(times.sunset));
+  assert.ok(schedule.sunriseMinutes < schedule.sunsetMinutes);
 });

@@ -76,10 +76,30 @@ function pathWithin(root, candidate) {
     (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
+/**
+ * Runtime V2 hands services its canonical data root, which on Windows carries
+ * the verbatim `\\?\` prefix that `fs.canonicalize` produces. Node's
+ * `realpathSync.native` answers without that prefix, so comparing the two
+ * spellings rejected every data root as "indirect" while the directory was
+ * perfectly direct. Compare the same spelling on both sides. (Written without
+ * backslash literals: the prefix is assembled from character codes.)
+ */
+function withoutVerbatimPrefix(value) {
+  if (process.platform !== "win32") return value;
+  const backslash = String.fromCharCode(92);
+  const verbatim = `${backslash}${backslash}?${backslash}`;
+  if (!value.startsWith(verbatim)) return value;
+  const rest = value.slice(verbatim.length);
+  const uncMarker = `UNC${backslash}`;
+  return rest.slice(0, uncMarker.length).toUpperCase() === uncMarker
+    ? `${backslash}${backslash}${rest.slice(uncMarker.length)}`
+    : rest;
+}
+
 function directDataDirectory() {
   const configured = process.env.BREADBOARD_DATA_DIR?.trim();
   if (!configured) fail("The semantic-memory data root is unavailable.", 500, "invalid_mem0_configuration");
-  const root = path.resolve(configured);
+  const root = path.resolve(withoutVerbatimPrefix(configured));
   const metadata = fs.lstatSync(root);
   if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
     fail("The semantic-memory data root is unavailable.", 500, "invalid_mem0_configuration");
@@ -147,7 +167,7 @@ function engineConfig() {
   );
   return {
     fingerprint,
-    dataDirectory,
+    dataDirectory: canonicalDataDirectory,
     vectorStorePath: directMutableFile(
       canonicalDataDirectory,
       path.join(canonicalDataDirectory, `vector-store-${spaceTag}.db`),

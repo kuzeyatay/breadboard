@@ -78,6 +78,20 @@ test("the calendar renders embedded, inside Plan's own shell", () => {
   );
 });
 
+test("the month calendar keeps its seven-column geometry without generated utilities", () => {
+  const sevenColumns = /gridTemplateColumns: "repeat\(7, minmax\(0, 1fr\)\)"/g;
+  assert.equal(
+    [...views.matchAll(sevenColumns)].length,
+    2,
+    "the month rows and weekday header both declare seven tracks",
+  );
+  assert.equal(
+    [...client.matchAll(sevenColumns)].length,
+    1,
+    "the mini month also declares seven tracks",
+  );
+});
+
 test("the client talks to the calendar API and nothing else", () => {
   const endpoints = [...client.matchAll(/fetch\(\s*[`"']([^`"']+)/g)].map((match) => match[1]);
   assert.ok(endpoints.length > 0);

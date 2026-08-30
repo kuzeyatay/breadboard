@@ -65,10 +65,15 @@ function publicFile(root, requestPath) {
   if (decoded.includes("\0") || decoded.includes("\\")) return null;
   const segments = decoded.split("/").filter(Boolean);
   if (segments.some((segment) => segment === "." || segment === "..")) return null;
-  const relative = segments.length === 0 || decoded.endsWith("/")
+  const directoryRequest = segments.length === 0 || decoded.endsWith("/");
+  const relative = directoryRequest
     ? path.join(...segments, "index.html")
     : path.join(...segments);
-  const candidates = path.extname(relative)
+  // A clean Quartz slug may contain dots (for example, a numbered lesson such
+  // as `1.1-fields`). Treating path.extname(slug) as proof that the request is
+  // for an asset skips the emitted `slug.html` file. Exact files still win,
+  // while every non-directory route also gets the normal clean-URL fallbacks.
+  const candidates = directoryRequest
     ? [relative]
     : [relative, `${relative}.html`, path.join(relative, "index.html")];
   if (!fs.existsSync(root)) return null;

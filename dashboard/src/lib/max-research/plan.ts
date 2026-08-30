@@ -1,8 +1,7 @@
 // Who does what, decided before anything starts.
 //
-// The five research agents are not interchangeable and running all of them on
-// every question would be waste dressed as thoroughness. Each reaches a
-// different part of the record:
+// The five research agents are not interchangeable, which is why Max Research
+// commissions all of them. Each reaches a different part of the record:
 //
 //   Deep Research  the indexed web, multi-round, and returns it cited
 //   Agent Reach    the open internet — threads, posts, videos, repositories
@@ -148,20 +147,14 @@ function rationaleFor(participant: MaxResearchParticipant): string {
 /**
  * Divide one question among the five.
  *
- * Deep Research and Agent Reach are unconditional: every question has an
- * indexed answer and a spoken one, and the gap between them is often the
- * finding. The other three are earned by the question — the literature when it
- * is a question the literature answers, the workspace when something can be
- * run, and ARIS whenever it is installed, because methodology costs no
- * retrieval and improves the two ends of the run.
+ * Every question gets all five. Availability is an execution outcome, not a
+ * planning filter: a missing service remains visible in the roster and in the
+ * final coverage statement instead of making a partial run look complete.
  */
 export function planMaxResearch(input: {
   question: string;
-  /** Participants whose runtime is not available right now. */
-  unavailable?: readonly MaxResearchParticipant[];
 }): MaxResearchPlan {
   const question = input.question.trim();
-  const unavailable = new Set(input.unavailable ?? []);
   const research = classifyResearch({ question });
 
   const academic =
@@ -198,9 +191,7 @@ export function planMaxResearch(input: {
     { participant: "aris", wave: 1, required: false },
   ];
 
-  const assignments = wanted
-    .filter((entry) => !unavailable.has(entry.participant))
-    .map(({ participant, wave, required }) => {
+  const assignments = wanted.map(({ participant, wave, required }) => {
       const guidance = guidanceFor(participant);
       return {
       participant,

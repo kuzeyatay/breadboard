@@ -17,6 +17,10 @@
 
 import { useSyncExternalStore } from "react";
 import { setYoloModeEnabled } from "./use-yolo-mode.ts";
+import {
+  persistComposerSwitch,
+  registerComposerSwitch,
+} from "./composer-switch-preferences.ts";
 
 const AGENT_MODE_KEY = "breadboard:agent-mode";
 const SUPER_AGENT_KEY = "breadboard:super-agent";
@@ -71,8 +75,7 @@ function subscribe(onStoreChange: () => void): () => void {
   };
 }
 
-/** Exported so the coupling can be exercised without rendering a component. */
-export function setAgentModeEnabled(enabled: boolean): void {
+function applyAgentMode(enabled: boolean): void {
   agentModeMemory = enabled;
   writeFlag(AGENT_MODE_KEY, enabled);
   if (!enabled) {
@@ -82,18 +85,39 @@ export function setAgentModeEnabled(enabled: boolean): void {
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 
-export function setSuperAgentEnabled(enabled: boolean): void {
+function applySuperAgent(enabled: boolean): void {
   superAgentMemory = enabled;
   writeFlag(SUPER_AGENT_KEY, enabled);
   if (enabled) {
     agentModeMemory = true;
     writeFlag(AGENT_MODE_KEY, true);
-    // Super Agent orchestrates private workers and cannot stop at their
-    // permission cards, so enabling it also enables the shared bypass policy.
-    setYoloModeEnabled(true);
   }
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
+
+/** Exported so the coupling can be exercised without rendering a component. */
+export function setAgentModeEnabled(enabled: boolean): void {
+  applyAgentMode(enabled);
+  persistComposerSwitch("agentMode", enabled);
+  if (!enabled) persistComposerSwitch("superAgent", false);
+}
+
+export function setSuperAgentEnabled(enabled: boolean): void {
+  applySuperAgent(enabled);
+  if (enabled) {
+    // Super Agent orchestrates private workers and cannot stop at their
+    // permission cards, so enabling it also enables the shared bypass policy.
+    setYoloModeEnabled(true);
+    persistComposerSwitch("agentMode", true);
+  }
+  persistComposerSwitch("superAgent", enabled);
+}
+
+// Hydrated from the account on load: the localStorage copy belongs to one
+// origin, and the desktop dashboard's origin changes on every launch. The
+// account record already carries the coupling, so each flag applies alone.
+registerComposerSwitch("agentMode", applyAgentMode);
+registerComposerSwitch("superAgent", applySuperAgent);
 
 // The setters are module-level and already stable, so they are returned as they
 // are rather than wrapped in a hook that would only re-derive the same identity.

@@ -15,6 +15,7 @@ import { ArtifactArchiveIcon } from "./artifact-panel";
 import RailDivider from "./rail-divider";
 import type { RailResize } from "./use-rail-resize";
 import { CHAT_HIGHLIGHTS, chatHighlight } from "@/lib/conversations/highlights";
+import { useOverflowMarquee } from "../overflow-marquee";
 
 export type TerminalPanel = "artifacts" | "uploads" | "scheduled" | "hooks" | "processes";
 
@@ -303,67 +304,6 @@ function readSectionState(): { pinned: boolean; recents: boolean } {
   }
 }
 
-// A name too long for the rail scrolls itself while the row is hovered, then
-// slides back — the row is narrow enough that an ellipsis often hides the part
-// that tells two chats apart.
-//
-// The travel distance is measured on hover rather than on render: the row's
-// pin and menu buttons only appear on hover, so the width the name actually has
-// is not known until then. Waiting out the delay also keeps a cursor crossing
-// the rail from setting every row in motion.
-const MARQUEE_DELAY_MS = 350;
-const MARQUEE_SPEED_PX_PER_SEC = 42;
-/** Share of the animation spent travelling one way; the rest is the pause at each end. */
-const MARQUEE_TRAVEL_SHARE = 0.36;
-
-// The element to measure is passed in rather than handed back, so nothing the
-// hook returns carries a ref into the render path.
-function useTitleMarquee(textRef: React.RefObject<HTMLSpanElement | null>) {
-  const timerRef = useRef<number | null>(null);
-  const [scroll, setScroll] = useState<{ distance: number; duration: number } | null>(null);
-
-  const stop = useCallback(() => {
-    if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    setScroll(null);
-  }, []);
-
-  const start = useCallback(() => {
-    if (timerRef.current !== null) return;
-    timerRef.current = window.setTimeout(() => {
-      timerRef.current = null;
-      const text = textRef.current;
-      if (!text) return;
-      const distance = text.scrollWidth - text.clientWidth;
-      // Sub-pixel overflow is rounding, not a cut-off name.
-      if (distance < 2) return;
-      const duration = distance / MARQUEE_SPEED_PX_PER_SEC / MARQUEE_TRAVEL_SHARE;
-      setScroll({ distance, duration });
-    }, MARQUEE_DELAY_MS);
-  }, [textRef]);
-
-  useEffect(
-    () => () => {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    },
-    [],
-  );
-
-  return {
-    running: scroll !== null,
-    style: scroll
-      ? ({
-          "--bb-marquee-distance": `${scroll.distance}px`,
-          "--bb-marquee-duration": `${scroll.duration.toFixed(2)}s`,
-        } as CSSProperties)
-      : undefined,
-    start,
-    stop,
-  };
-}
-
 function NavButton({
   label,
   icon,
@@ -524,7 +464,7 @@ function ChatRow({
   const [menuPosition, setMenuPosition] = useState<MenuPosition>({ top: 0, left: 0 });
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const titleRef = useRef<HTMLSpanElement>(null);
-  const marquee = useTitleMarquee(titleRef);
+  const marquee = useOverflowMarquee(titleRef);
 
   function showIntent() {
     marquee.start();

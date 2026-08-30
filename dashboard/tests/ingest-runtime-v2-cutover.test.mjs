@@ -125,48 +125,68 @@ test("terminal admission denial preserves closed Windows commit evidence", async
     resourceExhaustion: evidence,
     cancellationRequested: false,
   };
+  const control = {
+    async replay(_authority, _jobId, after) {
+      return {
+        jobId: job.jobId,
+        after,
+        nextAfter: after,
+        terminal: true,
+        hasMore: false,
+        events: [],
+      };
+    },
+    async inspect() {
+      return job;
+    },
+    async readOutput() {
+      throw new Error("terminal admission denial has no worker output");
+    },
+  };
   const response = createRuntimeIngestSseResponse({
     authority: { userId: 42, gardenId: "garden-1", conversationId: null },
     job,
     model: "selected-model",
     startedAt: Date.now(),
-    control: {
-      async replay(_authority, _jobId, after) {
-        return {
-          jobId: job.jobId,
-          after,
-          nextAfter: after,
-          terminal: true,
-          hasMore: false,
-          events: [],
-        };
-      },
-      async inspect() {
-        return job;
-      },
-      async readOutput() {
-        throw new Error("terminal admission denial has no worker output");
-      },
-    },
+    parseWithVlm: true,
+    control,
   });
   const payloads = await ssePayloads(response);
   assert.equal(payloads.length, 2);
+  const { error, ...rest } = JSON.parse(payloads[0]);
   assert.deepEqual(
-    {
-      ...JSON.parse(payloads[0]),
-      durationMs: 0,
-      tokenUsage: null,
-    },
+    { ...rest, durationMs: 0, tokenUsage: null },
     {
       type: "error",
-      error: "Runtime job execution failed.",
       code: "BREADBOARD_RESOURCE_EXHAUSTED",
       ...evidence,
       durationMs: 0,
       tokenUsage: null,
     },
   );
+  // The sanitized control-plane message never reaches the upload dialog for a
+  // memory denial; the closed headroom evidence and the VLM option are named.
+  assert.match(error, /8\.0 GB required/u);
+  assert.match(error, /4\.0 GB available/u);
+  assert.match(error, /VLM OCR/u);
+  assert.match(error, /paging file/u);
+  assert.doesNotMatch(error, /Runtime job execution failed/u);
   assert.equal(payloads[1], "[DONE]");
+
+  // A recovered stream does not know which parse option was chosen and a
+  // service denial may carry no evidence at all; both still get a remedy.
+  const recovered = createRuntimeIngestSseResponse({
+    authority: { userId: 42, gardenId: "garden-1", conversationId: null },
+    job: { ...job, resourceExhaustion: null },
+    model: "selected-model",
+    startedAt: Date.now(),
+    control: { ...control, async inspect() { return { ...job, resourceExhaustion: null }; } },
+  });
+  const recoveredError = JSON.parse((await ssePayloads(recovered))[0]).error;
+  assert.match(recoveredError, /could not reserve enough memory/u);
+  assert.match(recoveredError, /retry/u);
+  assert.doesNotMatch(recoveredError, /VLM/u);
+  assert.doesNotMatch(recoveredError, /Runtime job execution failed/u);
 });
 
 test("an arbitrary worker failure checkpoint cannot disclose internal details", async () => {

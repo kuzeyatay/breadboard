@@ -31,6 +31,7 @@ import {
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import DocumentContextMenu from "@/app/components/document-context-menu";
 import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
 import {
   restoreQueuedFollowUpDraft,
@@ -92,6 +93,7 @@ import type {
   PermissionPrompt,
 } from "@/app/components/hermes/use-agent-session";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
+import { applyGardenStableTextEvent } from "@/lib/hermes/garden-stable-stream";
 import {
   delegatedAgentActivityLabelForMessage,
   delegatedAgentCompletedLabelForMessage,
@@ -124,6 +126,7 @@ import ArtifactPanel, {
   ArtifactArchiveIcon,
   GARDEN_DOCUMENTS_CHANGED_EVENT,
 } from "@/app/components/hermes/artifact-panel";
+import { ArtifactDockHostProvider } from "@/app/components/hermes/artifact-dock-host";
 import { consumeArtifactAiEdit, type ArtifactAiEditDetail } from "@/app/components/hermes/artifact-ai-edit";
 import InlineAgentBrowserRun from "@/app/components/hermes/inline-agent-browser-run";
 import InlineArtifactCards, {
@@ -417,7 +420,11 @@ import {
   type ExternalAgentOutcome,
   type ExternalAgentTerminalResult,
 } from "@/lib/conversations/external-agent-runs";
-import { notifyTaskCompleted } from "@/lib/task-completion-notification";
+import {
+  notifyChatResponseFailed,
+  notifyChatResponseReady,
+} from "@/lib/task-completion-notification";
+import { reserveGardenTurnCheckpoint } from "@/lib/conversations/garden-turn-client";
 import { gardenDocumentHref } from "@/lib/garden-document-route";
 
 interface Message {
@@ -572,6 +579,8 @@ interface ChatSession {
   highlight?: string | null;
   /** A turn or an agent run is in flight in this chat right now. */
   active?: boolean;
+  /** Changes whenever the newest durable assistant message changes. */
+  latestAssistantVersion?: string | null;
 }
 
 /** One row of the rail's own feed: the chat without its transcript. */
@@ -585,6 +594,17 @@ interface ChatSessionSummary {
   pinned: boolean;
   highlight: string | null;
   active: boolean;
+  latestAssistantVersion: string | null;
+}
+
+function latestAssistantResponse(messages: readonly Message[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    const response = message.externalAgentResult?.trim() || message.content.trim();
+    if (response) return response;
+  }
+  return undefined;
 }
 
 interface ExternalAgentSelection {
@@ -2699,7 +2719,11 @@ export default function WorkspaceClient({
   forkAllowed,
 }: Props) {
   const router = useRouter();
-  const { toasts, addToast, dismissToast } = useToast();
+  const { toasts, addToast, dismissToast, dismissChatToasts } = useToast();
+  // Every artifact entry point in this workspace—archive rows and inline chat
+  // cards alike—opens into one overlay bounded by the workspace body. Keeping
+  // the host below the header prevents the viewer from covering Garden nav.
+  const [artifactDockHost, setArtifactDockHost] = useState<HTMLDivElement | null>(null);
 
   // Documents sidebar
   const [documents, setDocuments] = useState<DocInfo[]>([]);
@@ -2752,6 +2776,12 @@ export default function WorkspaceClient({
     () => new Set<string>(),
   );
   const chatActivity = useRef<ReadonlyMap<string, boolean>>(new Map());
+  const latestAssistantVersions = useRef<ReadonlyMap<string, string | null>>(
+    new Map(),
+  );
+  // A local response emits immediately; its next durable rail cursor is only
+  // an acknowledgement of that notice and must not create a second one.
+  const locallyAnnouncedChatResponses = useRef<Set<string>>(new Set());
   const unreadRestored = useRef(false);
   const [savingFlagSlug, setSavingFlagSlug] = useState<string | null>(null);
   const [selectedDocumentSlugs, setSelectedDocumentSlugs] = useState<string[]>(
@@ -2773,6 +2803,12 @@ export default function WorkspaceClient({
   // can follow it there and nowhere else. See useChatDraft.
   const [createdChatId, setCreatedChatId] = useState<number | null>(null);
   const activeChatIdRef = useRef<number | null>(null);
+  // A reply written in a background-answer notice is handed to the normal
+  // composer pipeline after that exact chat becomes the selected transcript.
+  const pendingNotificationReplyRef = useRef<{
+    chatId: number;
+    message: string;
+  } | null>(null);
   // `null` initially means "pick the newest persisted chat". After the user
   // presses New chat it means something different: keep a blank, unsaved
   // draft selected until its first turn creates the real row. A ref keeps
@@ -3747,19 +3783,85 @@ export default function WorkspaceClient({
     setUnreadChats(readUnreadChats(window.localStorage, clusterSlug));
     unreadRestored.current = false;
     chatActivity.current = new Map();
+    latestAssistantVersions.current = new Map();
+    locallyAnnouncedChatResponses.current.clear();
   }, [clusterSlug]);
 
   // The rows are rebuilt on every render, so the pass below is keyed on what it
-  // actually reads: which chats there are and which of them are working.
+  // actually reads: which chats are working and which assistant message is
+  // their newest durable answer.
+  const latestAssistantVersionByChat = new Map(
+    chatSessions.map((session) => [
+      String(session.id),
+      session.latestAssistantVersion ?? null,
+    ]),
+  );
   const railActivityKey = sidebarChats
-    .map((chat) => `${chat.id}:${chat.active ? 1 : 0}`)
+    .map(
+      (chat) =>
+        `${chat.id}:${chat.active ? 1 : 0}:${latestAssistantVersionByChat.get(chat.id) ?? ""}`,
+    )
     .join(",");
+
+  const notifyFinishedGardenChat = useCallback(async (
+    chatId: string,
+    title: string,
+  ) => {
+    let response: string | undefined;
+    try {
+      const params = new URLSearchParams({
+        clusterSlug,
+        sessionId: chatId,
+      });
+      const result = await fetch(`/api/chat-sessions?${params.toString()}`, {
+        cache: "no-store",
+      });
+      if (result.ok) {
+        const data = (await result.json()) as { sessions?: ChatSession[] };
+        response = latestAssistantResponse(data.sessions?.[0]?.messages ?? []);
+      }
+    } catch {
+      // The completion itself is still worth announcing. Opening the chat will
+      // load the transcript even if this small preview request was interrupted.
+    }
+    notifyChatResponseReady(title, {
+      chatId,
+      activeChatId: activeChatIdRef.current,
+      response,
+    });
+  }, [clusterSlug]);
 
   // One pass per refresh of the rail: raise the dot on every chat that stopped
   // running out of sight, and take it off the one being read.
   useEffect(() => {
     const previousActive = chatActivity.current;
     chatActivity.current = chatActivityById(sidebarChats);
+    const previousAssistantVersions = latestAssistantVersions.current;
+    const currentAssistantVersions = new Map(
+      sidebarChats.map((chat) => [
+        chat.id,
+        latestAssistantVersionByChat.get(chat.id) ?? null,
+      ]),
+    );
+    latestAssistantVersions.current = currentAssistantVersions;
+    for (const chat of sidebarChats) {
+      const currentVersion = currentAssistantVersions.get(chat.id);
+      const assistantChanged =
+        previousAssistantVersions.has(chat.id) &&
+        Boolean(currentVersion) &&
+        previousAssistantVersions.get(chat.id) !== currentVersion;
+      if (!assistantChanged) continue;
+      if (locallyAnnouncedChatResponses.current.delete(chat.id)) continue;
+      if (chat.active || chat.id === viewingChatId) continue;
+      const session = chatSessions.find(
+        (candidate) => String(candidate.id) === chat.id,
+      );
+      if (session?.isOwn === false) continue;
+      // Detached/server-owned Garden turns can finish without the stream that
+      // launched them still being mounted. The message cursor catches even a
+      // fast turn that starts and finishes between two activity polls.
+      void notifyFinishedGardenChat(chat.id, chat.title);
+    }
     setUnreadChats((current) => {
       const next = nextUnreadChats({
         unread: current,
@@ -3771,6 +3873,13 @@ export default function WorkspaceClient({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [railActivityKey, viewingChatId]);
+
+  // A notice is only an invitation to visit an unseen answer. Selecting that
+  // conversation by any route makes every notice belonging to it disappear.
+  useEffect(() => {
+    if (!viewingChatId) return;
+    dismissChatToasts(viewingChatId);
+  }, [dismissChatToasts, toasts, viewingChatId]);
 
   useEffect(() => {
     if (!unreadRestored.current) {
@@ -3798,13 +3907,27 @@ export default function WorkspaceClient({
   const openChatById = useCallback((chatId: string) => {
     const id = Number(chatId);
     if (!Number.isInteger(id)) return;
+    dismissChatToasts(chatId);
     pendingNewChatRef.current = false;
     setSidePanel(null);
     setActiveChatId(id);
     // An existing chat, so nothing typed in the blank composer belongs to it.
     setCreatedChatId(null);
     setDraftMessages(null);
-  }, []);
+  }, [dismissChatToasts]);
+
+  const replyToChatFromNotification = useCallback((
+    chatId: string,
+    message: string,
+  ) => {
+    const id = Number(chatId);
+    const target = chatSessions.find((session) => session.id === id);
+    if (!Number.isInteger(id) || !target || target.isOwn === false) {
+      throw new Error("This chat is no longer available for replies.");
+    }
+    pendingNotificationReplyRef.current = { chatId: id, message };
+    openChatById(chatId);
+  }, [chatSessions, openChatById]);
 
   // The server names a chat from its first prompt, the same way it names a
   // Terminal one. The Terminal sees that name arrive through its history poll;
@@ -3921,6 +4044,24 @@ export default function WorkspaceClient({
     (activeChatId !== null && streamingChatIds.has(activeChatId)) ||
     activeChat?.active === true ||
     hasRunningExternalAgentInActiveChat;
+
+  useEffect(() => {
+    const pending = pendingNotificationReplyRef.current;
+    if (
+      !pending ||
+      pending.chatId !== activeChatId ||
+      chatContentLoading ||
+      isStreaming ||
+      launchingExternalAgent !== null
+    ) {
+      return;
+    }
+    pendingNotificationReplyRef.current = null;
+    void handleSubmit(pending.message);
+    // `handleSubmit` reads the selected transcript from this render. Depending
+    // on its new function identity would rerun this hand-off on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChatId, chatContentLoading, isStreaming, launchingExternalAgent]);
   const visibleAgentConnection: ConnectionState =
     activeChat?.active === true && agentActivity.connection === "idle"
       ? "streaming"
@@ -3939,14 +4080,15 @@ export default function WorkspaceClient({
     virtual: transcriptVirtual,
   });
 
-  // One tick per question asked. Ticks name rows, not messages, so they are read
+  // One tick per visible chat message. Ticks name rows, not messages, so they are read
   // off the same list the virtualizer draws — the observer turns it drops would
   // otherwise slide every tick after them onto the wrong message.
   const railItems = useMemo<ChatMessageRailItem[]>(
     () =>
       buildTranscriptRows(messages).flatMap((row, rowIndex) =>
-        row.message.role === "user"
-          ? [{ rowIndex, label: row.message.content }]
+        (row.message.role === "user" || row.message.role === "assistant") &&
+        row.message.content.trim()
+          ? [{ rowIndex, label: row.message.content, role: row.message.role }]
           : [],
       ),
     [messages],
@@ -4039,6 +4181,43 @@ export default function WorkspaceClient({
       setExternalAgentStatus(
         `${request.agentName} could not start because the originating assistant message is missing.`,
       );
+      return;
+    }
+    if (request.startedRun?.kind === "max_research") {
+      // The tool boundary already owns this launch. Mirror its durable run into
+      // the open Garden transcript so the hidden observer can stream the result
+      // and hand it back, without launching a second worker.
+      delegatedAgentLaunchRef.current = request;
+      setDelegatedAgentLaunching(true);
+      try {
+        const prepared = await prepareExternalAgentSession("");
+        if (!prepared) return;
+        setChatStreaming(prepared.session.id, true);
+        await commitExternalAgentTurn(
+          prepared.session,
+          "",
+          {
+            role: "assistant",
+            content: "",
+            maxResearchRun: {
+              runId: request.startedRun.runId,
+              query: request.startedRun.query,
+            },
+            externalAgentOutcome: "running",
+          },
+        );
+      } catch (error) {
+        setExternalAgentStatus(
+          error instanceof Error
+            ? error.message
+            : `${request.agentName} started, but this view could not attach its observer.`,
+        );
+      } finally {
+        if (delegatedAgentLaunchRef.current?.requestId === request.requestId) {
+          delegatedAgentLaunchRef.current = null;
+        }
+        setDelegatedAgentLaunching(false);
+      }
       return;
     }
     const composerSelection = readComposerAgentSelection();
@@ -10739,7 +10918,9 @@ export default function WorkspaceClient({
         ? `Attached: ${attachmentNames.join(", ")}`
         : "");
     const turnCreatedAt = new Date().toISOString();
+    const clientMessageId = crypto.randomUUID();
     const userMsg: Message = {
+      clientMessageId,
       role: "user",
       content: displayText,
       createdAt: turnCreatedAt,
@@ -10769,6 +10950,7 @@ export default function WorkspaceClient({
       setDraftMessages([
         userMsg,
         {
+          clientMessageId,
           role: "assistant",
           content: "",
           createdAt: turnCreatedAt,
@@ -10811,6 +10993,7 @@ export default function WorkspaceClient({
 
     const nextMessages = [...history, userMsg];
     const assistantMsg: Message = {
+      clientMessageId,
       role: "assistant",
       content: "",
       createdAt: turnCreatedAt,
@@ -10829,16 +11012,23 @@ export default function WorkspaceClient({
     setChatStreaming(sessionId, true);
     chatHistoryEpoch.current += 1;
     updateChatMessages(sessionId, finalMessages);
-    // The user's half of the turn must exist durably before any runtime work
-    // begins. If the page is replaced a millisecond after dispatch, the
-    // detached server pump can still finish and append its answer to this
-    // checkpoint; without it the prompt simply vanishes from Garden history.
-    const checkpointSaved = await persistChatSession(
-      sessionId,
-      nextMessages,
-      title,
-      { updateLocal: false },
-    );
+    // Both halves of the turn must exist in one durable commit before any
+    // attachment, skill, model, or runtime preparation starts. A service
+    // restart can now either resume this answer or terminalize it; it can no
+    // longer restore the question alone.
+    let checkpointSaved = false;
+    try {
+      const checkpoint = await reserveGardenTurnCheckpoint(
+        sessionId,
+        clientMessageId,
+        userMsg,
+      );
+      userMsg.id = checkpoint.userMessageId;
+      assistantMsg.id = checkpoint.assistantMessageId;
+      checkpointSaved = true;
+    } catch {
+      addToast("Chat was not saved");
+    }
     if (!checkpointSaved) {
       setChatStreaming(sessionId, false);
       updateChatMessages(sessionId, history);
@@ -10980,6 +11170,7 @@ export default function WorkspaceClient({
           ),
           clusterSlug,
           chatSessionId: sessionId,
+          clientMessageId,
           model,
           reasoningEffort,
           attachments: pendingAttachments,
@@ -11045,6 +11236,7 @@ export default function WorkspaceClient({
             const event = JSON.parse(payload) as
               | { type: "sources"; sources: string[] }
               | { type: "delta"; text: string }
+              | { type: "provisional"; text: string }
               | { type: "replace"; text: string }
               | { type: "segment"; text: string; streamed: boolean }
               | { type: "thinking"; text: string }
@@ -11090,22 +11282,31 @@ export default function WorkspaceClient({
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "delta") {
-              assistantMsg.content += event.text;
+              Object.assign(
+                assistantMsg,
+                applyGardenStableTextEvent(assistantMsg, event),
+              );
+              finalMessages = messagesWithAssistant();
+              updateChatMessages(sessionId, finalMessages);
+            } else if (event.type === "provisional") {
+              Object.assign(
+                assistantMsg,
+                applyGardenStableTextEvent(assistantMsg, event),
+              );
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "replace") {
-              assistantMsg.content = event.text;
+              Object.assign(
+                assistantMsg,
+                applyGardenStableTextEvent(assistantMsg, event),
+              );
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "segment") {
-              // Streamed text so far was tool-call narration, not the answer.
-              // Park it in the thinking strip; the bubble restarts with the
-              // next segment.
-              if (typeof event.text === "string" && event.text.trim()) {
-                assistantMsg.thinking =
-                  `${assistantMsg.thinking ?? ""}\n${event.text}`.trim();
-              }
-              if (event.streamed) assistantMsg.content = "";
+              Object.assign(
+                assistantMsg,
+                applyGardenStableTextEvent(assistantMsg, event),
+              );
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "usage") {
@@ -11178,7 +11379,14 @@ export default function WorkspaceClient({
         !agentReportedError &&
         assistantMsg.content.trim()
       ) {
-        notifyTaskCompleted(displayText, {
+        locallyAnnouncedChatResponses.current.add(String(sessionId));
+        notifyChatResponseReady(displayText, {
+          chatId: sessionId,
+          activeChatId: activeChatIdRef.current,
+          response: assistantMsg.content,
+        });
+      } else if (agentFailed || agentReportedError) {
+        notifyChatResponseFailed(displayText, {
           chatId: sessionId,
           activeChatId: activeChatIdRef.current,
         });
@@ -11692,21 +11900,6 @@ export default function WorkspaceClient({
     const showLearnTokenUsage = Boolean(
       learnTokenUsage && (active || hasLearnTokenActivity),
     );
-    const learnUsageCallSummary = learnTokenUsage
-      ? [
-          learnTokenUsage.reportedCalls > 0
-            ? `${learnTokenUsage.reportedCalls} call${learnTokenUsage.reportedCalls === 1 ? "" : "s"}`
-            : null,
-          learnTokenUsage.inFlightCalls > 0
-            ? `${learnTokenUsage.inFlightCalls} active`
-            : null,
-          learnTokenUsage.unreportedCalls > 0
-            ? `${learnTokenUsage.unreportedCalls} unavailable`
-            : null,
-        ]
-          .filter(Boolean)
-          .join(" · ")
-      : "";
 
     if (
       !isOwner ||
@@ -12524,11 +12717,6 @@ export default function WorkspaceClient({
               <span className="text-gray-600">Waiting for usage</span>
             )}
 
-            {learnUsageCallSummary ? (
-              <span className="text-gray-600">
-                {learnUsageCallSummary}
-              </span>
-            ) : null}
             </>
           ) : (
             <span className="text-gray-600">Waiting for usage</span>
@@ -12759,9 +12947,10 @@ export default function WorkspaceClient({
           const documentHref = isPdfSource
             ? `/gardens/${clusterSlug}/pdf/${encodeURIComponent(doc.slug)}`
             : gardenDocumentHref(clusterSlug, doc);
-          return (
+          const rowKey = `${doc.slug}:${doc.type}:${index}`;
+          const row = (
             <li
-              key={`${doc.slug}:${doc.type}:${index}`}
+              key={rowKey}
               className={[
                 "group flex items-start gap-2.5 px-4 py-2 transition-colors",
                 isSource
@@ -12928,6 +13117,17 @@ export default function WorkspaceClient({
                 )}
               </button>
             </li>
+          );
+          return isSource ? (
+            <DocumentContextMenu
+              key={rowKey}
+              documentTitle={displayTitle}
+              pdfHref={isPdfSource ? documentHref : null}
+            >
+              {row}
+            </DocumentContextMenu>
+          ) : (
+            row
           );
         })}
       </ul>
@@ -14088,7 +14288,8 @@ export default function WorkspaceClient({
       ) : null}
 
       {/* Body */}
-      <div className="flex flex-1 min-h-0">
+      <div className="relative flex flex-1 min-h-0">
+        <ArtifactDockHostProvider host={artifactDockHost}>
         {/* Left sidebar: chat sessions */}
         {/* The Terminal's rail, garden-scoped: this garden's chats, its
             uploads, its schedules, its hooks and its live work. The Terminal
@@ -14474,9 +14675,17 @@ export default function WorkspaceClient({
             </main>
             <ChatMessageRail
               surface="garden-chat"
+              conversationKey={activeChatId}
               items={railItems}
               scrollRef={transcriptScrollRef}
               bridge={transcriptVirtual}
+              onReply={async (text) => {
+                if (isStreaming || externalRunHoldsQueue) {
+                  queueFollowUp(text);
+                  return;
+                }
+                await handleSubmit(text);
+              }}
             />
             <ChatJumpToBottom
               visible={transcriptAwayFromBottom}
@@ -14492,7 +14701,7 @@ export default function WorkspaceClient({
           {/* Input area */}
           <div
             ref={composerInset.ref}
-            className="bb-composer-overlay px-4 py-4"
+            className="bb-composer-overlay px-4 pb-3"
           >
             {/* A runtime agent the assistant chose, waiting to be started. */}
             {agentLaunchQueue.pending ? (
@@ -14770,6 +14979,14 @@ export default function WorkspaceClient({
           showInternalConceptGraph={showInternalConceptGraph}
           savedLinkCount={savedLinks.length}
         />
+        {/* A true overlay: it stays above the learning-map rail and reaches
+            left over the chat without resizing either underlying surface. */}
+        <div
+          ref={setArtifactDockHost}
+          className="bb-garden-artifact-lane absolute inset-y-0 right-0 z-30 w-[max(24rem,50vw)] max-w-[calc(100vw-3rem)] overflow-hidden"
+          data-artifact-dock-origin="left"
+        />
+        </ArtifactDockHostProvider>
       </div>
 
       {searchOpen ? (
@@ -15574,7 +15791,12 @@ export default function WorkspaceClient({
 
       {confirmDialog}
 
-      <Toaster toasts={toasts} onDismiss={dismissToast} />
+      <Toaster
+        toasts={toasts}
+        onDismiss={dismissToast}
+        onOpenChat={openChatById}
+        onReplyToChat={replyToChatFromNotification}
+      />
     </div>
   );
 }

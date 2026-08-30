@@ -14,7 +14,6 @@ import { isChatHighlight } from "../conversations/highlights.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
 import { scrubFileInPlaceViaRuntime } from "../watermarks/scrub-file.ts";
 import type { WatermarkRuntimeControl } from "../runtime-v2/watermark-job.ts";
-import { withCapabilityLease } from "../supervisor-control.ts";
 import {
   renderMarkdownArtifactViaRuntime,
   type RuntimeV2OfficeControl,
@@ -42,6 +41,12 @@ export interface ArtifactRow {
   garden_slug?: string | null;
   originating_run_id: string;
   originating_message_id: number | null;
+  /**
+   * Response id used only by transcript presentation. A legacy Garden row can
+   * have been rebound by an older startup backfill even though the artifact's
+   * durable origin remains the original canonical response.
+   */
+  presentation_message_id?: number | null;
   originating_tool_call_id: string | null;
   source_surface: "dashboard_terminal" | "garden_chat";
   kind: ArtifactKind;
@@ -1414,7 +1419,7 @@ export function listArtifactsForUser(input: {
   if (!input.conversationPublicId && !input.gardenSlug && !input.sourceSurface) {
     throw new ArtifactStoreError(400, "artifact_scope_required", "A conversation, Garden, or surface scope is required.");
   }
-  return database.prepare(`
+  const artifacts = database.prepare(`
     SELECT a.*, c.public_id AS conversation_public_id, cl.slug AS garden_slug
     FROM hermes_artifacts a
     JOIN conversations c ON c.id = a.conversation_id
@@ -1432,6 +1437,107 @@ export function listArtifactsForUser(input: {
     input.gardenSlug ?? null, input.gardenSlug ?? null,
     input.sourceSurface ?? null, input.sourceSurface ?? null, input.sourceSurface ?? null,
   ) as ArtifactRow[];
+  return input.conversationPublicId
+    ? reconcileLegacyGardenArtifactOwners(artifacts, database)
+    : artifacts;
+}
+
+const LEGACY_ARTIFACT_OWNER_MATCH_MS = 5 * 60 * 1_000;
+
+function storedTimestampMs(value: string): number {
+  return Date.parse(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
+}
+
+/**
+ * Recover the response id that the Garden transcript currently presents.
+ *
+ * Older builds recopied a compatibility `chat_messages` row each time its id
+ * changed, replacing a perfectly valid canonical binding with a duplicate.
+ * Artifact ownership itself remains immutable; this alias only lets the card
+ * follow the equivalent, currently visible response until those old rows age
+ * out of local data.
+ */
+function reconcileLegacyGardenArtifactOwners(
+  artifacts: ArtifactRow[],
+  database: Database.Database,
+): ArtifactRow[] {
+  const candidates = artifacts.filter(
+    (artifact) =>
+      artifact.source_surface === "garden_chat" &&
+      artifact.originating_message_id !== null,
+  );
+  if (candidates.length === 0) return artifacts;
+
+  const conversationIds = Array.from(
+    new Set(candidates.map((artifact) => artifact.conversation_id)),
+  );
+  const ownerIds = Array.from(
+    new Set(
+      candidates.flatMap((artifact) =>
+        artifact.originating_message_id === null
+          ? []
+          : [artifact.originating_message_id],
+      ),
+    ),
+  );
+  const conversationSlots = conversationIds.map(() => "?").join(",");
+  const ownerSlots = ownerIds.map(() => "?").join(",");
+  const visible = database.prepare(`
+    SELECT session.conversation_id, legacy.canonical_message_id,
+           legacy.content, legacy.created_at
+    FROM chat_messages AS legacy
+    JOIN chat_sessions AS session ON session.id = legacy.session_id
+    JOIN conversation_messages AS canonical
+      ON canonical.id = legacy.canonical_message_id
+    WHERE session.conversation_id IN (${conversationSlots})
+      AND legacy.role = 'assistant'
+      AND canonical.role = 'assistant'
+      AND canonical.conversation_id = session.conversation_id
+  `).all(...conversationIds) as Array<{
+    conversation_id: number;
+    canonical_message_id: number;
+    content: string;
+    created_at: string;
+  }>;
+  const owners = database.prepare(`
+    SELECT id, conversation_id, content, created_at
+    FROM conversation_messages
+    WHERE id IN (${ownerSlots}) AND role = 'assistant'
+  `).all(...ownerIds) as Array<{
+    id: number;
+    conversation_id: number;
+    content: string;
+    created_at: string;
+  }>;
+
+  const visibleIds = new Set(visible.map((message) => message.canonical_message_id));
+  const ownerById = new Map(owners.map((message) => [message.id, message]));
+  return artifacts.map((artifact) => {
+    const ownerId = artifact.originating_message_id;
+    if (ownerId === null || visibleIds.has(ownerId)) return artifact;
+    const owner = ownerById.get(ownerId);
+    if (!owner) return artifact;
+    const ownerTime = storedTimestampMs(owner.created_at);
+    const replacement = visible
+      .filter(
+        (message) =>
+          message.conversation_id === owner.conversation_id &&
+          message.content === owner.content,
+      )
+      .map((message) => ({
+        message,
+        distance: Math.abs(storedTimestampMs(message.created_at) - ownerTime),
+      }))
+      .filter((match) => Number.isFinite(match.distance))
+      .sort((left, right) => left.distance - right.distance)[0];
+    if (!replacement || replacement.distance > LEGACY_ARTIFACT_OWNER_MATCH_MS) {
+      return artifact;
+    }
+    return {
+      ...artifact,
+      presentation_message_id: replacement.message.canonical_message_id,
+    };
+  });
 }
 
 /**
@@ -1724,14 +1830,14 @@ export function renderArtifact(input: {
     const root = storageRoot(input.storageRoot);
     if (durableReadyArtifactAvailable(current, root)) return Promise.resolve(current);
   }
-  if (input.artifact.renderer_id === "docx" || input.artifact.renderer_id === "pdf") {
-    return renderArtifactInner(input);
-  }
-  return withCapabilityLease(
-    "artifact-render",
-    `artifact-${input.artifact.renderer_id}`,
-    () => renderArtifactInner(input),
-  );
+  // Office renderers (docx/pdf) run as Runtime V2 jobs and carry their own
+  // admission inside renderMarkdownArtifactViaRuntime. Every other renderer is
+  // a local validate-and-write of the stored source (see artifact-renderers.ts)
+  // with no process to supervise, so nothing is leased here. The control
+  // plane exposes no /v1/capabilities/<id>/lease route at all — a lease
+  // attempt answered 404 and surfaced as an opaque 500 from artifact_render,
+  // which is how HTML artifacts sat at "generating" forever.
+  return renderArtifactInner(input);
 }
 
 /** Shallow-merges a metadata patch into an artifact (null values are removed). */
@@ -2020,12 +2126,15 @@ export function listArtifactEventsAfter(input: {
 }
 
 export function presentArtifact(row: ArtifactRow): PresentedArtifact {
+  const assistantMessageId = row.presentation_message_id === undefined
+    ? row.originating_message_id
+    : row.presentation_message_id;
   return {
     id: row.id,
     conversationId: row.conversation_public_id ?? "",
     gardenId: row.garden_slug ?? null,
     runId: row.originating_run_id,
-    assistantMessageId: row.originating_message_id === null ? null : `msg_${row.originating_message_id}`,
+    assistantMessageId: assistantMessageId === null ? null : `msg_${assistantMessageId}`,
     toolCallId: row.originating_tool_call_id,
     kind: row.kind,
     renderer: row.renderer_id,

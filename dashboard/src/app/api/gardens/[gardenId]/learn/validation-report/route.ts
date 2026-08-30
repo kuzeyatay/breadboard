@@ -1,7 +1,10 @@
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
-import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import {
+  externalRuntimeFilesystem as fs,
+  externalRuntimePortableRealpath,
+} from "@/lib/external-runtime-filesystem";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -20,8 +23,11 @@ function validationReportFile(
   try {
     const metadata = fs.lstatSync(filePath);
     if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
-    const realGarden = fs.realpathSync(gardenDir);
-    const realFile = fs.realpathSync(filePath);
+    // Desktop services use extended Windows paths (\\?\C:\...). Node's
+    // JavaScript realpath walker truncates those paths, while the native
+    // implementation used by the shared runtime helper preserves them.
+    const realGarden = externalRuntimePortableRealpath(gardenDir);
+    const realFile = externalRuntimePortableRealpath(filePath);
     if (!realFile.startsWith(`${realGarden}${path.sep}`)) return null;
     return { filePath: realFile, size: metadata.size };
   } catch {

@@ -1013,6 +1013,74 @@ describe("ordinary Learn Council checkpoints", () => {
     assert.equal(canStartLearnCouncilAfterLegacyAbsence(db, "job-current"), true);
   });
 
+  it("adopts one immutable legacy failure proof across an exact successor retry", () => {
+    const db = database();
+    addJob(db, {
+      id: "job-failed-provider-outcome",
+      status: "failed",
+      createdAt: "2025-12-30T00:00:00.000Z",
+      updatedAt: "2025-12-30T00:10:00.000Z",
+    });
+    addJob(db, {
+      id: "job-completed-provider-outcome",
+      status: "failed",
+      createdAt: "2025-12-31T00:00:00.000Z",
+      updatedAt: "2025-12-31T00:10:00.000Z",
+    });
+    addJob(db, {
+      id: "job-first-retry",
+      status: "failed",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:10:00.000Z",
+    });
+    addJob(db, {
+      id: "job-successor-retry",
+      status: "generating_learning_pages",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    });
+    const common = {
+      failureOriginJobId: "job-failed-provider-outcome",
+      completionOriginJobId: "job-completed-provider-outcome",
+      requestHash: HASH_B,
+      proof: legacyFailureProof(),
+      councilRunId: "legacy-run-completed",
+      responseHash: RESPONSE_HASH,
+    };
+    materializeCompletedLegacyLearnCouncilCheckpointAfterFailure(db, {
+      ...common,
+      proofId: "legacy-proof-first-retry",
+      checkpointId: "legacy-completion-first-retry",
+      now: "2026-01-01T00:05:00.000Z",
+      ...stage("job-first-retry"),
+    });
+    const successor = materializeCompletedLegacyLearnCouncilCheckpointAfterFailure(db, {
+      ...common,
+      proofId: "legacy-proof-successor-adoption",
+      checkpointId: "legacy-completion-successor-retry",
+      now: "2026-01-02T00:01:00.000Z",
+      ...stage("job-successor-retry"),
+    });
+
+    assert.equal(successor.checkpoint_id, "legacy-completion-successor-retry");
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS count FROM learn_council_legacy_failure_proofs").get().count,
+      1,
+    );
+    assert.deepEqual(
+      db.prepare(
+        `SELECT proof_id, source_job_id, authorized_job_id
+         FROM learn_council_legacy_boundary_adoptions`,
+      ).get(),
+      {
+        proof_id: "legacy-proof-first-retry",
+        source_job_id: "job-first-retry",
+        authorized_job_id: "job-successor-retry",
+      },
+    );
+    assert.equal(canStartLearnCouncilAfterLegacyAbsence(db, "job-successor-retry"), true);
+  });
+
   it("carries a migrated failure boundary into an exact successor retry", () => {
     const db = database();
     addJob(db, {

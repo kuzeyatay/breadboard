@@ -32,9 +32,13 @@ import type { VimaxProduction } from "@/lib/vimax/types";
 import type { VoxProduction } from "@/lib/vox-director/types";
 import type { SocialsPostDocument } from "@/lib/socials-manager/post-artifact";
 import type { ArtifactKind, PresentedArtifact } from "@/lib/hermes/artifact-types";
-import { artifactEditorMode } from "@/lib/hermes/artifact-editor-types";
+import {
+  artifactEditorMode,
+  artifactUsesVisualHtmlEditor,
+} from "@/lib/hermes/artifact-editor-types";
 import ArtifactDocumentStudio from "./artifact-document-studio";
 import ArtifactGenOfficeEditor from "./artifact-genoffice-editor";
+import ArtifactVvvebEditor from "./artifact-vvveb-editor";
 import { dispatchArtifactAiEdit } from "./artifact-ai-edit";
 
 export { ARTIFACT_AI_EDIT_EVENT } from "./artifact-ai-edit";
@@ -534,6 +538,7 @@ export default function ArtifactViewer({
   const artifactId = artifact?.id ?? "";
   const artifactVersion = artifact?.version ?? 0;
   const editorMode = artifact ? artifactEditorMode(artifact) : null;
+  const usesVvvebEditor = artifact ? artifactUsesVisualHtmlEditor(artifact) : false;
   const usesGenOfficeEditor = artifact
     ? artifact.renderer === "document-file" && artifact.filename.toLowerCase().endsWith(".docx")
     : false;
@@ -801,6 +806,15 @@ export default function ArtifactViewer({
       );
     }
     if (editingDocument && editorMode && editorMode !== "pdf") {
+      if (usesVvvebEditor) {
+        return (
+          <ArtifactVvvebEditor
+            key={artifact.id}
+            artifact={artifact}
+            onSaved={(saved) => onUpdated?.(saved)}
+          />
+        );
+      }
       if (usesGenOfficeEditor) {
         return (
           <ArtifactGenOfficeEditor
@@ -1126,7 +1140,7 @@ export default function ArtifactViewer({
               onClick={() => {
                 const next = !editingDocument;
                 setEditingDocument(next);
-                if (next && usesGenOfficeEditor) setExpanded(true);
+                if (next && (usesGenOfficeEditor || usesVvvebEditor)) setExpanded(true);
               }}
               aria-pressed={editingDocument}
             >
@@ -1204,7 +1218,7 @@ export default function ArtifactViewer({
         ) : null}
         <div
           className={`bb-neu-recessed min-h-0 flex-1 ${
-            usesDocumentViewer
+            usesDocumentViewer || (editingDocument && usesVvvebEditor)
               ? "overflow-hidden p-0"
               : artifact.kind === "document" && !editingDocument
                 ? "overflow-auto p-0"

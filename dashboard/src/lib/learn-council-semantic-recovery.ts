@@ -6,6 +6,69 @@ export interface LearnCouncilTerminalReceiptProof {
   redispatchCount: number;
   redispatchAllowed: boolean;
   failureCode: string;
+  proofKind?: "terminal_receipt" | "expired_started_receipt";
+  startedAt?: string;
+  observedAt?: string;
+  maxStartedAgeMs?: number;
+}
+
+export interface LearnCouncilStartedReceiptObservation {
+  requestId: string;
+  requestHash: string;
+  dispatchGeneration: number;
+  dispatchCount: number;
+  redispatchCount: number;
+  redispatchAllowed: boolean;
+  attemptCount: number;
+  checkpointDispatchCount: number;
+  checkpointRedispatchCount: number;
+  startedAt: string;
+  observedAt: string;
+  maxStartedAgeMs: number;
+}
+
+/**
+ * Turn a still-started receipt into retry authority only after the maximum
+ * lifetime of its exact provider generation has elapsed. A live generation
+ * cannot cross this boundary: ChatMock's total upstream deadline is finite,
+ * and the attempt prefix must prove that no later generation completed.
+ */
+export function expiredStartedLearnCouncilReceiptProof(
+  input: LearnCouncilStartedReceiptObservation,
+): LearnCouncilTerminalReceiptProof | null {
+  const startedAtMs = Date.parse(input.startedAt);
+  const observedAtMs = Date.parse(input.observedAt);
+  if (
+    !input.requestId ||
+    !/^[a-f0-9]{64}$/u.test(input.requestHash) ||
+    !Number.isFinite(startedAtMs) ||
+    !Number.isFinite(observedAtMs) ||
+    observedAtMs < startedAtMs ||
+    !Number.isSafeInteger(input.maxStartedAgeMs) ||
+    input.maxStartedAgeMs < 1 ||
+    observedAtMs - startedAtMs < input.maxStartedAgeMs ||
+    input.dispatchGeneration !== input.dispatchCount ||
+    input.dispatchCount !== input.checkpointDispatchCount ||
+    input.redispatchCount !== input.checkpointRedispatchCount ||
+    input.redispatchCount !== input.dispatchCount - 1 ||
+    input.redispatchAllowed !== false ||
+    input.attemptCount !== input.dispatchCount - 1
+  ) {
+    return null;
+  }
+  return {
+    requestId: input.requestId,
+    requestHash: input.requestHash,
+    dispatchGeneration: input.dispatchGeneration,
+    dispatchCount: input.dispatchCount,
+    redispatchCount: input.redispatchCount,
+    redispatchAllowed: false,
+    failureCode: "council_started_receipt_expired",
+    proofKind: "expired_started_receipt",
+    startedAt: input.startedAt,
+    observedAt: input.observedAt,
+    maxStartedAgeMs: input.maxStartedAgeMs,
+  };
 }
 
 /**
@@ -23,6 +86,22 @@ export class LearnCouncilTerminalReceiptError extends Error {
         `(failureCode=${receipt.failureCode}, dispatchCount=${receipt.dispatchCount}).`,
     );
     this.name = "LearnCouncilTerminalReceiptError";
+    this.receipt = { ...receipt };
+  }
+}
+
+/** A strict receipt remained started after its provider generation's finite
+ * maximum lifetime. The exact attempt prefix proves the old process can no
+ * longer publish a result, so a new semantic identity is safe. */
+export class LearnCouncilExpiredStartedReceiptError extends Error {
+  readonly receipt: LearnCouncilTerminalReceiptProof;
+
+  constructor(receipt: LearnCouncilTerminalReceiptProof) {
+    super(
+      `Council request ${receipt.requestId} remained started beyond its ` +
+        `maximum provider lifetime (${receipt.maxStartedAgeMs ?? 0}ms).`,
+    );
+    this.name = "LearnCouncilExpiredStartedReceiptError";
     this.receipt = { ...receipt };
   }
 }
@@ -55,7 +134,10 @@ export async function runBoundedLearnCouncilSemanticAttempts<T>(input: {
       return await input.request({ semanticAttempt, priorTerminalReceipt });
     } catch (error) {
       if (
-        !(error instanceof LearnCouncilTerminalReceiptError) ||
+        !(
+          error instanceof LearnCouncilTerminalReceiptError ||
+          error instanceof LearnCouncilExpiredStartedReceiptError
+        ) ||
         semanticAttempt + 1 >= maxAttempts
       ) {
         throw error;

@@ -91,10 +91,18 @@ test("the agent runs a workflow through the capability-gated tool with an audit 
 test("the workflows page is a native canvas, not an embedded third-party editor", () => {
   const client = source("../src/app/workflows/workflows-client.tsx");
   const editor = source("../src/app/workflows/components/canvas-editor.tsx");
+  const node = source("../src/app/workflows/components/workflow-node.tsx");
+  const canvasStyles = source("../src/app/workflows/sim-canvas.css");
   const navigation = source("../src/lib/workflows/navigation.ts");
   assert.doesNotMatch(client, /<iframe/);
   assert.match(client, /CanvasEditor/);
   assert.match(editor, /ReactFlow/);
+  assert.match(editor, /style: \{ width: BLOCK_DIMENSIONS\.FIXED_WIDTH \}/);
+  assert.match(node, /typeLabel=\{config\.canvasPresentation\?\.typeLabel\}/);
+  assert.doesNotMatch(node, /typeLabel=\{config\.canvasPresentation\?\.typeLabel \?\? config\.name\}/);
+  assert.match(canvasStyles, /\.workflow-drag-handle\s*\{[^}]*width: 250px;/s);
+  assert.match(canvasStyles, /\.react-flow__handle\[data-nodeid\]\[data-handleid\][^{]*\{[^}]*opacity: 0 !important;/s);
+  assert.match(canvasStyles, /\[data-workflow-type-accent\] > svg\s*\{[^}]*width: 12px !important;[^}]*height: 12px !important;/s);
   assert.match(navigation, /window\.sessionStorage\.setItem\(WORKFLOWS_RETURN_PATH_KEY, returnPath\)/);
 });
 

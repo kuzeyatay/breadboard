@@ -57,6 +57,15 @@ export function artifactEditorMode(
   return SOURCE_RENDERERS.has(artifact.renderer) ? "source" : null;
 }
 
+/** Standalone HTML sources can use Vvveb's visual canvas without conversion. */
+export function artifactUsesVisualHtmlEditor(
+  artifact: EditableArtifactShape,
+): boolean {
+  return artifactEditorMode(artifact) === "source" &&
+    /^text\/html(?:;|$)/i.test(artifact.mimeType) &&
+    (artifact.renderer === "html" || artifact.renderer === "presentation-html");
+}
+
 export interface ArtifactReviewComment {
   id: string;
   quote: string;
@@ -76,4 +85,3 @@ export interface ArtifactEditorBlock {
   sheet?: string;
   cell?: string;
 }
-

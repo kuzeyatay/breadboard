@@ -379,7 +379,17 @@ export async function startDirectProviderTurn(
         "This failed turn requires an explicit retry.",
       );
     }
-    retryAssistantMessage(input.conversation.id, input.clientMessageId);
+    retryAssistantMessage(
+      input.conversation.id,
+      input.clientMessageId,
+      undefined,
+      {
+        ...(input.responseStartedAt
+          ? { responseStartedAt: input.responseStartedAt }
+          : {}),
+        ...(input.branchGroupId ? { branchGroupId: input.branchGroupId } : {}),
+      },
+    );
   }
 
   const model = selectedModel(input.model);

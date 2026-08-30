@@ -14,15 +14,26 @@ import {
   runManagedSetupJob,
 } from "@/lib/runtime-v2/managed-setup-job.ts";
 import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
+import { runCodexProbeViaRuntime } from "@/lib/runtime-v2/codex-probe-job.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
+async function runtimeToolchainStatus(userId: number, signal: AbortSignal) {
+  const codex = await runCodexProbeViaRuntime({ userId, signal });
+  return toolchainStatus({ found: codex.available, version: codex.version ?? "" });
+}
+
+export async function GET(request: Request) {
   try {
-    await requireUserId();
-    return NextResponse.json({ ok: true, status: toolchainStatus() });
+    const userId = await requireUserId();
+    return NextResponse.json({
+      ok: true,
+      status: await runtimeToolchainStatus(userId, request.signal),
+    });
   } catch (error) {
+    const runtimeResponse = runtimeAuthorityErrorResponse(error);
+    if (runtimeResponse) return runtimeResponse;
     if (error instanceof RouteError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
     }
@@ -50,7 +61,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: result.ok,
       message: result.message,
-      status: toolchainStatus(),
+      status: await runtimeToolchainStatus(userId, request.signal),
     });
   } catch (error) {
     const runtimeResponse = runtimeAuthorityErrorResponse(error);

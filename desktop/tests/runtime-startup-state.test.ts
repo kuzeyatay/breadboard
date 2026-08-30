@@ -47,6 +47,23 @@ test("required startup progress preserves the existing service-specific wording"
   });
 });
 
+test("a bounded service restart stays in progress even when it retains the prior limit diagnostic", () => {
+  const result = classifyRuntimeStartup([
+    service("chatmock", "ready", true),
+    service(
+      "dashboard",
+      "starting",
+      true,
+      "Service process exhausted its enforced resource limit",
+    ),
+  ]);
+  assert.deepEqual(result, {
+    phase: "starting",
+    message: "Starting workspace",
+    failure: null,
+  });
+});
+
 test("required eager failures stay visible and retryable without blocking on-demand capabilities", () => {
   const failed = service(
     "dashboard",

@@ -12,7 +12,7 @@
       "estimatedColdStartCommitMb": 2048,
       "softCommitLimitMb": 5120,
       "hardCommitLimitMb": 6144,
-      "maximumConcurrency": 1,
+      "maximumConcurrency": 2,
       "minimumInputBlobs": 0,
       "maximumInputBlobs": 0,
       "workspacePolicy": "private-per-job",
@@ -813,6 +813,29 @@
       "heartbeatTimeoutMs": 30000,
       "gracefulCancellationMs": 60000,
       "maximumRuntimeMs": 7200000,
+      "exitAfterJob": true
+    },
+    {
+      "kind": "codex-probe-node",
+      "jobTypes": ["codex-probe"],
+      "capabilityIds": ["runtime-agent:codex"],
+      "submissionAuthority": "user",
+      "environmentSource": "outer-codex",
+      "allowedExecutable": "runtimes/node/node.exe",
+      "allowedEntrypoint": "dashboard/scripts/runtime-v2-codex-probe-worker.mjs",
+      "protocolVersion": 1,
+      "resourceClass": "document-processing",
+      "estimatedColdStartCommitMb": 512,
+      "softCommitLimitMb": 1024,
+      "hardCommitLimitMb": 2048,
+      "maximumConcurrency": 1,
+      "minimumInputBlobs": 0,
+      "maximumInputBlobs": 0,
+      "workspacePolicy": "private-per-job",
+      "readyTimeoutMs": 30000,
+      "heartbeatTimeoutMs": 30000,
+      "gracefulCancellationMs": 30000,
+      "maximumRuntimeMs": 90000,
       "exitAfterJob": true
     },
     {
@@ -1829,7 +1852,7 @@
         },
         {
           "serviceId": "openscience",
-          "condition": "always"
+          "condition": "max-research-openscience-enabled"
         }
       ],
       "allowedExecutable": "runtimes/node/node.exe",

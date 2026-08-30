@@ -67,6 +67,81 @@
   filter: none;
 }
 
+/* Learn source images are cropped screenshots whose pixel dimensions should
+ * not dictate their reading size. The transformer groups each image with its
+ * caption so the pair can remain compact and, when the reading column has
+ * enough room, sit beside the prose that explains it. */
+.center {
+  container-name: quartz-reading-column;
+  container-type: inline-size;
+}
+
+.breadboard-source-visual {
+  clear: both;
+  width: fit-content;
+  max-width: min(100%, 32rem);
+  margin: 1.4rem auto;
+
+  > img {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: min(30rem, 70vh);
+    margin: 0 auto;
+    object-fit: contain;
+  }
+
+  > .breadboard-source-visual-caption {
+    max-width: 58ch;
+    margin: 0.6rem auto 0;
+    color: var(--gray);
+    font-size: 0.84rem;
+    line-height: 1.35;
+    text-align: center;
+    text-wrap: balance;
+  }
+}
+
+article.popover-hint:has(> .breadboard-source-visual)::after {
+  display: block;
+  clear: both;
+  content: "";
+}
+
+@container quartz-reading-column (min-width: 48rem) {
+  .breadboard-source-visual {
+    float: right;
+    clear: right;
+    max-width: min(42%, 30rem);
+    margin: 0.35rem 0 1.25rem 1.5rem;
+  }
+
+  /* Only prose should wrap beside a figure. Keep section boundaries and dense
+   * content blocks at full reading width. */
+  article.popover-hint
+    > :is(
+      h1,
+      h2,
+      h3,
+      h4,
+      h5,
+      h6,
+      hr,
+      blockquote,
+      pre,
+      ul,
+      ol,
+      .table-container,
+      .katex-display,
+      .breadboard-generated-visual-card,
+      .penecho-board,
+      .bb-video
+    ) {
+    clear: both;
+  }
+}
+
 @supports (-moz-appearance: none) {
   * {
     scrollbar-color: var(--neu-q-scrollbar-thumb) var(--neu-q-scrollbar-track);

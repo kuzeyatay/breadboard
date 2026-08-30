@@ -216,6 +216,7 @@ describe("reading a syllabus", () => {
         title: "Electrostatic fields",
         objectives: ["Relate flux and charge"],
         topics: ["Gauss's law"],
+        questionReferences: ["Problem 3.8"],
         materialIds: ["R1"],
       }],
       referencedMaterials: [{
@@ -342,6 +343,7 @@ describe("validating model-authored syllabus coverage", () => {
         title: "Repeated-resource unit",
         objectives: ["Use the assigned resource"],
         topics: ["resource"],
+        questionReferences: [],
         materialIds: ["R1", "R2"],
       }],
     };

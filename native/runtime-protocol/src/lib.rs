@@ -238,6 +238,10 @@ pub enum RuntimePublicFailureCode {
     Interrupted,
     #[serde(rename = "JOB_UNCERTAIN")]
     Uncertain,
+    /// A required Runtime service dependency could not be started or leased
+    /// before any worker existed. Which service is never disclosed here.
+    #[serde(rename = "SERVICE_DEPENDENCY_UNAVAILABLE")]
+    ServiceDependencyUnavailable,
 }
 
 impl RuntimePublicFailureCode {
@@ -248,6 +252,7 @@ impl RuntimePublicFailureCode {
             Self::ResourceExhausted => "BREADBOARD_RESOURCE_EXHAUSTED",
             Self::Interrupted => "JOB_INTERRUPTED",
             Self::Uncertain => "JOB_UNCERTAIN",
+            Self::ServiceDependencyUnavailable => "SERVICE_DEPENDENCY_UNAVAILABLE",
         }
     }
 }
@@ -1293,6 +1298,10 @@ impl RuntimeJobStatus {
                     )
                     | (JobState::Interrupted, RuntimePublicFailureCode::Interrupted)
                     | (JobState::Uncertain, RuntimePublicFailureCode::Uncertain)
+                    | (
+                        JobState::Failed,
+                        RuntimePublicFailureCode::ServiceDependencyUnavailable
+                    )
             ),
             _ => false,
         };
@@ -2175,6 +2184,7 @@ pub enum WorkerServiceDependencyCondition {
     MeetingNotesEngineScriberr,
     MeetingNotesEngineVoicebox,
     MeetingNotesNeedsChatmock,
+    MaxResearchOpenscienceEnabled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5064,6 +5074,7 @@ mod tests {
                 "outer-legal-node",
                 "sf3d-node",
                 "outer-codex-node",
+                "codex-probe-node",
                 "outer-ruflo-node",
                 "outer-deep-tutor-node",
                 "outer-openplanter-node",
@@ -5370,6 +5381,12 @@ mod tests {
                 "codex-run",
                 TrustedWorkerEnvironmentSource::OuterCodex,
                 (0, 4),
+            ),
+            (
+                "codex-probe-node",
+                "codex-probe",
+                TrustedWorkerEnvironmentSource::OuterCodex,
+                (0, 0),
             ),
             (
                 "outer-ruflo-node",
@@ -5814,7 +5831,7 @@ mod tests {
                 },
                 WorkerServiceDependency {
                     service_id: "openscience".into(),
-                    condition: WorkerServiceDependencyCondition::Always,
+                    condition: WorkerServiceDependencyCondition::MaxResearchOpenscienceEnabled,
                 },
             ]
         );
@@ -5960,8 +5977,8 @@ mod tests {
             hot_dashboard.resource_limits,
             ServiceResourceLimits {
                 estimated_cold_start_commit_mb: 3_072,
-                soft_commit_limit_mb: 6_144,
-                hard_commit_limit_mb: 8_192,
+                soft_commit_limit_mb: 9_216,
+                hard_commit_limit_mb: 11_264,
             }
         );
         assert_eq!(

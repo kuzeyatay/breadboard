@@ -4,14 +4,19 @@ export const TASK_COMPLETION_NOTIFICATION_EVENT =
 const MAX_TASK_LABEL_LENGTH = 78;
 
 export interface TaskCompletionNotificationDetail {
-  title: "Task completed";
+  title: "Task completed" | "Response ready" | "Response failed";
   message: string;
-  type: "success";
+  type: "success" | "error";
+  /** The conversation this notice can take the reader back to. */
+  chatId?: string;
+  /** Full assistant text. It is intentionally never shortened for display. */
+  response?: string;
 }
 
 export interface TaskCompletionNotificationOptions {
   chatId?: number | string | null;
   activeChatId?: number | string | null;
+  response?: string | null;
 }
 
 export function taskCompletionLabel(task: string): string {
@@ -34,15 +39,38 @@ export function taskCompletionNotification(
   };
 }
 
+export function chatResponseNotification(
+  task: string,
+  type: "success" | "error" = "success",
+): TaskCompletionNotificationDetail {
+  const label = taskCompletionLabel(task);
+  return type === "success"
+    ? {
+        title: "Response ready",
+        message: `Answered “${label}”.`,
+        type,
+      }
+    : {
+        title: "Response failed",
+        message: `Couldn’t finish “${label}”.`,
+        type,
+      };
+}
+
 export function isTaskChatActivelyViewed(
   options: TaskCompletionNotificationOptions = {},
 ): boolean {
   if (typeof document === "undefined") return false;
-  if (document.visibilityState !== "visible" || !document.hasFocus()) return false;
 
-  if (options.chatId === undefined || options.chatId === null) return true;
-  if (options.activeChatId === undefined || options.activeChatId === null) return false;
-  return String(options.chatId) === String(options.activeChatId);
+  // A turn that belongs to the chat on screen announces itself in the
+  // transcript, so a toast for it is never wanted -- not even when the window
+  // is behind another one. Window focus only decides the case of a run with no
+  // chat to be compared against.
+  if (options.chatId !== undefined && options.chatId !== null) {
+    if (options.activeChatId === undefined || options.activeChatId === null) return false;
+    return String(options.chatId) === String(options.activeChatId);
+  }
+  return document.visibilityState === "visible" && document.hasFocus();
 }
 
 export function notifyTaskCompleted(
@@ -54,7 +82,53 @@ export function notifyTaskCompleted(
   window.dispatchEvent(
     new CustomEvent<TaskCompletionNotificationDetail>(
       TASK_COMPLETION_NOTIFICATION_EVENT,
-      { detail: taskCompletionNotification(task) },
+      {
+        detail: {
+          ...taskCompletionNotification(task),
+          ...(options.chatId !== undefined && options.chatId !== null
+            ? { chatId: String(options.chatId) }
+            : {}),
+        },
+      },
     ),
   );
+}
+
+function notifyChatResponse(
+  task: string,
+  type: "success" | "error",
+  options: TaskCompletionNotificationOptions,
+): void {
+  if (typeof window === "undefined") return;
+  if (isTaskChatActivelyViewed(options)) return;
+  window.dispatchEvent(
+    new CustomEvent<TaskCompletionNotificationDetail>(
+      TASK_COMPLETION_NOTIFICATION_EVENT,
+      {
+        detail: {
+          ...chatResponseNotification(task, type),
+          ...(options.chatId !== undefined && options.chatId !== null
+            ? { chatId: String(options.chatId) }
+            : {}),
+          ...(options.response?.trim()
+            ? { response: options.response.trim() }
+            : {}),
+        },
+      },
+    ),
+  );
+}
+
+export function notifyChatResponseReady(
+  task: string,
+  options: TaskCompletionNotificationOptions = {},
+): void {
+  notifyChatResponse(task, "success", options);
+}
+
+export function notifyChatResponseFailed(
+  task: string,
+  options: TaskCompletionNotificationOptions = {},
+): void {
+  notifyChatResponse(task, "error", options);
 }

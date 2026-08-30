@@ -15,7 +15,6 @@ import {
   type AuthorizedRuntimeSession,
 } from "./session-service.ts";
 import {
-  appendChatMessage,
   getRuntimeSessionByChatSession,
   persistCapabilityDecision,
   recordAuditEvent,
@@ -41,6 +40,7 @@ import {
 } from "./dispatch-core.ts";
 import { listFilesystemGrants } from "./filesystem-grant-store.ts";
 import { connectedAppRegistryForTurn } from "./unified-tool-registry.ts";
+import { connectedRepositoryForTurn } from "../code-index/chat-turn.ts";
 import {
   beginRuntimeRun,
   finishRuntimeRun,
@@ -48,11 +48,18 @@ import {
   getRuntimeRun,
   markRuntimeRunSubmitted,
   parseRuntimeRunDispatch,
+  touchRuntimeRunHeartbeat,
 } from "./run-store.ts";
 import { hermesMessageId } from "./message-id.ts";
+import { RUN_HEARTBEAT_INTERVAL_MS } from "./run-liveness.ts";
 import {
+  annotateConversationTurn,
+  completeAssistantMessage,
   ensureConversationForLegacyChatSession,
+  failAssistantMessage,
   getConversationById,
+  reserveLegacyGardenAssistantTurn,
+  reserveConversationTurn,
   updateConversation,
 } from "../conversations/store.ts";
 import { generateAndApplyConversationTitle } from "../conversations/title-service.ts";
@@ -116,6 +123,7 @@ import { quartzAssistantSelectionPromptContext } from "../quartz-assistant-selec
 type GardenChatPayload = {
   clusterSlug?: unknown;
   chatSessionId?: unknown;
+  clientMessageId?: unknown;
   messages?: unknown;
   model?: unknown;
   reasoningEffort?: unknown;
@@ -171,6 +179,41 @@ export async function openGardenAgentChat(
   if (!text)
     throw new ApiError(400, "message_required", "A user message is required.");
   const page = parseActivePage(payload.activeMarkdown);
+  let conversation = ensureConversationForLegacyChatSession(
+    chatSessionId,
+    userId,
+  );
+  const suppliedClientMessageId =
+    typeof payload.clientMessageId === "string"
+      ? payload.clientMessageId.trim()
+      : "";
+  let reservedClientMessageId: string;
+  if (suppliedClientMessageId) {
+    const reserved = reserveConversationTurn({
+      conversation,
+      clientMessageId: suppliedClientMessageId,
+      surface: "garden_chat",
+      content: text,
+      metadata: { gardenPreDispatch: true },
+    });
+    reservedClientMessageId = reserved.userMessage.client_message_id;
+  } else {
+    reservedClientMessageId = reserveLegacyGardenAssistantTurn({
+      conversation,
+      chatSessionId,
+      content: text,
+    }).clientMessageId;
+  }
+  const touchPreDispatch = () =>
+    annotateConversationTurn({
+      conversationId: conversation.id,
+      clientMessageId: reservedClientMessageId,
+      metadata: { gardenPreDispatch: true },
+    });
+  touchPreDispatch();
+  const preDispatchHeartbeat = setInterval(touchPreDispatch, 10_000);
+  preDispatchHeartbeat.unref?.();
+  try {
   // Attachments reach this surface in the request body but used to stop here:
   // the payload was parsed for messages only, so a file picked in the Garden
   // composer never reached the runtime at all.
@@ -185,10 +228,6 @@ export async function openGardenAgentChat(
     signal,
   );
   const selectedSlugs = parseSelectedDocumentSlugs(payload.selectedDocumentSlugs);
-  let conversation = ensureConversationForLegacyChatSession(
-    chatSessionId,
-    userId,
-  );
   // Garden Chat's own copy of the first-turn titling in
   // conversations/turn-service.ts. This surface persists its transcript through
   // the legacy chat-session route rather than reserveConversationTurn, so the
@@ -219,6 +258,12 @@ export async function openGardenAgentChat(
       userId,
       gardenId: clusterSlug,
       payload: { intent: smallTalkReply.intent, chatSessionId },
+    });
+    completeAssistantMessage({
+      conversationId: conversation.id,
+      clientMessageId: reservedClientMessageId,
+      content: smallTalkReply.text,
+      metadata: { runtimeStatus: "idle", fastPath: true },
     });
     return smallTalkEventStream(smallTalkReply);
   }
@@ -398,10 +443,21 @@ export async function openGardenAgentChat(
     userId,
     mode: decision.mode,
   });
+  // The repository this Garden is connected to, read from the checkout for
+  // this turn: a description of what it is and how it is laid out, plus its
+  // code index as tools when the graph is ready. Nothing about the repository
+  // is written into this file — the same call describes whichever repository
+  // the user connected, and a Garden without one gets exactly the turn it
+  // always had.
+  const repository = await connectedRepositoryForTurn({
+    userId,
+    gardenSlug: clusterSlug,
+  });
   decision.selectedConnections = [
     ...new Set([
       ...decision.selectedConnections,
       ...connectedApps.connectionNames,
+      ...(repository?.connection ? [repository.connection] : []),
     ]),
   ];
   await runtime.health();
@@ -444,6 +500,12 @@ export async function openGardenAgentChat(
       automaticInteractiveVisualizer: visualizerSelection.automatic,
       automaticDiagramDesign: diagramSelection.automatic,
       automaticGithubExplorer: githubExplorerSelection.automatic,
+      ...(repository
+        ? {
+            connectedRepository: repository.repository.name,
+            connectedRepositoryCodeIndex: repository.codeIndex,
+          }
+        : {}),
       capabilityDecisionId: storedDecision.id,
       capabilityMode: decision.mode,
       intendedOutcome: prepared.plan.intendedOutcome,
@@ -487,6 +549,7 @@ export async function openGardenAgentChat(
     {
       ...resolved.tools,
       ...connectedApps.tools,
+      ...(repository?.tools ?? {}),
     },
   );
   // Documents the turn can see — files the user just attached and garden
@@ -521,6 +584,9 @@ export async function openGardenAgentChat(
       // late correction bolted onto the end of the prompt.
       gardenInstructionsContext(session.row.cluster_id),
       composeMemoryContext(memory),
+      // Directly after memory, so the repository reads as something the
+      // assistant knows about this Garden rather than a tool it was handed.
+      repository?.systemContext ?? "",
       connectedApps.systemContext,
       documents.context,
       editableDocuments.context,
@@ -584,40 +650,55 @@ export async function openGardenAgentChat(
           (call) => ({ ...call, carried: true }),
         )
       : [];
-  const run = beginRuntimeRun({
-    runtimeSessionId: session.row.id,
-    instruction: text,
-    dispatch: {
-      conversationPublicId: conversation.public_id,
-      model: engine.model,
-      modelIdentity: { modelID: engine.selectedModelID },
-      variant: engine.variant,
-      tools: runTools,
-      system: runSystem,
-      capabilities: capabilitySelection,
-      ...(carriedDelegations.length
-        ? { delegatedAgents: carriedDelegations }
-        : {}),
-    },
-  });
   const runtimeText =
     resolved.text ||
     "Acknowledge the persona selection briefly and ask how you can help.";
-  const runtimeMessageId = hermesMessageId(run.id);
+  let run: ReturnType<typeof beginRuntimeRun>;
+  try {
+    run = beginRuntimeRun({
+      runtimeSessionId: session.row.id,
+      instruction: text,
+      dispatch: {
+        conversationPublicId: conversation.public_id,
+        clientMessageId: reservedClientMessageId,
+        runtimeText,
+        model: engine.model,
+        modelIdentity: { modelID: engine.selectedModelID },
+        variant: engine.variant,
+        tools: runTools,
+        system: runSystem,
+        capabilities: capabilitySelection,
+        ...(carriedDelegations.length
+          ? { delegatedAgents: carriedDelegations }
+          : {}),
+      },
+    });
+  } catch (error) {
+    failAssistantMessage({
+      conversationId: conversation.id,
+      clientMessageId: reservedClientMessageId,
+      status: "failed",
+      error: "garden_run_not_started",
+    });
+    throw error;
+  }
+  const runtimeMessageId = hermesMessageId(reservedClientMessageId);
+  const finalConversation = conversation;
   return legacyGardenEventStream(
     session,
     signal,
     prepared,
     run.id,
+    reservedClientMessageId,
     { messageId: runtimeMessageId, instruction: runtimeText },
     webGroundingVerdict.required,
-    () =>
+    (target) =>
     runtime.startRun({
-      externalSessionId: session.externalSessionId,
-      liveSessionId: session.liveSessionId,
-      workspaceKey: session.workspaceKey,
-      directory: session.activeDirectory,
-      agentName: session.agentName,
+      externalSessionId: target.externalSessionId,
+      liveSessionId: target.liveSessionId,
+      workspaceKey: target.workspaceKey,
+      directory: target.activeDirectory,
+      agentName: target.agentName,
       text: runtimeText,
       // Everything that was not distilled into a skill: images, 3D models, and
       // documents small enough to stay verbatim.
@@ -631,7 +712,45 @@ export async function openGardenAgentChat(
       system: runSystem,
       messageId: runtimeMessageId,
     }),
+    // Hermes keeps live sessions in memory, so the first Garden turn after a
+    // Hermes restart addresses a session id the gateway no longer knows and
+    // prompt.submit answers "session not found". The Terminal already
+    // re-dispatches onto a recreated session (startConversationTurn's retry);
+    // this surface used to fail the turn with the gateway's message as the
+    // answer. Same recovery: rebuild the live session from the canonical
+    // transcript, re-apply this turn's decision, and send again.
+    async () => {
+      const replacement = await resolveConversationRuntime({
+        conversation: finalConversation,
+        surface: "garden_chat",
+        activeGardenSlug: clusterSlug,
+        activePageSlug: page?.slug ?? null,
+        forceRecreate: true,
+      });
+      await runtime.applyCapabilityDecision({
+        externalSessionId: replacement.externalSessionId,
+        liveSessionId: replacement.liveSessionId,
+        workspaceKey: replacement.workspaceKey,
+        directory: replacement.activeDirectory,
+        decision,
+      });
+      return replacement;
+    },
   );
+  } catch (error) {
+    annotateConversationTurn({
+      conversationId: conversation.id,
+      clientMessageId: reservedClientMessageId,
+      metadata: {
+        gardenPreDispatch: true,
+        preDispatchError:
+          error instanceof Error ? error.message : "Garden dispatch failed.",
+      },
+    });
+    throw error;
+  } finally {
+    clearInterval(preDispatchHeartbeat);
+  }
 }
 
 function parseMessages(value: unknown): ChatMessage[] {
@@ -770,10 +889,11 @@ function externalAgentsForRun(runId: string): ExternalAgentCall[] {
 }
 
 function legacyGardenEventStream(
-  session: AuthorizedRuntimeSession,
+  initialSession: AuthorizedRuntimeSession,
   requestSignal: AbortSignal,
   prepared: PreparedTurn,
   runId: string,
+  clientMessageId: string,
   turnReference: { messageId: string; instruction: string },
   /**
    * Adjudicated before dispatch by the web-grounding decider, and passed in
@@ -783,10 +903,21 @@ function legacyGardenEventStream(
    * pasted report full of citation links came to owe live web evidence.
    */
   webGroundingRequired: boolean,
-  sendMessage: () => Promise<void>,
+  /** Submit the prompt on the given runtime session. */
+  dispatch: (target: AuthorizedRuntimeSession) => Promise<void>,
+  /**
+   * Replace a runtime session the gateway no longer knows. Called once, only
+   * when opening the turn fails before any answer text arrived; its failure
+   * surfaces the original error, not its own.
+   */
+  recoverSession: () => Promise<AuthorizedRuntimeSession>,
 ): Response {
-  const runtime = getAgentRuntimeByKind(session.runtimeKind);
+  const runtime = getAgentRuntimeByKind(initialSession.runtimeKind);
   const encoder = new TextEncoder();
+  // Never cache the runtime identity for the turn: recovery rewrites the
+  // row's external/live ids in place, and every later call (stop, status)
+  // must address the session the answer is actually streaming on.
+  let session = initialSession;
   const pump = acquireDetachedEventPump(
     `legacy-garden:${runId}`,
     async (sink) => {
@@ -822,6 +953,7 @@ function legacyGardenEventStream(
             ...(request.originClientMessageId
               ? { originClientMessageId: request.originClientMessageId }
               : {}),
+            ...(request.startedRun ? { startedRun: request.startedRun } : {}),
           });
         }
       };
@@ -887,6 +1019,14 @@ function legacyGardenEventStream(
         });
         markStatus(session, "idle");
         finishRuntimeRun(runId, "cancelled");
+        if (session.row.conversation_id !== null) {
+          failAssistantMessage({
+            conversationId: session.row.conversation_id,
+            clientMessageId,
+            status: "aborted",
+            error: "awaiting_permission",
+          });
+        }
         // Nothing executed under this decision. It is abandoned rather than
         // completed; approving the permission produces a fresh decision on the
         // resumed turn.
@@ -895,35 +1035,89 @@ function legacyGardenEventStream(
         sink.close();
         return;
       }
+      // This compatibility pump owns the run just as surely as the canonical
+      // session pump does. Keep its durable claim alive so periodic recovery
+      // never adopts a healthy long-running Garden turn and starts a second
+      // consumer after the two-minute abandonment window.
+      touchRuntimeRunHeartbeat(runId);
+      const heartbeat = setInterval(
+        () => touchRuntimeRunHeartbeat(runId),
+        RUN_HEARTBEAT_INTERVAL_MS,
+      );
+      heartbeat.unref?.();
       try {
-        let connected!: () => void;
-        const ready = new Promise<void>((resolve) => {
-          connected = resolve;
-        });
-        const events = runtime
-          .streamSession(
-            {
-              externalSessionId: session.externalSessionId,
-              liveSessionId: session.liveSessionId,
-              workspaceKey: session.workspaceKey,
-              directory: session.activeDirectory,
-              ...turnReference,
+        // Open the event stream, then submit the prompt on the same session.
+        // The stream is subscribed first so no early delta is missed; the
+        // subscription itself never fails for a dead session — the gateway
+        // only answers "session not found" to prompt.submit.
+        const openTurn = async (target: AuthorizedRuntimeSession) => {
+          const attempt = new AbortController();
+          let connected!: () => void;
+          const ready = new Promise<void>((resolve) => {
+            connected = resolve;
+          });
+          const events = runtime
+            .streamSession(
+              {
+                externalSessionId: target.externalSessionId,
+                liveSessionId: target.liveSessionId,
+                workspaceKey: target.workspaceKey,
+                directory: target.activeDirectory,
+                ...turnReference,
+              },
+              attempt.signal,
+              connected,
+            )
+            [Symbol.asyncIterator]();
+          const firstEvent = events.next();
+          try {
+            await Promise.race([
+              ready,
+              firstEvent.then((result) => {
+                if (result.done)
+                  throw new Error(
+                    "Agent event stream closed before the prompt was sent.",
+                  );
+              }),
+            ]);
+            await dispatch(target);
+          } catch (error) {
+            // Release the abandoned subscription before the retry opens its
+            // own, so the old session's listener cannot outlive the turn.
+            attempt.abort();
+            firstEvent.catch(() => undefined);
+            void events.return?.(undefined).catch(() => undefined);
+            throw error;
+          }
+          return { events, firstEvent };
+        };
+        let opened: Awaited<ReturnType<typeof openTurn>>;
+        try {
+          opened = await openTurn(session);
+        } catch (firstError) {
+          let replacement: AuthorizedRuntimeSession;
+          try {
+            replacement = await recoverSession();
+          } catch {
+            throw firstError;
+          }
+          session = replacement;
+          recordAuditEvent({
+            eventType: "conversation.turn_redispatched",
+            runtimeSessionId: session.row.id,
+            userId: session.row.user_id,
+            gardenId: session.row.garden_id,
+            payload: {
+              runId,
+              reason:
+                firstError instanceof Error
+                  ? firstError.message
+                  : "runtime_dispatch_failed",
             },
-            undefined,
-            connected,
-          )
-          [Symbol.asyncIterator]();
-        const firstEvent = events.next();
-        await Promise.race([
-          ready,
-          firstEvent.then((result) => {
-            if (result.done)
-              throw new Error(
-                "Agent event stream closed before the prompt was sent.",
-              );
-          }),
-        ]);
-        await sendMessage();
+          });
+          opened = await openTurn(session);
+        }
+        const { events, firstEvent } = opened;
         markRuntimeRunSubmitted(runId);
         emitArtifactEvents();
         emitAgentLaunchRequests();
@@ -935,7 +1129,6 @@ function legacyGardenEventStream(
           const event = next.value;
           if (event.type === "assistant.delta") {
             assistantText += event.payload.text;
-            emit({ type: "delta", text: event.payload.text });
           }
           if (event.type === "assistant.segment") {
             // Streamed text up to here was tool-call narration, not the
@@ -948,10 +1141,12 @@ function legacyGardenEventStream(
               : event.payload.text;
             if (sealed.trim()) narrationSegments.push(sealed);
             if (event.payload.streamed) assistantText = "";
+            // A segment closed by a tool call is provisional narration, not a
+            // chat answer. Put it straight into the Thinking surface instead
+            // of briefly drawing it as a message that must later disappear.
             emit({
-              type: "segment",
+              type: "provisional",
               text: sealed,
-              streamed: event.payload.streamed,
             });
           }
           if (event.type === "assistant.completed") {
@@ -1053,7 +1248,6 @@ function legacyGardenEventStream(
             if (!assistantText.trim() && toolCalls.length === 0) {
               assistantText =
                 "The assistant returned no answer. Please try again.";
-              emit({ type: "replace", text: assistantText });
               recordAuditEvent({
                 eventType: "message.empty_response",
                 runtimeSessionId: session.row.id,
@@ -1061,6 +1255,10 @@ function legacyGardenEventStream(
                 gardenId: session.row.garden_id,
               });
             }
+            // Text is provisional until Hermes reaches idle because any
+            // earlier segment may still become tool-call narration. Reveal the
+            // stable answer once, after that decision.
+            emit({ type: "replace", text: assistantText });
             const verification = assessVerification(assistantText, evidence, {
               webGroundingRequired,
               externalAgents: externalAgentsForRun(runId),
@@ -1079,7 +1277,10 @@ function legacyGardenEventStream(
             // a run the agent believes it started and nobody ever will.
             emitAgentLaunchRequests();
             emit({ type: "verification", verification });
-            if (assistantText.trim() || toolCalls.length) {
+            if (
+              session.row.conversation_id !== null &&
+              (assistantText.trim() || toolCalls.length)
+            ) {
               const runtimeRun = getRuntimeRun(runId);
               const runtimeStartedAt = runtimeRun
                 ? Date.parse(runtimeRun.started_at)
@@ -1087,32 +1288,21 @@ function legacyGardenEventStream(
               const responseDurationMs = Number.isFinite(runtimeStartedAt)
                 ? Math.max(0, Date.now() - runtimeStartedAt)
                 : undefined;
-              const last = db
-                .prepare(
-                  "SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY order_index DESC LIMIT 1",
-                )
-                .get(session.row.chat_session_id) as
-                { role: string; content: string } | undefined;
-              if (
-                !last ||
-                last.role !== "assistant" ||
-                last.content !== assistantText
-              ) {
-                appendChatMessage({
-                  chatSessionId: session.row.chat_session_id!,
-                  role: "assistant",
-                  content: assistantText,
-                  tokenUsage,
-                  toolCalls: {
-                    calls: toolCalls,
-                    verification,
-                    ...(responseDurationMs !== undefined
-                      ? { responseDurationMs }
-                      : {}),
-                  },
+              completeAssistantMessage({
+                conversationId: session.row.conversation_id,
+                clientMessageId,
+                content: assistantText,
+                sources: [],
+                tokenUsage,
+                metadata: {
+                  calls: toolCalls,
+                  verification,
+                  ...(responseDurationMs !== undefined
+                    ? { responseDurationMs }
+                    : {}),
                   runtimeStatus: "idle",
-                });
-              }
+                },
+              });
             }
             break;
           }
@@ -1149,12 +1339,26 @@ function legacyGardenEventStream(
         markStatus(session, "failed");
         finishRuntimeRun(runId, "error");
         revokeCapabilityDecision(session.row.id, "abandoned");
+        const failureMessage =
+          error instanceof Error ? error.message : "Agent stream failed.";
+        if (session.row.conversation_id !== null) {
+          failAssistantMessage({
+            conversationId: session.row.conversation_id,
+            clientMessageId,
+            status: "failed",
+            content: assistantText,
+            error: "garden_event_stream_failed",
+            metadata: {
+              calls: toolCalls,
+              runtimeStatus: "failed",
+              runtimeError: failureMessage,
+            },
+            tokenUsage,
+          });
+        }
         emit({
           type: "error",
-          error:
-            error instanceof Error
-              ? error.message
-              : "Agent stream failed.",
+          error: failureMessage,
         });
         recordAuditEvent({
           eventType: "error",
@@ -1164,6 +1368,7 @@ function legacyGardenEventStream(
           payload: { stage: "garden_event_stream" },
         });
       } finally {
+        clearInterval(heartbeat);
         sink.emit(encoder.encode("data: [DONE]\n\n"));
         sink.close();
       }
