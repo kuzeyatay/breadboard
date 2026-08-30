@@ -1,0 +1,30 @@
+/* Breadboard board chrome.
+ *
+ * Applies only when the page is bound to a Breadboard whiteboard card
+ * (`?board=<id>`, which adds `body.breadboard-board`). A card is a framed
+ * surface on someone else's page: it already carries the board's name, and the
+ * board writes itself back continuously, so the wordmark and the manual
+ * new/save canvas controls are noise here. Everything else — the tools, the
+ * history panel, settings — is left exactly as the standalone app has it. */
+
+body.breadboard-board .brand,
+body.breadboard-board #newCanvasBtn,
+body.breadboard-board #saveCanvasBtn {
+  display: none;
+}
+
+/* The status line takes over the space the wordmark used to hold. */
+body.breadboard-board #aiStatusArea {
+  margin-right: auto;
+}
+
+/* Vertical space is scarce inside a card; give it back to the canvas. */
+body.breadboard-board main {
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 5px clamp(5px, 1vw, 10px);
+}
+
+body.breadboard-board .topbar {
+  margin-bottom: 4px;
+}

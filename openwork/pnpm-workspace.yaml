@@ -1,0 +1,68 @@
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude:
+  - "@opencode-ai/sdk"
+  - "acorn"
+  - "enhanced-resolve"
+  - "postcss"
+
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "ee/apps/*"
+  - "ee/packages/*"
+
+catalog:
+  react: 19.2.8
+  react-dom: 19.2.8
+
+catalogs:
+  react18:
+    react: 18.2.0
+    react-dom: 18.2.0
+linkWorkspacePackages: true
+preferWorkspacePackages: true
+overrides:
+  "@react-email/ui>next": 16.2.11
+  "@grpc/grpc-js@<1.14.4": 1.14.4
+  "axios@<1.18.1": 1.18.1
+  baseline-browser-mapping: 2.11.5
+  "body-parser@>=2.0.0 <2.3.0": 2.3.0
+  "brace-expansion@<1.1.18": 1.1.18
+  "brace-expansion@>=2.0.0 <2.1.4": 2.1.4
+  "brace-expansion@>=5.0.0 <5.0.9": 5.0.9
+  "builder-util-runtime@<9.7.0": 9.7.0
+  "defu@<6.1.5": 6.1.5
+  "diff@>=8.0.0 <8.0.3": 8.0.3
+  "fast-uri@>=3.0.0 <3.1.5": 3.1.5
+  "fast-xml-parser@>=5.0.0 <5.7.0": 5.7.0
+  "form-data@>=4.0.0 <4.0.6": 4.0.6
+  "hono@<4.12.27": 4.12.27
+  "ip-address@>=10.0.0 <10.3.1": 10.3.1
+  "js-yaml@>=4.0.0 <4.3.0": 4.3.0
+  "postcss@<8.5.23": 8.5.23
+  "protobufjs@<7.6.5": 7.6.5
+  "qs@>=6.0.0 <6.15.2": 6.15.2
+  "rollup@>=4.0.0 <4.59.0": 4.59.0
+  "samlify@<2.13.0": 2.13.0
+  "shell-quote@<1.10.0": 1.10.0
+  "socket.io-parser@>=4.0.0 <4.2.7": 4.2.7
+  "tar@<7.5.22": 7.5.22
+  "tmp@>=0.2.0 <0.2.7": 0.2.7
+  "undici@>=6.0.0 <6.28.0": 6.28.0
+  "uuid@<11.1.1": 11.1.1
+  "ws@>=8.0.0 <8.21.0": 8.21.0
+allowBuilds:
+  "@sentry/cli": true
+  "@whiskeysockets/baileys": true
+  better-sqlite3: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  msw: false
+  node-pty: true
+  protobufjs: true
+  sharp: true
+patchedDependencies:
+  '@better-auth/drizzle-adapter@1.6.11': patches/@better-auth__drizzle-adapter@1.6.11.patch
+  '@better-auth/oauth-provider@1.6.11': patches/@better-auth__oauth-provider@1.6.11.patch
+  '@modelcontextprotocol/sdk': patches/@modelcontextprotocol__sdk.patch

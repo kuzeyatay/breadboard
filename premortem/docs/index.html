@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A practical guide to structured pre-mortem failure analysis with Premortem.">
+  <title>Expected Parrot | Failure Analysis with Premortem</title>
+  <style>
+    :root{--ep-green:#428a5f;--ep-green-light:#5ba97a;--ep-green-dark:#214d35;--ink:#1a1a1a;--muted:#666;--paper:#f6f7f8;--panel:#fff;--rule:#e0e0e0;--accent:var(--ep-green);--soft:#f0f7f2;--code:#1e1e1e;--sidebar:290px;--measure:790px;--font-serif:Georgia,"Times New Roman",serif;--font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;--font-mono:"SF Mono",Consolas,"Liberation Mono",Menlo,monospace}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased}body{margin:0;color:var(--ink);background:var(--paper);font:16px/1.7 var(--font-sans)}
+    #progress{position:fixed;inset:0 auto auto 0;z-index:20;width:0;height:4px;background:var(--accent)}
+    nav{position:fixed;inset:0 auto 0 0;z-index:10;width:var(--sidebar);overflow-y:auto;padding:22px 22px 40px;color:#eef7f1;background:var(--ep-green-dark);font:14px/1.35 var(--font-sans)}
+    nav .brand-lockup{display:block;margin:0 0 20px;padding:12px;color:var(--ink);background:#fff;border-radius:9px;text-decoration:none}
+    nav .brand-lockup:hover{color:var(--ink);background:#f7faf8;text-decoration:none}nav .brand-lockup span{display:block;font-size:15px;font-weight:750;line-height:1.15}nav .brand-lockup small{display:block;margin-top:4px;color:var(--muted);font-size:10px;font-weight:650;letter-spacing:.06em;text-transform:uppercase}
+    nav .book-title{margin:0 8px 24px;font:600 20px/1.2 var(--font-serif)}nav>a:not(.brand-lockup){display:block;padding:6px 8px;color:#d5e9dc;text-decoration:none;border-radius:6px}nav>a:not(.brand-lockup):hover{color:#fff;background:#2d6244}
+    nav .part{margin:19px 8px 5px;color:#a7d7b9;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}nav .small{margin:28px 8px 0;color:#b7cec0;font-size:12px}
+    main{margin-left:var(--sidebar)}article{display:flex;flex-direction:column;max-width:916px;margin:auto;padding:48px 48px 110px;background:#fff;box-shadow:0 0 0 1px rgba(0,0,0,.025)}header.hero{order:0;padding:62px 0 46px;border-bottom:3px solid var(--ep-green)}#orientation{order:1}#failure{order:2}#personas{order:3}#reasons{order:4}#graph{order:5}#score{order:6}#mitigations{order:7}#research{order:8}#reporting{order:9}#quickstart{order:10}#agent-guidance{order:11}#output-contract{order:12}#edsl-jobs{order:13}footer{order:14}
+    .eyebrow{color:var(--accent);font:800 12px/1 var(--font-sans);letter-spacing:.13em;text-transform:uppercase}h1,h2,h3,h4{font-family:var(--font-serif);font-weight:600;line-height:1.3}
+    h1{max-width:760px;margin:14px 0 20px;font-size:clamp(42px,6vw,62px);letter-spacing:-.025em}h2{margin:80px 0 22px;padding:12px 0 8px;color:var(--ep-green);font-size:32px;letter-spacing:-.015em;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}h3{margin:42px 0 14px;font-size:23px}h4{margin:28px 0 8px;color:var(--muted);font-size:18px}
+    .dek{max-width:720px;color:var(--muted);font-size:21px;line-height:1.5}.metadata{display:flex;flex-wrap:wrap;gap:10px 24px;margin-top:28px;color:var(--muted);font:13px/1.4 var(--font-sans)}
+    p,ul,ol,dl,table,pre{max-width:var(--measure)}a{color:var(--ep-green);text-decoration:none}a:hover{color:var(--ep-green-light);text-decoration:underline}li::marker{color:var(--ep-green)}code{padding:.15em .35em;color:var(--ink);background:#f2f4f2;border-radius:4px;font-family:var(--font-mono);font-size:.88em}
+    pre{position:relative;overflow-x:hidden;margin:18px 0 26px;padding:20px 54px 20px 22px;color:#d4d4d4;background:var(--code);border-radius:8px;font:13px/1.55 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}pre code{padding:0;color:inherit;background:none;white-space:inherit}.command-code{border-left:4px solid var(--ep-green);background:#18231d}.syntax-program{color:#7ddc9e;font-weight:700}.syntax-option{color:#e8b86d}.syntax-string{color:#b9d8ff}
+    .copy{position:absolute;top:10px;right:10px;padding:5px 8px;color:#d8ebe0;background:#34453b;border:0;border-radius:5px;font:11px var(--font-sans);cursor:pointer}.copy:hover{color:#fff;background:var(--ep-green)}
+    table{width:100%;margin:20px 0 28px;border-collapse:collapse;font:14px/1.5 var(--font-sans)}th,td{padding:11px 12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--rule)}th{color:#fff;background:var(--ep-green);font-weight:650}tbody tr:nth-child(even){background:#f7f8f7}tbody tr:hover{background:#e8f5e9}
+    .chapter-number{color:var(--accent);font-size:.55em;vertical-align:.35em}.command-step{max-width:var(--measure);margin:42px 0}.command-step h3{margin:0 0 10px}.command-step pre{margin-bottom:16px}.block-label{margin:18px 0 6px;color:var(--muted);font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.args{margin:14px 0 20px}.args dt{margin-top:8px;font-family:var(--font-mono);font-size:13px;font-weight:700}.args dd{margin-left:0;color:var(--muted);font-size:14px}.output-toggle{max-width:var(--measure);margin:12px 0}.output-toggle+ .output-toggle{margin-bottom:24px}.output-toggle summary{color:var(--ep-green);font-size:13px;font-weight:700;cursor:pointer}.output-toggle[open] summary{margin-bottom:8px}.human-output{color:#eef7f1;background:#26362d}.causal-graph{display:block;width:100%;max-width:280px;height:auto;margin:24px 0 8px}.image-caption{margin-top:0;color:var(--muted);font-size:13px}
+    footer{margin-top:90px;padding-top:28px;color:var(--muted);border-top:3px solid var(--ep-green);font:13px/1.5 var(--font-sans)}
+    @media(max-width:980px){nav{position:static;width:auto}nav>a:not(.brand-lockup){display:inline-block}.brand-lockup{max-width:290px}nav .part{display:block}main{margin-left:0}article{padding:28px 24px 80px}}@media(max-width:650px){h2{font-size:29px}}
+    @media print{nav,#progress,.copy{display:none!important}main{margin:0}article{max-width:none;padding:0}body{color:#000;background:#fff;font-size:11pt}h2{break-before:page;margin-top:0}pre{white-space:pre-wrap;color:#000;background:#eee;border:1px solid #aaa}table{break-inside:avoid}.output-toggle>pre{display:block!important}.output-toggle summary{display:none}.human-toggle{display:none}}
+  </style>
+</head>
+<body>
+<div id="progress"></div>
+<nav aria-label="Book contents">
+  <a class="brand-lockup" href="https://www.expectedparrot.com/" target="_blank" rel="noopener"><span>Expected Parrot<small>Open-source research tools</small></span></a>
+  <div class="book-title">Failure Analysis<br>with Premortem</div>
+  <div class="part">Overview</div>
+  <a href="#orientation">1. What Premortem is for</a>
+  <a href="#failure">2. Define failure</a>
+  <a href="#personas">3. Stakeholder personas</a>
+  <div class="part">Analysis</div>
+  <a href="#reasons">4. Failure reasons</a>
+  <a href="#graph">5. Causal graph</a>
+  <a href="#score">6. Scoring risks</a>
+  <div class="part">Action</div>
+  <a href="#mitigations">7. Mitigations</a>
+  <a href="#research">8. Research agenda</a>
+  <a href="#reporting">9. Reporting</a>
+  <div class="part">Reference</div>
+  <a href="#quickstart">10. Command sequence</a>
+  <a href="#agent-guidance">Agent guidance</a>
+  <a href="#output-contract">JSON output contract</a>
+  <a href="#edsl-jobs">EDSL Jobs workflow</a>
+  <div class="small">Self-contained guide for the Premortem CLI.</div>
+</nav>
+
+<main><article>
+  <header class="hero">
+    <div class="eyebrow">Expected Parrot · A practical facilitation guide</div>
+    <h1>Structured Pre-mortem Failure Analysis</h1>
+    <p class="dek">From a vivid imagined failure through stakeholder perspectives and causal pathways to concrete mitigations, research questions, and a decision-ready report.</p>
+    <div class="metadata"><span>Tool: <strong>Premortem</strong></span><span>Method: <strong>prospective hindsight</strong></span><span>Audience: decision makers, analysts, and agents</span></div>
+  </header>
+
+  <section id="orientation">
+    <h2><span class="chapter-number">01</span> What Premortem is for</h2>
+    <p>Premortem is a command-line tool for pressure-testing a concrete initiative before the team commits to it. It is useful for launches, policies, programs, investments, migrations, and other plans where failure would be costly and different stakeholders see different parts of the risk.</p>
+    <p>The method starts with a thought experiment: assume the initiative has already failed. Looking backward from that imagined outcome makes it easier to name concerns that ordinary planning meetings suppress, especially concerns that cross organizational boundaries or challenge an optimistic consensus.</p>
+    <p>The package turns that discussion into a repeatable analysis. It stores the failure definition, stakeholder perspectives, failure stories, causal graph, risk scores, mitigations, research questions, and final report as one project. The command-line interface preserves the reasoning trail and makes it possible to stop for review between phases.</p>
+    <h3>What the process produces</h3>
+    <ul>
+      <li>A precise description of what definitive failure would look like.</li>
+      <li>Stakeholder-specific accounts of how that failure happened.</li>
+      <li>A compact causal graph showing root causes, intermediate effects, and terminal outcomes.</li>
+      <li>Prioritized interventions tied to specific points in the graph.</li>
+      <li>A research agenda for assumptions that should be tested before a go/no-go decision.</li>
+      <li>A report that communicates the recommendation and its evidence.</li>
+    </ul>
+    <h3>When to use it</h3>
+    <p>Use Premortem when there is a real plan to evaluate, when failure has meaningful consequences, and when stakeholder perspectives or causal analysis can improve the decision. If the team has not selected a plan yet, compare alternatives first. If all you need is a quick list of obvious risks, the full workflow is probably more structure than you need.</p>
+    <h3>How the workflow proceeds</h3>
+    <ol>
+      <li><strong>Imagine:</strong> describe definitive failure as a completed fact, including visible consequences.</li>
+      <li><strong>Diversify:</strong> use stakeholder lenses with different incentives, information, and exposure.</li>
+      <li><strong>Explain:</strong> organize their failure stories into a compact causal graph.</li>
+      <li><strong>Intervene:</strong> target dangerous pathways with mitigations and decision-relevant research.</li>
+    </ol>
+    <p>The workflow alternates generation, analyst synthesis, and explicit review. It does not predict one inevitable future. It identifies plausible mechanisms early enough to prevent them or test the assumptions behind them.</p>
+  </section>
+
+  <section id="output-contract">
+    <h2>Technical reference: JSON output</h2>
+    <p>Every command emits one JSON document by default. Automation should branch on the boolean <code>ok</code>, read successful results from <code>data</code>, and use <code>next_actions</code> to discover executable follow-up commands. The <code>command</code> array records the Premortem subcommand. Each action declares whether it mutates state, requires network access, or needs user approval.</p>
+    <pre><code>{
+  "schema_version": "1.0",
+  "ok": true,
+  "command": ["status"],
+  "data": {
+    "initiative": "Colgate Kitchen entrée launch",
+    "phase": "personas",
+    "personas": 0,
+    "graph_nodes": 0,
+    "mitigations": 0
+  },
+  "warnings": [],
+  "next_actions": []
+}</code></pre>
+    <p>Failures use the same outer contract, replace <code>data</code> with a structured <code>error</code>, and return a nonzero process status:</p>
+    <pre><code>{
+  "schema_version": "1.0",
+  "ok": false,
+  "command": ["docs", "show", "missing"],
+  "error": {
+    "code": "ID_NOT_FOUND",
+    "message": "Documentation topic not found.",
+    "details": {
+      "context": "missing",
+      "hint": "Run `premortem docs list`."
+    }
+  },
+  "warnings": [],
+  "next_actions": []
+}</code></pre>
+    <p><strong>Human output is explicit.</strong> Add <code>--human</code> when reading interactively. JSON remains the stable default for agents, scripts, and tests.</p>
+    <p><strong>Examples are abbreviated.</strong> The tutorial keeps the complete envelope fields but may omit timestamps, notes, saved-object metadata, or additional collection members inside <code>data</code>. The CLI output remains the source of truth.</p>
+  </section>
+
+  <section id="edsl-jobs">
+    <h2>Technical reference: EDSL execution</h2>
+    <p>Premortem packages the research design; EDSL executes it. These four commands form the boundary for every AI-assisted phase.</p>
+    <div class="command-step">
+      <h3>1. Build the Jobs package</h3>
+      <p>Creates a portable EDSL <code>Jobs</code> object without selecting or calling a model.</p>
+      <dl class="args"><dt>personas</dt><dd>The phase to package.</dd><dt>--context</dt><dd>The facilitator perspective used to design stakeholder personas.</dd><dt>--requirements</dt><dd>Comma-separated stakeholder roles that must be represented.</dd><dt>--output</dt><dd>Destination for the model-free <code>.jobs.ep</code> artifact.</dd></dl>
+      <div class="block-label">Command</div>
+      <pre><code>premortem job generate personas --context "Consumer packaged-goods launch strategist" --requirements "brand director,grocery category buyer,food safety lead,co-manufacturer operator,time-pressed parent" --output jobs/personas.jobs.ep</code></pre>
+      <div class="block-label">Output</div>
+      <pre><code>{"schema_version":"1.0","ok":true,"command":["job","generate","personas"],"data":{"object_type":"Jobs","phase":"personas","output_path":"jobs/personas.jobs.ep","expected_results_path":"jobs/personas-results.ep","question_names":["personas"],"agent_count":1,"scenario_count":1,"model_count":0},"warnings":[],"next_actions":[{"kind":"command","label":"Run `ep inspect jobs/personas.jobs.ep`","command":["ep","inspect","jobs/personas.jobs.ep"],"mutates_state":false,"requires_network":false,"requires_user_approval":false}]}</code></pre>
+    </div>
+    <div class="command-step">
+      <h3>2. Inspect the package</h3>
+      <p>Shows the object type and execution dimensions before any paid inference.</p>
+      <dl class="args"><dt>jobs/personas.jobs.ep</dt><dd>The Jobs artifact to inspect.</dd></dl>
+      <div class="block-label">Command</div>
+      <pre><code>ep inspect jobs/personas.jobs.ep</code></pre>
+      <div class="block-label">Output</div>
+      <pre><code>{"status":"ok","data":{"object_type":"Jobs","length":1,"question_count":1,"question_names":["personas"],"agent_count":1,"scenario_count":1,"model_count":0},"warnings":[]}</code></pre>
+    </div>
+    <div class="command-step">
+      <h3>3. Estimate the run cost</h3>
+      <p>Asks Expected Parrot for the credit hold and approximate dollar cost.</p>
+      <dl class="args"><dt>jobs/personas.jobs.ep</dt><dd>The Jobs artifact whose execution cost should be estimated.</dd></dl>
+      <div class="block-label">Command</div>
+      <pre><code>ep jobs cost jobs/personas.jobs.ep</code></pre>
+      <div class="block-label">Output</div>
+      <pre><code>{"status":"ok","data":{"credits_hold":0.16,"usd":0.0016},"warnings":[]}</code></pre>
+    </div>
+    <div class="command-step">
+      <h3>4. Run the job</h3>
+      <p>Executes the packaged interviews. This is the paid, networked step and the model is chosen explicitly here.</p>
+      <dl class="args"><dt>jobs/personas.jobs.ep</dt><dd>The input Jobs package.</dd><dt>--model</dt><dd>The EDSL model name to use for every interview.</dd><dt>--output</dt><dd>Destination for the portable Results artifact.</dd></dl>
+      <div class="block-label">Command</div>
+      <pre><code>ep run jobs/personas.jobs.ep --model gpt-5-nano --output jobs/personas-results.ep</code></pre>
+      <div class="block-label">Output</div>
+      <pre><code>{"status":"ok","data":{"meta":{"model_count":1,"agent_count":1,"scenario_count":1,"result_count":1,"saved":{"path":"jobs/personas-results.ep","format":"ep","object_type":"Results"}}},"warnings":[]}</code></pre>
+    </div>
+    <div class="command-step">
+      <h3>5. Ingest the results</h3>
+      <p>Validates and normalizes the EDSL Results into Premortem’s project store.</p>
+      <dl class="args"><dt>personas</dt><dd>The result type and destination collection.</dd><dt>--from</dt><dd>The Results <code>.ep</code> artifact produced by <code>ep run</code>.</dd></dl>
+      <div class="block-label">Command</div>
+      <pre><code>premortem ingest personas --from jobs/personas-results.ep</code></pre>
+      <div class="block-label">Output</div>
+      <pre><code>{"schema_version":"1.0","ok":true,"command":["ingest","personas"],"data":{"created":5,"personas":[{"id":"p001","name":"Maya Chen","role":"Colgate brand director"}]},"warnings":[],"next_actions":[]}</code></pre>
+    </div>
+    <p><strong>Preserve both artifacts.</strong> The <code>*.jobs.ep</code> file records what was asked and of whom. The <code>*-results.ep</code> file records the returned answers and model provenance. Premortem state is updated only by the explicit ingest command.</p>
+  </section>
+
+  <section id="failure">
+    <h2><span class="chapter-number">02</span> Define failure</h2>
+    <p>Begin with the initiative, its context, and the outcomes that must be avoided. Then state failure in the past tense as though the team is looking back from the future.</p>
+    <table><thead><tr><th>A strong statement</th><th>A weak statement</th></tr></thead><tbody>
+      <tr><td>Names a date or horizon.</td><td>Uses an indefinite “someday.”</td></tr>
+      <tr><td>Describes observable consequences.</td><td>Says only that the project “did not go well.”</td></tr>
+      <tr><td>Leaves causes for the analysis.</td><td>Embeds a favored causal explanation.</td></tr>
+      <tr><td>Avoids hedging.</td><td>Uses “might,” “could,” or “possibly.”</td></tr>
+    </tbody></table>
+    <p>The <a href="https://github.com/expectedparrot/premortem/blob/main/examples/colgate-kitchen/README.md">maintained example</a> is fictional: Colgate launches “Colgate Kitchen,” a line of refrigerated heat-and-serve entrées led by family-size lasagna.</p>
+    <p><strong>Failure statement.</strong> “It is twelve months after the nationwide launch. Major grocery chains have removed Colgate Kitchen lasagna and the rest of the entrée line, retail sell-through missed plan by 70%, $45 million of inventory and launch spending has been written off, and favorability toward the core Colgate brand has fallen 12 points.” The statement is vivid and measurable without claiming why it happened.</p>
+    <p><code>init</code> creates the project store. <code>--initiative</code> names the decision; <code>--failure</code> supplies the approved completed-fact outcome. Optional <code>--description</code> adds operating context and <code>--project-dir</code> overrides <code>.premortem/</code>.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem init --initiative "Colgate Kitchen entrée launch" \
+  --failure "It is twelve months after launch. Major grocery chains have removed the line, sell-through missed plan by 70%, $45 million has been written off, and core-brand favorability fell 12 points."</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{
+  "schema_version": "1.0",
+  "ok": true,
+  "command": ["init", "--initiative", "Colgate Kitchen entrée launch", "--failure", "It is twelve months after launch..."],
+  "data": {
+    "id": "pm_2026_0723120000",
+    "initiative": "Colgate Kitchen entrée launch",
+    "failure_statement": "It is twelve months after launch...",
+    "description": null
+  },
+  "warnings": [],
+  "next_actions": [{
+    "kind": "command",
+    "label": "Run `premortem persona add`",
+    "command": ["premortem", "persona", "add"],
+    "mutates_state": true,
+    "requires_network": false,
+    "requires_user_approval": false
+  }]
+}</code></pre>
+    <p><strong>Approval checkpoint.</strong> Show the complete failure statement to the decision owner and get explicit approval before initializing the project.</p>
+  </section>
+
+  <section id="personas">
+    <h2><span class="chapter-number">03</span> Stakeholder personas</h2>
+    <p>Create four to six perspectives whose incentives, access to information, and exposure to consequences differ. Useful roles often include the builder, buyer or user, operator, skeptic, and decision owner.</p>
+    <p>Personas are analytic lenses, not decorative biographies. Each one should reveal failure mechanisms that another role may miss.</p>
+    <p><code>persona add</code> stores one manually authored lens. <code>--name</code> is its stable display name; <code>--role</code> states the institutional position; optional <code>--perspective</code> records incentives and information access.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem persona add --name grocery_buyer --role "Frozen-food category buyer"</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["persona","add"],"data":{"id":"p001","name":"grocery_buyer","role":"Frozen-food category buyer","perspective":null},"warnings":[],"next_actions":[]}</code></pre>
+    <p><code>persona list</code> takes no required arguments and returns every stored persona. Add <code>--human</code> for a Rich table.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem persona list</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{
+  "schema_version": "1.0",
+  "ok": true,
+  "command": ["persona", "list"],
+  "data": [{
+    "id": "p001",
+    "name": "grocery_buyer",
+    "role": "Frozen-food category buyer",
+    "perspective": null
+  }],
+  "warnings": [],
+  "next_actions": []
+}</code></pre>
+    <p><strong>Approval checkpoint.</strong> Review the persona set before generating reasons. Replace generic or redundant roles and check that consequential outsiders are represented.</p>
+  </section>
+
+  <section id="reasons">
+    <h2><span class="chapter-number">04</span> Failure reasons</h2>
+    <p>Ask each persona to explain how the failure unfolded. Collect both episodic event chains and structural conditions. Concrete mechanisms are more useful than abstract risk labels.</p>
+    <table><thead><tr><th>Generic label</th><th>Operational mechanism</th></tr></thead><tbody>
+      <tr><td>Brand mismatch</td><td>Shoppers recognize Colgate immediately but report that an oral-care name makes the lasagna seem unappetizing.</td></tr>
+      <tr><td>Retailer resistance</td><td>Category buyers give the line one introductory facing and delist it after eight weeks below the required unit velocity.</td></tr>
+      <tr><td>Operations problems</td><td>The co-manufacturer misses sauce-fill tolerances at national volume, increasing rework and cold-chain dwell time.</td></tr>
+    </tbody></table>
+    <p><code>job generate reasons</code> packages two questions—episodic chains and structural factors—for every stored persona. <code>--domain</code> supplies concrete systems and constraints; <code>--good-example</code> calibrates specificity; <code>--output</code> names the Jobs artifact.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem job generate reasons \
+  --domain "Colgate brand associations, refrigerated entrée buying, grocery shelf velocity, co-manufacturing, food safety, cold-chain logistics" \
+  --good-example "Shoppers notice the Colgate name but associate it with toothpaste, so fewer households try the lasagna and weekly unit velocity falls below retailer hurdle rates." \
+  --output jobs/reasons.jobs.ep</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["job","generate","reasons"],"data":{"object_type":"Jobs","phase":"reasons","output_path":"jobs/reasons.jobs.ep","expected_results_path":"jobs/reasons-results.ep","question_names":["episodic_reasons","structural_reasons"],"agent_count":5,"scenario_count":1,"model_count":0},"warnings":[],"next_actions":[{"kind":"command","label":"Run `ep inspect jobs/reasons.jobs.ep`","command":["ep","inspect","jobs/reasons.jobs.ep"],"mutates_state":false,"requires_network":false,"requires_user_approval":false}]}</code></pre>
+    <p>If the output reads like a generic risk register, regenerate with stronger domain context and one example at the desired level of specificity.</p>
+  </section>
+
+  <section id="graph">
+    <h2><span class="chapter-number">05</span> Causal graph</h2>
+    <p>Synthesize the reasons into a small directed graph: roughly three or four root causes, two or three intermediate effects, and one or two terminal outcomes. Edges should name causal mechanisms, not merely imply sequence.</p>
+    <dl>
+      <dt>Root causes</dt><dd>No incoming edges. These upstream conditions create or amplify a pathway.</dd>
+      <dt>Intermediate effects</dt><dd>Places where causes combine, feedback develops, or symptoms propagate.</dd>
+      <dt>Terminal outcomes</dt><dd>No outgoing edges. These connect directly to the approved failure statement.</dd>
+      <dt>Convergence points</dt><dd>Nodes reached by multiple pathways and often useful as intervention targets.</dd>
+    </dl>
+    <img class="causal-graph" src="assets/colgate-kitchen-causal-graph.svg" alt="Causal graph showing the Colgate name making entrées seem unappetizing, suppressing household trial, lowering retailer sell-through, and causing grocery chains to delist the line.">
+    <p class="image-caption">A Graphviz rendering of maintained DOT source, using the same causal model emitted by <code>premortem graph export</code>. A full graph should also include operational, food-safety, pricing, and supply-chain branches where the evidence supports them.</p>
+    <p><code>graph add-node</code> stores one causal factor. <code>--label</code> states the mechanism; repeat <code>--reason</code> to attach the evidence records that support it.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem graph add-node --label "Colgate name makes entrées seem unappetizing" --reason r001</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["graph","add-node"],"data":{"id":"n001","label":"Colgate name makes entrées seem unappetizing","reason_ids":["r001"]},"warnings":[],"next_actions":[]}</code></pre>
+    <p>Run the same command for the downstream effect. Here <code>--label</code> names the effect and <code>--reason r002</code> links its supporting reason.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem graph add-node --label "Household trial remains below plan" --reason r002</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["graph","add-node"],"data":{"id":"n002","label":"Household trial remains below plan","reason_ids":["r002"]},"warnings":[],"next_actions":[]}</code></pre>
+    <p><code>graph add-edge</code> records direction and mechanism. <code>--from</code> is the cause node; <code>--to</code> is the effect node; <code>--label</code> explains how the cause produces the effect.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem graph add-edge --from n001 --to n002 --label "brand-category association suppresses first purchase"</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["graph","add-edge"],"data":{"id":"e001","source":"n001","target":"n002","label":"brand-category association suppresses first purchase"},"warnings":[],"next_actions":[]}</code></pre>
+    <p><code>graph list</code> takes no required arguments and returns the complete node and edge collections.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem graph list</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{
+  "schema_version": "1.0",
+  "ok": true,
+  "command": ["graph", "list"],
+  "data": {
+    "nodes": [
+      {"id": "n001", "label": "Colgate name makes entrées seem unappetizing", "reason_ids": ["r001"]},
+      {"id": "n002", "label": "Household trial remains below plan", "reason_ids": ["r002"]}
+    ],
+    "edges": [
+      {"id": "e001", "source": "n001", "target": "n002", "label": "brand-category association suppresses first purchase"}
+    ]
+  },
+  "warnings": [],
+  "next_actions": []
+}</code></pre>
+    <p><strong>Approval checkpoint.</strong> The graph is analyst work. Review it for missing mechanisms, overloaded nodes, and ambiguous edges before moving to mitigation.</p>
+  </section>
+
+  <section id="score">
+    <h2><span class="chapter-number">06</span> Scoring risks</h2>
+    <p>Score important graph nodes to direct attention, not to manufacture false precision. Likelihood describes how plausible the node is; impact describes how strongly it contributes to definitive failure. Use notes to preserve the evidence and reasoning behind both judgments.</p>
+    <table><thead><tr><th>Dimension</th><th>Question</th></tr></thead><tbody>
+      <tr><td>Likelihood</td><td>How plausible is this node under the planned initiative?</td></tr>
+      <tr><td>Impact</td><td>If this node occurs, how much does it contribute to definitive failure?</td></tr>
+      <tr><td>Notes</td><td>What observations, records, assumptions, or precedents support the ratings?</td></tr>
+    </tbody></table>
+    <p><code>score set</code> upserts one node score. <code>--node</code> identifies the graph node; <code>--likelihood</code> and <code>--impact</code> accept <code>low</code>, <code>medium</code>, or <code>high</code>; optional <code>--notes</code> records the basis.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem score set --node n001 --likelihood high --impact high</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["score","set"],"data":{"node_id":"n001","likelihood":"high","impact":"high","notes":null},"warnings":[],"next_actions":[]}</code></pre>
+  </section>
+
+  <section id="mitigations">
+    <h2><span class="chapter-number">07</span> Mitigations</h2>
+    <p>Every mitigation should name the graph node it targets and specify who does what by when. Separate prevention, early detection, and response; they intervene at different points in the pathway.</p>
+    <p><strong>Concrete form.</strong> “Before national production authorization, the consumer-insights director will run a 600-person randomized concept test comparing identical lasagna under the Colgate name and a standalone food brand.”</p>
+    <p><code>job generate mitigations</code> packages one interview per persona. <code>--good-example</code> demonstrates an owned, timed intervention; <code>--output</code> names the Jobs artifact. Optional <code>--bad-example</code> identifies language to reject.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem job generate mitigations \
+  --good-example "Before national production authorization, consumer insights runs a 600-person branded-versus-blind concept test and stops the Colgate-branded launch if purchase intent is eight points lower." \
+  --output jobs/mitigations.jobs.ep</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["job","generate","mitigations"],"data":{"object_type":"Jobs","phase":"mitigations","output_path":"jobs/mitigations.jobs.ep","expected_results_path":"jobs/mitigations-results.ep","question_names":["mitigations"],"agent_count":5,"scenario_count":1,"model_count":0},"warnings":[],"next_actions":[{"kind":"command","label":"Run `ep inspect jobs/mitigations.jobs.ep`","command":["ep","inspect","jobs/mitigations.jobs.ep"],"mutates_state":false,"requires_network":false,"requires_user_approval":false}]}</code></pre>
+    <p>The EDSL question returns a structured record with <code>action</code>, <code>owner</code>, <code>timing</code>, <code>node_ids</code>, and <code>mechanism</code>. After the approved <code>ep run</code>, ingest that Results artifact:</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem ingest mitigations --from jobs/mitigations-results.ep</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["ingest","mitigations"],"data":{"created":5,"mitigations":[{"id":"m001","text":"Run a branded-versus-blind concept test before production authorization.","node_ids":["n001"],"notes":"Owner: Consumer insights director\nTiming: Before production authorization\nMechanism: Tests whether parent-brand association suppresses trial"}]},"warnings":[],"next_actions":[]}</code></pre>
+    <p>A mitigation with no graph target is probably too broad. Map it to a mechanism or treat it as a weak recommendation requiring revision.</p>
+  </section>
+
+  <section id="research">
+    <h2><span class="chapter-number">08</span> Research agenda</h2>
+    <p>Not every uncertainty should become an action item. Research is valuable when an assumption is important, uncertain, and testable before the decision. A useful research question identifies the evidence that would update the recommendation.</p>
+    <p><code>job generate research-agenda</code> packages unresolved graph assumptions for every persona. <code>--output</code> chooses the Jobs artifact path; project state supplies the personas, reasons, and graph.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem job generate research-agenda --output jobs/research-agenda.jobs.ep</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["job","generate","research-agenda"],"data":{"object_type":"Jobs","phase":"research_agenda","output_path":"jobs/research-agenda.jobs.ep","expected_results_path":"jobs/research-agenda-results.ep","question_names":["research_agenda"],"agent_count":5,"scenario_count":1,"model_count":0},"warnings":[],"next_actions":[{"kind":"command","label":"Run `ep inspect jobs/research-agenda.jobs.ep`","command":["ep","inspect","jobs/research-agenda.jobs.ep"],"mutates_state":false,"requires_network":false,"requires_user_approval":false}]}</code></pre>
+    <p>Each returned research record has six explicit fields: <code>assumption</code>, <code>uncertainty</code>, <code>method</code>, <code>population</code>, <code>decision_threshold</code>, and <code>node_ids</code>. This makes the result usable by a reporting agent without parsing prose.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem ingest research-agenda --from jobs/research-agenda-results.ep</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["ingest","research-agenda"],"data":{"rows":5,"output_path":".premortem/output/results_research_agenda.json","source_results":"jobs/research-agenda-results.ep"},"warnings":[],"next_actions":[{"kind":"command","label":"Run `premortem report context`","command":["premortem","report","context"],"mutates_state":true,"requires_network":false,"requires_user_approval":false}]}</code></pre>
+    <table><thead><tr><th>Question</th><th>Decision relevance</th><th>Evidence</th></tr></thead><tbody>
+      <tr><td>How much does the Colgate name change purchase intent?</td><td>Determines whether the line can use the parent brand.</td><td>Randomized branded-versus-blind concept test with category buyers.</td></tr>
+      <tr><td>What velocity do grocery buyers require after launch?</td><td>Determines the trial volume needed to retain shelf space.</td><td>Interviews and historical reset data from target retail chains.</td></tr>
+    </tbody></table>
+  </section>
+
+  <section id="reporting">
+    <h2><span class="chapter-number">09</span> Reporting</h2>
+    <p>Premortem prepares the analysis; a downstream writing agent writes the audience-specific report. The canonical handoff is a structured JSON bundle containing source evidence, causal paths, risk rankings, mitigation coverage, research material, provenance, and explicit writing instructions.</p>
+    <p>Before exporting, run <code>premortem workflow validate</code>. It checks cross-entity references, duplicate edges, self-loops, and causal cycles. Errors should be repaired; warnings identify coverage gaps such as unscored or unmitigated nodes.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem workflow validate</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["workflow","validate"],"data":{"valid":true,"errors":[],"warnings":[{"severity":"warning","code":"unmitigated_nodes","message":"Nodes without mitigations: n006.","entity_ids":["n006"]}]},"warnings":[],"next_actions":[]}</code></pre>
+    <p><code>report context</code> writes that bundle. With no <code>--output</code>, it uses <code>.premortem/output/report-context.json</code>. Pass a different path when another agent or reporting system expects the artifact elsewhere.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem report context</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{
+  "schema_version": "1.0",
+  "ok": true,
+  "command": ["report", "context"],
+  "data": {
+    "object_type": "premortem_report_context",
+    "output_path": ".premortem/output/report-context.json",
+    "counts": {
+      "personas": 5,
+      "reasons": 10,
+      "nodes": 8,
+      "edges": 10,
+      "mitigations": 12,
+      "research_items": 5
+    },
+    "reporting_brief": {
+      "purpose": "Write a decision-ready report from this structured pre-mortem record.",
+      "required_sections": ["decision and recommendation", "principal causal pathways", "mitigations and owners", "research required before commitment", "limitations"]
+    }
+  },
+  "warnings": [],
+  "next_actions": []
+}</code></pre>
+    <p>Give the resulting JSON file to a writing agent together with the intended audience, tone, format, and decision context. An ingested executive summary can appear in the bundle as optional source material, but it is not required and should not dictate the final prose.</p>
+    <p><code>premortem report html</code> remains available when a quick deterministic HTML rendering is useful. It is a convenience output, not the canonical reporting workflow.</p>
+  </section>
+
+  <section id="quickstart">
+    <h2><span class="chapter-number">10</span> Canonical command sequence</h2>
+    <p>Follow the numbered chapters in order. For each AI phase, repeat the five-command lifecycle shown in <a href="#edsl-jobs">EDSL Jobs workflow</a>: build, inspect, estimate, run, and ingest. Each command above is isolated with its arguments and output so it can be copied and verified independently.</p>
+    <ol>
+      <li>Initialize after approving the failure statement.</li>
+      <li>Build, run, ingest, and review personas.</li>
+      <li>Build, run, ingest, and review failure reasons.</li>
+      <li>Synthesize nodes and edges manually; then score important nodes.</li>
+      <li>Build, run, and ingest mitigations.</li>
+      <li>Build, run, and ingest the research agenda.</li>
+      <li>Validate project integrity, repair errors, and review coverage warnings.</li>
+      <li>Export report context and give it to a writing agent with audience requirements.</li>
+    </ol>
+    <p><strong>Use the CLI as the source of truth.</strong> Project state lives in <code>.premortem/</code>. Do not edit its JSON files directly; use commands so validation and workflow state remain consistent.</p>
+  </section>
+
+  <section id="agent-guidance">
+    <h2>Agent guidance and handoff</h2>
+    <p>Premortem is designed to teach an agent the method as it works. The package includes phase-specific documentation, quality checklists, approval rules, current-state inference, and executable next actions. The agent should not memorize the full workflow or infer state from filenames.</p>
+    <h3>Start or resume</h3>
+    <p><code>agent-start</code> returns the facilitation contract, current phase, full agent guide, and executable <code>next_actions</code>. <code>--project-dir</code> is optional when state is not stored in the default <code>.premortem/</code> directory.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem agent-start</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["agent-start"],"data":{"role":"Facilitate the premortem; do not expect the user to know the method.","rules":["Use the CLI as the source of truth; do not edit .premortem JSON directly.","Read the phase guide before acting.","Stop for approval at required checkpoints."],"state":{"phase":"intake","project_exists":false}},"warnings":[],"next_actions":[{"kind":"command","label":"Run `premortem docs show facilitation-guide`","command":["premortem","docs","show","facilitation-guide"],"mutates_state":false,"requires_network":false,"requires_user_approval":false}]}</code></pre>
+    <h3>Ask the package what comes next</h3>
+    <p><code>workflow next</code> infers the phase from stored artifacts. It returns the phase checklist, recommended steps, and executable actions. Run it after initialization, ingestion, graph changes, or whenever resuming work.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem workflow next</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["workflow","next"],"data":{"phase":"personas","counts":{"personas":0},"validation":{"valid":true,"errors":[],"warnings":[]},"checklist":["Build a model-free personas.jobs.ep package.","Review 4-6 personas for specificity and conflicting incentives."],"recommended_next_steps":[{"kind":"command","label":"Build personas Jobs","command":"premortem job generate personas --context \"...\" --requirements \"...\" --output jobs/personas.jobs.ep"}]},"warnings":[],"next_actions":[{"kind":"command","label":"Run `premortem job generate personas --context \"...\" --requirements \"...\" --output jobs/personas.jobs.ep`","command":["premortem","job","generate","personas","--context","...","--requirements","...","--output","jobs/personas.jobs.ep"],"mutates_state":true,"requires_network":false,"requires_user_approval":false}]}</code></pre>
+    <h3>Load phase-specific technique</h3>
+    <p><code>workflow guide</code> combines the relevant packaged document with its quality checklist. The positional argument names the phase, such as <code>personas</code>, <code>reasons</code>, <code>causal-graph</code>, <code>mitigations</code>, or <code>research-agenda</code>.</p>
+    <div class="block-label">Command</div>
+    <pre><code>premortem workflow guide causal-graph</code></pre>
+    <div class="block-label">Output</div>
+    <pre><code>{"schema_version":"1.0","ok":true,"command":["workflow","guide"],"data":{"phase":"causal-graph","doc_topic":"causal-graph","markdown":"# Causal Graph\n...","checklist":["Read failure reasons and synthesize about 8 causal nodes.","Add about 10 directed edges with concise mechanism labels."]},"warnings":[],"next_actions":[]}</code></pre>
+    <h3>Copy this into a fresh Codex or Claude Code session</h3>
+    <p>The following bootstrap prompt gives a new coding agent enough information to install the package, discover its role, and continue by following state-aware guidance.</p>
+    <pre class="prompt-block"><code>Install the current Premortem and EDSL main branches. If uv is not installed,
+first run `python -m pip install --upgrade uv`, then run:
+
+uv tool install --upgrade --force \
+  --with-executables-from "edsl @ git+https://github.com/expectedparrot/edsl.git@main" \
+  "premortem @ git+https://github.com/expectedparrot/premortem.git@main"
+
+Verify that `premortem` and `ep` resolve from the directory reported by
+`uv tool dir --bin`:
+
+uv tool dir --bin
+command -v premortem
+command -v ep
+premortem --help
+ep --help
+
+If necessary, run `uv tool update-shell` and verify again.
+
+Run `ep auth status`. If authentication is missing, run `ep auth login` and
+follow its login flow. Let the EDSL CLI create and manage the repository-local
+`.env`; never display, copy, or commit API keys. Then run
+`ep profiles current` to inspect the redacted configuration and `ep check` to
+verify connectivity.
+
+You are facilitating a structured pre-mortem with me. Do not expect me to know
+the method and do not edit .premortem JSON files directly.
+
+1. Run `premortem agent-start` and follow its facilitation rules.
+2. Run `premortem workflow next` to determine the current phase and surface the
+   executable next actions.
+3. Before each phase, run `premortem workflow guide &lt;phase&gt;` and apply its
+   checklist and quality standards.
+4. Draft the failure statement yourself from my context, then stop for approval.
+   Also stop after personas, after the causal graph, and before paid model runs.
+5. For AI-assisted phases, build a model-free `.jobs.ep` package, inspect it,
+   estimate its cost, ask me to approve the model run, execute it with `ep run`,
+   and ingest the resulting `.ep` file.
+6. After every ingest or material state change, run `premortem workflow next`
+   again. Before report handoff, run `premortem workflow validate` and repair
+   any errors.
+7. Export `.premortem/output/report-context.json` with
+   `premortem report context`; give that evidence bundle and the audience
+   requirements to a writing agent. Direct HTML is only a convenience output.
+8. Before handing off, run `premortem agent-end` and lead with the recommendation,
+   research homework, and canonical report path.
+
+Start by running `premortem agent-start`. If no project exists, ask me for the
+initiative and relevant context, then draft the failure statement for approval.</code></pre>
+  </section>
+
+  <footer>
+    <strong>Expected Parrot · Premortem</strong>
+    <p>Open-source tools for structured research with agents and human respondents. View the <a href="https://github.com/expectedparrot/premortem">source on GitHub</a>.</p>
+  </footer>
+</article></main>
+<script>
+  const precedingCommand = (element) => {
+    let current = element.previousElementSibling;
+    while (current && current.tagName !== "PRE") current = current.previousElementSibling;
+    return current ? current.textContent.trim() : "";
+  };
+  const humanView = (command, payload) => {
+    const data = payload.data || {};
+    if (command.endsWith("agent-start")) {
+      const state = data.state || {};
+      const steps = state.recommended_next_steps || [];
+      return [
+        "Premortem Agent Start",
+        "",
+        data.role || "",
+        "",
+        `Current phase: ${state.phase || "unknown"}`,
+        "",
+        "Recommended next steps",
+        ...steps.map((step) => `• ${step.label} — ${step.command}`)
+      ].join("\n");
+    }
+    if (command.endsWith("workflow next")) {
+      const steps = data.recommended_next_steps || [];
+      return [
+        "Workflow next",
+        `Phase: ${data.phase}`,
+        `Project: ${data.project_exists === false ? "not initialized" : "initialized"}`,
+        "",
+        ...steps.map((step) => `${step.label}\n  ${step.command}`)
+      ].join("\n");
+    }
+    if (command.includes(" workflow guide ")) {
+      return [
+        data.title || `Guide: ${data.phase || "phase"}`,
+        "",
+        ...(data.checklist || []).map((item) => `• ${item}`),
+        "",
+        "The full packaged phase guidance follows."
+      ].join("\n");
+    }
+    if (command.includes(" job generate ")) {
+      return [
+        "EDSL Jobs package",
+        `Phase: ${data.phase}`,
+        `Jobs: ${data.output_path}`,
+        `Questions: ${(data.question_names || []).join(", ")}`,
+        `Agents: ${data.agent_count}  Scenarios: ${data.scenario_count}`,
+        `Run: ep run ${data.output_path} --model <model-name> --output ${data.expected_results_path}`
+      ].join("\n");
+    }
+    if (command.startsWith("premortem init ")) {
+      return `Pre-mortem initialized\nProject: ${data.id}\nInitiative: ${data.initiative}\nFailure: ${data.failure_statement || "See project record"}\nNext step: premortem persona add`;
+    }
+    if (command.includes(" ingest personas ")) {
+      const first = (data.personas || [])[0] || {};
+      return `Ingested ${data.created} personas\n\nID     Name          Role\n${first.id || ""}   ${first.name || ""}   ${first.role || ""}\n…`;
+    }
+    if (command.includes(" persona add ")) {
+      return `Persona added\nID: ${data.id}\nName: ${data.name}\nRole: ${data.role}`;
+    }
+    if (command.endsWith("persona list")) {
+      const first = Array.isArray(data) ? data[0] || {} : {};
+      return `ID     Name             Role\n${first.id || ""}   ${first.name || ""}   ${first.role || ""}\n…`;
+    }
+    if (command.includes(" graph add-node ")) {
+      return `Node added\nID: ${data.id}\nLabel: ${data.label}\nReasons: ${(data.reason_ids || []).join(", ") || "—"}`;
+    }
+    if (command.includes(" graph add-edge ")) {
+      return `Edge added\nID: ${data.id}\nFrom: ${data.source}\nTo: ${data.target}\nLabel: ${data.label || "—"}`;
+    }
+    if (command.endsWith("graph list")) {
+      return `Nodes\nID     Label\nn001   Colgate name makes entrées seem unappetizing\nn002   Household trial remains below plan\n\nEdges\nID     From    To      Label\ne001   n001    n002    brand-category association suppresses first purchase`;
+    }
+    if (command.includes(" score set ")) {
+      return `Score set\nNode: ${data.node_id}\nLikelihood: ${data.likelihood}\nImpact: ${data.impact}`;
+    }
+    if (command.endsWith("report html")) {
+      return `HTML report written to ${data.output_path}`;
+    }
+    if (command.endsWith("report context")) {
+      return `Report context exported\nPath: ${data.output_path}\nPersonas: ${data.counts.personas}\nReasons: ${data.counts.reasons}\nNodes: ${data.counts.nodes}\nMitigations: ${data.counts.mitigations}\n\nGive this JSON bundle and the audience requirements to a report-writing agent.`;
+    }
+    return null;
+  };
+  document.querySelectorAll(".block-label").forEach((label) => {
+    if (label.textContent.trim() !== "Output") return;
+    const output = label.nextElementSibling;
+    if (!output || output.tagName !== "PRE") return;
+    const command = precedingCommand(label);
+    const details = document.createElement("details");
+    details.className = "output-toggle";
+    const summary = document.createElement("summary");
+    summary.textContent = "Show JSON output";
+    details.appendChild(summary);
+    label.replaceWith(details);
+    details.appendChild(output);
+    details.addEventListener("toggle", () => {
+      summary.textContent = details.open ? "Hide JSON output" : "Show JSON output";
+    });
+    if (!command.startsWith("premortem ")) return;
+    try {
+      const rendered = humanView(command, JSON.parse(output.textContent));
+      if (!rendered) return;
+      const humanDetails = document.createElement("details");
+      humanDetails.className = "output-toggle human-toggle";
+      const humanSummary = document.createElement("summary");
+      humanSummary.textContent = "Show --human output";
+      const humanPre = document.createElement("pre");
+      humanPre.className = "human-output";
+      const humanCode = document.createElement("code");
+      humanCode.textContent = rendered;
+      humanPre.appendChild(humanCode);
+      humanDetails.append(humanSummary, humanPre);
+      details.after(humanDetails);
+      humanDetails.addEventListener("toggle", () => {
+        humanSummary.textContent = humanDetails.open ? "Hide --human output" : "Show --human output";
+      });
+    } catch (_) {}
+  });
+  document.querySelectorAll(".block-label").forEach((label) => {
+    if (label.textContent.trim() !== "Command") return;
+    const pre = label.nextElementSibling;
+    const code = pre && pre.querySelector("code");
+    if (!code) return;
+    pre.classList.add("command-code");
+    const text = code.textContent;
+    const pattern = /(--[\w-]+)|("[^"]*"|'[^']*')|\b(premortem|ep)\b/g;
+    const fragment = document.createDocumentFragment();
+    let position = 0;
+    for (const match of text.matchAll(pattern)) {
+      fragment.append(document.createTextNode(text.slice(position, match.index)));
+      const span = document.createElement("span");
+      span.className = match[1] ? "syntax-option" : match[2] ? "syntax-string" : "syntax-program";
+      span.textContent = match[0];
+      fragment.append(span);
+      position = match.index + match[0].length;
+    }
+    fragment.append(document.createTextNode(text.slice(position)));
+    code.replaceChildren(fragment);
+  });
+  document.querySelectorAll("pre").forEach((pre) => {
+    const button = document.createElement("button");
+    button.className = "copy";
+    button.type = "button";
+    button.textContent = "Copy";
+    button.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(pre.innerText.replace(/^Copy\n/, ""));
+      button.textContent = "Copied";
+      setTimeout(() => button.textContent = "Copy", 1200);
+    });
+    pre.appendChild(button);
+  });
+  const progress = document.getElementById("progress");
+  const updateProgress = () => {
+    const max = document.documentElement.scrollHeight - innerHeight;
+    progress.style.width = (max > 0 ? scrollY / max * 100 : 0) + "%";
+  };
+  addEventListener("scroll", updateProgress, {passive:true});
+  updateProgress();
+</script>
+</body>
+</html>

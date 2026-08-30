@@ -143,6 +143,7 @@ hermes-skills/approved/
 /screenpipe/crates/screenpipe-audio/onnxruntime-win-x64-1.22.0.zip
 
 # Upstream private-key fixtures are intentionally not mirrored.
+/openwork/apps/desktop/electron/testdata/chain-repair/*.key.pem
 /stirling-pdf/app/core/src/test/resources/certs/test-key.key
 /stirling-pdf/app/core/src/test/resources/certs/test-key.pem
 
