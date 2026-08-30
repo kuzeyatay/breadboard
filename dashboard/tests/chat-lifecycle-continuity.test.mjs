@@ -33,6 +33,9 @@ const presentation = source("../src/lib/hermes/session-presentation.ts");
 const runClock = source(
   "../src/app/components/hermes/external-run-clock.ts",
 );
+const maxResearchCard = source(
+  "../src/app/components/hermes/inline-max-research-run.tsx",
+);
 const chatSessionsRoute = source("../src/app/api/chat-sessions/route.ts");
 const quartzChatRoute = source("../src/app/api/quartz-ai/chat/route.ts");
 const quartzSessionsRoute = source("../src/app/api/quartz-ai/sessions/route.ts");
@@ -93,6 +96,9 @@ test("external run clocks are keyed to durable run timestamps, not card mounts",
   assert.match(runClock, /const startedAtByRunId = new Map<string, number>\(\)/);
   assert.match(runClock, /MAX_REMEMBERED_RUNS = 256/);
   assert.match(sessionHook, /rememberExternalRunStartedAt\(/);
+  assert.match(maxResearchCard, /externalRunStartedAtMs\(runId\)/);
+  assert.match(maxResearchCard, /persistedDurationMs/);
+  assert.doesNotMatch(maxResearchCard, /setSeconds\(\(value\) => value \+ 1\)/);
 
   const resetters = fs
     .readdirSync(new URL("../src/app/components/hermes/", import.meta.url))

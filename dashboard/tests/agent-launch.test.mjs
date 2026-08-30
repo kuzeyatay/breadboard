@@ -547,6 +547,7 @@ test("Max Research is durable before its private launch event reaches a page", (
   assert.match(route, /await startMaxResearchRun\(\{/);
   assert.match(route, /requestId: originClientMessageId/);
   assert.match(route, /attachExternalAgentRun\(\{/);
+  assert.match(route, /observeMaxResearchConversationTurn\(\{/);
   assert.match(route, /\.\.\.\(startedRun \? \{ startedRun \} : \{\}\)/);
 
   for (const stream of [eventStream, gardenAdapter]) {
@@ -556,6 +557,16 @@ test("Max Research is durable before its private launch event reaches a page", (
   assert.match(terminal, /run: request\.startedRun,/);
   assert.match(terminal, /attachToExistingTurn: true,/);
   assert.match(garden, /request\.startedRun\?\.kind === "max_research"/);
+
+  const settleAt = terminal.indexOf(
+    "await finishExternalAgentTurn({ clientMessageId, ...result })",
+  );
+  const continueAt = terminal.indexOf(
+    "setPendingLaunchContinuation(",
+    settleAt,
+  );
+  assert.ok(settleAt >= 0 && continueAt > settleAt);
+  assert.match(terminal, /settlingExternalTurnsRef/);
 
   const conversationStore = source("../src/lib/conversations/store.ts");
   assert.match(

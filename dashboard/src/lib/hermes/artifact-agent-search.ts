@@ -11,7 +11,7 @@ import type { PresentedArtifact } from "./artifact-types.ts";
 
 const DEFAULT_RESULT_LIMIT = 20;
 const MAX_RESULT_LIMIT = 50;
-const DEFAULT_CONTENT_SCAN_LIMIT = 100;
+const DEFAULT_CONTENT_SCAN_LIMIT = 25;
 const MAX_QUERY_LENGTH = 500;
 const MAX_QUERY_TERMS = 16;
 const MAX_SNIPPET_LENGTH = 360;
@@ -30,6 +30,7 @@ export interface AgentArtifactSearchResult {
   contentArtifactsInspected: number;
   contentInspectionFailures: number;
   contentSearchTruncated: boolean;
+  nextContentOffset: number | null;
 }
 
 interface AgentArtifactSearchOptions {
@@ -37,6 +38,7 @@ interface AgentArtifactSearchOptions {
   query: string;
   limit?: number;
   includeContent?: boolean;
+  contentOffset?: number;
   maxContentArtifacts?: number;
   database?: Database.Database;
   storageRoot?: string;
@@ -128,6 +130,7 @@ export async function searchArtifactsForAgent(
       contentArtifactsInspected: 0,
       contentInspectionFailures: 0,
       contentSearchTruncated: false,
+      nextContentOffset: null,
     };
   }
   const limit = Math.max(
@@ -148,11 +151,13 @@ export async function searchArtifactsForAgent(
   const matches = catalogMatches.slice(0, limit);
   const includeContent = options.includeContent !== false;
   const contentLimit = Math.max(
-    0,
+    1,
     Math.floor(options.maxContentArtifacts ?? DEFAULT_CONTENT_SCAN_LIMIT),
   );
-  const candidates = includeContent && matches.length < limit
-    ? contentCandidates.slice(0, contentLimit)
+  const contentOffset = Math.max(0, Math.floor(options.contentOffset ?? 0));
+  const contentSearchStarted = includeContent && matches.length < limit;
+  const candidates = contentSearchStarted
+    ? contentCandidates.slice(contentOffset, contentOffset + contentLimit)
     : [];
   let inspected = 0;
   let failures = 0;
@@ -178,6 +183,9 @@ export async function searchArtifactsForAgent(
     }
   }
 
+  const nextContentOffset = contentSearchStarted && contentCandidates.length > contentOffset + inspected
+    ? contentOffset + inspected
+    : null;
   return {
     query,
     matches,
@@ -185,8 +193,7 @@ export async function searchArtifactsForAgent(
     catalogMatchCount: catalogMatches.length,
     contentArtifactsInspected: inspected,
     contentInspectionFailures: failures,
-    contentSearchTruncated:
-      includeContent &&
-      contentCandidates.length > inspected,
+    contentSearchTruncated: nextContentOffset !== null,
+    nextContentOffset,
   };
 }

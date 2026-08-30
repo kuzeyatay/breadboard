@@ -19,7 +19,9 @@ PDFs, or sandboxed HTML that benefit from their own viewer or future revisions.
 Keep concise answers, short lists, and small snippets in chat. You may emit a
 short conversational explanation in the same run. Do not paste the full
 artifact into chat. Before revising, list/read the existing artifact and update
-it so Breadboard creates a new traceable version. Authorized MCP tools may
+it so Breadboard creates a new traceable version. Search when the user refers
+to an artifact without its id; Garden artifact search spans chats only inside
+the active Garden. Authorized MCP tools may
 gather inputs, but final persistence must use artifact tools with provenance.
 After an update or append, render/finalize the current version so it becomes
 previewable and downloadable.

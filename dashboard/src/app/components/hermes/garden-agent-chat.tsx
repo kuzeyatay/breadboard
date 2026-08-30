@@ -293,7 +293,7 @@ export default function GardenAgentChat({
       );
     };
     const listener = (raw: Event) => apply((raw as CustomEvent<ArtifactAiEditDetail>).detail);
-    const queued = consumeArtifactAiEdit({ gardenId: gardenSlug });
+    const queued = consumeArtifactAiEdit({ surface: "garden_chat", gardenId: gardenSlug });
     const timer = queued ? window.setTimeout(() => apply(queued), 0) : null;
     window.addEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
     return () => {

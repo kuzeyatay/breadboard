@@ -1454,7 +1454,11 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
 
 /* The Garden archive lives at the bottom of the learning-map rail, but an
    opened artifact overlays that rail and extends left over the chat. Its
-   portal host disappears completely while it is empty. */
+   resizable shell disappears completely while its portal host is empty. */
+.bb-garden-artifact-shell:not(:has(> .bb-garden-artifact-lane > .bb-artifact-dock)) {
+  display: none;
+}
+
 .bb-garden-artifact-lane:empty {
   display: none;
 }
@@ -1513,20 +1517,18 @@ html[data-breadboard-desktop="true"] .bb-artifact-dock-floating {
   }
 }
 
-/* Garden artifacts enter across the map's inner (left) edge and then sit above
-   the complete right rail. Terminal lanes keep their right-edge motion. */
-@media (prefers-reduced-motion: no-preference) {
-  [data-artifact-dock-origin="left"] > .bb-artifact-dock {
-    animation-name: bb-artifact-dock-in-from-left;
+@media (prefers-reduced-motion: reduce) {
+  .bb-artifact-dock {
+    animation: bb-artifact-dock-fade-in 160ms ease;
   }
 }
 
-@keyframes bb-artifact-dock-in-from-left {
+@keyframes bb-artifact-dock-fade-in {
   from {
-    transform: translateX(-100%);
+    opacity: 0;
   }
   to {
-    transform: translateX(0);
+    opacity: 1;
   }
 }
 

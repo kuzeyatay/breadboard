@@ -129,6 +129,38 @@ test("source documents save and render a traceable new artifact version", async 
   }
 });
 
+test("visual HTML autosave keeps the original and renders the changed page as a new version", async () => {
+  const input = fixture();
+  try {
+    const first = "<!doctype html><html><head><title>Landing</title></head><body><h1>Before</h1><button>Start</button></body></html>";
+    let artifact = createArtifact(shared(input, {
+      kind: "html",
+      rendererId: "html",
+      filename: "landing.html",
+      content: first,
+    }));
+    artifact = await renderArtifact({ artifact, runId: "run_editor", assistantMessageId: null, ...options(input) });
+    const opened = await loadArtifactEditor(artifact, options(input));
+    assert.equal(opened.mode, "source");
+    assert.equal(opened.content, first);
+
+    const changed = first.replace("Before", "Edited visually").replace("Start", "Open now");
+    const saved = await saveArtifactEditor({
+      artifact,
+      expectedVersion: 1,
+      content: changed,
+    }, options(input));
+    assert.equal(saved.status, "ready");
+    assert.equal(saved.current_version, 2);
+    assert.equal(readArtifactSource(saved, 1, input.storage, input.database), first);
+    assert.equal(readArtifactSource(saved, 2, input.storage, input.database), changed);
+    assert.equal(listArtifactVersions(saved.id, input.database).length, 2);
+  } finally {
+    input.database.close();
+    fs.rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
 test("DOCX blocks round-trip through the native editor and retain an HTML preview", async () => {
   const input = fixture();
   fs.mkdirSync(input.workspace, { recursive: true });

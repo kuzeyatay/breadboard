@@ -245,6 +245,14 @@ export async function POST(request: Request) {
           "Artifact search limit must be an integer from 1 to 50.",
         );
       }
+      const contentOffset = args.contentOffset === undefined ? 0 : Number(args.contentOffset);
+      if (!Number.isInteger(contentOffset) || contentOffset < 0 || contentOffset > 100_000) {
+        throw new ApiError(
+          400,
+          "artifact_search_offset_invalid",
+          "Artifact search contentOffset must be an integer from 0 to 100000.",
+        );
+      }
       result = {
         scope: describeAgentArtifactScope(artifactScope),
         ...(await searchArtifactsForAgent({
@@ -252,6 +260,7 @@ export async function POST(request: Request) {
           query: requiredText(args.query, "search_query", 500),
           limit: requestedLimit,
           includeContent: args.includeContent !== false,
+          contentOffset,
           signal: request.signal,
         })),
       };

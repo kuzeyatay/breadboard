@@ -126,7 +126,7 @@ import ArtifactPanel, {
   ArtifactArchiveIcon,
   GARDEN_DOCUMENTS_CHANGED_EVENT,
 } from "@/app/components/hermes/artifact-panel";
-import { ArtifactDockHostProvider } from "@/app/components/hermes/artifact-dock-host";
+import GardenArtifactDock from "@/app/components/hermes/garden-artifact-dock";
 import { consumeArtifactAiEdit, type ArtifactAiEditDetail } from "@/app/components/hermes/artifact-ai-edit";
 import InlineAgentBrowserRun from "@/app/components/hermes/inline-agent-browser-run";
 import InlineArtifactCards, {
@@ -1879,6 +1879,7 @@ const ChatTranscript = memo(function ChatTranscript({
                                   query={msg.maxResearchRun.query}
                                   persistedContent={msg.content}
                                   persistedOutcome={msg.externalAgentOutcome}
+                                  persistedDurationMs={msg.responseDurationMs}
                                 />
                               ) : msg.deepResearchRun ? (
                                 <InlineDeepResearchRun
@@ -2723,7 +2724,6 @@ export default function WorkspaceClient({
   // Every artifact entry point in this workspace—archive rows and inline chat
   // cards alike—opens into one overlay bounded by the workspace body. Keeping
   // the host below the header prevents the viewer from covering Garden nav.
-  const [artifactDockHost, setArtifactDockHost] = useState<HTMLDivElement | null>(null);
 
   // Documents sidebar
   const [documents, setDocuments] = useState<DocInfo[]>([]);
@@ -3080,7 +3080,7 @@ export default function WorkspaceClient({
       requestAnimationFrame(() => textareaRef.current?.focus());
     };
     const listener = (raw: Event) => apply((raw as CustomEvent<ArtifactAiEditDetail>).detail);
-    const queued = consumeArtifactAiEdit({ gardenId: clusterSlug });
+    const queued = consumeArtifactAiEdit({ surface: "garden_chat", gardenId: clusterSlug });
     const timer = queued ? window.setTimeout(() => apply(queued), 0) : null;
     window.addEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
     return () => {
@@ -14289,7 +14289,7 @@ export default function WorkspaceClient({
 
       {/* Body */}
       <div className="relative flex flex-1 min-h-0">
-        <ArtifactDockHostProvider host={artifactDockHost}>
+        <GardenArtifactDock>
         {/* Left sidebar: chat sessions */}
         {/* The Terminal's rail, garden-scoped: this garden's chats, its
             uploads, its schedules, its hooks and its live work. The Terminal
@@ -14979,14 +14979,7 @@ export default function WorkspaceClient({
           showInternalConceptGraph={showInternalConceptGraph}
           savedLinkCount={savedLinks.length}
         />
-        {/* A true overlay: it stays above the learning-map rail and reaches
-            left over the chat without resizing either underlying surface. */}
-        <div
-          ref={setArtifactDockHost}
-          className="bb-garden-artifact-lane absolute inset-y-0 right-0 z-30 w-[max(24rem,50vw)] max-w-[calc(100vw-3rem)] overflow-hidden"
-          data-artifact-dock-origin="left"
-        />
-        </ArtifactDockHostProvider>
+        </GardenArtifactDock>
       </div>
 
       {searchOpen ? (

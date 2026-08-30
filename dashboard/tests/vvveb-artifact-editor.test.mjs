@@ -61,6 +61,10 @@ test("vendored Vvveb page uses an inert inner canvas and the Breadboard bridge",
   const publicRoot = path.resolve(process.cwd(), "public/vvveb-editor");
   const editor = fs.readFileSync(path.join(publicRoot, "index.html"), "utf8");
   const bridge = fs.readFileSync(path.join(publicRoot, "breadboard-bridge.js"), "utf8");
+  const bridgeSource = fs.readFileSync(
+    path.resolve(process.cwd(), "src/vendor/vvveb/breadboard-bridge.js"),
+    "utf8",
+  );
 
   assert.match(editor, /breadboard-bridge\.js/);
   assert.match(editor, /id="iframe1" sandbox="allow-same-origin"/);
@@ -73,5 +77,7 @@ test("vendored Vvveb page uses an inert inner canvas and the Breadboard bridge",
   assert.match(bridge, /breadboard:vvveb-change/);
   assert.match(bridge, /event\.origin !== parentOrigin/);
   assert.doesNotMatch(bridge, /Builder\.getHtml/);
+  assert.equal(bridge, bridgeSource);
   assert.equal(fs.existsSync(path.join(publicRoot, "LICENSE")), true);
+  assert.equal(fs.existsSync(path.join(publicRoot, "libs/builder/builder.js")), true);
 });

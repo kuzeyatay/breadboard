@@ -22,6 +22,10 @@ const artifactPanel = fs.readFileSync(
   new URL("../src/app/components/hermes/artifact-panel.tsx", import.meta.url),
   "utf8",
 );
+const gardenArtifactDock = fs.readFileSync(
+  new URL("../src/app/components/hermes/garden-artifact-dock.tsx", import.meta.url),
+  "utf8",
+);
 const chatSessionsRoute = fs.readFileSync(
   new URL("../src/app/api/chat-sessions/route.ts", import.meta.url),
   "utf8",
@@ -306,7 +310,7 @@ test("an artifact opened in the Terminal fills a lane inside the dock, not the w
   );
 });
 
-test("a Garden archive artifact overlays the learning-map rail at reading width", () => {
+test("a Garden artifact overlays the learning-map rail in a resizable reading lane", () => {
   // The archive is one accordion near the bottom of the right rail. Its viewer
   // inherits the rail-owned host instead of replacing only that accordion.
   assert.match(artifactPanel, /const inheritedViewerHost = useArtifactDockHost\(\)/);
@@ -316,20 +320,45 @@ test("a Garden archive artifact overlays the learning-map rail at reading width"
   );
   assert.match(
     gardenWorkspace,
-    /\{\/\* Body \*\/\}\s*<div className="relative flex flex-1 min-h-0">\s*<ArtifactDockHostProvider host=\{artifactDockHost\}>[\s\S]*?<ChatTranscript[\s\S]*?<KnowledgeGraph[\s\S]*?bb-garden-artifact-lane absolute inset-y-0 right-0 z-30 w-\[max\(24rem,50vw\)\]/,
+    /\{\/\* Body \*\/\}\s*<div className="relative flex flex-1 min-h-0">\s*<GardenArtifactDock>[\s\S]*?<ChatTranscript[\s\S]*?<KnowledgeGraph[\s\S]*?<\/GardenArtifactDock>/,
   );
 
-  // The overlay enters over the map's inner edge and an empty host cannot
-  // intercept resizing or navigation in the learning map.
-  assert.match(gardenWorkspace, /data-artifact-dock-origin="left"/);
-  assert.match(globals, /\.bb-garden-artifact-lane:empty \{\s*display: none;/);
+  // The left edge follows the pointer while the right edge stays anchored, and
+  // its last width survives a reload. The untouched default remains half of
+  // the viewport, giving documents a real reading surface on first open.
+  assert.match(gardenArtifactDock, /const DEFAULT_WIDTH = "max\(24rem, 50vw\)"/);
+  assert.match(gardenArtifactDock, /const WIDTH_KEY = "breadboard:garden:artifact-dock-width"/);
+  assert.match(
+    gardenArtifactDock,
+    /active\.startWidth \+ active\.startX - event\.clientX/,
+  );
+  assert.match(gardenArtifactDock, /setPointerCapture\(event\.pointerId\)/);
+  assert.match(gardenArtifactDock, /role="separator"[\s\S]*?aria-label="Resize artifact viewer"/);
+  assert.match(gardenArtifactDock, /ArrowLeft[\s\S]*?ArrowRight/);
+  assert.match(
+    gardenArtifactDock,
+    /bb-garden-artifact-shell absolute inset-y-0 right-0 z-30 flex/,
+  );
+  assert.match(gardenArtifactDock, /<ArtifactDockHostProvider host=\{dockHost\}>/);
+
+  // The shell cannot intercept the learning map while no artifact is open.
   assert.match(
     globals,
-    /\[data-artifact-dock-origin="left"\] > \.bb-artifact-dock \{\s*animation-name: bb-artifact-dock-in-from-left;/,
+    /\.bb-garden-artifact-shell:not\(:has\(> \.bb-garden-artifact-lane > \.bb-artifact-dock\)\) \{\s*display: none;/,
+  );
+  assert.match(globals, /\.bb-garden-artifact-lane:empty \{\s*display: none;/);
+
+  // Garden uses the shared right-edge dock entrance. The old left-edge
+  // override made the panel appear to emerge from the middle of the page.
+  assert.doesNotMatch(gardenWorkspace, /data-artifact-dock-origin="left"/);
+  assert.doesNotMatch(globals, /bb-artifact-dock-in-from-left/);
+  assert.match(
+    globals,
+    /@keyframes bb-artifact-dock-in \{[\s\S]*?transform: translateX\(100%\);[\s\S]*?transform: translateX\(0\);/,
   );
   assert.match(
     globals,
-    /@keyframes bb-artifact-dock-in-from-left \{[\s\S]*?transform: translateX\(-100%\);[\s\S]*?transform: translateX\(0\);/,
+    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.bb-artifact-dock \{\s*animation: bb-artifact-dock-fade-in 160ms ease;/,
   );
 });
 

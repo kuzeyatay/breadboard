@@ -28,6 +28,7 @@ import { useChatGreeting } from "./use-chat-greeting";
 import { ArtifactDockHostProvider } from "./artifact-dock-host";
 import ArtifactPanel, { ARTIFACT_AI_EDIT_EVENT } from "./artifact-panel";
 import {
+  artifactAiEditMatchesScope,
   consumeArtifactAiEdit,
   type ArtifactAiEditDetail,
 } from "./artifact-ai-edit";
@@ -1323,7 +1324,10 @@ function RuntimeTerminal({
 
   useEffect(() => {
     const apply = ({ artifact, prompt }: ArtifactAiEditDetail) => {
-      if (!artifact?.id || artifact.conversationId !== session.sessionId)
+      if (
+        !artifact?.id ||
+        !artifactAiEditMatchesScope(artifact, { surface: "dashboard_terminal" })
+      )
         return;
       setSidePanel((current) => (current === "artifacts" ? null : current));
       setInput(
@@ -1331,14 +1335,14 @@ function RuntimeTerminal({
       );
     };
     const listener = (raw: Event) => apply((raw as CustomEvent<ArtifactAiEditDetail>).detail);
-    const queued = consumeArtifactAiEdit({ conversationId: session.sessionId });
+    const queued = consumeArtifactAiEdit({ surface: "dashboard_terminal" });
     const timer = queued ? window.setTimeout(() => apply(queued), 0) : null;
     window.addEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
     return () => {
       if (timer !== null) window.clearTimeout(timer);
       window.removeEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
     };
-  }, [session.sessionId]);
+  }, []);
 
   useEffect(() => {
     const onResize = () =>
@@ -5524,6 +5528,7 @@ function RuntimeTerminal({
   } | null>(null);
   const launchHopsRef = useRef(0);
   const continuedDelegatedTurnsRef = useRef(new Set<string>());
+  const settlingExternalTurnsRef = useRef(new Set<string>());
   const [pendingLaunchContinuation, setPendingLaunchContinuation] = useState<
     string | null
   >(null);
@@ -6705,67 +6710,77 @@ function RuntimeTerminal({
       clientMessageId: string,
       result: Omit<ExternalAgentTurnResult, "clientMessageId">,
     ) => {
-      void finishExternalAgentTurn({ clientMessageId, ...result }).catch(
-        (cause) => {
+      if (settlingExternalTurnsRef.current.has(clientMessageId)) return;
+      settlingExternalTurnsRef.current.add(clientMessageId);
+      void (async () => {
+        try {
+          // The terminal owner must be in the transcript before a delegated
+          // handback starts. Otherwise the new assistant turn can render while
+          // its owner is still "running", which suppresses message actions and
+          // leaves the composer Stop button latched.
+          await finishExternalAgentTurn({ clientMessageId, ...result });
+        } catch (cause) {
+          settlingExternalTurnsRef.current.delete(clientMessageId);
           setAttachmentStatus(
             cause instanceof Error
               ? cause.message
               : "The external agent result could not be saved.",
           );
-        },
-      );
-      const presentationOwned = session.messages.some(
-        (message) =>
-          message.role === "assistant" &&
-          message.clientMessageId === clientMessageId &&
-          Boolean(message.openGymRun),
-      );
-      if (presentationOwned) {
-        continuedDelegatedTurnsRef.current.add(clientMessageId);
-        if (awaitedLaunchRef.current?.clientMessageId === clientMessageId) {
-          awaitedLaunchRef.current = null;
+          return;
         }
-        setPendingLaunchContinuation(null);
-        return;
-      }
-      if (result.outcome === "aborted") {
-        continuedDelegatedTurnsRef.current.add(clientMessageId);
-        if (
-          awaitedLaunchRef.current?.clientMessageId === clientMessageId
-        ) {
-          awaitedLaunchRef.current = null;
-        }
-        setPendingLaunchContinuation(null);
-        launchHopsRef.current = 0;
-        return;
-      }
-      // If the assistant started this run and asked to hear how it went, hand
-      // the outcome back as a new turn. The turn is identified by not having
-      // existed when the launch was submitted, so a run the user started
-      // themselves never joins the chain.
-      const awaited = awaitedLaunchRef.current;
-      if (
-        !awaited ||
-        (awaited.clientMessageId
-          ? awaited.clientMessageId !== clientMessageId
-          : awaited.knownMessageIds.has(clientMessageId))
-      )
-        return;
-      awaitedLaunchRef.current = null;
-      continuedDelegatedTurnsRef.current.add(clientMessageId);
-      if (launchHopsRef.current >= MAX_AGENT_LAUNCH_HOPS) {
-        setAttachmentStatus(
-          `${awaited.agentName} finished. The assistant has handed off ${launchHopsRef.current} times in a row, so it is waiting for you before going further.`,
+        const presentationOwned = session.messages.some(
+          (message) =>
+            message.role === "assistant" &&
+            message.clientMessageId === clientMessageId &&
+            Boolean(message.openGymRun),
         );
-        return;
-      }
-      setPendingLaunchContinuation(
-        agentLaunchContinuationMessage({
-          agentName: awaited.agentName,
-          outcome: result.outcome,
-          content: result.content,
-        }),
-      );
+        if (presentationOwned) {
+          continuedDelegatedTurnsRef.current.add(clientMessageId);
+          if (awaitedLaunchRef.current?.clientMessageId === clientMessageId) {
+            awaitedLaunchRef.current = null;
+          }
+          setPendingLaunchContinuation(null);
+          return;
+        }
+        if (result.outcome === "aborted") {
+          continuedDelegatedTurnsRef.current.add(clientMessageId);
+          if (
+            awaitedLaunchRef.current?.clientMessageId === clientMessageId
+          ) {
+            awaitedLaunchRef.current = null;
+          }
+          setPendingLaunchContinuation(null);
+          launchHopsRef.current = 0;
+          return;
+        }
+        // If the assistant started this run and asked to hear how it went, hand
+        // the outcome back as a new turn. The turn is identified by not having
+        // existed when the launch was submitted, so a run the user started
+        // themselves never joins the chain.
+        const awaited = awaitedLaunchRef.current;
+        if (
+          !awaited ||
+          (awaited.clientMessageId
+            ? awaited.clientMessageId !== clientMessageId
+            : awaited.knownMessageIds.has(clientMessageId))
+        )
+          return;
+        awaitedLaunchRef.current = null;
+        continuedDelegatedTurnsRef.current.add(clientMessageId);
+        if (launchHopsRef.current >= MAX_AGENT_LAUNCH_HOPS) {
+          setAttachmentStatus(
+            `${awaited.agentName} finished. The assistant has handed off ${launchHopsRef.current} times in a row, so it is waiting for you before going further.`,
+          );
+          return;
+        }
+        setPendingLaunchContinuation(
+          agentLaunchContinuationMessage({
+            agentName: awaited.agentName,
+            outcome: result.outcome,
+            content: result.content,
+          }),
+        );
+      })();
     },
     [finishExternalAgentTurn, session.messages],
   );

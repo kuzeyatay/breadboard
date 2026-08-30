@@ -9,7 +9,7 @@
 // indistinguishable from one that has died, and the difference matters most
 // exactly when the wait is longest.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
@@ -19,6 +19,7 @@ import type {
   ExternalAgentOutcome,
   ExternalAgentTerminalResult,
 } from "@/lib/conversations/external-agent-runs";
+import { externalRunStartedAtMs } from "./external-run-clock";
 
 type ParticipantState =
   | "planned"
@@ -60,6 +61,7 @@ export default function InlineMaxResearchRun({
   persistedContent = "",
   persistedOutcome,
   persistedUsage,
+  persistedDurationMs,
   onTerminal,
   onRetry,
 }: {
@@ -68,6 +70,7 @@ export default function InlineMaxResearchRun({
   persistedContent?: string;
   persistedOutcome?: ExternalAgentOutcome;
   persistedUsage?: ChatTokenUsage;
+  persistedDurationMs?: number;
   onTerminal?: (result: ExternalAgentTerminalResult) => void;
   onRetry?: () => void;
 }) {
@@ -84,7 +87,10 @@ export default function InlineMaxResearchRun({
       ? persistedContent || null
       : null,
   );
-  const [seconds, setSeconds] = useState(0);
+  const startedAtMs = useMemo(() => externalRunStartedAtMs(runId), [runId]);
+  const [seconds, setSeconds] = useState(() =>
+    Math.max(0, Math.floor((Date.now() - startedAtMs) / 1_000)),
+  );
   const onTerminalRef = useRef(onTerminal);
   const reportedRef = useRef(Boolean(terminalAtMount));
 
@@ -214,9 +220,17 @@ export default function InlineMaxResearchRun({
 
   useEffect(() => {
     if (status !== "running") return;
-    const timer = setInterval(() => setSeconds((value) => value + 1), 1_000);
+    const update = () =>
+      setSeconds(
+        Math.max(
+          0,
+          Math.floor((Date.now() - startedAtMs) / 1_000),
+        ),
+      );
+    update();
+    const timer = setInterval(update, 1_000);
     return () => clearInterval(timer);
-  }, [status]);
+  }, [startedAtMs, status]);
 
   // Stopping lives on the composer, which reaches this same
   // `/api/max-research/runs/<id>/abort` endpoint through
@@ -237,7 +251,13 @@ export default function InlineMaxResearchRun({
         totalTokens={
           persistedUsage ? persistedUsage.inputTokens + persistedUsage.outputTokens : undefined
         }
-        responseDurationMs={!done || seconds > 0 ? seconds * 1_000 : undefined}
+        responseDurationMs={
+          done && persistedDurationMs !== undefined
+            ? persistedDurationMs
+            : !done || seconds > 0
+              ? seconds * 1_000
+              : undefined
+        }
         // No summary. The card's own header already carries the stage and the
         // clock, and passing it here printed the same word again on a line of
         // its own between the thinking row and the card.

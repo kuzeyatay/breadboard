@@ -13,6 +13,19 @@ export interface ArtifactAiEditDetail {
   prompt: string;
 }
 
+export type ArtifactAiEditScope =
+  | { surface: "dashboard_terminal" }
+  | { surface: "garden_chat"; gardenId: string };
+
+export function artifactAiEditMatchesScope(
+  artifact: ArtifactAiEditTarget,
+  scope: ArtifactAiEditScope,
+): boolean {
+  return scope.surface === "dashboard_terminal"
+    ? artifact.gardenId === null
+    : artifact.gardenId === scope.gardenId;
+}
+
 export function dispatchArtifactAiEdit(detail: ArtifactAiEditDetail): void {
   window.dispatchEvent(new CustomEvent(ARTIFACT_AI_EDIT_EVENT, { detail }));
 }
@@ -23,7 +36,7 @@ export function queueArtifactAiEdit(detail: ArtifactAiEditDetail): void {
 }
 
 export function consumeArtifactAiEdit(
-  scope: { conversationId?: string | null; gardenId?: string | null },
+  scope: ArtifactAiEditScope,
 ): ArtifactAiEditDetail | null {
   let parsed: ArtifactAiEditDetail;
   try {
@@ -37,8 +50,7 @@ export function consumeArtifactAiEdit(
   if (
     !parsed?.artifact?.id ||
     typeof parsed.prompt !== "string" ||
-    (scope.conversationId && parsed.artifact.conversationId !== scope.conversationId) ||
-    (scope.gardenId && parsed.artifact.gardenId !== scope.gardenId)
+    !artifactAiEditMatchesScope(parsed.artifact, scope)
   ) return null;
   sessionStorage.removeItem(HANDOFF_KEY);
   return parsed;

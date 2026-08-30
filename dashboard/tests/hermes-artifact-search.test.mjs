@@ -13,6 +13,7 @@ import {
   listArtifactsInAgentScope,
 } from "../src/lib/hermes/artifact-agent-scope.ts";
 import { searchArtifactsForAgent } from "../src/lib/hermes/artifact-agent-search.ts";
+import { artifactAiEditMatchesScope } from "../src/app/components/hermes/artifact-ai-edit.ts";
 import {
   createArtifact,
   readArtifactSource,
@@ -160,7 +161,7 @@ test("Hermes artifact scope mirrors the visible Terminal and Garden archives", (
 test("Hermes can search and revise an artifact from another chat in its active scope", async () => {
   const fixture = artifactFixture();
   try {
-    createArtifact(createInput(fixture, {
+    const unrelated = createArtifact(createInput(fixture, {
       title: "Unrelated catalog entry",
       content: "No matching phrase here.",
     }));
@@ -196,6 +197,27 @@ test("Hermes can search and revise an artifact from another chat in its active s
     assert.equal(byContent.matches[0].artifact.id, artifact.id);
     assert.equal(byContent.matches[0].matchedIn, "content");
     assert.match(byContent.matches[0].snippet, /characteristic impedance matrix/i);
+
+    const firstPage = await searchArtifactsForAgent({
+      artifacts: [unrelated, artifact],
+      query: "characteristic impedance",
+      maxContentArtifacts: 1,
+      database: fixture.database,
+      storageRoot: fixture.storage,
+    });
+    assert.equal(firstPage.matches.length, 0);
+    assert.equal(firstPage.contentSearchTruncated, true);
+    assert.equal(firstPage.nextContentOffset, 1);
+    const secondPage = await searchArtifactsForAgent({
+      artifacts: [unrelated, artifact],
+      query: "characteristic impedance",
+      contentOffset: firstPage.nextContentOffset,
+      maxContentArtifacts: 1,
+      database: fixture.database,
+      storageRoot: fixture.storage,
+    });
+    assert.equal(secondPage.matches[0].artifact.id, artifact.id);
+    assert.equal(secondPage.nextContentOffset, null);
 
     const byCatalog = await searchArtifactsForAgent({
       artifacts,
@@ -257,4 +279,36 @@ test("artifact_search is brokered to authenticated Hermes surfaces and registere
   assert.match(opencodeTool, /"artifact_search"/);
   assert.match(pythonPlugin, /"artifact_search"/);
   assert.match(adapter, /"artifact_search"/);
+});
+
+test("Ask AI hands an archived artifact to the matching surface instead of its originating chat", () => {
+  const terminalArtifact = {
+    id: "artifact-one",
+    title: "Old Terminal report",
+    conversationId: "an-older-terminal-chat",
+    gardenId: null,
+    renderer: "markdown",
+    sourceSkill: null,
+  };
+  const gardenArtifact = {
+    ...terminalArtifact,
+    id: "artifact-two",
+    gardenId: "physics",
+  };
+  assert.equal(
+    artifactAiEditMatchesScope(terminalArtifact, { surface: "dashboard_terminal" }),
+    true,
+  );
+  assert.equal(
+    artifactAiEditMatchesScope(gardenArtifact, { surface: "dashboard_terminal" }),
+    false,
+  );
+  assert.equal(
+    artifactAiEditMatchesScope(gardenArtifact, { surface: "garden_chat", gardenId: "physics" }),
+    true,
+  );
+  assert.equal(
+    artifactAiEditMatchesScope(gardenArtifact, { surface: "garden_chat", gardenId: "chemistry" }),
+    false,
+  );
 });

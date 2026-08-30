@@ -25,6 +25,7 @@ import {
 } from "@/lib/hermes/runtime-store.ts";
 import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel.ts";
 import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-agent-cancel.ts";
+import { reconcileMaxResearchConversation } from "@/lib/max-research/conversation-persistence.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +50,7 @@ export async function GET(
     if (conversation.surface !== surface) {
       throw new ApiError(404, "session_not_found", "This chat is no longer available.");
     }
+    await reconcileMaxResearchConversation(userId, conversation.id);
     return NextResponse.json({ session: presentHermesSessionDetail(conversation) });
   } catch (error) {
     return apiErrorResponse(error);

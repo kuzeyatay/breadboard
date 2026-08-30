@@ -35,6 +35,7 @@ editor = replaceOnce(
   '<iframe src="" id="iframe1" sandbox="allow-same-origin" allow="" referrerpolicy="no-referrer">',
   "document iframe",
 );
+editor = editor.replace('\n\t\t<input name="file" type="file" class="form-control"/>', "");
 editor = editor
   .replace('  <script src="demo/landing/sections/sections.js"></script>\n', "")
   .replace('  <script src="demo/landing/styles/styles.js"></script>\n', "")
@@ -68,6 +69,26 @@ for (const directory of ["css", "fonts", "img", "js", "libs"]) {
     force: true,
   });
 }
+
+// Upstream's ImageInput setter references a non-existent global `element`.
+// Selecting any ordinary element can render that property and raise before the
+// rest of the point-and-click controls load, so keep the vendored copy local.
+const inputsPath = path.join(outputRoot, "libs", "builder", "inputs.js");
+let inputs = (await fs.readFile(inputsPath, "utf8")).replaceAll("\r\n", "\n");
+inputs = replaceOnce(
+  inputs,
+  "\t\tif (value.indexOf(\"data:image\") == -1) {\n\t\t\telement.querySelector('input[type=\"text\"]').value = value;\n\t\t}",
+  "\t\tif (value.indexOf(\"data:image\") == -1) {\n\t\t\tlet input = this.element?.[0]?.querySelector('input[type=\"text\"]');\n\t\t\tif (input) input.value = value;\n\t\t}",
+  "ImageInput compatibility patch",
+);
+const imageInputStart = inputs.indexOf("let ImageInput =");
+const imageUploadStart = inputs.indexOf("\tonUpload: function", imageInputStart);
+if (imageInputStart < 0 || imageUploadStart < imageInputStart) {
+  throw new Error("Vvvebjs ImageInput initializer could not be patched.");
+}
+inputs = `${inputs.slice(0, imageUploadStart)}\tinit: function(data) {\n\t\treturn this.render(\"imageinput\", data);\n\t},\n\n${inputs.slice(imageUploadStart)}`;
+await fs.writeFile(inputsPath, inputs, "utf8");
+
 await fs.mkdir(path.join(outputRoot, "resources"), { recursive: true });
 await fs.copyFile(
   path.join(sourceRoot, "resources", "google-fonts.json"),
