@@ -1,7 +1,7 @@
 # Breadboard
 
 <p align="center">
-  <strong>A local-first AI workspace for turning source material into knowledge gardens, conversations, and durable artifacts.</strong>
+  <strong>A local-first AI workbench where knowledge, agents, tools, and creation converge: research deeply, learn from any source, build with specialized agents, and turn ambitious ideas into versioned, publishable work.</strong>
 </p>
 
 <p align="center">
