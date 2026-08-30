@@ -1,534 +1,307 @@
 # Breadboard
 
 <p align="center">
-  <strong>A cluster-based second brain for ingesting documents, chatting with knowledge, and publishing a digital garden.</strong>
+  <strong>A local-first AI workspace for turning source material into knowledge gardens, conversations, and durable artifacts.</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Next.js-16-black" alt="Next.js">
-  <img src="https://img.shields.io/badge/React-19-149eca" alt="React">
-  <img src="https://img.shields.io/badge/TypeScript-5-3178c6" alt="TypeScript">
-  <img src="https://img.shields.io/badge/Python-3.11+-3776ab" alt="Python">
-  <img src="https://img.shields.io/badge/SQLite-better--sqlite3-003b57" alt="SQLite">
-  <img src="https://img.shields.io/badge/Quartz-4.5.2-6b46c1" alt="Quartz">
+  <img src="https://img.shields.io/badge/status-active_development-f59e0b" alt="Status: active development">
+  <img src="https://img.shields.io/badge/platform-Windows_10%2F11-0078d4" alt="Platform: Windows 10 and 11">
+  <img src="https://img.shields.io/badge/Next.js-16-black" alt="Next.js 16">
+  <img src="https://img.shields.io/badge/React-19-149eca" alt="React 19">
+  <img src="https://img.shields.io/badge/runtime-local--first-3f7d5c" alt="Local-first runtime">
 </p>
 
----
+> [!IMPORTANT]
+> Breadboard is an experimental project under active development. It is not a
+> stable consumer release yet. Features, data schemas, runtime contracts, setup
+> steps, and UI behavior may change without notice. The Windows installer is
+> currently unsigned, automatic updates are disabled, and you should keep
+> backups of any important workspace data.
 
-## What is Breadboard?
->i promise its not a virus
+## Overview
 
-**Breadboard** is a multi-service knowledge workspace built around a simple idea:
+Breadboard brings research, learning, creation, and agent-assisted work into one
+desktop workspace. A **Garden** keeps a topic's source files, generated learning
+material, conversations, notes, artifacts, and knowledge graph together.
 
-> turn raw material into structured knowledge, then make it explorable.
+From the same workspace you can:
 
-It combines:
+- ingest PDFs, Office files, images, archives, audio, video, and Markdown;
+- turn source material into structured, cited learning paths;
+- chat with a Garden or use the general-purpose AI Terminal;
+- delegate work to specialized research, coding, media, office, and CAD agents;
+- create and revise versioned documents, presentations, spreadsheets, PDFs,
+  HTML pages, visualizations, and media artifacts;
+- browse or publish the result through a Quartz-powered digital garden.
 
-- a **private dashboard** for managing clusters
-- a **local AI bridge** for model access
-- a **knowledge ingestion pipeline** for uploaded sources
-- a **Quartz-powered digital garden** for browsing and publishing notes
+Breadboard runs its application services locally and stores mutable workspace
+data on the machine. Configured model providers, connected apps, and web tools
+can still send the content you ask them to process to their respective services.
 
-Each **cluster** acts like its own knowledge environment. You can upload source material, extract text, generate notes, chat against the cluster’s knowledge graph, and view the result as a browsable garden.
+## Highlights
 
----
+| Area | What Breadboard provides |
+| --- | --- |
+| **Gardens** | Topic-scoped sources, chats, notes, learning maps, links, and Quartz pages. |
+| **AI workspace** | A durable Terminal and Garden Chat powered by Hermes, with resumable runs and conversation history. |
+| **Learn pipeline** | Source-aware planning, syllabus generation, citations, visuals, validation, repair, and recovery. |
+| **Artifacts** | Versioned creation and editing for Markdown, HTML, PDF, Word, PowerPoint, Excel, data, images, audio, and video. |
+| **Visual HTML editing** | A sandboxed Vvveb editor for point-and-click changes while preserving artifact history. |
+| **Specialized agents** | Research, coding, browser, office, visualization, media, CAD, and other bounded workflows. Availability depends on local setup. |
+| **Connected tools** | MCP servers and optional connected apps, scoped through authenticated brokered routes. |
+| **Desktop runtime** | An Electron shell with a Rust-based Runtime V2 supervisor for service health, recovery, limits, logging, and shutdown. |
 
-## Core Features
+## Development Status
 
-### Cluster-Based Knowledge Spaces
-- Create separate knowledge gardens for different topics or projects
-- Organize sources, notes, chats, and graph relationships per cluster
-- Support for **private** and **public** clusters
+Breadboard is being built in public, but it should currently be treated as an
+alpha-quality developer project.
 
-### Invite-Only Accounts
-- Credentials-based authentication
-- Invite-code registration flow
-- SQLite-backed user and session-related data
+- **Primary target:** Windows 10/11 x64. The installer and full desktop runtime
+  are only release-tested on Windows.
+- **Packaging:** local Windows installer builds are supported, but the installer
+  is unsigned and there is no automatic updater.
+- **Compatibility:** migrations and configuration defaults are evolving; review
+  changes before opening an existing data directory with a newer revision.
+- **Optional capabilities:** many agents require an additional local runtime,
+  application, model, account, or setup step. Missing integrations should
+  degrade visibly, but not every combination is tested.
+- **Deployment:** Ubuntu self-hosting is documented, but the desktop application
+  remains the main development path.
+- **Data safety:** use a copy of important material and maintain backups. This is
+  not yet intended for irreplaceable or regulated data.
 
-### AI-Assisted Workflows
-- Chat inside a cluster using grounded cluster context
-- Generate notes from conversations
-- Extract structured knowledge from uploaded material
-- Pull available models from a local OpenAI-compatible backend
+Bug reports with reproduction steps, logs, and the commit hash are especially
+useful while the project is changing quickly.
 
-### Document Ingestion
-- PDF ingestion
-- Image transcription
-- DOCX text extraction
-- PPTX text extraction
-- XLSX text extraction
-- ZIP archive text extraction
-- Markdown generation from extracted content
-
-### Knowledge Graph + Garden
-- Knowledge map with documents, topics, notes, and links
-- Source tree view inside the dashboard
-- Quartz-powered library and garden views
-- Cluster-specific garden pages
-- Public library mode
-
-### Local Workflow
-- Windows-friendly launcher included
-- ChatMock, Quartz, and the dashboard can be run together locally
-- SQLite storage keeps setup lightweight
-
----
-
-## Desktop App (Windows)
-
-Breadboard ships as a native Windows desktop application: an Electron shell
-that starts, supervises, and cleanly shuts down the whole local stack
-(ChatMock + Hermes + Postiz + Quartz → dashboard) with no terminal windows and no
-manual `start.bat` or localhost URLs.
-
-- **Develop**: `npm ci --prefix desktop`, then `npm run desktop:dev` from
-  the repo root (uses the normal dev servers; existing scripts unchanged).
-- **Build the installer**: `npm run desktop:build:dashboard` →
-  `npm run desktop:prepare` → `npm run desktop:test` →
-  `npm run desktop:verify` → `npm run desktop:dist:win`
-  (produces `%LOCALAPPDATA%/breadboard-desktop-build/release/Breadboard-Setup-<version>-x64.exe`).
-- **Installed smoke test**: `npm run desktop:smoke:installed -- "<installer.exe>"`
-  installs the NSIS artifact, drives the installed stack with isolated data,
-  verifies restart/persistence/process cleanup, uninstalls it, and restores a
-  pre-existing per-user installation if one was present.
-- **Runtime architecture**: the Electron main process is the lifecycle owner;
-  services run on bundled Node/Bun/Python runtimes, bind `127.0.0.1` only,
-  and use per-launch ports and per-install secrets. See
-  `docs/DESKTOP_ARCHITECTURE.md`.
-- **Data**: everything mutable lives in `%APPDATA%/breadboard-desktop/Data/`
-  (databases, gardens, config, `logs/`). The installer never touches it; an
-  existing dev checkout's data can be imported (copied) on first launch —
-  see `docs/DESKTOP_ARCHITECTURE.md` (migration) and
-  `docs/DESKTOP_TROUBLESHOOTING.md`.
-- **Required desktop dependency**: Docker Desktop, Docker Engine, or Podman is
-  required for Postiz social publishing. Desktop startup waits for Postiz's
-  authenticated API and shows a visible failure with `postiz.log` if it cannot
-  become ready. ffmpeg/yt-dlp remain optional for video ingestion.
-- **Signing / updates**: the installer is currently unsigned and auto-update
-  is disabled by design — see `docs/DESKTOP_RELEASE_CHECKLIST.md`.
-
-Full docs: `docs/DESKTOP_ARCHITECTURE.md`, `docs/DESKTOP_DEVELOPMENT.md`,
-`docs/DESKTOP_PACKAGING.md`, `docs/DESKTOP_SECURITY.md`,
-`docs/DESKTOP_TROUBLESHOOTING.md`, `docs/DESKTOP_RELEASE_CHECKLIST.md`.
-
----
-
-## Architecture
+## How It Fits Together
 
 ```mermaid
 flowchart LR
-    U[User] --> D[Dashboard<br/>Next.js]
-    D --> DB[(SQLite)]
-    D --> H[Hermes<br/>chat runtime]
-    H --> CM[ChatMock<br/>LLM provider]
-    D --> C[Codex<br/>coding agent]
-    C --> CM
-    D --> CM
-    D --> Q[Quartz<br/>digital garden]
-    D --> KG[Knowledge extraction<br/>and note generation]
+    User[User] --> Desktop[Electron desktop shell]
+    Desktop --> Runtime[Runtime V2 supervisor]
+    Runtime --> Dashboard[Next.js dashboard]
+    Runtime --> Hermes[Hermes agent runtime]
+    Runtime --> Quartz[Quartz garden]
+    Runtime --> Services[Optional local services and workers]
 
-    KG --> Q
-    DB --> D
-    CM --> D
+    Dashboard --> SQLite[(SQLite and local files)]
+    Dashboard <--> Hermes
+    Dashboard <--> Quartz
+    Hermes --> Providers[Configured model providers]
+    Hermes --> Tools[Brokered tools and specialized agents]
+    Tools --> Artifacts[Versioned artifacts]
+    Dashboard --> Artifacts
 ```
 
----
+The Electron main process owns application lifecycle. Runtime V2 starts and
+monitors the allowed local services and finite jobs. The dashboard handles the
+workspace UI, authenticated APIs, persistence, and artifact presentation;
+Hermes handles conversational agent work; Quartz renders Gardens.
 
-## Repository Structure
+## Typical Workflow
 
-```text
-breadboard/
-├── dashboard/     # main app (Next.js + auth + APIs + UI)
-├── desktop/       # Electron shell that supervises the local stack
-├── hermes-agent/  # interactive chat runtime
-├── chatmock/      # local OpenAI-compatible model bridge
-├── quartz/        # Quartz site used as the garden layer
-├── scriberr/      # video transcription service (Docker)
-├── pdf.js/        # PDF-related frontend/runtime assets
-├── docs/          # integration, desktop, and agent documentation
-├── qa/            # Playwright QA suites for the Electron app
-├── scripts/       # service launchers and setup helpers
-└── start.bat      # starts ChatMock, Scriberr, Quartz, Hermes, and Dashboard
-```
+1. Create a Garden for a topic or project.
+2. Add source material such as PDFs, documents, links, audio, or video.
+3. Build a learning structure or browse the extracted source tree.
+4. Ask questions in Garden Chat, or use the Terminal for work that spans
+   Gardens and connected repositories.
+5. Open generated artifacts, edit them, ask AI for revisions, and retain earlier
+   versions.
+6. Explore the knowledge map or view the Garden through Quartz.
 
-Agent integrations are vendored as sibling clones (for example `hyperframes/`,
-`vimax/`, `video-use/`, `audio-analyzer-rs/`, `gbrain/`), each documented under
-`docs/`.
-
----
-
-## Tech Stack
-
-### Frontend
-- Next.js
-- React
-- TypeScript
-- Tailwind CSS
-- KaTeX + markdown rendering
-
-### Backend / App Layer
-- Next.js route handlers
-- NextAuth credentials authentication
-- better-sqlite3
-
-### AI / Knowledge Layer
-- OpenAI SDK pointed at a configurable backend
-- ChatMock for local OpenAI-compatible responses
-- Knowledge extraction and note generation flows
-- **GBrain** — optional garden-scoped knowledge retrieval (hybrid search,
-  multi-source synthesis, citations) behind a first-party loopback adapter,
-  enabled only for authenticated Garden Chat and Terminal. It never replaces
-  conversation memory and all writes stay proposal-based. Off by default
-  (`GBRAIN_MODE=disabled`); see [docs/GBRAIN_INTEGRATION.md](docs/GBRAIN_INTEGRATION.md).
-
-### Garden / Publishing
-- Quartz v4.5.2
-
----
-
-## How Breadboard Works
-
-### 1. Create an Account
-Breadboard uses an invite-code-based signup flow, then signs users in with credentials.
-
-### 2. Create a Cluster
-A cluster is your workspace. It groups source material, notes, chats, and garden content together.
-
-### 3. Upload Source Material
-You can ingest documents and other files into a cluster, extract readable text, and convert that into markdown.
-
-### 4. Generate Structure
-Breadboard turns source material into:
-- source documents
-- extracted topics
-- related notes
-- graph relationships
-
-### 5. Chat with the Cluster
-Cluster chat is grounded in the cluster’s stored knowledge, including notes, extracted topics, and graph relationships.
-
-### 6. Save Durable Notes
-You can generate notes from chats or write markdown notes manually.
-
-### 7. Browse the Garden
-Quartz renders the resulting knowledge as a browsable digital garden, with private and public views.
-
----
-
-## Database Model at a Glance
-
-The SQLite database stores:
-
-- `users`
-- `invite_codes`
-- `clusters`
-- `chat_sessions`
-- `chat_messages`
-- `pdf_document_edits`
-- `pdf_document_edit_history`
-
-That means Breadboard is not only storing notes and clusters, but also preserving chat history and PDF edit history.
-
----
-
-## Included Routes and Capabilities
-
-The dashboard exposes route groups for workflows such as:
-
-- auth
-- registration
-- models
-- chat
-- chat sessions
-- clusters
-- documents
-- extract-text
-- ingest
-- generate-notes
-- invites
-- knowledge-graph
-- Quartz graph preview
-- PDF.js passthrough
-
-This makes the dashboard the orchestration layer for the whole workspace.
-
----
-
-## Local Development
+## Getting Started
 
 ### Prerequisites
 
-- **Node.js 22.15+, 23.5+, or 24+** (the detached Learn worker requires synchronous module hooks)
-- **npm**
-- **Python 3.11+**
-- Windows PowerShell if you want to use the included startup script flow directly
+The full desktop development stack currently expects:
 
-### 1. Clone the Repository
+- Windows 10 or 11 x64;
+- Node.js `22.15+`, `23.5+`, or `24+` and npm;
+- Python 3.11+ and [`uv`](https://docs.astral.sh/uv/);
+- Rust and Cargo;
+- Bun 1.3.14+;
+- Git.
 
-```bash
+Docker Desktop, Docker Engine, or Podman is optional and is only needed for
+features that depend on containerized services, such as social publishing.
+Some media and specialist agents have their own documented prerequisites.
+
+### 1. Clone and install
+
+```powershell
 git clone https://github.com/kuzeyatay/breadboard.git
 cd breadboard
+
+npm ci
+npm ci --prefix dashboard
+npm ci --prefix quartz
+npm ci --prefix desktop
+npm ci --prefix hermes-agent
+
+Push-Location hermes-agent
+uv sync
+Pop-Location
 ```
 
-### 2. Install Dependencies
+The repository contains several integrated upstream projects. Some optional
+capabilities also provision isolated runtimes on first use or through a
+dedicated `npm run setup:*` command.
 
-#### Dashboard
-```bash
-cd dashboard
-npm install
-cd ..
-```
+### 2. Configure development secrets
 
-#### Quartz
-```bash
-cd quartz
-npm install
-cd ..
-```
-
-#### ChatMock
-Using a virtual environment:
-
-```bash
-cd chatmock
-python -m venv .venv
-```
-
-Activate it:
-
-**Windows**
-```bash
-.venv\Scripts\activate
-```
-
-**macOS / Linux**
-```bash
-source .venv/bin/activate
-```
-
-Then install:
-
-```bash
-pip install -e .
-cd ..
-```
-
-### 3. Configure Environment Variables
-
-Create:
-
-```text
-dashboard/.env.local
-```
-
-Suggested starting point:
-
-```env
-NEXTAUTH_SECRET=replace-this-with-a-long-random-secret
-NEXTAUTH_URL=http://localhost:3000
-
-OPENAI_BASE_URL=http://localhost:8765/v1
-QUARTZ_CONTENT_PATH=../quartz/content
-
-SECOND_BRAIN_INITIAL_INVITE_CODE=YOURINVITECODE
-```
-
-You may also need to add any backend-specific variables your local model bridge expects.
-
-#### Learn generation token limits (optional)
-
-The Learn pipeline uses token-efficient defaults: planning (source map, scope
-contract, topic map) runs on `full_council`, while subsection writing and
-repair run on `direct_council` with a compact per-page dossier. These are the
-defaults — set the variables only to change them:
-
-```env
-LEARN_GENERATION_COUNCIL_MODE=direct_council
-LEARN_REVISION_COUNCIL_MODE=direct_council
-LEARN_MAX_PAGE_ATTEMPTS=1
-LEARN_MAX_SNIPPETS_PER_PAGE=5
-LEARN_MAX_CHARS_PER_SNIPPET=1200
-LEARN_MAX_TOTAL_SOURCE_CHARS_PER_PAGE=6000
-LEARN_MAX_VISUALS_PER_PAGE=3
-LEARN_ENABLE_UNCONDITIONAL_REVISION=false
-LEARN_LOG_PROMPT_BUDGET=true
-```
-
-`LEARN_MAX_PAGE_ATTEMPTS` is clamped to at most 2. A page that fails the
-deterministic quality gate gets one focused repair call, never repeated
-full regeneration. `LEARN_LOG_PROMPT_BUDGET` prints a
-`[learn-token-budget]` line with approximate input tokens before every
-ChatMock call.
-
-### 4. Start the App
-
-#### Easiest Route on Windows
-
-From the repo root:
-
-```bat
-start.bat
-```
-
-This starts:
-- **ChatMock** on port `8765`
-- **Scriberr** on port `8091` (video transcription service; requires Docker)
-- **Quartz** on port `8081`
-- **Hermes** on port `9129` (interactive chat runtime)
-- **Dashboard** on port `3000`
-
-> **Hermes remains the conversational runtime.** Codex is a separate coding
-> agent in the composer’s **Agents** tab, alongside OpenCode. It runs only when
-> `/agents:codex` is selected, works in a Garden-connected repository, and uses
-> ChatMock's Responses API. See [docs/CODEX_INTEGRATION.md](docs/CODEX_INTEGRATION.md).
->
-> **openGym** is the persistent fitness-program and exercise-technique agent.
-> `/agents:open-gym <request>` works from the cloned 1,324-exercise catalogue;
-> registered exercise how-to answers play the matching animation in chat, and
-> full programs are saved across restarts and published as Markdown artifacts.
-> It runs inside the Dashboard, so there is no second service to start. See
-> [docs/OPEN_GYM_INTEGRATION.md](docs/OPEN_GYM_INTEGRATION.md).
->
-> **HyperFrames** makes videos. `/agents:hyperframes <brief>` scaffolds a
-> HyperFrames project, has a Codex process write the composition against the
-> clone's own video skills, renders an MP4 with the local CLI + FFmpeg, and
-> plays it in the chat card. The framework is vendored at `./hyperframes`. See
-> [docs/HYPERFRAMES_INTEGRATION.md](docs/HYPERFRAMES_INTEGRATION.md).
->
-> **Resource2Skill** builds polished artifacts from Microsoft’s distilled
-> multimodal skill libraries. `/agents:resource2skill <brief>` routes to Web,
-> PowerPoint, Excel, Blender, or audio automatically; add `--domain <name>` to
-> choose explicitly. Provision its isolated Python 3.11 environment with
-> `npm run setup:resource2skill`. See
-> [docs/RESOURCE2SKILL_INTEGRATION.md](docs/RESOURCE2SKILL_INTEGRATION.md).
->
-> **MatrAIx** answers a question by simulating a population rather than
-> reasoning about one. `/agents:matraix <what you want to learn>` writes a
-> questionnaire from the brief, draws a cohort out of persona records built on a
-> 1,290-dimension schema, runs each persona as its own agent, and reports how
-> the answers split — with `--by <dimension>` for the subgroup cuts and every
-> respondent's stated reason. Simulated opinion, not evidence from real people,
-> and the report says so. Provision its Python 3.12 environment with
-> `npm run setup:matraix`. See
-> [docs/MATRAIX_INTEGRATION.md](docs/MATRAIX_INTEGRATION.md).
->
-> **ViMax** makes films. `/agents:vimax <idea>` writes the story and screenplay,
-> casts and draws the characters, storyboards every shot, decomposes each shot
-> into first frame, motion and last frame, and ends in one artifact that plays
-> back as an animatic. The pipeline is ported from the clone at `./vimax` and
-> runs on ChatMock — no image or video API key needed. See
-> [docs/VIMAX_INTEGRATION.md](docs/VIMAX_INTEGRATION.md).
->
-> **Vox Director** explains things. `/agents:vox-director <topic>` writes a
-> beat map, picks a paper-collage look to fit the subject, renders a poster for
-> each beat, cuts each poster into pieces and flies them into place with the
-> clone's own keyframe engine, narrates it with the local speech service and
-> assembles an MP4 — all on this machine, with no API key and no call to the
-> upstream skill's hosted backend. Posters come from Breadboard's ComfyUI when
-> one is running and from deterministic paper title cards when it is not. The
-> skill is vendored at `./vox-director`. See
-> [docs/VOX_DIRECTOR_INTEGRATION.md](docs/VOX_DIRECTOR_INTEGRATION.md).
->
-> **Video Use** edits videos you already have. Attach one — or paste a YouTube
-> link, which is downloaded once and reused for every later mention — to a chat
-> message that asks for it to be changed ("cut the dead air", "trim it to 60
-> seconds", "make it vertical") and the edit runs without selecting an agent
-> first. Ask a question about the same link instead and the Watch skill answers
-> it from the same downloaded copy. The
-> result is a video artifact, and opening it opens a studio where further
-> prompts keep changing the same video: every pass replays the whole edit
-> against the untouched original, so revisions never stack up as re-encodes and
-> any earlier version can be restored. The studio opens for *any* video
-> artifact, whichever agent made it. The clone is at `./video-use` and needs no
-> environment built; an optional ElevenLabs key adds filler-word cuts and burned
-> captions. See [docs/VIDEO_USE_INTEGRATION.md](docs/VIDEO_USE_INTEGRATION.md).
->
-> **Scriberr** powers Garden Chat's video import: upload a video or paste a
-> YouTube URL and the full transcript becomes a timestamped Markdown source
-> under the garden's `sources/` folder. Scriberr is vendored at `./scriberr`
-> and runs via Docker (`npm run dev:scriberr`); set `SCRIBERR_AUTOSTART=false`
-> to skip it. See [docs/VIDEO_TRANSCRIPTION.md](docs/VIDEO_TRANSCRIPTION.md)
-> for setup, environment variables, and troubleshooting.
->
-> **Audio analysis** gives Breadboard ears. Attach a song to any chat and ask
-> about it — key, tempo, LUFS loudness, dynamic range, frequency balance, stereo
-> field, section boundaries, or how your mix differs from a reference — and the
-> answer is measured from the waveform rather than recalled about the song. It
-> runs on the pure-Rust `audio-analyzer-rs` clone (no Python, no ffmpeg, nothing
-> uploaded); provision it once with `npm run setup:audio-analyzer`. See
-> [docs/AUDIO_ANALYSIS.md](docs/AUDIO_ANALYSIS.md).
-
-#### Manual Startup
-
-##### ChatMock
-```bash
-cd chatmock
-python chatmock.py serve --port 8765 --reasoning-effort low --reasoning-summary detailed --reasoning-compat legacy
-```
-
-##### Quartz
 ```powershell
-powershell -NoExit -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-quartz.ps1
+Copy-Item .env.example .env
+Copy-Item dashboard/.env.example dashboard/.env.local
 ```
 
-##### Dashboard
-```bash
-cd dashboard
+At minimum, replace the placeholder `NEXTAUTH_SECRET` in
+`dashboard/.env.local` with a long random value. Review both example files
+before starting: they document model providers, local services, connected apps,
+paths, and optional capabilities.
+
+Never commit `.env`, `dashboard/.env.local`, OAuth tokens, provider keys, or
+generated runtime credentials.
+
+### 3. Run the desktop development stack
+
+```powershell
 npm run dev
 ```
 
----
+The current root `dev` command starts the integrated Electron application in
+dashboard hot-development mode. Runtime V2 owns the local service tree and
+reports startup or recovery failures in the app.
 
-## Local URLs
+Useful alternatives:
+
+| Command | Purpose |
+| --- | --- |
+| `npm run desktop:dev:hot` | Electron plus the hot Next.js development server. |
+| `npm run desktop:dev:lean` | Production-like standalone dashboard with lower long-running compiler overhead. |
+| `npm run dev:dashboard` | Dashboard only; other required services must already be available. |
+| `npm run dev:quartz` | Quartz Garden only. |
+| `npm run dev:chatmock` | Local OpenAI-compatible model bridge only. |
+| `npm run dev:hermes` | Hermes runtime only. |
+
+Default manual-development URLs are:
 
 - Dashboard: `http://localhost:3000`
-- Quartz garden: `http://localhost:8081`
-- ChatMock backend: `http://localhost:8765/v1`
-- Hermes runtime: `http://localhost:9129`
-- Scriberr (video transcription): `http://localhost:8091`
-- PenEcho (whiteboard cards): `http://localhost:8092` (started on demand)
+- Quartz: `http://localhost:8081`
+- ChatMock API: `http://localhost:8765/v1`
+- Hermes: `http://localhost:9129`
 
----
+Desktop launches use dynamically allocated loopback ports, so these defaults do
+not necessarily match an Electron session.
 
-## Notable Implementation Details
+## Building the Windows Installer
 
-- The dashboard homepage redirects to `/dashboard`
-- The Quartz site is configured with the title **breadboard**
-- Quartz is configured with SPA navigation and popovers enabled
-- Public and private garden/library views are both supported
-- Cluster chat is grounded using cluster knowledge inventory and graph relationships
-- New markdown notes can be created from the UI
-- The knowledge map tracks sources, topics, notes, links, and word counts
+```powershell
+npm run desktop:build:dashboard
+npm run desktop:prepare
+npm run desktop:test
+npm run desktop:verify
+npm run desktop:dist:win
+```
 
----
+The installer is written to the configured desktop release directory. The
+default development output is under:
 
-## Why the Name?
+```text
+%LOCALAPPDATA%/breadboard-desktop-build/release/
+```
 
-A breadboard is where ideas get tested, rearranged, and turned into working systems.
+Before distributing a build, follow the
+[desktop release checklist](docs/DESKTOP_RELEASE_CHECKLIST.md). The current
+installer is unsigned and is intended for development and evaluation.
 
-This project applies that same philosophy to knowledge: raw information goes in, structure emerges, and the result becomes something you can inspect, evolve, and publish.
+## Testing
 
----
+The main validation entry points are:
 
-## Roadmap Ideas
+```powershell
+npm run test:dashboard
+npm run desktop:test
+npm run test:scripts
+npm run qa:runtime-v2:parity
+npm run qa:electron:critical
+```
 
-- one-command setup for all services
-- Dockerized local development
-- cleaner environment configuration
-- deployment guide for the dashboard + Quartz pair
-- better onboarding for first-time users
-- cluster templates
-- import/export flows
+Some suites build native components, launch Electron, or prepare local services.
+See the desktop and Runtime V2 documentation before running packaged, burn-in,
+or memory QA.
 
-## Deploying on Ubuntu
+## Repository Layout
 
-For a small self-hosted machine, including a home server or old Mac mini running Ubuntu, see:
+```text
+breadboard/
+|-- dashboard/        Next.js application, APIs, persistence, and UI
+|-- desktop/          Electron shell and desktop packaging
+|-- native/           Rust Runtime V2 supervisor and shared protocols
+|-- runtime-v2/       Runtime manifests and service contracts
+|-- hermes-agent/     Conversational agent runtime
+|-- hermes-config/    Breadboard agent, system, and tool configuration
+|-- chatmock/         Local OpenAI-compatible provider bridge
+|-- quartz/           Garden source and generated Quartz site
+|-- docs/             Architecture, operations, and integration guides
+|-- qa/               Electron, runtime, memory, and packaged-app QA
+|-- scripts/          Setup, launch, migration, and validation helpers
+`-- shared/           Cross-runtime shared assets and contracts
+```
 
-- [DEPLOYMENT-UBUNTU.md](DEPLOYMENT-UBUNTU.md)
+Additional top-level directories contain integrated or vendored agent projects.
+Their Breadboard-facing contracts and setup instructions live in `docs/`.
 
----
+## Documentation
 
+| Topic | Guide |
+| --- | --- |
+| Desktop architecture | [docs/DESKTOP_ARCHITECTURE.md](docs/DESKTOP_ARCHITECTURE.md) |
+| Desktop development | [docs/DESKTOP_DEVELOPMENT.md](docs/DESKTOP_DEVELOPMENT.md) |
+| Packaging and releases | [docs/DESKTOP_PACKAGING.md](docs/DESKTOP_PACKAGING.md) and [docs/DESKTOP_RELEASE_CHECKLIST.md](docs/DESKTOP_RELEASE_CHECKLIST.md) |
+| Runtime V2 | [docs/RUNTIME_V2_ARCHITECTURE.md](docs/RUNTIME_V2_ARCHITECTURE.md) |
+| Hermes runtime | [docs/HERMES_RUNTIME.md](docs/HERMES_RUNTIME.md) |
+| Model providers | [docs/MODEL_PROVIDERS.md](docs/MODEL_PROVIDERS.md) |
+| Memory architecture | [docs/MEMORY_ARCHITECTURE.md](docs/MEMORY_ARCHITECTURE.md) |
+| Knowledge map | [docs/BRAIN_MAP.md](docs/BRAIN_MAP.md) |
+| Interactive visualizations | [docs/INTERACTIVE_VISUALIZER.md](docs/INTERACTIVE_VISUALIZER.md) |
+| Adding an agent | [docs/ADDING_AN_AGENT.md](docs/ADDING_AN_AGENT.md) |
+| Ubuntu deployment | [DEPLOYMENT-UBUNTU.md](DEPLOYMENT-UBUNTU.md) |
 
-## Summary
+Specialized integrations have their own guides in [`docs/`](docs/), including
+Codex, Deep Research, GBrain, GenOffice, UI-TARS, CAD, audio analysis, video
+editing, transcription, and connected communication tools.
 
-**Breadboard is a cluster-based second brain that lets you ingest documents, extract structured knowledge, chat against that knowledge, and publish the result as a digital garden.**
+## Security and Privacy Notes
+
+- Desktop services bind to loopback interfaces and use per-install credentials.
+- The renderer receives a narrow preload API rather than filesystem or process
+  access.
+- Tool calls and connected-app operations pass through authenticated,
+  scope-aware server routes.
+- Local-first does not mean offline-only: model providers, OAuth-connected apps,
+  web research, and publishing integrations can transmit selected content.
+- Do not expose development services directly to an untrusted network.
+- Review [docs/DESKTOP_SECURITY.md](docs/DESKTOP_SECURITY.md) before packaging or
+  deployment.
+
+These controls are still evolving and should not be treated as a completed
+security audit.
+
+## Roadmap
+
+Near-term work is focused on:
+
+- making first-run setup and optional runtime provisioning more predictable;
+- stabilizing artifact editing and cross-session agent continuity;
+- reducing resource use across long-running desktop sessions;
+- expanding migration, backup, and recovery coverage;
+- improving packaged-app parity and installer trust;
+- tightening documentation as integrations mature.
+
+## Why "Breadboard"?
+
+A physical breadboard is where ideas are assembled, tested, rearranged, and
+turned into working systems. This project applies the same idea to knowledge:
+bring the raw material together, connect it, experiment with it, and keep the
+result open to revision.
