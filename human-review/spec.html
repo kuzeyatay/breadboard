@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>human-review — Product spec</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&amp;family=Playfair+Display:ital,wght@1,700&amp;display=swap" rel="stylesheet">
+  <script>
+    try {
+      var savedTheme = localStorage.getItem("spec-theme");
+      if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+    } catch (error) {}
+  </script>
+  <style>
+    :root {
+      --canvas: #faf8f3;
+      --surface: #ffffff;
+      --ink: #1c1b18;
+      --ink-2: #6e6b64;
+      --ink-3: #9a968d;
+      --chip: #f1eee7;
+      --line: rgba(28, 27, 24, 0.16);
+      --line-soft: rgba(28, 27, 24, 0.08);
+      --shadow: 0 8px 24px rgba(28, 27, 24, 0.07);
+      --green: #5c7652;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --canvas: #17170f;
+        --surface: #232320;
+        --ink: #f3f1eb;
+        --ink-2: #a6a39b;
+        --ink-3: #726f67;
+        --chip: #2c2b27;
+        --line: rgba(243, 241, 235, 0.16);
+        --line-soft: rgba(243, 241, 235, 0.09);
+        --shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+        --green: #9bb690;
+      }
+    }
+
+    :root[data-theme="dark"] {
+      --canvas: #17170f;
+      --surface: #232320;
+      --ink: #f3f1eb;
+      --ink-2: #a6a39b;
+      --ink-3: #726f67;
+      --chip: #2c2b27;
+      --line: rgba(243, 241, 235, 0.16);
+      --line-soft: rgba(243, 241, 235, 0.09);
+      --shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      --green: #9bb690;
+    }
+
+    :root[data-theme="light"] {
+      --canvas: #faf8f3;
+      --surface: #ffffff;
+      --ink: #1c1b18;
+      --ink-2: #6e6b64;
+      --ink-3: #9a968d;
+      --chip: #f1eee7;
+      --line: rgba(28, 27, 24, 0.16);
+      --line-soft: rgba(28, 27, 24, 0.08);
+      --shadow: 0 8px 24px rgba(28, 27, 24, 0.07);
+      --green: #5c7652;
+    }
+
+    * { box-sizing: border-box; }
+    html { background: var(--canvas); color-scheme: light dark; }
+    body {
+      margin: 0;
+      padding: 0 20px 96px;
+      background: var(--canvas);
+      color: var(--ink);
+      font: 15.5px/1.6 "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button { font: inherit; }
+    .wrap { width: min(100%, 860px); margin-inline: auto; }
+    .masthead {
+      width: min(100%, 860px);
+      margin: 52px auto 8px;
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+    }
+    .masthead-copy { flex: 1; min-width: 0; }
+    .kicker {
+      margin: 0 0 12px;
+      color: var(--ink-3);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
+    .title {
+      margin: 0 0 10px;
+      font: italic 700 clamp(34px, 5vw, 48px)/1.05 "Playfair Display", Georgia, serif;
+      letter-spacing: -0.01em;
+    }
+    .tagline {
+      max-width: 58ch;
+      margin: 0;
+      color: var(--ink-2);
+      font-size: 16.5px;
+    }
+    .theme-toggle {
+      width: 40px;
+      height: 40px;
+      flex: none;
+      margin-top: 4px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: transparent;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .theme-toggle:hover { background: var(--chip); }
+    .tabs {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      width: min(100%, 860px);
+      margin: 30px auto 0;
+      padding: 12px 0;
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid var(--line-soft);
+      background: var(--canvas);
+    }
+    .tab {
+      padding: 8px 18px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--ink-2);
+      font-size: 13.5px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tab:hover { background: var(--chip); }
+    .tab[aria-selected="true"] { background: var(--ink); color: var(--canvas); }
+    .tab:focus-visible,
+    .theme-toggle:focus-visible { outline: 2px solid var(--ink-3); outline-offset: 2px; }
+    .panel { display: none; padding-top: 36px; }
+    .panel.active { display: block; }
+    h2 {
+      margin: 46px 0 8px;
+      font-size: 22px;
+      line-height: 1.25;
+      letter-spacing: -0.02em;
+    }
+    h2:first-child { margin-top: 0; }
+    h3 { margin: 0 0 6px; font-size: 15px; line-height: 1.35; }
+    p { max-width: 70ch; margin: 10px 0; }
+    ul, ol { margin: 14px 0; padding-left: 22px; }
+    li { margin: 7px 0; }
+    code {
+      padding: 1px 6px;
+      border-radius: 6px;
+      background: var(--chip);
+      font: 0.88em ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .subtle { color: var(--ink-2); font-size: 14px; }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 16px;
+      padding: 5px 11px;
+      border: 1px solid var(--line-soft);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin: 18px 0;
+    }
+    .cards.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card {
+      padding: 17px 18px;
+      border: 1px solid var(--line-soft);
+      border-radius: 14px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .card p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+    .mock-grid { display: grid; gap: 22px; margin: 18px 0; }
+    .mock {
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--line-soft);
+      border-radius: 16px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .mock img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .mock figcaption { padding: 14px 16px 16px; color: var(--ink-2); font-size: 13.5px; }
+    .mock figcaption strong { display: block; margin-bottom: 3px; color: var(--ink); }
+    .step {
+      display: block;
+      margin-bottom: 9px;
+      color: var(--ink-3);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .callout {
+      margin: 18px 0;
+      padding: 18px 20px;
+      border-left: 3px solid var(--ink);
+      border-radius: 0 10px 10px 0;
+      background: var(--chip);
+    }
+    .callout p { margin: 0; }
+    .table-wrap { width: 100%; margin: 16px 0; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th {
+      padding: 0 14px 10px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--ink-3);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-align: left;
+      text-transform: uppercase;
+    }
+    td {
+      padding: 12px 18px 12px 0;
+      border-bottom: 1px solid var(--line-soft);
+      vertical-align: top;
+    }
+    td:first-child { width: 24%; font-weight: 600; }
+    .commands td:first-child { width: 42%; }
+    @media (max-width: 700px) {
+      body { padding-inline: 16px; padding-bottom: 64px; }
+      .masthead { margin-top: 32px; }
+      .tabs { margin-top: 20px; overflow-x: auto; scrollbar-width: none; }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tab { flex: 0 0 auto; }
+      .panel { padding-top: 28px; }
+      .cards, .cards.four { grid-template-columns: 1fr; }
+      table { min-width: 600px; }
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .panel.active { animation: panel-in 160ms ease-out; }
+      @keyframes panel-in {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: none; }
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-copy">
+      <p class="kicker">Product spec · Updated August 3, 2026</p>
+      <h1 class="title">human-review</h1>
+      <p class="tagline">Edit and comment on agent work in the browser, then send one clean batch back to the agent.</p>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle color theme">◐</button>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Specification sections">
+    <button class="tab" id="tab-product" type="button" role="tab" aria-selected="true" aria-controls="panel-product" tabindex="0" data-panel="product">Product</button>
+    <button class="tab" id="tab-experience" type="button" role="tab" aria-selected="false" aria-controls="panel-experience" tabindex="-1" data-panel="experience">Review experience</button>
+    <button class="tab" id="tab-design" type="button" role="tab" aria-selected="false" aria-controls="panel-design" tabindex="-1" data-panel="design">Screens</button>
+    <button class="tab" id="tab-system" type="button" role="tab" aria-selected="false" aria-controls="panel-system" tabindex="-1" data-panel="system">System</button>
+  </nav>
+
+  <main>
+    <section class="panel active wrap" id="panel-product" role="tabpanel" aria-labelledby="tab-product" data-panel="product">
+      <span class="status">Built · v0.4.0</span>
+      <h2>What it does</h2>
+      <p>human-review gives any shell-capable coding agent a browser review loop. The human fixes small things directly, comments on exact text or elements, and sends everything together. The agent receives structured feedback, updates the source, and refreshes the page.</p>
+
+      <h2>Why it exists</h2>
+      <p>Reviewing agent output through chat is slow and imprecise. A person should be able to rewrite a sentence, remove a block, or point at the exact issue without describing where it is. The agent should then handle the source changes without undoing the human's edits.</p>
+
+      <h2>Core loop</h2>
+      <div class="cards four">
+        <article class="card"><span class="step">1 · Open</span><h3>Use the real output</h3><p>Open an HTML file, rendered Markdown file, or localhost route.</p></article>
+        <article class="card"><span class="step">2 · Review</span><h3>Edit in place</h3><p>Rewrite copy, delete elements, and anchor comments to the page.</p></article>
+        <article class="card"><span class="step">3 · Apply</span><h3>Send one batch</h3><p>The agent gets edits, comments, and an optional overall note as JSON.</p></article>
+        <article class="card"><span class="step">4 · Repeat</span><h3>See the result</h3><p>The agent updates the source, acknowledges the batch, and the page reloads.</p></article>
+      </div>
+
+      <h2>Supported targets</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Target</th><th>What the human reviews</th><th>Where edits land</th></tr></thead>
+          <tbody>
+            <tr><td>Static HTML</td><td>The actual file, rendered in the review UI.</td><td>Direct edits autosave to the HTML file and are included in the feedback batch.</td></tr>
+            <tr><td>Markdown</td><td>A rendered version of the Markdown.</td><td>The file stays untouched during review. The agent applies edits to the Markdown source.</td></tr>
+            <tr><td>Generated HTML</td><td>The rendered page, including client-side output.</td><td>Edits become source-directed feedback so browser serialization cannot corrupt the generator.</td></tr>
+            <tr><td>Localhost URL</td><td>The real development route and its assets, not a recreated page.</td><td>The agent applies edits to the matching MDX, TSX, template, or component. Rendered HTML is never written back into the app.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Scope</h2>
+      <div class="cards">
+        <article class="card"><h3>Included</h3><p>Local, single-user review; direct copy edits; element deletion; anchored comments; multi-page batches; durable feedback; agent-neutral shell commands.</p></article>
+        <article class="card"><h3>Not included</h3><p>Accounts, cloud sync, multiplayer review, production URL injection, agent chat, or automatic wake-up after an agent task has ended.</p></article>
+      </div>
+    </section>
+
+    <section class="panel wrap" id="panel-experience" role="tabpanel" aria-labelledby="tab-experience" data-panel="experience" hidden="">
+      <h2>One review pass</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Human action</th><th>Product behavior</th></tr></thead>
+          <tbody>
+            <tr><td>Type over text</td><td>The page changes immediately. The review rail records the exact before and after text.</td></tr>
+            <tr><td>Select text</td><td>A focused comment box opens, anchored to that exact quote.</td></tr>
+            <tr><td>Click a block</td><td>The comment applies to the image, chart, section, or other element.</td></tr>
+            <tr><td>Click the delete control</td><td>The element disappears and the deletion is added to the edit list.</td></tr>
+            <tr><td>Command-click a local link</td><td>The linked page opens in the same review session. Feedback from visited pages stays grouped in one batch.</td></tr>
+            <tr><td>Send</td><td>All edits, comments, and the overall note go to the waiting agent together.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Source behavior</h2>
+      <div class="callout">
+        <p><strong>Direct editing describes the experience, not always the storage layer.</strong> A human can type and delete on every supported target. Static HTML can save those changes directly. Markdown, generated pages, and localhost routes send the same exact changes to the agent, which updates the real source.</p>
+      </div>
+      <ul>
+        <li>Human wording is final. The agent carries direct edits across verbatim and does not rewrite them.</li>
+        <li>Comments are requests. The agent finds the quoted text or element and makes the requested change.</li>
+        <li>Acknowledgement clears the handled batch and reloads the current result.</li>
+        <li>File targets offer Revert all. Source-directed targets are not written during review, so there is nothing to restore on disk.</li>
+      </ul>
+
+      <h2>Agent states</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>State</th><th>What it means</th></tr></thead>
+          <tbody>
+            <tr><td>Listening</td><td>A foreground <code>poll</code> command is waiting and will receive the next batch.</td></tr>
+            <tr><td>Working</td><td>The agent received the batch but has not acknowledged it yet.</td></tr>
+            <tr><td>Not listening</td><td>No poll is active. Feedback is still saved, but the tool cannot restart an agent task or wake an agent harness on its own.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="subtle">A ten-minute timeout limits how long one poll stays open; it does not keep the computer awake. Agents can run the same poll again, or use <code>human-review status &lt;target&gt;</code> to check for saved feedback after returning.</p>
+
+      <h2>Experience principles</h2>
+      <div class="cards">
+        <article class="card"><h3>The page stays recognizable</h3><p>The reviewed content keeps its own layout, styling, and behavior. human-review adds only the review chrome and edit affordances.</p></article>
+        <article class="card"><h3>Nothing sent is lost</h3><p>Pending batches persist across poll timeouts, server restarts, and computer sleep until an agent acknowledges them.</p></article>
+        <article class="card"><h3>One primary action</h3><p>Review first, then Send. The agent responds through the changed page rather than another chat thread.</p></article>
+        <article class="card"><h3>Status tells the truth</h3><p>The UI distinguishes waiting, working, and not listening instead of implying an agent is active when it is not.</p></article>
+      </div>
+    </section>
+
+    <section class="panel wrap" id="panel-design" role="tabpanel" aria-labelledby="tab-design" data-panel="design" hidden>
+      <h2>Reference screens</h2>
+      <p>These screens show the core review experience: the artifact stays visually intact while comments, direct edits, deletions, and the final Send action live in the rail.</p>
+      <div class="mock-grid">
+        <figure class="mock">
+          <img src="spec-assets/main-value-screen.png" alt="The /human-review interface with an editable product spec on the left and two anchored feedback cards in the right rail.">
+          <figcaption><strong>Reviewing</strong>Select exact text or click a whole element to leave anchored feedback without describing where the issue is.</figcaption>
+        </figure>
+        <figure class="mock">
+          <img src="spec-assets/main-action-screen.png" alt="The /human-review interface while composing an element comment, with direct edits and a deletion listed in the right rail.">
+          <figcaption><strong>Composing and editing</strong>Direct edits, deletions, comments, and an overall note are collected into one batch for the agent.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="panel wrap" id="panel-system" role="tabpanel" aria-labelledby="tab-system" data-panel="system" hidden>
+      <h2>How it works</h2>
+      <ol>
+        <li>The CLI starts or reuses a local Node server and opens a tokenized review URL.</li>
+        <li>The server loads a file or fetches an allowed loopback URL, then injects the review SDK into the rendered page.</li>
+        <li>The SDK captures direct edits, deletions, selections, and element comments inside an isolated iframe.</li>
+        <li>The review rail groups feedback by file or URL and sends one durable batch.</li>
+        <li>A foreground long-poll returns JSON to the agent. The agent updates source and acknowledges the batch.</li>
+      </ol>
+
+      <h2>Agent contract</h2>
+      <div class="table-wrap commands">
+        <table>
+          <thead><tr><th>Command</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>human-review &lt;target&gt;</code></td><td>Open the file or localhost page for review.</td></tr>
+            <tr><td><code>human-review poll &lt;target&gt; --timeout 600</code></td><td>Wait for a feedback batch and print it as JSON.</td></tr>
+            <tr><td><code>human-review poll &lt;target&gt; --ack --timeout 600</code></td><td>Acknowledge the handled batch, reload, and keep listening.</td></tr>
+            <tr><td><code>human-review status &lt;target&gt;</code></td><td>Check whether feedback is waiting without blocking.</td></tr>
+            <tr><td><code>human-review setup --global</code></td><td>Install the usage skill for Claude Code, Codex, and compatible agent directories.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Any agent that can run shell commands and read JSON can use the same contract. The core product contains no Claude- or Codex-specific runtime integration.</p>
+
+      <h2>Implementation</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Layer</th><th>Shipped approach</th></tr></thead>
+          <tbody>
+            <tr><td>Runtime</td><td>Node.js 20+ using built-in HTTP, file system, and process APIs.</td></tr>
+            <tr><td>Browser UI</td><td>Vanilla JavaScript review rail plus a sandboxed iframe and <code>postMessage</code>.</td></tr>
+            <tr><td>Persistence</td><td>Local JSON state for comments and pending batches; atomic writes for editable HTML files.</td></tr>
+            <tr><td>Change detection</td><td>Native file watching reloads agent updates while suppressing the tool's own save echoes.</td></tr>
+            <tr><td>Agent transport</td><td>Long-poll HTTP to stdout JSON with at-least-once delivery until acknowledgement.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Privacy and guardrails</h2>
+      <ul>
+        <li>Everything runs locally. There is no account, hosted service, or database.</li>
+        <li>Every local request requires a secret token created for the running server.</li>
+        <li>URL review accepts only <code>localhost</code>, <code>127.0.0.1</code>, and <code>[::1]</code>.</li>
+        <li>Localhost review does not promise authenticated browser sessions or every client-side interaction.</li>
+        <li>Injected SDK markup and review highlights never persist into saved HTML.</li>
+      </ul>
+
+      <h2>Current status</h2>
+      <p>The core review loop, Markdown rendering, durable feedback, global agent setup, and localhost URL review are implemented. The localhost path has been dogfooded against a real Next.js wiki, including edit, source apply, acknowledgement, and reload.</p>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      var tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+      var panels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
+
+      function activate(name, moveFocus, updateHash) {
+        var nextTab = tabs.find(function (tab) { return tab.dataset.panel === name; }) || tabs[0];
+        tabs.forEach(function (tab) {
+          var active = tab === nextTab;
+          tab.setAttribute("aria-selected", String(active));
+          tab.tabIndex = active ? 0 : -1;
+        });
+        panels.forEach(function (panel) {
+          var active = panel.dataset.panel === nextTab.dataset.panel;
+          panel.classList.toggle("active", active);
+          panel.hidden = !active;
+        });
+        if (moveFocus) nextTab.focus();
+        if (updateHash && history.replaceState) history.replaceState(null, "", "#" + nextTab.dataset.panel);
+        window.scrollTo({ top: 0, behavior: "auto" });
+      }
+
+      tabs.forEach(function (tab, index) {
+        tab.addEventListener("click", function () { activate(tab.dataset.panel, false, true); });
+        tab.addEventListener("keydown", function (event) {
+          var nextIndex = null;
+          if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+          if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+          if (event.key === "Home") nextIndex = 0;
+          if (event.key === "End") nextIndex = tabs.length - 1;
+          if (nextIndex === null) return;
+          event.preventDefault();
+          activate(tabs[nextIndex].dataset.panel, true, true);
+        });
+      });
+
+      window.addEventListener("hashchange", function () { activate(location.hash.slice(1), false, false); });
+      activate(location.hash.slice(1) || "product", false, false);
+
+      document.getElementById("theme-toggle").addEventListener("click", function () {
+        var current = document.documentElement.dataset.theme ||
+          (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        var next = current === "dark" ? "light" : "dark";
+        document.documentElement.dataset.theme = next;
+        try { localStorage.setItem("spec-theme", next); } catch (error) {}
+      });
+    })();
+  </script>
+
+
+</body></html>

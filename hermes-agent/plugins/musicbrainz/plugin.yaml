@@ -1,0 +1,12 @@
+name: musicbrainz
+version: 0.1.0
+description: "MusicBrainz music metadata lookup - 6 read-only tools (artist/release/recording search, release + artist lookup, Cover Art Archive). Open data, no API key. All requests share a process-wide 1 req/sec throttle as required by the MusicBrainz rate-limiting policy."
+author: breadboard
+kind: standalone
+provides_tools:
+  - musicbrainz_search_artist
+  - musicbrainz_search_release
+  - musicbrainz_lookup_release
+  - musicbrainz_lookup_artist
+  - musicbrainz_search_recording
+  - musicbrainz_get_cover_art

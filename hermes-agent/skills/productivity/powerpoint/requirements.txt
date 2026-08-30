@@ -1,0 +1,19 @@
+# Keyless local runtime for the Onyx-derived PowerPoint workflow.
+# Resolved for Python 3.13; top-level and transitive packages are pinned so the
+# Docker build never performs an unconstrained runtime install.
+contourpy==1.3.3
+cycler==0.12.1
+defusedxml==0.7.1
+fonttools==4.63.0
+kiwisolver==1.5.0
+lxml==6.1.1
+matplotlib==3.11.0
+numpy==2.4.3
+packaging==26.0
+Pillow==12.2.0
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+python-pptx==1.0.2
+six==1.17.0
+typing-extensions==4.15.0
+XlsxWriter==3.2.9
