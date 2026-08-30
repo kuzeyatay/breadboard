@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+from importlib import import_module
+
+_TOOLSET = "omh"
+
+
+def _host_supports_hook(hook_name: str) -> bool:
+    try:
+        hermes_plugins = import_module("hermes_cli.plugins")
+    except ModuleNotFoundError as exc:
+        if exc.name in {"hermes_cli", "hermes_cli.plugins"}:
+            return True
+        raise
+    valid_hooks = getattr(hermes_plugins, "VALID_HOOKS", None)
+    if not isinstance(valid_hooks, (list, tuple, set, frozenset)):
+        return True
+    return hook_name in valid_hooks
+
+
+def _register_optional_hook(ctx, hook_name: str, callback: object) -> None:
+    if not _host_supports_hook(hook_name):
+        return
+    try:
+        ctx.register_hook(hook_name, callback)
+    except ValueError:
+        return
+
+
+def register(ctx):
+    """Register the OMH thin native bridge with Hermes.
+
+    Two different loaders call this with two different contexts. The plugin
+    loader passes a context that registers tools and hooks. The *memory
+    provider* loader in ``plugins/memory/__init__.py`` passes a collector whose
+    only real method is ``register_memory_provider`` -- it no-ops the rest -- so
+    running the tool wiring for it would import ten modules to no effect.
+
+    The real plugin context has no ``register_memory_provider``, which is what
+    makes the two safely distinguishable. Mentioning the name here is also what
+    makes this directory visible to Hermes' provider discovery, which text-scans
+    ``__init__.py`` for it.
+    """
+    if hasattr(ctx, "register_memory_provider"):
+        from .memory_provider import OmhMemoryProvider
+
+        ctx.register_memory_provider(OmhMemoryProvider())
+        return
+
+    from .hooks.llm_hooks import pre_llm_call
+    from .hooks.session_hooks import on_session_end
+    from .hooks.tool_hooks import pre_tool_call
+    from .hooks.verify_hooks import pre_verify
+    from .tools.capability_tool import OMH_CAPABILITIES_SCHEMA, omh_capabilities_handler
+    from .tools.chat_tool import OMH_INTERACT_SCHEMA, omh_interact_handler
+    from .tools.context_tool import OMH_CONTEXT_SCHEMA, omh_context_handler
+    from .tools.evidence_tool import OMH_EVIDENCE_SCHEMA, omh_evidence_handler
+    from .tools.hud_tool import OMH_HUD_SCHEMA, omh_hud_handler
+    from .tools.memory_tool import OMH_MEMORY_SCHEMA, omh_memory_handler
+    from .tools.probe_tool import OMH_PROBE_SCHEMA, omh_probe_handler
+    from .tools.recommend_tool import OMH_RECOMMEND_SCHEMA, omh_recommend_handler
+    from .tools.role_tool import OMH_ROLE_SCHEMA, omh_role_handler
+    from .tools.status_tool import OMH_STATUS_SCHEMA, omh_status_handler
+
+    ctx.register_tool(
+        "omh_capabilities",
+        _TOOLSET,
+        OMH_CAPABILITIES_SCHEMA,
+        omh_capabilities_handler,
+        description=OMH_CAPABILITIES_SCHEMA["description"],
+    )
+    ctx.register_tool(
+        "omh_context",
+        _TOOLSET,
+        OMH_CONTEXT_SCHEMA,
+        omh_context_handler,
+        description=OMH_CONTEXT_SCHEMA["description"],
+    )
+    ctx.register_tool(
+        "omh_gather_evidence",
+        _TOOLSET,
+        OMH_EVIDENCE_SCHEMA,
+        omh_evidence_handler,
+        description=OMH_EVIDENCE_SCHEMA["description"],
+    )
+    ctx.register_tool(
+        "omh_hud",
+        _TOOLSET,
+        OMH_HUD_SCHEMA,
+        omh_hud_handler,
+        description=OMH_HUD_SCHEMA["description"],
+    )
+    ctx.register_tool(
+        "omh_interact",
+        _TOOLSET,
+        OMH_INTERACT_SCHEMA,
+        omh_interact_handler,
+        description=OMH_INTERACT_SCHEMA["description"],
+    )
+    ctx.register_tool(
+        "omh_memory",
+        _TOOLSET,
+        OMH_MEMORY_SCHEMA,
+        omh_memory_handler,
+        description=OMH_MEMORY_SCHEMA["description"],
+    )
+    ctx.register_tool(
+        "omh_probe",
+        _TOOLSET,
+        OMH_PROBE_SCHEMA,
+        omh_probe_handler,
+        description=OMH_PROBE_SCHEMA["description"],
+    )
+    ctx.register_tool(
+        "omh_recommend",
+        _TOOLSET,
+        OMH_RECOMMEND_SCHEMA,
+        omh_recommend_handler,
+        description=OMH_RECOMMEND_SCHEMA["description"],
+    )
+    ctx.register_tool(
+        "omh_role",
+        _TOOLSET,
+        OMH_ROLE_SCHEMA,
+        omh_role_handler,
+        description=OMH_ROLE_SCHEMA["description"],
+    )
+    ctx.register_tool(
+        "omh_status",
+        _TOOLSET,
+        OMH_STATUS_SCHEMA,
+        omh_status_handler,
+        description=OMH_STATUS_SCHEMA["description"],
+    )
+    ctx.register_hook("on_session_end", on_session_end)
+    ctx.register_hook("pre_llm_call", pre_llm_call)
+    ctx.register_hook("pre_tool_call", pre_tool_call)
+    _register_optional_hook(ctx, "pre_verify", pre_verify)
