@@ -249,8 +249,11 @@ breadboard/
 `-- shared/           Cross-runtime shared assets and contracts
 ```
 
-Additional top-level directories contain integrated or vendored agent projects.
-Their Breadboard-facing contracts and setup instructions live in `docs/`.
+Additional top-level directories are pinned source snapshots of the upstream
+projects Breadboard integrates. They are committed as ordinary monorepo files,
+not Git submodules, so a normal clone contains the integration source. See the
+[source snapshot manifest](docs/VENDORED_REPOSITORIES.md) for revisions,
+licenses, deliberate size exclusions, and the refresh procedure.
 
 ## Documentation
 
@@ -266,6 +269,7 @@ Their Breadboard-facing contracts and setup instructions live in `docs/`.
 | Knowledge map | [docs/BRAIN_MAP.md](docs/BRAIN_MAP.md) |
 | Interactive visualizations | [docs/INTERACTIVE_VISUALIZER.md](docs/INTERACTIVE_VISUALIZER.md) |
 | Adding an agent | [docs/ADDING_AN_AGENT.md](docs/ADDING_AN_AGENT.md) |
+| Integrated source snapshots | [docs/VENDORED_REPOSITORIES.md](docs/VENDORED_REPOSITORIES.md) |
 | Ubuntu deployment | [DEPLOYMENT-UBUNTU.md](DEPLOYMENT-UBUNTU.md) |
 
 Specialized integrations have their own guides in [`docs/`](docs/), including

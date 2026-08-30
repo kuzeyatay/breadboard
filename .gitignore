@@ -120,93 +120,30 @@ hermes-skills/approved/
 /.unlazy/
 
 # ---------------------------------------------------------------------------
-# Vendored upstream clones that carry their own .git
+# Integrated upstream source snapshots
 #
-# These are checkouts of other projects, not submodules. Committing them would
-# either embed a bare gitlink or duplicate someone else's history here, so the
-# whole directory stays out of this repository. Vendored trees WITHOUT their
-# own .git (quartz/, gbrain/, openharness/, reader/, scriberr/, OfficeCLI/, …)
-# are deliberately committed and are not listed here.
+# The upstream projects used by Breadboard are committed as ordinary source
+# files. Local nested .git metadata is never committed. Keep only disposable,
+# unsafe, or reproducible bulk data out of the monorepo snapshot.
 # ---------------------------------------------------------------------------
-/AI-Youtube-Shorts-Generator/
-/Cognivia/
-/DeepTutor/
-/MatrAIx-Persona-8B/
-/MoneyPrinterTurbo/
-/OpenMontage/
-/OpenPlanter/
-/ShapeR/
-/SolidworksMCP-python/
-/Vibe-Trading/
 /.tmp-tiktok-downloader/
-/agent-loop-engineering-kit/
-/agent-reach/
-/agent-skills/
-/anydoc/
-/audio-analyzer-rs/
-/auto-claude-code-research-in-sleep/
-/book-to-skill/
-/bolt-slides/
-/bullshit-detector/
-/buzz/
-/career-ops/
-/codex/
-/comfyui/
-/daily_stock_analysis/
-/deep-research/
-/deer-flow/
-/diagram-design/
-/emilkowalski-skills/
 # Hijacked upstream clone kept only as evidence — contains a malware zip in
 # bluely/; the skill was re-authored clean into hermes-skills/prebuilt/.
 # Recommend deleting the directory outright.
 /github-explorer-skill/
-/goal/
-/hallmark/
-/harvey-labs/
-/hermes-agent/
-/human-review/
-/hyperframes/
-/Resource2Skill/
-/iFixAi/
-/inbox-zero/
-/loopx/
-/manim/
-/mcp-google-images-search/
-/mem0/
-/meta-prompting/
-/nango/
-/oh-my-hermes/
-/open-alpha-arena/
-/openGym/
-/opencode/
-/openscience/
-/openwork/
-/penecho/
-/postiz-app/
-/premortem/
-/prompt-engineering-guide/
-/pxpipe/
-/reverse-skill/
-/ruflo/
-/scientific-agent-skills/
-/screenpipe/
-/sim/
-/soundshuman/
-/stable-fast-3d/
-/stirling-pdf/
-/subsai/
-/tradingagents/
-/ts-fsrs/
-/unlazy/
-/unslop/
-/video-use/
-/vimax/
-/voicebox/
-/vox-director/
-/wardrobe/
-/watch/
-/watermarks-remover/
+/openscience-workspace/
+
+# Large upstream datasets, evaluation corpora, and generated media. These are
+# not read by Breadboard at runtime and remain available from their upstreams.
+/harvey-labs/tasks/
+/hyperframes/packages/producer/tests/
+/openGym/media/
+/pxpipe/eval/
+/Resource2Skill/skills_wiki/
+
+# Upstream private-key fixtures are intentionally not mirrored.
+/stirling-pdf/app/core/src/test/resources/certs/test-key.key
+/stirling-pdf/app/core/src/test/resources/certs/test-key.pem
 
 # ---------------------------------------------------------------------------
 # Per-agent generated workspaces, runs and installs
