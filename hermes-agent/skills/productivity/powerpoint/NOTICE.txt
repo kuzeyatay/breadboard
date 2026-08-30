@@ -1,0 +1,33 @@
+Onyx PPTX workflow provenance
+==============================
+
+This private-use Breadboard skill includes material copied and adapted from:
+
+  https://github.com/onyx-dot-app/onyx
+  source revision: dbcb0c76238bbb87b8422a77d6ffb2cd9046e6e6
+  source path: backend/onyx/skills/builtin/pptx/
+  template path: backend/onyx/server/features/build/sandbox/image/templates/pptx/
+
+The Onyx workflow additions were developed across upstream commits including
+283e8f4 through b59005c; the three template assets originated in 00fc4a8.
+The underlying PowerPoint skill lineage began with Anthropic's proprietary
+document-skill materials.
+
+The upstream SKILL.md labels this material:
+
+  Proprietary. LICENSE.txt has complete terms
+
+No LICENSE.txt was present beside the upstream PPTX skill in the cloned
+revision. This notice does not invent or grant rights. The copied/adapted Onyx
+material remains proprietary to its respective owner and is retained here only
+for the repository owner's personal, private use. Do not redistribute it or
+represent it as Breadboard-owned MIT code.
+
+Breadboard's pre-existing PowerPoint bundle and LICENSE.txt remain unchanged.
+The merge intentionally kept Breadboard's newer add-slide, cleanup, thumbnail,
+LibreOffice, validation, and OOXML schema implementations instead of replacing
+them with older upstream copies.
+
+No imported helper reads API keys or calls a hosted generation service. All
+required Python, Node, LibreOffice, Poppler, font, and icon dependencies run
+locally after installation.

@@ -1,0 +1,7 @@
+name: web-fetch
+version: 1.0.0
+description: "Direct page reader — fetches URLs over HTTP and returns readable text. No API key, no third-party reader service."
+author: Breadboard
+kind: backend
+provides_web_providers:
+  - fetch

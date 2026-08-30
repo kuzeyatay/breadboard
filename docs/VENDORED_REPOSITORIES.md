@@ -25,10 +25,13 @@ Breadboard's own repository statistics.
 - Reproducible bulk corpora and media are omitted to keep clones and GitHub
   operations practical: `harvey-labs/tasks`, HyperFrames producer test
   fixtures, `openGym/media`, `pxpipe/eval`, and
-  `Resource2Skill/skills_wiki`.
+  `Resource2Skill/skills_wiki`. Screenpipe's downloadable ONNX Runtime archive
+  is omitted as well.
 - Stirling PDF's two test private-key fixtures are intentionally omitted. No
   runtime credentials, generated workspaces, dependency installs, or nested
   repository histories are included.
+- LFS-backed files that remain in a snapshot are committed as ordinary Git
+  blobs; the imported attribute files disable their upstream LFS filters.
 
 The snapshot contains approximately 122,000 upstream files (3.3 GiB before Git
 compression) after those exclusions.

@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="crossorigin">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@1,600&amp;display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #eceae4; }
+  * { box-sizing: border-box; }
+  a { color: #1b1a16; text-decoration-color: #b6b2a8; text-underline-offset: 3px; }
+  a:hover { text-decoration-color: #1b1a16; }
+  button, textarea { font: inherit; }
+  ::selection { background: rgba(245, 196, 0, 0.42); }
+  [contenteditable]:focus { outline: none; }
+  mark[data-anchor] { background: rgba(245, 196, 0, 0.32); border-radius: 2px; color: inherit; cursor: pointer; }
+  mark[data-anchor]:hover { background: rgba(243, 176, 0, 0.5); }
+  [data-container] { cursor: pointer; }
+  @keyframes rl-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  @keyframes rl-pop { from { opacity: 0; transform: translateY(4px) scale(0.97); } to { opacity: 1; transform: none; } }
+</style>
+</helmet>
+<div style="height: 100vh; display: flex; font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif; background: {{ t.canvas }}; color: {{ t.txt }}; -webkit-font-smoothing: antialiased; overflow: hidden">
+
+  <main ref="{{ scrollRef }}" style="flex: 1; min-width: 0; overflow-y: auto; padding: 44px 0 120px; display: flex; align-items: flex-start; justify-content: center">
+    <article ref="{{ paperRef }}" contentEditable="{{ true }}" suppressContentEditableWarning="{{ true }}" spellCheck="{{ false }}" onInput="{{ onInput }}" onClick="{{ onPaperClick }}" style="width: min(100%, 748px); margin: 0 36px; padding: 60px 68px 66px; background: #ffffff; border: 1px solid #e4e2db; border-radius: 4px; box-shadow: 0 1px 2px rgba(27, 26, 22, 0.05), 0 12px 32px -20px rgba(27, 26, 22, 0.18); font: 14.5px/1.68 -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif; color: #26241e; cursor: text">
+      <p data-block="Eyebrow" style="margin: 0 0 14px; color: #a8a49a; font-size: 10.5px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Product spec · draft 3</p>
+      <h1 data-block="Title" style="margin: 0 0 12px; font: italic 600 42px/1.05 'Playfair Display', Georgia, serif; letter-spacing: -0.015em; color: #1b1a16">Redline</h1>
+      <p data-block="Subtitle" style="margin: 0 0 36px; max-width: 54ch; color: #6b6862; font-size: 16.5px; line-height: 1.55">Review and edit agent-generated HTML in the browser, then send the whole batch back to your agent.</p>
+
+      <h2 data-block="Problem heading" style="margin: 0 0 8px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; color: #1b1a16">Problem</h2>
+      <p data-block="Problem body" style="margin: 0 0 16px; max-width: 66ch">People who work with coding agents increasingly receive work as HTML artifacts: specs, plans, reports, newsletter drafts, landing pages. But the review loop is stuck in the terminal — you open the file, <mark data-anchor="c1">spot ten problems, then type a long prose message describing each one</mark>. Small copy fixes that would take five seconds to make yourself cost a full agent round-trip.</p>
+
+      <sc-if value="{{ calloutPresent }}" hint-placeholder-val="{{ true }}">
+        <div data-block="Metrics callout" data-container="Metrics callout" data-cid="k-metrics" onMouseEnter="{{ hoverOn }}" onMouseLeave="{{ hoverOff }}" style="position: relative; margin: 28px 0 32px; padding: 24px 28px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; border: 1px solid #e4e2db; border-radius: 6px; background: #faf9f5; outline-offset: 3px; outline: {{ calloutOutline }}">
+          <div>
+            <div style="font: 600 27px/1 'Playfair Display', Georgia, serif; letter-spacing: -0.01em; color: #1b1a16">300</div>
+            <div style="margin-top: 6px; color: #6b6862; font-size: 12.5px; line-height: 1.45">weekly npm downloads<br>within 8 weeks</div>
+          </div>
+          <div>
+            <div style="font: 600 27px/1 'Playfair Display', Georgia, serif; letter-spacing: -0.01em; color: #1b1a16">5</div>
+            <div style="margin-top: 6px; color: #6b6862; font-size: 12.5px; line-height: 1.45">artifacts reviewed<br>per week, dogfooding</div>
+          </div>
+          <div>
+            <div style="font: 600 27px/1 'Playfair Display', Georgia, serif; letter-spacing: -0.01em; color: #1b1a16">3 min</div>
+            <div style="margin-top: 6px; color: #6b6862; font-size: 12.5px; line-height: 1.45">median full loop,<br>open to fix applied</div>
+          </div>
+          <sc-if value="{{ showChip }}" hint-placeholder-val="{{ false }}">
+            <button type="button" contentEditable="{{ false }}" onClick="{{ removeCallout }}" title="Delete element" style="position: absolute; top: -11px; right: -11px; width: 23px; height: 23px; display: flex; align-items: center; justify-content: center; border: 1px solid #e4e2db; border-radius: 50%; background: #ffffff; color: #b23b2e; font-size: 11px; line-height: 1; cursor: pointer; box-shadow: 0 2px 8px rgba(27, 26, 22, 0.14); animation: rl-pop 120ms ease-out" style-hover="background: #b23b2e; color: #ffffff; border-color: #b23b2e">✕</button>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <h2 data-block="Solution heading" style="margin: 0 0 8px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; color: #1b1a16">Solution</h2>
+      <p data-block="Solution body" style="margin: 0 0 16px; max-width: 66ch">A CLI that opens any HTML file in a local browser where you edit text directly, delete elements, and <mark data-anchor="c2">leave Google Docs-style comments</mark> on highlighted text — then submits the whole batch to whatever agent you use, which fixes the file and hot-reloads the page.</p>
+      <p data-block="Scope" style="margin: 0 0 32px; max-width: 66ch; color: #6b6862; font-size: 13.5px"><strong style="color: #26241e; font-weight: 600">Scope:</strong> Local single-user review of one HTML file per session. Commenting and editing, batch feedback to any shell-capable agent, npm-distributed CLI. No hosting, no multiplayer, no accounts.</p>
+
+      <h2 data-block="Milestones heading" style="margin: 0 0 12px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; color: #1b1a16">Milestones</h2>
+      <div style="display: grid; border-top: 1px solid #e4e2db">
+        <div data-block="M1 Review core" data-container="M1 Review core" data-cid="k-m1" style="display: grid; grid-template-columns: 152px 1fr auto; gap: 16px; padding: 13px 0; border-bottom: 1px solid #f0eee8; align-items: baseline; outline-offset: 4px; outline: {{ m1Outline }}">
+          <span style="font-weight: 600; font-size: 13.5px">M1 Review core</span>
+          <span style="color: #6b6862; font-size: 13px">Server, iframe injection, commenting and editing end to end</span>
+          <span style="padding: 2px 9px; border-radius: 999px; background: #f2f0ea; color: #6b6862; font-size: 10.5px; font-weight: 600">Not started</span>
+        </div>
+        <div data-block="M2 Agent loop" data-container="M2 Agent loop" data-cid="k-m2" style="display: grid; grid-template-columns: 152px 1fr auto; gap: 16px; padding: 13px 0; border-bottom: 1px solid #f0eee8; align-items: baseline; outline-offset: 4px; outline: {{ m2Outline }}">
+          <span style="font-weight: 600; font-size: 13.5px">M2 Agent loop</span>
+          <span style="color: #6b6862; font-size: 13px">Long-poll, reply and resolve, hot reload, presence states</span>
+          <span style="padding: 2px 9px; border-radius: 999px; background: #f2f0ea; color: #6b6862; font-size: 10.5px; font-weight: 600">Not started</span>
+        </div>
+        <div data-block="M3 Public release" data-container="M3 Public release" data-cid="k-m3" style="display: grid; grid-template-columns: 152px 1fr auto; gap: 16px; padding: 13px 0; border-bottom: 1px solid #f0eee8; align-items: baseline; outline-offset: 4px; outline: {{ m3Outline }}">
+          <span style="font-weight: 600; font-size: 13.5px">M3 Public release</span>
+          <span style="color: #6b6862; font-size: 13px">npm publish, agent setup command, README and demo</span>
+          <span style="padding: 2px 9px; border-radius: 999px; background: #f2f0ea; color: #6b6862; font-size: 10.5px; font-weight: 600">Not started</span>
+        </div>
+      </div>
+    </article>
+  </main>
+
+  <button type="button" onClick="{{ togglePanel }}" title="{{ panelTitle }}" style="position: fixed; top: 50%; z-index: 40; width: 22px; height: 46px; display: flex; align-items: center; justify-content: center; margin-top: -23px; border: 1px solid; border-right: 0; border-radius: 7px 0 0 7px; font-size: 11px; line-height: 1; cursor: pointer; box-shadow: -2px 0 8px -6px rgba(0, 0, 0, 0.28); right: {{ handleRight }}; border-color: {{ t.hair }}; background: {{ t.rail }}; color: {{ t.mute }}" style-hover="color: {{ t.strongTxt }}; background: {{ t.soft }}">{{ handleGlyph }}</button>
+
+  <aside style="flex: none; overflow: hidden; display: flex; flex-direction: column; border-left: 1px solid {{ t.hair }}; width: {{ railWidth }}; background: {{ t.rail }}">
+    <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 16px 12px 12px">
+      <div style="display: flex; align-items: baseline; gap: 7px; padding: 0 4px 9px">
+        <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: {{ t.mute }}">Feedback</span>
+        <span style="color: {{ t.faint }}; font-size: 11px">{{ commentCount }}</span>
+        <button type="button" onClick="{{ toggleTheme }}" title="{{ themeTitle }}" style="margin-left: auto; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border: 1px solid; border-radius: 7px; font-size: 12.5px; line-height: 1; cursor: pointer; border-color: {{ t.hair }}; background: {{ t.soft }}; color: {{ t.txt }}" style-hover="border-color: {{ t.strongBorder }}; color: {{ t.strongTxt }}">{{ themeGlyph }}</button>
+      </div>
+
+      <sc-if value="{{ composing }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom: 8px; padding: 13px 14px; border: 1px solid {{ t.strongBorder }}; border-radius: 8px; background: {{ t.card }}; box-shadow: 0 4px 14px -8px rgba(27, 26, 22, 0.3); animation: rl-in 130ms ease-out">
+          <div style="display: flex; align-items: center; gap: 7px; margin-bottom: 9px">
+            <span style="padding: 2px 8px; border-radius: 999px; background: {{ t.chip }}; color: {{ t.mute }}; font-size: 10px; font-weight: 600; letter-spacing: 0.02em">{{ composeKind }}</span>
+            <span style="color: {{ t.faint }}; font-size: 11px">Esc to dismiss</span>
+          </div>
+          <p style="margin: 0 0 10px; padding-left: 9px; border-left: 2px solid rgba(245, 196, 0, 0.7); color: {{ t.mute }}; font-size: 12px; font-style: italic; line-height: 1.45; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical">{{ composeQuote }}</p>
+          <textarea ref="{{ composeRef }}" rows="3" placeholder="What should change?" onKeyDown="{{ composeKeys }}" style="width: 100%; padding: 8px 10px; border: 1px solid {{ t.hair }}; border-radius: 6px; background: {{ t.inputBg }}; color: {{ t.txt }}; font-size: 13px; line-height: 1.5; resize: none; outline: none" style-focus="border-color: {{ t.focus }}; background: {{ t.card }}"></textarea>
+          <div style="margin-top: 9px; display: flex; align-items: center; gap: 8px">
+            <button type="button" onClick="{{ saveComment }}" style="display: flex; align-items: center; gap: 7px; padding: 6px 11px; border: 1px solid; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; border-color: {{ t.btnBg }}; background: {{ t.btnBg }}; color: {{ t.btnFg }}">Add comment<span style="font-size: 10.5px; opacity: 0.55">⏎</span></button>
+            <button type="button" onClick="{{ cancelCompose }}" style="padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; color: {{ t.mute }}; font-size: 12px; cursor: pointer" style-hover="background: {{ t.soft }}; color: {{ t.strongTxt }}">Cancel</button>
+          </div>
+        </div>
+      </sc-if>
+
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <sc-for list="{{ comments }}" as="c" hint-placeholder-count="2">
+          <div onClick="{{ c.select }}" style="padding: 13px 14px; border: 1px solid {{ t.cardBorder }}; border-radius: 8px; background: {{ t.card }}; box-shadow: {{ c.ring }}">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px">
+              <span style="display: flex; align-items: center; gap: 6px; color: {{ t.mute2 }}; font-size: 11px; font-weight: 500">Peter<span style="color: {{ t.focus }}">·</span><span style="color: {{ t.faint2 }}">{{ c.ts }}</span></span>
+              <span onClick="{{ c.jump }}" style="margin-left: auto; color: {{ t.faint2 }}; font-size: 11px; white-space: nowrap; cursor: pointer" style-hover="color: {{ t.strongTxt }}">Jump to</span>
+              <button type="button" onClick="{{ c.remove }}" title="Delete comment" style="width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 4px; background: transparent; color: {{ t.faint }}; font-size: 10px; line-height: 1; cursor: pointer" style-hover="background: {{ t.dangerSoft }}; color: {{ t.danger }}">✕</button>
+            </div>
+            <p style="margin: 0 0 8px; padding-left: 9px; border-left: 2px solid rgba(245, 196, 0, 0.6); color: {{ t.mute }}; font-size: 12px; font-style: italic; line-height: 1.45; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical">{{ c.quote }}</p>
+            <p style="margin: 0; font-size: 13px; line-height: 1.5; color: {{ t.txt }}">{{ c.body }}</p>
+          </div>
+        </sc-for>
+      </div>
+
+      <sc-if value="{{ noComments }}" hint-placeholder-val="{{ false }}">
+        <div style="padding: 16px 14px; border: 1px dashed {{ t.dash }}; border-radius: 8px; color: {{ t.faint }}; font-size: 11.5px; line-height: 1.5; text-align: center">Select text or click an element to comment on it</div>
+      </sc-if>
+
+      <sc-if value="{{ hasEdits }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-top: 20px; animation: rl-in 140ms ease-out">
+          <div style="display: flex; align-items: baseline; gap: 7px; padding: 0 4px 9px">
+            <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: {{ t.mute }}">Your edits</span>
+            <span style="color: {{ t.faint }}; font-size: 11px">{{ editCount }}</span>
+            <span onClick="{{ revert }}" style="margin-left: auto; color: {{ t.faint2 }}; font-size: 11px; cursor: pointer" style-hover="color: {{ t.danger }}">Revert all</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 7px; padding: 0 4px 9px; color: {{ saveFg }}; font-size: 11px">
+            <span style="width: 6px; height: 6px; flex: none; border-radius: 50%; background: {{ saveDot }}"></span>{{ saveLabel }}
+          </div>
+          <div style="border: 1px solid {{ t.cardBorder }}; border-radius: 8px; background: {{ t.card }}; overflow: hidden">
+            <sc-for list="{{ edits }}" as="e" hint-placeholder-count="2">
+              <div style="display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-top: {{ e.divider }}">
+                <span style="width: 5px; height: 5px; flex: none; border-radius: 50%; background: {{ e.dot }}"></span>
+                <span style="font-size: 12.5px; color: {{ t.txt }}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{ e.label }}</span>
+                <span style="margin-left: auto; color: {{ t.faint2 }}; font-size: 11px; white-space: nowrap">{{ e.kind }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+
+    <div style="flex: none; padding: 12px; border-top: 1px solid {{ t.hair2 }}">
+      <textarea ref="{{ noteRef }}" rows="2" placeholder="Overall note…" onInput="{{ noteGrow }}" style="width: 100%; min-height: 58px; max-height: 40vh; margin-bottom: 9px; padding: 9px 10px; border: 1px solid; border-radius: 6px; border-color: {{ t.hair }}; background: {{ t.inputBg }}; color: {{ t.txt }}; font-size: 12.5px; line-height: 1.45; resize: vertical; overflow-y: auto; outline: none" style-focus="border-color: {{ t.focus }}"></textarea>
+      <button type="button" onClick="{{ send }}" style="width: 100%; padding: 10px 12px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid; border-radius: 6px; font-size: 12.5px; font-weight: 500; border-color: {{ sendBorder }}; background: {{ sendBg }}; color: {{ sendFg }}; cursor: {{ sendCursor }}">{{ sendLabel }}<span style="font-size: 11px; opacity: 0.5">{{ sendKey }}</span></button>
+      <sc-if value="{{ sent }}" hint-placeholder-val="{{ false }}">
+        <div style="margin: 10px 2px 2px; display: flex; align-items: center; justify-content: center; gap: 6px; color: {{ t.faint }}; font-size: 11px; line-height: 1.4">
+          <span style="width: 6px; height: 6px; flex: none; border-radius: 50%; background: {{ t.amber }}"></span>Agent working — page reloads when fixes land
+        </div>
+      </sc-if>
+    </div>
+  </aside>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;panelOpen&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;darkChrome&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  state = {
+    comments: [
+      { id: "c1", quote: "spot ten problems, then type a long prose message describing each one", body: "Cut this to one sentence. The terminal detail matters more than the count.", ts: "2m" },
+      { id: "c2", quote: "leave Google Docs-style comments", body: "Don't name another product in the pitch. Say \"anchored comments\" instead.", ts: "1m" }
+    ],
+    edits: [],
+    active: null,
+    compose: null,
+    callout: true,
+    hover: false,
+    sent: false,
+    panel: true,
+    saveState: "idle",
+    savedAt: "",
+    dark: false
+  };
+
+  themes = {
+    light: {
+      canvas: "#eceae4", rail: "#fbfaf7", card: "#ffffff", cardBorder: "#e9e7e0",
+      hair: "#e4e2db", hair2: "#eceae4", dash: "#e0ddd4", strongBorder: "#d9d5c9",
+      txt: "#26241e", strongTxt: "#1b1a16", mute: "#8b877d", mute2: "#6b6862",
+      faint: "#b6b2a8", faint2: "#a8a49a", soft: "#f2f0ea", chip: "#f4f2ec",
+      inputBg: "#fdfcfa", focus: "#c2beb4", danger: "#b23b2e", dangerSoft: "#f6ecea",
+      amber: "#c99500", btnBg: "#1b1a16", btnFg: "#fbfaf7", green: "#7d9370"
+    },
+    dark: {
+      canvas: "#171614", rail: "#1f1e1b", card: "#262420", cardBorder: "#34322d",
+      hair: "#2f2d29", hair2: "#2a2825", dash: "#3a3833", strongBorder: "#403d37",
+      txt: "#eae7e0", strongTxt: "#f4f1ea", mute: "#9c968a", mute2: "#a8a29a",
+      faint: "#6e6961", faint2: "#837d74", soft: "#2c2a26", chip: "#2e2c27",
+      inputBg: "#1c1b18", focus: "#4d4941", danger: "#d9705f", dangerSoft: "#3a2320",
+      amber: "#d9a520", btnBg: "#f0ede6", btnFg: "#1b1a16", green: "#8ea37f"
+    }
+  };
+
+  scrollRef = React.createRef();
+  paperRef = React.createRef();
+  composeRef = React.createRef();
+  noteRef = React.createRef();
+
+  componentDidMount() {
+    this._pristine = this.paperRef.current ? this.paperRef.current.innerHTML : "";
+
+    this._settle = (e) => {
+      const paper = this.paperRef.current;
+      if (!paper) return;
+      if (e && e.target && e.target.closest && e.target.closest("aside")) return;
+      const sel = window.getSelection();
+      const inPaper = sel && sel.rangeCount && paper.contains(sel.getRangeAt(0).commonAncestorContainer);
+      const text = sel && !sel.isCollapsed && inPaper ? sel.toString().trim() : "";
+
+      if (text) { this.openTextCompose(text); return; }
+
+      const container = e && e.target && e.target.closest ? e.target.closest("[data-container]") : null;
+      if (container && paper.contains(container)) { this.openContainerCompose(container); return; }
+
+      this.dismissEmpty();
+    };
+
+    this._onKey = (e) => {
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key === "Enter") { e.preventDefault(); this.send(); return; }
+      if (meta && e.key.toLowerCase() === "s") { e.preventDefault(); if (this.state.edits.length) this.markSaving(); return; }
+      if (e.key === "Escape") { this.cancelCompose(); this.setState({ active: null }); return; }
+      if (!meta && !e.shiftKey && (e.key.length === 1 || e.key === "Backspace")) return;
+      if (e.shiftKey && e.key.indexOf("Arrow") === 0) setTimeout(() => this._settle(null), 0);
+    };
+
+    document.addEventListener("mouseup", this._settle);
+    document.addEventListener("keydown", this._onKey);
+  }
+  componentWillUnmount() {
+    document.removeEventListener("mouseup", this._settle);
+    document.removeEventListener("keydown", this._onKey);
+  }
+
+  composeHasText() {
+    return !!(this.composeRef.current && this.composeRef.current.value.trim());
+  }
+
+  unwrap(id) {
+    const paper = this.paperRef.current;
+    const mark = paper && paper.querySelector('mark[data-anchor="' + id + '"]');
+    if (mark && mark.parentNode) {
+      while (mark.firstChild) mark.parentNode.insertBefore(mark.firstChild, mark);
+      mark.parentNode.removeChild(mark);
+      paper.normalize();
+    }
+  }
+
+  dismissEmpty() {
+    const c = this.state.compose;
+    if (!c || this.composeHasText()) return;
+    if (c.kind === "text") this.unwrap(c.id);
+    this.setState({ compose: null, active: null });
+  }
+
+  openTextCompose(text) {
+    const cur = this.state.compose;
+    if (cur && cur.kind === "text" && cur.quote === text) return;
+    if (cur && !this.composeHasText()) { if (cur.kind === "text") this.unwrap(cur.id); }
+    const sel = window.getSelection();
+    const id = "n" + Date.now();
+    if (sel && sel.rangeCount && !sel.isCollapsed) {
+      const range = sel.getRangeAt(0);
+      const mark = document.createElement("mark");
+      mark.setAttribute("data-anchor", id);
+      try { range.surroundContents(mark); }
+      catch (err) { mark.appendChild(range.extractContents()); range.insertNode(mark); }
+      sel.removeAllRanges();
+    }
+    this.setState({ compose: { id, quote: text, kind: "text" }, active: id }, this.focusCompose);
+  }
+
+  openContainerCompose(el) {
+    const id = el.getAttribute("data-cid");
+    const cur = this.state.compose;
+    if (cur && cur.id === id) return;
+    if (cur && !this.composeHasText() && cur.kind === "text") this.unwrap(cur.id);
+    this.setState({ compose: { id, quote: el.getAttribute("data-container"), kind: "element" }, active: id }, this.focusCompose);
+  }
+
+  focusCompose = () => { if (this.composeRef.current) this.composeRef.current.focus(); };
+
+  cancelCompose = () => {
+    const c = this.state.compose;
+    if (c && c.kind === "text") this.unwrap(c.id);
+    this.setState({ compose: null, active: null });
+  };
+
+  saveComment = () => {
+    const c = this.state.compose;
+    const body = (this.composeRef.current && this.composeRef.current.value.trim()) || "";
+    if (!c || !body) return;
+    this.setState((s) => ({
+      comments: s.comments.concat([{ id: c.id, quote: c.quote, body, ts: "just now", kind: c.kind }]),
+      compose: null, active: c.id, sent: false
+    }));
+  };
+
+  removeComment(id) {
+    this.unwrap(id);
+    this.setState((s) => ({ comments: s.comments.filter((c) => c.id !== id), active: null }));
+  }
+
+  jumpTo(id) {
+    const paper = this.paperRef.current, scroller = this.scrollRef.current;
+    const target = paper && (paper.querySelector('mark[data-anchor="' + id + '"]') || paper.querySelector('[data-cid="' + id + '"]'));
+    if (!target || !scroller) return;
+    const top = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    scroller.scrollTo({ top: top - scroller.clientHeight / 2.6, behavior: "smooth" });
+    this.setState({ active: id });
+  }
+
+  logEdit(label, kind) {
+    this.setState((s) => (s.edits.some((e) => e.label === label && e.kind === kind) ? s : { edits: s.edits.concat([{ label, kind }]) }));
+    this.markSaving();
+  }
+
+  markSaving() {
+    this.setState({ saveState: "saving" });
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => this.setState({ saveState: "saved", savedAt: this.clock() }), 800);
+  }
+
+  clock() {
+    return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  send = () => {
+    if (!this.state.comments.length && !this.state.edits.length) return;
+    this.setState({ sent: true, active: null, compose: null });
+  };
+
+  revert = () => {
+    if (this.paperRef.current && this._pristine) this.paperRef.current.innerHTML = this._pristine;
+    this.setState({ edits: [], callout: true, compose: null, active: null, saveState: "idle", savedAt: "" });
+  };
+
+  renderVals() {
+    const s = this.state;
+    const dirty = s.edits.length > 0;
+    const count = s.comments.length + s.edits.length;
+    const sendable = count > 0 && !s.sent;
+    const panel = this.props.panelOpen ?? s.panel;
+    const ring = (id) => (s.active === id ? "1px solid #1b1a16" : "1px solid transparent");
+    const dark = s.themeTouched ? s.dark : (this.props.darkChrome ?? s.dark);
+    const t = dark ? this.themes.dark : this.themes.light;
+
+    return {
+      t,
+      toggleTheme: () => this.setState({ dark: !dark, themeTouched: true }),
+      themeGlyph: dark ? "☀" : "☾",
+      themeTitle: dark ? "Switch chrome to light" : "Switch chrome to dark",
+      scrollRef: this.scrollRef,
+      paperRef: this.paperRef,
+      composeRef: this.composeRef,
+      railWidth: panel ? "352px" : "0px",
+      handleRight: panel ? "352px" : "0px",
+      handleGlyph: panel ? "›" : "‹",
+      panelTitle: panel ? "Hide comments panel" : "Show comments panel",
+      togglePanel: () => this.setState((p) => ({ panel: !p.panel })),
+
+      calloutPresent: s.callout,
+      showChip: s.hover,
+      calloutOutline: s.active === "k-metrics" ? "1px solid #1b1a16" : s.hover ? "1px solid #c2beb4" : "1px solid transparent",
+      m1Outline: ring("k-m1"), m2Outline: ring("k-m2"), m3Outline: ring("k-m3"),
+      hoverOn: () => this.setState({ hover: true }),
+      hoverOff: () => this.setState({ hover: false }),
+      removeCallout: () => { this.setState({ callout: false, hover: false, compose: null, active: null }); this.logEdit("Metrics callout", "deleted"); },
+
+      onInput: (e) => {
+        const block = e.target.closest ? e.target.closest("[data-block]") : null;
+        this.logEdit(block ? block.getAttribute("data-block") : "Document body", "edited");
+      },
+      onPaperClick: (e) => {
+        const m = e.target.closest && e.target.closest("mark[data-anchor]");
+        if (m) this.setState({ active: m.getAttribute("data-anchor") });
+      },
+
+      composing: !!s.compose,
+      composeQuote: s.compose ? s.compose.quote : "",
+      composeKind: s.compose && s.compose.kind === "element" ? "Element" : "Selection",
+      composeKeys: (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.saveComment(); }
+        if (e.key === "Escape") { e.preventDefault(); this.cancelCompose(); }
+      },
+      saveComment: this.saveComment,
+      cancelCompose: this.cancelCompose,
+
+      commentCount: s.comments.length,
+      noComments: s.comments.length === 0 && !s.compose,
+      comments: s.comments.map((c) => ({
+        ...c,
+        ring: s.active === c.id ? "inset 2px 0 0 #e0a800" : "inset 2px 0 0 transparent",
+        select: () => this.setState({ active: c.id }),
+        jump: () => this.jumpTo(c.id),
+        remove: () => this.removeComment(c.id)
+      })),
+
+      hasEdits: dirty,
+      editCount: s.edits.length,
+      edits: s.edits.map((e, i) => ({
+        label: e.label,
+        kind: e.kind,
+        dot: e.kind === "deleted" ? "#b23b2e" : "#c99500",
+        divider: i === 0 ? "0" : "1px solid #f2f0ea"
+      })),
+      revert: this.revert,
+      saveDot: s.saveState === "saving" ? t.amber : t.green,
+      saveFg: s.saveState === "saving" ? t.mute : t.faint2,
+      saveLabel: s.saveState === "saving" ? "Saving to redline-spec.html…" : "Saved to redline-spec.html · " + s.savedAt,
+
+      sent: s.sent,
+      noteRef: this.noteRef,
+      noteGrow: (e) => { const t = e.target; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight + 2, window.innerHeight * 0.4) + "px"; },
+      agentDot: s.sent ? t.amber : t.green,
+      send: this.send,
+      sendLabel: s.sent ? "Sent — waiting for agent" : count ? "Send " + count + " to agent" : "Nothing to send yet",
+      sendKey: sendable ? "⌘⏎" : "",
+      sendBg: sendable ? t.btnBg : t.soft,
+      sendFg: sendable ? t.btnFg : t.faint,
+      sendBorder: sendable ? t.btnBg : t.hair,
+      sendCursor: sendable ? "pointer" : "default",
+      footHint: s.sent ? "Agent working — page reloads when fixes land" : "Agent listening on ~/work/specs"
+    };
+  }
+}
+
+</script>
+</body>
+</html>

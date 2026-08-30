@@ -140,6 +140,7 @@ hermes-skills/approved/
 /openGym/media/
 /pxpipe/eval/
 /Resource2Skill/skills_wiki/
+/screenpipe/crates/screenpipe-audio/onnxruntime-win-x64-1.22.0.zip
 
 # Upstream private-key fixtures are intentionally not mirrored.
 /stirling-pdf/app/core/src/test/resources/certs/test-key.key
