@@ -974,12 +974,14 @@ mod tests {
 
     #[test]
     fn test_slack_token_detection() {
-        assert!(contains_pii(
-            concat!("xoxb-123456789012-", "1234567890123-abcdefghijklmnop")
-        ));
-        assert!(contains_pii(
-            concat!("xoxp-123456789012-", "1234567890123-abcdefghijklmnop")
-        ));
+        assert!(contains_pii(concat!(
+            "xoxb-123456789012-",
+            "1234567890123-abcdefghijklmnop"
+        )));
+        assert!(contains_pii(concat!(
+            "xoxp-123456789012-",
+            "1234567890123-abcdefghijklmnop"
+        )));
         assert!(contains_pii(concat!(
             "xapp-1-A12345678-",
             "1234567890123-abcdef"
@@ -1000,12 +1002,10 @@ mod tests {
             "wUILz7z6HoJzVeq6pyHPmVgQgV4"
         );
         // Note: This is a fake token format
-        assert!(contains_pii(
-            concat!(
-                "NTk0NzU2NTIxMzc3Nzk2NDEy.XQ0bXQ.",
-                "vHc7MzY3NDk0NzU2NTIxMzc3Nzk"
-            )
-        ));
+        assert!(contains_pii(concat!(
+            "NTk0NzU2NTIxMzc3Nzk2NDEy.XQ0bXQ.",
+            "vHc7MzY3NDk0NzU2NTIxMzc3Nzk"
+        )));
     }
 
     #[test]
