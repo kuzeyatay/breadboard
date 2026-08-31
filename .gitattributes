@@ -1,6 +1,10 @@
 # Quartz's public tree is generated build output, not authored source code.
 quartz/public/** linguist-generated=true
 
+# Keep Quartz program sources deterministic on Windows. Its build embeds
+# source text in source maps, so CRLF checkouts otherwise change every page.
+quartz/** text=auto eol=lf
+
 # Vvveb is synchronized third-party editor output served by the dashboard.
 # Preserve its upstream formatting without treating it as authored whitespace.
 dashboard/public/vvveb-editor/** linguist-vendored=true -whitespace
@@ -53,6 +57,7 @@ OpenMontage/** linguist-vendored=true -whitespace
 OpenPlanter/** linguist-vendored=true -whitespace
 openscience/** linguist-vendored=true -whitespace
 openwork/** linguist-vendored=true -whitespace
+patent-disclosure-skill/** linguist-vendored=true -whitespace
 penecho/** linguist-vendored=true -whitespace
 postiz-app/** linguist-vendored=true -whitespace
 premortem/** linguist-vendored=true -whitespace

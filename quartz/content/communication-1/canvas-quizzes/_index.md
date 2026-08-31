@@ -1,4 +1,0 @@
----
-title: "Canvas Quizzes"
----
-
