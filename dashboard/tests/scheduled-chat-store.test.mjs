@@ -41,6 +41,57 @@ test("a created schedule is armed with its first future run", () => {
   assert.equal(presented.cronDescription, "At 09:00 every day");
   assert.equal(presented.surface, "dashboard_terminal");
   assert.equal(presented.gardenSlug, null);
+  assert.equal(presented.model, "gpt-5.6-sol");
+  assert.equal(presented.reasoningEffort, "high");
+});
+
+test("a one-time schedule fires once and disarms while its chat is running", () => {
+  const store = createStore();
+  const createdAt = at(2026, 8, 31, 12, 0);
+  const dueAt = at(2026, 8, 31, 13, 30);
+  const row = store.create(1, {
+    ...terminalJob,
+    cron: "30 13 31 8 *",
+    oneShot: true,
+    runAt: dueAt.toISOString(),
+  }, createdAt);
+
+  let presented = presentScheduledChatJob(row, createdAt);
+  assert.equal(presented.oneShot, true);
+  assert.equal(presented.cronDescription, "Once");
+  assert.deepEqual(new Date(presented.nextRunAt), dueAt);
+  assert.equal(store.claimDue(at(2026, 8, 31, 13, 29)).length, 0);
+
+  const claimed = store.claimDue(dueAt);
+  assert.equal(claimed.length, 1);
+  assert.equal(claimed[0].enabled, 0, "claiming atomically prevents another firing");
+  assert.equal(store.claimDue(dueAt).length, 0);
+  presented = presentScheduledChatJob(store.require(1, row.id), dueAt);
+  assert.equal(presented.running, true);
+  assert.deepEqual(new Date(presented.nextRunAt), dueAt);
+
+  store.recordRun(row.id, { status: "ok", conversationId: "conv_once", at: dueAt });
+  presented = presentScheduledChatJob(store.require(1, row.id), dueAt);
+  assert.equal(presented.enabled, false);
+  assert.equal(presented.running, false);
+  assert.equal(presented.nextRunAt, null);
+});
+
+test("a schedule keeps the intelligence selected when it was created", () => {
+  const store = createStore();
+  const row = store.create(1, {
+    ...terminalJob,
+    model: "gpt-5.6-terra",
+    reasoningEffort: "max",
+  });
+
+  assert.equal(row.model, "gpt-5.6-terra");
+  assert.equal(row.reasoning_effort, "max");
+  assert.equal(presentScheduledChatJob(row).reasoningEffort, "max");
+  assert.throws(
+    () => store.update(1, row.id, { reasoningEffort: "impossible" }),
+    ScheduleError,
+  );
 });
 
 test("a garden schedule keeps its garden and a terminal schedule cannot have one", () => {

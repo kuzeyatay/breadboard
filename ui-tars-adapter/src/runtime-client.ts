@@ -68,6 +68,10 @@ export interface RuntimeHost {
    * guarantee cleanup on abort/shutdown/crash. Fake runtime never calls this.
    */
   ownBrowser?(pid: number, profileDir: string): void;
+  /** The approved runtime is about to observe or operate the real desktop. */
+  desktopControlStarted?(): void;
+  /** The runtime no longer has access to the real desktop. */
+  desktopControlStopped?(): void;
   /** Aborted by the host (stop / rejection). The runtime must stop promptly. */
   readonly signal: AbortSignal;
 }

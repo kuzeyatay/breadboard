@@ -35,6 +35,7 @@ test("Super Agent orchestration tools have dedicated live states", () => {
   assert.equal(superAgentActivityLabelForTool("agent_launch"), "Choosing an agent");
   assert.equal(superAgentActivityLabelForTool("skill-open"), "Opening skill");
   assert.equal(superAgentActivityLabelForTool("workflow_run"), "Running automation");
+  assert.equal(superAgentActivityLabelForTool("workflow_create"), "Creating automation");
   assert.equal(superAgentActivityLabelForTool("mcp_call"), "Using connected service");
   assert.equal(
     superAgentActivityLabelForTool("capability_search"),

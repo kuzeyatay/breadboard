@@ -59,7 +59,7 @@ function response(nodes, edges, revision = "brain_a") {
     scopeOptions: [{ id: "personal", kind: "personal", label: "Personal" }],
     capabilities: {
       buzz: true,
-      gbrain: false,
+      thoughtTopology: true,
       organization: true,
       expansion: true,
       pathFinding: true,
@@ -180,7 +180,10 @@ test("Breadboard response adapts to Quartz data without changing authorization s
   assert.ok(quartzLabelAlpha(3) > quartzLabelAlpha(0.5));
   assert.equal(quartzLabelAlpha(0.25, { selected: true }), 1);
   assert.ok(quartzBrainNodeStyle("user").radius > quartzBrainNodeStyle("page").radius);
-  assert.match(quartzLayoutStorageKey("private", "revision", "personal"), /private:personal:revision$/);
+  assert.match(
+    quartzLayoutStorageKey("private", "revision", "personal"),
+    /thought-topology-layout:v2:private:personal$/,
+  );
 });
 
 test("incremental expansion merges nodes and removes dangling expansion edges", () => {

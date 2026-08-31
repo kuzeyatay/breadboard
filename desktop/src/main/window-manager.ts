@@ -33,6 +33,8 @@ export interface WindowManagerOptions {
   recoveryHeartbeatMs?: number;
   /** Where window recovery reports what it is doing. Silent when omitted. */
   log?: (line: string) => void;
+  /** Lets the shell retire non-main safety windows before the app closes. */
+  onMainWindowCloseRequested?: () => void;
 }
 
 interface DashboardPreload {
@@ -781,7 +783,10 @@ export class WindowManager {
       // Retired startup/recovery windows are destroyed after their replacement
       // has become current. Their close events must not turn that handoff into
       // an application quit request.
-      if (this.mainWindow === window) this.mainWindowCloseRequested = true;
+      if (this.mainWindow === window) {
+        this.mainWindowCloseRequested = true;
+        this.options.onMainWindowCloseRequested?.();
+      }
     });
     window.on("closed", () => {
       // Only if it is still the main window: a dashboard swap retires this one

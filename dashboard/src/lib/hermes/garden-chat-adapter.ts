@@ -2,6 +2,7 @@
 // It preserves that UI's SSE contract while replacing its model transport with
 // an authorized, garden-scoped Hermes session.
 
+import path from "node:path";
 import db from "../db.ts";
 import { normalizeChatTokenUsage } from "../chat-token-usage.ts";
 import { requireUserId } from "../server-auth.ts";
@@ -66,7 +67,15 @@ import { generateAndApplyConversationTitle } from "../conversations/title-servic
 import { composeMemoryContext } from "../conversations/memory.ts";
 import { loadConversationMemoryBundleHybrid } from "../mem0/retrieval.ts";
 import { gardenInstructions } from "../garden-settings.ts";
-import { associateArtifactToolCall, listArtifactEventsAfter } from "./artifact-store.ts";
+import { readThoughtTopology } from "../thought-topology/storage.ts";
+import {
+  compactThoughtTopologyGraph,
+  queryThoughtTopologyGraph,
+} from "./thought-topology-graph.ts";
+import {
+  associateArtifactToolCall,
+  listArtifactEventsAfter,
+} from "./artifact-store.ts";
 import {
   externalAgentCallsForRun,
   listAgentLaunchRequestsAfter,
@@ -105,7 +114,10 @@ import {
 } from "./interactive-visualizer-skills.ts";
 import { turnCapabilitySelection } from "./capability-usage.ts";
 import { capabilitySummaryForRun } from "./capability-evidence.ts";
-import { audioAnalysisCommandText, AUDIO_ANALYSIS_SKILL } from "./audio-intent.ts";
+import {
+  audioAnalysisCommandText,
+  AUDIO_ANALYSIS_SKILL,
+} from "./audio-intent.ts";
 import { spotifyCommandText, SPOTIFY_SKILL } from "./spotify-intent.ts";
 import {
   hasAnalyzableAttachment,
@@ -225,553 +237,578 @@ export async function openGardenAgentChat(
   const preDispatchHeartbeat = setInterval(touchPreDispatch, 10_000);
   preDispatchHeartbeat.unref?.();
   try {
-  // Attachments reach this surface in the request body but used to stop here:
-  // the payload was parsed for messages only, so a file picked in the Garden
-  // composer never reached the runtime at all.
-  // ColPali narrows a long document to the pages this question is about, and
-  // hands the attachment back untouched when it cannot — an unindexed document
-  // still arrives whole.
-  const attachments = await retrieveDocumentAttachments(
-    userId,
-    resolveDocumentAttachments(userId, parseChatAttachments(payload.attachments)),
-    text,
-    process.env,
-    signal,
-  );
-  const selectedSlugs = parseSelectedDocumentSlugs(payload.selectedDocumentSlugs);
-  // Garden Chat's own copy of the first-turn titling in
-  // conversations/turn-service.ts. This surface persists its transcript through
-  // the legacy chat-session route rather than reserveConversationTurn, so the
-  // canonical pipeline's `order_index === 0` test is not available here; the
-  // payload carrying exactly one user message is the same first turn. Awaiting
-  // matches the Terminal, where the title lands before the run is dispatched.
-  // applyGeneratedConversationTitle writes chat_sessions too, so the Garden
-  // sidebar reads the same title, and its compare-and-swap on the observed
-  // title means a manual rename racing this call still wins.
-  if (isFirstUserTurn(messages)) {
-    conversation =
-      (await generateAndApplyConversationTitle({
-        conversation,
-        firstPrompt: text,
-        model: payload.model,
-      })) ?? conversation;
-  }
-  // A greeting does not need a 600k-word garden, memories, tools, or an agent
-  // run. Keep this intentionally narrow and fail closed for attachments,
-  // task-bearing text, and active personas, all of which need the full path.
-  const smallTalkReply =
-    attachments.length === 0 && !conversation.active_agency_agent_slug
-      ? resolveSmallTalkReply(text)
-      : null;
-  if (smallTalkReply) {
-    recordAuditEvent({
-      eventType: "small_talk.fast_path",
+    // Attachments reach this surface in the request body but used to stop here:
+    // the payload was parsed for messages only, so a file picked in the Garden
+    // composer never reached the runtime at all.
+    // ColPali narrows a long document to the pages this question is about, and
+    // hands the attachment back untouched when it cannot — an unindexed document
+    // still arrives whole.
+    const attachments = await retrieveDocumentAttachments(
       userId,
-      gardenId: clusterSlug,
-      payload: { intent: smallTalkReply.intent, chatSessionId },
-    });
-    completeAssistantMessage({
-      conversationId: conversation.id,
-      clientMessageId: reservedClientMessageId,
-      content: smallTalkReply.text,
-      metadata: { runtimeStatus: "idle", fastPath: true },
-    });
-    return smallTalkEventStream(smallTalkReply);
-  }
-
-  const engine = resolveHermesEngine(
-    payload.model,
-    payload.reasoningEffort,
-  );
-  const existing = getRuntimeSessionByChatSession(chatSessionId);
-  const session = existing
-    ? authorizeRuntimeSession(userId, existing.id)
-    : await resolveConversationRuntime({
-        conversation,
-        surface: "garden_chat",
-        activeGardenSlug: clusterSlug,
-        activePageSlug: page?.slug ?? null,
+      resolveDocumentAttachments(
+        userId,
+        parseChatAttachments(payload.attachments),
+      ),
+      text,
+      process.env,
+      signal,
+    );
+    const selectedSlugs = parseSelectedDocumentSlugs(
+      payload.selectedDocumentSlugs,
+    );
+    // Garden Chat's own copy of the first-turn titling in
+    // conversations/turn-service.ts. This surface persists its transcript through
+    // the legacy chat-session route rather than reserveConversationTurn, so the
+    // canonical pipeline's `order_index === 0` test is not available here; the
+    // payload carrying exactly one user message is the same first turn. Awaiting
+    // matches the Terminal, where the title lands before the run is dispatched.
+    // applyGeneratedConversationTitle writes chat_sessions too, so the Garden
+    // sidebar reads the same title, and its compare-and-swap on the observed
+    // title means a manual rename racing this call still wins.
+    if (isFirstUserTurn(messages)) {
+      conversation =
+        (await generateAndApplyConversationTitle({
+          conversation,
+          firstPrompt: text,
+          model: payload.model,
+        })) ?? conversation;
+    }
+    // A greeting does not need a 600k-word garden, memories, tools, or an agent
+    // run. Keep this intentionally narrow and fail closed for attachments,
+    // task-bearing text, and active personas, all of which need the full path.
+    const smallTalkReply =
+      attachments.length === 0 && !conversation.active_agency_agent_slug
+        ? resolveSmallTalkReply(text)
+        : null;
+    if (smallTalkReply) {
+      recordAuditEvent({
+        eventType: "small_talk.fast_path",
+        userId,
+        gardenId: clusterSlug,
+        payload: { intent: smallTalkReply.intent, chatSessionId },
       });
-  // The shared planner records the requested outcome, while the broker's
-  // surface ceiling keeps Garden Chat on curated Garden, artifact, and selected
-  // MCP tools. Filesystem grants can never turn this surface into a Terminal.
-  const prepared = prepareTurn({
-    request: text,
-    priorRequests: messages
-      .filter((message) => message.role === "user")
-      .map((message) => message.content)
-      .slice(-6, -1),
-    surface: "garden_chat",
-    userId,
-    grants: listFilesystemGrants(userId),
-    workspaceRoot: session.activeDirectory,
-  });
-  const decision = prepared.decision;
-  const premortemSelection = premortemCommandText({
-    text,
-    surface: "garden_chat",
-    authenticated: true,
-    priorMessages: messages,
-  });
-  const factcheckSelection = factcheckCommandText({
-    text: premortemSelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    priorMessages: messages,
-  });
-  const patentDisclosureSelection = patentDisclosureCommandText({
-    text: factcheckSelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    priorMessages: messages,
-  });
-  const visualizerSelection = visualizerCommandText({
-    text: patentDisclosureSelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    priorMessages: messages,
-  });
-  const agentLoopSelection = agentLoopCommandText({
-    text: visualizerSelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    priorMessages: messages,
-  });
-  // Garden Chat's own copy of the chain in conversations/turn-service.ts. A
-  // picture attached here has to select the skill for itself exactly as it does
-  // there — missing this second pipeline is how a feature silently works on one
-  // surface and not the other. There is no carried-picture case here: this
-  // legacy path parses messages as role and content only, so an attachment from
-  // an earlier turn is not visible from it.
-  const imageTo3dSelection = imageTo3dCommandText({
-    text: agentLoopSelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    hasImageAttachment: hasReconstructableAttachment(attachments),
-  });
-  const spotifySelection = spotifyCommandText({
-    text: imageTo3dSelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    hasAudioAttachment: hasAnalyzableAttachment(attachments),
-    activeAgentSlug: conversation.active_agency_agent_slug,
-  });
-  // The same second copy of the chain: an attached song has to select the skill
-  // here exactly as it does in conversations/turn-service.ts. No carried-track
-  // case, for the same reason there is no carried-picture one — this legacy path
-  // parses messages as role and content only.
-  const audioSelection = audioAnalysisCommandText({
-    text: spotifySelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    hasAudioAttachment: hasAnalyzableAttachment(attachments),
-  });
-  // The same second copy of the chain: a request to draw something has to
-  // select the skill here exactly as it does in conversations/turn-service.ts,
-  // and for the same reason it sits after the attachment-driven selections
-  // there.
-  const diagramSelection = diagramCommandText({
-    text: audioSelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    priorMessages: messages,
-  });
-  // The same second copy of the chain: a repo named for inspection has to
-  // select the skill here exactly as it does in conversations/turn-service.ts,
-  // after Diagram Design and before messaging for the same reasons.
-  const githubExplorerSelection = githubExplorerCommandText({
-    text: diagramSelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    priorMessages: messages,
-  });
-  // The same place in the chain as the copy in conversations/turn-service.ts:
-  // after every skill that claims a turn on its subject, before the errand.
-  const humanizeSelection = humanizeCommandText({
-    text: githubExplorerSelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    priorMessages: messages,
-  });
-  // Last in the chain: see the same call in conversations/turn-service.ts.
-  const messagingSelection = messagingCommandText({
-    text: humanizeSelection.text,
-    surface: "garden_chat",
-    authenticated: true,
-    priorMessages: messages,
-  });
-  const commandContext = {
-    mode: decision.mode,
-    surface: "garden_chat" as const,
-    runtimeKind: session.runtimeKind,
-    activeAgentSlug: conversation.active_agency_agent_slug,
-  };
-  // An automatic selection must never cost the user their turn. If an
-  // auto-selected capability is unavailable here, resolve the same message
-  // again without it. Patent selection is upstream of agent-loop selection,
-  // so its fallback starts from the fact-check selection text.
-  const resolved = await resolveCommandMessage(
-    userId,
-    messagingSelection.text,
-    session.activeDirectory,
-    commandContext,
-  ).catch(async (error: unknown) => {
-    if (
-      !patentDisclosureSelection.automatic &&
-      !imageTo3dSelection.automatic &&
-      !spotifySelection.automatic &&
-      !audioSelection.automatic &&
-      !diagramSelection.automatic &&
-      !githubExplorerSelection.automatic &&
-      !humanizeSelection.automatic
-    ) throw error;
-    return await resolveCommandMessage(
+      completeAssistantMessage({
+        conversationId: conversation.id,
+        clientMessageId: reservedClientMessageId,
+        content: smallTalkReply.text,
+        metadata: { runtimeStatus: "idle", fastPath: true },
+      });
+      return smallTalkEventStream(smallTalkReply);
+    }
+
+    const engine = resolveHermesEngine(payload.model, payload.reasoningEffort);
+    const existing = getRuntimeSessionByChatSession(chatSessionId);
+    const session = existing
+      ? authorizeRuntimeSession(userId, existing.id)
+      : await resolveConversationRuntime({
+          conversation,
+          surface: "garden_chat",
+          activeGardenSlug: clusterSlug,
+          activePageSlug: page?.slug ?? null,
+        });
+    // The shared planner records the requested outcome, while the broker's
+    // surface ceiling keeps Garden Chat on curated Garden, artifact, and selected
+    // MCP tools. Filesystem grants can never turn this surface into a Terminal.
+    const prepared = prepareTurn({
+      request: text,
+      priorRequests: messages
+        .filter((message) => message.role === "user")
+        .map((message) => message.content)
+        .slice(-6, -1),
+      surface: "garden_chat",
       userId,
-      messagingCommandText({
-        text: patentDisclosureSelection.automatic
-          ? factcheckSelection.text
-          : agentLoopSelection.text,
-        surface: "garden_chat",
-        authenticated: true,
-        priorMessages: messages,
-      }).text,
+      grants: listFilesystemGrants(userId),
+      workspaceRoot: session.activeDirectory,
+    });
+    const decision = prepared.decision;
+    const premortemSelection = premortemCommandText({
+      text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    const factcheckSelection = factcheckCommandText({
+      text: premortemSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    const patentDisclosureSelection = patentDisclosureCommandText({
+      text: factcheckSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    const visualizerSelection = visualizerCommandText({
+      text: patentDisclosureSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    const agentLoopSelection = agentLoopCommandText({
+      text: visualizerSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    // Garden Chat's own copy of the chain in conversations/turn-service.ts. A
+    // picture attached here has to select the skill for itself exactly as it does
+    // there — missing this second pipeline is how a feature silently works on one
+    // surface and not the other. There is no carried-picture case here: this
+    // legacy path parses messages as role and content only, so an attachment from
+    // an earlier turn is not visible from it.
+    const imageTo3dSelection = imageTo3dCommandText({
+      text: agentLoopSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      hasImageAttachment: hasReconstructableAttachment(attachments),
+    });
+    const spotifySelection = spotifyCommandText({
+      text: imageTo3dSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      hasAudioAttachment: hasAnalyzableAttachment(attachments),
+      activeAgentSlug: conversation.active_agency_agent_slug,
+    });
+    // The same second copy of the chain: an attached song has to select the skill
+    // here exactly as it does in conversations/turn-service.ts. No carried-track
+    // case, for the same reason there is no carried-picture one — this legacy path
+    // parses messages as role and content only.
+    const audioSelection = audioAnalysisCommandText({
+      text: spotifySelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      hasAudioAttachment: hasAnalyzableAttachment(attachments),
+    });
+    // The same second copy of the chain: a request to draw something has to
+    // select the skill here exactly as it does in conversations/turn-service.ts,
+    // and for the same reason it sits after the attachment-driven selections
+    // there.
+    const diagramSelection = diagramCommandText({
+      text: audioSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    // The same second copy of the chain: a repo named for inspection has to
+    // select the skill here exactly as it does in conversations/turn-service.ts,
+    // after Diagram Design and before messaging for the same reasons.
+    const githubExplorerSelection = githubExplorerCommandText({
+      text: diagramSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    // The same place in the chain as the copy in conversations/turn-service.ts:
+    // after every skill that claims a turn on its subject, before the errand.
+    const humanizeSelection = humanizeCommandText({
+      text: githubExplorerSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    // Last in the chain: see the same call in conversations/turn-service.ts.
+    const messagingSelection = messagingCommandText({
+      text: humanizeSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    const commandContext = {
+      mode: decision.mode,
+      surface: "garden_chat" as const,
+      runtimeKind: session.runtimeKind,
+      activeAgentSlug: conversation.active_agency_agent_slug,
+    };
+    // An automatic selection must never cost the user their turn. If an
+    // auto-selected capability is unavailable here, resolve the same message
+    // again without it. Patent selection is upstream of agent-loop selection,
+    // so its fallback starts from the fact-check selection text.
+    const resolved = await resolveCommandMessage(
+      userId,
+      messagingSelection.text,
       session.activeDirectory,
       commandContext,
-    );
-  });
-  decision.selectedConditionalSkills = resolved.invocations
-    .filter((item) => item.kind === "skill")
-    .map((item) => item.slug);
-  const automaticPatentDisclosure = patentDisclosureSelection.automatic &&
-    decision.selectedConditionalSkills.includes(PATENT_DISCLOSURE_SKILL);
-  decision.selectedConnections = resolved.invocations
-    .filter((item) => item.kind === "mcp")
-    .map((item) => item.slug);
-
-  // Whether this turn owes live web evidence. The keyword planner's "no" is
-  // final and free; its "yes" is a proposal a cheap model adjudicates, because
-  // the planner matches keywords anywhere in the message and cannot tell an
-  // instruction from text the user pasted to be worked on. Fixed here, before
-  // dispatch, so the finished answer is judged against a standard it could not
-  // lower. See web-grounding-decider.ts.
-  const webGroundingVerdict = await adjudicateWebGrounding({
-    request: resolved.userText || text,
-    plannerRequired: prepared.plan.requiresWebEvidence,
-  });
-
-  const runtime = getAgentRuntimeByKind(session.runtimeKind);
-  const connectedApps = await connectedAppRegistryForTurn({
-    runtime,
-    directory: session.activeDirectory,
-    userId,
-    mode: decision.mode,
-  });
-  // The repository this Garden is connected to, read from the checkout for
-  // this turn: a description of what it is and how it is laid out, plus its
-  // code index as tools when the graph is ready. Nothing about the repository
-  // is written into this file — the same call describes whichever repository
-  // the user connected, and a Garden without one gets exactly the turn it
-  // always had.
-  const repository = await connectedRepositoryForTurn({
-    userId,
-    gardenSlug: clusterSlug,
-  });
-  decision.selectedConnections = [
-    ...new Set([
-      ...decision.selectedConnections,
-      ...connectedApps.connectionNames,
-      ...(repository?.connection ? [repository.connection] : []),
-    ]),
-  ];
-  await runtime.health();
-  await runtime.applyCapabilityDecision({
-    externalSessionId: session.externalSessionId,
-    liveSessionId: session.liveSessionId,
-    workspaceKey: session.workspaceKey,
-    directory: session.activeDirectory,
-    decision,
-  });
-  const storedDecision = persistCapabilityDecision(session.row.id, decision);
-  recordAuditEvent({
-    eventType: "capability.decision",
-    runtimeSessionId: session.row.id,
-    userId,
-    gardenId: clusterSlug,
-    payload: {
-      decisionId: storedDecision.id,
-      mode: decision.mode,
-      implementationRequired: false,
-      decisionReason: decision.decisionReason,
-      decisionSource: decision.decisionSource,
-    },
-  });
-  markStatus(session, "busy");
-  recordAuditEvent({
-    eventType: "message.submitted",
-    runtimeSessionId: session.row.id,
-    userId,
-    gardenId: clusterSlug,
-    payload: {
-      characterCount: text.length,
-      chatSessionId,
-      modelId: engine.model.modelID,
-      reasoningEffort: engine.variant,
-      reasoningEffortAdjusted: engine.adjusted,
-      commands: resolved.invocations,
-      automaticPremortem: premortemSelection.automatic,
-      automaticFactcheck: factcheckSelection.automatic,
-      automaticPatentDisclosure,
-      automaticInteractiveVisualizer: visualizerSelection.automatic,
-      automaticDiagramDesign: diagramSelection.automatic,
-      automaticGithubExplorer: githubExplorerSelection.automatic,
-      ...(repository
-        ? {
-            connectedRepository: repository.repository.name,
-            connectedRepositoryCodeIndex: repository.codeIndex,
-          }
-        : {}),
-      capabilityDecisionId: storedDecision.id,
-      capabilityMode: decision.mode,
-      intendedOutcome: prepared.plan.intendedOutcome,
-      requiredCapabilities: prepared.plan.requiredCapabilities,
-      grantedCapabilities: prepared.grant.grantedCapabilities,
-      withheldCapabilities: prepared.grant.withheldCapabilities,
-      pendingPermissions: prepared.pendingPermissions.map((item) => item.id),
-      riskLevel: prepared.plan.riskLevel,
-    },
-  });
-  if (session.row.conversation_id === null) {
-    throw new ApiError(409, "conversation_required", "Garden artifacts require a canonical conversation.");
-  }
-  conversation = getConversationById(session.row.conversation_id) ?? conversation;
-  if (conversation.surface !== "garden_chat") {
-    throw new ApiError(409, "conversation_scope_mismatch", "The Garden conversation scope is invalid.");
-  }
-  const memory = await loadConversationMemoryBundleHybrid({
-    conversation,
-    query: text,
-    activeGardenId: session.row.cluster_id,
-    projectScopeId: "breadboard",
-    personalize: payload.personalize !== false,
-  });
-  let activeAgencyAgent: AgencyAgentDefinition | null = null;
-  if (resolved.agencyAgentSelection?.action === "clear") {
-    conversation = updateConversation(conversation, { activeAgencyAgentSlug: null });
-  } else if (resolved.agencyAgentSelection?.action === "set") {
-    conversation = updateConversation(conversation, {
-      activeAgencyAgentSlug: resolved.agencyAgentSelection.slug,
+    ).catch(async (error: unknown) => {
+      if (
+        !patentDisclosureSelection.automatic &&
+        !imageTo3dSelection.automatic &&
+        !spotifySelection.automatic &&
+        !audioSelection.automatic &&
+        !diagramSelection.automatic &&
+        !githubExplorerSelection.automatic &&
+        !humanizeSelection.automatic
+      )
+        throw error;
+      return await resolveCommandMessage(
+        userId,
+        messagingCommandText({
+          text: patentDisclosureSelection.automatic
+            ? factcheckSelection.text
+            : agentLoopSelection.text,
+          surface: "garden_chat",
+          authenticated: true,
+          priorMessages: messages,
+        }).text,
+        session.activeDirectory,
+        commandContext,
+      );
     });
-    activeAgencyAgent = findAgencyAgent(resolved.agencyAgentSelection.slug);
-  } else if (conversation.active_agency_agent_slug) {
-    activeAgencyAgent = findAgencyAgent(conversation.active_agency_agent_slug);
-    if (!activeAgencyAgent) {
-      conversation = updateConversation(conversation, { activeAgencyAgentSlug: null });
+    decision.selectedConditionalSkills = resolved.invocations
+      .filter((item) => item.kind === "skill")
+      .map((item) => item.slug);
+    const automaticPatentDisclosure =
+      patentDisclosureSelection.automatic &&
+      decision.selectedConditionalSkills.includes(PATENT_DISCLOSURE_SKILL);
+    decision.selectedConnections = resolved.invocations
+      .filter((item) => item.kind === "mcp")
+      .map((item) => item.slug);
+
+    // Whether this turn owes live web evidence. The keyword planner's "no" is
+    // final and free; its "yes" is a proposal a cheap model adjudicates, because
+    // the planner matches keywords anywhere in the message and cannot tell an
+    // instruction from text the user pasted to be worked on. Fixed here, before
+    // dispatch, so the finished answer is judged against a standard it could not
+    // lower. See web-grounding-decider.ts.
+    const webGroundingVerdict = await adjudicateWebGrounding({
+      request: resolved.userText || text,
+      plannerRequired: prepared.plan.requiresWebEvidence,
+    });
+
+    const runtime = getAgentRuntimeByKind(session.runtimeKind);
+    const connectedApps = await connectedAppRegistryForTurn({
+      runtime,
+      directory: session.activeDirectory,
+      userId,
+      mode: decision.mode,
+    });
+    // The repository this Garden is connected to, read from the checkout for
+    // this turn: a description of what it is and how it is laid out, plus its
+    // code index as tools when the graph is ready. Nothing about the repository
+    // is written into this file — the same call describes whichever repository
+    // the user connected, and a Garden without one gets exactly the turn it
+    // always had.
+    const repository = await connectedRepositoryForTurn({
+      userId,
+      gardenSlug: clusterSlug,
+    });
+    decision.selectedConnections = [
+      ...new Set([
+        ...decision.selectedConnections,
+        ...connectedApps.connectionNames,
+        ...(repository?.connection ? [repository.connection] : []),
+      ]),
+    ];
+    await runtime.health();
+    await runtime.applyCapabilityDecision({
+      externalSessionId: session.externalSessionId,
+      liveSessionId: session.liveSessionId,
+      workspaceKey: session.workspaceKey,
+      directory: session.activeDirectory,
+      decision,
+    });
+    const storedDecision = persistCapabilityDecision(session.row.id, decision);
+    recordAuditEvent({
+      eventType: "capability.decision",
+      runtimeSessionId: session.row.id,
+      userId,
+      gardenId: clusterSlug,
+      payload: {
+        decisionId: storedDecision.id,
+        mode: decision.mode,
+        implementationRequired: false,
+        decisionReason: decision.decisionReason,
+        decisionSource: decision.decisionSource,
+      },
+    });
+    markStatus(session, "busy");
+    recordAuditEvent({
+      eventType: "message.submitted",
+      runtimeSessionId: session.row.id,
+      userId,
+      gardenId: clusterSlug,
+      payload: {
+        characterCount: text.length,
+        chatSessionId,
+        modelId: engine.model.modelID,
+        reasoningEffort: engine.variant,
+        reasoningEffortAdjusted: engine.adjusted,
+        commands: resolved.invocations,
+        automaticPremortem: premortemSelection.automatic,
+        automaticFactcheck: factcheckSelection.automatic,
+        automaticPatentDisclosure,
+        automaticInteractiveVisualizer: visualizerSelection.automatic,
+        automaticDiagramDesign: diagramSelection.automatic,
+        automaticGithubExplorer: githubExplorerSelection.automatic,
+        ...(repository
+          ? {
+              connectedRepository: repository.repository.name,
+              connectedRepositoryCodeIndex: repository.codeIndex,
+            }
+          : {}),
+        capabilityDecisionId: storedDecision.id,
+        capabilityMode: decision.mode,
+        intendedOutcome: prepared.plan.intendedOutcome,
+        requiredCapabilities: prepared.plan.requiredCapabilities,
+        grantedCapabilities: prepared.grant.grantedCapabilities,
+        withheldCapabilities: prepared.grant.withheldCapabilities,
+        pendingPermissions: prepared.pendingPermissions.map((item) => item.id),
+        riskLevel: prepared.plan.riskLevel,
+      },
+    });
+    if (session.row.conversation_id === null) {
+      throw new ApiError(
+        409,
+        "conversation_required",
+        "Garden artifacts require a canonical conversation.",
+      );
     }
-  }
-  const runTools = mergeSelectedTools(
-    prepared.grant.allowedTools,
-    {
+    conversation =
+      getConversationById(session.row.conversation_id) ?? conversation;
+    if (conversation.surface !== "garden_chat") {
+      throw new ApiError(
+        409,
+        "conversation_scope_mismatch",
+        "The Garden conversation scope is invalid.",
+      );
+    }
+    const memory = await loadConversationMemoryBundleHybrid({
+      conversation,
+      query: text,
+      activeGardenId: session.row.cluster_id,
+      projectScopeId: "breadboard",
+      personalize: payload.personalize !== false,
+    });
+    let activeAgencyAgent: AgencyAgentDefinition | null = null;
+    if (resolved.agencyAgentSelection?.action === "clear") {
+      conversation = updateConversation(conversation, {
+        activeAgencyAgentSlug: null,
+      });
+    } else if (resolved.agencyAgentSelection?.action === "set") {
+      conversation = updateConversation(conversation, {
+        activeAgencyAgentSlug: resolved.agencyAgentSelection.slug,
+      });
+      activeAgencyAgent = findAgencyAgent(resolved.agencyAgentSelection.slug);
+    } else if (conversation.active_agency_agent_slug) {
+      activeAgencyAgent = findAgencyAgent(
+        conversation.active_agency_agent_slug,
+      );
+      if (!activeAgencyAgent) {
+        conversation = updateConversation(conversation, {
+          activeAgencyAgentSlug: null,
+        });
+      }
+    }
+    const runTools = mergeSelectedTools(prepared.grant.allowedTools, {
       ...resolved.tools,
       ...connectedApps.tools,
       ...(repository?.tools ?? {}),
-    },
-  );
-  // Documents the turn can see — files the user just attached and garden
-  // sources they ticked in the sidebar — become book-to-skill skills when they
-  // are large enough to be worth distilling, and the turn gets their structured
-  // index instead of their raw text.
-  const editableDocuments = stageEditableDocumentAttachments({
-    userId,
-    attachments,
-    workspace: session.activeDirectory,
-  });
-  const documents = await prepareDocumentContext({
-    userId,
-    conversationId: conversation.public_id,
-    attachments,
-    garden: { clusterSlug, selectedDocumentSlugs: selectedSlugs },
-    signal,
-  });
-  const runSystem = composeHermesSystemPrompt({
-    surface: "garden_chat",
-    decision,
-    userText: resolved.userText || text,
-    // Only the attachments that still travel verbatim: a distilled document
-    // reaches the model as an index, which has no values to check.
-    suppliedEvidence: suppliedEvidenceText(documents.inlineAttachments),
-    conversationPublicId: conversation.public_id,
-    adhdMode: payload.adhdMode === true,
-    additional: [
-      // The garden's own standing instructions, set from the workspace header's
-      // settings dialog. Placed ahead of the rest of the turn's context so it
-      // reads as a preference the assistant carries into the work, not as a
-      // late correction bolted onto the end of the prompt.
-      gardenInstructionsContext(session.row.cluster_id),
-      composeMemoryContext(memory),
-      // Directly after memory, so the repository reads as something the
-      // assistant knows about this Garden rather than a tool it was handed.
-      repository?.systemContext ?? "",
-      connectedApps.systemContext,
-      documents.context,
-      editableDocuments.context,
-      decision.selectedConditionalSkills.includes(IMAGE_TO_3D_SKILL)
-        ? renderImageTo3dContext(reconstructableFromAttachments(attachments))
-        : "",
-      decision.selectedConditionalSkills.includes(AUDIO_ANALYSIS_SKILL)
-        ? renderAudioAnalysisContext(tracksFromAttachments(userId, attachments))
-        : "",
-      decision.selectedConditionalSkills.includes(MUSIC_RECOGNITION_SKILL)
-        ? renderMusicRecognitionContext(tracksFromAttachments(userId, attachments))
-        : "",
-      gardenTurnContext(
-        clusterSlug,
-        chatSessionId,
-        page,
-        selectedSlugs,
-        prepared,
-      ),
-      quartzAssistantSelectionPromptContext(payload.selectedTextContext) ||
-        quartzAssistantSelectionPromptContext(payload.selectedText),
-    ].filter(Boolean).join("\n\n"),
-    persona: activeAgencyAgent
-      ? renderAgencyAgentPersona(activeAgencyAgent)
-      : undefined,
-  });
-  // Garden Chat's copy of the capability ledger the Terminal keeps. Same rule:
-  // only selections the resolver kept are recorded, so an automatic pick the
-  // availability fallback dropped never appears in this turn's provenance.
-  // Super agent does not reach this surface, so there is no inventory here.
-  const capabilitySelection = turnCapabilitySelection({
-    invocations: resolved.invocations,
-    automaticSkills: [
-      ...(imageTo3dSelection.automatic ? [{ slug: IMAGE_TO_3D_SKILL }] : []),
-      ...(spotifySelection.automatic ? [{ slug: SPOTIFY_SKILL }] : []),
-      ...(audioSelection.automatic ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),
-      ...(diagramSelection.automatic ? [{ slug: DIAGRAM_DESIGN_SKILL }] : []),
-      ...(githubExplorerSelection.automatic
-        ? [{ slug: GITHUB_EXPLORER_SKILL }]
-        : []),
-      ...(automaticPatentDisclosure
-        ? [{ slug: PATENT_DISCLOSURE_SKILL }]
-        : []),
-      ...(premortemSelection.automatic ? [{ slug: "premortem" }] : []),
-      ...(factcheckSelection.automatic ? [{ slug: "bullshit-detector" }] : []),
-      ...(messagingSelection.automatic ? [{ slug: "send-to-my-phone" }] : []),
-      ...(agentLoopSelection.automatic
-        ? [{ slug: "agent-loop-engineering" }]
-        : []),
-      ...(visualizerSelection.automatic
-        ? [
-            { slug: INTERACTIVE_VISUALIZER_SKILL },
-            { slug: INTERACTIVE_VISUALIZER_IN_CHAT_SKILL },
-          ]
-        : []),
-    ],
-  });
-  // A delegated worker is launched on one turn and reported on the next, and
-  // only the second is visible: the hand-back arrives as a hidden message, so
-  // the answer the user reads belongs to a run that queued nothing and called
-  // no tool. Carry the delegation across that seam, or the one turn anybody
-  // opens the evidence panel on shows no trace of whose work it is. The hidden
-  // worker turn is durable across a long run and a server restart; the live
-  // queue remains only as a compatibility fallback.
-  const carriedDelegations =
-    payload.internalAgentContinuation === true
-      ? carriedExternalAgentsForContinuation({
-          continuationText: text,
-          messages: memory.recentMessages,
-          launchCalls: externalAgentCallsForRun(
-            getLatestRuntimeRun(session.row.id)?.id,
-          ),
-        })
-      : [];
-  const runtimeText =
-    resolved.text ||
-    "Acknowledge the persona selection briefly and ask how you can help.";
-  let run: ReturnType<typeof beginRuntimeRun>;
-  try {
-    run = beginRuntimeRun({
-      runtimeSessionId: session.row.id,
-      instruction: text,
-      dispatch: {
-        conversationPublicId: conversation.public_id,
+    });
+    // Documents the turn can see — files the user just attached and garden
+    // sources they ticked in the sidebar — become book-to-skill skills when they
+    // are large enough to be worth distilling, and the turn gets their structured
+    // index instead of their raw text.
+    const editableDocuments = stageEditableDocumentAttachments({
+      userId,
+      attachments,
+      workspace: session.activeDirectory,
+    });
+    const documents = await prepareDocumentContext({
+      userId,
+      conversationId: conversation.public_id,
+      attachments,
+      garden: { clusterSlug, selectedDocumentSlugs: selectedSlugs },
+      signal,
+    });
+    const runSystem = composeHermesSystemPrompt({
+      surface: "garden_chat",
+      decision,
+      userText: resolved.userText || text,
+      // Only the attachments that still travel verbatim: a distilled document
+      // reaches the model as an index, which has no values to check.
+      suppliedEvidence: suppliedEvidenceText(documents.inlineAttachments),
+      conversationPublicId: conversation.public_id,
+      adhdMode: payload.adhdMode === true,
+      additional: [
+        // The garden's own standing instructions, set from the workspace header's
+        // settings dialog. Placed ahead of the rest of the turn's context so it
+        // reads as a preference the assistant carries into the work, not as a
+        // late correction bolted onto the end of the prompt.
+        gardenInstructionsContext(session.row.cluster_id),
+        gardenTopologyContext(clusterSlug, page),
+        composeMemoryContext(memory),
+        // Directly after memory, so the repository reads as something the
+        // assistant knows about this Garden rather than a tool it was handed.
+        repository?.systemContext ?? "",
+        connectedApps.systemContext,
+        documents.context,
+        editableDocuments.context,
+        decision.selectedConditionalSkills.includes(IMAGE_TO_3D_SKILL)
+          ? renderImageTo3dContext(reconstructableFromAttachments(attachments))
+          : "",
+        decision.selectedConditionalSkills.includes(AUDIO_ANALYSIS_SKILL)
+          ? renderAudioAnalysisContext(
+              tracksFromAttachments(userId, attachments),
+            )
+          : "",
+        decision.selectedConditionalSkills.includes(MUSIC_RECOGNITION_SKILL)
+          ? renderMusicRecognitionContext(
+              tracksFromAttachments(userId, attachments),
+            )
+          : "",
+        gardenTurnContext(
+          clusterSlug,
+          chatSessionId,
+          page,
+          selectedSlugs,
+          prepared,
+        ),
+        quartzAssistantSelectionPromptContext(payload.selectedTextContext) ||
+          quartzAssistantSelectionPromptContext(payload.selectedText),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      persona: activeAgencyAgent
+        ? renderAgencyAgentPersona(activeAgencyAgent)
+        : undefined,
+    });
+    // Garden Chat's copy of the capability ledger the Terminal keeps. Same rule:
+    // only selections the resolver kept are recorded, so an automatic pick the
+    // availability fallback dropped never appears in this turn's provenance.
+    // Super agent does not reach this surface, so there is no inventory here.
+    const capabilitySelection = turnCapabilitySelection({
+      invocations: resolved.invocations,
+      automaticSkills: [
+        ...(imageTo3dSelection.automatic ? [{ slug: IMAGE_TO_3D_SKILL }] : []),
+        ...(spotifySelection.automatic ? [{ slug: SPOTIFY_SKILL }] : []),
+        ...(audioSelection.automatic ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),
+        ...(diagramSelection.automatic ? [{ slug: DIAGRAM_DESIGN_SKILL }] : []),
+        ...(githubExplorerSelection.automatic
+          ? [{ slug: GITHUB_EXPLORER_SKILL }]
+          : []),
+        ...(automaticPatentDisclosure
+          ? [{ slug: PATENT_DISCLOSURE_SKILL }]
+          : []),
+        ...(premortemSelection.automatic ? [{ slug: "premortem" }] : []),
+        ...(factcheckSelection.automatic
+          ? [{ slug: "bullshit-detector" }]
+          : []),
+        ...(messagingSelection.automatic ? [{ slug: "send-to-my-phone" }] : []),
+        ...(agentLoopSelection.automatic
+          ? [{ slug: "agent-loop-engineering" }]
+          : []),
+        ...(visualizerSelection.automatic
+          ? [
+              { slug: INTERACTIVE_VISUALIZER_SKILL },
+              { slug: INTERACTIVE_VISUALIZER_IN_CHAT_SKILL },
+            ]
+          : []),
+      ],
+    });
+    // A delegated worker is launched on one turn and reported on the next, and
+    // only the second is visible: the hand-back arrives as a hidden message, so
+    // the answer the user reads belongs to a run that queued nothing and called
+    // no tool. Carry the delegation across that seam, or the one turn anybody
+    // opens the evidence panel on shows no trace of whose work it is. The hidden
+    // worker turn is durable across a long run and a server restart; the live
+    // queue remains only as a compatibility fallback.
+    const carriedDelegations =
+      payload.internalAgentContinuation === true
+        ? carriedExternalAgentsForContinuation({
+            continuationText: text,
+            messages: memory.recentMessages,
+            launchCalls: externalAgentCallsForRun(
+              getLatestRuntimeRun(session.row.id)?.id,
+            ),
+          })
+        : [];
+    const runtimeText =
+      resolved.text ||
+      "Acknowledge the persona selection briefly and ask how you can help.";
+    let run: ReturnType<typeof beginRuntimeRun>;
+    try {
+      run = beginRuntimeRun({
+        runtimeSessionId: session.row.id,
+        instruction: text,
+        dispatch: {
+          conversationPublicId: conversation.public_id,
+          clientMessageId: reservedClientMessageId,
+          runtimeText,
+          model: engine.model,
+          modelIdentity: { modelID: engine.selectedModelID },
+          variant: engine.variant,
+          tools: runTools,
+          system: runSystem,
+          capabilities: capabilitySelection,
+          ...(carriedDelegations.length
+            ? { delegatedAgents: carriedDelegations }
+            : {}),
+        },
+      });
+    } catch (error) {
+      failAssistantMessage({
+        conversationId: conversation.id,
         clientMessageId: reservedClientMessageId,
-        runtimeText,
-        model: engine.model,
-        modelIdentity: { modelID: engine.selectedModelID },
-        variant: engine.variant,
-        tools: runTools,
-        system: runSystem,
-        capabilities: capabilitySelection,
-        ...(carriedDelegations.length
-          ? { delegatedAgents: carriedDelegations }
-          : {}),
+        status: "failed",
+        error: "garden_run_not_started",
+      });
+      throw error;
+    }
+    const runtimeMessageId = hermesMessageId(reservedClientMessageId);
+    const finalConversation = conversation;
+    return legacyGardenEventStream(
+      session,
+      signal,
+      prepared,
+      run.id,
+      reservedClientMessageId,
+      { messageId: runtimeMessageId, instruction: runtimeText },
+      webGroundingVerdict.required,
+      (target) =>
+        runtime.startRun({
+          externalSessionId: target.externalSessionId,
+          liveSessionId: target.liveSessionId,
+          workspaceKey: target.workspaceKey,
+          directory: target.activeDirectory,
+          agentName: target.agentName,
+          text: runtimeText,
+          // Everything that was not distilled into a skill: images, 3D models, and
+          // documents small enough to stay verbatim.
+          attachments: documents.inlineAttachments,
+          // The brokered map is authoritative. A selected MCP/skill tool may only
+          // narrow it, never widen it.
+          tools: runTools,
+          model: engine.model,
+          modelIdentity: { modelID: engine.selectedModelID },
+          variant: engine.variant,
+          system: runSystem,
+          messageId: runtimeMessageId,
+        }),
+      // Hermes keeps live sessions in memory, so the first Garden turn after a
+      // Hermes restart addresses a session id the gateway no longer knows and
+      // prompt.submit answers "session not found". The Terminal already
+      // re-dispatches onto a recreated session (startConversationTurn's retry);
+      // this surface used to fail the turn with the gateway's message as the
+      // answer. Same recovery: rebuild the live session from the canonical
+      // transcript, re-apply this turn's decision, and send again.
+      async () => {
+        const replacement = await resolveConversationRuntime({
+          conversation: finalConversation,
+          surface: "garden_chat",
+          activeGardenSlug: clusterSlug,
+          activePageSlug: page?.slug ?? null,
+          forceRecreate: true,
+        });
+        await runtime.applyCapabilityDecision({
+          externalSessionId: replacement.externalSessionId,
+          liveSessionId: replacement.liveSessionId,
+          workspaceKey: replacement.workspaceKey,
+          directory: replacement.activeDirectory,
+          decision,
+        });
+        return replacement;
       },
-    });
-  } catch (error) {
-    failAssistantMessage({
-      conversationId: conversation.id,
-      clientMessageId: reservedClientMessageId,
-      status: "failed",
-      error: "garden_run_not_started",
-    });
-    throw error;
-  }
-  const runtimeMessageId = hermesMessageId(reservedClientMessageId);
-  const finalConversation = conversation;
-  return legacyGardenEventStream(
-    session,
-    signal,
-    prepared,
-    run.id,
-    reservedClientMessageId,
-    { messageId: runtimeMessageId, instruction: runtimeText },
-    webGroundingVerdict.required,
-    (target) =>
-    runtime.startRun({
-      externalSessionId: target.externalSessionId,
-      liveSessionId: target.liveSessionId,
-      workspaceKey: target.workspaceKey,
-      directory: target.activeDirectory,
-      agentName: target.agentName,
-      text: runtimeText,
-      // Everything that was not distilled into a skill: images, 3D models, and
-      // documents small enough to stay verbatim.
-      attachments: documents.inlineAttachments,
-      // The brokered map is authoritative. A selected MCP/skill tool may only
-      // narrow it, never widen it.
-      tools: runTools,
-      model: engine.model,
-      modelIdentity: { modelID: engine.selectedModelID },
-      variant: engine.variant,
-      system: runSystem,
-      messageId: runtimeMessageId,
-    }),
-    // Hermes keeps live sessions in memory, so the first Garden turn after a
-    // Hermes restart addresses a session id the gateway no longer knows and
-    // prompt.submit answers "session not found". The Terminal already
-    // re-dispatches onto a recreated session (startConversationTurn's retry);
-    // this surface used to fail the turn with the gateway's message as the
-    // answer. Same recovery: rebuild the live session from the canonical
-    // transcript, re-apply this turn's decision, and send again.
-    async () => {
-      const replacement = await resolveConversationRuntime({
-        conversation: finalConversation,
-        surface: "garden_chat",
-        activeGardenSlug: clusterSlug,
-        activePageSlug: page?.slug ?? null,
-        forceRecreate: true,
-      });
-      await runtime.applyCapabilityDecision({
-        externalSessionId: replacement.externalSessionId,
-        liveSessionId: replacement.liveSessionId,
-        workspaceKey: replacement.workspaceKey,
-        directory: replacement.activeDirectory,
-        decision,
-      });
-      return replacement;
-    },
-  );
+    );
   } catch (error) {
     annotateConversationTurn({
       conversationId: conversation.id,
@@ -864,6 +901,33 @@ function gardenInstructionsContext(clusterId: number | null): string {
   ].join("\n");
 }
 
+/**
+ * Give Hermes a bounded, graph-native view of the same Thought Topology the UI
+ * renders. The full scored subgraph remains available through
+ * garden_get_graph_neighbors; this compact packet makes the current structure
+ * legible even before Hermes decides to call a tool.
+ */
+function gardenTopologyContext(
+  gardenSlug: string,
+  page: { slug: string; title?: string } | null,
+): string {
+  const contentRoot = process.env.QUARTZ_CONTENT_PATH;
+  if (!contentRoot) return "";
+  const topology = readThoughtTopology(path.join(contentRoot, gardenSlug));
+  if (!topology) return "";
+  const graph = queryThoughtTopologyGraph(topology, {
+    start: page?.slug ?? `garden:${gardenSlug}`,
+    depth: page ? 1 : 3,
+    limit: page ? 20 : 32,
+    includeHierarchy: true,
+  });
+  return [
+    "Canonical Garden relationship model: Thought Topology, represented as a typed property graph.",
+    "Its contains edges encode Garden → folder → page structure. Its affinity edges carry relation, direction, weight (0–1), origin, explanation, and evidence. Use garden_get_graph_neighbors for a deeper or filtered subgraph; do not reconstruct the retired Knowledge Map.",
+    `Current bounded Thought Topology:\n${JSON.stringify(compactThoughtTopologyGraph(graph))}`,
+  ].join("\n");
+}
+
 function gardenTurnContext(
   gardenSlug: string,
   chatSessionId: number,
@@ -899,7 +963,6 @@ function gardenTurnContext(
     .join("\n");
 }
 
-
 /**
  * The capability selection recorded on a run, or nothing if the row has gone.
  * Read back rather than closed over so the stream describes the exact turn it
@@ -919,7 +982,9 @@ function capabilitySelectionForRun(runId: string) {
  */
 function externalAgentsForRun(runId: string): ExternalAgentCall[] {
   const run = getRuntimeRun(runId);
-  const carried = run ? (parseRuntimeRunDispatch(run).delegatedAgents ?? []) : [];
+  const carried = run
+    ? (parseRuntimeRunDispatch(run).delegatedAgents ?? [])
+    : [];
   return [...carried, ...externalAgentCallsForRun(runId)];
 }
 
@@ -995,7 +1060,10 @@ function legacyGardenEventStream(
         }
       };
       const emitArtifactEvents = () => {
-        for (const event of listArtifactEventsAfter({ runId, afterId: lastArtifactEventId })) {
+        for (const event of listArtifactEventsAfter({
+          runId,
+          afterId: lastArtifactEventId,
+        })) {
           lastArtifactEventId = event.id;
           emit({
             type: event.type,
@@ -1207,7 +1275,11 @@ function legacyGardenEventStream(
             });
           }
           if (event.type === "tool.completed") {
-            associateArtifactToolCall(runId, event.payload.toolName, event.payload.toolCallId);
+            associateArtifactToolCall(
+              runId,
+              event.payload.toolName,
+              event.payload.toolCallId,
+            );
             emit({
               type: "tool",
               status: event.payload.success ? "completed" : "failed",
@@ -1226,7 +1298,9 @@ function legacyGardenEventStream(
             for (const resource of normalizeGenerativeUiResources(
               event.payload.uiResources,
             )) {
-              if (!uiResources.some((existing) => existing.id === resource.id)) {
+              if (
+                !uiResources.some((existing) => existing.id === resource.id)
+              ) {
                 uiResources.push(resource);
               }
             }
@@ -1293,7 +1367,10 @@ function legacyGardenEventStream(
             });
           }
           if (event.type === "clarify.expired") {
-            emit({ type: "clarify_expired", requestId: event.payload.requestId });
+            emit({
+              type: "clarify_expired",
+              requestId: event.payload.requestId,
+            });
           }
           if (event.type === "error")
             emit({ type: "error", error: event.payload.message });
@@ -1384,10 +1461,7 @@ function legacyGardenEventStream(
           outcome: "completed",
           toolNames: toolCalls.map((call) => String(call.toolName)),
         });
-        revokeCapabilityDecision(
-          session.row.id,
-          "completed",
-        );
+        revokeCapabilityDecision(session.row.id, "completed");
         recordAuditEvent({
           eventType: "message.completed",
           runtimeSessionId: session.row.id,
@@ -1445,10 +1519,10 @@ function legacyGardenEventStream(
     },
   );
   return pump.response(requestSignal, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Breadboard-AI-Backend": "hermes",
-      "X-Breadboard-Runtime-Session": String(session.row.id),
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Breadboard-AI-Backend": "hermes",
+    "X-Breadboard-Runtime-Session": String(session.row.id),
   });
 }

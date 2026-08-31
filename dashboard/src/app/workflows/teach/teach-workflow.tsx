@@ -16,6 +16,11 @@ import type {
   WorkflowStep,
 } from "@/lib/teach/types";
 import {
+  clearTeachSetupDraft,
+  readTeachSetupDraft,
+  writeTeachSetupDraft,
+} from "@/lib/teach/setup-draft";
+import {
   controlTeachSession,
   desktopShell,
   formatElapsed,
@@ -61,6 +66,7 @@ export default function TeachWorkflow({
   const [microphoneId, setMicrophoneId] = useState<string>("");
   const [micGranted, setMicGranted] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [setupDraftReady, setSetupDraftReady] = useState(false);
 
   const [session, setSession] = useState<TeachSessionSummary | null>(null);
   const [view, setView] = useState<TeachSessionView | null>(null);
@@ -82,6 +88,27 @@ export default function TeachWorkflow({
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    const saved = readTeachSetupDraft(window.localStorage);
+    if (saved?.reteachWorkflowId === reteachWorkflowId) {
+      setName(saved.name);
+      setObjective(saved.objective);
+      setMicrophoneId(saved.microphoneId);
+    }
+    setSetupDraftReady(true);
+  }, [reteachWorkflowId]);
+
+  useEffect(() => {
+    if (!setupDraftReady || phase !== "setup") return;
+    writeTeachSetupDraft(window.localStorage, {
+      name,
+      objective,
+      microphoneId,
+      reteachWorkflowId,
+      ...(reteachName ? { reteachName } : {}),
+    });
+  }, [microphoneId, name, objective, phase, reteachName, reteachWorkflowId, setupDraftReady]);
+
   /* ---------------- microphone ---------------- */
 
   const requestMicrophone = useCallback(async () => {
@@ -93,7 +120,11 @@ export default function TeachWorkflow({
       setMicGranted(true);
       const devices = await listMicrophones();
       setMicrophones(devices);
-      if (devices.length > 0 && !microphoneId) setMicrophoneId(devices[0].deviceId);
+      setMicrophoneId((current) =>
+        devices.some((device) => device.deviceId === current)
+          ? current
+          : (devices[0]?.deviceId ?? ""),
+      );
     } catch (cause) {
       setError(
         (cause as Error).name === "NotAllowedError"
@@ -101,7 +132,7 @@ export default function TeachWorkflow({
           : (cause as Error).message,
       );
     }
-  }, [microphoneId]);
+  }, []);
 
   /* ---------------- start ---------------- */
 
@@ -121,6 +152,7 @@ export default function TeachWorkflow({
       });
       recorderRef.current = recorder;
       startedAtRef.current = started.startedAtEpochMs;
+      clearTeachSetupDraft(window.localStorage);
       setSession(started.session);
       setPhase("recording");
       void desktopShell()?.openTeachController(started.session.id).catch(() => undefined);
@@ -171,6 +203,7 @@ export default function TeachWorkflow({
   }, [busy, session]);
 
   const cancel = useCallback(async () => {
+    clearTeachSetupDraft(window.localStorage);
     if (!session) {
       onClose();
       return;
@@ -181,6 +214,11 @@ export default function TeachWorkflow({
     await controlTeachSession(session.id, "cancel").catch(() => undefined);
     onClose();
   }, [onClose, session]);
+
+  const closeSetup = useCallback(() => {
+    clearTeachSetupDraft(window.localStorage);
+    onClose();
+  }, [onClose]);
 
   /* ---------------- the floating controller ---------------- */
 
@@ -280,7 +318,7 @@ export default function TeachWorkflow({
         micGranted={micGranted}
         onRequestMicrophone={() => void requestMicrophone()}
         onStart={() => void start()}
-        onCancel={onClose}
+        onCancel={closeSetup}
         busy={busy}
         reteachName={reteachWorkflowId ? reteachName : undefined}
       />
@@ -354,6 +392,7 @@ export default function TeachWorkflow({
             answers,
             retainRecording,
           });
+          clearTeachSetupDraft(window.localStorage);
           onSaved(saved.workflowId);
         } catch (cause) {
           setError((cause as Error).message);
@@ -427,15 +466,18 @@ function SetupScreen(props: {
 
         <label className="block">
           <span className="text-xs font-medium uppercase tracking-wide text-[var(--ink-muted)]">
-            What are you about to do? (optional)
+            What should Breadboard know about this automation? (optional)
           </span>
           <textarea
             value={props.objective}
             onChange={(event) => props.onObjective(event.target.value)}
             rows={2}
-            placeholder="A sentence here helps Breadboard tell the task from the incidental clicks."
+            placeholder="Describe the intended result or rules — for example, “Write the summary yourself and reply with it.”"
             className="neu-input mt-1.5 w-full resize-none rounded-xl border border-[var(--line)] bg-[var(--paper-bg)] px-3 py-2 text-sm"
           />
+          <span className="mt-1.5 block text-xs leading-5 text-[var(--ink-muted)]">
+            Include anything Breadboard should do differently from the way you demonstrate it.
+          </span>
         </label>
 
         <div>

@@ -15,7 +15,11 @@ import {
   trackScheduledChatFinished,
   trackScheduledChatStarted,
 } from "../plan/agent-tracking.ts";
-import { startSessionEventPump } from "../hermes/event-stream.ts";
+import {
+  startSessionEventPump,
+  waitForSessionEventPump,
+} from "../hermes/event-stream.ts";
+import { getRuntimeRun } from "../hermes/run-store.ts";
 import { requireEnabled } from "../hermes/route-core.ts";
 import {
   authorizeGardenAccess,
@@ -29,6 +33,11 @@ export interface ScheduledChatRunResult {
   error?: string;
 }
 
+export interface ScheduledChatRunOptions {
+  /** Keep the schedule's execution lease until the assistant turn settles. */
+  waitForCompletion?: boolean;
+}
+
 function chatTitle(job: ScheduledChatJobRow): string {
   return `${job.title}`.slice(0, 120) || "Scheduled chat";
 }
@@ -39,6 +48,7 @@ function chatTitle(job: ScheduledChatJobRow): string {
  */
 export async function runScheduledChatJob(
   job: ScheduledChatJobRow,
+  options: ScheduledChatRunOptions = {},
 ): Promise<ScheduledChatRunResult> {
   const gardenSlug = job.surface === "garden_chat" ? job.garden_slug : null;
   if (job.surface === "garden_chat" && !gardenSlug) {
@@ -72,6 +82,7 @@ export async function runScheduledChatJob(
       surface: job.surface,
       scopeKind: garden ? "garden" : "global",
       defaultGardenId: garden?.clusterId ?? null,
+      scheduledChatJobId: job.id,
     });
     conversationId = conversation.public_id;
 
@@ -91,12 +102,22 @@ export async function runScheduledChatJob(
       text: job.prompt,
       surface: job.surface,
       surfaceContext: garden ? { activeGardenSlug: garden.slug } : undefined,
+      model: job.model,
+      reasoningEffort: job.reasoning_effort,
     });
 
     if (result.accepted) {
-      // "Dispatched" is as far as this function sees: the answer streams into
-      // the conversation after it returns. The card says the firing worked,
-      // which is the thing a schedule can actually fail at.
+      if (options.waitForCompletion) {
+        await waitForSessionEventPump(runtime);
+        const finishedRun = getRuntimeRun(result.run.id);
+        if (!finishedRun || finishedRun.status !== "completed") {
+          return failed(
+            finishedRun?.status === "cancelled"
+              ? "The scheduled chat was stopped."
+              : "The scheduled chat did not complete.",
+          );
+        }
+      }
       trackScheduledChatFinished({ userId: job.user_id, runId, outcome: "completed" });
       return { status: "ok", conversationId };
     }

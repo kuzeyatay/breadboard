@@ -253,7 +253,7 @@ export const buzzBrainSource = {
           {
             source: "buzz",
             code: "buzz_unavailable",
-            message: "Buzz is unavailable; the rest of the Knowledge Map is still current.",
+            message: "Buzz is unavailable; the rest of Thought Topology is still current.",
           },
         ],
       };

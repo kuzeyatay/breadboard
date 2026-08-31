@@ -27,6 +27,7 @@ import {
   GADGET_TOOLS,
   DOCUMENT_SKILL_TOOLS,
   MEMORY_TOOLS,
+  WORKFLOW_AUTHORING_TOOLS,
   WORKFLOW_PROPOSAL_TOOLS,
   SKILL_LESSON_TOOLS,
   MESSAGING_TOOLS,
@@ -223,6 +224,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...ARTIFACT_TOOLS,
       ...GADGET_TOOLS,
       ...MEMORY_TOOLS,
+      ...WORKFLOW_AUTHORING_TOOLS,
       ...WORKFLOW_PROPOSAL_TOOLS,
       ...SKILL_LESSON_TOOLS,
       ...DOCUMENT_SKILL_TOOLS,
@@ -701,6 +703,12 @@ function buildToolMap(
   // capability class of its own. So it follows memory's scope rather than the
   // turn's, and like memory is never given to anonymous Quartz.
   for (const tool of WORKFLOW_PROPOSAL_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
+  // Direct creation is available on the same private surfaces, but its route
+  // additionally requires the active user instruction to explicitly ask for
+  // the durable workflow. Without that intent Hermes can only propose one.
+  for (const tool of WORKFLOW_AUTHORING_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
   // A lesson is recorded at the moment a skill's guidance turns out to be wrong

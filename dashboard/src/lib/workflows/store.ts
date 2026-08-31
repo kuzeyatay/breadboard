@@ -152,20 +152,24 @@ export function getWorkflowById(id: string): (WorkflowRecord & { userId: number 
   };
 }
 
-export function createWorkflow(userId: number, input: { name?: string; description?: string }): WorkflowRecord {
+export function createWorkflow(
+  userId: number,
+  input: { name?: string; description?: string; state?: unknown },
+): WorkflowRecord {
   const id = randomUUID();
-  const name = input.name?.trim() || "Untitled workflow";
-  const description = input.description?.trim() ?? "";
+  const name = (input.name?.trim() || "Untitled workflow").slice(0, 200);
+  const description = (input.description?.trim() ?? "").slice(0, 2000);
+  const state = input.state ?? EMPTY_STATE;
   db
     .prepare(
       `INSERT INTO workflows (id, user_id, name, description, state) VALUES (?, ?, ?, ?, ?)`,
     )
-    .run(id, userId, name, description, JSON.stringify(EMPTY_STATE));
+    .run(id, userId, name, description, JSON.stringify(state));
   return {
     id,
     name,
     description,
-    state: EMPTY_STATE,
+    state,
     updatedAt: new Date().toISOString(),
     source: "canvas",
     procedure: null,

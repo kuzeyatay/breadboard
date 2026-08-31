@@ -66,6 +66,140 @@ export type TopologyPayload = {
   runtimeStatus?: { state: "building" | "failed" | "stale"; message: string }
 }
 
+export type AggregateTopologyEntry = {
+  clusterSlug: string
+  topology: TopologyPayload
+}
+
+/**
+ * Join several independently-authorized Garden topologies beneath one library
+ * root. IDs and folder paths are namespaced so two Gardens can safely contain
+ * the same relative filenames. Each Garden becomes a first-level folder,
+ * which preserves the visible hierarchy as library -> Garden -> folder/page.
+ */
+export function aggregateThoughtTopologies(
+  aggregateSlug: string,
+  aggregateTitle: string,
+  requestedGardenCount: number,
+  entries: AggregateTopologyEntry[],
+): TopologyPayload {
+  const folders: TopologyPayloadFolder[] = [
+    {
+      id: "aggregate:root",
+      path: "",
+      parentId: null,
+      title: aggregateTitle,
+      depth: 0,
+      nodeCount: entries.reduce((sum, entry) => sum + entry.topology.nodes.length, 0),
+      summary: {
+        state: "ready",
+        text: `${aggregateTitle} contains ${entries.length} ${entries.length === 1 ? "garden" : "gardens"}.`,
+      },
+    },
+  ]
+  const nodes: TopologyPayloadNode[] = []
+  const edges: TopologyPayloadEdge[] = []
+  const namespace = (clusterSlug: string, id: string) =>
+    `aggregate:${encodeURIComponent(clusterSlug)}:${id}`
+
+  for (const { clusterSlug, topology } of entries) {
+    const sourceRoot = topology.folders.find((folder) => folder.depth === 0) ?? null
+    const gardenFolderId = namespace(clusterSlug, "garden")
+    folders.push({
+      id: gardenFolderId,
+      path: clusterSlug,
+      parentId: "aggregate:root",
+      title: topology.garden.title,
+      depth: 1,
+      nodeCount: topology.nodes.length,
+      summary: topology.garden.summary,
+      pageSlug: topology.garden.slug,
+    })
+
+    const folderId = (id: string) =>
+      !sourceRoot || id === sourceRoot.id ? gardenFolderId : namespace(clusterSlug, id)
+    for (const folder of topology.folders) {
+      if (sourceRoot && folder.id === sourceRoot.id) continue
+      folders.push({
+        ...folder,
+        id: namespace(clusterSlug, folder.id),
+        path: [clusterSlug, folder.path].filter(Boolean).join("/"),
+        parentId: folder.parentId ? folderId(folder.parentId) : gardenFolderId,
+        depth: Math.max(2, folder.depth + 1),
+        x: undefined,
+        y: undefined,
+      })
+    }
+
+    const pageId = (id: string) => namespace(clusterSlug, id)
+    for (const node of topology.nodes) {
+      nodes.push({
+        ...node,
+        id: pageId(node.id),
+        folderId: folderId(node.folderId),
+        x: undefined,
+        y: undefined,
+      })
+    }
+    for (const edge of topology.edges) {
+      // Hierarchy lines are rebuilt from the merged folder tree by the planner.
+      // Carrying source structural edges would leave them pointing at the old
+      // Garden root and can also confuse page IDs with folder IDs.
+      if (edge.structural) continue
+      edges.push({
+        ...edge,
+        id: namespace(clusterSlug, edge.id),
+        source: pageId(edge.source),
+        target: pageId(edge.target),
+      })
+    }
+  }
+
+  const partial = entries.length < requestedGardenCount
+  const building = entries.some(
+    ({ topology }) =>
+      topology.build.state === "building" || topology.runtimeStatus?.state === "building",
+  )
+  const degraded = entries.some(
+    ({ topology }) =>
+      topology.build.state !== "ready" ||
+      topology.build.retrievalMode === "concept-lexical" ||
+      Boolean(topology.runtimeStatus),
+  )
+  const semanticVector = entries.every(
+    ({ topology }) => topology.build.retrievalMode === "semantic-vector",
+  )
+  const thresholds = entries.map(({ topology }) => topology.build.threshold).filter(Number.isFinite)
+
+  return {
+    garden: {
+      id: 0,
+      slug: aggregateSlug,
+      title: aggregateTitle,
+      summary: {
+        state: partial || degraded ? "degraded" : "ready",
+        text: `${aggregateTitle} contains ${entries.length} ${entries.length === 1 ? "garden" : "gardens"} and ${nodes.length} ${nodes.length === 1 ? "page" : "pages"}.`,
+      },
+    },
+    folders,
+    nodes,
+    edges,
+    build: {
+      state: building ? "building" : partial || degraded ? "degraded" : "ready",
+      threshold: thresholds.length > 0 ? Math.min(...thresholds) : 0.68,
+      retrievalMode: semanticVector ? "semantic-vector" : "concept-lexical",
+    },
+    ...(partial
+      ? {
+          runtimeStatus: {
+            state: "stale" as const,
+            message: `${entries.length} of ${requestedGardenCount} gardens loaded into Thought Topology.`,
+          },
+        }
+      : {}),
+  }
+}
+
 export type PlannedNodeKind = "garden" | "folder" | "page"
 
 export interface PlannedNode {

@@ -23,7 +23,10 @@ export function adaptBrainGraph(response: BrainGraphResponse): QuartzBrainGraph 
       relation: edge.relation,
       origin: edge.origin,
       explicit: edge.explicit,
-      weight: edge.weight ?? 1,
+      weight: Math.max(
+        0.1,
+        edge.weight ?? edge.confidence ?? (edge.explicit ? 1 : 0.55),
+      ),
       metadata: edge,
     })),
   };

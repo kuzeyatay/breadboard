@@ -403,6 +403,8 @@ test("PenEcho status is observational and Quartz cards heartbeat then release on
   assert.match(card, /document\.removeEventListener\("keydown", onKeyDown\)/);
   assert.match(card, /event\.source !== frame\.contentWindow/);
   assert.match(card, /data\?\.type !== FRAME_READY_MESSAGE/);
+  assert.match(card, /mode: "no-cors"/);
+  assert.doesNotMatch(card, /addEventListener\("load"[\s\S]*markFrameReady/);
   assert.match(
     boardBinding,
     /window\.parent\.postMessage\([\s\S]*BREADBOARD_BOARD_READY_MESSAGE/,

@@ -12,7 +12,11 @@
 
 import type Database from "better-sqlite3";
 
-import { assistantModelVendor, formatAssistantModelName } from "../ai-models.ts";
+import {
+  DEFAULT_MODEL,
+  assistantModelVendor,
+  formatAssistantModelName,
+} from "../ai-models.ts";
 import {
   addDays,
   dateOf,
@@ -148,19 +152,24 @@ export interface ModelUse {
   outputTokens: number;
   /** Terminal replies on this model that never produced an answer. */
   failed: number;
-  /** USD for this model's measured replies, or null when it has no rate. */
+  /** USD for this model's measured replies, using the fallback when needed. */
   costUsd: number | null;
+  /** This model used the profile's fallback rate rather than its own rate. */
+  estimated: boolean;
 }
 
 export interface ProfileCost {
   models: ModelUse[];
-  /** Summed across the models that have a rate. Never a guess for the rest. */
+  /** Every reported token, using the fallback model when its own rate is unknown. */
   totalUsd: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
   pricedReplies: number;
-  /** Replies on a model nobody has priced — the caveat on the total above. */
-  unpricedReplies: number;
-  /** Replies whose model was never recorded, which predate this bookkeeping. */
-  unattributedReplies: number;
+  /** Usage priced with the fallback because its model or rate was unavailable. */
+  estimatedReplies: number;
+  estimatedTokens: number;
+  fallbackModel: string;
   /**
    * Tool output the runtime compressed away before it reached a model, priced
    * at what those tokens would have cost. It sits beside the spend rather than
@@ -360,15 +369,19 @@ export function readProfileStats(
 
   const usage = database
     .prepare(
-      `SELECT
+      `WITH profile_messages AS (
+         SELECT m.*
+         FROM conversation_messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         WHERE c.user_id = ? AND ${UNIQUE_REPORTED_USAGE}
+       )
+       SELECT
          COALESCE(SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END), 0) AS prompts,
          COALESCE(SUM(CASE WHEN m.role = 'assistant' AND m.status = 'complete' THEN 1 ELSE 0 END), 0) AS replies,
-         COALESCE(SUM(json_extract(m.token_usage, '$.totalTokens')), 0) AS tokens,
+         COALESCE(SUM(CASE WHEN m.role = 'assistant' THEN ${REPORTED_TOTAL_TOKENS} ELSE 0 END), 0) AS tokens,
          COALESCE(SUM(${REPLY_DURATION_MS}), 0) AS thinking_ms,
-         COALESCE(SUM(CASE WHEN m.token_usage IS NOT NULL THEN 1 ELSE 0 END), 0) AS measured
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
-       WHERE c.user_id = ?`,
+         COALESCE(SUM(CASE WHEN m.role = 'assistant' AND m.token_usage IS NOT NULL THEN 1 ELSE 0 END), 0) AS measured
+       FROM profile_messages m`,
     )
     .get(userId) as {
     prompts: number;
@@ -765,25 +778,142 @@ const REPLY_DURATION_MS = `COALESCE(
 )`;
 
 /**
+ * A short-lived migration wrote a second `legacy-*` copy of some already
+ * canonical assistant messages. The copies carry the exact same usage receipt
+ * and can be several minutes apart, so summing rows inflated both tokens and
+ * money. A canonical sibling wins; when only migrated copies exist, their first
+ * copy wins. Two ordinary replies that happen to use the same number of tokens
+ * remain two replies.
+ */
+const UNIQUE_REPORTED_USAGE = `NOT (
+  m.role = 'assistant'
+  AND COALESCE(json_extract(m.token_usage, '$.totalTokens'), 0) > 0
+  AND (
+    m.client_message_id LIKE 'legacy-%'
+    OR COALESCE(json_extract(m.metadata, '$.migrated'), 0) = 1
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM conversation_messages sibling
+    WHERE sibling.conversation_id = m.conversation_id
+      AND sibling.id <> m.id
+      AND sibling.role = 'assistant'
+      AND sibling.status <> 'pending'
+      AND (
+        (
+          sibling.client_message_id NOT LIKE 'legacy-%'
+          AND COALESCE(json_extract(sibling.metadata, '$.migrated'), 0) <> 1
+        )
+        OR (
+          sibling.id < m.id
+          AND (
+            sibling.client_message_id LIKE 'legacy-%'
+            OR COALESCE(json_extract(sibling.metadata, '$.migrated'), 0) = 1
+          )
+        )
+      )
+      AND ABS((julianday(sibling.created_at) - julianday(m.created_at)) * 86400) <= 600
+      AND COALESCE(json_extract(sibling.token_usage, '$.inputTokens'), 0)
+          = COALESCE(json_extract(m.token_usage, '$.inputTokens'), 0)
+      AND COALESCE(json_extract(sibling.token_usage, '$.outputTokens'), 0)
+          = COALESCE(json_extract(m.token_usage, '$.outputTokens'), 0)
+      AND COALESCE(json_extract(sibling.token_usage, '$.totalTokens'), 0)
+          = COALESCE(json_extract(m.token_usage, '$.totalTokens'), 0)
+      AND COALESCE(json_extract(sibling.token_usage, '$.cachedInputTokens'), 0)
+          = COALESCE(json_extract(m.token_usage, '$.cachedInputTokens'), 0)
+      AND COALESCE(json_extract(sibling.token_usage, '$.reasoningTokens'), 0)
+          = COALESCE(json_extract(m.token_usage, '$.reasoningTokens'), 0)
+      AND COALESCE(json_extract(sibling.token_usage, '$.apiCalls'), 0)
+          = COALESCE(json_extract(m.token_usage, '$.apiCalls'), 0)
+      AND COALESCE(json_extract(sibling.token_usage, '$.contextUsedTokens'), 0)
+          = COALESCE(json_extract(m.token_usage, '$.contextUsedTokens'), 0)
+  )
+)`;
+
+const REPORTED_OUTPUT_TOKENS = `MAX(
+  COALESCE(json_extract(m.token_usage, '$.outputTokens'), 0),
+  0
+)`;
+
+// When an older receipt only has `totalTokens`, treat the unexplained balance
+// as input. This lets every reported token participate in the estimate.
+const REPORTED_INPUT_TOKENS = `MAX(
+  COALESCE(json_extract(m.token_usage, '$.inputTokens'), 0),
+  COALESCE(json_extract(m.token_usage, '$.totalTokens'), 0) - ${REPORTED_OUTPUT_TOKENS},
+  0
+)`;
+
+const REPORTED_TOTAL_TOKENS = `MAX(
+  COALESCE(json_extract(m.token_usage, '$.totalTokens'), 0),
+  ${REPORTED_INPUT_TOKENS} + ${REPORTED_OUTPUT_TOKENS}
+)`;
+
+/**
  * Which models answered you, and what that came to in money.
  *
- * Cost is deliberately partial. A model with no published rate is counted and
- * named rather than priced at zero, and replies from before the model was
- * recorded at all are kept in their own bucket — a total that quietly absorbed
- * either would be worse than one that admits its own edges.
+ * Every reported token participates. A recorded model uses its published rate;
+ * an unrated or missing model uses the user's background-model rate, falling
+ * back once more to Breadboard's product default when that model is local or
+ * otherwise unrated.
  */
 function readCost(database: Database.Database, userId: number): ProfileCost {
+  let configuredFallback = DEFAULT_MODEL;
+  try {
+    const row = database
+      .prepare("SELECT default_model FROM hermes_user_settings WHERE user_id = ?")
+      .get(userId) as { default_model: string | null } | undefined;
+    configuredFallback = row?.default_model?.trim() || DEFAULT_MODEL;
+  } catch {
+    // Older/test databases can predate per-user Hermes settings.
+  }
+  const fallbackModel =
+    priceUsd(configuredFallback, { inputTokens: 0, outputTokens: 0 }) === null
+      ? DEFAULT_MODEL
+      : configuredFallback;
+
   const rows = database
     .prepare(
-      `SELECT json_extract(m.metadata, '$.model') AS model,
+      `WITH message_usage AS (
+         SELECT COALESCE(
+                  (
+                    SELECT COALESCE(
+                             json_extract(r.dispatch_json, '$.modelIdentity.modelID'),
+                             NULLIF(json_extract(r.dispatch_json, '$.model.modelID'), 'default')
+                           )
+                    FROM hermes_runs r
+                    JOIN hermes_runtime_sessions s ON s.id = r.runtime_session_id
+                    WHERE s.conversation_id = m.conversation_id
+                      AND json_extract(r.dispatch_json, '$.clientMessageId') = m.client_message_id
+                      AND COALESCE(
+                            json_extract(r.dispatch_json, '$.modelIdentity.modelID'),
+                            NULLIF(json_extract(r.dispatch_json, '$.model.modelID'), 'default')
+                          ) IS NOT NULL
+                    ORDER BY r.started_at DESC, r.id DESC
+                    LIMIT 1
+                  ),
+                  NULLIF(json_extract(m.metadata, '$.model'), 'default'),
+                  json_extract(m.metadata, '$.model'),
+                  NULLIF(json_extract(m.token_usage, '$.model'), 'default'),
+                  json_extract(m.token_usage, '$.model')
+                ) AS model,
+                m.status,
+                ${REPORTED_INPUT_TOKENS} AS input_tokens,
+                ${REPORTED_OUTPUT_TOKENS} AS output_tokens,
+                ${REPORTED_TOTAL_TOKENS} AS total_tokens
+         FROM conversation_messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         WHERE c.user_id = ?
+           AND m.role = 'assistant'
+           AND m.status <> 'pending'
+           AND ${UNIQUE_REPORTED_USAGE}
+       )
+       SELECT model,
               COUNT(*) AS n,
-              COALESCE(SUM(CASE WHEN m.status <> 'complete' THEN 1 ELSE 0 END), 0) AS failed,
-              COALESCE(SUM(json_extract(m.token_usage, '$.inputTokens')), 0) AS input_tokens,
-              COALESCE(SUM(json_extract(m.token_usage, '$.outputTokens')), 0) AS output_tokens,
-              COALESCE(SUM(json_extract(m.token_usage, '$.totalTokens')), 0) AS total_tokens
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
-       WHERE c.user_id = ? AND m.role = 'assistant' AND m.status <> 'pending'
+              COALESCE(SUM(CASE WHEN status <> 'complete' THEN 1 ELSE 0 END), 0) AS failed,
+              COALESCE(SUM(input_tokens), 0) AS input_tokens,
+              COALESCE(SUM(output_tokens), 0) AS output_tokens,
+              COALESCE(SUM(total_tokens), 0) AS total_tokens
+       FROM message_usage
        GROUP BY model`,
     )
     .all(userId) as Array<{
@@ -798,35 +928,55 @@ function readCost(database: Database.Database, userId: number): ProfileCost {
   const models: ModelUse[] = [];
   let totalUsd = 0;
   let pricedReplies = 0;
-  let unpricedReplies = 0;
-  let unattributedReplies = 0;
+  let totalTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let estimatedReplies = 0;
+  let estimatedTokens = 0;
 
   for (const row of rows) {
     const model = row.model?.trim();
     const replies = Number(row.n);
-    if (!model) {
-      unattributedReplies += replies;
-      continue;
+    const rowInputTokens = Number(row.input_tokens);
+    const rowOutputTokens = Number(row.output_tokens);
+    const rowTotalTokens = Number(row.total_tokens);
+    const recordedPrice = model
+      ? priceUsd(model, {
+          inputTokens: rowInputTokens,
+          outputTokens: rowOutputTokens,
+        })
+      : null;
+    const estimated = recordedPrice === null;
+    const costUsd =
+      recordedPrice ??
+      priceUsd(fallbackModel, {
+        inputTokens: rowInputTokens,
+        outputTokens: rowOutputTokens,
+      }) ??
+      0;
+
+    pricedReplies += replies;
+    totalTokens += rowTotalTokens;
+    inputTokens += rowInputTokens;
+    outputTokens += rowOutputTokens;
+    totalUsd += costUsd;
+    if (estimated) {
+      estimatedReplies += replies;
+      estimatedTokens += rowTotalTokens;
     }
-    const inputTokens = Number(row.input_tokens);
-    const outputTokens = Number(row.output_tokens);
-    const costUsd = priceUsd(model, { inputTokens, outputTokens });
-    if (costUsd === null) {
-      unpricedReplies += replies;
-    } else {
-      pricedReplies += replies;
-      totalUsd += costUsd;
-    }
+    if (!model) continue;
+
     models.push({
       model,
       label: formatAssistantModelName(model),
       vendorLabel: assistantModelVendor(model).label,
       replies,
-      tokens: Number(row.total_tokens),
-      inputTokens,
-      outputTokens,
+      tokens: rowTotalTokens,
+      inputTokens: rowInputTokens,
+      outputTokens: rowOutputTokens,
       failed: Number(row.failed),
       costUsd,
+      estimated,
     });
   }
 
@@ -844,9 +994,13 @@ function readCost(database: Database.Database, userId: number): ProfileCost {
   return {
     models,
     totalUsd,
+    totalTokens,
+    inputTokens,
+    outputTokens,
     pricedReplies,
-    unpricedReplies,
-    unattributedReplies,
+    estimatedReplies,
+    estimatedTokens,
+    fallbackModel,
     compression,
   };
 }

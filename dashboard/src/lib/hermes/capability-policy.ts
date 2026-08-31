@@ -93,6 +93,7 @@ const KNOWLEDGE_TOOLS = [
   "garden_propose_page_revision",
   "garden_propose_visualization",
   "garden_run_proposal_validation",
+  "workflow_create",
 ] as const;
 
 const TECHNICAL_READ_TOOLS = ["read", "glob", "grep"] as const;

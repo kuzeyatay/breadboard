@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import { ensureChatNotificationSchema } from "../chat-notifications/store.ts";
+import { backfillGenerativeUiResources } from "../generative-ui/backfill.ts";
 
 /**
  * Additive, repeatable migration for Breadboard-owned conversations.
@@ -22,6 +23,7 @@ export function ensureConversationSchema(database: Database.Database): void {
                                 CHECK (scope_kind IN ('global','garden','page')),
       default_garden_id         INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
       active_agency_agent_slug  TEXT,
+      scheduled_chat_job_id     INTEGER,
       legacy_chat_session_id    INTEGER UNIQUE,
       legacy_runtime_session_id INTEGER UNIQUE,
       next_order_index          INTEGER NOT NULL DEFAULT 0,
@@ -158,6 +160,15 @@ export function ensureConversationSchema(database: Database.Database): void {
     "active_agency_agent_slug",
     "active_agency_agent_slug TEXT",
   );
+  // Scheduled conversations remain ordinary durable chats. This provenance is
+  // only presentation state: while their first turn is active the rail keeps
+  // them in Scheduled, then the same row falls through to Recents on finish.
+  ensureColumn(
+    database,
+    "conversations",
+    "scheduled_chat_job_id",
+    "scheduled_chat_job_id INTEGER",
+  );
   // A pinned chat keeps its place in the sidebar independently of activity, so
   // pinning deliberately does not touch updated_at. A highlight is a marker on
   // the row rather than a place in the list, and is not activity either.
@@ -179,6 +190,7 @@ export function ensureConversationSchema(database: Database.Database): void {
   ensureColumn(database, "hermes_messages", "canonical_message_id", "canonical_message_id INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL");
 
   backfillLegacyConversations(database);
+  applyGenerativeUiResourceBackfill(database);
 
   // Older canonical conversations pre-date surface binding. Recover the
   // server-created surface from their runtime/message history once, then keep
@@ -229,6 +241,20 @@ function ensureColumn(
   if (!columns.some((candidate) => candidate.name === column)) {
     database.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
   }
+}
+
+function applyGenerativeUiResourceBackfill(database: Database.Database): void {
+  const applied = database.prepare(
+    "SELECT 1 FROM conversation_schema_migrations WHERE version = 2",
+  ).get();
+  if (applied) return;
+
+  database.transaction(() => {
+    backfillGenerativeUiResources(database);
+    database.prepare(
+      "INSERT OR IGNORE INTO conversation_schema_migrations(version) VALUES (2)",
+    ).run();
+  }).immediate();
 }
 
 function opaqueConversationId(): string {

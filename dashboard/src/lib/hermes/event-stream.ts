@@ -111,7 +111,10 @@ function persistAssistantOnce(
     // engine was resolved when the turn was sent, and by the time the answer
     // lands the user may have picked a different model in the composer.
     const dispatchedModel = activeRun
-      ? parseRuntimeRunDispatch(activeRun).model?.modelID
+      ? (() => {
+          const dispatch = parseRuntimeRunDispatch(activeRun);
+          return dispatch.modelIdentity?.modelID ?? dispatch.model?.modelID;
+        })()
       : undefined;
     const metadata = {
       toolCalls,
@@ -1240,6 +1243,13 @@ function sessionEventPump(session: AuthorizedRuntimeSession) {
  */
 export function startSessionEventPump(session: AuthorizedRuntimeSession): void {
   sessionEventPump(session);
+}
+
+/** Join the same detached pump a scheduled worker started, until its turn ends. */
+export function waitForSessionEventPump(
+  session: AuthorizedRuntimeSession,
+): Promise<void> {
+  return sessionEventPump(session).settled();
 }
 
 /**

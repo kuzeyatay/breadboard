@@ -1,3 +1,5 @@
+import type { AssistantReasoningEffort } from "../assistant-reasoning.ts";
+
 // Shared scheduled-chat types. Kept free of the SQLite store so client
 // components can import the shape the API returns without pulling better-sqlite3
 // into the browser bundle.
@@ -15,6 +17,10 @@ export interface ScheduledChatJob {
   surface: ScheduledChatSurface;
   gardenSlug: string | null;
   promptSlug: string | null;
+  model: string;
+  reasoningEffort: AssistantReasoningEffort;
+  /** Runs once at nextRunAt, then disarms itself. */
+  oneShot: boolean;
   enabled: boolean;
   /** ISO timestamp; null while the schedule is paused. */
   nextRunAt: string | null;

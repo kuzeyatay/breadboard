@@ -15,6 +15,7 @@ const NODE_KINDS = new Set<BrainNodeKind | OptionalBrainNodeKind>([
   "member",
   "agent",
   "garden",
+  "folder",
   "source",
   "page",
   "concept",
@@ -86,6 +87,8 @@ function nodeImportance(node: BrainNode, degree: number): number {
       ? 1
       : node.kind === "organization" || node.kind === "garden"
         ? 0.82
+        : node.kind === "folder"
+          ? 0.58
         : node.kind === "artifact" || node.kind === "memory"
           ? 0.3
           : 0;

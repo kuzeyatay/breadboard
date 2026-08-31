@@ -13,7 +13,6 @@ import {
 import { chatDraftKey, writeChatDraft } from "@/lib/conversations/drafts.ts";
 import { mergeBrainGraphResponse } from "@/lib/profile/brain-graph-normalize.ts";
 import type {
-  BrainEdge,
   BrainEdgeOrigin,
   BrainGraphResponse,
   BrainNode,
@@ -110,8 +109,9 @@ function GraphList({
   onSelect: (nodeId: string, additive: boolean) => void;
   onOpen: (node: BrainNode) => void;
 }) {
+  const lastRightClickRef = useRef<{ id: string; at: number } | null>(null);
   return (
-    <div className="h-full overflow-y-auto p-3" aria-label="Knowledge Map node list">
+    <div className="h-full overflow-y-auto p-3" aria-label="Thought Topology node list">
       {nodes.length === 0 ? (
         <p className="px-2 py-10 text-center text-sm text-gray-500">
           No nodes match these filters.
@@ -130,7 +130,19 @@ function GraphList({
               <button
                 type="button"
                 onClick={(event) => onSelect(node.id, event.shiftKey || event.ctrlKey || event.metaKey)}
-                onDoubleClick={() => onOpen(node)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  const now = performance.now();
+                  if (
+                    lastRightClickRef.current?.id === node.id &&
+                    now - lastRightClickRef.current.at <= 500
+                  ) {
+                    lastRightClickRef.current = null;
+                    onOpen(node);
+                  } else {
+                    lastRightClickRef.current = { id: node.id, at: now };
+                  }
+                }}
                 className="flex w-full items-start gap-3 px-3 py-2.5 text-left"
                 aria-pressed={selected.has(node.id)}
               >
@@ -148,158 +160,6 @@ function GraphList({
         </ul>
       )}
     </div>
-  );
-}
-
-function Inspector({
-  nodes,
-  edge,
-  nodeById,
-  pathAvailable,
-  expanding,
-  onOpen,
-  onFocus,
-  onExpand,
-  onFindPath,
-  onAsk,
-  onClear,
-}: {
-  nodes: BrainNode[];
-  edge: BrainEdge | null;
-  nodeById: ReadonlyMap<string, BrainNode>;
-  pathAvailable: boolean;
-  expanding: boolean;
-  onOpen: (node: BrainNode) => void;
-  onFocus: (node: BrainNode) => void;
-  onExpand: (node: BrainNode) => void;
-  onFindPath: () => void;
-  onAsk: (mode: "ask" | "synthesize") => void;
-  onClear: () => void;
-}) {
-  if (edge) {
-    const source = nodeById.get(edge.source);
-    const target = nodeById.get(edge.target);
-    return (
-      <aside className="w-full shrink-0 border-t border-gray-800 bg-gray-950/90 p-4 xl:w-72 xl:border-l xl:border-t-0">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-gray-500">
-              Connection
-            </p>
-            <h3 className="mt-1 break-words text-sm font-semibold text-white">
-              {formatKind(edge.relation)}
-            </h3>
-          </div>
-          <button type="button" onClick={onClear} className="text-gray-600 hover:text-white" aria-label="Close connection inspector">
-            ×
-          </button>
-        </div>
-
-        <div className="mt-4 space-y-2" aria-label="Selected connection endpoints">
-          {[{ label: "From", node: source }, { label: "To", node: target }].map(({ label, node }) => (
-            <button
-              key={label}
-              type="button"
-              disabled={!node}
-              onClick={() => node && onFocus(node)}
-              className="w-full rounded-lg border border-gray-800 bg-gray-900/65 px-3 py-2 text-left hover:border-gray-600 disabled:cursor-default"
-            >
-              <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-gray-600">{label}</span>
-              <span className="mt-0.5 block truncate text-xs font-medium text-gray-200">{node?.label ?? "Unavailable node"}</span>
-            </button>
-          ))}
-        </div>
-
-        <dl className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
-          <div className="rounded-lg border border-gray-800 p-2">
-            <dt className="text-gray-600">Origin</dt>
-            <dd className="mt-0.5 truncate text-gray-300">{edge.origin}</dd>
-          </div>
-          <div className="rounded-lg border border-gray-800 p-2">
-            <dt className="text-gray-600">Evidence</dt>
-            <dd className="mt-0.5 text-gray-300">{edge.explicit ? "Explicit" : "Derived"}</dd>
-          </div>
-          <div className="col-span-2 rounded-lg border border-gray-800 p-2">
-            <dt className="text-gray-600">Weight</dt>
-            <dd className="mt-0.5 text-gray-300">{(edge.weight ?? 1).toFixed(2)}</dd>
-          </div>
-        </dl>
-
-        <p className="mt-4 text-[11px] leading-5 text-gray-500">
-          Select an endpoint to center it, or click this connection again to clear the selection.
-        </p>
-      </aside>
-    );
-  }
-
-  if (nodes.length === 0) {
-    return (
-      <aside className="hidden w-72 shrink-0 border-l border-gray-800 bg-gray-950/75 p-5 xl:block">
-        <p className="text-xs font-medium uppercase tracking-[0.16em] text-gray-600">Inspector</p>
-        <p className="mt-3 text-sm leading-6 text-gray-500">
-          Select a node or connection to inspect it. Shift-click a second node to find an evidence path.
-        </p>
-      </aside>
-    );
-  }
-  const node = nodes[nodes.length - 1];
-  return (
-    <aside className="w-full shrink-0 border-t border-gray-800 bg-gray-950/90 p-4 xl:w-72 xl:border-l xl:border-t-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-gray-600">
-            {formatKind(node.kind)}
-          </p>
-          <h3 className="mt-1 break-words text-sm font-semibold text-white">{node.label}</h3>
-        </div>
-        <button type="button" onClick={onClear} className="text-gray-600 hover:text-white" aria-label="Close inspector">
-          ×
-        </button>
-      </div>
-      {node.subtitle && <p className="mt-3 line-clamp-4 text-xs leading-5 text-gray-400">{node.subtitle}</p>}
-      <dl className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
-        <div className="rounded-lg border border-gray-800 p-2">
-          <dt className="text-gray-600">Connections</dt>
-          <dd className="mt-0.5 text-gray-300">{node.metrics?.degree ?? 0}</dd>
-        </div>
-        <div className="rounded-lg border border-gray-800 p-2">
-          <dt className="text-gray-600">Origins</dt>
-          <dd className="mt-0.5 truncate text-gray-300">{node.origins.join(", ")}</dd>
-        </div>
-      </dl>
-      <div className="mt-4 flex flex-wrap gap-2">
-        {node.href && (
-          <button type="button" onClick={() => onOpen(node)} className="rounded-md bg-white px-2.5 py-1.5 text-xs font-medium text-gray-950 hover:bg-gray-200">
-            Open
-          </button>
-        )}
-        <button type="button" onClick={() => onFocus(node)} className="rounded-md border border-gray-800 px-2.5 py-1.5 text-xs text-gray-400 hover:text-white">
-          Focus
-        </button>
-        {node.expandable && (
-          <button type="button" disabled={expanding} onClick={() => onExpand(node)} className="rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300 hover:border-gray-500 hover:text-white disabled:opacity-50">
-            {expanding ? "Expanding…" : "Expand"}
-          </button>
-        )}
-        <button type="button" onClick={() => onAsk("ask")} className="rounded-md border border-gray-800 px-2.5 py-1.5 text-xs text-gray-400 hover:text-white">
-          Ask Hermes
-        </button>
-      </div>
-      {nodes.length === 2 && (
-        <div className="mt-4 border-t border-gray-800 pt-4">
-          <p className="text-xs text-gray-500">Two nodes selected.</p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <button type="button" onClick={onFindPath} className="rounded-md border border-violet-400/40 px-2.5 py-1.5 text-xs text-violet-200 hover:bg-violet-400/10">
-              Find path
-            </button>
-            <button type="button" onClick={() => onAsk("synthesize")} className="rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300 hover:text-white">
-              Synthesize
-            </button>
-          </div>
-          {!pathAvailable && <p className="mt-2 text-[11px] text-gray-600">Path evidence is not highlighted yet.</p>}
-        </div>
-      )}
-    </aside>
   );
 }
 
@@ -349,10 +209,10 @@ export default function BrainMapClient({
         cache: "no-store",
       });
       const payload = (await response.json().catch(() => ({}))) as BrainGraphResponse & { error?: string };
-      if (!response.ok) throw new Error(payload.error || "The Knowledge Map could not be loaded.");
+      if (!response.ok) throw new Error(payload.error || "Thought Topology could not be loaded.");
       if (!controller.signal.aborted) setGraph(payload);
     } catch (cause) {
-      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "The Knowledge Map could not be loaded.");
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Thought Topology could not be loaded.");
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
@@ -399,7 +259,7 @@ export default function BrainMapClient({
     setEvidenceEdges(new Set());
     setPathMessage(null);
     setSelectedIds((current) => {
-      if (!additive) return [nodeId];
+      if (!additive) return current.length === 1 && current[0] === nodeId ? [] : [nodeId];
       if (current.includes(nodeId)) return current.filter((id) => id !== nodeId);
       return [...current.slice(-1), nodeId];
     });
@@ -439,7 +299,9 @@ export default function BrainMapClient({
         setExpansionParentId(node.id);
       }
     } catch (cause) {
-      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "That node could not be expanded.");
+      if (!controller.signal.aborted) {
+        setError(cause instanceof Error ? cause.message : "That node could not be expanded.");
+      }
     } finally {
       if (!controller.signal.aborted) setExpanding(false);
     }
@@ -505,14 +367,9 @@ export default function BrainMapClient({
     () => new Set(selectedEdgeId ? [selectedEdgeId] : []),
     [selectedEdgeId],
   );
-  const nodeById = useMemo(
-    () => new Map(graph?.nodes.map((node) => [node.id, node]) ?? []),
-    [graph],
-  );
-  const selectedNodes = useMemo(() => selectedIds.flatMap((id) => graph?.nodes.find((node) => node.id === id) ?? []), [graph, selectedIds]);
-  const selectedEdge = useMemo(
-    () => graph?.edges.find((edge) => edge.id === selectedEdgeId) ?? null,
-    [graph, selectedEdgeId],
+  const selectedNodes = useMemo(
+    () => selectedIds.flatMap((id) => graph?.nodes.find((node) => node.id === id) ?? []),
+    [graph, selectedIds],
   );
   const visibleNodeIds = useMemo(() => new Set(displayGraph?.nodes.map((node) => node.id) ?? []), [displayGraph]);
 
@@ -521,15 +378,17 @@ export default function BrainMapClient({
     const path = evidencePath(graph, selectedIds[0], selectedIds[1]);
     setEvidenceNodes(path?.nodes ?? new Set());
     setEvidenceEdges(path?.edges ?? new Set());
-    setPathMessage(path ? `${path.edges.size} relationship${path.edges.size === 1 ? "" : "s"} in the shortest visible evidence path.` : "No path exists in the loaded graph.");
+    setPathMessage(path
+      ? `${path.edges.size} relationship${path.edges.size === 1 ? "" : "s"} in the shortest visible evidence path.`
+      : "No path exists in the loaded graph.");
   }, [graph, selectedIds]);
 
   const askHermes = useCallback((askMode: "ask" | "synthesize") => {
     if (selectedIds.length === 0) return;
     const stableIds = selectedIds.map((id) => `- ${id}`).join("\n");
     const prompt = askMode === "synthesize"
-      ? `Synthesize the relationship between these authorized Knowledge Map node IDs. Resolve them server-side and cite the evidence you use:\n${stableIds}`
-      : `Help me understand this authorized Knowledge Map node. Resolve it server-side and cite the evidence you use:\n${stableIds}`;
+      ? `Synthesize the relationship between these authorized Thought Topology node IDs. Resolve them server-side and cite the evidence you use:\n${stableIds}`
+      : `Help me understand this authorized Thought Topology node. Resolve it server-side and cite the evidence you use:\n${stableIds}`;
     writeChatDraft(window.localStorage, chatDraftKey("dashboard_terminal", null), prompt);
     router.push("/dashboard");
   }, [router, selectedIds]);
@@ -546,23 +405,33 @@ export default function BrainMapClient({
   if (!graph || !displayGraph || !rendererGraph) return null;
 
   return (
-    <section aria-label="Private Knowledge Map" className="overflow-hidden rounded-2xl border border-gray-800 bg-gray-950/70 shadow-2xl">
+    <div>
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-2 px-1">
+        <div>
+          <h2 className="text-lg font-semibold text-white">Thought Topology</h2>
+          <p className="text-xs text-gray-500">How your knowledge, work, and gardens are connected.</p>
+        </div>
+        <p className="text-xs text-gray-500" role="status">
+          {loading ? "Updating Thought Topology…" : `${displayGraph.nodes.length} nodes · ${displayGraph.edges.length} weighted lines`}
+        </p>
+      </div>
+    <section aria-label="Private Thought Topology" className="overflow-hidden rounded-2xl border border-gray-800 bg-gray-950/70 shadow-2xl">
       <header className="border-b border-gray-800 bg-gray-950/85 p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <label className="sr-only" htmlFor="brain-search">Search the Knowledge Map</label>
+          <label className="sr-only" htmlFor="brain-search">Search Thought Topology</label>
           <input id="brain-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search nodes" className="neu-control min-w-48 flex-1 rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none focus:border-gray-600" />
-          <label className="sr-only" htmlFor="brain-scope">Knowledge Map scope</label>
+          <label className="sr-only" htmlFor="brain-scope">Thought Topology scope</label>
           <select id="brain-scope" value={scopeKey} onChange={(event) => changeScope(event.target.value)} className="neu-control rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-200 outline-none focus:border-gray-600">
             {graph.scopeOptions.map((option) => <option key={option.id} value={option.organizationId ?? option.id}>{option.label}</option>)}
           </select>
           <button type="button" onClick={() => setMode((current) => current === "overview" ? "full" : "overview")} className="rounded-lg border border-gray-800 px-3 py-2 text-xs text-gray-400 hover:border-gray-600 hover:text-white">
             {mode === "overview" ? "Show everything" : "Overview"}
           </button>
-          <span className="text-[11px] text-gray-600">{displayGraph.nodes.length} nodes · {displayGraph.edges.length} edges</span>
+          <span className="text-[11px] text-gray-600">{displayGraph.nodes.length} nodes · {displayGraph.edges.length} weighted lines</span>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <select value={kind} onChange={(event) => setKind(event.target.value)} aria-label="Filter by node type" className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-400"><option value="all">All types</option>{kinds.map((value) => <option key={value} value={value}>{formatKind(value)}</option>)}</select>
-          <select value={origin} onChange={(event) => setOrigin(event.target.value as "all" | BrainEdgeOrigin)} aria-label="Filter by origin" className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-400"><option value="all">All origins</option>{origins.map((value) => <option key={value} value={value}>{value}</option>)}</select>
+          <select value={origin} onChange={(event) => setOrigin(event.target.value as "all" | BrainEdgeOrigin)} aria-label="Filter by origin" className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-400"><option value="all">All origins</option>{origins.map((value) => <option key={value} value={value}>{formatKind(value)}</option>)}</select>
           <select value={garden} onChange={(event) => setGarden(event.target.value)} aria-label="Filter by Garden" className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-400"><option value="all">All Gardens</option>{gardens.map((value) => <option key={value} value={value}>{value}</option>)}</select>
           {organizations.length > 0 && <select value={organization} onChange={(event) => setOrganization(event.target.value)} aria-label="Filter by organization" className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-400"><option value="all">All organizations</option>{organizations.map((value) => <option key={value} value={value}>{graph.scopeOptions.find((option) => option.organizationId === value)?.label ?? "Organization"}</option>)}</select>}
           <select value={dateWindow} onChange={(event) => setDateWindow(event.target.value)} aria-label="Filter by date" className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-400"><option value="all">Any date</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select>
@@ -580,11 +449,12 @@ export default function BrainMapClient({
       )}
 
       {graph.nodes.length === 0 ? (
-        <div className="flex h-[60vh] min-h-[26rem] items-center justify-center p-8 text-center"><div><p className="text-sm text-gray-300">Your accessible Knowledge Map is empty.</p><p className="mt-2 text-xs text-gray-600">Create a Garden, conversation, memory, artifact, or Buzz thread to add the first connection.</p></div></div>
+        <div className="flex h-[60vh] min-h-[26rem] items-center justify-center p-8 text-center"><div><p className="text-sm text-gray-300">Your accessible Thought Topology is empty.</p><p className="mt-2 text-xs text-gray-600">Create a Garden, conversation, memory, artifact, or Buzz thread to add the first connection.</p></div></div>
       ) : (
-        <div className="flex min-h-[31rem] flex-col xl:h-[72vh] xl:flex-row">
-          <div className="hidden h-[65vh] min-h-[28rem] min-w-0 flex-1 md:block xl:h-auto xl:min-h-0">
+        <div className="min-h-[31rem] xl:h-[72vh]">
+          <div className="relative hidden h-[65vh] min-h-[28rem] min-w-0 md:block xl:h-full xl:min-h-0">
             {!fallback ? (
+              <>
               <BrainMapCanvas
                 key={scopeKey}
                 graph={rendererGraph}
@@ -602,18 +472,37 @@ export default function BrainMapClient({
                 onOpen={openNode}
                 onFailure={() => setFallback(true)}
               />
+              {selectedNodes.length > 0 && (
+                <div className="absolute bottom-3 right-3 z-30 flex max-w-[calc(100%-1.5rem)] flex-wrap justify-end gap-1.5 rounded-lg border border-gray-800 bg-gray-950/85 p-1.5 shadow-lg backdrop-blur">
+                  {selectedNodes[selectedNodes.length - 1].href && (
+                    <button type="button" onClick={() => openNode(selectedNodes[selectedNodes.length - 1])} className="rounded-md bg-white px-2.5 py-1.5 text-[11px] font-medium text-gray-950 hover:bg-gray-200">Open</button>
+                  )}
+                  <button type="button" onClick={() => setFocusRequest({ id: selectedNodes[selectedNodes.length - 1].id, nonce: Date.now() })} className="rounded-md border border-gray-700 px-2.5 py-1.5 text-[11px] text-gray-300 hover:text-white">Focus</button>
+                  {selectedNodes[selectedNodes.length - 1].expandable && (
+                    <button type="button" disabled={expanding} onClick={() => void expandNode(selectedNodes[selectedNodes.length - 1])} className="rounded-md border border-gray-700 px-2.5 py-1.5 text-[11px] text-gray-300 hover:text-white disabled:opacity-50">{expanding ? "Expanding…" : "Expand"}</button>
+                  )}
+                  <button type="button" onClick={() => askHermes("ask")} className="rounded-md border border-gray-700 px-2.5 py-1.5 text-[11px] text-gray-300 hover:text-white">Ask Hermes</button>
+                  {selectedNodes.length === 2 && (
+                    <>
+                      <button type="button" onClick={findPath} className="rounded-md border border-violet-400/40 px-2.5 py-1.5 text-[11px] text-violet-200 hover:bg-violet-400/10">Find path</button>
+                      <button type="button" onClick={() => askHermes("synthesize")} className="rounded-md border border-gray-700 px-2.5 py-1.5 text-[11px] text-gray-300 hover:text-white">Synthesize</button>
+                    </>
+                  )}
+                </div>
+              )}
+              </>
             ) : (
               <GraphList nodes={listedNodes} selected={selectedSet} onSelect={selectNode} onOpen={openNode} />
             )}
           </div>
           <div className="h-[60vh] min-h-[28rem] md:hidden"><GraphList nodes={listedNodes} selected={selectedSet} onSelect={selectNode} onOpen={openNode} /></div>
-          <Inspector edge={selectedEdge} nodeById={nodeById} nodes={selectedNodes} pathAvailable={evidenceEdges.size > 0} expanding={expanding} onOpen={openNode} onFocus={(node) => setFocusRequest({ id: node.id, nonce: Date.now() })} onExpand={expandNode} onFindPath={findPath} onAsk={askHermes} onClear={() => { setSelectedIds([]); setSelectedEdgeId(null); setEvidenceNodes(new Set()); setEvidenceEdges(new Set()); setPathMessage(null); }} />
         </div>
       )}
       <footer className="flex flex-wrap justify-between gap-2 border-t border-gray-800 px-4 py-2 text-[10px] text-gray-700">
-        <span>Private · authorized sources only · canonical and derived edges are labeled separately</span>
+        <span>Private · authorized sources only · hierarchy and weighted semantic lines stay distinct</span>
         <span>{loading ? "Refreshing…" : `Built in ${graph.diagnostics.buildMs} ms`}</span>
       </footer>
     </section>
+    </div>
   );
 }

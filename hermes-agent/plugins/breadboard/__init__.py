@@ -457,7 +457,30 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             name,
             "/api/hermes/tools/garden",
             "garden",
-            _schema(name, description, {**_OPTIONAL_GARDEN, "slug": _STRING}, ["slug"]),
+            _schema(
+                name,
+                description,
+                {
+                    **_OPTIONAL_GARDEN,
+                    "slug": _STRING,
+                    **(
+                        {
+                            "depth": {"type": "number", "minimum": 0, "maximum": 3},
+                            "limit": {"type": "number", "minimum": 2, "maximum": 50},
+                            "minWeight": {"type": "number", "minimum": 0, "maximum": 1},
+                            "relationTypes": {
+                                "type": "array",
+                                "items": {"type": "string", "maxLength": 64},
+                                "maxItems": 12,
+                            },
+                            "includeHierarchy": {"type": "boolean"},
+                        }
+                        if name == "garden_get_graph_neighbors"
+                        else {}
+                    ),
+                },
+                ["slug"],
+            ),
         )
         for name, description in (
             ("garden_get_page", "Fetch one authorized Garden page by slug."),
@@ -475,7 +498,7 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             ),
             (
                 "garden_get_graph_neighbors",
-                "Fetch knowledge-graph neighbors for an authorized page or concept.",
+                "Traverse the authorized Garden's Thought Topology as a bounded typed property graph. The result includes Garden-folder-page contains edges plus scored affinity edges with relation, direction, weight, explanation, evidence, and provenance. The slug may be a node id, page slug/path, folder path, or Garden slug.",
             ),
         )
     ),
@@ -1545,6 +1568,91 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         ),
     ),
     (
+        "workflow_create",
+        "/api/hermes/tools/workflow/create",
+        "workflow",
+        _schema(
+            "workflow_create",
+            (
+                "Create and save a native Breadboard workflow, which appears "
+                "immediately in the Workflows capability page. Use this ONLY "
+                "when the user explicitly asks you to create, build, save, or "
+                "register a workflow/automation. Never use it to enact your "
+                "own suggestion; use workflow_propose for that. Call action "
+                "'catalog' first to read the exact registered block types and "
+                "input ids, then call action 'create'. Steps are connected in "
+                "their listed order when edges is omitted. Return the saved "
+                "workflow link and any configuration warnings to the user."
+            ),
+            {
+                "action": {
+                    "type": "string",
+                    "enum": ["catalog", "create"],
+                    "description": "Read the block catalog or create the workflow. Defaults to create.",
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Short name shown in the Workflows capability page.",
+                },
+                "description": {"type": "string", "maxLength": 2000},
+                "steps": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "description": "Ordered registered blocks. May be empty for a blank workflow.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+                                "description": "Local key used by edges.",
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "generic_webhook",
+                                    "schedule",
+                                    "agent",
+                                    "api",
+                                    "function",
+                                    "condition",
+                                    "evaluator",
+                                    "response",
+                                ],
+                            },
+                            "name": {"type": "string", "maxLength": 120},
+                            "inputs": {
+                                "type": "object",
+                                "additionalProperties": True,
+                                "description": "Values keyed by input id from the catalog.",
+                            },
+                        },
+                        "required": ["key", "type"],
+                        "additionalProperties": False,
+                    },
+                },
+                "edges": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "description": "Optional graph edges; omit to connect steps linearly.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": {"type": "string"},
+                            "to": {"type": "string"},
+                            "sourceHandle": {"type": "string", "maxLength": 100},
+                        },
+                        "required": ["from", "to"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            [],
+        ),
+    ),
+    (
         "memory_query",
         "/api/hermes/tools/memory/query",
         "memory",
@@ -2366,13 +2474,14 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         _schema(
             "product_search",
             (
-                "Search current public product pages and return sourced, "
-                "structured products for Breadboard's native carousel. Call "
+                "Search current public product pages plus price-specific "
+                "discovery results and return sourced, structured products "
+                "for Breadboard's native carousel. Call "
                 "this whenever the user is discovering, comparing, choosing, "
                 "shopping for, or finding alternatives to products, including "
                 "natural requests like 'is there a ... I can buy?'. Prefer it "
-                "to generic web search for the first product-discovery step. If the user "
-                "asks what they can buy, call product_search before web_search. The result's "
+                "for the first product-discovery step, before composing a "
+                "recommendation from prose alone. The result's "
                 "uiResources are rendered by Breadboard automatically; do not "
                 "copy their JSON into the answer. Summarize the useful tradeoffs "
                 "in ordinary text and do not invent products, prices, ratings, "
@@ -3897,7 +4006,7 @@ def _request_payload(
     # These tools file their binary output as an artifact, so they need the
     # same tool-call id the artifact routes do: that is what binds the result to
     # the response it was produced under.
-    if route_kind in {"artifact", "memory", "image_to_3d", "manim"}:
+    if route_kind in {"artifact", "memory", "workflow", "image_to_3d", "manim"}:
         return {"action": tool_name, "args": args, "toolCallId": tool_call_id}
     if route_kind == "mcp":
         payload = {

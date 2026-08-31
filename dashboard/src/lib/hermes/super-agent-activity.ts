@@ -7,6 +7,7 @@ const SUPER_AGENT_TOOL_LABELS: Readonly<Record<string, string>> = {
   agent_launch: "Choosing an agent",
   skill_open: "Opening skill",
   workflow_run: "Running automation",
+  workflow_create: "Creating automation",
   mcp_call: "Using connected service",
   capability_search: "Searching capabilities",
   capability_gap: "Finding a capability",

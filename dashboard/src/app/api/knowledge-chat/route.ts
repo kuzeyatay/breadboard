@@ -15,7 +15,10 @@ import {
   chatTokenUsageEventFromResponse,
   type ChatTokenUsageStreamEvent,
 } from '@/lib/chat-token-usage';
-import type { ChatAttachment } from '@/lib/chat-attachments';
+import {
+  productAttachmentPromptText,
+  type ChatAttachment,
+} from '@/lib/chat-attachments';
 import { modelAttachmentPromptText } from '@/lib/model-attachments';
 import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
@@ -116,6 +119,10 @@ function buildResponsesInput(
       (attachment): attachment is Extract<ChatAttachment, { type: 'model' }> =>
         attachment.type === 'model',
     );
+    const productAttachments = attachments.filter(
+      (attachment): attachment is Extract<ChatAttachment, { type: 'product' }> =>
+        attachment.type === 'product',
+    );
     const attachedText = [
       ...textAttachments.map(
         (attachment) => `--- Attached file: ${attachment.name} ---\n${attachment.text}`,
@@ -123,6 +130,10 @@ function buildResponsesInput(
       ...modelAttachments.map(
         (attachment) =>
           `--- Attached file: ${attachment.name} ---\n${modelAttachmentPromptText(attachment)}`,
+      ),
+      ...productAttachments.map(
+        (attachment) =>
+          `--- Selected product: ${attachment.name} ---\n${productAttachmentPromptText(attachment)}`,
       ),
     ].join('\n\n');
     const contentParts: Array<

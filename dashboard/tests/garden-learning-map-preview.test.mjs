@@ -114,3 +114,33 @@ test("the Quartz preview preserves the browser host and reports real canvas read
   );
   assert.doesNotMatch(graph, /setPreviewReady|Preparing preview/);
 });
+
+test("library pages bridge each scoped Garden into one aggregate Thought Topology", () => {
+  const libraryClient = read("src/app/garden/library-garden-client.tsx");
+  const quartzGraph = read(
+    "../quartz/quartz/components/scripts/graph.inline.ts",
+  );
+  const topologyLayout = read(
+    "../quartz/quartz/components/scripts/thoughtTopologyLayout.ts",
+  );
+
+  assert.match(
+    libraryClient,
+    /data\.type === ["']breadboard:thought-topology-request["']/,
+  );
+  assert.match(
+    libraryClient,
+    /\/api\/thought-topology\?clusterSlug=\$\{encodeURIComponent\(clusterSlug\)\}/,
+  );
+  assert.match(quartzGraph, /requestAggregateThoughtTopology/);
+  assert.match(quartzGraph, /Promise\.all\(/);
+  assert.match(
+    quartzGraph,
+    /url\.searchParams\.set\("clusterSlug", clusterSlug\)/,
+  );
+  assert.match(topologyLayout, /aggregateThoughtTopologies/);
+  assert.match(
+    topologyLayout,
+    /preserves the visible hierarchy as library -> Garden -> folder\/page/,
+  );
+});

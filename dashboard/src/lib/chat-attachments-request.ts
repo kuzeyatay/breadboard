@@ -19,6 +19,7 @@ import {
   isDocumentBlobId,
   normalizeDocumentSummary,
 } from "./document-attachments.ts";
+import { normalizeProductAttachment } from "./generative-ui/contracts.ts";
 
 const MAX_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_TEXT_LENGTH = 2 * 1024 * 1024;
@@ -43,8 +44,18 @@ export function parseChatAttachments(value: unknown): ChatAttachment[] {
     }
     const attachment = item as Record<string, unknown>;
     const name = requireString(attachment.name, `attachments[${index}].name`, 500);
-    if (/[\\/\0]/.test(name)) {
+    if (
+      (attachment.type === "product" && /\0/.test(name)) ||
+      (attachment.type !== "product" && /[\\/\0]/.test(name))
+    ) {
       throw new ApiError(400, "invalid_attachments", "Attachment name is invalid.");
+    }
+    if (attachment.type === "product") {
+      const product = normalizeProductAttachment(attachment.product);
+      if (!product) {
+        throw new ApiError(400, "invalid_attachments", "That product attachment is not valid.");
+      }
+      return { type: "product", name, product };
     }
     if (attachment.type === "text") {
       return {

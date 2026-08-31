@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { loadTeachAvailability, type TeachAvailabilityView } from "@/app/workflows/teach/teach-client";
+import { WorkflowSourceIcon } from "@/app/workflows/components/workflow-source-icon";
 import type { LocalWorkflowSummary } from "@/lib/workflows/types";
 import { isSameTabNavigationClick, rememberWorkflowReturnPath } from "@/lib/workflows/navigation";
 
@@ -33,17 +34,6 @@ type Props = {
   disabled?: boolean;
 };
 
-function WorkflowIcon() {
-  return (
-    <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
-      <circle cx="6" cy="6" r="2.25" />
-      <circle cx="18" cy="12" r="2.25" />
-      <circle cx="6" cy="18" r="2.25" />
-      <path strokeLinecap="round" d="M8.2 6h2.3a3 3 0 0 1 3 3v0a3 3 0 0 0 3 3M8.2 18h2.3a3 3 0 0 0 3-3v0a3 3 0 0 1 3-3" />
-    </svg>
-  );
-}
-
 function PlusIcon() {
   return (
     <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
@@ -57,6 +47,14 @@ function TeachIcon() {
     <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v9m0 0a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
       <path strokeLinecap="round" d="M5 8a7 7 0 0 1 14 0" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <path strokeLinecap="round" d="M4 7h16M9 7V4h6v3M7 7l.7 13h8.6L17 7M10 11v5M14 11v5" />
     </svg>
   );
 }
@@ -99,6 +97,7 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [creating, setCreating] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [teachAvailability, setTeachAvailability] = useState<TeachAvailabilityView | null>(null);
   const debouncedQuery = useRef("");
 
@@ -156,12 +155,6 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
     (workflow) => !input.trim() || workflow.name.toLowerCase().includes(input.trim().toLowerCase()),
   );
 
-  function navigateToWorkflow(event: MouseEvent<HTMLAnchorElement>) {
-    if (!isSameTabNavigationClick(event)) return;
-    rememberWorkflowReturnPath();
-    onNavigate?.();
-  }
-
   async function createWorkflow() {
     if (creating) return;
     setCreating(true);
@@ -188,13 +181,39 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
     onNavigate?.();
   }
 
+  function navigateToWorkflow(event: MouseEvent<HTMLAnchorElement>) {
+    if (!isSameTabNavigationClick(event)) return;
+    rememberWorkflowReturnPath();
+    onNavigate?.();
+  }
+
+  async function deleteWorkflow(workflow: LocalWorkflowListItem) {
+    if (deletingId) return;
+    if (!window.confirm(`Delete “${workflow.name}”? This cannot be undone.`)) return;
+
+    setDeletingId(workflow.id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/workflows/${encodeURIComponent(workflow.id)}`, {
+        method: "DELETE",
+      });
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "The workflow could not be deleted.");
+      setItems((current) => current.filter((item) => item.id !== workflow.id));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The workflow could not be deleted.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
     <div className="space-y-4 p-2">
       <div className="neu-surface-subtle rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="max-w-md">
             <div className="flex items-center gap-2 text-[var(--botanical)]">
-              <WorkflowIcon />
+              <WorkflowSourceIcon />
               <h3 className="font-semibold text-[var(--ink-heading)]">Workflow automations</h3>
             </div>
             <p className="mt-1.5 text-xs leading-5 text-[var(--ink-muted)]">
@@ -266,7 +285,7 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
                 className="group flex min-w-0 flex-1 items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--paper-strong)] text-[var(--botanical)]">
-                  <WorkflowIcon />
+                  <WorkflowSourceIcon source={workflow.source} />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium text-[var(--ink-heading)] group-hover:text-[var(--botanical)]">{workflow.name}</span>
@@ -281,17 +300,26 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
                     </span>
                   ) : null}
                 </span>
-                <span className="shrink-0 text-[11px] font-medium text-[var(--botanical)]">Add to chat</span>
               </button>
               <a
                 href={`/workflows?workflow=${encodeURIComponent(workflow.id)}`}
                 onClick={navigateToWorkflow}
                 className="neu-button-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[var(--line)] text-[var(--ink-muted)] transition hover:text-[var(--botanical)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
-                aria-label={`Open ${workflow.name} on the canvas`}
-                title="Open on the canvas"
+                aria-label={`Open settings for ${workflow.name}`}
+                title="Workflow settings"
               >
                 <SettingsIcon />
               </a>
+              <button
+                type="button"
+                onClick={() => void deleteWorkflow(workflow)}
+                disabled={deletingId !== null}
+                className="neu-button-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[var(--line)] text-[var(--ink-muted)] transition hover:text-[var(--danger)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={`Delete ${workflow.name}`}
+                title="Delete workflow"
+              >
+                <TrashIcon />
+              </button>
             </div>
           ))}
         </div>

@@ -608,8 +608,24 @@ test(
       ["edge:waves"],
     );
     assert.match(
-      await frame.locator(".graph-outer .thought-topology-heading").innerText(),
+      await frame
+        .locator(".graph > .thought-topology-meta .thought-topology-heading")
+        .innerText(),
       /Connections inside Module V Waves and Oscilations/,
+    );
+    assert.equal(
+      await frame
+        .locator(".graph > .thought-topology-meta")
+        .evaluate((node) =>
+          node.nextElementSibling?.classList.contains("graph-outer"),
+        ),
+      true,
+      "Thought Topology metadata sits immediately above the bordered canvas",
+    );
+    assert.equal(
+      await frame.locator(".graph-outer .thought-topology-heading").count(),
+      0,
+      "inline heading is not overlaid inside the canvas",
     );
 
     // Individual markdown pages use Thought Topology too, scoped to the
@@ -631,7 +647,9 @@ test(
     }
     assert.equal(
       await frame
-        .locator(".right.sidebar .graph-outer .thought-topology-heading h3")
+        .locator(
+          ".right.sidebar .graph > .thought-topology-meta .thought-topology-heading h3",
+        )
         .innerText(),
       "Thought Topology",
     );
@@ -779,7 +797,9 @@ test(
       0,
     );
     assert.match(
-      await frame.locator(".graph-outer .thought-topology-status").innerText(),
+      await frame
+        .locator(".graph > .thought-topology-meta .thought-topology-status")
+        .innerText(),
       /could not be loaded/i,
     );
   },

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import { adaptBrainGraph } from "@/lib/quartz-brain-graph/adapter.ts";
-import { createQuartzBrainRenderer } from "@/lib/quartz-brain-graph/renderer.ts";
+import { createThoughtTopologyRenderer } from "@/lib/quartz-brain-graph/renderer.ts";
 import { quartzLayoutStorageKey } from "@/lib/quartz-brain-graph/state.ts";
 import type { QuartzBrainRendererController } from "@/lib/quartz-brain-graph/types.ts";
 import type { BrainGraphResponse } from "@/lib/profile/brain-graph-types.ts";
@@ -59,7 +59,7 @@ export default function BrainMapCanvas({
     const adapted = adaptBrainGraph(latestGraphRef.current);
     const normalizationMs = Math.round((performance.now() - normalizationStarted) * 10) / 10;
     const rendererStarted = performance.now();
-    void createQuartzBrainRenderer(host, adapted, {
+    void createThoughtTopologyRenderer(host, adapted, {
       layoutStorageKey,
       selectedNodeIds,
       selectedEdgeIds,
@@ -71,7 +71,7 @@ export default function BrainMapCanvas({
       onOpen: (nodeId, href) => latestCallbacksRef.current.onOpen(nodeId, href),
       onFailure: () => latestCallbacksRef.current.onFailure(),
       onSettled: (simulationSettleMs) => {
-        console.info("[brain-renderer]", JSON.stringify({ simulationSettleMs }));
+        console.info("[thought-topology-renderer]", JSON.stringify({ simulationSettleMs }));
       },
     })
       .then((controller) => {
@@ -81,7 +81,7 @@ export default function BrainMapCanvas({
         }
         controllerRef.current = controller;
         controller.setSearch(query);
-        console.info("[brain-renderer]", JSON.stringify({
+        console.info("[thought-topology-renderer]", JSON.stringify({
           nodeCount: adapted.nodes.length,
           edgeCount: adapted.links.length,
           normalizationMs,
@@ -106,7 +106,7 @@ export default function BrainMapCanvas({
     const started = performance.now();
     const adapted = adaptBrainGraph(graph);
     controllerRef.current?.updateGraph(adapted, expansionParentId);
-    console.info("[brain-renderer]", JSON.stringify({
+    console.info("[thought-topology-renderer]", JSON.stringify({
       nodeCount: adapted.nodes.length,
       edgeCount: adapted.links.length,
       normalizationMs: Math.round((performance.now() - started) * 10) / 10,
@@ -136,7 +136,7 @@ export default function BrainMapCanvas({
       <div
         ref={hostRef}
         className="h-full w-full touch-none outline-none"
-        aria-label={`Interactive Knowledge Map with ${graph.nodes.length} nodes and ${graph.edges.length} relationships`}
+        aria-label={`Interactive Thought Topology with ${graph.nodes.length} nodes and ${graph.edges.length} weighted relationships`}
         role="img"
       />
       <div className="absolute bottom-3 left-3 flex items-center gap-1 rounded-lg border border-gray-800 bg-gray-950/85 p-1 shadow-lg backdrop-blur">

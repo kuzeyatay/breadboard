@@ -108,6 +108,32 @@ export function nearestRailTick(
 }
 
 /**
+ * A truthful temporary choice while the virtual list has not exposed any row
+ * positions yet. This window is normally only one frame, but it can last while
+ * a restored conversation is attaching its virtualizer. Defaulting to zero in
+ * that window is what made the first line look selected indefinitely.
+ *
+ * Scroll progress is only a fallback, never the normal selection rule. At the
+ * two places that matter most it is exact: the beginning chooses the first
+ * question and the end chooses the newest one. A transcript shorter than its
+ * viewport is already showing its end, so it chooses the newest question too.
+ */
+export function fallbackRailTick(
+  itemCount: number,
+  scroller: {
+    scrollTop: number;
+    clientHeight: number;
+    scrollHeight: number;
+  },
+): number {
+  if (itemCount <= 1) return 0;
+  const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  if (maximum === 0) return itemCount - 1;
+  const progress = Math.min(1, Math.max(0, scroller.scrollTop / maximum));
+  return Math.round(progress * (itemCount - 1));
+}
+
+/**
  * The line down the viewport that the rail measures questions against.
  *
  * Normally the top: what you have just scrolled to is what you are reading, and
@@ -186,7 +212,10 @@ export default function ChatMessageRail({
       return estimated === null ? null : estimated + listOffset;
     });
 
-    if (starts.every((start) => start === null)) return;
+    if (starts.every((start) => start === null)) {
+      setActive(fallbackRailTick(items.length, scroller));
+      return;
+    }
     setActive(nearestRailTick(starts, railFocusLine(scroller)));
   }, [bridge, items, scrollRef]);
 
@@ -231,24 +260,54 @@ export default function ChatMessageRail({
   // The scroller covers viewport changes, the virtual list covers row
   // measurement corrections, and the tail covers content outside that list
   // (the disclaimer, proposal cards, and the measured composer clearance).
+  //
+  // Absolute virtual rows can also mount, unmount, or receive a new transform
+  // while the list's own width and height stay identical. ResizeObserver does
+  // not report those changes. MutationObserver closes that gap and enrolls
+  // every newly mounted row in the resize observer, so both its position and
+  // its later content growth can move the active tick.
   useEffect(() => {
-    if (
-      !enabled ||
-      typeof window === "undefined" ||
-      typeof window.ResizeObserver !== "function"
-    ) {
-      return;
-    }
+    if (!enabled || typeof window === "undefined") return;
     const scroller = scrollRef.current;
     if (!scroller) return;
-    const observer = new window.ResizeObserver(scheduleMeasure);
-    observer.observe(scroller);
-    const list = scroller.querySelector("[data-chat-virtual-list]");
-    if (list) observer.observe(list);
-    const tail = scroller.querySelector(".bb-chat-scroll-tail");
-    if (tail) observer.observe(tail);
-    return () => observer.disconnect();
-  }, [enabled, items, scheduleMeasure, scrollRef]);
+
+    const resizeObserver =
+      typeof window.ResizeObserver === "function"
+        ? new window.ResizeObserver(scheduleMeasure)
+        : null;
+    const observeCurrentGeometry = () => {
+      resizeObserver?.observe(scroller);
+      const list = scroller.querySelector("[data-chat-virtual-list]");
+      if (list) {
+        resizeObserver?.observe(list);
+        for (const row of list.querySelectorAll(":scope > [data-index]")) {
+          resizeObserver?.observe(row);
+        }
+      }
+      const tail = scroller.querySelector(".bb-chat-scroll-tail");
+      if (tail) resizeObserver?.observe(tail);
+    };
+
+    observeCurrentGeometry();
+    const mutationObserver =
+      typeof window.MutationObserver === "function"
+        ? new window.MutationObserver(() => {
+            observeCurrentGeometry();
+            scheduleMeasure();
+          })
+        : null;
+    mutationObserver?.observe(scroller, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style", "data-mounted-rows"],
+    });
+
+    return () => {
+      mutationObserver?.disconnect();
+      resizeObserver?.disconnect();
+    };
+  }, [enabled, scheduleMeasure, scrollRef]);
 
   // The scroller the rail was pointed at is not the one it last measured, so the
   // transcript underneath it has been replaced. Runs after every render, which

@@ -128,9 +128,16 @@ test("the profile exposes current-location availability without folding it into 
   assert.match(client, /role="status"/);
   assert.match(client, /aria-live="polite"/);
   assert.match(client, /aria-busy=\{checking\}/);
-  assert.match(client, />\s*Enable\s*<\/button>/);
-  assert.match(client, /checking \? "Checking[^\"]*" : "Refresh"/);
-  assert.match(client, />\s*Turn off\s*<\/button>/);
+  assert.match(client, /checked=\{preference\.useForAnswers\}/);
+  assert.match(client, /onChange=\{toggleLocation\}/);
+  assert.doesNotMatch(client, />\s*Turn off\s*<\/button>/);
+  assert.match(client, /aria-label="Refresh location"/);
+  assert.match(client, /<RefreshCw/);
+  assert.match(
+    client,
+    /aria-label="Refresh location"[\s\S]*?className="inline-flex h-5 w-5 items-center justify-center text-gray-500/,
+    "refresh is an unframed icon control beside the status",
+  );
   assert.match(client, /requestCurrentLocationFix\(/);
   assert.match(locationSource, /navigator\.geolocation\.getCurrentPosition/);
   assert.match(locationSource, /allowThemeLocation/);
@@ -194,6 +201,29 @@ test("a shell whose browser cannot locate falls back to the operating system", (
 test("the identity card carries no monogram tile", () => {
   assert.doesNotMatch(client, /monogram/i);
   assert.match(client, /\{account\.username\}/, "the name itself is what identifies you");
+});
+
+test("the profile no longer carries the product-about essay", () => {
+  assert.doesNotMatch(client, /About this breadboard/);
+  assert.doesNotMatch(client, /AboutBreadboard|AboutPassage/);
+});
+
+test("the model card sits directly below cost without the old caveat essay", () => {
+  const costCard = client.indexOf('title="What it cost to answer you"');
+  const modelCard = client.indexOf("<ModelPanel cost={stats.cost} />");
+  const containingStackEnd = client.indexOf("</Packed>", costCard);
+
+  assert.ok(costCard >= 0 && modelCard > costCard, "cost is followed by the model card");
+  assert.ok(modelCard < containingStackEnd, "both cards stay in the same vertical stack");
+  assert.equal(modelCard, client.lastIndexOf("<ModelPanel cost={stats.cost} />"));
+  assert.doesNotMatch(client, /An upper bound on list prices/);
+  assert.doesNotMatch(client, /Compression is the mirror of that bound/);
+  assert.doesNotMatch(client, /use the .* rate/);
+});
+
+test("the packed settings leave the standard gap before reliability", () => {
+  assert.match(client, /className="mt-4 gap-4 lg:columns-2"/);
+  assert.doesNotMatch(client, /className="mt-4 -mb-4 gap-4 lg:columns-2"/);
 });
 
 test("the stats shown are ones no other surface already answers", () => {

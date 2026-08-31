@@ -76,7 +76,12 @@ export type GenerativeUiResource = ProductSearchResource;
 
 export type GenerativeUiAction =
   | {
-      type: "product.open-details" | "product.find-similar" | "product.compare" | "product.visit";
+      type:
+        | "product.open-details"
+        | "product.find-similar"
+        | "product.select"
+        | "product.compare"
+        | "product.visit";
       resource: ProductSearchResource;
       productId: string;
     };
@@ -238,6 +243,20 @@ function normalizeProduct(
   };
 }
 
+/** Validate a standalone product copied into a durable chat attachment. */
+export function normalizeProductAttachment(
+  value: unknown,
+): ProductSearchItem | null {
+  const candidate = record(value);
+  if (!candidate || !Array.isArray(candidate.sourceIds)) return null;
+  const knownSourceIds = new Set(
+    candidate.sourceIds.filter(
+      (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+    ),
+  );
+  return normalizeProduct(candidate, knownSourceIds);
+}
+
 export function normalizeGenerativeUiResource(
   value: unknown,
 ): GenerativeUiResource | null {
@@ -328,6 +347,32 @@ export function generativeUiResourcesFromToolOutput(
   return normalizeGenerativeUiResources(parsed?.uiResources);
 }
 
+/**
+ * Recover resources from the durable verification evidence written for older
+ * live Hermes completions. This is intentionally routed through the same
+ * tool-name gate and untrusted-resource normalizer as a live event.
+ */
+export function generativeUiResourcesFromVerification(
+  value: unknown,
+): GenerativeUiResource[] {
+  const verification = record(value);
+  const evidence = verification && Array.isArray(verification.evidence)
+    ? verification.evidence
+    : [];
+  const resources = new Map<string, GenerativeUiResource>();
+  for (const entry of evidence) {
+    const item = record(entry);
+    const details = record(item?.details);
+    if (!item || item.success === false || !details) continue;
+    const toolName = text(details.toolName, 160);
+    for (const resource of generativeUiResourcesFromToolOutput(toolName, details.result)) {
+      resources.set(resource.id, resource);
+      if (resources.size >= 4) return [...resources.values()];
+    }
+  }
+  return [...resources.values()];
+}
+
 export function productForResource(
   resource: ProductSearchResource,
   productId: string,
@@ -342,7 +387,7 @@ export function productForAction(action: GenerativeUiAction): ProductSearchItem 
       ? "open-details"
       : action.type === "product.find-similar"
         ? "find-similar"
-        : action.type === "product.compare"
+        : action.type === "product.select" || action.type === "product.compare"
           ? "compare"
           : "visit";
   if (!action.resource.actions.includes(required)) return null;

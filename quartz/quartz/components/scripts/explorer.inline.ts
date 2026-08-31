@@ -1,4 +1,9 @@
 import { FileTrieNode } from "../../util/fileTrie"
+import {
+  gardenClusterFoldersFromJson,
+  groupGardenExplorerNodes,
+  isVirtualGardenClusterNode,
+} from "../../util/gardenExplorerGroups"
 import { isVisibleGardenRootEntry } from "../../util/explorerScope"
 import { FullSlug, resolveRelative, simplifySlug } from "../../util/path"
 import { ContentDetails } from "../../plugins/emitters/contentIndex"
@@ -127,6 +132,14 @@ function applyGardenExplorerScope(explorer: HTMLElement, trie: FileTrieNode<Cont
   for (const clusterNode of trie.children) {
     if (!effectiveAllowed.includes(clusterNode.slugSegment)) continue
     clusterNode.children = clusterNode.children.filter(isVisibleGardenRootEntry)
+  }
+
+  if (explorer.dataset.gardenScope === "private") {
+    groupGardenExplorerNodes(
+      trie,
+      allowedClusters,
+      gardenClusterFoldersFromJson(explorer.dataset.gardenClusterFolders),
+    )
   }
 }
 
@@ -606,6 +619,7 @@ function createFolderNode(
   const folderPath = node.slug
   const { cluster, relFolder } = clusterAndRelFolder(folderPath)
   const isGardenRoot = relFolder.length === 0
+  const isVirtualCluster = isVirtualGardenClusterNode(node)
   // Existing emitted pages may outlive an asset-only rebuild, so apply the
   // clipping hook at runtime as well as in Explorer's template.
   titleContainer.classList.add("folder-title-clip")
@@ -615,9 +629,10 @@ function createFolderNode(
     folderContainer.classList.add("active")
   }
 
-  // Allow dropping notes into this folder and creating/deleting sub-folders from the dashboard.
-  makeFolderDropTarget(folderContainer, folderPath)
-  if (insideDashboard) {
+  // Virtual cluster headings organize Gardens in the library. They are not
+  // content folders, so note/file actions remain on the real Garden nodes.
+  if (!isVirtualCluster) makeFolderDropTarget(folderContainer, folderPath)
+  if (insideDashboard && !isVirtualCluster) {
     const addBtn = document.createElement("button")
     addBtn.type = "button"
     addBtn.className = "explorer-folder-add explorer-folder-action"
@@ -653,7 +668,7 @@ function createFolderNode(
   }
 
   let folderTitle: HTMLElement
-  if (opts.folderClickBehavior === "link") {
+  if (opts.folderClickBehavior === "link" && !isVirtualCluster) {
     // Replace button with link for link behavior
     const button = titleContainer.querySelector(".folder-button") as HTMLElement
     const a = document.createElement("a")
@@ -664,10 +679,18 @@ function createFolderNode(
     button.replaceWith(a)
     folderTitle = a
   } else {
+    const button = titleContainer.querySelector(".folder-button") as HTMLButtonElement
     const span = titleContainer.querySelector(".folder-title") as HTMLElement
     span.textContent = node.displayName
     folderTitle = span
+    if (isVirtualCluster && opts.folderClickBehavior === "link") {
+      button.ariaLabel = `Toggle cluster ${node.displayName}`
+      button.addEventListener("click", toggleFolder)
+      window.addCleanup(() => button.removeEventListener("click", toggleFolder))
+    }
   }
+
+  if (isVirtualCluster) folderContainer.classList.add("garden-cluster-group")
 
   if (isGardenRoot) {
     folderContainer.classList.add("garden-root")

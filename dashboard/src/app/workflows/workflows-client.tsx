@@ -12,8 +12,10 @@ import { useRouter } from "next/navigation";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import { backLabelFor } from "@/lib/nav-history";
+import { readTeachSetupDraft } from "@/lib/teach/setup-draft";
 import { consumeWorkflowReturnPath, peekWorkflowReturnPath } from "@/lib/workflows/navigation";
 import { CanvasEditor } from "./components/canvas-editor";
+import { WorkflowSourceIcon } from "./components/workflow-source-icon";
 import DemonstratedWorkflow from "./teach/demonstrated-workflow";
 import TeachWorkflow from "./teach/teach-workflow";
 import { loadTeachAvailability, type TeachAvailabilityView } from "./teach/teach-client";
@@ -63,17 +65,6 @@ function TeachIcon() {
     <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v9m0 0a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
       <path strokeLinecap="round" d="M5 8a7 7 0 0 1 14 0" />
-    </svg>
-  );
-}
-
-function WorkflowIcon() {
-  return (
-    <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
-      <circle cx="6" cy="6" r="2.25" />
-      <circle cx="18" cy="12" r="2.25" />
-      <circle cx="6" cy="18" r="2.25" />
-      <path strokeLinecap="round" d="M8.2 6h2.3a3 3 0 0 1 3 3v0a3 3 0 0 0 3 3M8.2 18h2.3a3 3 0 0 0 3-3v0a3 3 0 0 1 3-3" />
     </svg>
   );
 }
@@ -325,7 +316,7 @@ function HomeView({
                 className="group flex min-w-0 flex-1 items-center gap-3 rounded-xl px-1 py-1 text-left"
               >
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--paper-strong)] text-[var(--botanical)]">
-                  <WorkflowIcon />
+                  <WorkflowSourceIcon source={workflow.source} />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium text-[var(--ink-heading)] group-hover:text-[var(--botanical)]">
@@ -402,6 +393,17 @@ export default function WorkflowsClient({
 
   useEffect(() => {
     if (teachOnOpen && !workflowId) setTeaching({ workflowId: null });
+  }, [teachOnOpen, workflowId]);
+
+  useEffect(() => {
+    // A setup draft belongs to the workflows home, not to a workflow explicitly
+    // opened from chat. Returning to the home restores the panel that held it.
+    if (teachOnOpen || workflowId) return;
+    const draft = readTeachSetupDraft(window.localStorage);
+    if (!draft) return;
+    setTeaching((current) =>
+      current ?? { workflowId: draft.reteachWorkflowId, name: draft.reteachName },
+    );
   }, [teachOnOpen, workflowId]);
 
   useEffect(() => {

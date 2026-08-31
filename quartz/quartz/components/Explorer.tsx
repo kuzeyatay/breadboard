@@ -115,6 +115,9 @@ export default ((userOpts?: Partial<Options>) => {
           (value): value is string => typeof value === "string" && value.length > 0,
         )
       : []
+    const gardenClusterFolders = Array.isArray(fm?.garden_cluster_folders)
+      ? fm.garden_cluster_folders.filter((value): value is string => typeof value === "string")
+      : []
     const gardenScope = typeof fm?.garden_scope === "string" ? fm.garden_scope : ""
 
     return (
@@ -129,6 +132,7 @@ export default ((userOpts?: Partial<Options>) => {
         data-savestate={opts.useSavedState}
         data-garden-scope={gardenScope}
         data-graph-clusters={JSON.stringify(graphClusters)}
+        data-garden-cluster-folders={JSON.stringify(gardenClusterFolders)}
         data-data-fns={JSON.stringify({
           order: opts.order,
           sortFn: opts.sortFn.toString(),

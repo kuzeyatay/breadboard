@@ -212,15 +212,18 @@ test("the inventory tools are open only to an authenticated super-agent turn", a
   const superAgent = tools({ userId: 7, superAgent: true });
   assert.equal(superAgent.skill_open, true);
   assert.equal(superAgent.workflow_run, true);
+  assert.equal(superAgent.workflow_create, true);
 
   const normal = tools({ userId: 7 });
   assert.equal(normal.skill_open, false);
   assert.equal(normal.workflow_run, false);
+  assert.equal(normal.workflow_create, true);
 
   // An anonymous or public session is never elevated, whatever it claims.
   const anonymous = tools({ userId: null, superAgent: true });
   assert.equal(anonymous.skill_open, false);
   assert.equal(anonymous.workflow_run, false);
+  assert.equal(anonymous.workflow_create, false);
 
   const quartz = tools({
     userId: 7,
@@ -229,6 +232,7 @@ test("the inventory tools are open only to an authenticated super-agent turn", a
   });
   assert.equal(quartz.skill_open, false);
   assert.equal(quartz.workflow_run, false);
+  assert.equal(quartz.workflow_create, false);
 });
 
 test("a super-agent turn selects the whole inventory for itself", () => {

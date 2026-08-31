@@ -32,6 +32,7 @@ import {
   resolveConversationRuntime,
   type AuthorizedRuntimeSession,
 } from "../hermes/session-service.ts";
+import { startSessionEventPump } from "../hermes/event-stream.ts";
 import {
   getHermesUserSettings,
   persistCapabilityDecision,
@@ -1652,6 +1653,11 @@ export async function startConversationTurn(
     },
   });
   markStatus(session, "busy");
+  // The pump owns persistence, not the browser tab. Starting it at the durable
+  // run boundary closes the last first-turn crash window: a restored client can
+  // dispatch its reserved message without first keeping an SSE viewer alive,
+  // and navigation or a dashboard restart cannot lose the answer afterwards.
+  startSessionEventPump(session);
 
   const dispatch = async (target: AuthorizedRuntimeSession) => {
     await getAgentRuntimeByKind(target.runtimeKind).startRun({

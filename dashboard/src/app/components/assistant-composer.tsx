@@ -124,6 +124,7 @@ import { composerSegments } from '@/lib/composer-links';
 import { modelAttachmentHref } from '@/lib/model-attachments';
 import ModelCubeIcon from '@/app/components/model-cube-icon';
 import SignInRequiredCard from '@/app/components/sign-in-required-card';
+import type { ProductSearchItem } from '@/lib/generative-ui/contracts.ts';
 
 /** What the goal card's play button sends when a goal has stalled. */
 const GOAL_CONTINUATION_MESSAGE = 'Continue working on the goal.';
@@ -142,7 +143,7 @@ function workflowInputFromComposer(value: string, stagedPrompt: string): string 
 
 export interface ComposerAttachment {
   name: string;
-  type?: 'text' | 'image' | 'model' | 'video' | 'audio' | 'document';
+  type?: 'text' | 'image' | 'model' | 'video' | 'audio' | 'document' | 'product';
   /** Data URL for image attachments — enables an inline thumbnail + lightbox preview. */
   dataUrl?: string;
   /** Set for 3D models, videos, audio and documents; the chip links to the stored file so it can be checked before sending. */
@@ -156,6 +157,8 @@ export interface ComposerAttachment {
    * accepts either and the chip reads whichever the attachment actually is.
    */
   summary?: DocumentAttachmentSummary | ModelAttachmentSummary;
+  /** Structured product selected from a native product-search result. */
+  product?: ProductSearchItem;
 }
 
 interface Props {
@@ -1376,9 +1379,20 @@ export default function AssistantComposer({
                     <span className="shrink-0 text-[var(--botanical)]">
                       <ModelCubeIcon className="h-3.5 w-3.5" />
                     </span>
+                  ) : attachment.type === 'product' && attachment.product?.imageUrl ? (
+                    // Product images are already allowlisted HTTPS display URLs.
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={attachment.product.imageUrl}
+                      alt=""
+                      referrerPolicy="no-referrer"
+                      className="h-5 w-5 shrink-0 rounded-md bg-white object-contain"
+                    />
                   ) : (
                     <svg className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
-                      {attachment.type === 'image' ? (
+                      {attachment.type === 'product' ? (
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h10.5l.75 12H6l.75-12ZM9 9V6a3 3 0 0 1 6 0v3" />
+                      ) : attachment.type === 'image' ? (
                         <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 4.5h16.5v15H3.75z" />
                       ) : attachment.type === 'video' ? (
                         <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h10.5v10.5H3.75zM14.25 10.5 20.25 7.5v9l-6-3z" />

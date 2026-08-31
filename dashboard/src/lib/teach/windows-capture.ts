@@ -27,6 +27,24 @@ import { ensureHelperBinary, helperAvailability, helperChildEnvironment } from "
 
 const READY_TIMEOUT_MS = 30_000;
 const STOP_TIMEOUT_MS = 12_000;
+const DOTNET_UNHANDLED_EXCEPTION = 0xe0434352;
+const STARTUP_ERROR_PREFIX = "BB_TEACH_ERROR|";
+
+/**
+ * Node preserves a Windows extended-path prefix when the desktop runtime was
+ * itself launched from one (for example `\\\\?\\C:\\...`). The recorder is
+ * deliberately compiled against the in-box .NET Framework, whose legacy
+ * `System.IO.Path` rejects the `?` in that otherwise valid Win32 spelling.
+ *
+ * Keep the namespaced path on Breadboard's side, where it avoids MAX_PATH, and
+ * translate it only at the helper process boundary. The recording directories
+ * are shallow enough that removing the prefix cannot reintroduce MAX_PATH here.
+ */
+export function pathForLegacyWindowsHelper(value: string): string {
+  if (value.startsWith("\\\\?\\UNC\\")) return `\\\\${value.slice(8)}`;
+  if (value.startsWith("\\\\?\\")) return value.slice(4);
+  return value;
+}
 
 interface ActiveCapture {
   sessionId: string;
@@ -57,6 +75,24 @@ const registry = (): Map<string, ActiveCapture> => {
   return holder.__breadboardTeachCaptures;
 };
 
+/**
+ * Sessions between spawn request and ready handshake.
+ *
+ * Recovery runs from more than one Next route bundle. Without this marker it
+ * can observe the freshly inserted `preparing` row before the helper has joined
+ * the active-capture map, decide it belongs to a dead process, and delete the
+ * recording directory from underneath the helper during startup.
+ */
+const startingRegistry = (): Set<string> => {
+  const holder = globalThis as typeof globalThis & {
+    __breadboardTeachCapturesStarting?: Set<string>;
+  };
+  if (!holder.__breadboardTeachCapturesStarting) {
+    holder.__breadboardTeachCapturesStarting = new Set();
+  }
+  return holder.__breadboardTeachCapturesStarting;
+};
+
 function readLines(stream: NodeJS.ReadableStream, onLine: (line: string) => void): void {
   let buffer = "";
   stream.setEncoding("utf8");
@@ -83,6 +119,40 @@ function countEvents(eventLogPath: string): number {
   }
 }
 
+function recorderStartupProblem(line: string): string | null {
+  if (!line.startsWith(STARTUP_ERROR_PREFIX)) return null;
+
+  const exceptionType = line.slice(STARTUP_ERROR_PREFIX.length).split("|", 1)[0] ?? "";
+  if (exceptionType.endsWith("UnauthorizedAccessException")) {
+    return "Breadboard could not write to the recording folder.";
+  }
+  if (exceptionType.endsWith("DirectoryNotFoundException")) {
+    return "The recording folder was not prepared correctly.";
+  }
+  if (exceptionType.endsWith("ArgumentException")) {
+    return "Windows rejected the recording folder.";
+  }
+  if (exceptionType.endsWith("IOException")) {
+    return "Breadboard could not prepare the recording files.";
+  }
+  return "Windows could not initialize the recorder.";
+}
+
+export function recorderExitMessage(code: number, startupProblem?: string | null): string {
+  if (startupProblem) {
+    return `The demonstration recorder could not start. ${startupProblem}`;
+  }
+
+  const unsignedCode = code >>> 0;
+  if (unsignedCode === DOTNET_UNHANDLED_EXCEPTION) {
+    return "The Windows demonstration recorder crashed during startup. Restart Breadboard and try again.";
+  }
+
+  return `The demonstration recorder exited during startup (code ${code}, 0x${unsignedCode
+    .toString(16)
+    .toUpperCase()}).`;
+}
+
 export class WindowsDemonstrationCaptureBackend implements DemonstrationCaptureBackend {
   readonly platform = "win32";
 
@@ -92,19 +162,34 @@ export class WindowsDemonstrationCaptureBackend implements DemonstrationCaptureB
 
   async start(options: CaptureOptions): Promise<CaptureSession> {
     const captures = registry();
-    if (captures.has(options.sessionId)) {
+    const starting = startingRegistry();
+    if (captures.has(options.sessionId) || starting.has(options.sessionId)) {
       throw new Error("That teaching session is already recording.");
     }
 
+    starting.add(options.sessionId);
+    try {
+      return await this.startCapture(options, captures);
+    } finally {
+      starting.delete(options.sessionId);
+    }
+  }
+
+  private async startCapture(
+    options: CaptureOptions,
+    captures: Map<string, ActiveCapture>,
+  ): Promise<CaptureSession> {
     const binary = await ensureHelperBinary();
     const outputDirectory = ensureDirectory(options.outputDirectory);
     const eventLogPath = path.join(outputDirectory, "events.jsonl");
-    const framesDirectory = options.captureFrames ? path.join(outputDirectory, "frames") : null;
+    const framesDirectory = options.captureFrames
+      ? ensureDirectory(path.join(outputDirectory, "frames"))
+      : null;
 
     const args = [
       "record",
       "--out",
-      outputDirectory,
+      pathForLegacyWindowsHelper(outputDirectory),
       "--max-frames",
       String(Math.max(1, Math.min(2000, options.maxFrames))),
       "--frame-width",
@@ -120,7 +205,9 @@ export class WindowsDemonstrationCaptureBackend implements DemonstrationCaptureB
     }) as ChildProcessWithoutNullStreams;
 
     const exited = new Promise<number | null>((resolve) => {
-      child.once("exit", (code) => resolve(code));
+      // `close` runs after stdout/stderr have drained, so a structured startup
+      // failure is available before we turn the exit into a user-facing error.
+      child.once("close", (code) => resolve(code));
     });
 
     let ready: (value: Record<string, unknown>) => void = () => {};
@@ -138,13 +225,17 @@ export class WindowsDemonstrationCaptureBackend implements DemonstrationCaptureB
         // The helper speaks JSON on stdout; anything else is not for us.
       }
     });
+    let startupProblem: string | null = null;
     // The helper never prints captured content to stderr, only failures to start.
-    readLines(child.stderr, (line) => teachWarn("capture", "recorder reported a problem", { line }));
+    readLines(child.stderr, (line) => {
+      startupProblem = recorderStartupProblem(line) ?? startupProblem;
+      teachWarn("capture", "recorder reported a problem", { line });
+    });
 
     child.once("error", (error) => readyFailed(error));
     void exited.then((code) => {
       if (code !== 0 && code !== null) {
-        readyFailed(new Error(`The demonstration recorder exited with code ${code}.`));
+        readyFailed(new Error(recorderExitMessage(code, startupProblem)));
       }
     });
 
@@ -153,7 +244,13 @@ export class WindowsDemonstrationCaptureBackend implements DemonstrationCaptureB
         () => reject(new Error("The demonstration recorder did not start in time.")),
         READY_TIMEOUT_MS,
       );
-      void readySignal.finally(() => clearTimeout(timer));
+      // `finally` creates a second rejected promise when startup fails. Handling
+      // both outcomes directly clears the timer without leaking that rejection
+      // into Next.js' process-level unhandledRejection reporter.
+      void readySignal.then(
+        () => clearTimeout(timer),
+        () => clearTimeout(timer),
+      );
     });
 
     let handshake: Record<string, unknown>;
@@ -297,10 +394,10 @@ export class WindowsDemonstrationCaptureBackend implements DemonstrationCaptureB
 
 /** True when a recorder for this session is still alive in this process. */
 export function hasActiveCapture(sessionId: string): boolean {
-  return registry().has(sessionId);
+  return registry().has(sessionId) || startingRegistry().has(sessionId);
 }
 
 /** Every session this process is still recording. Used to clean up on restart. */
 export function activeCaptureSessionIds(): string[] {
-  return [...registry().keys()];
+  return [...new Set([...registry().keys(), ...startingRegistry()])];
 }

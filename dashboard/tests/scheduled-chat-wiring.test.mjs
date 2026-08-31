@@ -20,6 +20,9 @@ const runner = source("../src/lib/schedules/runner.ts");
 const scheduler = source("../src/lib/schedules/scheduler.ts");
 const backgroundExecutor = source("../scripts/runtime-v2-background-executor.mjs");
 const eventStream = source("../src/lib/hermes/event-stream.ts");
+const terminal = source("../src/app/components/hermes/dashboard-agent-terminal.tsx");
+const sidebar = source("../src/app/components/hermes/terminal-sidebar.tsx");
+const conversationStore = source("../src/lib/conversations/store.ts");
 
 test("the Prompts palette no longer schedules anything", () => {
   // Scheduling is a place of its own; the palette only produces text.
@@ -45,6 +48,36 @@ test("the Scheduled panel composes with the same capability palette the chat has
   assert.match(scheduledPanel, /<SlashCommandMenu/);
   assert.match(scheduledPanel, /setSlashMenuOpen\(true\)[\s\S]{0,100}setPaletteOpen\(false\)/);
   assert.doesNotMatch(scheduledPanel, /next === "\/"[\s\S]{0,100}setPaletteOpen\(true\)/);
+  // Its resting shell and controls are the same full-size composer shown under
+  // a normal chat, including intelligence, dictation and the accent send arrow.
+  assert.match(scheduledPanel, /className="neu-composer relative mt-5 rounded-\[30px\] p-2"/);
+  assert.match(scheduledPanel, /<SpeechDictationButton[\s\S]{0,160}placement="below"/);
+  assert.match(scheduledPanel, /className="neu-button flex h-11[\s\S]{0,160}selectedEffortLabel/);
+  assert.match(scheduledPanel, /className="neu-button-accent flex h-11 w-11/);
+  // A schedule captures the displayed intelligence rather than reverting to
+  // an unrelated server default when it fires unattended.
+  assert.match(scheduledPanel, /model,[\s\S]{0,40}reasoningEffort/);
+  assert.match(runner, /model: job\.model,[\s\S]{0,80}reasoningEffort: job\.reasoning_effort/);
+});
+
+test("plain-language delayed tasks enter Scheduled instead of sending immediately", () => {
+  assert.match(terminal, /parseExplicitScheduleRequest\(text\)/);
+  assert.match(terminal, /oneShot: schedule\.oneShot,[\s\S]{0,80}runAt: schedule\.runAt/);
+  assert.match(terminal, /notifySchedulesChanged\(\);[\s\S]{0,80}setSidePanel\("scheduled"\)/);
+  assert.match(scheduledPanel, /oneShot: !advancedOpen && parsed\.oneShot/);
+  assert.match(scheduledPanel, /runAt: !advancedOpen \? parsed\.runAt : null/);
+});
+
+test("a running scheduled chat has one loader, then becomes an unread Recent", () => {
+  assert.match(conversationStore, /scheduledChatJobId: row\.scheduled_chat_job_id \?\? null/);
+  assert.match(runner, /scheduledChatJobId: job\.id/);
+  assert.match(sidebar, /const scheduled = visibleChats\.filter\(\(chat\) => chat\.scheduled && chat\.active\)/);
+  assert.match(sidebar, /label="Scheduled"/);
+  assert.match(sidebar, /scheduled\.map\(\(chat\) => renderRow\(chat\)\)/);
+  assert.match(scheduledPanel, /job\.running \? \([\s\S]{0,180}<ActiveChatIcon/);
+  // The same history list feeds the existing active -> unread edge detector.
+  assert.match(terminal, /scheduled: item\.scheduled/);
+  assert.match(terminal, /unread: unreadChats\.has\(item\.id\)/);
 });
 
 test("the palette can be anchored above or below its trigger", () => {
@@ -122,6 +155,7 @@ test("a scheduled run goes through the same authenticated turn pipeline as a per
   );
   // An unattended run must never sit waiting on a permission prompt.
   assert.match(runner, /"blocked" in result/);
+  assert.match(runner, /waitForSessionEventPump\(runtime\)/);
 });
 
 test("the pump can run without a browser attached, and the SSE route still uses it", () => {

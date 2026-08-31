@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self'; script-src 'self'"
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="./overlay.css" />
+    <script src="./overlay.js"></script>
+    <title>Bread is using your computer</title>
+  </head>
+  <body>
+    <div class="screen-edge" aria-hidden="true"></div>
+    <div class="computer-use-notice" role="status" aria-live="polite">
+      <span class="status-light" aria-hidden="true"></span>
+      <strong>Bread</strong>
+      <span>is using your computer</span>
+      <span class="notice-divider" aria-hidden="true"></span>
+      <kbd>esc</kbd>
+      <span>to cancel</span>
+    </div>
+    <div class="cursor-halo" aria-hidden="true"></div>
+  </body>
+</html>

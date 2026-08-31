@@ -18,7 +18,10 @@ import {
   messageAttachments,
   parseUploadId,
 } from "../src/lib/conversations/uploads.ts";
-import { parseScheduleRequest } from "../src/lib/schedules/natural-language.ts";
+import {
+  parseExplicitScheduleRequest,
+  parseScheduleRequest,
+} from "../src/lib/schedules/natural-language.ts";
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
@@ -691,6 +694,18 @@ test("a scheduling sentence resolves to a cron expression the panel shows back",
   assert.equal(vague.cron, "0 9 * * *");
   assert.equal(vague.recognized, false);
   assert.ok(vague.title.length > 0);
+
+  const now = new Date("2026-08-31T12:00:00.000Z");
+  const delayed = parseExplicitScheduleRequest(
+    "start this task in an hour and half",
+    now,
+  );
+  assert.ok(delayed);
+  assert.equal(delayed.oneShot, true);
+  assert.equal(delayed.runAt, "2026-08-31T13:30:00.000Z");
+  assert.equal(delayed.prompt, "start this task");
+  // Mentioning time in an ordinary question is not enough to hijack the send.
+  assert.equal(parseExplicitScheduleRequest("what happened in an hour", now), null);
 
   assert.match(scheduledPanel, /parseScheduleRequest\(text\)/);
   assert.match(scheduledPanel, /parsed\.recognized \? "Understood" : "Assuming"/);

@@ -57,6 +57,8 @@ export interface StoredUpload {
   chatSessionId: number | null;
 }
 
+type StoredUploadAttachment = Exclude<ChatMessageAttachment, { type: "product" }>;
+
 const IMAGE_MIME = /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,/i;
 
 export function dataUrlByteLength(dataUrl: string): number {
@@ -75,7 +77,7 @@ export function dataUrlMimeType(dataUrl: string): string {
  * Both the list and the content route go through here so an index always means
  * the same file.
  */
-export function messageAttachments(metadata: string | null): ChatMessageAttachment[] {
+export function messageAttachments(metadata: string | null): StoredUploadAttachment[] {
   if (!metadata) return [];
   let parsed: unknown;
   try {
@@ -86,10 +88,17 @@ export function messageAttachments(metadata: string | null): ChatMessageAttachme
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
   const record = parsed as Record<string, unknown>;
   const attachments = normalizeChatMessageAttachments(record.attachments);
-  if (attachments.length > 0) return attachments;
+  // A selected product is durable message context, not an uploaded file. If a
+  // message contains only products, do not fall through to the legacy filename
+  // fallback and accidentally list their titles in Uploads.
+  if (attachments.length > 0) {
+    return attachments.filter(
+      (attachment): attachment is StoredUploadAttachment => attachment.type !== "product",
+    );
+  }
   // Chats from before attachments were retained kept only the filenames.
   if (!Array.isArray(record.attachmentNames)) return [];
-  return record.attachmentNames.flatMap<ChatMessageAttachment>((name) =>
+  return record.attachmentNames.flatMap<StoredUploadAttachment>((name) =>
     typeof name === "string" && name.trim()
       ? [{ type: "file" as const, name: name.trim().slice(0, 240) }]
       : [],

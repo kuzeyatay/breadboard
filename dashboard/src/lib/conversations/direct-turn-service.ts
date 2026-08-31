@@ -30,6 +30,7 @@ import {
 import {
   attachmentOrderManifest,
   chatMessageAttachments,
+  productAttachmentPromptText,
   type ChatAttachment,
 } from "../chat-attachments.ts";
 import {
@@ -237,6 +238,10 @@ function currentUserInput(
     .flatMap((attachment) =>
       attachment.type === "text" || attachment.type === "document"
         ? [`--- Attached file: ${attachment.name} ---\n${attachment.text}`]
+        : attachment.type === "product"
+          ? [
+              `--- Selected product: ${attachment.name} ---\n${productAttachmentPromptText(attachment)}`,
+            ]
         : attachment.type === "model"
           ? [
               `--- Attached file: ${attachment.name} ---\n${modelAttachmentPromptText(attachment)}`,

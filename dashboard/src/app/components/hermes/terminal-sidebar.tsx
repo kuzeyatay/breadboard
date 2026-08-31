@@ -52,6 +52,8 @@ export interface TerminalSidebarChat {
   updatedAt: string;
   active: boolean;
   pinned: boolean;
+  /** A scheduler-opened chat stays in Scheduled only while its turn is active. */
+  scheduled?: boolean;
   /**
    * A blank chat with a composer draft that is not in the history feed yet.
    * It belongs in the rail immediately, but cannot be renamed, pinned, or
@@ -290,19 +292,23 @@ function ChevronIcon({ open, className = "h-3.5 w-3.5" }: { open: boolean; class
   );
 }
 
-function readSectionState(): { pinned: boolean; recents: boolean } {
-  if (typeof window === "undefined") return { pinned: true, recents: true };
+function readSectionState(): { pinned: boolean; scheduled: boolean; recents: boolean } {
+  if (typeof window === "undefined") {
+    return { pinned: true, scheduled: true, recents: true };
+  }
   try {
     const parsed = JSON.parse(window.localStorage.getItem(SECTION_STATE_KEY) ?? "{}") as {
       pinned?: unknown;
+      scheduled?: unknown;
       recents?: unknown;
     };
     return {
       pinned: parsed.pinned !== false,
+      scheduled: parsed.scheduled !== false,
       recents: parsed.recents !== false,
     };
   } catch {
-    return { pinned: true, recents: true };
+    return { pinned: true, scheduled: true, recents: true };
   }
 }
 
@@ -1061,8 +1067,22 @@ export default function TerminalSidebar({
   }, []);
   const visibleChats = frozen ? frozen.chats : chats;
 
+  // A scheduled chat is still the same durable conversation. Only its active
+  // turn changes placement: it works under Scheduled with the standard loader,
+  // then falls through to Pinned/Recents when it finishes. Keeping it in the
+  // same `chats` array lets the unread edge detector raise the green dot.
   const pinned = visibleChats.filter((chat) => chat.pinned);
   const recents = visibleChats.filter((chat) => !chat.pinned);
+  const scheduled = visibleChats.filter((chat) => chat.scheduled && chat.active);
+  const scheduledIds = new Set(scheduled.map((chat) => chat.id));
+  // These arrays are fresh derivations for this render, so removing scheduled
+  // rows in place cannot affect props or state. Keeping the ordinary grouping
+  // as the first pass also makes the Pinned/Recents invariant easy to inspect.
+  for (const chats of [pinned, recents]) {
+    for (let index = chats.length - 1; index >= 0; index -= 1) {
+      if (scheduledIds.has(chats[index].id)) chats.splice(index, 1);
+    }
+  }
 
   const stopWorking = useCallback(() => {
     setMode("idle");
@@ -1070,7 +1090,7 @@ export default function TerminalSidebar({
   }, []);
 
   const toggleSection = useCallback(
-    (key: "pinned" | "recents") => {
+    (key: "pinned" | "scheduled" | "recents") => {
       setSections((current) => {
         const next = { ...current, [key]: !current[key] };
         window.localStorage.setItem(SECTION_STATE_KEY, JSON.stringify(next));
@@ -1253,6 +1273,22 @@ export default function TerminalSidebar({
               />
               {sections.pinned ? (
                 <ul className="space-y-0.5">{pinned.map((chat) => renderRow(chat))}</ul>
+              ) : null}
+            </section>
+          ) : null}
+
+          {scheduled.length > 0 ? (
+            <section className="pt-1">
+              <SectionHeader
+                label="Scheduled"
+                open={sections.scheduled}
+                count={scheduled.length}
+                onToggle={() => toggleSection("scheduled")}
+              />
+              {sections.scheduled ? (
+                <ul className="space-y-0.5">
+                  {scheduled.map((chat) => renderRow(chat))}
+                </ul>
               ) : null}
             </section>
           ) : null}

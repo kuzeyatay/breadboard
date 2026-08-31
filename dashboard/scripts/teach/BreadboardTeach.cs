@@ -980,8 +980,22 @@ namespace Breadboard.Teach
 
         public int Run()
         {
-            Directory.CreateDirectory(outputDirectory);
-            if (captureFrames) Directory.CreateDirectory(framesDirectory);
+            // Node prepares these directories before spawn. A recovery request
+            // from another route bundle used to be able to remove them during
+            // this startup window, however, so make initialization idempotent at
+            // the final process boundary as well.
+            if (!Directory.Exists(outputDirectory))
+            {
+                Directory.CreateDirectory(outputDirectory);
+            }
+            if (captureFrames && !Directory.Exists(framesDirectory))
+            {
+                Directory.CreateDirectory(framesDirectory);
+            }
+            if (!Directory.Exists(outputDirectory) || (captureFrames && !Directory.Exists(framesDirectory)))
+            {
+                throw new DirectoryNotFoundException("The recording directory could not be prepared.");
+            }
             writer = new StreamWriter(new FileStream(eventLogPath, FileMode.Create, FileAccess.Write, FileShare.Read), new UTF8Encoding(false));
             writer.AutoFlush = true;
 
@@ -2375,6 +2389,22 @@ namespace Breadboard.Teach
     {
         [STAThread]
         public static int Main(string[] args)
+        {
+            try
+            {
+                return Run(args);
+            }
+            catch (Exception error)
+            {
+                string message = (error.Message ?? "Windows could not initialize the recorder.")
+                    .Replace("\r", " ")
+                    .Replace("\n", " ");
+                Console.Error.WriteLine("BB_TEACH_ERROR|" + error.GetType().FullName + "|" + message);
+                return 4;
+            }
+        }
+
+        private static int Run(string[] args)
         {
             Native.MakeDpiAware();
             try { Console.OutputEncoding = new UTF8Encoding(false); }

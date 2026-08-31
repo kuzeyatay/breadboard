@@ -20,6 +20,7 @@ export interface ConversationRow {
   scope_kind: ConversationScopeKind;
   default_garden_id: number | null;
   active_agency_agent_slug: string | null;
+  scheduled_chat_job_id: number | null;
   legacy_chat_session_id: number | null;
   legacy_runtime_session_id: number | null;
   next_order_index: number;
@@ -84,6 +85,8 @@ export interface CreateConversationInput {
   surface?: HermesSurface;
   scopeKind?: ConversationScopeKind;
   defaultGardenId?: number | null;
+  /** Schedule that created this chat, if it was opened unattended. */
+  scheduledChatJobId?: number | null;
   /** Off the record: hidden from history and invisible to memory, for good. */
   temporary?: boolean;
 }
@@ -94,8 +97,11 @@ export function createConversation(
 ): ConversationRow {
   const publicId = `conv_${crypto.randomBytes(18).toString("base64url")}`;
   const result = database.prepare(`
-    INSERT INTO conversations(public_id, user_id, title, surface, scope_kind, default_garden_id, temporary)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO conversations(
+      public_id, user_id, title, surface, scope_kind, default_garden_id,
+      scheduled_chat_job_id, temporary
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     publicId,
     input.userId,
@@ -103,6 +109,7 @@ export function createConversation(
     input.surface ?? "dashboard_terminal",
     input.scopeKind ?? "global",
     input.defaultGardenId ?? null,
+    input.scheduledChatJobId ?? null,
     input.temporary ? 1 : 0,
   );
   const id = Number(result.lastInsertRowid);
@@ -557,12 +564,20 @@ export function createConversationWithInitialTurn(input: {
       conversation,
       ...input.turn,
     }, database);
+    const preDispatchRecovery = parseObject(
+      parseObject(input.turn.metadata).preDispatchRecovery,
+    );
     const assistantMessage = failAssistantMessage({
       conversationId: conversation.id,
       clientMessageId: input.turn.clientMessageId,
       status: "aborted",
       error: "turn_dispatch_pending",
-      metadata: { preDispatchReserved: true },
+      metadata: {
+        preDispatchReserved: true,
+        ...(Object.keys(preDispatchRecovery).length > 0
+          ? { preDispatchRecovery }
+          : {}),
+      },
     }, database);
     return {
       conversation: turn.conversation,
@@ -1226,6 +1241,7 @@ export function presentConversation(row: ConversationRow): {
   scopeKind: ConversationScopeKind;
   defaultGardenId: number | null;
   activeAgencyAgentSlug: string | null;
+  scheduledChatJobId: number | null;
   pinned: boolean;
   pinnedAt: string | null;
   highlight: string | null;
@@ -1239,6 +1255,7 @@ export function presentConversation(row: ConversationRow): {
     scopeKind: row.scope_kind,
     defaultGardenId: row.default_garden_id,
     activeAgencyAgentSlug: row.active_agency_agent_slug,
+    scheduledChatJobId: row.scheduled_chat_job_id ?? null,
     pinned: row.pinned_at !== null,
     pinnedAt: row.pinned_at ?? null,
     // The client mirrors this rather than remembering what it asked for: a

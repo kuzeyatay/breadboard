@@ -122,6 +122,8 @@ function host(
     actionStarted: ({ action }) => log.push(`started:${action}`),
     actionCompleted: () => log.push("completed"),
     actionFailed: () => log.push("failed"),
+    desktopControlStarted: () => log.push("desktop-control:started"),
+    desktopControlStopped: () => log.push("desktop-control:stopped"),
     requestApproval: async ({ action }) => {
       log.push(`approval:${action}`);
       return approvals.shift() ?? false;
@@ -270,6 +272,9 @@ test("approved desktop run captures screenshots and executes GUI actions", async
   assert.ok(log.includes("return-window:capture"));
   assert.ok(log.includes("return-window:focus"));
   assert.ok(log.includes("status:The newest email is a project update."));
+  assert.equal(log.filter((entry) => entry === "desktop-control:started").length, 1);
+  assert.equal(log.filter((entry) => entry === "desktop-control:stopped").length, 1);
+  assert.ok(log.indexOf("desktop-control:started") < log.indexOf("screenshot"));
   assert.equal(outcome.summary, "The newest email is a project update.");
 });
 
@@ -296,6 +301,8 @@ test("failed and stopped desktop runs also return to the launch window", async (
 
     assert.equal(outcome.status, terminal);
     assert.equal(log.filter((entry) => entry === "return-window:focus").length, 1);
+    assert.equal(log.filter((entry) => entry === "desktop-control:started").length, 1);
+    assert.equal(log.filter((entry) => entry === "desktop-control:stopped").length, 1);
   }
 });
 

@@ -1,0 +1,152 @@
+:root {
+  --signal: #34d17a;
+  --signal-bright: #79f2aa;
+  --edge-border: rgba(74, 231, 137, 0.62);
+  --edge-glow: rgba(52, 209, 122, 0.24);
+  --edge-glow-bright: rgba(121, 242, 170, 0.32);
+  --corner-glow: rgba(52, 209, 122, 0.56);
+  --notice-ring: rgba(52, 209, 122, 0.12);
+  --status-glow: rgba(52, 209, 122, 0.88);
+  --cursor-border: rgba(121, 242, 170, 0.82);
+  --cursor-wash: rgba(52, 209, 122, 0.08);
+  --cursor-fill: rgba(52, 209, 122, 0.22);
+  --cursor-glow: rgba(52, 209, 122, 0.56);
+  --notice: rgba(18, 22, 20, 0.94);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+:root[data-appearance="red"] {
+  --signal: #ff485c;
+  --signal-bright: #ff8b96;
+  --edge-border: rgba(255, 72, 92, 0.7);
+  --edge-glow: rgba(255, 52, 75, 0.28);
+  --edge-glow-bright: rgba(255, 139, 150, 0.36);
+  --corner-glow: rgba(255, 52, 75, 0.62);
+  --notice-ring: rgba(255, 72, 92, 0.18);
+  --status-glow: rgba(255, 72, 92, 0.92);
+  --cursor-border: rgba(255, 139, 150, 0.88);
+  --cursor-wash: rgba(255, 52, 75, 0.1);
+  --cursor-fill: rgba(255, 52, 75, 0.25);
+  --cursor-glow: rgba(255, 52, 75, 0.62);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+  user-select: none;
+}
+
+:root:not([data-surface]) body {
+  visibility: hidden;
+}
+
+.screen-edge,
+.computer-use-notice,
+.cursor-halo {
+  display: none;
+}
+
+:root[data-surface="edge"] .screen-edge {
+  position: fixed;
+  inset: 0;
+  display: block;
+  border: 2px solid var(--edge-border);
+  box-shadow:
+    inset 0 0 26px var(--edge-glow),
+    inset 0 0 7px var(--edge-glow-bright);
+  background:
+    radial-gradient(ellipse 310px 240px at 0 0, var(--corner-glow), transparent 70%),
+    radial-gradient(ellipse 310px 240px at 100% 0, var(--corner-glow), transparent 70%),
+    radial-gradient(ellipse 310px 240px at 0 100%, var(--corner-glow), transparent 70%),
+    radial-gradient(ellipse 310px 240px at 100% 100%, var(--corner-glow), transparent 70%);
+}
+
+:root[data-surface="edge"][data-banner="true"] .computer-use-notice {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px 8px 12px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.78);
+  background: var(--notice);
+  box-shadow:
+    0 10px 32px rgba(0, 0, 0, 0.34),
+    0 0 0 1px var(--notice-ring);
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  text-rendering: geometricPrecision;
+}
+
+.computer-use-notice strong {
+  color: #fff;
+  font-weight: 650;
+}
+
+.status-light {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--signal-bright);
+  box-shadow: 0 0 12px var(--status-glow);
+}
+
+.notice-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+kbd {
+  min-width: 29px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.42);
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+:root[data-surface="cursor"] .cursor-halo {
+  position: absolute;
+  inset: 9px;
+  display: block;
+  border: 2px solid var(--cursor-border);
+  border-radius: 999px;
+  background: radial-gradient(
+    circle,
+    transparent 0 18px,
+    var(--cursor-wash) 19px,
+    var(--cursor-fill) 30px,
+    transparent 39px
+  );
+  box-shadow:
+    0 0 24px var(--cursor-glow),
+    inset 0 0 16px var(--cursor-fill);
+}
+
+@media (forced-colors: active) {
+  :root[data-surface="edge"] .screen-edge,
+  :root[data-surface="cursor"] .cursor-halo {
+    border-color: Highlight;
+  }
+}

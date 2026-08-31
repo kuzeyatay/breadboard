@@ -32,6 +32,7 @@ const compile = await import("../src/lib/teach/compile.ts");
 const induction = await import("../src/lib/teach/induction.ts");
 const artifacts = await import("../src/lib/teach/artifacts.ts");
 const backends = await import("../src/lib/teach/backends.ts");
+const windowsCapture = await import("../src/lib/teach/windows-capture.ts");
 const model = await import("../src/lib/teach/model.ts");
 const promptInputs = await import("../src/lib/teach/prompt-inputs.ts");
 
@@ -1063,6 +1064,32 @@ test("an unsupported platform says so instead of pretending", async () => {
   }
 });
 
+test("a Windows CLR crash is explained instead of shown as an opaque decimal code", () => {
+  const message = windowsCapture.recorderExitMessage(3762504530);
+  assert.match(message, /Windows demonstration recorder crashed during startup/);
+  assert.doesNotMatch(message, /3762504530/);
+
+  assert.match(
+    windowsCapture.recorderExitMessage(4, "The recording folder was not prepared correctly."),
+    /could not start.*recording folder was not prepared correctly/i,
+  );
+});
+
+test("Windows extended paths are converted only at the legacy helper boundary", () => {
+  assert.equal(
+    windowsCapture.pathForLegacyWindowsHelper("\\\\?\\C:\\Breadboard\\recording"),
+    "C:\\Breadboard\\recording",
+  );
+  assert.equal(
+    windowsCapture.pathForLegacyWindowsHelper("\\\\?\\UNC\\server\\share\\recording"),
+    "\\\\server\\share\\recording",
+  );
+  assert.equal(
+    windowsCapture.pathForLegacyWindowsHelper("C:\\Breadboard\\recording"),
+    "C:\\Breadboard\\recording",
+  );
+});
+
 test("the Windows helper source stays inside what its compiler accepts", () => {
   if (process.platform !== "win32") return;
   const source = fs.readFileSync(
@@ -1076,4 +1103,20 @@ test("the Windows helper source stays inside what its compiler accepts", () => {
   assert.doesNotMatch(source, /\?\./, "no null-conditional operators");
   assert.doesNotMatch(source, /=>\s*[^{\s][^;\n]*;\s*$/m, "no expression-bodied members");
   assert.doesNotMatch(source, /\bnameof\s*\(/, "no nameof");
+  assert.match(source, /if \(!Directory\.Exists\(outputDirectory\)\)[\s\S]*Directory\.CreateDirectory\(outputDirectory\)/);
+  assert.match(source, /if \(captureFrames && !Directory\.Exists\(framesDirectory\)\)[\s\S]*Directory\.CreateDirectory\(framesDirectory\)/);
+  assert.match(source, /BB_TEACH_ERROR\|/);
+});
+
+test("a recorder being launched is protected from orphan recovery", () => {
+  const source = fs.readFileSync(
+    new URL("../src/lib/teach/windows-capture.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /starting\.add\(options\.sessionId\)/);
+  assert.match(source, /finally \{[\s\S]*starting\.delete\(options\.sessionId\)/);
+  assert.match(
+    source,
+    /return registry\(\)\.has\(sessionId\) \|\| startingRegistry\(\)\.has\(sessionId\)/,
+  );
 });

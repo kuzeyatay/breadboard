@@ -12,8 +12,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import SpeechDictationButton from "@/app/components/speech-dictation-button";
+import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
+import { useAssistantModels } from "@/app/components/use-assistant-models";
 import { CommandHub, type CommandHubHandle } from "./command-hub";
+import { ActiveChatIcon } from "./history-client";
 import SlashCommandMenu, { type SlashCommandMenuHandle } from "./slash-command-menu";
+import { formatAssistantModelName, groupAssistantModels } from "@/lib/ai-models";
+import type { AssistantReasoningEffort } from "@/lib/assistant-reasoning";
+import type { IntelligenceMode } from "@/lib/intelligence-modes";
 import type { CommandHubItem } from "@/lib/hermes/commands.ts";
 import { slashQueryAt, slashQueryReplacementRange } from "@/lib/hermes/slash-query";
 import { AGENT_TARS_SLASH_COMMAND } from "@/lib/ui-tars/identity.ts";
@@ -127,6 +134,31 @@ const SCHEDULE_RUNTIME_AGENT_IDS = [
   "ruflo",
 ];
 
+const EFFORT_LABELS: Record<AssistantReasoningEffort, string> = {
+  none: "None",
+  low: "Light",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Ultra",
+};
+
+const FALLBACK_EFFORT_OPTIONS: IntelligenceMode[] = [
+  { value: "low", label: "Light", detail: "Quick, light reasoning" },
+  { value: "medium", label: "Medium", detail: "Balanced reasoning" },
+  { value: "high", label: "High", detail: "Deeper thinking" },
+  { value: "xhigh", label: "Extra high", detail: "Extended thinking" },
+  { value: "max", label: "Ultra", detail: "Maximum reasoning depth" },
+];
+
+function CheckIcon() {
+  return (
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2} aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+    </svg>
+  );
+}
+
 export default function TerminalScheduledPanel({ surface, gardenSlug = null }: Props) {
   const [schedules, setSchedules] = useState<ScheduledChatJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -137,6 +169,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [intelligenceOpen, setIntelligenceOpen] = useState(false);
   // The token under the caret, which is what the menu filters on.
   const [slashQuery, setSlashQuery] = useState("");
   const [title, setTitle] = useState("");
@@ -152,6 +185,14 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
   const paletteRef = useRef<CommandHubHandle>(null);
   const slashMenuRef = useRef<SlashCommandMenuHandle>(null);
   const promptSlugRef = useRef<string | null>(null);
+  const {
+    model,
+    setModel,
+    reasoningEffort,
+    setReasoningEffort,
+    intelligenceModes,
+  } = useAssistantIntelligence();
+  const { models, modelsLoading, loadModels } = useAssistantModels();
 
   const load = useCallback(async () => {
     try {
@@ -173,7 +214,14 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
     void load();
     const listener = () => void load();
     window.addEventListener(SCHEDULES_CHANGED_EVENT, listener);
-    return () => window.removeEventListener(SCHEDULES_CHANGED_EVENT, listener);
+    // Firings are started by the background executor, not this tab. Poll while
+    // the panel is present so a due row gains its loader and leaves the active
+    // list as soon as its chat finishes.
+    const timer = window.setInterval(() => void load(), 5_000);
+    return () => {
+      window.removeEventListener(SCHEDULES_CHANGED_EVENT, listener);
+      window.clearInterval(timer);
+    };
   }, [load]);
 
   const parsed = useMemo(() => parseScheduleRequest(text), [text]);
@@ -184,8 +232,16 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
   const cron = advancedOpen ? manualCron : parsed.cron;
   const cronValid = isValidCronExpression(cron);
   const preview = cronValid
-    ? `${describeCronExpression(cron)} · first run ${formatRunTime(nextCronOccurrence(cron).toISOString())}`
+    ? !advancedOpen && parsed.oneShot && parsed.runAt
+      ? `Once · ${formatRunTime(parsed.runAt)} (${formatRelativeRunTime(parsed.runAt)})`
+      : `${describeCronExpression(cron)} · first run ${formatRunTime(nextCronOccurrence(cron).toISOString())}`
     : "That cron expression is not valid.";
+  const effortOptions = intelligenceModes.length
+    ? intelligenceModes
+    : FALLBACK_EFFORT_OPTIONS;
+  const selectedEffortLabel =
+    effortOptions.find((option) => option.value === reasoningEffort)?.label ??
+    EFFORT_LABELS[reasoningEffort];
 
   /**
    * Drops a capability token into the sentence at the caret. A lone "/" means
@@ -238,6 +294,10 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
           surface,
           gardenSlug,
           promptSlug: promptSlugRef.current,
+          model,
+          reasoningEffort,
+          oneShot: !advancedOpen && parsed.oneShot,
+          runAt: !advancedOpen ? parsed.runAt : null,
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as { error?: string };
@@ -248,7 +308,11 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
       setTitle("");
       promptSlugRef.current = null;
       setAdvancedOpen(false);
-      setMessage("Scheduled. Each run opens its own chat.");
+      setMessage(
+        parsed.oneShot && parsed.runAt
+          ? `Scheduled ${formatRelativeRunTime(parsed.runAt)}.`
+          : "Scheduled. Each run opens its own chat.",
+      );
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "This schedule could not be saved.");
     } finally {
@@ -307,7 +371,9 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
         (job) => job.surface === "garden_chat" && job.gardenSlug === gardenSlug,
       )
     : schedules;
-  const visible = showActiveOnly ? scoped.filter((job) => job.enabled) : scoped;
+  const visible = showActiveOnly
+    ? scoped.filter((job) => job.enabled || job.running)
+    : scoped;
 
   return (
     // The same paper surface the artifacts archive uses: these panels share one
@@ -343,7 +409,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
           {scheduleTargetLabel({ surface, gardenSlug })} and sends the prompt as its first message.
         </p>
 
-        <div className="neu-inset relative mt-3 rounded-2xl border px-3 py-2">
+        <div className="neu-composer relative mt-5 rounded-[30px] p-2">
           <SlashCommandMenu
             ref={slashMenuRef}
             open={slashMenuOpen}
@@ -357,7 +423,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
               insertCapability(item);
             }}
           />
-          <div className="flex items-start gap-1.5">
+          <div className="flex min-w-0 items-end gap-1.5">
             <CommandHub
               ref={paletteRef}
               open={paletteOpen}
@@ -385,7 +451,6 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
               onSelectOpenCode={() => insertToken(OPENCODE_COMMAND)}
               onSelectCodex={() => insertToken(CODEX_COMMAND)}
               onSelectRuflo={() => insertToken(RUFLO_COMMAND)}
-              compact
               placement="below"
               surface={surface}
               gardenSlug={gardenSlug}
@@ -397,55 +462,146 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
               aria-expanded={advancedOpen}
               aria-label={advancedOpen ? "Hide cadence controls" : "Set the cadence by hand"}
               title={advancedOpen ? "Hide cadence controls" : "Set the cadence by hand"}
-              className="mt-2 shrink-0 rounded-full p-1 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
+              className="neu-button-icon flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[var(--ink)] transition hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
             >
-              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                <circle cx="12" cy="12" r="8.5" />
-                <path strokeLinecap="round" d="M12 8.5v7M8.5 12h7" />
+              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
               </svg>
             </button>
-            <textarea
-              ref={inputRef}
+            <div className="relative flex min-h-11 min-w-0 flex-1 items-center">
+              <textarea
+                ref={inputRef}
+                value={text}
+                rows={1}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setText(next);
+                  // Typing in a leading slash token filters ready commands without
+                  // opening the full capability manager — including the token of a
+                  // sentence that already has a body, so an existing capability can
+                  // be swapped. Backspacing to "/" stays quiet.
+                  const { inputType } = event.nativeEvent as Partial<InputEvent>;
+                  const slashQuery = slashQueryAt(next, event.target.selectionStart);
+                  if (slashQuery && (slashMenuOpen || !inputType?.startsWith("delete"))) {
+                    setSlashQuery(slashQuery.query);
+                    setSlashMenuOpen(true);
+                    setPaletteOpen(false);
+                  } else if (slashMenuOpen) {
+                    setSlashMenuOpen(false);
+                  }
+                }}
+                onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+                  if (slashMenuRef.current?.handleKeyDown(event)) return;
+                  if (paletteRef.current?.handleKeyDown(event)) return;
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void create();
+                  }
+                }}
+                placeholder="Schedule a task"
+                aria-label="Schedule a task"
+                className="block max-h-32 min-h-6 w-full min-w-0 max-w-full resize-none overflow-y-auto bg-transparent px-1 py-0 text-[15px] leading-6 text-[var(--ink)] caret-[var(--composer-caret)] outline-none placeholder:text-[var(--ink-muted)]"
+              />
+            </div>
+
+            <div className="relative shrink-0 self-end">
+              <button
+                type="button"
+                onClick={() => {
+                  loadModels();
+                  setIntelligenceOpen((value) => !value);
+                }}
+                onPointerEnter={loadModels}
+                onFocus={loadModels}
+                className="neu-button flex h-11 items-center gap-1.5 rounded-full bg-[var(--paper-strong)] px-3.5 text-sm text-[var(--ink)] transition hover:bg-[var(--paper-bg)]"
+                title={`${selectedEffortLabel} reasoning · ${formatAssistantModelName(model)}`}
+                aria-expanded={intelligenceOpen}
+              >
+                <span>{selectedEffortLabel}</span>
+                <svg className="h-3.5 w-3.5 text-[var(--ink-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                </svg>
+              </button>
+
+              {intelligenceOpen ? (
+                <>
+                  <button
+                    type="button"
+                    className="fixed inset-0 z-30 cursor-default"
+                    onClick={() => setIntelligenceOpen(false)}
+                    aria-label="Close intelligence menu"
+                  />
+                  <div className="neu-popover absolute right-0 top-full z-40 mt-2 flex max-h-[min(32rem,calc(100vh-8rem))] w-64 flex-col rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-2 text-sm">
+                    <div className="min-h-0 flex-1 overflow-y-auto">
+                      <div className="px-2.5 pb-1.5 pt-1 text-sm text-[var(--ink-muted)]">Intelligence</div>
+                      {effortOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => setReasoningEffort(option.value)}
+                          className={`flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-[var(--paper-strong)] ${
+                            option.value === reasoningEffort
+                              ? "neu-selected bg-[var(--paper-surface)] text-[var(--ink-heading)]"
+                              : "text-[var(--ink)]"
+                          }`}
+                        >
+                          <span>
+                            <span className="block">{option.label}</span>
+                            <span className="block text-[11px] text-[var(--ink-muted)]">{option.detail}</span>
+                          </span>
+                          {option.value === reasoningEffort ? <CheckIcon /> : null}
+                        </button>
+                      ))}
+
+                      <div className="my-1.5 border-t border-[var(--line)]" />
+                      <div className="flex items-center justify-between px-2.5 pb-1 pt-1 text-xs text-[var(--ink-muted)]">
+                        <span>Model</span>
+                        {modelsLoading ? <span>Loading…</span> : null}
+                      </div>
+                      {groupAssistantModels(models).map((group) => (
+                        <div key={group.vendorId}>
+                          <div className="px-2.5 pb-0.5 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--ink-muted)]">
+                            <span className="underline decoration-[var(--line-strong)] underline-offset-4">{group.vendorLabel}</span>
+                          </div>
+                          {group.models.map((item) => (
+                            <button
+                              key={item}
+                              type="button"
+                              onClick={() => setModel(item)}
+                              className={`flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-[var(--paper-strong)] ${
+                                item === model
+                                  ? "neu-selected bg-[var(--paper-surface)] text-[var(--ink-heading)]"
+                                  : "text-[var(--ink)]"
+                              }`}
+                            >
+                              <span className="truncate">{formatAssistantModelName(item)}</span>
+                              {item === model ? <CheckIcon /> : null}
+                            </button>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            <SpeechDictationButton
               value={text}
-              rows={1}
-              onChange={(event) => {
-                const next = event.target.value;
-                setText(next);
-                // Typing in a leading slash token filters ready commands without
-                // opening the full capability manager — including the token of a
-                // sentence that already has a body, so an existing capability can
-                // be swapped. Backspacing to "/" stays quiet.
-                const { inputType } = event.nativeEvent as Partial<InputEvent>;
-                const slashQuery = slashQueryAt(next, event.target.selectionStart);
-                if (slashQuery && (slashMenuOpen || !inputType?.startsWith("delete"))) {
-                  setSlashQuery(slashQuery.query);
-                  setSlashMenuOpen(true);
-                  setPaletteOpen(false);
-                } else if (slashMenuOpen) {
-                  setSlashMenuOpen(false);
-                }
-              }}
-              onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
-                if (slashMenuRef.current?.handleKeyDown(event)) return;
-                if (paletteRef.current?.handleKeyDown(event)) return;
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void create();
-                }
-              }}
-              placeholder="Schedule a task"
-              aria-label="Schedule a task"
-              className="mt-2 max-h-32 w-full resize-none bg-transparent text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]"
+              onChange={setText}
+              disabled={saving}
+              textareaRef={inputRef}
+              placement="below"
             />
             <button
               type="button"
               onClick={() => void create()}
               disabled={saving || !text.trim() || !cronValid}
               aria-label="Create this schedule"
-              className="neu-button-accent mt-1.5 shrink-0 rounded-full bg-[var(--botanical)] p-1.5 text-white transition disabled:opacity-40"
+              className="neu-button-accent flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)]"
             >
-              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 19V5m0 0-6 6m6-6 6 6" />
+              <svg className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 19.5v-15m0 0-6 6m6-6 6 6" />
               </svg>
             </button>
           </div>
@@ -613,7 +769,15 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
                 <li key={job.id} className="neu-surface-subtle rounded-xl border p-3">
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-[var(--ink-heading)]">{job.title}</p>
+                      <p className="flex items-center gap-2 truncate text-sm font-medium text-[var(--ink-heading)]">
+                        <span className="truncate">{job.title}</span>
+                        {job.running ? (
+                          <ActiveChatIcon
+                            label={`${job.title} is running`}
+                            className="h-3.5 w-3.5 shrink-0"
+                          />
+                        ) : null}
+                      </p>
                       <p className="mt-1 line-clamp-2 text-xs text-[var(--ink-muted)]">{job.prompt}</p>
                       <p className="mt-2 text-[10px] text-[var(--ink-muted)]">
                         {job.cronDescription} · {scheduleTargetLabel(job)}
@@ -633,24 +797,28 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
                     <div className="flex shrink-0 flex-col items-end gap-1">
                       <button
                         type="button"
+                        disabled={job.running}
                         onClick={() => void runNow(job)}
-                        className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)]"
+                        className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)] disabled:cursor-wait disabled:opacity-45"
                       >
-                        Run now
+                        {job.running ? "Running" : "Run now"}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void patch(
-                            job,
-                            { enabled: !job.enabled },
-                            job.enabled ? "Schedule paused." : "Schedule resumed.",
-                          )
-                        }
-                        className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)]"
-                      >
-                        {job.enabled ? "Pause" : "Resume"}
-                      </button>
+                      {job.oneShot && job.lastRunAt ? null : (
+                        <button
+                          type="button"
+                          disabled={job.running}
+                          onClick={() =>
+                            void patch(
+                              job,
+                              { enabled: !job.enabled },
+                              job.enabled ? "Schedule paused." : "Schedule resumed.",
+                            )
+                          }
+                          className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)] disabled:cursor-wait disabled:opacity-45"
+                        >
+                          {job.enabled ? "Pause" : "Resume"}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => void remove(job)}

@@ -1,5 +1,11 @@
-import { INTERNAL_CONCEPT_TYPE, isLegacySubtopicRelPath } from "../../learning-garden.ts";
-import { scanClusterKnowledge, type KnowledgeNode } from "../../knowledge.ts";
+import path from "node:path";
+
+import { readThoughtTopology } from "../../thought-topology/storage.ts";
+import type {
+  ThoughtTopology,
+  TopologyEdge,
+  TopologyNode,
+} from "../../thought-topology/types.ts";
 import {
   gardensForScope,
   organizationForScope,
@@ -21,23 +27,19 @@ import type {
   BrainScope,
 } from "../brain-graph-types.ts";
 
-function publicKnowledgeKind(node: KnowledgeNode): BrainNodeKind {
-  if (node.type === "source-document") return "source";
-  if (node.type === INTERNAL_CONCEPT_TYPE || node.type === "knowledge-topic") return "concept";
+function topologyNodeKind(node: TopologyNode): BrainNodeKind {
+  if (node.kind === "source") return "source";
+  if (node.kind === "internal-concept") return "concept";
   return "page";
 }
 
-function relation(value: string): BrainRelation {
-  if (value === "source") return "derived_from";
-  if (value === "wikilink") return "links_to";
+function topologyRelation(edge: TopologyEdge): BrainRelation {
+  if (edge.relationType === "derives-from") return "derived_from";
+  if (edge.relationType === "part-of") return "belongs_to";
+  if (edge.relationType === "applies-to" || edge.relationType === "example-of") {
+    return "supports";
+  }
   return "related_to";
-}
-
-function visibleKnowledge(node: KnowledgeNode): boolean {
-  return !(
-    node.draft === "true" ||
-    (node.type !== INTERNAL_CONCEPT_TYPE && isLegacySubtopicRelPath(node.relPath))
-  );
 }
 
 function gardenFragment(
@@ -74,13 +76,10 @@ function gardenFragment(
     metadata: {
       visibility: garden.visibility,
       ownedByYou: garden.ownerUserId === context.userId,
+      graphModel: "thought-topology",
     },
   });
 
-  // A Garden owned by the viewer can still be organization-visible. Personal
-  // scope deliberately anchors it to the viewer; otherwise it would point at
-  // an organization node that is absent from that scope and normalization
-  // would silently discard the ownership edge.
   const useOrganizationParent = Boolean(org) && scope.kind !== "personal";
   const parentId = useOrganizationParent ? `organization:${org!.publicId}` : "user:self";
   if (scope.kind !== "organization" || organizationForScope(context, scope)?.id === org?.id) {
@@ -102,131 +101,214 @@ function gardenFragment(
     });
   }
 
-  const contentPath = process.env.QUARTZ_CONTENT_PATH;
-  if (!contentPath) {
+  const contentRoot = process.env.QUARTZ_CONTENT_PATH;
+  if (!contentRoot) {
     return {
       nodes,
       edges,
-      warnings: [
-        {
-          source: "gardens",
-          code: "content_path_unavailable",
-          message: "Canonical Garden files are unavailable; Garden anchors are still shown.",
-        },
-      ],
+      warnings: [{
+        source: "thought-topology",
+        code: "content_path_unavailable",
+        message: "Thought Topology files are unavailable; Garden anchors are still shown.",
+      }],
     };
   }
 
-  try {
-    const knowledge = scanClusterKnowledge(contentPath, garden.slug, { migrateSources: false });
-    const visible = knowledge.nodes.filter(visibleKnowledge);
-    const ranked = visible
-      .sort(
-        (left, right) =>
-          (right.wordCount > 0 ? 1 : 0) - (left.wordCount > 0 ? 1 : 0) ||
-          (Date.parse(right.date) || 0) - (Date.parse(left.date) || 0) ||
-          left.slug.localeCompare(right.slug),
-      )
-      .slice(0, perGardenLimit);
-    const visibleSlugs = new Set(ranked.map((node) => node.slug));
+  const topology = readThoughtTopology(path.join(contentRoot, garden.slug));
+  if (!topology) {
+    return {
+      nodes,
+      edges,
+      warnings: [{
+        source: "thought-topology",
+        code: "topology_unavailable",
+        message: "One authorized Garden is waiting for its Thought Topology to be generated.",
+      }],
+    };
+  }
 
-    for (const node of ranked) {
-      const kind = publicKnowledgeKind(node);
-      const nodeId = knowledgeNodeId(garden.slug, kind, node.slug);
-      nodes.push({
-        id: nodeId,
-        kind,
-        label: node.title,
-        subtitle: node.description || node.excerpt || undefined,
-        href: `/garden/${encodeURIComponent(garden.slug)}?note=${encodeURIComponent(node.slug)}`,
-        origins: ["canonical"],
-        organizationId: org?.publicId,
-        gardenId,
-        gardenSlug: garden.slug,
-        createdAt: node.date,
-        updatedAt: node.date,
-        expandable: kind !== "concept",
-        metrics: { wordCount: node.wordCount, activity: node.locations.length },
-        metadata: {
-          knowledgeType: node.type,
-          sourceType: node.sourceType || null,
-          locationCount: node.locations.length,
-          tagCount: node.tags.length,
-        },
-      });
+  return topologyFragment(topology, {
+    nodes,
+    edges,
+    garden,
+    gardenId,
+    organizationId: org?.publicId,
+    perGardenLimit,
+  });
+}
+
+function topologyFragment(
+  topology: ThoughtTopology,
+  context: {
+    nodes: BrainNode[];
+    edges: BrainEdge[];
+    garden: AuthorizedGarden;
+    gardenId: string;
+    organizationId?: string;
+    perGardenLimit: number;
+  },
+): BrainGraphFragment {
+  const { garden, gardenId, organizationId } = context;
+  const nodes = [...context.nodes];
+  const edges = [...context.edges];
+  const folderIdByTopologyId = new Map<string, string>();
+  const pageIdByTopologyId = new Map<string, string>();
+  const allFolders = [...topology.folders]
+    .sort((left, right) => left.depth - right.depth || left.path.localeCompare(right.path));
+  for (const folder of allFolders) {
+    if (!folder.path) folderIdByTopologyId.set(folder.id, gardenId);
+  }
+  const folders = allFolders.filter((folder) => Boolean(folder.path));
+  const pageBudget = Math.max(0, context.perGardenLimit - folders.length - 1);
+  const pages = [...topology.nodes]
+    .sort(
+      (left, right) =>
+        right.wordCount - left.wordCount || left.slug.localeCompare(right.slug),
+    )
+    .slice(0, pageBudget);
+
+  for (const folder of folders) {
+    const nodeId = knowledgeNodeId(garden.slug, "folder", folder.path || folder.id);
+    folderIdByTopologyId.set(folder.id, nodeId);
+    nodes.push({
+      id: nodeId,
+      kind: "folder",
+      label: folder.title,
+      subtitle: folder.summary.text || undefined,
+      href: folder.pageSlug
+        ? `/garden/${encodeURIComponent(garden.slug)}?note=${encodeURIComponent(folder.pageSlug)}`
+        : undefined,
+      origins: ["canonical", "thought-topology"],
+      organizationId,
+      gardenId,
+      gardenSlug: garden.slug,
+      updatedAt: topology.build.generatedAt,
+      expandable: true,
+      metrics: { activity: folder.nodeCount },
+      metadata: {
+        graphModel: "thought-topology",
+        folderPath: folder.path,
+        folderDepth: folder.depth,
+        summaryState: folder.summary.state,
+      },
+    });
+  }
+
+  for (const folder of folders) {
+    const target = folderIdByTopologyId.get(folder.id);
+    if (!target) continue;
+    const source = folder.parentId
+      ? folderIdByTopologyId.get(folder.parentId)
+      : gardenId;
+    if (!source) continue;
+    edges.push({
+      id: brainEdgeId(source, target, "contains", "canonical"),
+      source,
+      target,
+      relation: "contains",
+      origin: "canonical",
+      explicit: true,
+      weight: folder.parentId ? 1.25 : 1.45,
+      organizationId,
+      gardenId,
+    });
+  }
+
+  for (const page of pages) {
+    const kind = topologyNodeKind(page);
+    const nodeId = knowledgeNodeId(garden.slug, kind, page.slug);
+    pageIdByTopologyId.set(page.id, nodeId);
+    nodes.push({
+      id: nodeId,
+      kind,
+      label: page.title,
+      subtitle: page.summary.text || undefined,
+      href: `/garden/${encodeURIComponent(garden.slug)}?note=${encodeURIComponent(page.slug)}`,
+      origins: ["canonical", "thought-topology"],
+      organizationId,
+      gardenId,
+      gardenSlug: garden.slug,
+      updatedAt: topology.build.generatedAt,
+      expandable: kind !== "concept",
+      metrics: { wordCount: page.wordCount },
+      metadata: {
+        graphModel: "thought-topology",
+        knowledgeType: page.knowledgeType,
+        primaryConcepts: page.primaryConcepts.join(" · "),
+        summaryState: page.summary.state,
+      },
+    });
+    const folderId = folderIdByTopologyId.get(page.folderId);
+    if (folderId) {
       edges.push({
-        id: brainEdgeId(gardenId, nodeId, "contains", "canonical"),
-        source: gardenId,
+        id: brainEdgeId(folderId, nodeId, "contains", "canonical"),
+        source: folderId,
         target: nodeId,
         relation: "contains",
         origin: "canonical",
         explicit: true,
-        organizationId: org?.publicId,
+        weight: kind === "source" ? 1.25 : 1.05,
+        organizationId,
         gardenId,
-        weight: kind === "source" ? 1.3 : 1,
       });
     }
-
-    for (const edge of knowledge.edges) {
-      if (!visibleSlugs.has(edge.source) || !visibleSlugs.has(edge.target)) continue;
-      const sourceNode = ranked.find((node) => node.slug === edge.source);
-      const targetNode = ranked.find((node) => node.slug === edge.target);
-      if (!sourceNode || !targetNode) continue;
-      const source = knowledgeNodeId(garden.slug, publicKnowledgeKind(sourceNode), sourceNode.slug);
-      const target = knowledgeNodeId(garden.slug, publicKnowledgeKind(targetNode), targetNode.slug);
-      const edgeRelation = relation(edge.relation);
-      edges.push({
-        id: brainEdgeId(source, target, edgeRelation, "canonical"),
-        source,
-        target,
-        relation: edgeRelation,
-        origin: "canonical",
-        explicit: edge.relation !== "shared-topic",
-        organizationId: org?.publicId,
-        gardenId,
-        weight: edge.relation === "shared-topic" ? 0.55 : 1,
-      });
-    }
-
-    return {
-      nodes,
-      edges,
-      truncated: visible.length > ranked.length,
-    };
-  } catch {
-    return {
-      nodes,
-      edges,
-      warnings: [
-        {
-          source: "gardens",
-          code: "garden_scan_failed",
-          message: `One authorized Garden could not be scanned; its private path was not exposed.`,
-        },
-      ],
-    };
   }
+
+  for (const edge of topology.edges) {
+    const source = pageIdByTopologyId.get(edge.source);
+    const target = pageIdByTopologyId.get(edge.target);
+    if (!source || !target) continue;
+    const relation = topologyRelation(edge);
+    const origin = "thought-topology" as const;
+    edges.push({
+      id: brainEdgeId(source, target, relation, origin),
+      source,
+      target,
+      relation,
+      origin,
+      explicit: edge.origin !== "inferred",
+      confidence: edge.score,
+      weight: edge.score,
+      organizationId,
+      gardenId,
+      semanticRelation: edge.relationType,
+      direction: edge.direction,
+      explanation: edge.explanation.text || undefined,
+      evidence: edge.evidence.slice(0, 6).map((item) => item.label),
+    });
+  }
+
+  return {
+    nodes,
+    edges,
+    truncated: topology.nodes.length > pages.length,
+    warnings: topology.build.state === "ready"
+      ? []
+      : [{
+          source: "thought-topology",
+          code: `topology_${topology.build.state}`,
+          message: `One Garden's Thought Topology is ${topology.build.state}; its last safe graph is shown.`,
+        }],
+  };
 }
 
 export const gardensBrainSource = {
-  name: "gardens",
+  name: "thought-topology",
   buildOverview(
     context: BrainGraphAccessContext,
     scope: BrainScope,
     limits: BrainGraphLimits,
   ): BrainGraphFragment {
-    const fragments = gardensForScope(context, scope)
+    const gardens = gardensForScope(context, scope);
+    const fragments = gardens
       .slice(0, limits.maxGardens)
-      .map((garden) =>
-        gardenFragment(context, scope, garden, limits.maxKnowledgeNodesPerGarden),
-      );
+      .map((garden) => gardenFragment(context, scope, garden, limits.maxKnowledgeNodesPerGarden));
     return {
       nodes: fragments.flatMap((fragment) => fragment.nodes),
       edges: fragments.flatMap((fragment) => fragment.edges),
       warnings: fragments.flatMap((fragment) => fragment.warnings ?? []),
       truncated:
-        gardensForScope(context, scope).length > limits.maxGardens ||
-        fragments.some((fragment) => fragment.truncated),
+        gardens.length > limits.maxGardens || fragments.some((fragment) => fragment.truncated),
     };
   },
   expand(

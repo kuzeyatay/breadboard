@@ -9,7 +9,14 @@ import crypto from "node:crypto";
 import path from "node:path";
 import db from "../db.ts";
 import { organizationIdsForUser } from "../organizations/store.ts";
+import { readThoughtTopology } from "../thought-topology/storage.ts";
+import type { ThoughtTopology } from "../thought-topology/types.ts";
 import { ApiError } from "./route-core.ts";
+import {
+  queryThoughtTopologyGraph,
+  type HermesTopologyGraphEdge,
+  type HermesTopologyGraphResult,
+} from "./thought-topology-graph.ts";
 
 // --- CORS -----------------------------------------------------------------
 
@@ -33,7 +40,8 @@ function allowedOrigins(): string[] {
 
 export function corsHeaders(origin: string | null): Record<string, string> {
   const allowlist = allowedOrigins();
-  const allowed = origin && allowlist.includes(origin) ? origin : allowlist[0] ?? "*";
+  const allowed =
+    origin && allowlist.includes(origin) ? origin : (allowlist[0] ?? "*");
   return {
     "Access-Control-Allow-Origin": allowed,
     "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
@@ -61,7 +69,11 @@ export function enforceRateLimit(key: string, now = Date.now()): void {
     return;
   }
   if (bucket.count >= MAX_PER_WINDOW) {
-    throw new ApiError(429, "rate_limited", "Too many requests. Please slow down.");
+    throw new ApiError(
+      429,
+      "rate_limited",
+      "Too many requests. Please slow down.",
+    );
   }
   bucket.count += 1;
 }
@@ -120,7 +132,8 @@ export function authorizeQuartzAccess(
   userId: number | null,
 ): { cluster: QuartzCluster; isOwner: boolean } {
   const cluster = loadQuartzCluster(gardenId);
-  if (!cluster) throw new ApiError(404, "garden_not_found", "Garden not found.");
+  if (!cluster)
+    throw new ApiError(404, "garden_not_found", "Garden not found.");
   const isOwner = userId !== null && cluster.user_id === userId;
   if (isOwner) return { cluster, isOwner };
   if (cluster.chat_accessible === 1) {
@@ -129,7 +142,11 @@ export function authorizeQuartzAccess(
     }
   }
   // Private, or public with chat disabled: not accessible to this caller.
-  throw new ApiError(403, "quartz_ai_forbidden", "AI chat is not enabled for this page.");
+  throw new ApiError(
+    403,
+    "quartz_ai_forbidden",
+    "AI chat is not enabled for this page.",
+  );
 }
 
 // --- Page context assembly ------------------------------------------------
@@ -159,6 +176,7 @@ export interface QuartzGraphInput {
   depth?: unknown;
   relationshipTypes?: unknown;
   viewport?: unknown;
+  selectedConnection?: unknown;
 }
 
 export interface QuartzGraphContext {
@@ -169,7 +187,15 @@ export interface QuartzGraphContext {
   filters: string[];
   depth: number;
   relationshipTypes: string[];
-  viewport: { x: number; y: number; width: number; height: number; scale: number } | null;
+  viewport: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    scale: number;
+  } | null;
+  selectedConnection?: HermesTopologyGraphEdge | null;
+  thoughtTopology?: HermesTopologyGraphResult | null;
 }
 
 /**
@@ -182,17 +208,25 @@ export async function assembleQuartzContext(
   graphInput?: QuartzGraphInput | null,
 ): Promise<QuartzPageContext> {
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
-  if (!contentPath) throw new ApiError(500, "not_configured", "Content path not configured.");
+  if (!contentPath)
+    throw new ApiError(500, "not_configured", "Content path not configured.");
   const { scanClusterKnowledge } = await import("../knowledge.ts");
   const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
+  const thoughtTopology = readThoughtTopology(
+    path.join(contentPath, cluster.slug),
+  );
   const relativePageSlug = pageSlug.startsWith(`${cluster.slug}/`)
     ? pageSlug.slice(cluster.slug.length + 1)
     : pageSlug;
-  const node = knowledge.nodes.find((n) => n.slug === relativePageSlug || n.relPath === relativePageSlug);
+  const node = knowledge.nodes.find(
+    (n) => n.slug === relativePageSlug || n.relPath === relativePageSlug,
+  );
 
   const neighbors = node
     ? knowledge.edges
-        .filter((edge) => edge.source === node.slug || edge.target === node.slug)
+        .filter(
+          (edge) => edge.source === node.slug || edge.target === node.slug,
+        )
         .slice(0, 12)
         .map((edge) => ({
           related: edge.source === node.slug ? edge.target : edge.source,
@@ -200,10 +234,16 @@ export async function assembleQuartzContext(
         }))
     : [];
   const backlinks = node
-    ? knowledge.edges.filter((edge) => edge.target === node.slug).slice(0, 12).map((edge) => edge.source)
+    ? knowledge.edges
+        .filter((edge) => edge.target === node.slug)
+        .slice(0, 12)
+        .map((edge) => edge.source)
     : [];
   const outgoingLinks = node
-    ? knowledge.edges.filter((edge) => edge.source === node.slug).slice(0, 12).map((edge) => edge.target)
+    ? knowledge.edges
+        .filter((edge) => edge.source === node.slug)
+        .slice(0, 12)
+        .map((edge) => edge.target)
     : [];
 
   return {
@@ -217,9 +257,19 @@ export async function assembleQuartzContext(
     prerequisites: (node?.related ?? []).slice(0, 8),
     backlinks,
     outgoingLinks,
-    neighboringConcepts: [...new Set([...backlinks, ...outgoingLinks, ...(node?.related ?? [])])].slice(0, 16),
+    neighboringConcepts: [
+      ...new Set([...backlinks, ...outgoingLinks, ...(node?.related ?? [])]),
+    ].slice(0, 16),
     neighbors,
-    graph: graphInput ? assembleBoundedGraphContext(cluster.slug, knowledge.nodes, knowledge.edges, graphInput) : null,
+    graph: graphInput
+      ? assembleBoundedGraphContext(
+          cluster.slug,
+          knowledge.nodes,
+          knowledge.edges,
+          graphInput,
+          thoughtTopology,
+        )
+      : null,
   };
 }
 
@@ -228,84 +278,180 @@ export function assembleBoundedGraphContext(
   nodes: Array<{ slug: string; title: string }>,
   edges: Array<{ source: string; target: string; relation: string }>,
   input: QuartzGraphInput,
+  thoughtTopology?: ThoughtTopology | null,
 ): QuartzGraphContext {
   const bySlug = new Map(nodes.map((node) => [node.slug, node]));
   const normalize = (value: string) => {
     if (value === gardenSlug) return "index";
-    if (value.startsWith(`${gardenSlug}/`)) return value.slice(gardenSlug.length + 1);
+    if (value.startsWith(`${gardenSlug}/`))
+      return value.slice(gardenSlug.length + 1);
     return value.includes("/") && !bySlug.has(value) ? "" : value;
   };
   const displaySlug = (value: string) => `${gardenSlug}/${value}`;
-  const requestedSelected = typeof input.selectedNodeSlug === "string" ? normalize(input.selectedNodeSlug) : "";
+  const requestedSelected =
+    typeof input.selectedNodeSlug === "string"
+      ? normalize(input.selectedNodeSlug)
+      : "";
   const selected = bySlug.get(requestedSelected) ?? null;
   const visibleSlugs = Array.isArray(input.visibleNodeSlugs)
-    ? input.visibleNodeSlugs.filter((value): value is string => typeof value === "string").slice(0, 24)
+    ? input.visibleNodeSlugs
+        .filter((value): value is string => typeof value === "string")
+        .slice(0, 24)
     : [];
-  const visibleNodes = [...new Set(visibleSlugs)]
-    .flatMap((slug) => {
-      const value = bySlug.get(normalize(slug));
-      return value ? [{ slug: displaySlug(value.slug), title: value.title }] : [];
-    });
+  const visibleNodes = [...new Set(visibleSlugs)].flatMap((slug) => {
+    const value = bySlug.get(normalize(slug));
+    return value ? [{ slug: displaySlug(value.slug), title: value.title }] : [];
+  });
   const selectedEdges = selected
-    ? edges.filter((edge) => edge.source === selected.slug || edge.target === selected.slug)
+    ? edges.filter(
+        (edge) =>
+          edge.source === selected.slug || edge.target === selected.slug,
+      )
     : [];
   const requestedNeighbors = new Set(
     Array.isArray(input.directNeighborSlugs)
-      ? input.directNeighborSlugs.filter((value): value is string => typeof value === "string").map(normalize).slice(0, 12)
+      ? input.directNeighborSlugs
+          .filter((value): value is string => typeof value === "string")
+          .map(normalize)
+          .slice(0, 12)
       : [],
   );
-  const directNeighbors = selectedEdges.flatMap((edge) => {
-    const slug = edge.source === selected?.slug ? edge.target : edge.source;
-    if (requestedNeighbors.size && !requestedNeighbors.has(slug)) return [];
-    const value = bySlug.get(slug);
-    return value ? [{ slug: displaySlug(slug), title: value.title, relation: edge.relation }] : [];
-  }).slice(0, 12);
+  const directNeighbors = selectedEdges
+    .flatMap((edge) => {
+      const slug = edge.source === selected?.slug ? edge.target : edge.source;
+      if (requestedNeighbors.size && !requestedNeighbors.has(slug)) return [];
+      const value = bySlug.get(slug);
+      return value
+        ? [
+            {
+              slug: displaySlug(slug),
+              title: value.title,
+              relation: edge.relation,
+            },
+          ]
+        : [];
+    })
+    .slice(0, 12);
   const actualRelations = new Set(selectedEdges.map((edge) => edge.relation));
   const requestedRelations = Array.isArray(input.relationshipTypes)
-    ? input.relationshipTypes.filter((value): value is string => typeof value === "string")
+    ? input.relationshipTypes.filter(
+        (value): value is string => typeof value === "string",
+      )
     : [];
   const viewport = boundedViewport(input.viewport);
+  const selectedConnectionInput =
+    input.selectedConnection && typeof input.selectedConnection === "object"
+      ? (input.selectedConnection as Record<string, unknown>)
+      : null;
+  const graphStart =
+    requestedSelected ||
+    (typeof selectedConnectionInput?.sourceSlug === "string"
+      ? selectedConnectionInput.sourceSlug
+      : "") ||
+    `garden:${gardenSlug}`;
+  const topologyDepth = selectedConnectionInput
+    ? Math.max(1, Math.min(3, Number(input.depth) || 1))
+    : input.depth;
+  const thoughtTopologyGraph = thoughtTopology
+    ? queryThoughtTopologyGraph(thoughtTopology, {
+        start: graphStart,
+        depth: topologyDepth,
+        limit: 24,
+        relationTypes: input.relationshipTypes,
+        includeHierarchy: true,
+      })
+    : null;
+  const requestedEdgeId =
+    typeof selectedConnectionInput?.edgeId === "string"
+      ? selectedConnectionInput.edgeId
+      : "";
+  const selectedConnection = requestedEdgeId
+    ? (thoughtTopologyGraph?.edges.find(
+        (edge) => edge.id === requestedEdgeId,
+      ) ?? null)
+    : null;
   return {
-    selectedNode: selected ? { slug: displaySlug(selected.slug), title: selected.title } : null,
+    selectedNode: selected
+      ? { slug: displaySlug(selected.slug), title: selected.title }
+      : null,
     visibleNodes,
     directNeighbors,
     activeCluster: gardenSlug,
     filters: Array.isArray(input.filters)
-      ? input.filters.filter((value): value is string => typeof value === "string").map((value) => value.slice(0, 100)).slice(0, 8)
+      ? input.filters
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.slice(0, 100))
+          .slice(0, 8)
       : [],
-    depth: Math.max(0, Math.min(3, Number.isFinite(Number(input.depth)) ? Number(input.depth) : 1)),
-    relationshipTypes: (requestedRelations.length ? requestedRelations.filter((value) => actualRelations.has(value)) : [...actualRelations]).slice(0, 8),
+    depth: Math.max(
+      0,
+      Math.min(
+        3,
+        Number.isFinite(Number(input.depth)) ? Number(input.depth) : 1,
+      ),
+    ),
+    relationshipTypes: (requestedRelations.length
+      ? requestedRelations.filter((value) => actualRelations.has(value))
+      : [...actualRelations]
+    ).slice(0, 8),
     viewport,
+    ...(thoughtTopologyGraph
+      ? { thoughtTopology: thoughtTopologyGraph, selectedConnection }
+      : {}),
   };
 }
 
-export function quartzSystemContext(page: QuartzPageContext, selectedText?: string): string {
+export function quartzSystemContext(
+  page: QuartzPageContext,
+  selectedText?: string,
+): string {
   return [
     `Authorized garden: ${page.gardenName} (${page.gardenId}).`,
     `Current page: ${page.pageTitle} (${page.pageSlug}).`,
     page.visibleContent ? `Visible page content:\n${page.visibleContent}` : "",
     selectedText ? `Reader selection:\n${selectedText.slice(0, 2_000)}` : "",
     page.backlinks.length ? `Backlinks: ${page.backlinks.join(", ")}` : "",
-    page.outgoingLinks.length ? `Outgoing links: ${page.outgoingLinks.join(", ")}` : "",
-    page.neighboringConcepts.length ? `Neighboring concepts: ${page.neighboringConcepts.join(", ")}` : "",
+    page.outgoingLinks.length
+      ? `Outgoing links: ${page.outgoingLinks.join(", ")}`
+      : "",
+    page.neighboringConcepts.length
+      ? `Neighboring concepts: ${page.neighboringConcepts.join(", ")}`
+      : "",
     page.sources.length ? `Source references: ${page.sources.join(", ")}` : "",
-    page.graph ? `Bounded graph interaction context:\n${JSON.stringify(page.graph)}` : "",
+    page.graph
+      ? `${page.graph.thoughtTopology ? "Bounded Thought Topology property graph" : "Bounded graph interaction context"}:\n${JSON.stringify(page.graph)}`
+      : "",
     "Do not infer access to any other garden. Use proposal tools for every requested change.",
-  ].filter(Boolean).join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function boundedViewport(value: unknown): QuartzGraphContext["viewport"] {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  const numbers = [record.x, record.y, record.width, record.height, record.scale].map(Number);
+  const numbers = [
+    record.x,
+    record.y,
+    record.width,
+    record.height,
+    record.scale,
+  ].map(Number);
   if (!numbers.every(Number.isFinite)) return null;
-  return { x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3], scale: numbers[4] };
+  return {
+    x: numbers[0],
+    y: numbers[1],
+    width: numbers[2],
+    height: numbers[3],
+    scale: numbers[4],
+  };
 }
 
 // A shared marker used by knowledge lint (path check) intentionally references
 // this file so the QUARTZ_CONTENT_PATH root remains a single source of truth.
 export function quartzGardenRoot(gardenId: string): string {
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
-  if (!contentPath) throw new ApiError(500, "not_configured", "Content path not configured.");
+  if (!contentPath)
+    throw new ApiError(500, "not_configured", "Content path not configured.");
   return path.join(contentPath, gardenId);
 }

@@ -7,6 +7,12 @@ import { randomUUID } from "node:crypto";
 
 import type DatabaseType from "better-sqlite3";
 
+import { DEFAULT_MODEL, normalizeAssistantModelId } from "../ai-models.ts";
+import {
+  ASSISTANT_REASONING_EFFORTS,
+  DEFAULT_ASSISTANT_REASONING_EFFORT,
+  type AssistantReasoningEffort,
+} from "../assistant-reasoning.ts";
 import { ensureScheduledChatSchema } from "./schema.ts";
 import {
   CronError,
@@ -47,6 +53,9 @@ export interface ScheduledChatJobRow {
   surface: ScheduledChatSurface;
   garden_slug: string | null;
   prompt_slug: string | null;
+  model: string;
+  reasoning_effort: AssistantReasoningEffort;
+  one_shot: number;
   enabled: number;
   next_run_at: string;
   last_run_at: string | null;
@@ -94,6 +103,10 @@ export interface CreateScheduledChatInput {
   surface: ScheduledChatSurface;
   gardenSlug?: string | null;
   promptSlug?: string | null;
+  model?: string;
+  reasoningEffort?: unknown;
+  oneShot?: boolean;
+  runAt?: string | null;
   enabled?: boolean;
 }
 
@@ -121,21 +134,56 @@ function normalizeSurface(value: unknown): ScheduledChatSurface {
   throw new ScheduleError(400, "A schedule must target the terminal or a garden chat.");
 }
 
+function normalizeModel(value: unknown): string {
+  const model = normalizeAssistantModelId(value ?? DEFAULT_MODEL);
+  if (model) return model;
+  throw new ScheduleError(400, "The selected model is invalid.");
+}
+
+function normalizeReasoningEffort(value: unknown): AssistantReasoningEffort {
+  const effort = value ?? DEFAULT_ASSISTANT_REASONING_EFFORT;
+  if (
+    typeof effort === "string" &&
+    ASSISTANT_REASONING_EFFORTS.includes(effort as AssistantReasoningEffort)
+  ) {
+    return effort as AssistantReasoningEffort;
+  }
+  throw new ScheduleError(400, "The selected reasoning effort is invalid.");
+}
+
+function normalizeOneShotRunAt(value: unknown, now: Date): string {
+  const timestamp = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  if (!Number.isFinite(timestamp)) {
+    throw new ScheduleError(400, "A one-time schedule needs a valid run time.");
+  }
+  if (timestamp <= now.getTime()) {
+    throw new ScheduleError(400, "A one-time schedule must be in the future.");
+  }
+  return new Date(timestamp).toISOString();
+}
+
 export function presentScheduledChatJob(
   row: ScheduledChatJobRow,
   now: Date = new Date(),
 ): ScheduledChatJob {
+  const running =
+    row.lease_expires_at !== null && row.lease_expires_at > now.toISOString();
   return {
     id: row.id,
     title: row.title,
     prompt: row.prompt,
     cron: row.cron_expression,
-    cronDescription: describeCronExpression(row.cron_expression),
+    cronDescription: row.one_shot === 1 ? "Once" : describeCronExpression(row.cron_expression),
     surface: row.surface,
     gardenSlug: row.garden_slug,
     promptSlug: row.prompt_slug,
+    model: row.model,
+    reasoningEffort: row.reasoning_effort,
+    oneShot: row.one_shot === 1,
     enabled: row.enabled === 1,
-    nextRunAt: row.enabled === 1 ? row.next_run_at : null,
+    // A one-shot disarms atomically when it starts. Keep its due time visible
+    // while the lease says the chat is still running.
+    nextRunAt: row.enabled === 1 || running ? row.next_run_at : null,
     lastRunAt: row.last_run_at,
     lastStatus:
       row.last_status === "ok" || row.last_status === "failed" ? row.last_status : null,
@@ -145,7 +193,7 @@ export function presentScheduledChatJob(
     createdAt: row.created_at,
     // A live lease is the only honest answer to "is this running right now",
     // and an expired one is not a run — it is a process that went away.
-    running: row.lease_expires_at !== null && row.lease_expires_at > now.toISOString(),
+    running,
   };
 }
 
@@ -210,13 +258,22 @@ export class ScheduledChatJobStore {
     const cron = boundedText(input.cron, 120, "A schedule");
     const surface = normalizeSurface(input.surface);
     const gardenSlug = surface === "garden_chat" ? boundedText(input.gardenSlug, 160, "A garden") : null;
-    const nextRunAt = firstRunAfter(cron, now);
+    const model = normalizeModel(input.model);
+    const reasoningEffort = normalizeReasoningEffort(input.reasoningEffort);
+    // Validate the expression even for one-shot rows. It remains a readable,
+    // backwards-compatible description, while next_run_at is authoritative.
+    const cronRunAt = firstRunAfter(cron, now);
+    const oneShot = input.oneShot === true;
+    const nextRunAt = oneShot
+      ? normalizeOneShotRunAt(input.runAt, now)
+      : cronRunAt;
 
     const result = this.db
       .prepare(
         `INSERT INTO scheduled_chat_jobs
-           (user_id, title, prompt, cron_expression, surface, garden_slug, prompt_slug, enabled, next_run_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (user_id, title, prompt, cron_expression, surface, garden_slug, prompt_slug,
+            model, reasoning_effort, one_shot, enabled, next_run_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         userId,
@@ -226,6 +283,9 @@ export class ScheduledChatJobStore {
         surface,
         gardenSlug,
         typeof input.promptSlug === "string" ? input.promptSlug.slice(0, 100) : null,
+        model,
+        reasoningEffort,
+        oneShot ? 1 : 0,
         input.enabled === false ? 0 : 1,
         nextRunAt,
       );
@@ -257,23 +317,52 @@ export class ScheduledChatJobStore {
     if (surface === "garden_chat" && !gardenSlug) {
       throw new ScheduleError(400, "A garden schedule needs a garden.");
     }
+    const model = input.model === undefined ? existing.model : normalizeModel(input.model);
+    const reasoningEffort = input.reasoningEffort === undefined
+      ? existing.reasoning_effort
+      : normalizeReasoningEffort(input.reasoningEffort);
+    const oneShot = input.oneShot === undefined
+      ? existing.one_shot === 1
+      : input.oneShot === true;
     const enabled = input.enabled === undefined ? existing.enabled === 1 : input.enabled === true;
 
     // A paused schedule keeps its stored next run so re-enabling is predictable;
     // any change to the expression (or resuming) recomputes it from now.
-    const nextRunAt =
-      cron !== existing.cron_expression || (enabled && existing.enabled === 0)
+    const nextRunAt = oneShot
+      ? input.runAt !== undefined
+        ? normalizeOneShotRunAt(input.runAt, now)
+        : existing.next_run_at
+      : cron !== existing.cron_expression ||
+          oneShot !== (existing.one_shot === 1) ||
+          (enabled && existing.enabled === 0)
         ? firstRunAfter(cron, now)
         : existing.next_run_at;
+    if (oneShot && enabled && Date.parse(nextRunAt) <= now.getTime()) {
+      throw new ScheduleError(400, "A completed one-time schedule cannot be resumed.");
+    }
 
     this.db
       .prepare(
         `UPDATE scheduled_chat_jobs
          SET title = ?, prompt = ?, cron_expression = ?, surface = ?, garden_slug = ?,
-             enabled = ?, next_run_at = ?, updated_at = datetime('now')
+             model = ?, reasoning_effort = ?, one_shot = ?, enabled = ?, next_run_at = ?,
+             updated_at = datetime('now')
          WHERE id = ? AND user_id = ?`,
       )
-      .run(title, prompt, cron, surface, gardenSlug, enabled ? 1 : 0, nextRunAt, id, userId);
+      .run(
+        title,
+        prompt,
+        cron,
+        surface,
+        gardenSlug,
+        model,
+        reasoningEffort,
+        oneShot ? 1 : 0,
+        enabled ? 1 : 0,
+        nextRunAt,
+        id,
+        userId,
+      );
     return this.require(userId, id);
   }
 
@@ -314,7 +403,9 @@ export class ScheduledChatJobStore {
       for (const job of due) {
         let nextRunAt: string;
         try {
-          nextRunAt = nextCronOccurrence(job.cron_expression, now).toISOString();
+          nextRunAt = job.one_shot === 1
+            ? job.next_run_at
+            : nextCronOccurrence(job.cron_expression, now).toISOString();
         } catch {
           // An unparseable expression can only have arrived by direct DB edit.
           // Disable it rather than spinning on it every tick.
@@ -332,16 +423,25 @@ export class ScheduledChatJobStore {
         const updated = this.db
           .prepare(
             `UPDATE scheduled_chat_jobs
-             SET next_run_at = ?, lease_owner = ?, lease_expires_at = ?,
+             SET next_run_at = ?, enabled = ?, lease_owner = ?, lease_expires_at = ?,
                  updated_at = datetime('now')
              WHERE id = ? AND next_run_at = ?
                AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
           )
-          .run(nextRunAt, this.owner, leaseUntil, job.id, job.next_run_at, iso);
+          .run(
+            nextRunAt,
+            job.one_shot === 1 ? 0 : job.enabled,
+            this.owner,
+            leaseUntil,
+            job.id,
+            job.next_run_at,
+            iso,
+          );
         if (updated.changes > 0) {
           claimed.push({
             ...job,
             next_run_at: nextRunAt,
+            enabled: job.one_shot === 1 ? 0 : job.enabled,
             lease_owner: this.owner,
             lease_expires_at: leaseUntil,
           });

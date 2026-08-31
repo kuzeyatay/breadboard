@@ -17,6 +17,16 @@ test("the Skills hub lists the user's own workflows and can create one", () => {
   assert.doesNotMatch(panel, /Ready to run/);
   assert.match(panel, /Teach workflow/);
   assert.match(panel, /\/workflows\?teach=1/);
+  assert.doesNotMatch(panel, /Add to chat/);
+  assert.match(panel, /<SettingsIcon \/>/);
+  assert.match(panel, /title="Workflow settings"/);
+  assert.match(panel, /\/workflows\?workflow=\$\{encodeURIComponent\(workflow\.id\)\}/);
+  assert.match(panel, /<TrashIcon \/>/);
+  assert.match(panel, /method: "DELETE"/);
+  assert.match(panel, /<WorkflowSourceIcon source=\{workflow\.source\} \/>/);
+  const sourceIcon = source("../src/app/workflows/components/workflow-source-icon.tsx");
+  assert.match(sourceIcon, /source === "demonstration"/);
+  assert.match(sourceIcon, /<rect x="9" y="3" width="6" height="10" rx="3" \/>/);
 });
 
 test("saved automations are staged in the composer, then execute as chat turns", () => {
@@ -101,6 +111,36 @@ test("the agent runs a workflow through the capability-gated tool with an audit 
   // The inventory reads the database directly, so a turn never depends on a service.
   assert.match(superAgent, /listWorkflows\(userId\)/);
   assert.match(superAgent, /workflow_run/);
+});
+
+test("Hermes can explicitly author a workflow into the capability-page store", () => {
+  const route = source("../src/app/api/hermes/tools/workflow/create/route.ts");
+  const authoring = source("../src/lib/workflows/authoring.ts");
+  const scopes = source("../src/lib/hermes/tool-scopes.ts");
+  const broker = source("../src/lib/hermes/capability-broker.ts");
+  const plugin = source("../../hermes-agent/plugins/breadboard/__init__.py");
+  const manifest = source("../../hermes-agent/plugins/breadboard/plugin.yaml");
+  const listRoute = source("../src/app/api/workflows/local/route.ts");
+
+  assert.match(route, /explicitlyRequestsWorkflowCreation\(run\.instruction\)/);
+  assert.match(route, /buildAuthoredWorkflowState\(definition\)/);
+  assert.match(route, /createWorkflow\(session\.user_id/);
+  assert.match(route, /workflow\.tool\.create/);
+  assert.match(route, /priorWorkflowId/);
+  assert.match(route, /toolCallId/);
+  assert.match(route, /Saved and registered in the Workflows capability page/);
+  assert.match(authoring, /getAllBlocks/);
+  assert.match(authoring, /unknown input/);
+  assert.match(authoring, /must not contain a cycle/);
+  assert.match(scopes, /WORKFLOW_AUTHORING_TOOLS = \["workflow_create"\]/);
+  assert.match(broker, /for \(const tool of WORKFLOW_AUTHORING_TOOLS\)/);
+  assert.match(plugin, /"workflow_create"/);
+  assert.match(plugin, /workflow_propose for that/);
+  assert.match(plugin, /"workflow", "image_to_3d"/);
+  assert.match(manifest, /- workflow_create/);
+  // Registration is not a second copy: both Hermes creation and the picker use
+  // the canonical workflow store.
+  assert.match(listRoute, /listWorkflows\(userId\)/);
 });
 
 test("the workflows page is a native canvas, not an embedded third-party editor", () => {
