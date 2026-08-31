@@ -78,6 +78,7 @@ dashboard/playwright-report/
 /.qa-results/
 # Disposable isolated worktrees used for bounded QA repair experiments.
 /.qa-worktrees/
+/.tmp/
 
 # ---------------------------------------------------------------------------
 # Databases and runtime state
@@ -85,15 +86,17 @@ dashboard/playwright-report/
 *.db
 *.db-wal
 *.db-shm
-/runtime/jobs/
-/runtime/endpoints.json
+/runtime/
 /runtime-v2/
+dashboard/runtime-v2/
 /database/
 
 # Machine-local integration credentials and generated optimizer state.
 /cliproxy/api-key
 /cliproxy/management-key
 /cliproxy/config.yaml
+/cliproxy/auth/
+/cliproxy/bin/
 /.claude/proven-config.json
 /.claude/.proven-config-version
 
@@ -162,6 +165,7 @@ dashboard/cad-projects/
 # HyperFrames: the scaffolded video projects (with their renders) and the
 # HyperFrames CLI Breadboard installs into its own npm prefix.
 dashboard/hyperframes-runs/
+dashboard/openmaic-data/
 dashboard/hyperframes-cli/
 dashboard/resource2skill-runs/
 
@@ -211,11 +215,20 @@ dashboard/goal-mode/
 # only the per-garden directories are ignored.
 # ---------------------------------------------------------------------------
 dashboard/db/
+
+# Mutable state the teaching subsystem creates on demand in the dev layout: the
+# compiled capture helper, the lazily-installed speech environment and its model
+# cache, demonstration recordings, and each learned workflow's compiled form.
+# All of it is rebuilt or re-downloaded when needed; none of it is source.
+dashboard/runtime/
 dashboard/database/
 dashboard/artifacts/[0-9]*/
 dashboard/chat-videos/
 
 # Disposable gardens created by actual-Electron development QA.
+/quartz/content/
+/quartz/public/
+/quartz/.breadboard-quartz-publish*
 /quartz/content/critical-qa-garden-*/
 /quartz/content/hot-gbrain-smoke-*/
 
