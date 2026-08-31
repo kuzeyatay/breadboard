@@ -7,9 +7,13 @@ const MAX_TARGET_ARGUMENTS: usize = 4_096;
 const MAX_WINDOWS_COMMAND_LINE_UTF16: usize = 32_767;
 const MAX_ENVIRONMENT_NAME_BYTES: usize = 256;
 const MEBIBYTE_BYTES: u64 = 1024 * 1024;
-const SYSTEM_COMMIT_RESERVE_FLOOR_BYTES: u64 = 4 * 1024 * MEBIBYTE_BYTES;
-const SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES: u64 = 1536 * MEBIBYTE_BYTES;
-const SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES: u64 = 8 * 1024 * MEBIBYTE_BYTES;
+// Development system-commit reserve: max(2 GiB, 5% of the commit limit
+// bounded to 1-4 GiB) plus a 256 MiB guard band. Keep in sync with
+// `runtime-core/src/admission.rs` and `runtime-core/src/process_owner.rs`.
+const SYSTEM_COMMIT_RESERVE_FLOOR_BYTES: u64 = 2 * 1024 * MEBIBYTE_BYTES;
+const SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES: u64 = 1024 * MEBIBYTE_BYTES;
+const SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES: u64 = 4 * 1024 * MEBIBYTE_BYTES;
+const SYSTEM_COMMIT_DERIVED_RESERVE_DIVISOR: u64 = 20;
 const SYSTEM_COMMIT_RESERVE_GUARD_BAND_BYTES: u64 = 256 * MEBIBYTE_BYTES;
 const SYSTEM_COMMIT_REBALANCE_HYSTERESIS_BYTES: u64 = 256 * MEBIBYTE_BYTES;
 const SYSTEM_COMMIT_DYNAMIC_BURST_MULTIPLIER: u64 = 4;
@@ -88,11 +92,7 @@ const AUDIO_ANALYZER_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_AUDIO_ANALYZER_SERVER",
     "BREADBOARD_AUDIO_ANALYZER_TIMEOUT_MS",
 ];
-const IMAGE_SEARCH_GOOGLE_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
-    "BREADBOARD_DATA_DIR",
-    "BREADBOARD_GOOGLE_IMAGES_API_KEY",
-    "BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID",
-];
+const IMAGE_SEARCH_GOOGLE_WORKER_ENVIRONMENT_NAMES: &[&str] = &["BREADBOARD_DATA_DIR"];
 const INTERACTIVE_VISUALIZER_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_VISUAL_BROWSER_PATH",
     "INTERACTIVE_VISUALIZER_ENABLED",
@@ -139,6 +139,19 @@ const OUTER_CAREER_OPS_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_REPO_ROOT",
     "CAREER_OPS_ROOT",
     "PLAYWRIGHT_BROWSERS_PATH",
+    "CHATMOCK_API_KEY",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+];
+const OUTER_OPENEXECUTIVE_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
+    "BREADBOARD_DATA_DIR",
+    "BREADBOARD_REPO_ROOT",
+    "OPENEXECUTIVE_ROOT",
     "CHATMOCK_API_KEY",
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -237,6 +250,8 @@ const GBRAIN_SYNC_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "GBRAIN_ADAPTER_URL",
     "GBRAIN_ADAPTER_SECRET",
     "GBRAIN_QUERY_TIMEOUT_MS",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
 ];
 const OUTER_AGENT_REACH_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_DATA_DIR",
@@ -1351,7 +1366,6 @@ const DASHBOARD_ENVIRONMENT_NAMES: &[&str] = &[
     "VIBE_TRADING_SERVICE_URL",
     "VIBE_TRADING_SERVICE_API_KEY",
     "STOCK_ANALYST_SERVICE_URL",
-    "BREADBOARD_GOOGLE_IMAGES_CONFIGURED",
     "WARDROBE_ROOT",
     "WARDROBE_RUNTIME_ROOT",
     "WARDROBE_DATA_DIR",
@@ -1481,6 +1495,7 @@ enum EnvironmentProfile {
     OuterOpencodeWorker,
     TradingAgentWorker,
     OuterCareerOpsWorker,
+    OuterOpenExecutiveWorker,
     SystemLocationWorker,
     ChatmockWorker,
     VimaxWorker,
@@ -1585,6 +1600,7 @@ impl EnvironmentProfile {
             "outer-opencode-worker" => Ok(Self::OuterOpencodeWorker),
             "trading-agent-worker" => Ok(Self::TradingAgentWorker),
             "outer-career-ops-worker" => Ok(Self::OuterCareerOpsWorker),
+            "outer-openexecutive-worker" => Ok(Self::OuterOpenExecutiveWorker),
             "system-location-worker" => Ok(Self::SystemLocationWorker),
             "chatmock-worker" => Ok(Self::ChatmockWorker),
             "vimax-worker" => Ok(Self::VimaxWorker),
@@ -1721,6 +1737,10 @@ impl EnvironmentProfile {
             Self::OuterCareerOpsWorker => (
                 TOOL_WORKER_ENVIRONMENT_NAMES,
                 OUTER_CAREER_OPS_WORKER_ENVIRONMENT_NAMES,
+            ),
+            Self::OuterOpenExecutiveWorker => (
+                TOOL_WORKER_ENVIRONMENT_NAMES,
+                OUTER_OPENEXECUTIVE_WORKER_ENVIRONMENT_NAMES,
             ),
             Self::SystemLocationWorker => (
                 SYSTEM_LOCATION_WORKER_OS_ENVIRONMENT_NAMES,
@@ -2207,7 +2227,7 @@ fn should_request_dynamic_commit_burst(
 }
 
 fn derived_system_commit_reserve_bytes(commit_limit_bytes: u64) -> u64 {
-    (commit_limit_bytes / 10).clamp(
+    (commit_limit_bytes / SYSTEM_COMMIT_DERIVED_RESERVE_DIVISOR).clamp(
         SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES,
         SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES,
     )
@@ -6754,14 +6774,15 @@ mod tests {
         let derived = SystemCommitGuardEvidence::at_launch(
             SystemCommitGuardConfig {
                 expected_commit_bytes: 3_072 * mib,
-                trusted_reserve_bytes: 4_096 * mib,
+                trusted_reserve_bytes: 2_048 * mib,
             },
             configured,
             (100_000 - 20_000) * mib,
             100_000 * mib,
         );
-        assert_eq!(derived.launch_derived_reserve_bytes, 8_192 * mib);
-        assert_eq!(derived.launch_effective_reserve_bytes, 8_192 * mib);
+        // 5% of 100,000 MiB is 5,000 MiB, bounded to the 4 GiB derived cap.
+        assert_eq!(derived.launch_derived_reserve_bytes, 4_096 * mib);
+        assert_eq!(derived.launch_effective_reserve_bytes, 4_096 * mib);
 
         let trusted = SystemCommitGuardEvidence::at_launch(
             SystemCommitGuardConfig {
@@ -6989,6 +7010,8 @@ mod tests {
         );
         assert!(parse("outer-career-ops-worker", "CAREER_OPS_ROOT").is_ok());
         assert!(parse("outer-career-ops-worker", "PLAYWRIGHT_BROWSERS_PATH").is_ok());
+        assert!(parse("outer-openexecutive-worker", "OPENEXECUTIVE_ROOT").is_ok());
+        assert!(parse("outer-openexecutive-worker", "CHATMOCK_API_KEY").is_ok());
         assert_eq!(
             parse(
                 "outer-career-ops-worker",

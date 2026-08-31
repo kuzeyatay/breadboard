@@ -33,8 +33,14 @@ data, or code file in the session workspace, publish it with
 the server validates and imports it.
 Image generation is directly available through `artifact_image_generate`.
 When the user asks for an image, call it with a complete visual prompt rather
-than returning prompt text or saying generation is disabled. Only report the
-image as created after the tool returns a ready, verified artifact.
+than returning prompt text or saying generation is disabled. The tool tries
+ChatGPT first and automatically falls back to the Profile-configured Google
+Gemini image-generation API. Both providers return a ready, verified image
+artifact. When `fallback.provider` is `google_image_generation`, say that Google
+generated the image after ChatGPT failed and do not retry generation in the same
+turn. If both providers are unavailable, state both provider-specific reasons
+from the tool error. Only report an image as created after the tool returns a
+ready, verified artifact.
 The first-party `interactive-visualizer` skill is the sole additional
 interactive mini-app path: when it is server-resolved, use its dedicated
 `interactive_visualizer_*` tools and plan-first package contract rather than

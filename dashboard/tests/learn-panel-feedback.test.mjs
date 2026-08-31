@@ -86,6 +86,32 @@ test("Learn keeps controls up and current-step copy below the progress bar", () 
   );
 });
 
+test("completed Learn panel omits redundant status copy and internal identifiers", () => {
+  assert.doesNotMatch(workspaceSource, /Lessons complete\./);
+  assert.match(
+    workspaceSource,
+    /const statusDetails = status === "complete"\s*\? \[\]/,
+  );
+
+  const completedFooterIndex = workspaceSource.indexOf(
+    '{panelExpanded && status === "complete" && (',
+  );
+  const completedFooterEnd = workspaceSource.indexOf(
+    "</section>",
+    completedFooterIndex,
+  );
+  assert.ok(
+    completedFooterIndex >= 0 && completedFooterEnd > completedFooterIndex,
+    "completed Learn footer is missing",
+  );
+  const completedFooter = workspaceSource.slice(
+    completedFooterIndex,
+    completedFooterEnd,
+  );
+  assert.match(completedFooter, /Open lessons/);
+  assert.doesNotMatch(completedFooter, /latestTextbookVersionId|job\?\.id/);
+});
+
 test("an active Learn run shows one action instead of wrapping disabled actions", () => {
   assert.match(workspaceSource, /\{hasLearnData && !active && \(/);
   assert.match(workspaceSource, /\{showPrimaryAction && !active && \(/);
@@ -153,6 +179,35 @@ test("Learn controls stay on one row and the syllabus name absorbs the pressure"
   assert.ok(
     controlHeights.length >= 6,
     "every Learn control should share the 30px row height",
+  );
+});
+
+test("Learn exposes a natural-language request layer from a question control", () => {
+  assert.match(workspaceSource, /aria-label=\{[\s\S]*?Guide Learn with a request/);
+  assert.match(workspaceSource, /ariaLabel="Guide Learn"/);
+  assert.match(workspaceSource, /role="dialog"/);
+  assert.match(workspaceSource, /LEARN_USER_INSTRUCTION_EXAMPLES\.map/);
+  assert.match(workspaceSource, /id="learn-user-instruction"/);
+  assert.match(workspaceSource, /Redo only the topics after Maxwell's equations/);
+  assert.match(workspaceSource, /userInstruction: learnUserInstruction\.trim\(\) \|\| undefined/);
+  assert.match(workspaceSource, /handleGuidedLearnRun/);
+  assert.match(workspaceSource, /hasExistingLearnContent[\s\S]*?setLearnConfirmationAction\("full_rebuild"\)/);
+});
+
+test("Learn panel uses the wider workspace without a blurred edge", () => {
+  const css = fs.readFileSync(
+    new URL("../src/app/globals.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(workspaceSource, /bb-neu-learn-tray[^"]*max-w-7xl/);
+  assert.doesNotMatch(workspaceSource, /bb-neu-learn-tray[^"]*max-w-5xl/);
+  assert.match(
+    css,
+    /\.bb-neu-learn-tray\s*\{[\s\S]*?box-shadow:\s*none;/,
+  );
+  assert.doesNotMatch(
+    css,
+    /html\[data-theme="dark"\] \.bb-neu-learn-tray\s*\{/,
   );
 });
 

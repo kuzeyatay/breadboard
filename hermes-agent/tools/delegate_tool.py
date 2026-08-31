@@ -55,6 +55,50 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
 
 
 # ---------------------------------------------------------------------------
+# Child -> root task identity
+# ---------------------------------------------------------------------------
+# A delegated child runs its tool calls under its own task_id (the stable
+# subagent id) so file-state, cwd records and TUI events stay per-child. Tool
+# backends that authorize against the *durable* session — Breadboard's plugin
+# resolves ``task_id`` to a runtime-session row — need the root task instead.
+# The map holds an entry for the lifetime of a child run and is resolved
+# transitively, so a nested orchestrator's worker still lands on the root.
+_CHILD_ROOT_TASK_IDS: Dict[str, str] = {}
+_CHILD_ROOT_TASK_LOCK = threading.Lock()
+
+
+def _register_child_task(child_task_id: str, parent_task_id: Optional[str]) -> None:
+    if not child_task_id or not parent_task_id or child_task_id == parent_task_id:
+        return
+    with _CHILD_ROOT_TASK_LOCK:
+        _CHILD_ROOT_TASK_IDS[child_task_id] = parent_task_id
+
+
+def _unregister_child_task(child_task_id: str) -> None:
+    with _CHILD_ROOT_TASK_LOCK:
+        _CHILD_ROOT_TASK_IDS.pop(child_task_id, None)
+
+
+def resolve_root_task_id(task_id: Optional[str]) -> Optional[str]:
+    """Return the root (non-delegated) task id behind ``task_id``.
+
+    Unknown ids resolve to themselves, so callers can apply this
+    unconditionally. A child is only ever registered against an already
+    running parent, so cycles cannot form; the walk is bounded anyway.
+    """
+    current = task_id
+    if not current:
+        return task_id
+    with _CHILD_ROOT_TASK_LOCK:
+        for _ in range(8):
+            parent = _CHILD_ROOT_TASK_IDS.get(current)
+            if not parent:
+                break
+            current = parent
+    return current
+
+
+# ---------------------------------------------------------------------------
 # Subagent approval callbacks
 # ---------------------------------------------------------------------------
 # Subagents run inside a ThreadPoolExecutor worker. The CLI's interactive
@@ -1972,6 +2016,12 @@ def _run_single_child(
 
         child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
         parent_task_id = getattr(parent_agent, "_current_task_id", None)
+        # Durable-session backends resolve the child to the root task through
+        # resolve_root_task_id(); unregistered in the finally below.
+        _register_child_task(
+            child_task_id,
+            parent_task_id or getattr(parent_agent, "session_id", None),
+        )
         # Seed the child's session-cwd record from the parent's (cwd rearch):
         # children share the parent's container, and today they inherit the
         # parent's live env.cwd implicitly. Seeding at spawn preserves that
@@ -2129,6 +2179,7 @@ def _run_single_child(
                 "diagnostic_path": diagnostic_path,
             }
         finally:
+            _unregister_child_task(child_task_id)
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
             _timeout_executor.shutdown(wait=False)

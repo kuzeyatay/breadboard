@@ -24,6 +24,8 @@ import {
 } from "../supervisor-control.ts";
 import { interactiveVisualizerConfig } from
   "./interactive-visualizer-config.ts";
+import type { CustomInteractiveVisualizerManifest } from
+  "./interactive-visualizer-custom.ts";
 import type {
   InteractiveVisualizerBrowserTests,
   InteractiveVisualizerManifest,
@@ -65,7 +67,10 @@ interface RuntimeScopeRow {
 interface RuntimeVisualizerResult {
   status: "validation-failed" | "browser-failed" | "ready";
   validation: InteractiveVisualizerValidation;
-  manifest: InteractiveVisualizerManifest | null;
+  manifest:
+    | InteractiveVisualizerManifest
+    | CustomInteractiveVisualizerManifest
+    | null;
   sourceHash: string | null;
   tests: InteractiveVisualizerBrowserTests | null;
   bundleHash: string | null;
@@ -264,7 +269,9 @@ function validTests(value: unknown): value is InteractiveVisualizerBrowserTests 
     (check.detail === undefined || typeof check.detail === "string"));
 }
 
-function validManifest(value: unknown): value is InteractiveVisualizerManifest {
+function validManifest(
+  value: unknown,
+): value is InteractiveVisualizerManifest | CustomInteractiveVisualizerManifest {
   if (!isRecord(value)) return false;
   let bytes = Number.POSITIVE_INFINITY;
   try {
@@ -273,7 +280,7 @@ function validManifest(value: unknown): value is InteractiveVisualizerManifest {
     return false;
   }
   return bytes <= 64 * 1024 &&
-    value.schemaVersion === 1 &&
+    (value.schemaVersion === 1 || value.schemaVersion === 2) &&
     value.artifactType === "interactive-visualizer" &&
     typeof value.title === "string" &&
     typeof value.description === "string" &&
@@ -283,6 +290,21 @@ function validManifest(value: unknown): value is InteractiveVisualizerManifest {
     isRecord(value.runtime) &&
     value.runtime.id === "breadboard-interactive-visualizer" &&
     typeof value.runtime.version === "string";
+}
+
+/**
+ * The exact acceptance predicate for a worker's durable `result.json`. Exported
+ * so tests can prove the gate accepts what the worker actually writes for a
+ * schema-2 package; the runtime path keeps calling it through `validateResult`.
+ */
+export function validateInteractiveVisualizerRuntimeResult(
+  job: Pick<
+    RuntimeJobSnapshot,
+    "jobId" | "attempt" | "workerInstanceId" | "lastWorkerSequence"
+  >,
+  content: unknown,
+): RuntimeVisualizerResult {
+  return validateResult(job as RuntimeJobSnapshot, content);
 }
 
 function validateResult(
@@ -339,21 +361,50 @@ function validateResult(
     ) {
       throw new Error("Runtime returned an invalid validation failure.");
     }
-  } else if (
-    !result.validation.valid ||
-    !validManifest(result.manifest) ||
-    typeof result.sourceHash !== "string" ||
-    !SHA256.test(result.sourceHash) ||
-    !validTests(result.tests) ||
-    typeof result.bundleHash !== "string" ||
-    !SHA256.test(result.bundleHash) ||
-    (result.status === "ready") !== result.tests.passed ||
-    (result.status === "ready") !==
-      (typeof result.outputRelativePath === "string")
-  ) {
-    throw new Error("Runtime returned an invalid browser-test result.");
+  } else {
+    // Name the exact field that breaks the contract. A bare "invalid
+    // browser-test result" once hid a manifest-schema mismatch behind a
+    // message the model read as a runtime failure of its own package, and it
+    // spent three repair attempts rewriting a bundle the browser gate had
+    // already passed.
+    const reason = browserTestResultDefect(result, result.validation);
+    if (reason) {
+      throw new Error(
+        `Runtime returned an invalid browser-test result: ${reason}.`,
+      );
+    }
   }
   return result as unknown as RuntimeVisualizerResult;
+}
+
+function browserTestResultDefect(
+  result: Record<string, unknown>,
+  validation: InteractiveVisualizerValidation,
+): string | null {
+  if (!validation.valid) return "validation did not pass";
+  if (!validManifest(result.manifest)) {
+    const schema = isRecord(result.manifest)
+      ? String(result.manifest.schemaVersion)
+      : typeof result.manifest;
+    return `manifest is not a supported visualizer manifest (schemaVersion ${schema})`;
+  }
+  if (typeof result.sourceHash !== "string" || !SHA256.test(result.sourceHash)) {
+    return "sourceHash is not a sha256 digest";
+  }
+  if (!validTests(result.tests)) return "tests do not match the browser-test contract";
+  if (typeof result.bundleHash !== "string" || !SHA256.test(result.bundleHash)) {
+    return "bundleHash is not a sha256 digest";
+  }
+  const ready = result.status === "ready";
+  if (ready !== result.tests.passed) {
+    return `status ${String(result.status)} disagrees with tests.passed=${String(result.tests.passed)}`;
+  }
+  if (ready !== (typeof result.outputRelativePath === "string")) {
+    return ready
+      ? "ready result has no bundle path"
+      : "failed result carries a bundle path";
+  }
+  return null;
 }
 
 function outputDirectory(job: RuntimeJobSnapshot): string {
@@ -371,6 +422,18 @@ function outputDirectory(job: RuntimeJobSnapshot): string {
     "workspace",
     "interactive-visualizer-output",
   );
+}
+
+/**
+ * Reads a worker's `bundle.html` from inside its job fence. Exported so the
+ * gate test can run the exact fence checks against real files under a
+ * temporary data root; the runtime path calls it through `runVisualizerJob`.
+ */
+export function readFencedInteractiveVisualizerBundle(
+  job: Pick<RuntimeJobSnapshot, "jobId" | "attempt" | "workerInstanceId">,
+  relativePath: string,
+): string {
+  return readBundle(job as RuntimeJobSnapshot, relativePath);
 }
 
 function readBundle(job: RuntimeJobSnapshot, relativePath: string): string {
@@ -391,19 +454,46 @@ function readBundle(job: RuntimeJobSnapshot, relativePath: string): string {
   if (relativePath !== expectedRelative) {
     throw new Error("Runtime returned a visualizer bundle outside its fence.");
   }
-  const filePath = path.resolve(runtimeDataRoot(), ...relativePath.split("/"));
+  const root = runtimeDataRoot();
+  const filePath = path.resolve(root, ...relativePath.split("/"));
   const metadata = fs.lstatSync(filePath);
-  const maximum = interactiveVisualizerConfig().maxArtifactBytes;
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.size < 1 ||
-    metadata.size > maximum ||
-    !samePath(fs.realpathSync.native(filePath), filePath)
-  ) {
-    throw new Error("The fenced visualizer bundle is unavailable.");
+  // Name the predicate that failed. A bare "bundle is unavailable" once cost a
+  // whole turn: the worker had passed the package and written the bundle, and
+  // nothing recorded which of these checks rejected it.
+  const defect = bundleDefect(root, filePath, metadata);
+  if (defect) {
+    throw new Error(`The fenced visualizer bundle is unavailable: ${defect}.`);
   }
   return fs.readFileSync(filePath, "utf8");
+}
+
+function bundleDefect(
+  root: string,
+  filePath: string,
+  metadata: NonNullable<ReturnType<typeof fs.lstatSync>>,
+): string | null {
+  if (metadata.isSymbolicLink()) return "bundle path is a symbolic link";
+  if (!metadata.isFile()) return "bundle path is not a regular file";
+  if (metadata.size < 1) return "bundle is empty";
+  const maximum = interactiveVisualizerConfig().maxArtifactBytes;
+  if (metadata.size > maximum) {
+    return `bundle is ${metadata.size} bytes, above the ${maximum}-byte artifact limit`;
+  }
+  // The fence rejects links *inside* the job tree. Canonicalise the data root
+  // as well, so the way the root itself is spelled (a junction, an 8.3 short
+  // name, a subst or differently-cased drive on Windows) cannot fail a bundle
+  // that sits exactly where the worker wrote it.
+  const canonicalRoot = fs.realpathSync.native(root);
+  const expected = path.resolve(canonicalRoot, path.relative(root, filePath));
+  const actual = fs.realpathSync.native(filePath);
+  if (!samePath(actual, expected)) {
+    console.error(
+      "[interactive-visualizer] bundle resolves outside its fence",
+      { expected, actual },
+    );
+    return "bundle resolves to a different location than its fenced path";
+  }
+  return null;
 }
 
 async function cancelRows(rows: RuntimeScopeRow[]): Promise<boolean> {

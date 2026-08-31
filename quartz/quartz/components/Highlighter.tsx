@@ -13,86 +13,34 @@ import styles from "./styles/highlighter.scss"
 import { DEFAULT_HIGHLIGHT_COLOR, HIGHLIGHT_COLORS } from "./scripts/highlightPalette"
 import { QuartzComponent, QuartzComponentConstructor } from "./types"
 
-const iconProps = {
-  width: 16,
-  height: 16,
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  "stroke-width": 1.8,
-  "stroke-linecap": "round" as const,
-  "stroke-linejoin": "round" as const,
-  "aria-hidden": true,
-}
-
-const HighlightIcon = () => (
-  <svg {...iconProps}>
-    <path d="m9 11-6 6v3h9l3-3" />
-    <path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" />
-  </svg>
-)
-
-const CopyIcon = () => (
-  <svg {...iconProps}>
-    <rect x="8" y="8" width="13" height="13" rx="2" />
-    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-  </svg>
-)
-
-const AskIcon = () => (
-  <svg {...iconProps}>
-    <path d="M12 3a7 7 0 0 0-7 7v1a7 7 0 0 0 7 7h1l4 3v-4.2A7 7 0 0 0 19 12v-2a7 7 0 0 0-7-7Z" />
-    <path d="M12 7v6" />
-    <path d="M9 10h6" />
-  </svg>
-)
-
-const CheckIcon = () => (
-  <svg {...iconProps}>
-    <path d="m20 6-11 11-5-5" />
-  </svg>
-)
-
-const EraserIcon = () => (
-  <svg {...iconProps}>
-    <path d="m7 21-4.3-4.3a2 2 0 0 1 0-2.8l9.6-9.6a2 2 0 0 1 2.8 0l5.6 5.6a2 2 0 0 1 0 2.8L13 21" />
-    <path d="M22 21H7" />
-    <path d="m5 11 9 9" />
-  </svg>
-)
-
-const ChevronIcon = () => (
-  <svg {...iconProps} width={14} height={14}>
-    <path d="m6 9 6 6 6-6" />
-  </svg>
-)
-
 const Highlighter: QuartzComponent = () => (
   <div class="bb-highlighter" hidden>
-    <div class="bb-highlight-menu" role="toolbar" aria-label="Highlight selected text">
-      <button
-        type="button"
-        class="bb-highlight-button"
-        data-highlight-action="apply"
-        title="Highlight selection"
-        aria-label="Highlight selection"
-      >
-        <HighlightIcon />
-      </button>
-      <button
-        type="button"
-        class="bb-highlight-button bb-highlight-copy"
-        data-highlight-action="copy"
-        title="Copy selection"
-        aria-label="Copy selection"
-      >
-        <span class="bb-highlight-icon-idle">
-          <CopyIcon />
-        </span>
-        <span class="bb-highlight-icon-done">
-          <CheckIcon />
-        </span>
-      </button>
+    <div class="bb-highlight-menu" role="toolbar" aria-label="Selected text actions">
+      <div class="bb-highlight-colors" role="group" aria-label="Highlight color">
+        <span class="bb-highlight-colors-label">Highlight</span>
+        {HIGHLIGHT_COLORS.filter((color) => color.id !== DEFAULT_HIGHLIGHT_COLOR).map((color) => (
+          <button
+            type="button"
+            class="bb-highlight-color"
+            data-highlight-color={color.id}
+            aria-label={`Highlight ${color.label.toLowerCase()}`}
+            title={color.label}
+          >
+            <span class="bb-highlight-swatch" data-hl-color={color.id}></span>
+          </button>
+        ))}
+        <button
+          type="button"
+          class="bb-highlight-remove"
+          data-highlight-action="erase"
+          title="Remove highlight"
+          aria-label="Remove highlight"
+          hidden
+        >
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <span class="bb-highlight-divider" aria-hidden="true"></span>
       <button
         type="button"
         class="bb-highlight-ask"
@@ -100,9 +48,9 @@ const Highlighter: QuartzComponent = () => (
         title="Ask about this selection in chat"
         aria-label="Ask about this selection in chat"
       >
-        <AskIcon />
         <span>Ask in chat</span>
       </button>
+      <span class="bb-highlight-divider" aria-hidden="true"></span>
       <button
         type="button"
         class="bb-highlight-ask"
@@ -110,61 +58,7 @@ const Highlighter: QuartzComponent = () => (
         title="Attach an answer to this highlight"
         aria-label="Attach an answer to this highlight"
       >
-        <AskIcon />
         <span>Ask here</span>
-      </button>
-      <button
-        type="button"
-        class="bb-highlight-button bb-highlight-erase"
-        data-highlight-action="erase"
-        title="Remove highlight"
-        aria-label="Remove highlight"
-        hidden
-      >
-        <EraserIcon />
-      </button>
-      <span class="bb-highlight-divider" aria-hidden="true"></span>
-      <button
-        type="button"
-        class="bb-highlight-trigger"
-        data-highlight-action="palette"
-        aria-haspopup="true"
-        aria-expanded="false"
-        title="Choose highlight colour"
-      >
-        <span class="bb-highlight-swatch" data-hl-color={DEFAULT_HIGHLIGHT_COLOR}></span>
-        <span class="bb-highlight-trigger-label">Color</span>
-        <ChevronIcon />
-      </button>
-    </div>
-
-    <div class="bb-highlight-palette" role="menu" aria-label="Highlight colours" hidden>
-      {HIGHLIGHT_COLORS.map((color) => (
-        <button
-          type="button"
-          role="menuitemradio"
-          class="bb-highlight-option"
-          data-highlight-color={color.id}
-          aria-checked={color.id === DEFAULT_HIGHLIGHT_COLOR ? "true" : "false"}
-        >
-          <span class="bb-highlight-swatch" data-hl-color={color.id}></span>
-          <span class="bb-highlight-option-label">{color.label}</span>
-          <span class="bb-highlight-option-check">
-            <CheckIcon />
-          </span>
-        </button>
-      ))}
-      <span class="bb-highlight-palette-divider" aria-hidden="true"></span>
-      <button
-        type="button"
-        role="menuitem"
-        class="bb-highlight-option bb-highlight-option-remove"
-        data-highlight-action="erase"
-      >
-        <span class="bb-highlight-option-icon">
-          <EraserIcon />
-        </span>
-        <span class="bb-highlight-option-label">Remove highlight</span>
       </button>
     </div>
   </div>

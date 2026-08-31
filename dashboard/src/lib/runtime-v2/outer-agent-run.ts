@@ -128,6 +128,14 @@ export const OUTER_AGENT_RUNTIME_ADAPTERS = Object.freeze({
     scopePrefix: "oa_career_ops",
     timeoutMs: 12 * 60 * 60 * 1_000,
   }),
+  openexecutive: Object.freeze({
+    kind: "openexecutive",
+    jobType: "openexecutive-run",
+    workerKind: "outer-openexecutive-node",
+    resourceClass: "large-generation",
+    scopePrefix: "oa_openexecutive",
+    timeoutMs: 2 * 60 * 60 * 1_000,
+  }),
   "agent-reach": Object.freeze({
     kind: "agent-reach",
     jobType: "agent-reach-run",
@@ -135,6 +143,14 @@ export const OUTER_AGENT_RUNTIME_ADAPTERS = Object.freeze({
     resourceClass: "browser-automation",
     scopePrefix: "oa_agent_reach",
     timeoutMs: 8 * 60 * 60 * 1_000,
+  }),
+  praxist: Object.freeze({
+    kind: "praxist",
+    jobType: "praxist-run",
+    workerKind: "outer-praxist-node",
+    resourceClass: "large-generation",
+    scopePrefix: "oa_praxist",
+    timeoutMs: 12 * 60 * 60 * 1_000,
   }),
   "agent-tars": Object.freeze({
     kind: "agent-tars",
@@ -571,10 +587,14 @@ function synthesizedTerminalEvent(
           ? "OpenCode completed the task."
           : adapter.kind === "trading-agent"
             ? "The market analysis finished."
+          : adapter.kind === "openexecutive"
+            ? "Open Executive finished without a response."
           : adapter.kind === "career-ops"
             ? "Career Ops finished without an answer."
           : adapter.kind === "agent-reach"
             ? "Agent Reach finished without an answer."
+          : adapter.kind === "praxist"
+            ? "Praxist finished without a research summary."
           : adapter.kind === "agent-tars"
             ? "Agent TARS completed the task."
           : adapter.kind === "openwork"
@@ -641,10 +661,14 @@ function synthesizedTerminalEvent(
           ? "OpenCode task stopped."
           : adapter.kind === "trading-agent"
             ? "The market analysis was stopped."
+          : adapter.kind === "openexecutive"
+            ? "Open Executive stopped."
           : adapter.kind === "career-ops"
             ? "Career Ops stopped."
           : adapter.kind === "agent-reach"
             ? "Agent Reach stopped."
+          : adapter.kind === "praxist"
+            ? "Praxist research stopped."
           : adapter.kind === "agent-tars"
             ? "Agent TARS task stopped."
           : adapter.kind === "openwork"

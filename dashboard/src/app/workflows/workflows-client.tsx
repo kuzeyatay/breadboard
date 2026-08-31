@@ -7,13 +7,16 @@
 // hardcode that same param, so it stays the identifier here):
 //  - no `workflow` param: the workflows HOME list (create/open/delete).
 //  - `?workflow=<id>`: the CANVAS view for that workflow.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import { backLabelFor } from "@/lib/nav-history";
 import { consumeWorkflowReturnPath, peekWorkflowReturnPath } from "@/lib/workflows/navigation";
 import { CanvasEditor } from "./components/canvas-editor";
+import DemonstratedWorkflow from "./teach/demonstrated-workflow";
+import TeachWorkflow from "./teach/teach-workflow";
+import { loadTeachAvailability, type TeachAvailabilityView } from "./teach/teach-client";
 import "./sim-canvas.css";
 import type { WorkflowStateJson } from "./lib/types";
 
@@ -24,6 +27,10 @@ type WorkflowListItem = {
   name: string;
   description?: string | null;
   blockCount?: number;
+  nodeCount?: number;
+  stepCount?: number;
+  /** How it was authored. Older rows have no column and read as "canvas". */
+  source?: "canvas" | "demonstration";
   updatedAt: string | null;
 };
 
@@ -32,6 +39,7 @@ type WorkflowDetail = {
   name: string;
   description?: string | null;
   state: WorkflowStateJson | null;
+  source?: "canvas" | "demonstration";
 };
 
 function BackIcon() {
@@ -46,6 +54,15 @@ function PlusIcon() {
   return (
     <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
       <path strokeLinecap="round" d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function TeachIcon() {
+  return (
+    <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v9m0 0a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
+      <path strokeLinecap="round" d="M5 8a7 7 0 0 1 14 0" />
     </svg>
   );
 }
@@ -180,7 +197,15 @@ function ProposalsSection({ onOpen }: { onOpen: (id: string) => void }) {
   );
 }
 
-function HomeView({ onOpen }: { onOpen: (id: string) => void }) {
+function HomeView({
+  onOpen,
+  onTeach,
+  teachAvailability,
+}: {
+  onOpen: (id: string) => void;
+  onTeach: () => void;
+  teachAvailability: TeachAvailabilityView | null;
+}) {
   const [items, setItems] = useState<WorkflowListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -241,17 +266,33 @@ function HomeView({ onOpen }: { onOpen: (id: string) => void }) {
         <div>
           <h2 className="font-semibold text-[var(--ink-heading)]">Your workflows</h2>
           <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-            Build an automation on the canvas, then run it from here or from chat.
+            Build an automation on the canvas, or show Breadboard the task once and let it
+            work the workflow out. Either way you run it from here or from chat.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={createWorkflow}
-          disabled={creating}
-          className="neu-button-primary inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <PlusIcon /> New workflow
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onTeach}
+            disabled={teachAvailability !== null && !teachAvailability.available}
+            title={
+              teachAvailability && !teachAvailability.available
+                ? teachAvailability.reason
+                : "Show Breadboard the task once, out loud, and it builds the workflow"
+            }
+            className="neu-button inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <TeachIcon /> Teach Workflow
+          </button>
+          <button
+            type="button"
+            onClick={createWorkflow}
+            disabled={creating}
+            className="neu-button-primary inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <PlusIcon /> New workflow
+          </button>
+        </div>
       </div>
 
       {error ? (
@@ -291,7 +332,11 @@ function HomeView({ onOpen }: { onOpen: (id: string) => void }) {
                     {workflow.name}
                   </span>
                   <span className="mt-0.5 block text-[11px] text-[var(--ink-muted)]">
-                    {typeof workflow.blockCount === "number" ? `${workflow.blockCount} blocks` : ""}
+                    {workflow.source === "demonstration"
+                      ? `${workflow.stepCount ?? 0} steps · Learned from demonstration`
+                      : typeof (workflow.blockCount ?? workflow.nodeCount) === "number"
+                        ? `${workflow.blockCount ?? workflow.nodeCount} blocks`
+                        : ""}
                     {workflow.updatedAt ? ` · Updated ${formatUpdatedAt(workflow.updatedAt)}` : ""}
                   </span>
                 </span>
@@ -312,13 +357,39 @@ function HomeView({ onOpen }: { onOpen: (id: string) => void }) {
   );
 }
 
-export default function WorkflowsClient({ workflowId }: { workflowId: string | null }) {
+export default function WorkflowsClient({
+  workflowId,
+  teachOnOpen = false,
+  initialRunId = null,
+}: {
+  workflowId: string | null;
+  teachOnOpen?: boolean;
+  initialRunId?: string | null;
+}) {
   const router = useRouter();
   const [activeId, setActiveId] = useState<string | null>(workflowId);
   const [detail, setDetail] = useState<WorkflowDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [backLabel, setBackLabel] = useState(BACK_FALLBACK_LABEL);
-  const openedFromChatRef = useRef(Boolean(workflowId));
+  const [openedFromChat] = useState(() => Boolean(workflowId));
+  // Non-null while the teaching flow is open. A re-teach carries the workflow it
+  // is correcting, so the second demonstration becomes a version of that
+  // workflow rather than a new one beside it.
+  const [teaching, setTeaching] = useState<{ workflowId: string | null; name?: string } | null>(
+    teachOnOpen ? { workflowId: null } : null,
+  );
+  const [teachAvailability, setTeachAvailability] = useState<TeachAvailabilityView | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadTeachAvailability(controller.signal)
+      .then(setTeachAvailability)
+      .catch(() => {
+        // A page that cannot check leaves the button enabled; starting a session
+        // reports the real reason, and it is the same reason.
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const returnPath = peekWorkflowReturnPath();
@@ -328,6 +399,10 @@ export default function WorkflowsClient({ workflowId }: { workflowId: string | n
   useEffect(() => {
     setActiveId(workflowId);
   }, [workflowId]);
+
+  useEffect(() => {
+    if (teachOnOpen && !workflowId) setTeaching({ workflowId: null });
+  }, [teachOnOpen, workflowId]);
 
   useEffect(() => {
     if (!activeId) {
@@ -341,7 +416,13 @@ export default function WorkflowsClient({ workflowId }: { workflowId: string | n
       .then(async (response) => {
         const payload = (await response.json().catch(() => ({}))) as Partial<WorkflowDetail> & { error?: string };
         if (!response.ok || !payload.id) throw new Error(payload.error || "This workflow could not be opened.");
-        setDetail({ id: payload.id, name: payload.name ?? "Untitled workflow", description: payload.description ?? "", state: payload.state ?? null });
+        setDetail({
+          id: payload.id,
+          name: payload.name ?? "Untitled workflow",
+          description: payload.description ?? "",
+          state: payload.state ?? null,
+          source: payload.source ?? "canvas",
+        });
       })
       .catch((cause) => {
         if (cause instanceof DOMException && cause.name === "AbortError") return;
@@ -378,11 +459,11 @@ export default function WorkflowsClient({ workflowId }: { workflowId: string | n
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           <button
             type="button"
-            onClick={activeId && !openedFromChatRef.current ? goHome : leaveWorkflows}
+            onClick={activeId && !openedFromChat ? goHome : leaveWorkflows}
             className="flex shrink-0 items-center gap-1.5 text-sm text-gray-500 transition-colors hover:text-white"
           >
             <BackIcon />
-            {activeId && !openedFromChatRef.current ? "All workflows" : backLabel}
+            {activeId && !openedFromChat ? "All workflows" : backLabel}
           </button>
           <span className="text-gray-700">/</span>
           <h1 className="truncate text-sm font-semibold text-white">Workflows</h1>
@@ -390,8 +471,27 @@ export default function WorkflowsClient({ workflowId }: { workflowId: string | n
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        {!activeId ? (
-          <HomeView onOpen={openWorkflow} />
+        {teaching ? (
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+            <TeachWorkflow
+              reteachWorkflowId={teaching.workflowId}
+              reteachName={teaching.name}
+              onSaved={(savedId) => {
+                setTeaching(null);
+                openWorkflow(savedId);
+              }}
+              onClose={() => {
+                setTeaching(null);
+                if (!activeId) goHome();
+              }}
+            />
+          </div>
+        ) : !activeId ? (
+          <HomeView
+            onOpen={openWorkflow}
+            onTeach={() => setTeaching({ workflowId: null })}
+            teachAvailability={teachAvailability}
+          />
         ) : detailError ? (
           <div className="flex flex-1 items-center justify-center p-6">
             <div className="neu-inset w-full max-w-md rounded-3xl border border-[var(--line)] p-7 text-center">
@@ -403,13 +503,28 @@ export default function WorkflowsClient({ workflowId }: { workflowId: string | n
             </div>
           </div>
         ) : detail && detail.id === activeId ? (
-          <CanvasEditor
-            workflowId={detail.id}
-            initialName={detail.name}
-            initialDescription={detail.description ?? ""}
-            initialState={detail.state}
-            onBack={goHome}
-          />
+          detail.source === "demonstration" ? (
+            <DemonstratedWorkflow
+              workflowId={detail.id}
+              initialRunId={initialRunId}
+              onBack={goHome}
+              onReteach={() => setTeaching({ workflowId: detail.id, name: detail.name })}
+              onDelete={async () => {
+                await fetch(`/api/workflows/${encodeURIComponent(detail.id)}`, { method: "DELETE" }).catch(
+                  () => undefined,
+                );
+                goHome();
+              }}
+            />
+          ) : (
+            <CanvasEditor
+              workflowId={detail.id}
+              initialName={detail.name}
+              initialDescription={detail.description ?? ""}
+              initialState={detail.state}
+              onBack={goHome}
+            />
+          )
         ) : (
           <div className="flex flex-1 items-center justify-center">
             <BreadboardLoader className="h-5 w-5 text-[var(--botanical)]" />

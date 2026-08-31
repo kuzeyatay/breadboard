@@ -39,6 +39,7 @@ const AGENT_NAMES: Record<string, string> = {
   "max-research": "Max Research",
   "deep-research": "Deep Research",
   "agent-reach": "Agent Reach",
+  praxist: "Praxist",
   "get-doc": "Get Doc",
   openscience: "OpenScience",
 };

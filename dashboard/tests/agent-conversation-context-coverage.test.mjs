@@ -25,6 +25,7 @@ const WIRED = [
   { agent: "ruflo", file: "src/app/api/ruflo/runs/route.ts", seam: /withConversationContext\(/ },
   { agent: "agent-reach", file: "src/lib/agent-reach/run-manager.ts", seam: /promptWithContext\(run\.task/ },
   { agent: "career-ops", file: "src/lib/career-ops/run-manager.ts", seam: /promptWithContext\(request\.task \|\| run\.task/ },
+  { agent: "openexecutive", file: "src/lib/openexecutive/run-manager.ts", seam: /conversationContext: input\.conversationContext/ },
   { agent: "open-gym", file: "src/lib/open-gym/run-manager.ts", seam: /promptWithContext\(run\.task, input\.conversationContext\)/ },
   { agent: "deep-tutor", file: "src/lib/deep-tutor/run-manager.ts", seam: /contextSection\(run\.conversationContext\)/ },
   { agent: "get-doc", file: "src/lib/get-doc/run-manager.ts", seam: /promptWithContext\(request\.query/ },
@@ -48,6 +49,8 @@ const WIRED = [
   { agent: "vimax", file: "src/lib/vimax/prompts.ts", seam: /tagged\("CONVERSATION_SO_FAR", input\.conversation\)/ },
   { agent: "vox-director", file: "src/lib/vox-director/prompts.ts", seam: /tagged\("CONVERSATION_SO_FAR", input\.conversation\)/ },
   { agent: "wardrobe", file: "src/lib/wardrobe/run-manager.ts", seam: /promptWithContext\(\s*run\.request\.direction/ },
+  { agent: "classroom", file: "src/lib/classroom/run-manager.ts", seam: /promptWithContext\(run\.request\.brief/ },
+  { agent: "gods-eye", file: "src/lib/gods-eye/run-manager.ts", seam: /promptWithContext\(run\.task, input\.conversationContext\)/ },
 ];
 
 /**
@@ -73,11 +76,12 @@ test("every runtime agent with a prompt reads the chat it was launched from", ()
 
 test("the launch routes hand the conversation to their run manager", () => {
   const routes = [
-    "agent-reach", "career-ops", "open-gym", "deep-tutor", "get-doc", "openplanter",
+    "agent-reach", "career-ops", "openexecutive", "open-gym", "deep-tutor", "get-doc", "openplanter",
     "openscience", "openwork", "legal", "deer-flow", "inbox-zero",
     "hyperframes", "openmontage", "vibe-trading", "stock-analyst",
     "socials-manager", "resource2skill", "video-use", "meeting-notes",
-    "hardware-blueprint", "vimax", "vox-director", "wardrobe",
+    "hardware-blueprint", "vimax", "vox-director", "wardrobe", "classroom",
+    "gods-eye",
   ];
   for (const agent of routes) {
     const route = source(`src/app/api/${agent}/runs/route.ts`);

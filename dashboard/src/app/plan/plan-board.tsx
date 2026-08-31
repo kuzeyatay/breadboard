@@ -124,7 +124,7 @@ export default function PlanBoard({
               </span>
             </header>
 
-            <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-2 pb-2">
+            <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-2 pb-2 pt-1">
               {column.tasks.map((task, index) => {
                 const busy = busyTaskIds.has(task.id);
                 const showLineBefore = isTarget && target.index === index;

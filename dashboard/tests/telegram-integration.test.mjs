@@ -86,11 +86,26 @@ test("a message goes through the same authenticated turn pipeline as the browser
   );
   // An unattended message must never sit waiting on a permission prompt.
   assert.match(inbound, /"blocked" in result/);
+  assert.match(inbound, /surfaceContext: \{ deliveryChannel: "telegram" \}/);
   // And the runtime is checked before anything is created.
   assert.ok(
     inbound.indexOf("requireEnabled()") < inbound.indexOf("createConversation("),
     "a stopped runtime must not leave an empty chat behind",
   );
+});
+
+test("an inbound message wakes the on-demand runtime, and a failed turn strands no empty chat", () => {
+  // The gateway process holds no supervisor control, so the on-demand Hermes
+  // service must be woken (via the dashboard) before the turn — and before any
+  // conversation exists, so a runtime that cannot come back fails cleanly.
+  assert.match(inbound, /wakeAgentRuntime\("telegram-inbound"\)/);
+  assert.ok(
+    inbound.indexOf("wakeAgentRuntime(") < inbound.indexOf("createConversation("),
+    "the runtime must be woken before a conversation is created",
+  );
+  // If the turn still dies before persisting anything, the fresh conversation
+  // is removed rather than left as an empty chat in Recents.
+  assert.match(inbound, /deleteConversation\(createdConversation\)/);
 });
 
 test("only the owner's allowed senders can spend tokens", () => {
@@ -226,6 +241,8 @@ test("Telegram sits beside WhatsApp in Settings → Messaging", () => {
   assert.match(panel, /official Bot API/);
   assert.match(panel, /privacy mode/);
   assert.match(panel, /@BotFather/);
+  assert.match(panel, /placeholder="@username, 123456789"/);
+  assert.doesNotMatch(panel, /@kuzey/i);
 });
 
 test("the Telegram tables are created with the rest of the schema", () => {

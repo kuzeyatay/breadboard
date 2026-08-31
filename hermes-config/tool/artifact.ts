@@ -44,7 +44,7 @@ export const create = tool({
 })
 
 export const image_generate = tool({
-  description: "Generate an image now and save it as a verified, durable image artifact owned by this response. Use this whenever the user asks to create, draw, render, or generate an image; do not return only a suggested prompt and do not say image generation is unavailable before calling this tool.",
+  description: "Generate an image now and save it as a verified, durable image artifact owned by this response. Use this whenever the user asks to create, draw, render, or generate an image; do not return only a suggested prompt and do not say image generation is unavailable before calling this tool. ChatGPT is always tried first. If it fails, Breadboard automatically uses Google Gemini image generation with the API key configured in Profile, and saves that generated image through the same verified artifact path. When fallback.provider is google_image_generation, say Google generated the image after ChatGPT failed and do not retry. If neither generator can run, state both provider-specific reasons from the error.",
   args: {
     prompt: tool.schema.string(),
     title: tool.schema.string().optional(),

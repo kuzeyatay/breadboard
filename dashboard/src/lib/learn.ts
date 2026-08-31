@@ -103,6 +103,7 @@ import {
 import {
   learnSourceBindingRecord,
   matchingLearnSourceNormalizationReceipt,
+  rebindLearnSourceNormalizationReceipt,
   sourceSetHashForBindingRecords,
 } from "@/lib/learn-source-normalization-receipt";
 import {
@@ -422,6 +423,8 @@ export interface LearnJob {
   sourceIds: string[];
   /** Slug of the document designated as this run's syllabus (study guide). */
   syllabusSourceId?: string;
+  /** User-authored natural-language direction applied to planning and writing. */
+  userInstruction?: string;
   sourceOnly: boolean;
   includeSourceSnapshots: boolean;
   /** Set only while `status` is "paused": the status Resume returns to. */
@@ -560,6 +563,7 @@ interface LearnJobRow {
   source_set_hash: string | null;
   source_ids_json: string | null;
   syllabus_source_id: string | null;
+  user_instruction: string | null;
   source_only: number | null;
   include_source_snapshots: number | null;
   paused_from_status: LearnStatus | null;
@@ -691,6 +695,22 @@ interface PlanningReceiptRedispatch {
   requestId: string;
   checkpointRequestId: string;
   requestHash: string;
+  redispatchReason: "receipt_not_found" | "request_failed";
+}
+
+/** A 502 is replayable only after the strict ChatMock receipt proves that the
+ * exact provider generation ended without a reusable answer. Keeping this
+ * distinct from an arbitrary SDK/HTTP error lets the outer Learn call create a
+ * fresh receipt without ever replaying an ambiguous in-flight request. */
+class LearnCouncilHttp502ReceiptError extends LearnCouncilTerminalReceiptError {
+  readonly status = 502;
+  readonly cause: unknown;
+
+  constructor(receipt: ConstructorParameters<typeof LearnCouncilTerminalReceiptError>[0], cause: unknown) {
+    super(receipt);
+    this.name = "LearnCouncilHttp502ReceiptError";
+    this.cause = cause;
+  }
 }
 
 function isPlanningReceiptRedispatch(
@@ -956,7 +976,7 @@ Return ONLY JSON with exactly these six arrays of concise strings: included, exc
 The contract must protect source scope: no unsupported expansion, no disconnected topic cards, and no final Generated Subtopics pages.
 Availability rule (hard): treat any extracted formula, equation, figure, table, or graph anchor as available. Do not add caveats claiming formulas, notation, definitions, tables, or figures are unavailable or caption-only when anchors for them exist.`;
 
-const TOPIC_MAP_PROMPT = `You create the source-grounded Learning Unit Contract and its section spine for a Breadboard learning garden. Author 15-25 learning units first, then assign every unit to a model-authored section in the same response. Code will validate and project your section decisions verbatim; it will not cluster, title, or explain sections for you.
+const TOPIC_MAP_PROMPT = `You create the source-grounded Learning Unit Contract and its section spine for a Breadboard learning garden. Author every learning unit needed to cover the teachable syllabus and source scope at the required depth, then assign every unit to a model-authored section in the same response. Code will validate and project your section decisions verbatim; it will not cluster, title, or explain sections for you.
 Return ONLY JSON with this shape:
 {
   "title": "Topic title (the subject itself, e.g. 'Spiking Neural Networks')",
@@ -1049,11 +1069,11 @@ ${TITLE_RULES}
 Contract rules:
 - Generate learningUnits first and encode their section ownership in each unit's sectionPlan object. Do not return a separate nested section/subsection map.
 - Author syllabusUnitIds from exact supplied syllabusCoverage unit IDs. With a syllabus, every learning unit must name at least one syllabus unit it serves; without one, return an empty array. Code never guesses this mapping from title overlap.
-- Author 4-7 sections in learner order. A section normally owns 2-5 contiguous units. If one unit must stand alone, repeat a precise singleSubsectionReason on that section's unit. Reuse the exact same section id, title, purpose, and singleSubsectionReason on every unit assigned to that section.
+- Author sections in learner order according to semantic cohesion and syllabus depth, not a fixed total. A section normally owns 2-5 contiguous units. Create another section whenever that is needed to keep the teaching sequence coherent or to cover the syllabus fully; there is no maximum section count. If one unit must stand alone, repeat a precise singleSubsectionReason on that section's unit. Reuse the exact same section id, title, purpose, and singleSubsectionReason on every unit assigned to that section.
 - Section titles and purposes are learner-facing semantic content. They must be specific to this garden; code will never synthesize or repair them.
 - A unit is the smallest meaningful teaching step: one learner question, one conceptual move.
-- Normal source-rich gardens need 15-25 units; never produce an 8-section/1-subsection outline.
-- role names the unit's teaching move, never the type of source artifact it owns. A verified formula may support any semantically appropriate role. Do not relabel a concept, mechanism, application, interpretation, synthesis, comparison, worked example, or practice unit as formula merely because that unit owns one or more equations. For a rich 15-25-unit spine, use at least three appropriate roles, including at least one conceptual/mechanism role and at least one application/interpretation/synthesis/practice role.
+- Source-rich gardens normally need at least 15 units, and large syllabi may need substantially more. Never stop at an arbitrary unit or section total: create enough precise units to cover every teachable syllabus unit and all in-scope source material at the required depth. Do not produce a table-of-contents-style outline made mostly of one-subsection sections.
+- role names the unit's teaching move, never the type of source artifact it owns. A verified formula may support any semantically appropriate role. Do not relabel a concept, mechanism, application, interpretation, synthesis, comparison, worked example, or practice unit as formula merely because that unit owns one or more equations. For a source-rich spine, use at least three appropriate roles, including at least one conceptual/mechanism role and at least one application/interpretation/synthesis/practice role.
 - Partition every entry in extractedSourceArtifacts exactly once. Assign it to the one precise unit where it teaches best, or put its exact id in the garden-wide sourceArtifactOmissions array with your specific reason. Never forget an artifact, assign it twice, both assign and omit it, or invent a generic omission reason.
 - extractedSourceArtifacts is the request's single canonical source-artifact catalog. sources.sourceArtifactCatalogRef and sourceMap.sourceArtifactCatalogRef point to that array instead of repeating it. Each artifact's optional sourceMapAnnotation preserves distinct model-authored Source Map semantics. Resolve every artifact only through its exact canonical id.
 - sourceArtifactOmissions is required even when empty. Omissions are not learning-unit ownership: do not use sourceFigures.placement="not_used_with_reason" in the active contract.
@@ -1159,7 +1179,7 @@ const SYLLABUS_PLANNING_RULES = `
 Syllabus (hard requirements):
 - A syllabus (study guide / course outline) was provided as \`syllabus\`, already read into \`syllabusCoverage\`. It states what this course must teach, in what order, and to what depth.
 - The syllabus is NOT source material and is NOT a topic. Never write a page about the syllabus, never cite it as a source, never treat its headings as content to summarize, and never mention it in learner-facing text.
-- Treat \`syllabusCoverage.units\` as the required plan: work through them in order, cover each unit's objectives and topics, and match the depth each is given. An item the syllabus treats as central earns a full learning unit; background or optional items earn proportionally less.
+- Treat \`syllabusCoverage.units\` as the required plan: work through them in order, cover each teachable unit's objectives and topics, and match the depth each is given. Every teachable syllabus unit ID must appear in at least one learning unit's syllabusUnitIds. An item the syllabus treats as central earns a full learning unit; background or optional items earn proportionally less. Never compress unrelated syllabus units together merely to hit a smaller unit or section count.
 - Source material that no syllabus unit covers is out of scope. Exclude it rather than adding units for it.
 
 Material availability (hard requirements — this is what stops fabrication):
@@ -1184,6 +1204,32 @@ Syllabus:
  * runs without one keep their existing prompts byte-for-byte. */
 function withSyllabusRules(basePrompt: string, rules: string, hasSyllabus: boolean): string {
   return hasSyllabus ? `${basePrompt}\n${rules}` : basePrompt;
+}
+
+const LEARN_USER_INSTRUCTION_RULES = `
+User guidance:
+- \`userInstruction\` is a direct request from the learner about this run. Treat it as a real requirement for scope, emphasis, ordering, inclusion, exclusion, or revision.
+- Resolve natural references such as "after X", "from X onward", "only these topics", and "keep everything before X" against the authored course order and topic names.
+- When the learner asks to redo only part of an existing course, preserve the meaning and ordering of material outside that target and change the requested range only.
+- The request never overrides source grounding, unavailable-material gates, syllabus teachability, output schemas, or safety constraints. State an honest warning when the selected sources cannot support it.
+- Never quote or discuss the instruction in learner-facing prose; carry it out.`;
+
+function normalizeLearnUserInstruction(value: string | undefined): string | undefined {
+  const instruction = value?.trim();
+  if (!instruction) return undefined;
+  if (instruction.length > 4_000) {
+    throw new Error("Learn guidance must be 4,000 characters or fewer.");
+  }
+  return instruction;
+}
+
+function withLearnUserInstructionRules(
+  basePrompt: string,
+  userInstruction: string | undefined,
+): string {
+  return userInstruction
+    ? `${basePrompt}\n${LEARN_USER_INSTRUCTION_RULES}`
+    : basePrompt;
 }
 
 const OVERVIEW_PROMPT = `Write the Topic Overview page: the first page a learner reads in this Breadboard learning garden.
@@ -1281,6 +1327,7 @@ function ensureLearnTables(): void {
       source_set_hash            TEXT,
       source_ids_json            TEXT NOT NULL DEFAULT '[]',
       syllabus_source_id         TEXT,
+      user_instruction           TEXT,
       source_only                INTEGER NOT NULL DEFAULT 1,
       include_source_snapshots   INTEGER NOT NULL DEFAULT 0,
       paused_from_status         TEXT,
@@ -1415,6 +1462,9 @@ function ensureLearnTables(): void {
   }
   if (!learnJobColumns.has("syllabus_source_id")) {
     db.exec("ALTER TABLE learn_jobs ADD COLUMN syllabus_source_id TEXT");
+  }
+  if (!learnJobColumns.has("user_instruction")) {
+    db.exec("ALTER TABLE learn_jobs ADD COLUMN user_instruction TEXT");
   }
   if (!learnJobColumns.has("model")) {
     db.exec("ALTER TABLE learn_jobs ADD COLUMN model TEXT NOT NULL DEFAULT 'gpt-5.6-sol'");
@@ -1594,6 +1644,7 @@ function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
     sourceSetHash: row.source_set_hash ?? undefined,
     sourceIds: parseSourceIds(row.source_ids_json),
     syllabusSourceId: row.syllabus_source_id ?? undefined,
+    userInstruction: row.user_instruction?.trim() || undefined,
     sourceOnly: Boolean(row.source_only ?? 1),
     includeSourceSnapshots: Boolean(row.include_source_snapshots ?? 0),
     pausedFromStatus: row.paused_from_status ?? undefined,
@@ -1658,6 +1709,7 @@ function createLearnJob({
   mode,
   sourceIds,
   syllabusSourceId,
+  userInstruction,
   sourceOnly,
   includeSourceSnapshots,
 }: {
@@ -1668,6 +1720,7 @@ function createLearnJob({
   mode: LearnMode;
   sourceIds: string[];
   syllabusSourceId?: string;
+  userInstruction?: string;
   sourceOnly: boolean;
   includeSourceSnapshots: boolean;
 }): LearnJob {
@@ -1685,6 +1738,7 @@ function createLearnJob({
     requiresReplan: false,
     sourceIds: [...sourceIds],
     syllabusSourceId,
+    userInstruction: userInstruction?.trim() || undefined,
     sourceOnly,
     includeSourceSnapshots,
     tokenUsage: emptyLearnTokenUsage(),
@@ -1696,9 +1750,9 @@ function createLearnJob({
   db.prepare(
     `INSERT INTO learn_jobs (
       id, garden_id, user_id, model, status, mode, current_step, progress_percent, requires_replan,
-      source_ids_json, syllabus_source_id, source_only, include_source_snapshots,
+      source_ids_json, syllabus_source_id, user_instruction, source_only, include_source_snapshots,
       active_elapsed_ms, timer_started_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     job.id,
     job.gardenId,
@@ -1711,6 +1765,7 @@ function createLearnJob({
     job.requiresReplan ? 1 : 0,
     jsonString(job.sourceIds),
     job.syllabusSourceId ?? null,
+    job.userInstruction ?? null,
     job.sourceOnly ? 1 : 0,
     job.includeSourceSnapshots ? 1 : 0,
     job.elapsedMs,
@@ -1763,6 +1818,17 @@ function confirmLearnLeaseForFailureCleanup(
     if (delay === undefined) return false;
     Atomics.wait(learnFailureOwnershipWait, 0, 0, delay);
   }
+}
+
+/** Council receipt resolution and the final pre-POST gate need the same
+ * fail-closed ownership proof as rollback cleanup. A mutation-guard collision
+ * is transient uncertainty, not evidence that the lease was lost; retry the
+ * exact fenced token briefly and authorize only a confirmed `owned` result. */
+function confirmLearnLeaseForCouncilDispatch(
+  lease: GardenLearnLease,
+  jobId: string,
+): boolean {
+  return confirmLearnLeaseForFailureCleanup(lease, jobId);
 }
 const LEARN_JOB_HEARTBEAT_INTERVAL_MS = 15_000;
 const LEARN_CANCELLATION_REQUESTED_STEP =
@@ -2086,6 +2152,7 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
          latest_textbook_version_id = ?,
          source_set_hash = ?,
          source_ids_json = ?,
+         user_instruction = ?,
          source_only = ?,
          include_source_snapshots = ?,
          paused_from_status = ?,
@@ -2108,6 +2175,7 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
     next.latestTextbookVersionId ?? null,
     next.sourceSetHash ?? null,
     jsonString(next.sourceIds),
+    next.userInstruction ?? null,
     next.sourceOnly ? 1 : 0,
     next.includeSourceSnapshots ? 1 : 0,
     next.pausedFromStatus ?? null,
@@ -3136,6 +3204,23 @@ async function reviewAndBindSourceFormulas({
     combinedSourceSetHash,
     createdAt: nowIso(),
   });
+  rebindLearnSourceNormalizationReceipt({
+    gardenDir: path.join(contentPath, gardenId),
+    expectedCombinedSourceSetHash: combinedSourceSetHash,
+    sourceIds: selectedSourceIds,
+    current: context.sources.map((source) =>
+      learnSourceBindingRecord({
+        slug: source.slug,
+        relPath: source.relPath,
+        title: source.title,
+        description: source.description,
+        sourceFile: source.sourceFile,
+        date: source.date,
+        wordCount: source.wordCount,
+        body: source.body,
+      }),
+    ),
+  });
   refreshSelectedSourceArtifactInventory(contentPath, gardenId, context);
   context.sourceFormulaReviewSetHash = review.reviewedFormulaSetHash;
   context.sourceSetHash = combinedSourceSetHash;
@@ -3459,21 +3544,7 @@ function promptSourcesCompact(context: LearnSourceContext): unknown {
   };
 }
 
-async function callCouncilText({
-  client,
-  model,
-  taskType,
-  gardenId,
-  pageId,
-  system,
-  user,
-  sourceContext,
-  councilModeOverride,
-  timeoutMs,
-  preserveExactContent = false,
-  planningCheckpoint,
-  ordinaryCheckpoint,
-}: {
+interface CouncilTextInput {
   client: OpenAI;
   model: string;
   taskType: CouncilTaskType;
@@ -3493,7 +3564,23 @@ async function callCouncilText({
   planningCheckpoint?: LearnPlanningRequestCheckpoint;
   /** Durable identity for every other Learn Council call. */
   ordinaryCheckpoint?: LearnOrdinaryRequestCheckpoint;
-}): Promise<CouncilCallResult> {
+}
+
+async function callCouncilTextOnce({
+  client,
+  model,
+  taskType,
+  gardenId,
+  pageId,
+  system,
+  user,
+  sourceContext,
+  councilModeOverride,
+  timeoutMs,
+  preserveExactContent = false,
+  planningCheckpoint,
+  ordinaryCheckpoint,
+}: CouncilTextInput): Promise<CouncilCallResult> {
   if (ordinaryCheckpoint && councilModeOverride !== "direct_council") {
     throw new LearnPlanningRecoveryConflictError(
       "Durable ordinary Learn Council calls require the explicit direct_council route.",
@@ -3551,6 +3638,77 @@ async function callCouncilText({
           })
         : await post();
     } catch (error) {
+      if (bindingToComplete && modelHttpStatus(error) === 502) {
+        const lookup = await promptlessCouncilResultGet(
+          client,
+          "/internal/council-results/resolve",
+          {
+            requestId: bindingToComplete.requestId,
+            requestHash: bindingToComplete.requestHash,
+          },
+        );
+        if (lookup.status === 200 && lookup.result) {
+          return resolveCompletedPlanningReceipt({
+            client,
+            binding: bindingToComplete,
+            expectedModel: model,
+            preserveExactContent,
+            ...(bindingToComplete.sameReceiptRedispatch
+              ? {
+                  adoption: {
+                    jobId: planningCheckpoint!.jobId,
+                    gardenId,
+                    stageKey: planningCheckpoint!.stageKey,
+                    semanticAttempt: planningCheckpoint!.semanticAttempt,
+                  },
+                }
+              : {}),
+            recovered: true,
+          });
+        }
+        if (
+          lookup.status === 409 &&
+          lookup.code === "request_failed" &&
+          lookup.receipt?.redispatchAllowed === true &&
+          lookup.receipt.failureCode
+        ) {
+          try {
+            updateLearnJob(planningCheckpoint!.jobId, {
+              currentStep: `HTTP 502; automatically retrying ${planningCheckpoint!.stageLabel}`,
+            });
+          } catch {
+            // The exact server receipt remains the retry authority.
+          }
+          await waitForLearnHttp502Retry(
+            planningCheckpoint!.jobId,
+            LEARN_HTTP_502_RETRY_BASE_DELAY_MS,
+          );
+          return dispatchCouncilRequest(
+            { ...requestToDispatch, clientRequestRedispatch: true },
+            bindingToComplete,
+          );
+        }
+        if (
+          lookup.status === 409 &&
+          lookup.code === "request_failed" &&
+          lookup.receipt?.redispatchAllowed === false &&
+          lookup.receipt.failureCode
+        ) {
+          throw new LearnCouncilHttp502ReceiptError(
+            {
+              requestId: bindingToComplete.requestId,
+              requestHash: bindingToComplete.requestHash,
+              dispatchGeneration: lookup.receipt.dispatchGeneration,
+              dispatchCount: lookup.receipt.dispatchCount,
+              redispatchCount: lookup.receipt.redispatchCount,
+              redispatchAllowed: false,
+              failureCode: lookup.receipt.failureCode,
+              proofKind: "terminal_receipt",
+            },
+            error,
+          );
+        }
+      }
       if (
         bindingToComplete?.sameReceiptRedispatch &&
         modelHttpStatus(error) === 409
@@ -3666,6 +3824,9 @@ async function callCouncilText({
           ...completionRequest,
           clientRequestId: requestId,
           clientRequestHash: requestHash,
+          ...(sameReceiptRedispatch?.redispatchReason === "request_failed"
+            ? { clientRequestRedispatch: true }
+            : {}),
         },
         {
           requestId,
@@ -3676,6 +3837,75 @@ async function callCouncilText({
       );
     },
   });
+}
+
+const LEARN_HTTP_502_RETRY_BASE_DELAY_MS = 2_000;
+const LEARN_HTTP_502_RETRY_MAX_DELAY_MS = 30_000;
+
+function learnHttp502RetryDelayMs(retryNumber: number): number {
+  return Math.min(
+    LEARN_HTTP_502_RETRY_MAX_DELAY_MS,
+    LEARN_HTTP_502_RETRY_BASE_DELAY_MS * 2 ** Math.min(4, Math.max(0, retryNumber - 1)),
+  );
+}
+
+async function waitForLearnHttp502Retry(jobId: string, delayMs: number): Promise<void> {
+  const deadline = Date.now() + delayMs;
+  while (Date.now() < deadline) {
+    await learnCheckpoint(jobId);
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Math.min(250, Math.max(1, deadline - Date.now()))),
+    );
+  }
+  await learnCheckpoint(jobId);
+}
+
+/** Retry a proven 502 forever, using a new strict receipt only after the prior
+ * receipt is terminal. The stage-key suffix gives each transport cycle a
+ * durable local identity; the canonical request body and hash remain exactly
+ * unchanged. Cancellation and pause checks stay live during every backoff. */
+async function callCouncilText(input: CouncilTextInput): Promise<CouncilCallResult> {
+  const checkpoint = input.planningCheckpoint ?? input.ordinaryCheckpoint;
+  let retryNumber = 0;
+  for (;;) {
+    const stageKey = retryNumber === 0 || !checkpoint
+      ? checkpoint?.stageKey
+      : `${checkpoint.stageKey}:http-502-retry:${retryNumber}`;
+    try {
+      return await callCouncilTextOnce({
+        ...input,
+        ...(input.planningCheckpoint && stageKey
+          ? { planningCheckpoint: { ...input.planningCheckpoint, stageKey } }
+          : {}),
+        ...(input.ordinaryCheckpoint && stageKey
+          ? { ordinaryCheckpoint: { ...input.ordinaryCheckpoint, stageKey } }
+          : {}),
+      });
+    } catch (error) {
+      if (!(error instanceof LearnCouncilHttp502ReceiptError) || !checkpoint) {
+        throw error;
+      }
+      retryNumber += 1;
+      const delayMs = learnHttp502RetryDelayMs(retryNumber);
+      try {
+        updateLearnJob(checkpoint.jobId, {
+          currentStep: `HTTP 502; automatically retrying ${checkpoint.stageLabel} (retry ${retryNumber})`,
+        });
+        appendLearnEvent(input.planningCheckpoint?.contentPath ?? input.ordinaryCheckpoint!.contentPath, input.gardenId, "learn_http_502_auto_retry_scheduled", {
+          jobId: checkpoint.jobId,
+          stageKey: checkpoint.stageKey,
+          stageLabel: checkpoint.stageLabel,
+          retryNumber,
+          delayMs,
+          priorReceiptRequestId: error.receipt.requestId,
+          priorReceiptDispatchCount: error.receipt.dispatchCount,
+        });
+      } catch {
+        // Retry authority comes from the strict receipt, never from telemetry.
+      }
+      await waitForLearnHttp502Retry(checkpoint.jobId, delayMs);
+    }
+  }
 }
 
 async function callCouncilJson({
@@ -5617,6 +5847,19 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
         const reason = mayRedispatchFailed
           ? "request_failed"
           : "receipt_not_found";
+        if (mayRedispatchFailed && modelHttpStatus(dispatchError) === 502) {
+          try {
+            updateLearnJob(input.checkpoint.jobId, {
+              currentStep: `HTTP 502; automatically retrying ${input.checkpoint.stageLabel}`,
+            });
+          } catch {
+            // The exact server receipt remains the retry authority.
+          }
+          await waitForLearnHttp502Retry(
+            input.checkpoint.jobId,
+            LEARN_HTTP_502_RETRY_BASE_DELAY_MS,
+          );
+        }
         const checkpointId = source.job_id === input.checkpoint.jobId
           ? source.checkpoint_id
           : makeId("lrqa");
@@ -5663,11 +5906,18 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
         lookup.code === "request_failed" &&
         lookup.receipt
       ) {
-        throw terminalOrdinaryCouncilReceiptError(
+        const terminalError = terminalOrdinaryCouncilReceiptError(
           source,
           requestHash,
           lookup.receipt,
         );
+        if (modelHttpStatus(dispatchError) === 502) {
+          throw new LearnCouncilHttp502ReceiptError(
+            terminalError.receipt,
+            dispatchError,
+          );
+        }
+        throw terminalError;
       }
       const expiredStarted = expiredStartedOrdinaryCouncilReceiptError({
         source,
@@ -6100,7 +6350,34 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
     return resolveStarted(selection.newestIncomplete);
   }
 
-  const lineage = exactFailedLearnCouncilLineage(db, input.checkpoint.jobId);
+  const exactLineage = exactFailedLearnCouncilLineage(
+    db,
+    input.checkpoint.jobId,
+  );
+  // Stage-specific native checkpoints were already resolved above. A failed
+  // predecessor that also completed a native planning receipt is provably a
+  // post-migration strict worker: every ordinary Council POST in that runtime
+  // synchronously persists this stage checkpoint first. Its absence is exact
+  // negative issuance evidence, so it must not be reclassified as legacy and
+  // extend the 37-minute pre-receipt quiescence window. Pre-migration jobs (no
+  // completed native planning receipt) retain the full legacy lookup + wait.
+  const lineage = exactLineage.filter(
+    (origin) => !hasCompletedNativePlanningCheckpoint(db, origin.id),
+  );
+  if (lineage.length !== exactLineage.length) {
+    appendLearnEvent(
+      input.checkpoint.contentPath,
+      gardenId,
+      "learn_council_strict_predecessors_excluded_from_legacy_fallback",
+      {
+        jobId: input.checkpoint.jobId,
+        stageKey: input.checkpoint.stageKey,
+        semanticAttempt: input.checkpoint.semanticAttempt,
+        exactPredecessorCount: exactLineage.length,
+        legacyPredecessorCount: lineage.length,
+      },
+    );
+  }
   if (
     lineage.some((job, index) =>
       index > 0 && job.created_at === lineage[index - 1].created_at)
@@ -6408,6 +6685,114 @@ function assertExactRecoveredPlanningRouting(
   }
 }
 
+interface EligiblePriorPlanningCheckpoint {
+  row: PriorPlanningCheckpointRow;
+  abandonedFence?: {
+    recoveredAt: string;
+    events: Array<Record<string, unknown>>;
+    malformedEvents: false;
+  };
+}
+
+/** A failed job can leave a native checkpoint locally `started` even after its
+ * server receipt has become terminal. When a later explicit retry changes the
+ * canonical request (for example, after a prompt/code revision), that old hash
+ * must still fail closed while it is in flight. It must not permanently block
+ * the new request once the server proves that the old receipt is terminal.
+ *
+ * Completed mismatches are reconciled locally before being skipped. Failed
+ * mismatches are skipped only when the strict receipt has exhausted its server
+ * redispatch authority. Missing or still-started receipts remain eligible and
+ * therefore retain the existing request-hash conflict fence. */
+async function omitTerminallySettledMismatchedPlanningReceipts(input: {
+  client: OpenAI;
+  requestHash: string;
+  expectedModel: string;
+  checkpoint: LearnPlanningRequestCheckpoint;
+  candidates: EligiblePriorPlanningCheckpoint[];
+}): Promise<EligiblePriorPlanningCheckpoint[]> {
+  const unresolved: EligiblePriorPlanningCheckpoint[] = [];
+  for (const candidate of input.candidates) {
+    const { row } = candidate;
+    if (
+      row.request_hash === input.requestHash ||
+      row.result_origin !== "receipt" ||
+      !row.receipt_request_id
+    ) {
+      unresolved.push(candidate);
+      continue;
+    }
+    if (!exactPlanningDispatchAuthority(input.checkpoint.jobId, row.garden_id)) {
+      throw new PlanningRecoveryBoundaryError("dispatch_authority_lost");
+    }
+    const lookup = await promptlessCouncilResultGet(
+      input.client,
+      "/internal/council-results/resolve",
+      {
+        requestId: row.receipt_request_id,
+        requestHash: row.request_hash,
+      },
+    );
+    if (!exactPlanningDispatchAuthority(input.checkpoint.jobId, row.garden_id)) {
+      throw new PlanningRecoveryBoundaryError("dispatch_authority_lost");
+    }
+    if (lookup.status === 200 && lookup.result) {
+      assertExactRecoveredPlanningRouting(lookup.result, input.expectedModel);
+      if (row.state === "started") {
+        completePlanningCheckpoint(db, {
+          requestId: row.request_id,
+          requestHash: row.request_hash,
+          councilRunId: lookup.result.councilRunId,
+          responseHash: lookup.result.responseHash,
+          now: nowIso(),
+        });
+      }
+      appendLearnEvent(
+        input.checkpoint.contentPath,
+        row.garden_id,
+        "learn_terminal_mismatched_planning_receipt_omitted",
+        {
+          jobId: input.checkpoint.jobId,
+          originJobId: row.job_id,
+          stageKey: row.stage_key,
+          semanticAttempt: row.semantic_attempt,
+          outcome: "completed",
+          receiptRequestId: row.receipt_request_id,
+        },
+      );
+      continue;
+    }
+    if (
+      lookup.status === 409 &&
+      lookup.code === "request_failed" &&
+      lookup.receipt?.redispatchAllowed === false &&
+      Boolean(lookup.receipt.failureCode)
+    ) {
+      appendLearnEvent(
+        input.checkpoint.contentPath,
+        row.garden_id,
+        "learn_terminal_mismatched_planning_receipt_omitted",
+        {
+          jobId: input.checkpoint.jobId,
+          originJobId: row.job_id,
+          stageKey: row.stage_key,
+          semanticAttempt: row.semantic_attempt,
+          outcome: "failed",
+          receiptRequestId: row.receipt_request_id,
+          dispatchCount: lookup.receipt.dispatchCount,
+          failureCode: lookup.receipt.failureCode,
+        },
+      );
+      continue;
+    }
+    // A missing, still-started, malformed, or redispatchable receipt can still
+    // race with a provider call. Keep it eligible so the hash mismatch below
+    // remains a hard no-POST boundary.
+    unresolved.push(candidate);
+  }
+  return unresolved;
+}
+
 async function resolveCompletedPlanningReceipt(input: {
   client: OpenAI;
   binding: {
@@ -6535,14 +6920,7 @@ async function resolvePriorPlanningResult({
     stageKey: checkpoint.stageKey,
     semanticAttempt: checkpoint.semanticAttempt,
   });
-  const eligibleRows: Array<{
-    row: PriorPlanningCheckpointRow;
-    abandonedFence?: {
-      recoveredAt: string;
-      events: Array<Record<string, unknown>>;
-      malformedEvents: false;
-    };
-  }> = [];
+  const eligibleRows: EligiblePriorPlanningCheckpoint[] = [];
   for (const row of priorRows) {
     const exactBinding = row.result_origin === "receipt"
       ? exactStrictReceiptOriginBinding(row, current)
@@ -6591,10 +6969,18 @@ async function resolvePriorPlanningResult({
     // A clean completed receipt from an ordinary semantic-failure job is not
     // replayed: it was already observed and knowingly rejected by that run.
   }
-  let exactCheckpoint: (typeof eligibleRows)[number] | null;
+  const unresolvedEligibleRows =
+    await omitTerminallySettledMismatchedPlanningReceipts({
+      client,
+      requestHash,
+      expectedModel: request.model,
+      checkpoint,
+      candidates: eligibleRows,
+    });
+  let exactCheckpoint: (typeof unresolvedEligibleRows)[number] | null;
   try {
     exactCheckpoint = await resolveUniquePlanningCandidate({
-      candidates: eligibleRows.map((entry) => ({
+      candidates: unresolvedEligibleRows.map((entry) => ({
         candidate: entry,
         disposition: "eligible" as const,
         requestHash: entry.row.request_hash,
@@ -6628,6 +7014,30 @@ async function resolvePriorPlanningResult({
       if (
         row.result_origin === "receipt" &&
         row.state === "started" &&
+        lookup.status === 409 &&
+        lookup.code === "request_failed" &&
+        lookup.receipt?.dispatchGeneration === 1 &&
+        lookup.receipt.dispatchCount === 1 &&
+        lookup.receipt.redispatchCount === 0 &&
+        lookup.receipt.redispatchAllowed === true &&
+        typeof lookup.receipt.failureCode === "string" &&
+        Boolean(lookup.receipt.failureCode)
+      ) {
+        // ChatMock durably proved that generation one terminated without a
+        // reusable answer and explicitly authorized one bounded redispatch.
+        // Reuse the exact receipt id/hash so the server's generation fence,
+        // rather than a new logical request, decides the retry atomically.
+        return {
+          kind: "same_receipt_redispatch",
+          requestId: row.receipt_request_id ?? row.request_id,
+          checkpointRequestId: row.request_id,
+          requestHash,
+          redispatchReason: "request_failed",
+        };
+      }
+      if (
+        row.result_origin === "receipt" &&
+        row.state === "started" &&
         lookup.status === 404 &&
         lookup.code === "receipt_not_found"
       ) {
@@ -6640,6 +7050,7 @@ async function resolvePriorPlanningResult({
           requestId: row.receipt_request_id ?? row.request_id,
           checkpointRequestId: row.request_id,
           requestHash,
+          redispatchReason: "receipt_not_found",
         };
       }
       throw new LearnPlanningRecoveryConflictError(
@@ -7871,7 +8282,8 @@ function syllabusUnitAssignmentProblems(
         : []);
   }
   const coverageById = new Map(syllabusCoverage.units.map((unit) => [unit.unitId, unit]));
-  return units.flatMap((unit) => {
+  const assignedTeachableIds = new Set<string>();
+  const problems = units.flatMap((unit) => {
     const ids = unit.syllabusUnitIds ?? [];
     const problems: string[] = [];
     if (ids.length === 0) {
@@ -7883,10 +8295,20 @@ function syllabusUnitAssignmentProblems(
         problems.push(`unit "${unit.id}" references unknown syllabus unit "${id}"`);
       } else if (!syllabusUnit.teachable) {
         problems.push(`unit "${unit.id}" references syllabus unit "${id}" that the coverage review judged unteachable`);
+      } else {
+        assignedTeachableIds.add(id);
       }
     }
     return problems;
   });
+  for (const syllabusUnit of syllabusCoverage.units) {
+    if (syllabusUnit.teachable && !assignedTeachableIds.has(syllabusUnit.unitId)) {
+      problems.push(
+        `teachable syllabus unit "${syllabusUnit.unitId}" (${syllabusUnit.title}) is not covered by any learning unit`,
+      );
+    }
+  }
+  return problems;
 }
 
 function writeLearningUnitContractArtifacts({
@@ -8321,6 +8743,7 @@ export async function runLearnPlanning({
   syllabusSourceId,
   sourceOnly = true,
   includeSourceSnapshots = false,
+  userInstruction,
   resetSourceMap = false,
   retainLeaseOnSuccess = false,
   yieldToResponse,
@@ -8335,6 +8758,7 @@ export async function runLearnPlanning({
   syllabusSourceId?: string | null;
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
+  userInstruction?: string;
   resetSourceMap?: boolean;
   /** Internal full-rebuild handoff: the caller must release retainedLease. */
   retainLeaseOnSuccess?: boolean;
@@ -8345,6 +8769,7 @@ export async function runLearnPlanning({
   learningMap: StoredLearningMap;
   retainedLease?: GardenLearnLease;
 }> {
+  const effectiveUserInstruction = normalizeLearnUserInstruction(userInstruction);
   assertNoPendingLearnClear(gardenId);
   const gardenDir = clusterPath(contentPath, gardenId);
   const jobId = makeId("learn_job");
@@ -8421,6 +8846,7 @@ export async function runLearnPlanning({
       // reproduces exactly the same teaching-set/syllabus split.
       sourceIds: context.selectedSourceIds,
       syllabusSourceId: context.syllabus?.slug,
+      userInstruction: effectiveUserInstruction,
       sourceOnly,
       includeSourceSnapshots,
     });
@@ -8454,7 +8880,7 @@ export async function runLearnPlanning({
     });
     activeLearnCouncilDispatchAuthorities.set(
       job.id,
-      () => !lease.lost && lease.heartbeat(),
+      () => confirmLearnLeaseForCouncilDispatch(lease, job.id),
     );
   } catch (error) {
     const message = errorMessage(error, "Planning workspace could not be prepared");
@@ -9079,9 +9505,13 @@ export async function runLearnPlanning({
         model,
         taskType: "source_map",
         gardenId,
-        system: withSyllabusRules(SOURCE_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+        system: withLearnUserInstructionRules(
+          withSyllabusRules(SOURCE_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+          effectiveUserInstruction,
+        ),
         user: compactJson({
           sourceOnly,
+          userInstruction: effectiveUserInstruction,
           syllabus: syllabusPayload,
           syllabusCoverage: syllabusCoveragePayload(),
           sourceContext: promptSourceContext,
@@ -9302,12 +9732,16 @@ export async function runLearnPlanning({
       model,
       taskType: "scope_contract",
       gardenId,
-      system: withSyllabusRules(SCOPE_CONTRACT_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+      system: withLearnUserInstructionRules(
+        withSyllabusRules(SCOPE_CONTRACT_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+        effectiveUserInstruction,
+      ),
       // The scope contract reasons over the source map (already a digest of the
       // full text), so it takes the compacted map + a body-free source context.
       // The syllabus stays in full: it is what defines the scope.
       user: compactJson({
         sourceOnly,
+        userInstruction: effectiveUserInstruction,
         syllabus: syllabusPayload,
         syllabusCoverage: syllabusCoveragePayload(),
         sourceMap,
@@ -9338,6 +9772,7 @@ export async function runLearnPlanning({
     const spineSourceContext = promptSourcesCompact(context);
     const topicMapPlanningPacket = () => projectCanonicalLearningSpinePacket({
       sourceOnly,
+      userInstruction: effectiveUserInstruction,
       syllabus: syllabusPayload,
       syllabusCoverage: syllabusCoveragePayload(),
       sourceMap,
@@ -9361,7 +9796,7 @@ export async function runLearnPlanning({
               repair: {
                 ...repair,
                 instruction:
-                  "The strongest rejected candidate below failed these hard checks. Return a complete corrected replacement JSON object, not a patch or prose explanation. The bounded repairHistory records the exact hard-check history and whether each prior response became the next repair incumbent. Preserve valid source assignments and omission reasons, regenerate 15-25 precise learningUnits, partition every registered artifact exactly once between an owning unit and sourceArtifactOmissions, keep semanticConcepts separate from readable knowledgeClaims, and do not return sections first. Treat role as the teaching move rather than the owned artifact type: formulas may support any appropriate role, so never turn concept/mechanism/application/interpretation/synthesis/practice units into formula units merely because they own equations; a rich spine must use at least three appropriate roles including conceptual/mechanism and application/interpretation/synthesis/practice. If a semanticConcept slug appears in multiple units, every occurrence must use exactly the same preferredLabel and exactly the same aliases array in the same order; author that identity yourself because code will never choose or merge it.",
+                  "The strongest rejected candidate below failed these hard checks. Return a complete corrected replacement JSON object, not a patch or prose explanation. The bounded repairHistory records the exact hard-check history and whether each prior response became the next repair incumbent. Preserve valid source assignments and omission reasons, regenerate every precise learningUnit needed for full teachable-syllabus and in-scope source coverage without an arbitrary unit or section ceiling, partition every registered artifact exactly once between an owning unit and sourceArtifactOmissions, keep semanticConcepts separate from readable knowledgeClaims, and do not return sections first. Treat role as the teaching move rather than the owned artifact type: formulas may support any appropriate role, so never turn concept/mechanism/application/interpretation/synthesis/practice units into formula units merely because they own equations; a rich spine must use at least three appropriate roles including conceptual/mechanism and application/interpretation/synthesis/practice. If a semanticConcept slug appears in multiple units, every occurrence must use exactly the same preferredLabel and exactly the same aliases array in the same order; author that identity yourself because code will never choose or merge it.",
               },
             }
           : {}),
@@ -9373,7 +9808,10 @@ export async function runLearnPlanning({
       model,
       taskType: "learning_spine",
       gardenId,
-      system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+      system: withLearnUserInstructionRules(
+        withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+        effectiveUserInstruction,
+      ),
       user: topicMapUser(),
       sourceContext: { ...planningSourceMeta, taskType: "learning_spine" },
       contentPath,
@@ -9516,7 +9954,10 @@ export async function runLearnPlanning({
         model,
         taskType: "learning_spine",
         gardenId,
-        system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+        system: withLearnUserInstructionRules(
+          withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+          effectiveUserInstruction,
+        ),
         user: topicMapUser(repairFeedback),
         sourceContext: {
           ...planningSourceMeta,
@@ -9634,7 +10075,10 @@ export async function runLearnPlanning({
             model,
             taskType: "learning_spine",
             gardenId,
-            system: withSyllabusRules(request.system, SYLLABUS_PLANNING_RULES, hasSyllabus),
+            system: withLearnUserInstructionRules(
+              withSyllabusRules(request.system, SYLLABUS_PLANNING_RULES, hasSyllabus),
+              effectiveUserInstruction,
+            ),
             user: request.user,
             sourceContext: {
               ...planningSourceMeta,
@@ -10276,7 +10720,7 @@ export async function runLearnPlanning({
           try {
             void publishQuartzAfterMutation(
               `failed Learn planning rollback in ${gardenId}`,
-              { requireSuccess: true },
+              { requireSuccess: true, gardenSlug: gardenId },
             )
               .then(() => {
                 try {
@@ -11099,6 +11543,7 @@ const LEARN_RUN_ROLLBACK_PATHS = [
   ".breadboard/source-visual-source-index.json",
   ".breadboard/source-formula-reviews",
   ".breadboard/source-formula-review-set.json",
+  ".breadboard/source-normalization-receipt.json",
   ".breadboard/visual-index.json",
   ".breadboard/visual-contract-executability-reviews.json",
   ".breadboard/visual-decision-records.json",
@@ -11619,6 +12064,7 @@ async function cleanupLearnArtifactsAfterCancel({
   );
   void publishQuartzAfterMutation(`learn cancellation cleanup in ${gardenId}`, {
     requireSuccess: true,
+    gardenSlug: gardenId,
   })
     .then(() => clearLearnPublicationRetry(gardenId, publicationToken))
     .catch((error) => {
@@ -12364,6 +12810,7 @@ export async function runTextbookGeneration({
   mode = "generate",
   sourceOnly = true,
   includeSourceSnapshots = false,
+  userInstruction,
   autoConfirmTopicMap = false,
   confirmProposedLearningMap = false,
   gardenLease,
@@ -12378,6 +12825,7 @@ export async function runTextbookGeneration({
   mode?: Exclude<LearnMode, "plan">;
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
+  userInstruction?: string;
   /**
    * Noninteractive/test escape hatch. When true, a proposed (unconfirmed) topic
    * map is auto-promoted to confirmed so page generation can proceed without a
@@ -12396,6 +12844,7 @@ export async function runTextbookGeneration({
   /** Cooperative route handoff after the durable job is visible to polling. */
   yieldToResponse?: (jobId: string) => Promise<void>;
 }): Promise<{ job: LearnJob; textbookVersionId: string; pageCount: number }> {
+  const requestedUserInstruction = normalizeLearnUserInstruction(userInstruction);
   if (mode === "repair") {
     throw new Error("Scoped repair must use runLearnRepairOperation; it cannot enter the full page-generation loop.");
   }
@@ -12455,6 +12904,7 @@ export async function runTextbookGeneration({
   let map: StoredLearningMap;
   let context: LearnSourceContext;
   let sourceFormulaReviewFinalizationContext!: SourceFormulaReviewFinalizationContext;
+  let effectiveUserInstruction: string | undefined;
   let handoffJobId: string | undefined;
   let inheritedPlanningSnapshotJobId: string | undefined;
   try {
@@ -12556,6 +13006,9 @@ export async function runTextbookGeneration({
       );
     }
     map = selectedMap;
+    effectiveUserInstruction =
+      requestedUserInstruction ??
+      normalizeLearnUserInstruction(getLearnJobById(map.jobId)?.userInstruction);
     // Reload source state only after lease acquisition. A confirmed map owns
     // its exact document/syllabus selection, so a concurrent rebuild cannot
     // leave this worker generating from stale pre-lock bytes.
@@ -12752,6 +13205,7 @@ export async function runTextbookGeneration({
         mode,
         sourceIds: context.selectedSourceIds,
         syllabusSourceId: context.syllabus?.slug,
+        userInstruction: effectiveUserInstruction,
         sourceOnly,
         includeSourceSnapshots,
         confirmedLearningMapId: map.id,
@@ -12785,6 +13239,7 @@ export async function runTextbookGeneration({
           mode,
           sourceIds: context.selectedSourceIds,
           syllabusSourceId: context.syllabus?.slug,
+          userInstruction: effectiveUserInstruction,
           sourceOnly,
           includeSourceSnapshots,
         });
@@ -12800,7 +13255,7 @@ export async function runTextbookGeneration({
   try {
     activeLearnCouncilDispatchAuthorities.set(
       job.id,
-      () => !lease.lost && lease.heartbeat(),
+      () => confirmLearnLeaseForCouncilDispatch(lease, job.id),
     );
     updateLearnJob(job.id, {
       status: "generating_learning_pages",
@@ -13425,9 +13880,13 @@ export async function runTextbookGeneration({
           taskType: "source_synthesis",
           gardenId,
           pageId: "learning/Topic Overview",
-          system: OVERVIEW_PROMPT,
+          system: withLearnUserInstructionRules(
+            OVERVIEW_PROMPT,
+            effectiveUserInstruction,
+          ),
           user: compactJson({
             task: attempt === 1 ? "write_topic_overview" : "repair_topic_overview",
+            userInstruction: effectiveUserInstruction,
             learningMap: map.learningMap,
             scopeContract: map.scopeContract,
             sourceOnly,
@@ -13716,14 +14175,18 @@ export async function runTextbookGeneration({
               taskType: "subsection_generation",
               gardenId,
               pageId,
-              system: withSyllabusRules(
-                SUBSECTION_PROMPT,
-                SYLLABUS_PAGE_RULES,
-                Boolean(context.syllabus),
+              system: withLearnUserInstructionRules(
+                withSyllabusRules(
+                  SUBSECTION_PROMPT,
+                  SYLLABUS_PAGE_RULES,
+                  Boolean(context.syllabus),
+                ),
+                effectiveUserInstruction,
               ),
               user: withVerbatimSourceFormulaCopySheet(
                 compactJson({
                   task: "write_subsection",
+                  userInstruction: effectiveUserInstruction,
                   dossier: pageDossier,
                   instructions: {
                     style: "flowing beginner-friendly textbook subsection",
@@ -13773,10 +14236,14 @@ export async function runTextbookGeneration({
                 taskType: "subsection_repair",
                 gardenId,
                 pageId,
-                system: SUBSECTION_REPAIR_PROMPT,
+                system: withLearnUserInstructionRules(
+                  SUBSECTION_REPAIR_PROMPT,
+                  effectiveUserInstruction,
+                ),
                 user: withVerbatimSourceFormulaCopySheet(
                   compactJson({
                   pageMarkdown: attemptBody,
+                  userInstruction: effectiveUserInstruction,
                   failedProblems: hardQualityProblems
                     .map(formatModelAuthoredLessonQualityProblemForRepair),
                   dossier: pageDossier,
@@ -14662,6 +15129,7 @@ export async function runTextbookGeneration({
     }
     await publishQuartzAfterMutation(`learn textbook generation in ${gardenId}`, {
       requireSuccess: true,
+      gardenSlug: gardenId,
     });
     if (!lease.heartbeat()) {
       throw new LearnPipelineConflictError(
@@ -14833,7 +15301,7 @@ export async function runTextbookGeneration({
           try {
             await publishQuartzAfterMutation(
               `rolled back failed Learn generation in ${gardenId}`,
-              { requireSuccess: true },
+              { requireSuccess: true, gardenSlug: gardenId },
             );
             if (publicationToken) {
               try {
@@ -14959,6 +15427,7 @@ export interface FullRebuildOptions {
   syllabusSourceId?: string | null;
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
+  userInstruction?: string;
   /** Destructive confirmation. The literal true is required at runtime too. */
   forceFullRebuild: true;
 }
@@ -15319,7 +15788,7 @@ export async function switchFinishedLearnHumanizer({
     if (changed) {
       await publishQuartzAfterMutation(
         `${enabled ? "humanized" : "restored AI"} Learn copy in ${gardenId}`,
-        { requireSuccess: true },
+        { requireSuccess: true, gardenSlug: gardenId },
       );
     }
     promotionCommitted = true;
@@ -15355,7 +15824,7 @@ export async function switchFinishedLearnHumanizer({
       try {
         await publishQuartzAfterMutation(
           `rolled back failed Learn humanizer switch in ${gardenId}`,
-          { requireSuccess: true },
+          { requireSuccess: true, gardenSlug: gardenId },
         );
         clearLearnPublicationRetry(gardenId, publicationToken);
       } catch (republishError) {
@@ -15417,6 +15886,7 @@ export async function rebuildEntireGarden(
       syllabusSourceId: options.syllabusSourceId,
       sourceOnly: options.sourceOnly ?? true,
       includeSourceSnapshots: options.includeSourceSnapshots ?? false,
+      userInstruction: options.userInstruction,
       resetSourceMap: true,
       retainLeaseOnSuccess: true,
       yieldToResponse,
@@ -15444,6 +15914,7 @@ export async function rebuildEntireGarden(
       mode: "full_rebuild",
       sourceOnly: options.sourceOnly ?? true,
       includeSourceSnapshots: options.includeSourceSnapshots ?? false,
+      userInstruction: options.userInstruction,
       gardenLease: rebuildLease,
       yieldToResponse,
     });
@@ -15548,6 +16019,7 @@ export async function rebuildEntireGarden(
       try {
         await publishQuartzAfterMutation(`failed Learn rebuild rollback in ${gardenId}`, {
           requireSuccess: true,
+          gardenSlug: gardenId,
         });
         if (publicationToken) {
           try {
@@ -15664,7 +16136,7 @@ export async function runLearnRepairOperation({
   try {
     activeLearnCouncilDispatchAuthorities.set(
       job.id,
-      () => !lease.lost && lease.heartbeat(),
+      () => confirmLearnLeaseForCouncilDispatch(lease, job.id),
     );
     updateLearnJob(job.id, {
       status: "analyzing_issues",
@@ -15770,6 +16242,7 @@ export async function runLearnRepairOperation({
     updateLearnJobExpectStatus(job.id, { status: "publishing_repair", currentStep: "Publishing repaired projection", progressPercent: 96 });
     await publishQuartzAfterMutation(`scoped Learn repair in ${gardenId}`, {
       requireSuccess: true,
+      gardenSlug: gardenId,
     });
     if (!lease.heartbeat()) {
       throw new LearnPipelineConflictError(
@@ -15863,7 +16336,7 @@ export async function runLearnRepairOperation({
         try {
           await publishQuartzAfterMutation(
             `rolled back failed Learn repair in ${gardenId}`,
-            { requireSuccess: true },
+            { requireSuccess: true, gardenSlug: gardenId },
           );
           if (publicationToken) {
             try {
@@ -15990,6 +16463,7 @@ export async function runLearnPipeline({
   syllabusSourceId,
   sourceOnly = true,
   includeSourceSnapshots = false,
+  userInstruction,
   autoConfirmTopicMap = false,
   client,
   model = DEFAULT_MODEL,
@@ -16005,6 +16479,7 @@ export async function runLearnPipeline({
   syllabusSourceId?: string | null;
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
+  userInstruction?: string;
   autoConfirmTopicMap?: boolean;
   client: OpenAI;
   model?: string;
@@ -16034,6 +16509,7 @@ export async function runLearnPipeline({
       syllabusSourceId,
       sourceOnly,
       includeSourceSnapshots,
+      userInstruction,
       retainLeaseOnSuccess: autoConfirmTopicMap,
       yieldToResponse,
     });
@@ -16061,6 +16537,7 @@ export async function runLearnPipeline({
         mode: "generate",
         sourceOnly,
         includeSourceSnapshots,
+        userInstruction,
         gardenLease: retainedLease,
         yieldToResponse,
       });
@@ -16119,6 +16596,7 @@ export async function runLearnPipeline({
     mode: operationMode,
     sourceOnly,
     includeSourceSnapshots,
+    userInstruction,
     autoConfirmTopicMap,
     yieldToResponse,
   });
@@ -16913,6 +17391,7 @@ export async function clearAllLearnData({
     try {
       await publishQuartzAfterMutation(`cleared Learn data in ${gardenId}`, {
         requireSuccess: true,
+        gardenSlug: gardenId,
       });
     } catch (publicationError) {
       const previousGardenDir = publication.previousPreservedAt;
@@ -16939,7 +17418,7 @@ export async function clearAllLearnData({
       try {
         await publishQuartzAfterMutation(
           `rolled back failed Learn Clear publication in ${gardenId}`,
-          { requireSuccess: true },
+          { requireSuccess: true, gardenSlug: gardenId },
         );
       } catch (republishError) {
         throw new Error(
@@ -17019,7 +17498,7 @@ export async function clearAllLearnData({
       try {
         await publishQuartzAfterMutation(
           `rolled back failed Learn Clear database commit in ${gardenId}`,
-          { requireSuccess: true },
+          { requireSuccess: true, gardenSlug: gardenId },
         );
       } catch (republishError) {
         throw new Error(
@@ -17197,7 +17676,7 @@ async function recoverInterruptedLearnClears(contentPath: string): Promise<void>
       if (current.phase === "restored_pending_publication") {
         await publishQuartzAfterMutation(
           `resumed restored Learn Clear publication in ${current.garden_id}`,
-          { requireSuccess: true },
+          { requireSuccess: true, gardenSlug: current.garden_id },
         );
         if (!leaseResult.lease.heartbeat()) {
           throw new LearnPipelineConflictError(
@@ -17219,7 +17698,7 @@ async function recoverInterruptedLearnClears(contentPath: string): Promise<void>
           updateLearnClearOperation(current.id, "restored_pending_publication");
           await publishQuartzAfterMutation(
             `completed restored Learn Clear publication in ${current.garden_id}`,
-            { requireSuccess: true },
+            { requireSuccess: true, gardenSlug: current.garden_id },
           );
           if (!leaseResult.lease.heartbeat()) {
             throw new LearnPipelineConflictError(
@@ -17261,7 +17740,7 @@ async function recoverInterruptedLearnClears(contentPath: string): Promise<void>
       updateLearnClearOperation(current.id, "restored_pending_publication");
       await publishQuartzAfterMutation(
         `recovered interrupted Learn Clear in ${current.garden_id}`,
-        { requireSuccess: true },
+        { requireSuccess: true, gardenSlug: current.garden_id },
       );
       if (!leaseResult.lease.heartbeat()) {
         throw new LearnPipelineConflictError(
@@ -17318,7 +17797,7 @@ async function recoverPendingLearnPublications(contentPath: string): Promise<voi
       }
       await publishQuartzAfterMutation(
         `retrying ${publication.reason} in ${publication.garden_id}`,
-        { requireSuccess: true },
+        { requireSuccess: true, gardenSlug: publication.garden_id },
       );
       if (!leaseResult.lease.heartbeat()) {
         throw new LearnPipelineConflictError(
@@ -17611,7 +18090,7 @@ export async function recoverAbandonedLearnJobs({
         try {
           await publishQuartzAfterMutation(
             `recovered abandoned Learn operation in ${candidate.garden_id}`,
-            { requireSuccess: true },
+            { requireSuccess: true, gardenSlug: candidate.garden_id },
           );
           clearLearnPublicationRetry(candidate.garden_id, publicationToken);
         } catch (error) {

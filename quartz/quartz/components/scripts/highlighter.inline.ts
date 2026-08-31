@@ -42,7 +42,6 @@ interface Span {
 
 const STORAGE_PREFIX = "breadboard:garden-highlights:v1:"
 const ANSWER_STORAGE_PREFIX = "breadboard:garden-highlight-answers:v1:"
-const COLOR_KEY = "breadboard:garden-highlight-color:v1"
 // How much text either side of a highlight is kept so it can be found again
 // after the page around it changes.
 const CONTEXT = 48
@@ -134,20 +133,6 @@ function writeInlineAnswers(list: StoredInlineAnswer[]) {
   } catch {
     // Answers remain available for this page load when storage is unavailable.
   }
-}
-
-function readColor(): HighlightColor {
-  try {
-    const stored = localStorage.getItem(COLOR_KEY)
-    if (isHighlightColor(stored)) return stored
-  } catch {}
-  return DEFAULT_HIGHLIGHT_COLOR
-}
-
-function writeColor(color: HighlightColor) {
-  try {
-    localStorage.setItem(COLOR_KEY, color)
-  } catch {}
 }
 
 function newId(): string {
@@ -476,23 +461,15 @@ document.addEventListener("nav", () => {
   if (container.parentElement !== document.body) document.body.appendChild(container)
 
   const menu = container.querySelector<HTMLElement>(".bb-highlight-menu")!
-  const palette = container.querySelector<HTMLElement>(".bb-highlight-palette")!
-  const trigger = container.querySelector<HTMLElement>('[data-highlight-action="palette"]')!
-  const triggerSwatch = trigger.querySelector<HTMLElement>(".bb-highlight-swatch")!
-  const copyButton = container.querySelector<HTMLElement>('[data-highlight-action="copy"]')!
   const askButtons = Array.from(
     container.querySelectorAll<HTMLButtonElement>(
       '[data-highlight-action="ask-chat"], [data-highlight-action="ask-inline"]',
     ),
   )
-  const eraseButton = container.querySelector<HTMLElement>(
-    '.bb-highlight-menu [data-highlight-action="erase"]',
-  )!
+  const eraseButton = container.querySelector<HTMLElement>('[data-highlight-action="erase"]')!
 
   let highlights = render(root)
   let inlineAnswers = readInlineAnswers()
-  let activeColor = readColor()
-  let copyResetTimer = 0
   let openAnswerHighlightId: string | null = null
   const autoOpenedAnswerRequests = new Set<string>()
   // Escape means "leave me alone with this selection": without it the next
@@ -507,24 +484,8 @@ document.addEventListener("nav", () => {
     button.hidden = window.parent === window && !hasPageAssistant
   }
 
-  const syncColorUi = () => {
-    triggerSwatch.dataset.hlColor = activeColor
-    for (const option of container.querySelectorAll<HTMLElement>("[data-highlight-color]")) {
-      option.setAttribute(
-        "aria-checked",
-        option.dataset.highlightColor === activeColor ? "true" : "false",
-      )
-    }
-  }
-
-  const closePalette = () => {
-    palette.hidden = true
-    trigger.setAttribute("aria-expanded", "false")
-  }
-
   const hide = () => {
     container.hidden = true
-    closePalette()
   }
 
   const answerPopover = document.createElement("section")
@@ -534,20 +495,36 @@ document.addEventListener("nav", () => {
   answerPopover.setAttribute("aria-label", "Answer about highlighted text")
   answerPopover.innerHTML = `
     <header class="bb-highlight-answer-header">
-      <div class="bb-highlight-answer-question"></div>
-      <button type="button" class="bb-highlight-answer-close" aria-label="Close answer" title="Close">&times;</button>
+      <div class="bb-highlight-answer-question">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 5v5a4 4 0 0 0 4 4h11m-3-3 3 3-3 3"></path>
+        </svg>
+        <span class="bb-highlight-answer-question-text"></span>
+      </div>
+      <div class="bb-highlight-answer-tools">
+        <button type="button" class="bb-highlight-answer-tool bb-highlight-answer-delete" data-answer-action="delete" aria-label="Delete highlight" title="Delete highlight">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m3 0-1 13H7L6 7"></path>
+          </svg>
+        </button>
+        <button type="button" class="bb-highlight-answer-tool bb-highlight-answer-run" data-answer-action="retry" aria-label="Ask this question again" title="Retry">
+          <svg class="bb-highlight-answer-retry-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M20 6v5h-5M4 18v-5h5m9.7-3A7 7 0 0 0 6.1 7.1L4 11m16 2-2.1 3.9A7 7 0 0 1 5.3 14"></path>
+          </svg>
+          <span class="bb-highlight-answer-stop-icon" aria-hidden="true"></span>
+        </button>
+      </div>
     </header>
     <div class="bb-highlight-answer-status" aria-live="polite"></div>
     <div class="bb-highlight-answer-body"></div>
-    <footer class="bb-highlight-answer-actions">
-      <button type="button" data-answer-action="retry">Ask again</button>
-      <button type="button" data-answer-action="delete">Delete highlight</button>
-    </footer>
   `
   document.body.appendChild(answerPopover)
-  const answerQuestion = answerPopover.querySelector<HTMLElement>(".bb-highlight-answer-question")!
+  const answerQuestion = answerPopover.querySelector<HTMLElement>(
+    ".bb-highlight-answer-question-text",
+  )!
   const answerStatus = answerPopover.querySelector<HTMLElement>(".bb-highlight-answer-status")!
   const answerBody = answerPopover.querySelector<HTMLElement>(".bb-highlight-answer-body")!
+  const answerRun = answerPopover.querySelector<HTMLButtonElement>(".bb-highlight-answer-run")!
 
   const answerForHighlight = (highlightId: string) =>
     [...inlineAnswers].reverse().find((answer) => answer.highlightId === highlightId)
@@ -580,10 +557,10 @@ document.addEventListener("nav", () => {
   const placeAnswer = (rect: DOMRect) => {
     answerPopover.hidden = false
     answerPopover.style.visibility = "hidden"
-    const width = Math.min(560, window.innerWidth - 32)
+    const width = Math.min(580, window.innerWidth - 32)
     answerPopover.style.width = `${width}px`
-    const gap = 12
-    let left = rect.left + rect.width / 2 - width / 2
+    const gap = 14
+    let left = rect.left - 24
     left = Math.max(16, Math.min(left, window.innerWidth - width - 16))
     const height = Math.min(answerPopover.offsetHeight, window.innerHeight - 32)
     let top = rect.bottom + gap
@@ -606,16 +583,19 @@ document.addEventListener("nav", () => {
     if (openAnswerHighlightId !== highlightId) return
     answerQuestion.textContent = answer.question
     answerBody.textContent = answer.answer
-    answerStatus.textContent =
-      answer.state === "pending"
-        ? "Thinking…"
-        : answer.state === "streaming"
-          ? "Answering…"
-          : answer.state === "error"
-            ? "The answer could not be completed."
-            : answer.responseDurationMs !== undefined
-              ? `Answered in ${(answer.responseDurationMs / 1000).toFixed(1)}s`
-              : ""
+    const pending = answer.state === "pending" || answer.state === "streaming"
+    answerRun.dataset.answerAction = pending ? "stop" : "retry"
+    answerRun.setAttribute("aria-label", pending ? "Stop this answer" : "Ask this question again")
+    answerRun.title = pending ? "Stop" : "Retry"
+    answerRun.dataset.pending = pending ? "true" : "false"
+    answerRun.disabled = false
+    answerStatus.textContent = pending
+      ? "Thinking"
+      : answer.state === "error"
+        ? "Answer incomplete"
+        : answer.responseDurationMs !== undefined
+          ? `Thought (${(answer.responseDurationMs / 1000).toFixed(1)}s · ↓ tokens unavailable)`
+          : "Thought (↓ tokens unavailable)"
     answerBody.hidden = !answer.answer
     placeAnswer(rect)
   }
@@ -679,9 +659,6 @@ document.addEventListener("nav", () => {
   const applyColor = (color: HighlightColor) => {
     const current = currentSpan()
     if (!current) return
-    activeColor = color
-    writeColor(color)
-    syncColorUi()
     highlights = addSpan(highlights, current.map.text, current.span, color)
     writeStored(highlights)
     finish()
@@ -746,21 +723,6 @@ document.addEventListener("nav", () => {
     finish()
   }
 
-  const copySelection = () => {
-    const text = window.getSelection()?.toString() ?? ""
-    if (!text) return
-    navigator.clipboard?.writeText(text).then(
-      () => {
-        copyButton.dataset.copied = "true"
-        window.clearTimeout(copyResetTimer)
-        copyResetTimer = window.setTimeout(() => delete copyButton.dataset.copied, 1400)
-      },
-      () => {},
-    )
-  }
-
-  syncColorUi()
-
   // Keep the selection alive while the menu is clicked.
   const onMenuMouseDown = (event: Event) => event.preventDefault()
   container.addEventListener("mousedown", onMenuMouseDown)
@@ -785,21 +747,9 @@ document.addEventListener("nav", () => {
       case "ask-inline":
         askSelection("inline")
         break
-      case "apply":
-        applyColor(activeColor)
-        break
-      case "copy":
-        copySelection()
-        break
       case "erase":
         eraseSelection()
         break
-      case "palette": {
-        const open = palette.hidden
-        palette.hidden = !open
-        trigger.setAttribute("aria-expanded", open ? "true" : "false")
-        break
-      }
     }
   }
   container.addEventListener("click", onMenuClick)
@@ -840,10 +790,6 @@ document.addEventListener("nav", () => {
       return
     }
     if (container.hidden) return
-    if (!palette.hidden) {
-      closePalette()
-      return
-    }
     dismissed = true
     hide()
   }
@@ -908,14 +854,8 @@ document.addEventListener("nav", () => {
   window.addEventListener("message", onInlineAnswer)
 
   const onAnswerClick = (event: MouseEvent) => {
-    const target = (event.target as HTMLElement).closest<HTMLElement>(
-      "button[data-answer-action], .bb-highlight-answer-close",
-    )
+    const target = (event.target as HTMLElement).closest<HTMLElement>("button[data-answer-action]")
     if (!target) return
-    if (target.classList.contains("bb-highlight-answer-close")) {
-      closeAnswer()
-      return
-    }
     const highlightId = openAnswerHighlightId
     if (!highlightId) return
     if (target.dataset.answerAction === "delete") {
@@ -926,6 +866,27 @@ document.addEventListener("nav", () => {
       closeAnswer()
       highlights = render(root)
       syncAnswerMarks()
+      return
+    }
+    if (target.dataset.answerAction === "stop") {
+      const answer = answerForHighlight(highlightId)
+      if (!answer) return
+      target.setAttribute("aria-label", "Stopping this answer")
+      target.setAttribute("aria-busy", "true")
+      target.setAttribute("title", "Stopping…")
+      ;(target as HTMLButtonElement).disabled = true
+      answerStatus.textContent = "Stopping…"
+      if (window.parent !== window) {
+        window.parent.postMessage(
+          {
+            type: "second-brain:assistant-inline-stop",
+            requestId: answer.requestId,
+            highlightId,
+            pageSlug: document.body.dataset.slug ?? window.location.pathname,
+          },
+          "*",
+        )
+      }
       return
     }
     if (target.dataset.answerAction === "retry") {
@@ -973,7 +934,6 @@ document.addEventListener("nav", () => {
   root.addEventListener("click", onArticleClick)
 
   window.addCleanup(() => {
-    window.clearTimeout(copyResetTimer)
     container.removeEventListener("mousedown", onMenuMouseDown)
     container.removeEventListener("click", onMenuClick)
     document.removeEventListener("pointerup", onPointerUp)

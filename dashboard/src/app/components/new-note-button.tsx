@@ -159,19 +159,19 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
       </button>
 
       {open && (
-        <div
-          className="markdown-editor-modal"
-          onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
-        >
-          <form onSubmit={handleSubmit} className="markdown-editor-panel">
+        <div className="markdown-editor-modal">
+          <form
+            onSubmit={handleSubmit}
+            className="markdown-editor-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-note-dialog-title"
+          >
             <div className="markdown-editor-header">
               <div>
                 <p className="markdown-editor-kicker">Markdown</p>
-                <h2>New note</h2>
+                <h2 id="new-note-dialog-title">New note</h2>
               </div>
-              <button type="button" onClick={() => setOpen(false)} className="markdown-editor-close" aria-label="Close editor">
-                Close
-              </button>
             </div>
             <div className="markdown-editor-fields">
               {needsPicker && clusters.length > 0 && (
@@ -197,6 +197,7 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
                 <span>Title</span>
                 <input
                   type="text"
+                  className="markdown-editor-title"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   placeholder="Note title"

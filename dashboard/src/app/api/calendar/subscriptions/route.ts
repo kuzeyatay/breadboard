@@ -33,6 +33,9 @@ export async function POST(request: Request) {
       "Subscribed calendar";
 
     const store = getCalendarStore();
+    // A subscription is read-only. Keep a writable Personal calendar beside it
+    // even when this profile action is the user's first visit to the calendar.
+    store.listCalendarsEnsuringDefault(userId);
     const calendar = store.createCalendar(userId, {
       name,
       color: typeof body.color === "string" ? body.color : undefined,

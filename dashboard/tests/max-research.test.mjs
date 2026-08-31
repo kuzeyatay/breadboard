@@ -122,7 +122,7 @@ test("a question that can be run earns the workspace", () => {
   assert.ok(plan.assignments.some((a) => a.participant === "openscience"));
 });
 
-test("every question commissions all five", () => {
+test("every question commissions all six", () => {
   // The roster used to be filtered: Get Doc only for questions that read as
   // academic, OpenScience only for ones that read as empirical. That saved a
   // little time and cost the answer whatever those two would have found, and it
@@ -138,7 +138,7 @@ test("every question commissions all five", () => {
     const chosen = planMaxResearch({ question }).assignments.map((a) => a.participant);
     assert.deepEqual(
       [...chosen].sort(),
-      ["agent_reach", "aris", "deep_research", "get_doc", "openscience"],
+      ["agent_reach", "aris", "deep_research", "get_doc", "openscience", "praxist"],
       question,
     );
   }
@@ -167,14 +167,14 @@ test("retrieval runs together, and what reads it waits", () => {
   assert.ok(waves.length >= 2);
 });
 
-test("availability cannot shrink the five-agent plan", () => {
+test("availability cannot shrink the six-agent plan", () => {
   const plan = planMaxResearch({
     question: "what percentage of startups survive five years",
   });
   const chosen = plan.assignments.map((a) => a.participant);
   assert.deepEqual(
     [...chosen].sort(),
-    ["agent_reach", "aris", "deep_research", "get_doc", "openscience"],
+    ["agent_reach", "aris", "deep_research", "get_doc", "openscience", "praxist"],
   );
 });
 
@@ -579,7 +579,7 @@ test("a participant that cannot start remains visible and is not invoked", async
   });
   assert.equal(summary.status, "completed");
   assert.ok(summary.participants.includes("get_doc"));
-  assert.equal(summary.participants.length, 5);
+  assert.equal(summary.participants.length, 6);
   assert.ok(
     summary.results.some(
       (result) =>
@@ -587,7 +587,7 @@ test("a participant that cannot start remains visible and is not invoked", async
     ),
   );
   const planEvent = events.find((event) => event.type === "plan.completed");
-  assert.equal(planEvent.payload.participants.length, 5);
+  assert.equal(planEvent.payload.participants.length, 6);
   assert.ok(
     events.some(
       (event) =>
@@ -645,6 +645,26 @@ test("a failed reconciliation keeps the research it was given", async () => {
   const failure = events.find((event) => event.type === "run.failed");
   assert.equal(failure.payload.findingsRetained, true);
   assert.equal(failure.payload.resynthesizable, true);
+  assert.ok(
+    failure.payload.retainedFindings.some(
+      (finding) =>
+        finding.participant === "deep_research" &&
+        /deep_research found something/.test(finding.output),
+    ),
+  );
+
+  // A Runtime V2 worker exits after this terminal event, so recovery cannot
+  // depend on the manager's in-memory map. The durable hand-back carries the
+  // actual findings and explicitly tells the continuation they are evidence.
+  const {
+    MAX_RESEARCH_RETAINED_FINDINGS_MARKER,
+    terminalResultFromEvents,
+  } = await import("../src/lib/max-research/runtime-run-manager.ts");
+  const handedBack = terminalResultFromEvents(events);
+  assert.equal(handedBack.outcome, "failed");
+  assert.ok(handedBack.content.includes(MAX_RESEARCH_RETAINED_FINDINGS_MARKER));
+  assert.match(handedBack.content, /deep_research found something/);
+  assert.match(handedBack.content, /Source collection was partial but not empty/);
 
   // And reconciling again costs nothing but the one call that failed.
   const { resynthesizeRun } = await import(
@@ -671,6 +691,21 @@ test("a transient upstream failure is retried before it is believed", () => {
   const body = source("src/lib/max-research/completion.ts");
   assert.match(body, /const RETRYABLE = new Set\(\[408, 429, 500, 502, 503, 504\]\)/);
   assert.match(body, /const ATTEMPTS = 3/);
+  // A max-effort writer can legitimately run beyond the former ten-minute
+  // deadline. Timing it out must not launch duplicate long generations.
+  assert.match(body, /SYNTHESIS_TIMEOUT_MS = 30 \* 60_000/);
+  assert.match(body, /import \{ createLongHeaderTimeoutFetch \} from "\.\.\/chatmock-client\.ts"/);
+  assert.match(
+    body,
+    /const synthesisFetch = createLongHeaderTimeoutFetch\(\{\s*timeoutMs: SYNTHESIS_TIMEOUT_MS,/,
+  );
+  assert.match(body, /await \(input\.fetchImpl \?\? synthesisFetch\)\(/);
+  assert.doesNotMatch(body, /const response = await fetch\(/);
+  assert.match(
+    body,
+    /if \(controller\.signal\.aborted\)[\s\S]{0,220}30-minute deadline/,
+  );
+  assert.match(body, /describeTransportFailure/);
   // An empty completion is a failure too — a run that "succeeded" with no text
   // is the same lost work with a friendlier status.
   assert.match(body, /returned no text/);
@@ -761,7 +796,7 @@ test("the open-internet brief asks for findings, not for a plan", () => {
 test("Get Doc is sent a complete request, not a partial one behind a cast", () => {
   // The bug a live run exposed and a cast had hidden. `{ query } as never`
   // omitted every other field, so `limit` was undefined, OpenAlex's `per-page`
-  // became `limit * 2` = NaN, and all five catalogs answered HTTP 400. The run
+  // became `limit * 2` = NaN, and all six catalogs answered HTTP 400. The run
   // reported "no documents matched" for a question with a real literature, and
   // the answer repeated that the literature had nothing to say. With the
   // request complete, the same question returns ten papers with free PDFs.

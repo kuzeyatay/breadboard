@@ -105,7 +105,7 @@ chat behavior because both affect visible parity.
 
 The Runtime V2 implicit route order is:
 
-`premortem -> factcheck -> interactive visualizer -> agent loop -> Watch -> image-to-3D -> Spotify -> audio -> diagram -> GitHub Explorer -> humanize -> messaging -> Goal`
+`premortem -> factcheck -> patent disclosure -> interactive visualizer -> agent loop -> Watch -> image-to-3D -> Spotify -> audio -> diagram -> GitHub Explorer -> humanize -> messaging -> Goal`
 
 The legacy Garden adapter is separately frozen because it currently omits
 Watch, Goal, and recent-attachment handling. That is a known source gap, not a

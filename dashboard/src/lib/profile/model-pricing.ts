@@ -31,12 +31,19 @@ export interface ModelRate {
 /**
  * Published list prices, current as of August 2026.
  *
- * Only Anthropic's line is seeded, because those are the rates this repository
- * can state without guessing. Everything else — the gpt-5.6 family, whatever a
- * subscription proxy is serving, an Ollama model on this machine — stays out
- * until someone fills in a number they can stand behind.
+ * OpenAI source: https://developers.openai.com/api/docs/models/compare
+ * Anthropic source: https://www.anthropic.com/pricing
+ *
+ * These are API list prices, not a claim about what a ChatGPT subscription or
+ * a locally hosted model actually bills. The profile explains that distinction
+ * beside the estimate.
  */
 export const MODEL_RATES: Readonly<Record<string, ModelRate>> = {
+  // The unsuffixed alias resolves to Sol and carries the same list price.
+  "gpt-5.6": { input: 4, output: 20 },
+  "gpt-5.6-sol": { input: 4, output: 20 },
+  "gpt-5.6-terra": { input: 2, output: 12 },
+  "gpt-5.6-luna": { input: 0.2, output: 1.2 },
   "claude-fable-5": { input: 10, output: 50 },
   // Same model at the same published rate. The pxpipe route saves money by
   // sending far fewer input tokens for the same context, not by buying them

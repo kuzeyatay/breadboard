@@ -20,29 +20,21 @@ pre:has(> code.penecho-board-block) {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
-    padding: 0.7rem 0.9rem;
+    gap: 0.75rem;
+    min-height: 2.5rem;
+    margin: 0;
+    padding: 0.35rem 0.65rem;
     cursor: pointer;
     user-select: none;
   }
 
-  .penecho-board-heading {
-    min-width: 0;
-  }
-
-  .penecho-board-kicker {
-    margin: 0 0 0.12rem;
-    color: var(--secondary);
-    font-size: 0.72rem;
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-
   .penecho-board-title {
+    min-width: 0;
     margin: 0;
     overflow: hidden;
-    font-size: 1.05rem;
+    font-size: 0.95rem;
+    font-weight: 650;
+    line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -51,7 +43,7 @@ pre:has(> code.penecho-board-block) {
     flex: none;
     border: 1px solid var(--lightgray);
     border-radius: 8px;
-    padding: 0.4rem 0.7rem;
+    padding: 0.32rem 0.58rem;
     background: color-mix(in srgb, var(--light) 88%, transparent);
     color: var(--secondary);
     cursor: pointer;
@@ -76,13 +68,18 @@ pre:has(> code.penecho-board-block) {
     background-color: #fbfbf9;
     background-image:
       linear-gradient(color-mix(in srgb, var(--lightgray) 45%, transparent) 1px, transparent 1px),
-      linear-gradient(90deg, color-mix(in srgb, var(--lightgray) 45%, transparent) 1px, transparent 1px);
+      linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--lightgray) 45%, transparent) 1px,
+        transparent 1px
+      );
     background-size: 26px 26px;
     box-shadow: inset 0 1px 6px rgb(0 0 0 / 6%);
   }
 
   .penecho-board-placeholder {
     position: absolute;
+    z-index: 2;
     inset: 0;
     display: flex;
     flex-direction: column;
@@ -90,7 +87,20 @@ pre:has(> code.penecho-board-block) {
     justify-content: center;
     gap: 0.7rem;
     padding: 1rem;
+    background: color-mix(in srgb, #fbfbf9 90%, transparent);
     text-align: center;
+    transition:
+      opacity 120ms ease,
+      visibility 120ms ease;
+  }
+
+  .penecho-board-loading-indicator {
+    width: 1.35rem;
+    height: 1.35rem;
+    border: 2px solid color-mix(in srgb, var(--secondary) 24%, transparent);
+    border-top-color: var(--secondary);
+    border-radius: 50%;
+    animation: penecho-board-spin 750ms linear infinite;
   }
 
   .penecho-board-placeholder-text {
@@ -107,10 +117,32 @@ pre:has(> code.penecho-board-block) {
     height: 100%;
     border: 0;
     background: transparent;
+    opacity: 0;
+    transition: opacity 120ms ease;
   }
 
-  &.penecho-board--mounted .penecho-board-placeholder {
-    display: none;
+  &.penecho-board--ready {
+    .penecho-board-placeholder {
+      visibility: hidden;
+      pointer-events: none;
+      opacity: 0;
+    }
+
+    .penecho-board-frame {
+      opacity: 1;
+    }
+  }
+}
+
+@keyframes penecho-board-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .penecho-board .penecho-board-loading-indicator {
+    animation: none;
   }
 }
 

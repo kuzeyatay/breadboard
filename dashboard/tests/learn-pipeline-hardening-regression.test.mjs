@@ -271,6 +271,7 @@ describe("Learn rollback and garden isolation contracts", () => {
     assert.ok(rollbackPaths.includes(".breadboard/planning"));
     assert.ok(rollbackPaths.includes(".breadboard/source-formula-reviews"));
     assert.ok(rollbackPaths.includes(".breadboard/source-formula-review-set.json"));
+    assert.ok(rollbackPaths.includes(".breadboard/source-normalization-receipt.json"));
     assert.ok(rollbackPaths.includes(".breadboard/source-visual-source-index.json"));
     for (const protectedPath of [
       "_index.md",
@@ -1890,7 +1891,12 @@ describe("Learn validation, reads, and publication contracts", () => {
     assert.match(targetedSource, /canonicalEvidenceByUnit:\s*canonicalLearningSpineEvidenceByUnit\(/);
     assert.match(targetedSource, /maxAttempts:\s*2/);
     assert.match(targetedSource, /taskType:\s*"learning_spine_targeted_repair"/);
-    assert.match(targetedSource, /system:\s*withSyllabusRules\(request\.system/);
+    assert.match(targetedSource, /system:\s*withLearnUserInstructionRules\(/);
+    assert.match(
+      targetedSource,
+      /withSyllabusRules\(request\.system, SYLLABUS_PLANNING_RULES, hasSyllabus\)/,
+    );
+    assert.match(targetedSource, /effectiveUserInstruction/);
     assert.doesNotMatch(targetedSource, /system:[^\n]*TOPIC_MAP_PROMPT/);
     assert.match(targetedSource, /return result\.parsed/);
     assert.match(targetedSource, /modelAuthoredLearningUnitParseProblems\(candidate\)/);

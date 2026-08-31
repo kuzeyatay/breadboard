@@ -5,6 +5,7 @@ import {
   InvalidLearnRouteBodyError,
   isLearnRouteConflict,
   parseExplicitLearnPlanSelection,
+  parseLearnUserInstruction,
   readLearnRouteJsonObject,
 } from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
@@ -30,6 +31,7 @@ export async function POST(
     const body = await readLearnRouteJsonObject(request);
     const { includedSourceIds, syllabusSourceId } =
       parseExplicitLearnPlanSelection(body);
+    const userInstruction = parseLearnUserInstruction(body);
     const { baseURL } = resolveChatmockBaseUrl(request);
     const model = selectedModelForUser(userId);
     const execution = await executeLearnOperationForRoute({
@@ -44,6 +46,7 @@ export async function POST(
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,
       autoConfirmTopicMap: body.skipManualReview === true,
+      userInstruction,
     }, `planning for ${cluster.slug}`);
 
     if (execution.accepted) {

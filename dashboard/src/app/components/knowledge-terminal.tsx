@@ -88,13 +88,11 @@ interface Props {
 }
 
 const HISTORY_KEY = 'breadboard:knowledge-terminal-history';
-const HEIGHT_KEY = 'breadboard:knowledge-terminal-height';
 const MAX_SESSIONS = 40;
 // Collapsed height shows just the grab bar; drag the top edge up to open it,
 // the same way garden cards are resized.
 const COLLAPSED_HEIGHT = 48;
 const MIN_HEIGHT = COLLAPSED_HEIGHT;
-const MIN_DEFAULT_OPEN_HEIGHT = 360;
 
 // Bottom edge of the breadboard navbar, so a fully opened terminal stops right
 // below the main header instead of covering it.
@@ -115,12 +113,6 @@ function maxHeight(): number {
 
 function clampHeight(height: number): number {
   return Math.min(maxHeight(), Math.max(MIN_HEIGHT, Math.round(height)));
-}
-
-function defaultOpenHeight(): number {
-  return clampHeight(
-    Math.max(MIN_DEFAULT_OPEN_HEIGHT, Math.round(maxHeight() * 0.68)),
-  );
 }
 
 function formatChatTime(value: string): string {
@@ -244,7 +236,6 @@ const TranscriptRow = memo(function TranscriptRow({
 
 export default function KnowledgeTerminal({ scope }: Props) {
   const resizeStartRef = useRef<{ startY: number; startHeight: number } | null>(null);
-  const preferredOpenHeightRef = useRef<number | null>(null);
 
   const [height, setHeight] = useState(COLLAPSED_HEIGHT);
   const [isResizing, setIsResizing] = useState(false);
@@ -277,7 +268,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
         setHeaderMounted(false);
         setHeaderClosing(false);
         headerCloseTimer.current = null;
-      }, 660);
+      }, 200);
     }
   }, [isOpen]);
 
@@ -372,11 +363,6 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const scopeTagline = isPublic ? 'chat across all public gardens' : 'chat across every garden you own';
 
   useEffect(() => {
-    const savedHeight = Number(window.localStorage.getItem(HEIGHT_KEY));
-    if (Number.isFinite(savedHeight) && savedHeight > COLLAPSED_HEIGHT + 8) {
-      preferredOpenHeightRef.current = clampHeight(savedHeight);
-    }
-
     const onResize = () => setHeight((current) => clampHeight(current));
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
@@ -393,13 +379,6 @@ export default function KnowledgeTerminal({ scope }: Props) {
     setInput('');
   }, [scope]);
 
-  useEffect(() => {
-    if (height <= COLLAPSED_HEIGHT + 8) return;
-    const preferredHeight = clampHeight(height);
-    preferredOpenHeightRef.current = preferredHeight;
-    window.localStorage.setItem(HEIGHT_KEY, String(preferredHeight));
-  }, [height]);
-
   const transcriptVirtual = useChatVirtualBridge();
   const composerInset = useComposerInset();
   const {
@@ -415,13 +394,13 @@ export default function KnowledgeTerminal({ scope }: Props) {
     virtual: transcriptVirtual,
   });
 
-  // One tick per visible chat message. The terminal hands the virtualizer `messages`
+  // One tick per question asked. The terminal hands the virtualizer `messages`
   // untouched, so a message's place in the conversation is also its row.
   const railItems = useMemo<ChatMessageRailItem[]>(
     () =>
       messages.flatMap((message, index) =>
-        (message.role === 'user' || message.role === 'assistant') && message.content.trim()
-          ? [{ rowIndex: index, label: message.content, role: message.role }]
+        message.role === 'user'
+          ? [{ rowIndex: index, label: message.content }]
           : [],
       ),
     [messages],
@@ -785,7 +764,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
       headerClickGuard.endPointerSequence();
     }
     if (!moved && event.type !== 'pointercancel' && !isOpen) {
-      setHeight(preferredOpenHeightRef.current ?? defaultOpenHeight());
+      setHeight(maxHeight());
     }
   }
 
@@ -797,7 +776,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
       return;
     }
     if (!headerClickGuard.shouldHandleClick() || isOpen) return;
-    setHeight(preferredOpenHeightRef.current ?? defaultOpenHeight());
+    setHeight(maxHeight());
   }
 
   const terminalStyle: CSSProperties = {
@@ -854,7 +833,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
             (event.key === 'Enter' || event.key === ' ')
           ) {
             event.preventDefault();
-            setHeight(preferredOpenHeightRef.current ?? defaultOpenHeight());
+            setHeight(maxHeight());
           }
         }}
         style={{ background: 'var(--terminal-bar)' }}
@@ -868,7 +847,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
             type="button"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() => setSidebarOpen((value) => !value)}
-            style={{ animationDelay: '40ms' }}
+            style={{ animationDelay: headerClosing ? '0ms' : '40ms' }}
             className={`${headerItemAnim} neu-button-icon flex h-7 w-7 items-center justify-center rounded-md border border-gray-800 text-gray-400 transition hover:border-gray-700 hover:text-white`}
             title={sidebarOpen ? 'Hide history' : 'Show history'}
             aria-label="Toggle history"
@@ -879,13 +858,13 @@ export default function KnowledgeTerminal({ scope }: Props) {
           </button>
           <div className="min-w-0">
             <p
-              style={{ animationDelay: '210ms' }}
+              style={{ animationDelay: headerClosing ? '0ms' : '210ms' }}
               className={`${headerItemAnim} truncate text-sm font-semibold text-[#172A22]`}
             >
               {isPublic ? 'Public knowledge assistant' : 'Breadboard Assistant'}
             </p>
             <p
-              style={{ animationDelay: '300ms' }}
+              style={{ animationDelay: headerClosing ? '0ms' : '300ms' }}
               className={`${headerItemAnim} truncate text-[11px] text-[#5F6F68]`}
             >
               {`${scopeTagline.charAt(0).toUpperCase()}${scopeTagline.slice(1)}`}
@@ -1028,17 +1007,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
           </div>
             <ChatMessageRail
               surface="knowledge-terminal"
-              conversationKey={activeId}
               items={railItems}
               scrollRef={transcriptScrollRef}
               bridge={transcriptVirtual}
-              onReply={(text) => {
-                if (isStreaming) {
-                  queueFollowUp(text);
-                  return;
-                }
-                return sendMessage(text);
-              }}
             />
             <ChatJumpToBottom
               visible={transcriptAwayFromBottom}

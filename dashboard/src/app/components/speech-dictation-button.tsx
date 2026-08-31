@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import MusicRecognitionButton from "@/app/components/music-recognition-button";
 import MicrophonePermissionHelp from "./microphone-permission-help";
 import { describeMicrophoneBlock, type MicrophoneFix } from "@/lib/speech/microphone-access";
 import {
@@ -31,12 +32,14 @@ interface SpeechDictationButtonProps {
   compact?: boolean;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   /**
-   * Full-screen voice mode: the third entry in the microphone's menu, and what
+   * Full-screen voice mode: an entry in the microphone's menu, and what
    * a double-tap goes straight to. Passed only by hosts that can hold a spoken
    * conversation; without it the menu offers dictation and file transcription
    * alone, and there is no double-tap window to wait out.
    */
   onOpenVoiceMode?: () => void;
+  /** Existing runtime session, used only to retain a direct recognition result in chat. */
+  runtimeSessionId?: string | number | null;
 }
 
 type PcmCapture = {
@@ -156,21 +159,24 @@ function MicrophoneMenuItem({
   icon,
   onClick,
   accent = false,
+  disabled = false,
 }: {
   title: string;
   hint: string;
   icon: React.ReactNode;
   onClick: () => void;
   accent?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       role="menuitem"
       onClick={onClick}
+      disabled={disabled}
       className={`flex w-full items-start gap-2.5 rounded-lg px-3 py-2 text-left transition ${
         accent ? "hover:bg-[var(--selection-yellow)]" : "hover:bg-[var(--paper-strong)]"
-      }`}
+      } disabled:cursor-not-allowed disabled:opacity-45`}
     >
       <svg
         className="mt-0.5 h-4 w-4 shrink-0 text-[var(--ink-muted)]"
@@ -197,6 +203,7 @@ export default function SpeechDictationButton({
   compact = false,
   textareaRef,
   onOpenVoiceMode,
+  runtimeSessionId,
 }: SpeechDictationButtonProps) {
   const [state, setState] = useState<DictationState>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -218,6 +225,7 @@ export default function SpeechDictationButton({
   const mountedRef = useRef(true);
   const tapTimerRef = useRef<number | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [musicBusy, setMusicBusy] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -617,6 +625,12 @@ export default function SpeechDictationButton({
    * acts immediately and never opens a menu.
    */
   function handleTap() {
+    if (musicBusy) {
+      // Closing the menu unmounts the recognition controller, whose cleanup
+      // aborts the request and stops every microphone track immediately.
+      setMenuOpen(false);
+      return;
+    }
     if (state === "recording") {
       recorderRef.current?.stop();
       return;
@@ -649,7 +663,9 @@ export default function SpeechDictationButton({
 
   const busy = state === "requesting" || state === "transcribing" || state === "reading-file";
   const label =
-    state === "recording"
+    musicBusy
+      ? "Cancel song identification"
+      : state === "recording"
       ? "Stop dictation — words appear as you speak"
       : state === "transcribing"
         ? "Finishing dictation"
@@ -683,11 +699,11 @@ export default function SpeechDictationButton({
         disabled={disabled || busy}
         aria-label={label}
         title={label}
-        aria-pressed={state === "recording"}
+        aria-pressed={state === "recording" || musicBusy}
         className={`neu-button-icon relative flex items-center justify-center rounded-full transition disabled:opacity-45 ${
           compact ? "h-9 w-9" : "h-11 w-11"
         } ${
-          state === "recording"
+          state === "recording" || musicBusy
             ? "bg-[#c96d6d]/15 text-[#b85353] ring-1 ring-[#c96d6d]/50"
             : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"
         }`}
@@ -700,7 +716,7 @@ export default function SpeechDictationButton({
             <path strokeLinecap="round" strokeLinejoin="round" d="M5.75 10.5v.75a6.25 6.25 0 0 0 12.5 0v-.75M12 17.5V21m-3 0h6" />
           </svg>
         )}
-        {state === "recording" ? (
+        {state === "recording" || musicBusy ? (
           <span className="absolute right-1 top-1 h-2 w-2 animate-pulse rounded-full bg-[#c96d6d]" aria-hidden />
         ) : null}
       </button>
@@ -714,6 +730,7 @@ export default function SpeechDictationButton({
             title="Dictate live"
             hint="Words appear as you speak."
             onClick={dictateFromMenu}
+            disabled={musicBusy}
             icon={
               <>
                 <rect x="9" y="3" width="6" height="11" rx="3" />
@@ -722,10 +739,17 @@ export default function SpeechDictationButton({
             }
           />
           <span className="mx-2 block h-px bg-[var(--line)]" aria-hidden />
+          <MusicRecognitionButton
+            disabled={disabled || state !== "idle"}
+            runtimeSessionId={runtimeSessionId}
+            onBusyChange={setMusicBusy}
+          />
+          <span className="mx-2 block h-px bg-[var(--line)]" aria-hidden />
           <MicrophoneMenuItem
             title="Transcribe a recording"
             hint="An audio or video file, read by the same model."
             onClick={chooseRecording}
+            disabled={musicBusy}
             icon={
               <path
                 strokeLinecap="round"
@@ -742,6 +766,7 @@ export default function SpeechDictationButton({
                 hint="Full-screen voice mode. Double-tap the microphone for this."
                 accent
                 onClick={openVoiceModeFromMenu}
+                disabled={musicBusy}
                 icon={
                   <path
                     strokeLinecap="round"

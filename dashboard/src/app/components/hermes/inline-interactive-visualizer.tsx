@@ -6,10 +6,12 @@ import { artifactUrl } from "./artifact-viewer";
 
 interface Props {
   artifact: PresentedArtifact;
-  onOpen: () => void;
 }
 
 const PROTOCOL = "breadboard:interactive-visualizer:v1";
+const INITIAL_INLINE_HEIGHT = 420;
+const MIN_INLINE_HEIGHT = 280;
+const MAX_INLINE_HEIGHT = 1_200;
 
 function currentTheme(): "dark" | "light" {
   const explicitTheme = document.documentElement.dataset.theme;
@@ -28,9 +30,12 @@ function currentTheme(): "dark" | "light" {
  * natural continuation of the assistant response instead of a nested card.
  * Its compact artifact card remains a separate sibling below the embed.
  */
-export default function InlineInteractiveVisualizer({ artifact, onOpen }: Props) {
+export default function InlineInteractiveVisualizer({ artifact }: Props) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const [height, setHeight] = useState(760);
+  // A large initial viewport becomes a false content measurement in older
+  // visualizers whose document is min-height: 100%. Start near the compact
+  // inline size; genuinely taller content will report its scroll height.
+  const [height, setHeight] = useState(INITIAL_INLINE_HEIGHT);
   const instanceId = useId();
   const channel = `${artifact.id}:${artifact.version}:${instanceId}`;
   const previewUrl = `${artifactUrl(artifact, "preview")}&channel=${encodeURIComponent(channel)}`;
@@ -67,7 +72,12 @@ export default function InlineInteractiveVisualizer({ artifact, onOpen }: Props)
       if (data.type === "ready" || data.type === "resize") {
         const nextHeight = Number(data.height);
         if (Number.isFinite(nextHeight)) {
-          setHeight(Math.max(460, Math.min(1_200, nextHeight)));
+          setHeight(
+            Math.max(
+              MIN_INLINE_HEIGHT,
+              Math.min(MAX_INLINE_HEIGHT, nextHeight),
+            ),
+          );
         }
       }
     };
@@ -97,20 +107,9 @@ export default function InlineInteractiveVisualizer({ artifact, onOpen }: Props)
 
   return (
     <article
-      className="group relative mt-3 min-w-0"
+      className="relative mt-3 min-w-0"
       aria-label={`${artifact.title} interactive visualization`}
     >
-      <button
-        type="button"
-        onClick={onOpen}
-        title="Open in the artifact viewer"
-        aria-label={`Open ${artifact.title} in the artifact viewer`}
-        className="absolute bottom-2 right-2 z-[1] rounded-full border border-[var(--line)] bg-[var(--paper-bg)]/90 p-2 text-[var(--ink-muted)] opacity-0 backdrop-blur-sm transition hover:text-[var(--ink-heading)] focus-visible:opacity-100 group-hover:opacity-70 group-hover:hover:opacity-100"
-      >
-        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4" />
-        </svg>
-      </button>
       <iframe
         key={previewUrl}
         ref={frameRef}
@@ -120,7 +119,7 @@ export default function InlineInteractiveVisualizer({ artifact, onOpen }: Props)
         referrerPolicy="no-referrer"
         src={previewUrl}
         style={{ height }}
-        className="block min-h-[27.5rem] w-full border-0 bg-transparent"
+        className="block min-h-[17.5rem] w-full border-0 bg-transparent"
       />
     </article>
   );

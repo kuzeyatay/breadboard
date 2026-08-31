@@ -15,7 +15,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import ChatMarkdown from "@/app/components/chat-markdown";
+import ChatMarkdown, {
+  type ChatTextAnnotation,
+} from "@/app/components/chat-markdown";
 import ChatTimeSeparator from "@/app/components/chat-time-separator";
 import ChatModelChangeSeparator from "@/app/components/chat-model-change-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
@@ -63,6 +65,7 @@ import InlineConversationMap, {
   type InlineConversationMapKind,
 } from "./inline-conversation-map";
 import InlineSpotifyPlayer from "./inline-spotify-player";
+import GenerativeUiRenderer from "./generative-ui-renderer";
 import InlineDeepResearchRun from "./inline-deep-research-run";
 import InlineMaxResearchRun from "./inline-max-research-run";
 import InlineAgentReachRun from "./inline-agent-reach-run";
@@ -71,6 +74,7 @@ import InlineMeetingNotesRun from "./inline-meeting-notes-run";
 import type { MeetingRecording } from "@/lib/meeting-notes/use-meeting-recorder";
 import InlineDeepTutorRun from "./inline-deep-tutor-run";
 import InlineCareerOpsRun from "./inline-career-ops-run";
+import InlineOpenExecutiveRun from "./inline-openexecutive-run";
 import InlineOpenGymRun from "./inline-open-gym-run";
 import InlineVibeTradingRun from "./inline-vibe-trading-run";
 import InlineStockAnalystRun from "./inline-stock-analyst-run";
@@ -85,9 +89,12 @@ import InlineHyperframesRun from "./inline-hyperframes-run";
 import InlineResource2SkillRun from "./inline-resource2skill-run";
 import InlineMatraixRun from "./inline-matraix-run";
 import InlineBoltSlidesRun from "./inline-bolt-slides-run";
+import InlineClassroomRun from "./inline-classroom-run";
+import InlineGodsEyeRun from "./inline-gods-eye-run";
 import InlineOpenMontageRun from "./inline-openmontage-run";
 import InlineOpenworkRun from "./inline-openwork-run";
 import InlineOpenscienceRun from "./inline-openscience-run";
+import InlinePraxistRun from "./inline-praxist-run";
 import InlineInboxZeroRun from "./inline-inbox-zero-run";
 import InlineVimaxRun from "./inline-vimax-run";
 import InlineVoxDirectorRun from "./inline-vox-director-run";
@@ -122,11 +129,17 @@ import {
   type ActivityItem,
   type AgentRunState,
   type ConnectionState,
+  type ClarificationPrompt,
   type PermissionPrompt,
 } from "./use-agent-session";
 import type { HermesSurface } from "@/lib/hermes/config.ts";
+import {
+  productForAction,
+  type GenerativeUiAction,
+} from "@/lib/generative-ui/contracts.ts";
 import { requiresGeographicGrounding } from "@/lib/map/grounding.ts";
 import { spotifyPlayerAssistantIndex } from "@/lib/hermes/spotify-intent.ts";
+import { assistantVisibleContent } from "@/lib/hermes/assistant-visible-content";
 import type { LocalWorkflowSummary } from "@/lib/workflows/types";
 import {
   externalAgentCardContent,
@@ -161,17 +174,35 @@ import {
   type ChatTextSelectionReference,
 } from "@/lib/chat-text-selection";
 import {
+  DEFAULT_CHAT_HIGHLIGHT_COLOR,
+  isChatHighlightColor,
+  type ChatHighlightColor,
+} from "@/lib/chat-highlights";
+import {
   delegatedAgentActivityLabelForMessage,
   delegatedAgentCompletedLabelForMessage,
+  delegatedAgentOutcomeLabelForMessage,
+  delegatedWorkersForMessage,
+  delegatedWorkersOutcome,
+  delegatedWorkersOutcomeNote,
+  delegatedContinuationPreamble,
   delegatedAgentStartedAtForMessage,
   delegatedTurnCarriedDurationMs,
   delegatedTurnTotalUsage,
+  supersededDelegationAssistantIndices,
 } from "@/lib/hermes/super-agent-activity";
 
 interface Props {
   messages: AgentMessage[];
   connection: ConnectionState;
   runState: AgentRunState;
+  /**
+   * A durable runtime run still owns this conversation even if the browser's
+   * event stream disconnected and `runState` fell back to a terminal-looking
+   * local state. The history rail already reads this authority from storage;
+   * the open transcript and composer must read it too.
+   */
+  persistedRunActive?: boolean;
   /**
    * An external agent launch that has not reached the transcript yet. The turn
    * only becomes visible once its run id comes back, and the composer must
@@ -196,9 +227,12 @@ interface Props {
   steerError: string | null;
   error: string | null;
   pendingPermission: PermissionPrompt | null;
+  pendingClarification?: ClarificationPrompt | null;
   activities: ActivityItem[];
   input: string;
   onInputChange: (value: string) => void;
+  /** Breadboard-owned actions emitted by typed generative UI renderers. */
+  onGenerativeUiAction?: (action: GenerativeUiAction) => void;
   /**
    * Lent by the owner when it needs to focus the composer itself — putting the
    * caret after an opener it just dropped in, for instance. Left out, the panel
@@ -242,6 +276,7 @@ interface Props {
   /** Stop also ends any pending delegated-agent hand-back owned by the surface. */
   onStopRequested?: (externalClientMessageIds: string[]) => void;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
+  onClarificationAnswer?: (answer: string) => void;
   onRetryMessage?: (userMessageIndex: number, branchGroupId: string) => void;
   placeholder?: string;
   emptyState?: React.ReactNode;
@@ -299,6 +334,9 @@ interface Props {
   careerOpsAgent?: { id: string; name: string } | null;
   onClearCareerOps?: () => void;
   onSelectCareerOps?: () => void;
+  openExecutiveAgent?: { id: string; name: string } | null;
+  onClearOpenExecutive?: () => void;
+  onSelectOpenExecutive?: () => void;
   onSelectOpenGym?: () => void;
   vibeTradingAgent?: { id: string; name: string } | null;
   onClearVibeTrading?: () => void;
@@ -339,9 +377,12 @@ interface Props {
   onSelectResource2Skill?: () => void;
   onSelectMatraix?: () => void;
   onSelectBoltSlides?: () => void;
+  onSelectClassroom?: () => void;
+  onSelectGodsEye?: () => void;
   onSelectOpenMontage?: () => void;
   onSelectOpenwork?: () => void;
   onSelectOpenscience?: () => void;
+  onSelectPraxist?: () => void;
   onSelectMaxResearch?: () => void;
   onSelectInboxZero?: () => void;
   onSelectVimax?: () => void;
@@ -404,6 +445,11 @@ const BRANCH_STORAGE_PREFIX = "breadboard:conversation-branches:";
 const INLINE_SELECTION_STORAGE_PREFIX = "breadboard:inline-selections:";
 const DELETED_INLINE_SELECTION_STORAGE_PREFIX =
   "breadboard:deleted-inline-selections:";
+const CHAT_HIGHLIGHT_STORAGE_PREFIX = "breadboard:chat-highlights:";
+
+interface SavedChatHighlight extends Omit<ChatTextSelectionReference, "mode"> {
+  color: ChatHighlightColor;
+}
 
 interface InlineSelectionThread {
   selection: ChatTextSelectionReference;
@@ -413,6 +459,9 @@ interface InlineSelectionThread {
   usage?: AgentMessage["usage"];
   responseDurationMs?: number;
   startedAt?: string;
+  /** The answer message's own id, so text inside the popover is selectable
+   * and can host highlights and nested "Ask here" threads of its own. */
+  answerMessageId?: string;
 }
 
 function loadInlineSelections(sessionId: string): ChatTextSelectionReference[] {
@@ -453,6 +502,48 @@ function loadDeletedInlineSelectionIds(sessionId: string): Set<string> {
     );
   } catch {
     return new Set();
+  }
+}
+
+function normalizeSavedChatHighlight(value: unknown): SavedChatHighlight | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const selection = normalizeChatTextSelectionReference({
+    ...candidate,
+    mode: "chat",
+  });
+  if (!selection) return null;
+  return {
+    id: selection.id,
+    sourceMessageId: selection.sourceMessageId,
+    start: selection.start,
+    end: selection.end,
+    quote: selection.quote,
+    prefix: selection.prefix,
+    suffix: selection.suffix,
+    color: isChatHighlightColor(candidate.color)
+      ? candidate.color
+      : DEFAULT_CHAT_HIGHLIGHT_COLOR,
+  };
+}
+
+function loadChatHighlights(sessionId: string): SavedChatHighlight[] {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(
+        `${CHAT_HIGHLIGHT_STORAGE_PREFIX}${sessionId}`,
+      ) ?? "[]",
+    ) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    return parsed.flatMap((value) => {
+      const highlight = normalizeSavedChatHighlight(value);
+      if (!highlight || seen.has(highlight.id)) return [];
+      seen.add(highlight.id);
+      return [highlight];
+    });
+  } catch {
+    return [];
   }
 }
 
@@ -561,13 +652,19 @@ function inlineMapKindForAssistant(
   messages: AgentMessage[],
   assistantIndex: number,
 ): InlineConversationMapKind | null {
-  const userIndex = previousUserMessageIndex(messages, assistantIndex);
+  // Delegated agents return their findings as hidden user-role messages. Those
+  // findings are evidence, not a new request: prose such as "close to failure"
+  // must never be reinterpreted as a request for nearby places.
+  const userIndex = retryTargetUserMessageIndex(messages, assistantIndex);
   if (userIndex < 0) return null;
   const request = messages[userIndex];
   if (!request || request.role !== "user") return null;
   const priorRequests = messages
     .slice(0, userIndex)
-    .filter((message) => message.role === "user")
+    .filter(
+      (message) =>
+        message.role === "user" && message.internalAgentContinuation !== true,
+    )
     .slice(-8)
     .map((message) => message.content);
   const assessment = requiresGeographicGrounding(request.content, {
@@ -594,15 +691,18 @@ export default function AgentRuntimePanel({
   messages,
   connection,
   runState,
+  persistedRunActive = false,
   externalRunLaunching = false,
   delegationInFlight = false,
   temporaryChat = false,
   steerError,
   error,
   pendingPermission,
+  pendingClarification = null,
   activities,
   input,
   onInputChange,
+  onGenerativeUiAction,
   onSubmit,
   beforeComposer,
   onRunWorkflow,
@@ -616,6 +716,7 @@ export default function AgentRuntimePanel({
   onAbort,
   onStopRequested,
   onPermissionDecision,
+  onClarificationAnswer,
   onRetryMessage,
   placeholder,
   emptyState,
@@ -661,6 +762,9 @@ export default function AgentRuntimePanel({
   careerOpsAgent,
   onClearCareerOps,
   onSelectCareerOps,
+  openExecutiveAgent,
+  onClearOpenExecutive,
+  onSelectOpenExecutive,
   onSelectOpenGym,
   vibeTradingAgent,
   onClearVibeTrading,
@@ -698,9 +802,12 @@ export default function AgentRuntimePanel({
   onSelectResource2Skill,
   onSelectMatraix,
   onSelectBoltSlides,
+  onSelectClassroom,
+  onSelectGodsEye,
   onSelectOpenMontage,
   onSelectOpenwork,
   onSelectOpenscience,
+  onSelectPraxist,
   onSelectMaxResearch,
   onSelectInboxZero,
   onSelectVimax,
@@ -727,6 +834,22 @@ export default function AgentRuntimePanel({
   // lend one rather than the panel keeping its ref to itself.
   const fallbackComposerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composerTextareaRef = ownerComposerTextareaRef ?? fallbackComposerTextareaRef;
+  const handleGenerativeUiAction = useCallback(
+    (action: GenerativeUiAction) => {
+      const product = productForAction(action);
+      if (!product) return;
+
+      if (action.type === "product.find-similar") {
+        onInputChange(
+          `Find products similar to ${product.title} from ${product.merchant}.`,
+        );
+        window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+        return;
+      }
+      onGenerativeUiAction?.(action);
+    },
+    [composerTextareaRef, onGenerativeUiAction, onInputChange],
+  );
   const copiedUserTimerRef = useRef<number | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [messageEditText, setMessageEditText] = useState("");
@@ -755,17 +878,27 @@ export default function AgentRuntimePanel({
   const [savedInlineSelections, setSavedInlineSelections] = useState<
     ChatTextSelectionReference[]
   >([]);
+  const [savedChatHighlights, setSavedChatHighlights] = useState<
+    SavedChatHighlight[]
+  >([]);
   const [deletedInlineSelectionIds, setDeletedInlineSelectionIds] = useState<
     Set<string>
   >(() => new Set());
   const [inlineSelectionStorageSession, setInlineSelectionStorageSession] =
     useState<string | null>(null);
+  const [highlightStorageSession, setHighlightStorageSession] =
+    useState<string | null>(null);
   const [openInlineAnswer, setOpenInlineAnswer] = useState<{
     id: string;
     anchor: FloatingAnchorRect;
   } | null>(null);
-  const streaming = connection === "streaming" || connection === "connecting" || connection === "waiting";
+  const streaming =
+    persistedRunActive ||
+    connection === "streaming" ||
+    connection === "connecting" ||
+    connection === "waiting";
   const activeRun =
+    persistedRunActive ||
     runState === "submitting" ||
     runState === "connecting" ||
     runState === "running" ||
@@ -945,6 +1078,22 @@ export default function AgentRuntimePanel({
       awaitingStopRef.current = false;
     }
   }, [externalRunActive, externalStops.length]);
+  // Progress reported by hidden delegated cards, keyed by the worker turn. The
+  // launching row reads it into its label; nothing else on screen shows that a
+  // private worker is getting anywhere.
+  const [delegatedWorkerStages, setDelegatedWorkerStages] = useState<
+    Record<string, string>
+  >({});
+  const reportDelegatedWorkerStage = useCallback(
+    (clientMessageId: string, stage: string) => {
+      setDelegatedWorkerStages((current) =>
+        current[clientMessageId] === stage
+          ? current
+          : { ...current, [clientMessageId]: stage },
+      );
+    },
+    [],
+  );
   const [humanizerEnabled] = useHumanizerMode();
   // Whether this panel has watched a run finish. Auto-rewriting an answer
   // it merely found on screen would rewrite history on page load.
@@ -966,14 +1115,35 @@ export default function AgentRuntimePanel({
         : lastIndex,
     -1,
   );
+  // A private worker card stays mounted to observe and settle its runtime, but
+  // it draws nothing. It cannot own visible hand-off status or the row above it
+  // freezes in past tense while the worker continues running.
+  const lastVisibleAssistantIndex = messages.reduce(
+    (lastIndex, message, index) =>
+      message.role === "assistant" &&
+      !(
+        message.delegatedAgentRun === true &&
+        !message.openGymRun &&
+        !message.godsEyeRun
+      ) &&
+      !message.modelChange &&
+      message.textSelection?.mode !== "inline"
+        ? index
+        : lastIndex,
+    -1,
+  );
   const newestAssistant =
     lastAssistantIndex >= 0 ? messages[lastAssistantIndex] : undefined;
+  const newestAssistantVisibleContent = assistantVisibleContent(
+    newestAssistant?.content ?? "",
+    newestAssistant?.progressNotes,
+  );
   const transcriptRevealKey = sessionId ?? "new";
   // The newest answer's text is revealed at a readable pace rather than drawn
   // straight from the buffer, so a reply that arrives in bursts (or whole)
   // still reads as a stream. Older messages render their content directly.
   const revealedAssistantContent = useSmoothStreamText(
-    newestAssistant?.content ?? "",
+    newestAssistantVisibleContent,
     streaming,
     transcriptRevealKey,
   );
@@ -1038,6 +1208,10 @@ export default function AgentRuntimePanel({
 
     return { byAssistantIndex, hiddenMessageIndices };
   }, [messages]);
+  const supersededDelegationAssistants = useMemo(
+    () => supersededDelegationAssistantIndices(messages),
+    [messages],
+  );
   // Every message that actually draws something, paired with its position in
   // the whole conversation. Rows that draw nothing — a continuation, an
   // inline selection, a folded course correction, or a delegated turn folded
@@ -1061,6 +1235,7 @@ export default function AgentRuntimePanel({
           storedMessage.internalAgentContinuation === true) ||
         storedMessage.textSelection?.mode === "inline" ||
         inlinedCourseCorrections.hiddenMessageIndices.has(index) ||
+        supersededDelegationAssistants.has(index) ||
         (storedMessage.delegatedAgentRun === true &&
           messages[index + 1]?.internalAgentContinuation === true)
       ) {
@@ -1099,17 +1274,22 @@ export default function AgentRuntimePanel({
       }
     });
     return rows;
-  }, [messages, inlinedCourseCorrections, lastAssistantIndex, runInFlight]);
-  // One tick per visible chat message, for the rail down the right edge. Numbered off
+  }, [
+    messages,
+    inlinedCourseCorrections,
+    supersededDelegationAssistants,
+    lastAssistantIndex,
+    runInFlight,
+  ]);
+  // One tick per question asked, for the rail down the right edge. Numbered off
   // the rows rather than off `messages`, because everything dropped above —
   // continuations, inline selections and folded corrections — is exactly what makes
   // the two differ, and the rail has to speak the virtualizer's indices.
   const railItems = useMemo<ChatMessageRailItem[]>(
     () =>
       transcriptRows.flatMap((row, rowIndex) =>
-        (row.message.role === "user" || row.message.role === "assistant") &&
-        row.message.content.trim()
-          ? [{ rowIndex, label: row.message.content, role: row.message.role }]
+        row.message.role === "user"
+          ? [{ rowIndex, label: row.message.content }]
           : [],
       ),
     [transcriptRows],
@@ -1162,20 +1342,44 @@ export default function AgentRuntimePanel({
         current.usage = message.usage;
         current.responseDurationMs = message.responseDurationMs;
         current.startedAt = message.createdAt;
+        current.answerMessageId = messageSelectionSourceId(
+          message,
+          messageIndex,
+        );
       }
       byId.set(selection.id, current);
     });
     return byId;
   }, [activeRun, deletedInlineSelectionIds, messages, savedInlineSelections]);
   const annotationsByMessage = useMemo(() => {
-    const byMessage = new Map<string, ChatTextSelectionReference[]>();
+    const byMessage = new Map<string, ChatTextAnnotation[]>();
     for (const thread of inlineSelectionThreads.values()) {
       const entries = byMessage.get(thread.selection.sourceMessageId) ?? [];
-      entries.push(thread.selection);
+      entries.push({ ...thread.selection, kind: "answer" });
       byMessage.set(thread.selection.sourceMessageId, entries);
     }
+    for (const highlight of savedChatHighlights) {
+      const entries = byMessage.get(highlight.sourceMessageId) ?? [];
+      entries.push({ ...highlight, kind: "highlight", color: highlight.color });
+      byMessage.set(highlight.sourceMessageId, entries);
+    }
     return byMessage;
-  }, [inlineSelectionThreads]);
+  }, [inlineSelectionThreads, savedChatHighlights]);
+  const selectionIsHighlighted = Boolean(
+    selectionMenu &&
+      savedChatHighlights.some(
+        (highlight) =>
+          highlight.sourceMessageId === selectionMenu.sourceMessageId &&
+          chatTextSelectionsOverlap(highlight, selectionMenu),
+      ),
+  );
+  const selectionHighlightColor = selectionMenu
+    ? savedChatHighlights.find(
+        (highlight) =>
+          highlight.sourceMessageId === selectionMenu.sourceMessageId &&
+          chatTextSelectionsOverlap(highlight, selectionMenu),
+      )?.color
+    : undefined;
   const inlineRunActive = activeRun && messages.some(
     (message) =>
       message.role === "assistant" &&
@@ -1286,8 +1490,10 @@ export default function AgentRuntimePanel({
     setOpenInlineAnswer(null);
     if (!sessionId) {
       setSavedInlineSelections([]);
+      setSavedChatHighlights([]);
       setDeletedInlineSelectionIds(new Set());
       setInlineSelectionStorageSession(null);
+      setHighlightStorageSession(null);
       return;
     }
     const deletedIds = loadDeletedInlineSelectionIds(sessionId);
@@ -1297,7 +1503,9 @@ export default function AgentRuntimePanel({
         (selection) => !deletedIds.has(selection.id),
       ),
     );
+    setSavedChatHighlights(loadChatHighlights(sessionId));
     setInlineSelectionStorageSession(sessionId);
+    setHighlightStorageSession(sessionId);
   }, [sessionId]);
 
   useEffect(() => {
@@ -1320,6 +1528,18 @@ export default function AgentRuntimePanel({
     savedInlineSelections,
     sessionId,
   ]);
+
+  useEffect(() => {
+    if (!sessionId || highlightStorageSession !== sessionId) return;
+    try {
+      window.localStorage.setItem(
+        `${CHAT_HIGHLIGHT_STORAGE_PREFIX}${sessionId}`,
+        JSON.stringify(savedChatHighlights),
+      );
+    } catch {
+      // Highlights remain available for the current page when storage is blocked.
+    }
+  }, [highlightStorageSession, savedChatHighlights, sessionId]);
 
   useEffect(() => {
     const restored = messages.flatMap((message) => {
@@ -1717,21 +1937,74 @@ export default function AgentRuntimePanel({
   // and re-parse — every mounted message on every streaming tick.
   const receiveTextSelection = useCallback(
     (selection: ChatTextSelectionCandidate) => {
-      if (!onAskSelection || activeRun || conversationLocked) return;
+      if (activeRun || conversationLocked) return;
       const overlapping = (
         annotationsByMessage.get(selection.sourceMessageId) ?? []
       ).find((annotation) => chatTextSelectionsOverlap(annotation, selection));
-      if (overlapping) {
+      if (overlapping?.kind === "answer") {
         setSelectionMenu(null);
         setOpenInlineAnswer({ id: overlapping.id, anchor: selection.anchor });
         window.getSelection()?.removeAllRanges();
         return;
       }
-      setOpenInlineAnswer(null);
+      // A selection made inside the open "Ask here" answer keeps its popover on
+      // screen: the menu floats above the very answer it is about, which is
+      // what lets a follow-up be asked from an answer, recursively.
+      setOpenInlineAnswer((current) =>
+        current &&
+        inlineSelectionThreads.get(current.id)?.answerMessageId ===
+          selection.sourceMessageId
+          ? current
+          : null,
+      );
       setSelectionMenu(selection);
     },
-    [activeRun, annotationsByMessage, conversationLocked, onAskSelection],
+    [
+      activeRun,
+      annotationsByMessage,
+      conversationLocked,
+      inlineSelectionThreads,
+    ],
   );
+
+  function applySelectionHighlight(color: ChatHighlightColor) {
+    if (!selectionMenu) return;
+    setSavedChatHighlights((current) => {
+      const withoutOverlap = current.filter(
+        (highlight) =>
+          highlight.sourceMessageId !== selectionMenu.sourceMessageId ||
+          !chatTextSelectionsOverlap(highlight, selectionMenu),
+      );
+      return [
+        ...withoutOverlap,
+        {
+          id: crypto.randomUUID(),
+          sourceMessageId: selectionMenu.sourceMessageId,
+          start: selectionMenu.start,
+          end: selectionMenu.end,
+          quote: selectionMenu.quote,
+          prefix: selectionMenu.prefix,
+          suffix: selectionMenu.suffix,
+          color,
+        },
+      ];
+    });
+    setSelectionMenu(null);
+    window.getSelection()?.removeAllRanges();
+  }
+
+  function removeSelectionHighlight() {
+    if (!selectionMenu) return;
+    setSavedChatHighlights((current) =>
+      current.filter(
+        (highlight) =>
+          highlight.sourceMessageId !== selectionMenu.sourceMessageId ||
+          !chatTextSelectionsOverlap(highlight, selectionMenu),
+      ),
+    );
+    setSelectionMenu(null);
+    window.getSelection()?.removeAllRanges();
+  }
 
   function beginSelectionQuestion(mode: "chat" | "inline") {
     if (!selectionMenu) return;
@@ -1746,6 +2019,13 @@ export default function AgentRuntimePanel({
       suffix: selectionMenu.suffix,
     };
     if (mode === "inline") {
+      setSavedChatHighlights((current) =>
+        current.filter(
+          (highlight) =>
+            highlight.sourceMessageId !== selection.sourceMessageId ||
+            !chatTextSelectionsOverlap(highlight, selection),
+        ),
+      );
       setSavedInlineSelections((current) => [...current, selection]);
     }
     setComposerSelection(selection);
@@ -1788,6 +2068,15 @@ export default function AgentRuntimePanel({
 
   const openAnnotation = useCallback(
     (annotationId: string, anchor: FloatingAnchorRect) => {
+      const highlight = savedChatHighlights.find(
+        (candidate) => candidate.id === annotationId,
+      );
+      if (highlight) {
+        setOpenInlineAnswer(null);
+        setSelectionMenu({ ...highlight, anchor });
+        window.getSelection()?.removeAllRanges();
+        return;
+      }
       const thread = inlineSelectionThreads.get(annotationId);
       if (!thread) return;
       if (!thread.question) {
@@ -1801,7 +2090,7 @@ export default function AgentRuntimePanel({
           : { id: annotationId, anchor },
       );
     },
-    [composerTextareaRef, inlineSelectionThreads],
+    [composerTextareaRef, inlineSelectionThreads, savedChatHighlights],
   );
 
   function deleteInlineSelection(annotationId: string) {
@@ -1925,10 +2214,7 @@ export default function AgentRuntimePanel({
                   ? messages[index - 2]
                   : undefined;
                 const continuationPreamble =
-                  continuationOwner?.delegatedAgentRun === true
-                    ? continuationOwner.delegatedAgentPreamble?.trim() ||
-                      continuationOwner.content.trim()
-                    : "";
+                  delegatedContinuationPreamble(messages, index);
                 // The delegating turn is hidden behind this row, so its time
                 // belongs to this row's clock. Without it the answer claimed
                 // the seconds of its synthesis as the whole operation's.
@@ -1939,6 +2225,10 @@ export default function AgentRuntimePanel({
                   continuationOwner,
                   message.usage,
                 );
+                const storedAssistantContent = assistantVisibleContent(
+                  message.content,
+                  message.progressNotes,
+                );
                 // Keep one visible assistant row during the hand-back. Until
                 // synthesis emits its first text, the row retains the sentence
                 // the person was already reading instead of collapsing to an
@@ -1948,9 +2238,9 @@ export default function AgentRuntimePanel({
                     ? revealedAssistantContent ||
                       // A restored or finished reply must show its stored text
                       // even when the paced reveal has nothing queued.
-                      (!streaming ? message.content : "") ||
+                      (!streaming ? storedAssistantContent : "") ||
                       continuationPreamble
-                    : message.content || continuationPreamble;
+                    : storedAssistantContent || continuationPreamble;
                 const inlineMapKind =
                   message.role === "assistant" &&
                   index === lastAssistantIndex &&
@@ -1959,7 +2249,8 @@ export default function AgentRuntimePanel({
                     ? inlineMapKindForAssistant(messages, index)
                     : null;
                 const inlineMapRequestStartedAt = inlineMapKind
-                  ? messages[previousUserMessageIndex(messages, index)]?.createdAt
+                  ? messages[retryTargetUserMessageIndex(messages, index)]
+                      ?.createdAt
                   : undefined;
                 const inlineSpotify =
                   message.role === "assistant" &&
@@ -1971,8 +2262,20 @@ export default function AgentRuntimePanel({
                             ?.createdAt,
                       }
                     : null;
+                // The hidden workers this row delegated to. They are the only
+                // record of how the hand-off ended: stopped or failed with no
+                // hand-back used to read exactly like a finished answer.
+                const delegatedWorkers = delegatedWorkersForMessage(
+                  messages,
+                  index,
+                );
+                const delegatedWorkerOutcome =
+                  delegatedWorkersOutcome(delegatedWorkers);
                 const delegatedAgentCompleted =
-                  delegatedAgentCompletedLabelForMessage(message);
+                  delegatedAgentOutcomeLabelForMessage(
+                    message,
+                    delegatedWorkerOutcome,
+                  ) ?? delegatedAgentCompletedLabelForMessage(message);
                 const delegatedAgentStartedAt =
                   delegatedAgentStartedAtForMessage(message);
                 // A delegated worker owns no visible card, so this row is the
@@ -1984,13 +2287,40 @@ export default function AgentRuntimePanel({
                 // stop its timer while the work carried on.
                 const delegatedAgentActive =
                   externalAgentRunInFlight(message) ||
-                  (index === lastAssistantIndex && delegationInFlight);
+                  (index === lastVisibleAssistantIndex && delegationInFlight) ||
+                  delegatedWorkerOutcome === "running";
+                // The worker's own progress, so a run that takes an hour does
+                // not spend it behind a label that never changes.
+                const delegatedWorkerStage = delegatedWorkers
+                  .map((worker) =>
+                    worker.clientMessageId
+                      ? delegatedWorkerStages[worker.clientMessageId]
+                      : undefined,
+                  )
+                  .find((stage) => stage?.trim());
                 // Past tense while it runs read as an answer that had stopped
                 // mid-thought.
+                const delegatedAgentActivity =
+                  delegatedAgentActivityLabelForMessage(message);
                 const delegatedAgentLabel = delegatedAgentActive
-                  ? delegatedAgentActivityLabelForMessage(message) ??
-                    delegatedAgentCompleted
+                  ? delegatedAgentActivity
+                    ? delegatedWorkerStage
+                      ? `${delegatedAgentActivity} · ${delegatedWorkerStage}`
+                      : delegatedAgentActivity
+                    : delegatedAgentCompleted
                   : delegatedAgentCompleted;
+                const delegatedOutcomeNote =
+                  !delegatedAgentActive &&
+                  !supersededDelegationAssistants.has(index)
+                    ? delegatedWorkersOutcomeNote(delegatedWorkers)
+                    : undefined;
+                const retryDelegation =
+                  delegatedOutcomeNote &&
+                  onRetryMessage &&
+                  !activeRun &&
+                  !conversationLocked
+                    ? () => retryAssistantAsBranch(index)
+                    : undefined;
                 return (
                 <div
                   className={timeSeparators[index] ? "space-y-3" : undefined}
@@ -2008,7 +2338,7 @@ export default function AgentRuntimePanel({
                     <MessageActionsSlot
                       suppressActions={
                         message.delegatedAgentRun === true ||
-                        (index === lastAssistantIndex && delegationInFlight)
+                        (index === lastVisibleAssistantIndex && delegationInFlight)
                       }
                     >
                     {message.role === "user" ? (
@@ -2025,7 +2355,8 @@ export default function AgentRuntimePanel({
                     ) : null}
                     {message.role === "assistant" &&
                     message.delegatedAgentPreamble &&
-                    !message.openGymRun ? (
+                    !message.openGymRun &&
+                    !message.godsEyeRun ? (
                       <div className="mb-3 text-sm leading-7 text-gray-200">
                         <ActivityPanel
                           activities={[]}
@@ -2048,6 +2379,24 @@ export default function AgentRuntimePanel({
                           onSelection={receiveTextSelection}
                           onOpenAnnotation={openAnnotation}
                         />
+                        {delegatedOutcomeNote ? (
+                          <div
+                            className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--ink-muted)]"
+                            role="status"
+                            data-testid="delegated-worker-outcome"
+                          >
+                            <span>{delegatedOutcomeNote}</span>
+                            {retryDelegation ? (
+                              <button
+                                type="button"
+                                onClick={retryDelegation}
+                                className="rounded-full border border-[var(--line)] px-2.5 py-0.5 text-xs font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-strong)]"
+                              >
+                                Retry
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                     {message.role === "user" ? (
@@ -2201,12 +2550,16 @@ export default function AgentRuntimePanel({
                     ) : isExternalAgentRunMessage(message) ? (
                       <div
                         className={
-                          message.delegatedAgentRun && !message.openGymRun
+                          message.delegatedAgentRun &&
+                          !message.openGymRun &&
+                          !message.godsEyeRun
                             ? "hidden"
                             : "contents"
                         }
                         aria-hidden={
-                          (message.delegatedAgentRun && !message.openGymRun) ||
+                          (message.delegatedAgentRun &&
+                            !message.openGymRun &&
+                            !message.godsEyeRun) ||
                           undefined
                         }
                       >
@@ -2239,6 +2592,8 @@ export default function AgentRuntimePanel({
                           agentId={message.agentBrowserRun.agentId}
                           runId={message.agentBrowserRun.runId}
                           task={message.agentBrowserRun.task}
+                          signInSurface={surface}
+                          signInSessionId={sessionId}
                           persistedContent={message.content}
                           persistedOutcome={message.externalAgentOutcome}
                           onRetry={
@@ -2261,6 +2616,16 @@ export default function AgentRuntimePanel({
                         <InlineMaxResearchRun
                           runId={message.maxResearchRun.runId}
                           query={message.maxResearchRun.query}
+                          onStage={
+                            message.delegatedAgentRun === true &&
+                            message.clientMessageId
+                              ? (stage) =>
+                                  reportDelegatedWorkerStage(
+                                    message.clientMessageId!,
+                                    stage,
+                                  )
+                              : undefined
+                          }
                           persistedContent={message.content}
                           persistedOutcome={message.externalAgentOutcome}
                           persistedUsage={message.usage}
@@ -2407,6 +2772,27 @@ export default function AgentRuntimePanel({
                             !activeRun &&
                             (message.interrupted ||
                               index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : message.openExecutiveRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineOpenExecutiveRun
+                          runId={message.openExecutiveRun.runId}
+                          task={message.openExecutiveRun.task}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted || index === lastAssistantIndex)
                               ? () => retryAssistantAsBranch(index)
                               : undefined
                           }
@@ -2712,6 +3098,53 @@ export default function AgentRuntimePanel({
                           }}
                         />
                       </div>
+                    ) : message.godsEyeRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineGodsEyeRun
+                          runId={message.godsEyeRun.runId}
+                          task={message.godsEyeRun.task}
+                          quiet={
+                            message.godsEyeRun.quiet === true ||
+                            message.delegatedAgentRun === true
+                          }
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted || index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : message.classroomRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineClassroomRun
+                          runId={message.classroomRun.runId}
+                          brief={message.classroomRun.brief}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          persistedUsage={message.usage}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted || index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
                     ) : message.boltSlidesRun ? (
                       <div className="text-sm leading-7 text-gray-200">
                         <InlineBoltSlidesRun
@@ -2770,6 +3203,27 @@ export default function AgentRuntimePanel({
                             !activeRun &&
                             (message.interrupted ||
                               index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : message.praxistRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlinePraxistRun
+                          runId={message.praxistRun.runId}
+                          task={message.praxistRun.task}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted || index === lastAssistantIndex)
                               ? () => retryAssistantAsBranch(index)
                               : undefined
                           }
@@ -3063,12 +3517,19 @@ export default function AgentRuntimePanel({
                             delegatedAgentActive
                               ? "streaming"
                               : index === lastAssistantIndex && !inlineRunActive
-                                ? connection
+                                ? streaming
+                                  ? "streaming"
+                                  : connection
                                 : "idle"
                           }
                           pendingPermission={
                             index === lastAssistantIndex && !inlineRunActive
                               ? pendingPermission
+                              : null
+                          }
+                          pendingClarification={
+                            index === lastAssistantIndex && !inlineRunActive
+                              ? pendingClarification
                               : null
                           }
                           usage={totalUsage}
@@ -3087,6 +3548,7 @@ export default function AgentRuntimePanel({
                           activePhaseStartedAt={delegatedAgentStartedAt}
                           carriedDurationMs={carriedDurationMs}
                           onPermissionDecision={onPermissionDecision}
+                          onClarificationAnswer={onClarificationAnswer}
                           completedLabel={delegatedAgentLabel}
                           stateLabel={
                             responseInterrupted
@@ -3122,6 +3584,12 @@ export default function AgentRuntimePanel({
                             turnPending={
                               index === lastAssistantIndex && runInFlight
                             }
+                          />
+                        ) : null}
+                        {message.uiResources?.length ? (
+                          <GenerativeUiRenderer
+                            resources={message.uiResources}
+                            onAction={handleGenerativeUiAction}
                           />
                         ) : null}
                         {visibleAssistantContent ||
@@ -3299,17 +3767,9 @@ export default function AgentRuntimePanel({
       </div>
         <ChatMessageRail
           surface={surface === "quartz_ai" ? "quartz-ai" : "hermes-chat"}
-          conversationKey={sessionId}
           items={railItems}
           scrollRef={transcriptScrollRef}
           bridge={transcriptVirtual}
-          onReply={(text) => {
-            if (queueHeld) {
-              queueFollowUp(text);
-              return;
-            }
-            return onSendQueued(text);
-          }}
         />
         <ChatJumpToBottom
           visible={transcriptAwayFromBottom}
@@ -3321,8 +3781,16 @@ export default function AgentRuntimePanel({
       {selectionMenu ? (
         <ChatSelectionMenu
           selection={selectionMenu}
-          onAskInChat={() => beginSelectionQuestion("chat")}
-          onAskHere={() => beginSelectionQuestion("inline")}
+          highlighted={selectionIsHighlighted}
+          highlightColor={selectionHighlightColor}
+          onHighlightColor={applySelectionHighlight}
+          onRemoveHighlight={removeSelectionHighlight}
+          onAskInChat={
+            onAskSelection ? () => beginSelectionQuestion("chat") : undefined
+          }
+          onAskHere={
+            onAskSelection ? () => beginSelectionQuestion("inline") : undefined
+          }
           onClose={() => setSelectionMenu(null)}
         />
       ) : null}
@@ -3335,6 +3803,14 @@ export default function AgentRuntimePanel({
           usage={openThread.usage}
           responseDurationMs={openThread.responseDurationMs}
           startedAt={openThread.startedAt}
+          answerMessageId={openThread.answerMessageId}
+          annotations={
+            openThread.answerMessageId
+              ? annotationsByMessage.get(openThread.answerMessageId)
+              : undefined
+          }
+          onSelection={receiveTextSelection}
+          onOpenAnnotation={openAnnotation}
           onClose={() => setOpenInlineAnswer(null)}
           onDelete={() => deleteInlineSelection(openThread.selection.id)}
           onStop={openThread.pending ? stopInlineAnswer : undefined}
@@ -3370,10 +3846,12 @@ export default function AgentRuntimePanel({
           onRunWorkflow={onRunWorkflow}
           history={sentMessages}
           textareaRef={composerTextareaRef}
-          // A chat that is still arriving keeps its ordinary invitation and
-          // stays typable: the wait belongs on the send button, which spins,
-          // and not in the box, where it looked like the field was dead.
-          placeholder={placeholder ?? "Ask the agent…"}
+          // While an answer is in flight, the composer is for a follow-up that
+          // joins the visible queue. Transcript-history loading still keeps the
+          // surface's ordinary invitation because no answer is being written.
+          placeholder={
+            runInFlight ? "Follow up." : (placeholder ?? "Ask the agent…")
+          }
           disabled={conversationLocked}
           loading={conversationLoading}
           queueDisabled={Boolean(disabled)}
@@ -3414,6 +3892,9 @@ export default function AgentRuntimePanel({
           careerOpsAgent={careerOpsAgent}
           onClearCareerOps={onClearCareerOps}
           onSelectCareerOps={onSelectCareerOps}
+          openExecutiveAgent={openExecutiveAgent}
+          onClearOpenExecutive={onClearOpenExecutive}
+          onSelectOpenExecutive={onSelectOpenExecutive}
           onSelectOpenGym={onSelectOpenGym}
           vibeTradingAgent={vibeTradingAgent}
           onClearVibeTrading={onClearVibeTrading}
@@ -3451,9 +3932,12 @@ export default function AgentRuntimePanel({
           onSelectResource2Skill={onSelectResource2Skill}
           onSelectMatraix={onSelectMatraix}
           onSelectBoltSlides={onSelectBoltSlides}
+          onSelectClassroom={onSelectClassroom}
+          onSelectGodsEye={onSelectGodsEye}
           onSelectOpenMontage={onSelectOpenMontage}
           onSelectOpenwork={onSelectOpenwork}
           onSelectOpenscience={onSelectOpenscience}
+          onSelectPraxist={onSelectPraxist}
           onSelectMaxResearch={onSelectMaxResearch}
           onSelectInboxZero={onSelectInboxZero}
           onSelectVimax={onSelectVimax}
@@ -3485,6 +3969,7 @@ export default function AgentRuntimePanel({
           onStop={canStop && !respondingToInlineSelection ? stopEverything : undefined}
           stopPending={stopRequestPending}
           permissionPending={Boolean(pendingPermission)}
+          clarificationPending={Boolean(pendingClarification)}
         />
       </div>
       {promptToSave !== null ? (

@@ -148,7 +148,15 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
   },
   "trading-agent": {
     group: "markets",
-    does: "The LangGraph analyst firm — a multi-analyst debate over one ticker, ending in a research report. Its composer refuses free typing, so the request is a form rather than a sentence.",
+    does: "The LangGraph analyst firm — market, sentiment, news, and fundamentals specialists debate one ticker, then a risk team produces a research report. It reads and reports; it cannot place a trade.",
+    choose:
+      "Choose it when a named firm's analysis benefits from the full bull/bear and risk debate. Start the brief with the exchange symbol and optional ISO date, for example `NVDA 2026-08-30`; the date defaults to today.",
+  },
+  praxist: {
+    group: "research",
+    does: "Runs an already prepared Praxist task-project directory through its own multi-agent, multi-generation autonomous research-and-development loop, preserving its experiment artifacts and accepted findings.",
+    choose:
+      "Choose it only when the user supplied an absolute path to an existing Praxist task project with task.yaml, or explicitly asked to run the configured Praxist project. It is not a general web-research agent and cannot turn an arbitrary question into a valid measurable task project.",
   },
 
   "inbox-zero": {
@@ -169,6 +177,13 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     does: "The job-search desk: a router over roughly eighty-four deterministic scripts with its own persistent workspace, so searches, tailored applications, and tracking accumulate across runs.",
     choose:
       "Choose it for finding roles, tailoring an application to a real posting, or anything that should build on what earlier runs stored. A CV you are simply writing is writing.",
+  },
+
+  openexecutive: {
+    group: "work",
+    does: "Runs the cloned OpenExecutive orchestrator: one coherent executive voice backed by strategy, finance, people, legal, operations, marketing, product, and board specialists, with private decision memory across runs.",
+    choose:
+      "Choose it for a consequential company decision or cross-functional operating question that benefits from several executive disciplines. A narrow factual question or ordinary writing request does not need an executive-team run.",
   },
 
   "open-gym": {
@@ -210,6 +225,18 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     does: "Plans a deck slide by slide, themes it, and compiles React source with Vite into a running web app: every slide a responsive page with click-builds, a thumbnail rail, annotation, and a synced presenter view. It returns a link and files the deck as an artifact here.",
     choose:
       "Choose it when the deck will be presented or shared as a link and the interactivity is the point — a punchline that lands on a click, a live product mock. Resource2Skill makes the .pptx; this makes the web deck.",
+  },
+  "gods-eye": {
+    group: "research",
+    does: "Aims a photorealistic live globe — aircraft, ships, satellites, earthquakes, fires, public cameras — at the place the message names, and answers with that view framed in the chat. When delegated, the framed globe renders directly without a run card.",
+    choose:
+      "Choose it when the user wants to see a place or the live activity over it, including a thermal or night-vision look. It shows the live world, not facts about it — routing and nearby-places questions belong to the map tools.",
+  },
+  classroom: {
+    group: "research",
+    does: "Turns a topic, or the documents attached to the message, into an interactive OpenMAIC classroom: an outline, then slides taught by an AI teacher, quizzes with grading, HTML simulations, and project work — opened as a live lesson and filed as an artifact here.",
+    choose:
+      "Choose it when the user wants to be taught something as a lesson — a course, a class, a walkthrough with checks on understanding — rather than told it. Deep Tutor answers questions one turn at a time; this builds the whole lesson up front.",
   },
   matraix: {
     group: "work",

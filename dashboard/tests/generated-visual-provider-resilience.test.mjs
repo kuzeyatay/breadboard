@@ -1862,7 +1862,8 @@ test("critic prompt requires topology/domain comparison and legacy approval ente
     assert.match(system, /no retained hidden-state snapshot/i);
     assert.match(system, /complete bounded inventory of every blocking revision/i);
     assert.match(system, /immutableContract controls and outputs are planner-owned/i);
-    assert.match(system, /trusted runtime renders every exact immutable control before numeric outputs and observable scenes.*runtimeEvidence verifies DOM order and rendered mobile visibility.*candidate cannot author control placement/i);
+    assert.match(system, /trusted runtime renders one dominant visual before compact results and every exact immutable control.*runtimeEvidence verifies that visual-first order.*candidate cannot author control placement/i);
+    assert.match(system, /same minimal presentation contract as the in-chat visualizer.*reject redundant annotation or formula scenes.*Prefer exactly one scene.*full non-visual detail in accessibilityDescription/is);
     assert.match(system, /Do not request a duplicate selector, scene-embedded control, CSS, or runtime ordering change/i);
     assert.match(system, /sourceCode\/SDK-feasible/i);
     assert.match(system, /never request a contract, planner, lesson, route, renderer, runtime, CSS, or unavailable SDK mutation/i);

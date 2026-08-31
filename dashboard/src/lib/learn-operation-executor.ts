@@ -90,6 +90,7 @@ async function executeLearnOperationInner(
         sourceOnly: request.sourceOnly,
         includeSourceSnapshots: request.includeSourceSnapshots,
         autoConfirmTopicMap: request.autoConfirmTopicMap,
+        userInstruction: request.userInstruction,
         yieldToResponse,
       });
     }
@@ -211,6 +212,7 @@ async function executeLearnOperationInner(
           sourceOnly: request.sourceOnly,
           includeSourceSnapshots: request.includeSourceSnapshots,
           forceFullRebuild: true,
+          userInstruction: request.userInstruction,
         },
         yieldToResponse,
       );

@@ -11,11 +11,14 @@
 // A WhatsApp thread maps to one conversation while it stays warm; after a quiet
 // period (or an explicit `/new`) the next message opens a fresh chat.
 
+import { wakeAgentRuntime } from "../agent-runtime/wake.ts";
 import {
   createConversation,
+  deleteConversation,
   getConversationById,
   listConversationMessages,
   presentConversationMessage,
+  type ConversationRow,
 } from "../conversations/store.ts";
 import { startConversationTurn } from "../conversations/turn-service.ts";
 import { startSessionEventPump } from "../hermes/event-stream.ts";
@@ -128,11 +131,19 @@ export async function routeWhatsAppMessage(
   });
 
   const forceNew = command === "/new";
+  let createdConversation: ConversationRow | null = null;
 
   try {
     // Fail before creating anything when the runtime is off, so a stopped runtime
     // answers WhatsApp with a reason instead of leaving an empty chat behind.
     requireEnabled();
+
+    // Hermes is an on-demand service: after a few quiet minutes the supervisor
+    // stops it, and only a lease can start it again — which this gateway
+    // process cannot take itself. Wake it (via the dashboard) before anything
+    // is created, so the turn below finds a live runtime. `/new` skips the
+    // wait: it only names a fresh chat, no turn runs.
+    if (!forceNew) await wakeAgentRuntime("whatsapp-inbound");
 
     const existing =
       !forceNew && chat.conversation_id !== null
@@ -154,6 +165,7 @@ export async function routeWhatsAppMessage(
         surface: "dashboard_terminal",
         scopeKind: "global",
       });
+    if (!warm) createdConversation = conversation;
 
     store.bindConversation(message.chatId, conversation.id);
 
@@ -248,6 +260,23 @@ export async function routeWhatsAppMessage(
         "That turn did not finish. Open the chat in Breadboard to see what happened.",
     };
   } catch (cause) {
+    // A turn that failed before producing anything must not strand an empty
+    // chat in Recents; the failure still reaches the sender as the reply below.
+    // The dangling chat binding is fine — the next message finds no
+    // conversation behind it and opens a fresh one.
+    if (
+      createdConversation &&
+      listConversationMessages(createdConversation.id, {
+        limit: 1,
+        includePending: true,
+      }).length === 0
+    ) {
+      try {
+        deleteConversation(createdConversation);
+      } catch {
+        // Keeping the empty chat is better than losing the error reply.
+      }
+    }
     return {
       status: "failed",
       reason: "error",

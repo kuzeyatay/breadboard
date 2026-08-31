@@ -22,12 +22,18 @@ import path from "node:path";
 import { createEngine } from "../../../gbrain/src/core/engine-factory.ts";
 import { importFromContent } from "../../../gbrain/src/core/import-file.ts";
 import { addSource } from "../../../gbrain/src/core/sources-ops.ts";
-import { embedQuery } from "../../../gbrain/src/core/embedding.ts";
+import {
+  embedBatch,
+  embedQuery,
+  getEmbeddingDimensions,
+  getEmbeddingModelName,
+} from "../../../gbrain/src/core/embedding.ts";
 import type { BrainEngine } from "../../../gbrain/src/core/engine.ts";
 import { configureEmbedding, type EmbeddingEnv, type EmbeddingSetup } from "./embedding-config.ts";
 import { resolveSourceFilter, type RetrievalBackend } from "./types.ts";
 import type {
   GBrainCitation,
+  GBrainEmbeddingResponse,
   GBrainGraphResponse,
   GBrainIndexPage,
   GBrainMode,
@@ -164,6 +170,20 @@ export class GBrainEngineBackend implements RetrievalBackend {
   }
   get providerName(): string {
     return this.embedding.provider;
+  }
+
+  async embedTexts(texts: string[]): Promise<GBrainEmbeddingResponse> {
+    if (!this.embeddingsAvailable) throw new Error("embedding_unavailable");
+    const vectors = await embedBatch(texts, { maxRetries: 0 });
+    const dimension = getEmbeddingDimensions();
+    if (vectors.length !== texts.length || vectors.some((vector) => vector.length !== dimension)) {
+      throw new Error("embedding_unavailable");
+    }
+    return {
+      model: getEmbeddingModelName(),
+      dimension,
+      vectors: vectors.map((vector) => Array.from(vector)),
+    };
   }
 
   async init(): Promise<void> {

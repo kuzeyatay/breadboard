@@ -64,6 +64,25 @@ function PlanIcon({ className }: { className?: string }) {
   );
 }
 
+function ProjectsNavIcon({ open, className }: { open: boolean; className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="4" width="17" height="16" rx="2.25" />
+      <path d="M8.5 4v16" />
+      {open ? <path d="m15 9-3 3 3 3" /> : <path d="m12 9 3 3-3 3" />}
+    </svg>
+  );
+}
+
 async function readError(response: Response, fallback: string): Promise<string> {
   const body = await response.json().catch(() => ({}));
   return typeof body?.error === "string" ? body.error : fallback;
@@ -93,6 +112,7 @@ export default function PlanClient({
   const [error, setError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
+  const [projectsNavOpen, setProjectsNavOpen] = useState(true);
 
   // Due cards for whatever window the calendar is showing.
   const [dueRange, setDueRange] = useState<{ from: string; to: string } | null>(null);
@@ -355,6 +375,18 @@ export default function PlanClient({
           Plan
         </a>
 
+        <button
+          type="button"
+          onClick={() => setProjectsNavOpen((open) => !open)}
+          className="neu-button-icon hidden size-8 items-center justify-center rounded-lg border text-gray-500 hover:text-white lg:flex"
+          aria-controls="plan-projects-navigation"
+          aria-expanded={projectsNavOpen}
+          aria-label={projectsNavOpen ? "Close projects navigation" : "Open projects navigation"}
+          title={projectsNavOpen ? "Close projects navigation" : "Open projects navigation"}
+        >
+          <ProjectsNavIcon open={projectsNavOpen} className="size-4" />
+        </button>
+
         <div className="neu-segmented flex items-center gap-0.5 rounded-lg border">
           {(["board", "calendar"] as const).map((option) => (
             <button
@@ -387,96 +419,101 @@ export default function PlanClient({
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <aside className="bb-neu-sidebar-left hidden w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r px-3 py-4 lg:flex">
-          <div>
-            <h2 className="mb-2 px-1 text-[11px] uppercase tracking-wider text-gray-500">
-              Projects
-            </h2>
-            <ul className="space-y-0.5">
-              {projects.map((project) => {
-                const active = project.id === activeProjectId;
-                return (
-                  <li key={project.id}>
-                    <button
-                      type="button"
-                      onClick={() => void selectProject(project.id)}
-                      className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
-                        active ? "bb-neu-conversation-row-selected text-white" : "text-gray-400 hover:text-white"
-                      }`}
-                    >
-                      <span
-                        className="size-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: project.color }}
-                        aria-hidden="true"
-                      />
-                      <span className="min-w-0 flex-1 truncate">{project.name}</span>
-                      {project.overdueCount > 0 ? (
-                        <span
-                          className="shrink-0 tabular-nums"
-                          style={{ color: "var(--danger)" }}
-                          title={`${project.overdueCount} overdue`}
-                        >
-                          {project.overdueCount}
-                        </span>
-                      ) : (
-                        project.openCount > 0 && (
-                          <span className="shrink-0 tabular-nums text-gray-600">
-                            {project.openCount}
-                          </span>
-                        )
-                      )}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-
-            <form onSubmit={createProject} className="mt-2 flex gap-1">
-              <input
-                value={newProjectName}
-                onChange={(event) => setNewProjectName(event.target.value)}
-                placeholder="New project"
-                className="neu-control min-w-0 flex-1 rounded-lg border px-2 py-1 text-xs text-white placeholder:text-gray-600"
-              />
-              <button
-                type="submit"
-                disabled={creatingProject || !newProjectName.trim()}
-                className="neu-button-icon rounded-lg border px-2 py-1 text-xs text-gray-400 disabled:opacity-40"
-                aria-label="Add project"
-              >
-                +
-              </button>
-            </form>
-          </div>
-
-          {labels.length > 0 && (
+        {projectsNavOpen && (
+          <aside
+            id="plan-projects-navigation"
+            className="bb-neu-sidebar-left hidden w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r px-3 py-4 lg:flex"
+          >
             <div>
               <h2 className="mb-2 px-1 text-[11px] uppercase tracking-wider text-gray-500">
-                Labels
+                Projects
               </h2>
-              <div className="flex flex-wrap gap-1 px-1">
-                {labels.map((label) => (
-                  <span
-                    key={label.id}
-                    className="rounded-full px-1.5 py-px text-[10px]"
-                    style={{
-                      backgroundColor: `color-mix(in srgb, ${label.color} 24%, var(--paper-raised))`,
-                      color: "var(--ink)",
-                    }}
-                  >
-                    {label.name}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+              <ul className="space-y-0.5">
+                {projects.map((project) => {
+                  const active = project.id === activeProjectId;
+                  return (
+                    <li key={project.id}>
+                      <button
+                        type="button"
+                        onClick={() => void selectProject(project.id)}
+                        className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
+                          active ? "bb-neu-conversation-row-selected text-white" : "text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        <span
+                          className="size-2 shrink-0 rounded-full"
+                          style={{ backgroundColor: project.color }}
+                          aria-hidden="true"
+                        />
+                        <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                        {project.overdueCount > 0 ? (
+                          <span
+                            className="shrink-0 tabular-nums"
+                            style={{ color: "var(--danger)" }}
+                            title={`${project.overdueCount} overdue`}
+                          >
+                            {project.overdueCount}
+                          </span>
+                        ) : (
+                          project.openCount > 0 && (
+                            <span className="shrink-0 tabular-nums text-gray-600">
+                              {project.openCount}
+                            </span>
+                          )
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
 
-          <p className="mt-auto px-1 text-[11px] leading-5 text-gray-600">
-            Cards marked <span className="text-gray-500">agent</span> or{" "}
-            <span className="text-gray-500">scheduled</span> were filed by breadboard
-            itself.
-          </p>
-        </aside>
+              <form onSubmit={createProject} className="mt-2 flex gap-1">
+                <input
+                  value={newProjectName}
+                  onChange={(event) => setNewProjectName(event.target.value)}
+                  placeholder="New project"
+                  className="neu-control min-w-0 flex-1 rounded-lg border px-2 py-1 text-xs text-white placeholder:text-gray-600"
+                />
+                <button
+                  type="submit"
+                  disabled={creatingProject || !newProjectName.trim()}
+                  className="neu-button-icon rounded-lg border px-2 py-1 text-xs text-gray-400 disabled:opacity-40"
+                  aria-label="Add project"
+                >
+                  +
+                </button>
+              </form>
+            </div>
+
+            {labels.length > 0 && (
+              <div>
+                <h2 className="mb-2 px-1 text-[11px] uppercase tracking-wider text-gray-500">
+                  Labels
+                </h2>
+                <div className="flex flex-wrap gap-1 px-1">
+                  {labels.map((label) => (
+                    <span
+                      key={label.id}
+                      className="rounded-full px-1.5 py-px text-[10px]"
+                      style={{
+                        backgroundColor: `color-mix(in srgb, ${label.color} 24%, var(--paper-raised))`,
+                        color: "var(--ink)",
+                      }}
+                    >
+                      {label.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <p className="mt-auto px-1 text-[11px] leading-5 text-gray-600">
+              Cards marked <span className="text-gray-500">agent</span> or{" "}
+              <span className="text-gray-500">scheduled</span> were filed by breadboard
+              itself.
+            </p>
+          </aside>
+        )}
 
         <div className="flex min-w-0 flex-1 flex-col">
           {view === "board" ? (

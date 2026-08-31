@@ -31,7 +31,7 @@ pre:has(> code.breadboard-generated-visual-block) {
   .bgv-meta {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 0.8rem 1.2rem;
     min-width: 0;
     border-top: 1px solid var(--viz-line);
@@ -40,23 +40,12 @@ pre:has(> code.breadboard-generated-visual-block) {
     font-size: 0.78rem;
   }
 
-  .bgv-provenance,
   .bgv-actions {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 0.45rem 0.75rem;
     min-width: 0;
-  }
-
-  .bgv-version {
-    flex: none;
-    font-family: var(--codeFont);
-  }
-
-  .bgv-sources {
-    min-width: 0;
-    overflow-wrap: anywhere;
   }
 
   .bgv-actions {

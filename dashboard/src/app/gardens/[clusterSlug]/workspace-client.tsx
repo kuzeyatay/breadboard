@@ -8,6 +8,7 @@ import {
   useLayoutEffect,
   useCallback,
   useMemo,
+  useSyncExternalStore,
   type RefObject,
 } from "react";
 import Link from "next/link";
@@ -20,6 +21,10 @@ import TerminalSidebar, {
   type TerminalSidebarChat,
 } from "@/app/components/hermes/terminal-sidebar";
 import SidePanelDock from "@/app/components/hermes/side-panel-dock";
+import ProductDetailsPanel, {
+  type ProductPanelSelection,
+} from "@/app/components/hermes/product-details-panel";
+import GenerativeUiRenderer from "@/app/components/hermes/generative-ui-renderer";
 import { useRailResize } from "@/app/components/hermes/use-rail-resize";
 import {
   chatActivityById,
@@ -78,6 +83,7 @@ import ChatMessageAttachments from "@/app/components/chat-message-attachments";
 import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import ActivityPanel from "@/app/components/hermes/activity-panel";
+import type { ClarificationPrompt } from "@/app/components/hermes/use-agent-session";
 import {
   splitLeadingCommandTokens,
   UserMessageText,
@@ -94,19 +100,48 @@ import type {
 } from "@/app/components/hermes/use-agent-session";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import { applyGardenStableTextEvent } from "@/lib/hermes/garden-stable-stream";
+import { assistantVisibleContent } from "@/lib/hermes/assistant-visible-content";
 import {
   delegatedAgentActivityLabelForMessage,
   delegatedAgentCompletedLabelForMessage,
+  delegatedAgentOutcomeLabelForMessage,
+  delegatedWorkersForMessage,
+  delegatedWorkersOutcome,
+  delegatedWorkersOutcomeNote,
+  delegatedContinuationPreamble,
   delegatedAgentStartedAtForMessage,
   delegatedTurnCarriedDurationMs,
   delegatedTurnTotalUsage,
+  supersededDelegationAssistantIndices,
 } from "@/lib/hermes/super-agent-activity";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import ChatMessageRail, {
   type ChatMessageRailItem,
 } from "@/app/components/chat-message-rail";
-import ChatMarkdown from "@/app/components/chat-markdown";
+import ChatMarkdown, {
+  type ChatTextAnnotation,
+} from "@/app/components/chat-markdown";
+import {
+  ChatSelectionMenu,
+  InlineSelectionAnswerPopover,
+  QuotedChatSelection,
+  SelectableAssistantMarkdown,
+  SelectionComposerContext,
+  type ChatTextSelectionCandidate,
+  type FloatingAnchorRect,
+} from "@/app/components/chat-text-selection-ui";
+import {
+  chatTextSelectionQuestionPrompt,
+  chatTextSelectionsOverlap,
+  normalizeChatTextSelectionReference,
+  type ChatTextSelectionReference,
+} from "@/lib/chat-text-selection";
+import {
+  DEFAULT_CHAT_HIGHLIGHT_COLOR,
+  isChatHighlightColor,
+  type ChatHighlightColor,
+} from "@/lib/chat-highlights";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
 import GardenVideoImport from "@/app/components/garden-video-import";
@@ -142,6 +177,7 @@ import InlineGetDocRun from "@/app/components/hermes/inline-get-doc-run";
 import InlineMeetingNotesRun from "@/app/components/hermes/inline-meeting-notes-run";
 import InlineDeepTutorRun from "@/app/components/hermes/inline-deep-tutor-run";
 import InlineCareerOpsRun from "@/app/components/hermes/inline-career-ops-run";
+import InlineOpenExecutiveRun from "@/app/components/hermes/inline-openexecutive-run";
 import InlineOpenGymRun from "@/app/components/hermes/inline-open-gym-run";
 import InlineTradingAgentsRun from "@/app/components/hermes/inline-tradingagents-run";
 import InlineVibeTradingRun from "@/app/components/hermes/inline-vibe-trading-run";
@@ -155,9 +191,12 @@ import InlineHyperframesRun from "@/app/components/hermes/inline-hyperframes-run
 import InlineResource2SkillRun from "@/app/components/hermes/inline-resource2skill-run";
 import InlineMatraixRun from "@/app/components/hermes/inline-matraix-run";
 import InlineBoltSlidesRun from "@/app/components/hermes/inline-bolt-slides-run";
+import InlineClassroomRun from "@/app/components/hermes/inline-classroom-run";
+import InlineGodsEyeRun from "@/app/components/hermes/inline-gods-eye-run";
 import InlineOpenMontageRun from "@/app/components/hermes/inline-openmontage-run";
 import InlineOpenworkRun from "@/app/components/hermes/inline-openwork-run";
 import InlineOpenscienceRun from "@/app/components/hermes/inline-openscience-run";
+import InlinePraxistRun from "@/app/components/hermes/inline-praxist-run";
 import InlineInboxZeroRun from "@/app/components/hermes/inline-inbox-zero-run";
 import InlineVimaxRun from "@/app/components/hermes/inline-vimax-run";
 import InlineVoxDirectorRun from "@/app/components/hermes/inline-vox-director-run";
@@ -192,6 +231,15 @@ import {
   taskFromBoltSlidesCommand,
 } from "@/lib/bolt-slides/identity.ts";
 import {
+  classroomUserMessage,
+  taskFromClassroomCommand,
+} from "@/lib/classroom/identity.ts";
+import {
+  GODS_EYE_AGENT_ID,
+  godsEyeUserMessage,
+  taskFromGodsEyeCommand,
+} from "@/lib/gods-eye/identity.ts";
+import {
   briefFromOpenMontageCommand,
   openMontageUserMessage,
 } from "@/lib/openmontage/identity.ts";
@@ -203,6 +251,11 @@ import {
   openscienceUserMessage,
   taskFromOpenscienceCommand,
 } from "@/lib/openscience/identity.ts";
+import {
+  parsePraxistTaskPath,
+  praxistUserMessage,
+  taskFromPraxistCommand,
+} from "@/lib/praxist/identity.ts";
 import {
   inboxZeroUserMessage,
   taskFromInboxZeroCommand,
@@ -271,10 +324,7 @@ import {
   currentLearnElapsedMs,
   formatLearnElapsedTime,
 } from "@/lib/learn-timer";
-import {
-  sumIngestTokenUsage,
-  type IngestTokenUsage,
-} from "@/lib/ingest-token-usage";
+import { sumIngestTokenUsage } from "@/lib/ingest-token-usage";
 import {
   beginRuntimeIngestRecovery,
   bindRuntimeIngestResponse,
@@ -284,6 +334,16 @@ import {
   runtimeIngestRecoveries,
   runtimeIngestRecoveryRecord,
 } from "@/lib/runtime-v2/ingest-recovery-client";
+import {
+  cancelGardenUploadTask,
+  gardenUploadTasksServerSnapshot,
+  gardenUploadTasksSnapshot,
+  hasLiveGardenUploadRequest,
+  registerGardenUploadSink,
+  removeGardenUploadTask,
+  startGardenUploadTask,
+  subscribeGardenUploads,
+} from "@/lib/garden-upload-store";
 import {
   agentBrowserStartFailure,
   agentBrowserUserMessage,
@@ -334,6 +394,12 @@ import {
   taskFromCareerOpsCommand,
 } from "@/lib/career-ops/identity.ts";
 import {
+  OPENEXECUTIVE_AGENT_ID,
+  OPENEXECUTIVE_AGENT_NAME,
+  openExecutiveUserMessage,
+  taskFromOpenExecutiveCommand,
+} from "@/lib/openexecutive/identity.ts";
+import {
   OPEN_GYM_AGENT_ID,
   openGymUserMessage,
   taskFromOpenGymCommand,
@@ -343,6 +409,7 @@ import {
   TRADINGAGENTS_AGENT_ID,
   TRADINGAGENTS_AGENT_NAME,
   parseTradingAgentsCommand,
+  tradingAgentsRequestFromBrief,
   tradingAgentsRunLabel,
   tradingAgentsUserMessage,
   type TradingAgentsRequest,
@@ -389,6 +456,7 @@ import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts"
 import {
   MAX_AGENT_LAUNCH_HOPS,
   agentLaunchContinuationMessage,
+  agentLaunchWorkerClientMessageId,
   useAgentLaunchQueue,
   type AgentLaunchRequestPayload,
 } from "@/app/components/hermes/use-agent-launch-queue";
@@ -424,8 +492,20 @@ import {
   notifyChatResponseFailed,
   notifyChatResponseReady,
 } from "@/lib/task-completion-notification";
+import {
+  setActiveChatNotificationTarget,
+  takeChatNotificationReply,
+  type ChatNotificationTarget,
+} from "@/lib/chat-notification-inbox";
 import { reserveGardenTurnCheckpoint } from "@/lib/conversations/garden-turn-client";
 import { gardenDocumentHref } from "@/lib/garden-document-route";
+import {
+  normalizeGenerativeUiResources,
+  productForAction,
+  safeProductUrl,
+  type GenerativeUiAction,
+  type GenerativeUiResource,
+} from "@/lib/generative-ui/contracts.ts";
 
 interface Message {
   id?: string;
@@ -437,14 +517,22 @@ interface Message {
   content: string;
   /** Model-to-model hand-back; retained in context but hidden from the user. */
   internalAgentContinuation?: boolean;
+  /**
+   * Selected assistant text this turn quotes ("Ask in chat") or answers in
+   * place ("Ask here"). Inline turns are hidden from the transcript and read
+   * through the highlight's popover instead.
+   */
+  textSelection?: ChatTextSelectionReference;
   createdAt?: string;
   sources?: string[];
   thinking?: string;
+  progressNotes?: string[];
   attachmentNames?: string[];
   attachments?: ChatMessageAttachment[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   verification?: VerificationSummary;
+  uiResources?: GenerativeUiResource[];
   agentBrowserRun?: { agentId: string; runId: string; task: string };
   deepResearchRun?: {
     runId: string;
@@ -473,6 +561,7 @@ interface Message {
   meetingNotesRun?: { runId: string; task: string };
   deepTutorRun?: { runId: string; task: string; capability: string };
   careerOpsRun?: { runId: string; task: string };
+  openExecutiveRun?: { runId: string; task: string };
   openGymRun?: { runId: string; task: string; quiet?: boolean };
   tradingAgentsRun?: { runId: string; task: string };
   vibeTradingRun?: { runId: string; task: string };
@@ -485,9 +574,12 @@ interface Message {
   resource2SkillRun?: { runId: string; brief: string };
   matraixRun?: { runId: string; brief: string };
   boltSlidesRun?: { runId: string; brief: string };
+  classroomRun?: { runId: string; brief: string };
+  godsEyeRun?: { runId: string; task: string; quiet?: boolean };
   openMontageRun?: { runId: string; brief: string };
   openworkRun?: { runId: string; task: string };
   openscienceRun?: { runId: string; task: string };
+  praxistRun?: { runId: string; task: string };
   inboxZeroRun?: { runId: string; task: string };
   vimaxRun?: { runId: string; brief: string };
   voxDirectorRun?: { runId: string; brief: string };
@@ -643,6 +735,126 @@ function loadBranchGroups(
   }
 }
 
+// ── Selected-text questions ("Ask in chat" / "Ask here") ─────────────────────
+// The same feature the Terminal has, against this workspace's legacy chat
+// store. Highlights and not-yet-asked selections live in localStorage per chat
+// id; answered threads restore from the `textSelection` metadata each turn
+// persists with its messages.
+
+const INLINE_SELECTION_STORAGE_PREFIX =
+  "breadboard:garden-chat-inline-selections:";
+const DELETED_INLINE_SELECTION_STORAGE_PREFIX =
+  "breadboard:garden-chat-deleted-inline-selections:";
+const CHAT_HIGHLIGHT_STORAGE_PREFIX = "breadboard:garden-chat-highlights:";
+
+interface SavedChatHighlight extends Omit<ChatTextSelectionReference, "mode"> {
+  color: ChatHighlightColor;
+}
+
+interface InlineSelectionThread {
+  selection: ChatTextSelectionReference;
+  question?: string;
+  answer?: string;
+  pending: boolean;
+  usage?: ChatTokenUsage;
+  responseDurationMs?: number;
+  startedAt?: string;
+  /** The answer message's own id, so text inside the popover is selectable
+   * and can host highlights and nested "Ask here" threads of its own. */
+  answerMessageId?: string;
+}
+
+/**
+ * The id selections anchor to. The checkpoint assigns the durable `msg_N` id
+ * before any answer streams, so unlike the Terminal the stable id comes first.
+ */
+function messageSelectionSourceId(message: Message, messageIndex: number): string {
+  return message.id ?? message.clientMessageId ?? `assistant-${messageIndex}`;
+}
+
+function loadInlineSelections(chatId: number): ChatTextSelectionReference[] {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(
+        `${INLINE_SELECTION_STORAGE_PREFIX}${chatId}`,
+      ) ?? "[]",
+    ) as unknown[];
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    return parsed.flatMap((value) => {
+      const selection = normalizeChatTextSelectionReference(value);
+      if (!selection || selection.mode !== "inline" || seen.has(selection.id)) {
+        return [];
+      }
+      seen.add(selection.id);
+      return [selection];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function loadDeletedInlineSelectionIds(chatId: number): Set<string> {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(
+        `${DELETED_INLINE_SELECTION_STORAGE_PREFIX}${chatId}`,
+      ) ?? "[]",
+    ) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed.filter(
+        (value): value is string =>
+          typeof value === "string" && value.length > 0 && value.length <= 160,
+      ),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function normalizeSavedChatHighlight(value: unknown): SavedChatHighlight | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const selection = normalizeChatTextSelectionReference({
+    ...candidate,
+    mode: "chat",
+  });
+  if (!selection) return null;
+  return {
+    id: selection.id,
+    sourceMessageId: selection.sourceMessageId,
+    start: selection.start,
+    end: selection.end,
+    quote: selection.quote,
+    prefix: selection.prefix,
+    suffix: selection.suffix,
+    color: isChatHighlightColor(candidate.color)
+      ? candidate.color
+      : DEFAULT_CHAT_HIGHLIGHT_COLOR,
+  };
+}
+
+function loadChatHighlights(chatId: number): SavedChatHighlight[] {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(
+        `${CHAT_HIGHLIGHT_STORAGE_PREFIX}${chatId}`,
+      ) ?? "[]",
+    ) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    return parsed.flatMap((value) => {
+      const highlight = normalizeSavedChatHighlight(value);
+      if (!highlight || seen.has(highlight.id)) return [];
+      seen.add(highlight.id);
+      return [highlight];
+    });
+  } catch {
+    return [];
+  }
+}
+
 /** Shared by the two repository-scoped agents (OpenCode and Ruflo). */
 function explainRepositoryAgentError(
   code: unknown,
@@ -705,6 +917,36 @@ interface SavedLinkInfo {
   provider?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+type LearnSourceKind = "document" | "link" | "video" | "audio";
+
+const LEARN_SOURCE_KINDS: LearnSourceKind[] = [
+  "document",
+  "link",
+  "video",
+  "audio",
+];
+
+function learnSourceKind(doc: DocInfo): LearnSourceKind {
+  const sourceType = doc.sourceType.trim().toLowerCase();
+  if (sourceType === "url" || sourceType === "link") return "link";
+  if (sourceType.includes("audio")) return "audio";
+  if (sourceType === "youtube" || sourceType.includes("video")) return "video";
+  return "document";
+}
+
+function learnSourceKindLabel(kind: LearnSourceKind): string {
+  switch (kind) {
+    case "link":
+      return "Links";
+    case "video":
+      return "Videos";
+    case "audio":
+      return "Audio";
+    default:
+      return "Documents";
+  }
 }
 
 function normalizedSearchText(value: string): string {
@@ -778,6 +1020,7 @@ interface LearnJobInfo {
   error?: string;
   requiresReplan?: boolean;
   proposedLearningMapId?: string;
+  userInstruction?: string;
   elapsedMs: number;
   timerStartedAt?: string;
   tokenUsage?: {
@@ -894,6 +1137,7 @@ interface MarkdownTagUpdateResult {
 interface Props {
   clusterSlug: string;
   clusterName: string;
+  initialChatId?: string | null;
   isOwner?: boolean;
   clusterVisibility: "private" | "organization" | "public";
   chatAccessible: boolean;
@@ -902,6 +1146,25 @@ interface Props {
 
 const ACCEPTED =
   ".pdf,.jpg,.jpeg,.png,.webp,.txt,.md,.csv,.docx,.pptx,.xlsx,.zip";
+const LEARN_USER_INSTRUCTION_MAX_CHARS = 4_000;
+const LEARN_USER_INSTRUCTION_EXAMPLES = [
+  {
+    label: "Focus",
+    text: "Explain boundary conditions in more depth.",
+  },
+  {
+    label: "Include",
+    text: "Include one worked example in every topic.",
+  },
+  {
+    label: "Exclude",
+    text: "Exclude antenna arrays from this course.",
+  },
+  {
+    label: "Redo",
+    text: "Redo only the topics after Maxwell's equations. Keep everything before that unchanged.",
+  },
+] as const;
 const HANDWRITING_FILE_RE = /\.(pdf|jpg|jpeg|png|webp)$/i;
 const EMPTY_MESSAGES: Message[] = [];
 
@@ -1059,8 +1322,6 @@ function pastedImageName(file: File, index: number): string {
   return `pasted-screenshot-${index + 1}.${ext}`;
 }
 
-type FileStatus = "pending" | "uploading" | "done" | "error";
-
 const DEFAULT_FLAG_COLOR = "#facc15";
 const FLAG_COLORS = [
   DEFAULT_FLAG_COLOR,
@@ -1137,6 +1398,7 @@ function hasRunningExternalAgent(message: Message): boolean {
     Boolean(
       message.agentBrowserRun ||
       message.deepResearchRun ||
+      message.maxResearchRun ||
       message.codexRun ||
       message.openCodeRun ||
       message.openPlanterRun ||
@@ -1145,6 +1407,7 @@ function hasRunningExternalAgent(message: Message): boolean {
       message.meetingNotesRun ||
       message.deepTutorRun ||
       message.careerOpsRun ||
+      message.openExecutiveRun ||
       message.openGymRun ||
       message.tradingAgentsRun ||
       message.vibeTradingRun ||
@@ -1157,9 +1420,12 @@ function hasRunningExternalAgent(message: Message): boolean {
       message.resource2SkillRun ||
       message.matraixRun ||
       message.boltSlidesRun ||
+      message.classroomRun ||
+      message.godsEyeRun ||
       message.openMontageRun ||
       message.openworkRun ||
       message.openscienceRun ||
+      message.praxistRun ||
       message.inboxZeroRun ||
       message.vimaxRun ||
       message.voxDirectorRun ||
@@ -1183,6 +1449,7 @@ interface ChatTranscriptProps {
   greetingSuggestions: string[];
   /** An opener was picked: it fills the composer the workspace owns. */
   onSelectSuggestion: (prompt: string) => void;
+  onGenerativeUiAction: (action: GenerativeUiAction) => void;
   chatSessionId: number | null;
   isStreaming: boolean;
   loadingChats: boolean;
@@ -1191,6 +1458,8 @@ interface ChatTranscriptProps {
   connection: ConnectionState;
   pendingPermission: PermissionPrompt | null;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
+  pendingClarification: ClarificationPrompt | null;
+  onClarificationAnswer: (answer: string) => void;
   onEditMessage: (messageIndex: number, text: string) => void;
   /** Remove one exchange: this message and the answer it produced. */
   onDeleteMessage: (messageIndex: number) => void;
@@ -1201,6 +1470,12 @@ interface ChatTranscriptProps {
     runId: string,
     result: ExternalAgentTerminalResult,
   ) => void;
+  /** Highlights and "Ask here" anchors, keyed by source message id. */
+  annotationsByMessage: ReadonlyMap<string, ChatTextAnnotation[]>;
+  /** Text was selected in an assistant message: offer the selection menu. */
+  onTextSelection: (selection: ChatTextSelectionCandidate) => void;
+  /** A painted highlight/answer anchor was clicked. */
+  onOpenAnnotation: (annotationId: string, anchor: FloatingAnchorRect) => void;
   inlineArtifactRetireVersion: number;
   /**
    * A model-delegated worker is somewhere in its hand-off — queued behind the
@@ -1224,6 +1499,9 @@ interface ChatTranscriptProps {
  */
 type TranscriptRow = { index: number; message: Message };
 
+/** Stable empty list so annotation-free rows keep their memoized markdown. */
+const EMPTY_CHAT_ANNOTATIONS: readonly ChatTextAnnotation[] = [];
+
 const transcriptRowKey = (row: TranscriptRow) =>
   chatRowKey(row.message, row.index);
 
@@ -1240,6 +1518,8 @@ const transcriptRowHeight = (row: TranscriptRow) =>
  */
 function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
   const rows: TranscriptRow[] = [];
+  const supersededDelegationAssistants =
+    supersededDelegationAssistantIndices(messages);
   messages.forEach((storedMessage, index) => {
     // Only the hand-back is internal. The turn persists the flag on both of its
     // messages, so dropping every flagged row also dropped the answer the
@@ -1248,6 +1528,10 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
     if (
       (storedMessage.role === "user" &&
         storedMessage.internalAgentContinuation === true) ||
+      // An "Ask here" turn is read inside its highlight's popover, not as
+      // transcript rows.
+      storedMessage.textSelection?.mode === "inline" ||
+      supersededDelegationAssistants.has(index) ||
       (storedMessage.delegatedAgentRun === true &&
         messages[index + 1]?.internalAgentContinuation === true)
     ) {
@@ -1273,6 +1557,7 @@ const ChatTranscript = memo(function ChatTranscript({
   greeting,
   greetingSuggestions,
   onSelectSuggestion,
+  onGenerativeUiAction,
   chatSessionId,
   isStreaming,
   loadingChats,
@@ -1281,12 +1566,17 @@ const ChatTranscript = memo(function ChatTranscript({
   connection,
   pendingPermission,
   onPermissionDecision,
+  pendingClarification,
+  onClarificationAnswer,
   onEditMessage,
   onDeleteMessage,
   onRetryAssistant,
   branchGroups,
   onSwitchBranch,
   onExternalAgentTerminal,
+  annotationsByMessage,
+  onTextSelection,
+  onOpenAnnotation,
   inlineArtifactRetireVersion,
   delegationInFlight,
   transcriptScrollRef,
@@ -1306,14 +1596,32 @@ const ChatTranscript = memo(function ChatTranscript({
       message.role === "assistant" ? index : lastIndex,
     -1,
   );
+  // Private worker cards remain mounted as runtime observers, but they are not
+  // visible answers and must not take live status from the hand-off above.
+  const lastVisibleAssistantIndex = messages.reduce(
+    (lastIndex, message, index) =>
+      message.role === "assistant" &&
+      !(
+        message.delegatedAgentRun === true &&
+        !message.openGymRun &&
+        !message.godsEyeRun
+      )
+        ? index
+        : lastIndex,
+    -1,
+  );
   const newestAssistant =
     lastAssistantIndex >= 0 ? messages[lastAssistantIndex] : undefined;
+  const newestAssistantVisibleContent = assistantVisibleContent(
+    newestAssistant?.content ?? "",
+    newestAssistant?.progressNotes,
+  );
   const transcriptRevealKey = String(chatSessionId ?? "new");
   // The newest answer's text is revealed at a readable pace rather than drawn
   // straight from the buffer, so a reply that arrives in bursts (or whole)
   // still reads as a stream. Older messages render their content directly.
   const revealedAssistantContent = useSmoothStreamText(
-    newestAssistant?.content ?? "",
+    newestAssistantVisibleContent,
     isStreaming,
     transcriptRevealKey,
   );
@@ -1459,6 +1767,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.meetingNotesRun ??
                 msg.deepTutorRun ??
                 msg.careerOpsRun ??
+                msg.openExecutiveRun ??
                 msg.openGymRun ??
                 msg.tradingAgentsRun ??
                 msg.vibeTradingRun ??
@@ -1471,9 +1780,12 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.resource2SkillRun ??
                 msg.matraixRun ??
                 msg.boltSlidesRun ??
+                msg.classroomRun ??
+                msg.godsEyeRun ??
                 msg.openMontageRun ??
                 msg.openworkRun ??
                 msg.openscienceRun ??
+                msg.praxistRun ??
                 msg.inboxZeroRun ??
                 msg.vimaxRun ??
                 msg.voxDirectorRun ??
@@ -1492,10 +1804,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 ? messages[i - 2]
                 : undefined;
               const continuationPreamble =
-                continuationOwner?.delegatedAgentRun === true
-                  ? continuationOwner.delegatedAgentPreamble?.trim() ||
-                    continuationOwner.content.trim()
-                  : "";
+                delegatedContinuationPreamble(messages, i);
               // The delegating turn is hidden behind this row, so its time
               // belongs to this row's clock. Without it the answer claimed the
               // seconds of its synthesis as the whole operation's.
@@ -1506,12 +1815,25 @@ const ChatTranscript = memo(function ChatTranscript({
                 continuationOwner,
                 msg.usage,
               );
+              const storedAssistantContent = assistantVisibleContent(
+                msg.content,
+                msg.progressNotes,
+              );
               const visibleAssistantContent =
                 i === lastAssistantIndex
                   ? revealedAssistantContent || continuationPreamble
-                  : msg.content || continuationPreamble;
+                  : storedAssistantContent || continuationPreamble;
+              // The hidden workers this row delegated to: the only record of
+              // how the hand-off ended. Stopped or failed with no hand-back
+              // used to read exactly like a finished answer.
+              const delegatedWorkers = delegatedWorkersForMessage(messages, i);
+              const delegatedWorkerOutcome =
+                delegatedWorkersOutcome(delegatedWorkers);
               const delegatedAgentCompleted =
-                delegatedAgentCompletedLabelForMessage(msg);
+                delegatedAgentOutcomeLabelForMessage(
+                  msg,
+                  delegatedWorkerOutcome,
+                ) ?? delegatedAgentCompletedLabelForMessage(msg);
               const delegatedAgentStartedAt =
                 delegatedAgentStartedAtForMessage(msg);
               // A delegated worker owns no visible card, so this row is the
@@ -1527,13 +1849,20 @@ const ChatTranscript = memo(function ChatTranscript({
                     externalRun &&
                     (msg.externalAgentOutcome ?? "running") === "running",
                 ) ||
-                (i === lastAssistantIndex && delegationInFlight);
+                (i === lastVisibleAssistantIndex && delegationInFlight) ||
+                delegatedWorkerOutcome === "running";
               // Past tense while it runs read as an answer that had stopped
               // mid-thought.
               const delegatedAgentLabel = delegatedAgentActive
                 ? delegatedAgentActivityLabelForMessage(msg) ??
                   delegatedAgentCompleted
                 : delegatedAgentCompleted;
+              // A row a hand-back has superseded never reaches this map —
+              // buildTranscriptRows drops it — so the note is only ever for the
+              // row that nothing followed.
+              const delegatedOutcomeNote = !delegatedAgentActive
+                ? delegatedWorkersOutcomeNote(delegatedWorkers)
+                : undefined;
               return (
                 <div className="flex w-full flex-col gap-3">
                   {timeSeparators[i] ? (
@@ -1624,6 +1953,11 @@ const ChatTranscript = memo(function ChatTranscript({
                             </form>
                           ) : (
                             <>
+                              {msg.textSelection ? (
+                                <QuotedChatSelection
+                                  selection={msg.textSelection}
+                                />
+                              ) : null}
                               <div className="neu-chat-message neu-chat-message-user w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
                                 <CollapsibleUserMessage
                                   messageKey={messageInteractionId}
@@ -1774,7 +2108,9 @@ const ChatTranscript = memo(function ChatTranscript({
                     ) : (
                       <div className="flex w-full flex-col gap-2">
                         <MessageActionsSlot>
-                          {msg.delegatedAgentPreamble && !msg.openGymRun ? (
+                          {msg.delegatedAgentPreamble &&
+                          !msg.openGymRun &&
+                          !msg.godsEyeRun ? (
                             <ActivityPanel
                               activities={[]}
                               connection={
@@ -1789,11 +2125,31 @@ const ChatTranscript = memo(function ChatTranscript({
                               completedLabel={delegatedAgentCompleted}
                             />
                           ) : null}
-                          {msg.delegatedAgentPreamble && !msg.openGymRun ? (
+                          {msg.delegatedAgentPreamble &&
+                          !msg.openGymRun &&
+                          !msg.godsEyeRun ? (
                             <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
                               <ChatMarkdown
                                 content={msg.delegatedAgentPreamble}
                               />
+                            </div>
+                          ) : null}
+                          {delegatedOutcomeNote ? (
+                            <div
+                              className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--ink-muted)]"
+                              role="status"
+                              data-testid="delegated-worker-outcome"
+                            >
+                              <span>{delegatedOutcomeNote}</span>
+                              {!externalRun && !isStreaming ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onRetryAssistant(i)}
+                                  className="rounded-full border border-[var(--line)] px-2.5 py-0.5 text-xs font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-strong)]"
+                                >
+                                  Retry
+                                </button>
+                              ) : null}
                             </div>
                           ) : null}
                           {!externalRun ? (
@@ -1817,6 +2173,11 @@ const ChatTranscript = memo(function ChatTranscript({
                                   ? pendingPermission
                                   : null
                               }
+                              pendingClarification={
+                                i === lastAssistantIndex
+                                  ? pendingClarification
+                                  : null
+                              }
                               usage={totalUsage}
                               responseDurationMs={msg.responseDurationMs}
                               responseStartedAt={
@@ -1830,6 +2191,7 @@ const ChatTranscript = memo(function ChatTranscript({
                               activePhaseStartedAt={delegatedAgentStartedAt}
                               carriedDurationMs={carriedDurationMs}
                               onPermissionDecision={onPermissionDecision}
+                              onClarificationAnswer={onClarificationAnswer}
                               completedLabel={delegatedAgentLabel}
                               stateLabel={
                                 delegatedAgentActive && delegatedAgentLabel
@@ -1845,12 +2207,16 @@ const ChatTranscript = memo(function ChatTranscript({
                           {externalRun ? (
                             <div
                               className={
-                                msg.delegatedAgentRun && !msg.openGymRun
+                                msg.delegatedAgentRun &&
+                                !msg.openGymRun &&
+                                !msg.godsEyeRun
                                   ? "hidden"
                                   : "contents"
                               }
                               aria-hidden={
-                                (msg.delegatedAgentRun && !msg.openGymRun) ||
+                                (msg.delegatedAgentRun &&
+                                  !msg.openGymRun &&
+                                  !msg.godsEyeRun) ||
                                 undefined
                               }
                             >
@@ -1859,6 +2225,8 @@ const ChatTranscript = memo(function ChatTranscript({
                                   agentId={msg.agentBrowserRun.agentId}
                                   runId={msg.agentBrowserRun.runId}
                                   task={msg.agentBrowserRun.task}
+                                  signInSurface="garden_chat"
+                                  signInSessionId={chatSessionId}
                                   persistedContent={msg.content}
                                   persistedOutcome={msg.externalAgentOutcome}
                                   onRetry={
@@ -2130,6 +2498,24 @@ const ChatTranscript = memo(function ChatTranscript({
                                     )
                                   }
                                 />
+                              ) : msg.openExecutiveRun ? (
+                                <InlineOpenExecutiveRun
+                                  runId={msg.openExecutiveRun.runId}
+                                  task={msg.openExecutiveRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.openExecutiveRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
                               ) : msg.openGymRun ? (
                                 <InlineOpenGymRun
                                   runId={msg.openGymRun.runId}
@@ -2264,6 +2650,47 @@ const ChatTranscript = memo(function ChatTranscript({
                                     )
                                   }
                                 />
+                              ) : msg.godsEyeRun ? (
+                                <InlineGodsEyeRun
+                                  runId={msg.godsEyeRun.runId}
+                                  task={msg.godsEyeRun.task}
+                                  quiet={
+                                    msg.godsEyeRun.quiet === true ||
+                                    msg.delegatedAgentRun === true
+                                  }
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.godsEyeRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.classroomRun ? (
+                                <InlineClassroomRun
+                                  runId={msg.classroomRun.runId}
+                                  brief={msg.classroomRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.classroomRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
                               ) : msg.boltSlidesRun ? (
                                 <InlineBoltSlidesRun
                                   runId={msg.boltSlidesRun.runId}
@@ -2336,6 +2763,24 @@ const ChatTranscript = memo(function ChatTranscript({
                                   onTerminal={(result) =>
                                     onExternalAgentTerminal(
                                       msg.openscienceRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.praxistRun ? (
+                                <InlinePraxistRun
+                                  runId={msg.praxistRun.runId}
+                                  task={msg.praxistRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.praxistRun!.runId,
                                       result,
                                     )
                                   }
@@ -2526,8 +2971,27 @@ const ChatTranscript = memo(function ChatTranscript({
                             </div>
                           ) : visibleAssistantContent ? (
                             <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
-                              <ChatMarkdown content={visibleAssistantContent} />
+                              <SelectableAssistantMarkdown
+                                content={visibleAssistantContent}
+                                sourceMessageId={messageSelectionSourceId(
+                                  msg,
+                                  i,
+                                )}
+                                annotations={
+                                  annotationsByMessage.get(
+                                    messageSelectionSourceId(msg, i),
+                                  ) ?? EMPTY_CHAT_ANNOTATIONS
+                                }
+                                onSelection={onTextSelection}
+                                onOpenAnnotation={onOpenAnnotation}
+                              />
                             </div>
+                          ) : null}
+                          {msg.uiResources?.length ? (
+                            <GenerativeUiRenderer
+                              resources={msg.uiResources}
+                              onAction={onGenerativeUiAction}
+                            />
                           ) : null}
                           {chatSessionId ? (
                             <InlineArtifactCards
@@ -2714,6 +3178,7 @@ function persistPrompts(prompts: SavedPrompt[]) {
 export default function WorkspaceClient({
   clusterSlug,
   clusterName,
+  initialChatId = null,
   isOwner = true,
   clusterVisibility,
   chatAccessible,
@@ -2740,7 +3205,9 @@ export default function WorkspaceClient({
   const [docsExpanded, setDocsExpanded] = useState(false);
   const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
   const [linksExpanded, setLinksExpanded] = useState(false);
-  const [videosExpanded, setVideosExpanded] = useState(false);
+  const [linkComposerOpen, setLinkComposerOpen] = useState(false);
+  const [mediaExpanded, setMediaExpanded] = useState(false);
+  const [mediaComposerOpen, setMediaComposerOpen] = useState(false);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
   const [savedLinks, setSavedLinks] = useState<SavedLinkInfo[]>([]);
   const [linksLoading, setLinksLoading] = useState(true);
@@ -2767,6 +3234,9 @@ export default function WorkspaceClient({
   const railCollapsed = rail.collapsed;
   // Which panel is open beside the transcript, and whether search is up.
   const [sidePanel, setSidePanel] = useState<TerminalPanel | null>(null);
+  const [productPanel, setProductPanel] = useState<ProductPanelSelection | null>(
+    null,
+  );
   const [searchOpen, setSearchOpen] = useState(false);
   const [railError, setRailError] = useState<string | null>(null);
   // The rail's deletes ask in the app's own sheet; `confirmDialog` is rendered
@@ -2809,6 +3279,7 @@ export default function WorkspaceClient({
     chatId: number;
     message: string;
   } | null>(null);
+  const openedRequestedChatRef = useRef<string | null>(null);
   // `null` initially means "pick the newest persisted chat". After the user
   // presses New chat it means something different: keep a blank, unsaved
   // draft selected until its first turn creates the real row. A ref keeps
@@ -2899,6 +3370,8 @@ export default function WorkspaceClient({
     useState<ExternalAgentSelection | null>(null);
   const [careerOpsAgent, setCareerOpsAgent] =
     useState<ExternalAgentSelection | null>(null);
+  const [openExecutiveAgent, setOpenExecutiveAgent] =
+    useState<ExternalAgentSelection | null>(null);
   const [tradingAgentsAgent, setTradingAgentsAgent] =
     useState<ExternalAgentSelection | null>(null);
   const [vibeTradingAgent, setVibeTradingAgent] =
@@ -2936,6 +3409,7 @@ export default function WorkspaceClient({
     | "meeting-notes"
     | "deep-tutor"
     | "career-ops"
+    | "openexecutive"
     | "open-gym"
     | "trading-agent"
     | "vibe-trading"
@@ -2947,9 +3421,12 @@ export default function WorkspaceClient({
     | "resource2skill"
     | "matraix"
     | "bolt-slides"
+    | "classroom"
+    | "gods-eye"
     | "openmontage"
     | "openwork"
     | "openscience"
+    | "praxist"
     | "inbox-zero"
     | "vimax"
     | "vox-director"
@@ -2974,6 +3451,7 @@ export default function WorkspaceClient({
     | "meeting-notes"
     | "deep-tutor"
     | "career-ops"
+    | "openexecutive"
     | "open-gym"
     | "trading-agent"
     | "vibe-trading"
@@ -2985,9 +3463,12 @@ export default function WorkspaceClient({
     | "resource2skill"
     | "matraix"
     | "bolt-slides"
+    | "classroom"
+    | "gods-eye"
     | "openmontage"
     | "openwork"
     | "openscience"
+    | "praxist"
     | "inbox-zero"
     | "vimax"
     | "vox-director"
@@ -3043,6 +3524,52 @@ export default function WorkspaceClient({
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const handleGenerativeUiAction = useCallback(
+    (action: GenerativeUiAction) => {
+      const product = productForAction(action);
+      if (!product) return;
+
+      if (action.type === "product.find-similar") {
+        setInput(`Find products similar to ${product.title} from ${product.merchant}.`);
+        setProductPanel(null);
+        window.setTimeout(() => textareaRef.current?.focus(), 0);
+        return;
+      }
+      if (action.type === "product.visit") {
+        const url = safeProductUrl(product.url);
+        if (!url) return;
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.click();
+        return;
+      }
+
+      setSidePanel(null);
+      setProductPanel((current) => {
+        if (action.type === "product.open-details") {
+          return {
+            resource: action.resource,
+            productId: action.productId,
+            compareProductIds: [],
+          };
+        }
+        const prior = current?.resource.id === action.resource.id
+          ? current.compareProductIds
+          : [];
+        const compareProductIds = prior.includes(action.productId)
+          ? prior.filter((id) => id !== action.productId)
+          : [...prior, action.productId].slice(-4);
+        return {
+          resource: action.resource,
+          productId: action.productId,
+          compareProductIds,
+        };
+      });
+    },
+    [],
+  );
   // The same greeting engine the terminals use, told which garden it is
   // standing in, so a blank garden chat opens on words about this garden
   // rather than a fixed heading.
@@ -3091,31 +3618,39 @@ export default function WorkspaceClient({
 
   // Upload modal
   const [showUpload, setShowUpload] = useState(false);
+  // The upload dialog prints each file's failure under the file itself. While
+  // it is open, a corner notice would only repeat what the person is reading;
+  // an upload continued in the background is the case that needs one.
+  const showUploadRef = useRef(false);
+  useEffect(() => {
+    showUploadRef.current = showUpload;
+  }, [showUpload]);
+  // Upload tasks live in a module-level store so they keep running and stay
+  // visible when this page unmounts; navigation must never lose an upload.
+  const allUploadTasks = useSyncExternalStore(
+    subscribeGardenUploads,
+    gardenUploadTasksSnapshot,
+    gardenUploadTasksServerSnapshot,
+  );
+  const uploadTasks = useMemo(
+    () => allUploadTasks.filter((task) => task.clusterSlug === clusterSlug),
+    [allUploadTasks, clusterSlug],
+  );
+  const [selectedUploadTaskId, setSelectedUploadTaskId] = useState<string | null>(null);
+  const selectedUploadTaskIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedUploadTaskIdRef.current = selectedUploadTaskId;
+  }, [selectedUploadTaskId]);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
-  const [uploadStatuses, setUploadStatuses] = useState<
-    Record<string, FileStatus>
-  >({});
-  const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
-  const [uploadSteps, setUploadSteps] = useState<Record<string, string>>({});
-  const [uploadTokenUsage, setUploadTokenUsage] = useState<
-    Record<string, IngestTokenUsage>
-  >({});
-  const [uploadVisionErrors, setUploadVisionErrors] = useState<
-    Record<string, string>
-  >({});
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
   const [parseWithVlm, setParseWithVlm] = useState(false);
   const [parseWithAnydoc, setParseWithAnydoc] = useState(false);
   const [generateMap, setGenerateMap] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadElapsedMs, setUploadElapsedMs] = useState(0);
+  const isUploading = uploadTasks.some((task) => task.state === "uploading");
+  const [uploadClock, setUploadClock] = useState(() => Date.now());
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const uploadAbortControllerRef = useRef<AbortController | null>(null);
-  const uploadCanceledRef = useRef(false);
-  const uploadRuntimeJobIdsRef = useRef<Set<string>>(new Set());
-  const uploadRecoveryRequestIdsRef = useRef<Set<string>>(new Set());
 
   // Chat attachments (per-message, sent directly to the AI)
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
@@ -3176,6 +3711,13 @@ export default function WorkspaceClient({
   const [learnSyllabusPrompt, setLearnSyllabusPrompt] = useState("");
   const [learnSyllabusGenerating, setLearnSyllabusGenerating] = useState(false);
   const learnSyllabusInputRef = useRef<HTMLInputElement | null>(null);
+  const [learnUserInstruction, setLearnUserInstruction] = useState("");
+  const [learnUserInstructionDraft, setLearnUserInstructionDraft] =
+    useState("");
+  const [learnUserInstructionOpen, setLearnUserInstructionOpen] =
+    useState(false);
+  const learnUserInstructionButtonRef = useRef<HTMLButtonElement | null>(null);
+  const learnUserInstructionInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [learnTimerNowMs, setLearnTimerNowMs] = useState(() => Date.now());
   const learnSkipManualReviewRef = useRef(false);
   const lastSyncedLearnSelectionRef = useRef<string | null>(null);
@@ -3335,6 +3877,9 @@ export default function WorkspaceClient({
   useEffect(() => {
     const controller = new AbortController();
     for (const stored of runtimeIngestRecoveries(clusterSlug)) {
+      // An upload loop still running in the module store owns this record;
+      // attaching here too would double-stream and double-report the job.
+      if (hasLiveGardenUploadRequest(stored.requestId)) continue;
       void (async () => {
         let record = stored;
         if (record.cancelRequested) {
@@ -3354,16 +3899,7 @@ export default function WorkspaceClient({
         const outcome = await recoverRuntimeIngest(
           record,
           (event) => {
-            if (event.type === "progress" && typeof event.step === "string") {
-              setUploadSteps((prev) => ({
-                ...prev,
-                [record.fileKey]: event.step as string,
-              }));
-            } else if (event.type === "result") {
-              setUploadStatuses((prev) => ({
-                ...prev,
-                [record.fileKey]: "done",
-              }));
+            if (event.type === "result") {
               if (record.purpose === "syllabus" && typeof event.slug === "string") {
                 setLearnSyllabusSlug(event.slug);
                 setLearnIncludedSourceSlugs((current) =>
@@ -3375,15 +3911,9 @@ export default function WorkspaceClient({
               event.canceled !== true &&
               typeof event.error === "string"
             ) {
-              setUploadStatuses((prev) => ({
-                ...prev,
-                [record.fileKey]: "error",
-              }));
-              setUploadErrors((prev) => ({
-                ...prev,
-                [record.fileKey]: event.error as string,
-              }));
-              addToast(`${record.filename}: ${event.error}`);
+              if (!showUploadRef.current) {
+                addToast(`${record.filename}: ${event.error}`);
+              }
             }
           },
           { signal: controller.signal },
@@ -3396,6 +3926,27 @@ export default function WorkspaceClient({
       })().catch(() => undefined);
     }
     return () => controller.abort();
+  }, [addToast, clusterSlug, fetchDocuments, fetchLearnStatus]);
+
+  // Hand the module-level upload engine this page's notification and refresh
+  // hooks while mounted. Toasts raised while the page was away are delivered
+  // on registration.
+  useEffect(() => {
+    return registerGardenUploadSink(clusterSlug, {
+      addToast: (toast) => addToast(toast.message, toast.type, toast.title),
+      refreshAfterFile: () => {
+        void fetchDocuments();
+        setGraphRefreshVersion((value) => value + 1);
+      },
+      refreshAfterTask: () => {
+        void fetchDocuments();
+        void fetchLearnStatus();
+        setSourceDocsExpanded(true);
+        setGraphRefreshVersion((value) => value + 1);
+      },
+      isTaskStatusVisible: (taskId) =>
+        showUploadRef.current && selectedUploadTaskIdRef.current === taskId,
+    });
   }, [addToast, clusterSlug, fetchDocuments, fetchLearnStatus]);
 
   const switchFinishedLearnHumanizer = useCallback(
@@ -3521,6 +4072,27 @@ export default function WorkspaceClient({
     learnState?.job?.id,
     learnState?.syllabusSourceId,
   ]);
+
+  useEffect(() => {
+    const instruction = learnState?.job?.userInstruction?.trim();
+    if (!instruction) return;
+    setLearnUserInstruction(instruction);
+    if (!learnUserInstructionOpen) {
+      setLearnUserInstructionDraft(instruction);
+    }
+  }, [
+    learnState?.job?.id,
+    learnState?.job?.userInstruction,
+    learnUserInstructionOpen,
+  ]);
+
+  useEffect(() => {
+    if (!learnUserInstructionOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      learnUserInstructionInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [learnUserInstructionOpen]);
 
   useEffect(() => {
     if (loadingDocs) return;
@@ -3877,9 +4449,17 @@ export default function WorkspaceClient({
   // A notice is only an invitation to visit an unseen answer. Selecting that
   // conversation by any route makes every notice belonging to it disappear.
   useEffect(() => {
-    if (!viewingChatId) return;
-    dismissChatToasts(viewingChatId);
-  }, [dismissChatToasts, toasts, viewingChatId]);
+    const target: ChatNotificationTarget | null = viewingChatId
+      ? {
+          surface: "garden_chat",
+          gardenSlug: clusterSlug,
+          chatId: viewingChatId,
+        }
+      : null;
+    setActiveChatNotificationTarget(target);
+    if (target) dismissChatToasts(target);
+    return () => setActiveChatNotificationTarget(null);
+  }, [clusterSlug, dismissChatToasts, viewingChatId]);
 
   useEffect(() => {
     if (!unreadRestored.current) {
@@ -3907,19 +4487,51 @@ export default function WorkspaceClient({
   const openChatById = useCallback((chatId: string) => {
     const id = Number(chatId);
     if (!Number.isInteger(id)) return;
-    dismissChatToasts(chatId);
+    dismissChatToasts({
+      surface: "garden_chat",
+      gardenSlug: clusterSlug,
+      chatId,
+    });
     pendingNewChatRef.current = false;
+    setProductPanel(null);
     setSidePanel(null);
     setActiveChatId(id);
     // An existing chat, so nothing typed in the blank composer belongs to it.
     setCreatedChatId(null);
     setDraftMessages(null);
-  }, [dismissChatToasts]);
+  }, [clusterSlug, dismissChatToasts]);
+
+  useEffect(() => {
+    const requested = initialChatId?.trim() ?? "";
+    if (!requested || openedRequestedChatRef.current === requested) return;
+    openedRequestedChatRef.current = requested;
+    openChatById(requested);
+  }, [initialChatId, openChatById]);
+
+  const openChatFromNotification = useCallback((
+    target: ChatNotificationTarget,
+  ) => {
+    if (
+      target.surface !== "garden_chat" ||
+      target.gardenSlug !== clusterSlug
+    ) {
+      return false;
+    }
+    openChatById(target.chatId);
+    return true;
+  }, [clusterSlug, openChatById]);
 
   const replyToChatFromNotification = useCallback((
-    chatId: string,
+    notificationTarget: ChatNotificationTarget,
     message: string,
   ) => {
+    if (
+      notificationTarget.surface !== "garden_chat" ||
+      notificationTarget.gardenSlug !== clusterSlug
+    ) {
+      return false;
+    }
+    const chatId = notificationTarget.chatId;
     const id = Number(chatId);
     const target = chatSessions.find((session) => session.id === id);
     if (!Number.isInteger(id) || !target || target.isOwn === false) {
@@ -3927,7 +4539,8 @@ export default function WorkspaceClient({
     }
     pendingNotificationReplyRef.current = { chatId: id, message };
     openChatById(chatId);
-  }, [chatSessions, openChatById]);
+    return true;
+  }, [chatSessions, clusterSlug, openChatById]);
 
   // The server names a chat from its first prompt, the same way it names a
   // Terminal one. The Terminal sees that name arrive through its history poll;
@@ -4046,7 +4659,21 @@ export default function WorkspaceClient({
     hasRunningExternalAgentInActiveChat;
 
   useEffect(() => {
-    const pending = pendingNotificationReplyRef.current;
+    let pending = pendingNotificationReplyRef.current;
+    if (
+      !pending &&
+      activeChatId !== null &&
+      !chatContentLoading &&
+      !isStreaming &&
+      launchingExternalAgent === null
+    ) {
+      const message = takeChatNotificationReply(window.sessionStorage, {
+        surface: "garden_chat",
+        gardenSlug: clusterSlug,
+        chatId: String(activeChatId),
+      });
+      if (message) pending = { chatId: activeChatId, message };
+    }
     if (
       !pending ||
       pending.chatId !== activeChatId ||
@@ -4061,7 +4688,13 @@ export default function WorkspaceClient({
     // `handleSubmit` reads the selected transcript from this render. Depending
     // on its new function identity would rerun this hand-off on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeChatId, chatContentLoading, isStreaming, launchingExternalAgent]);
+  }, [
+    activeChatId,
+    chatContentLoading,
+    clusterSlug,
+    isStreaming,
+    launchingExternalAgent,
+  ]);
   const visibleAgentConnection: ConnectionState =
     activeChat?.active === true && agentActivity.connection === "idle"
       ? "streaming"
@@ -4080,15 +4713,14 @@ export default function WorkspaceClient({
     virtual: transcriptVirtual,
   });
 
-  // One tick per visible chat message. Ticks name rows, not messages, so they are read
+  // One tick per question asked. Ticks name rows, not messages, so they are read
   // off the same list the virtualizer draws — the observer turns it drops would
   // otherwise slide every tick after them onto the wrong message.
   const railItems = useMemo<ChatMessageRailItem[]>(
     () =>
       buildTranscriptRows(messages).flatMap((row, rowIndex) =>
-        (row.message.role === "user" || row.message.role === "assistant") &&
-        row.message.content.trim()
-          ? [{ rowIndex, label: row.message.content, role: row.message.role }]
+        row.message.role === "user"
+          ? [{ rowIndex, label: row.message.content }]
           : [],
       ),
     [messages],
@@ -4105,23 +4737,394 @@ export default function WorkspaceClient({
     [messages],
   );
 
-  // A runtime agent a super-agent turn asked for, and the follow-up turn its
-  // result comes back on. The structured delegation goes straight to the
-  // selected launcher so its slash command is never persisted as user input.
-  const awaitedLaunchRef = useRef<{
-    agentName: string;
-    /** Runs already in the transcript when the launch was submitted. */
-    knownRunIds: Set<string>;
-    runId: string | null;
+  // ── Selected-text questions ("Ask in chat" / "Ask here") ───────────────────
+  const [selectionMenu, setSelectionMenu] =
+    useState<ChatTextSelectionCandidate | null>(null);
+  const [composerSelection, setComposerSelection] =
+    useState<ChatTextSelectionReference | null>(null);
+  const [savedInlineSelections, setSavedInlineSelections] = useState<
+    ChatTextSelectionReference[]
+  >([]);
+  const [savedChatHighlights, setSavedChatHighlights] = useState<
+    SavedChatHighlight[]
+  >([]);
+  const [deletedInlineSelectionIds, setDeletedInlineSelectionIds] = useState<
+    Set<string>
+  >(() => new Set());
+  const [selectionStorageChatId, setSelectionStorageChatId] = useState<
+    number | null
+  >(null);
+  const [openInlineAnswer, setOpenInlineAnswer] = useState<{
+    id: string;
+    anchor: FloatingAnchorRect;
   } | null>(null);
+  // A shared chat can be read but not asked into; the menu still highlights.
+  const canAskSelection = activeChat?.isOwn !== false;
+
+  useEffect(() => {
+    setSelectionMenu(null);
+    setComposerSelection(null);
+    setOpenInlineAnswer(null);
+    if (activeChatId === null) {
+      setSavedInlineSelections([]);
+      setSavedChatHighlights([]);
+      setDeletedInlineSelectionIds(new Set());
+      setSelectionStorageChatId(null);
+      return;
+    }
+    const deletedIds = loadDeletedInlineSelectionIds(activeChatId);
+    setDeletedInlineSelectionIds(deletedIds);
+    setSavedInlineSelections(
+      loadInlineSelections(activeChatId).filter(
+        (selection) => !deletedIds.has(selection.id),
+      ),
+    );
+    setSavedChatHighlights(loadChatHighlights(activeChatId));
+    setSelectionStorageChatId(activeChatId);
+  }, [activeChatId]);
+
+  useEffect(() => {
+    if (activeChatId === null || selectionStorageChatId !== activeChatId) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        `${INLINE_SELECTION_STORAGE_PREFIX}${activeChatId}`,
+        JSON.stringify(savedInlineSelections),
+      );
+      window.localStorage.setItem(
+        `${DELETED_INLINE_SELECTION_STORAGE_PREFIX}${activeChatId}`,
+        JSON.stringify([...deletedInlineSelectionIds]),
+      );
+      window.localStorage.setItem(
+        `${CHAT_HIGHLIGHT_STORAGE_PREFIX}${activeChatId}`,
+        JSON.stringify(savedChatHighlights),
+      );
+    } catch {
+      // The message metadata still restores completed inline answers.
+    }
+  }, [
+    activeChatId,
+    deletedInlineSelectionIds,
+    savedChatHighlights,
+    savedInlineSelections,
+    selectionStorageChatId,
+  ]);
+
+  // Selections persisted with their turns come back on reload even where
+  // localStorage did not survive.
+  useEffect(() => {
+    const restored = messages.flatMap((message) => {
+      const selection = normalizeChatTextSelectionReference(
+        message.textSelection,
+      );
+      return selection?.mode === "inline" &&
+        !deletedInlineSelectionIds.has(selection.id)
+        ? [selection]
+        : [];
+    });
+    if (restored.length === 0) return;
+    setSavedInlineSelections((current) => {
+      const next = new Map(
+        current.map((selection) => [selection.id, selection]),
+      );
+      let changed = false;
+      for (const selection of restored) {
+        if (next.has(selection.id)) continue;
+        next.set(selection.id, selection);
+        changed = true;
+      }
+      return changed ? [...next.values()] : current;
+    });
+  }, [deletedInlineSelectionIds, messages]);
+
+  const inlineSelectionThreads = useMemo(() => {
+    const byId = new Map<string, InlineSelectionThread>();
+    for (const selection of savedInlineSelections) {
+      if (deletedInlineSelectionIds.has(selection.id)) continue;
+      byId.set(selection.id, { selection, pending: false });
+    }
+    messages.forEach((message, messageIndex) => {
+      // An answer reserved before the stream may not carry the selection
+      // itself if the tab died mid-turn; adjacency to its question recovers
+      // it, since a turn's two halves are always reserved together.
+      const inherited =
+        message.role === "assistant" &&
+        messages[messageIndex - 1]?.role === "user"
+          ? messages[messageIndex - 1]?.textSelection
+          : undefined;
+      const selection = message.textSelection ?? inherited;
+      if (
+        !selection ||
+        selection.mode !== "inline" ||
+        deletedInlineSelectionIds.has(selection.id)
+      ) {
+        return;
+      }
+      const current = byId.get(selection.id) ?? { selection, pending: false };
+      if (message.role === "user") {
+        current.question = message.content;
+        // Pending from the moment the question is sent, not from the moment
+        // its answer row exists, so a re-asked question never flashes its
+        // predecessor's answer.
+        if (isStreaming && messageIndex === messages.length - 1) {
+          current.pending = true;
+          current.answer = undefined;
+          current.usage = undefined;
+          current.responseDurationMs = undefined;
+          current.startedAt = message.createdAt;
+        }
+      } else {
+        current.answer = message.content || undefined;
+        current.pending = isStreaming && messageIndex === messages.length - 1;
+        current.usage = message.usage;
+        current.responseDurationMs = message.responseDurationMs;
+        current.startedAt = message.createdAt;
+        current.answerMessageId = messageSelectionSourceId(
+          message,
+          messageIndex,
+        );
+      }
+      byId.set(selection.id, current);
+    });
+    return byId;
+  }, [deletedInlineSelectionIds, isStreaming, messages, savedInlineSelections]);
+
+  const annotationsByMessage = useMemo(() => {
+    const byMessage = new Map<string, ChatTextAnnotation[]>();
+    for (const thread of inlineSelectionThreads.values()) {
+      const entries = byMessage.get(thread.selection.sourceMessageId) ?? [];
+      entries.push({ ...thread.selection, kind: "answer" });
+      byMessage.set(thread.selection.sourceMessageId, entries);
+    }
+    for (const highlight of savedChatHighlights) {
+      const entries = byMessage.get(highlight.sourceMessageId) ?? [];
+      entries.push({ ...highlight, kind: "highlight", color: highlight.color });
+      byMessage.set(highlight.sourceMessageId, entries);
+    }
+    return byMessage;
+  }, [inlineSelectionThreads, savedChatHighlights]);
+
+  const selectionIsHighlighted = Boolean(
+    selectionMenu &&
+      savedChatHighlights.some(
+        (highlight) =>
+          highlight.sourceMessageId === selectionMenu.sourceMessageId &&
+          chatTextSelectionsOverlap(highlight, selectionMenu),
+      ),
+  );
+  const selectionHighlightColor = selectionMenu
+    ? savedChatHighlights.find(
+        (highlight) =>
+          highlight.sourceMessageId === selectionMenu.sourceMessageId &&
+          chatTextSelectionsOverlap(highlight, selectionMenu),
+      )?.color
+    : undefined;
+
+  const receiveTextSelection = useCallback(
+    (selection: ChatTextSelectionCandidate) => {
+      if (chatContentLoading) return;
+      const overlapping = (
+        annotationsByMessage.get(selection.sourceMessageId) ?? []
+      ).find((annotation) => chatTextSelectionsOverlap(annotation, selection));
+      if (overlapping?.kind === "answer") {
+        setSelectionMenu(null);
+        setOpenInlineAnswer({ id: overlapping.id, anchor: selection.anchor });
+        window.getSelection()?.removeAllRanges();
+        return;
+      }
+      // A selection made inside the open "Ask here" answer keeps its popover
+      // on screen: the menu floats above the very answer it is about, which
+      // is what lets a follow-up be asked from an answer, recursively.
+      setOpenInlineAnswer((current) =>
+        current &&
+        inlineSelectionThreads.get(current.id)?.answerMessageId ===
+          selection.sourceMessageId
+          ? current
+          : null,
+      );
+      setSelectionMenu(selection);
+    },
+    [annotationsByMessage, chatContentLoading, inlineSelectionThreads],
+  );
+
+  function applySelectionHighlight(color: ChatHighlightColor) {
+    if (!selectionMenu) return;
+    setSavedChatHighlights((current) => {
+      const withoutOverlap = current.filter(
+        (highlight) =>
+          highlight.sourceMessageId !== selectionMenu.sourceMessageId ||
+          !chatTextSelectionsOverlap(highlight, selectionMenu),
+      );
+      return [
+        ...withoutOverlap,
+        {
+          id: crypto.randomUUID(),
+          sourceMessageId: selectionMenu.sourceMessageId,
+          start: selectionMenu.start,
+          end: selectionMenu.end,
+          quote: selectionMenu.quote,
+          prefix: selectionMenu.prefix,
+          suffix: selectionMenu.suffix,
+          color,
+        },
+      ];
+    });
+    setSelectionMenu(null);
+    window.getSelection()?.removeAllRanges();
+  }
+
+  function removeSelectionHighlight() {
+    if (!selectionMenu) return;
+    setSavedChatHighlights((current) =>
+      current.filter(
+        (highlight) =>
+          highlight.sourceMessageId !== selectionMenu.sourceMessageId ||
+          !chatTextSelectionsOverlap(highlight, selectionMenu),
+      ),
+    );
+    setSelectionMenu(null);
+    window.getSelection()?.removeAllRanges();
+  }
+
+  function beginSelectionQuestion(mode: "chat" | "inline") {
+    if (!selectionMenu) return;
+    const selection: ChatTextSelectionReference = {
+      id: crypto.randomUUID(),
+      mode,
+      sourceMessageId: selectionMenu.sourceMessageId,
+      start: selectionMenu.start,
+      end: selectionMenu.end,
+      quote: selectionMenu.quote,
+      prefix: selectionMenu.prefix,
+      suffix: selectionMenu.suffix,
+    };
+    if (mode === "inline") {
+      setSavedChatHighlights((current) =>
+        current.filter(
+          (highlight) =>
+            highlight.sourceMessageId !== selection.sourceMessageId ||
+            !chatTextSelectionsOverlap(highlight, selection),
+        ),
+      );
+      setSavedInlineSelections((current) => [...current, selection]);
+    }
+    setComposerSelection(selection);
+    setSelectionMenu(null);
+    setOpenInlineAnswer(null);
+    window.getSelection()?.removeAllRanges();
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  }
+
+  function cancelSelectionQuestion() {
+    const selection = composerSelection;
+    setComposerSelection(null);
+    if (
+      selection?.mode === "inline" &&
+      !messages.some((message) => message.textSelection?.id === selection.id)
+    ) {
+      setSavedInlineSelections((current) =>
+        current.filter((candidate) => candidate.id !== selection.id),
+      );
+    }
+  }
+
+  const openAnnotation = useCallback(
+    (annotationId: string, anchor: FloatingAnchorRect) => {
+      const highlight = savedChatHighlights.find(
+        (candidate) => candidate.id === annotationId,
+      );
+      if (highlight) {
+        setOpenInlineAnswer(null);
+        setSelectionMenu({ ...highlight, anchor });
+        window.getSelection()?.removeAllRanges();
+        return;
+      }
+      const thread = inlineSelectionThreads.get(annotationId);
+      if (!thread) return;
+      if (!thread.question) {
+        setComposerSelection(thread.selection);
+        window.setTimeout(() => textareaRef.current?.focus(), 0);
+        return;
+      }
+      setOpenInlineAnswer((current) =>
+        current?.id === annotationId ? null : { id: annotationId, anchor },
+      );
+    },
+    [inlineSelectionThreads, savedChatHighlights],
+  );
+
+  function deleteInlineSelection(annotationId: string) {
+    setOpenInlineAnswer(null);
+    setSelectionMenu(null);
+    setComposerSelection((current) =>
+      current?.id === annotationId ? null : current,
+    );
+    setSavedInlineSelections((current) =>
+      current.filter((selection) => selection.id !== annotationId),
+    );
+    setDeletedInlineSelectionIds((current) => {
+      const next = new Set(current);
+      next.add(annotationId);
+      return next;
+    });
+  }
+
+  // Retry and edit are one path: both send the question again against the
+  // same highlight, and the thread map keeps the newest question/answer pair.
+  function askInlineSelectionAgain(
+    selection: ChatTextSelectionReference,
+    question: string,
+  ) {
+    const trimmed = question.trim();
+    if (!trimmed || isStreaming || chatContentLoading || !canAskSelection) {
+      return;
+    }
+    void handleSubmit(trimmed, undefined, [], false, undefined, {
+      textSelection: selection,
+    });
+  }
+
+  /** The composer's submit: a held selected-text question rides the turn. */
+  function submitComposer() {
+    if (!composerSelection || !canAskSelection) {
+      void handleSubmit();
+      return;
+    }
+    const question = input.trim();
+    if (!question || isStreaming || chatContentLoading) return;
+    const selection = composerSelection;
+    setComposerSelection(null);
+    setSelectionMenu(null);
+    setOpenInlineAnswer(null);
+    setInput("");
+    void handleSubmit(question, undefined, [], false, undefined, {
+      textSelection: selection,
+    });
+  }
+
+  const openInlineThread = openInlineAnswer
+    ? inlineSelectionThreads.get(openInlineAnswer.id)
+    : undefined;
+
+  // Runtime agents a Super Agent turn asked for. Each gets a distinct hidden
+  // transcript turn, allowing several workers to run and report independently.
+  interface AwaitedLaunch {
+    agentName: string;
+    requestId: string;
+    workerClientMessageId: string;
+    runId: string | null;
+  }
+  const awaitedLaunchesRef = useRef(new Map<string, AwaitedLaunch>());
   const launchHopsRef = useRef(0);
+  const launchRoundOriginsRef = useRef(new Set<string>());
   const continuedDelegatedRunsRef = useRef(new Set<string>());
   const delegatedAgentLaunchRef = useRef<AgentLaunchRequestPayload | null>(
     null,
   );
-  const [pendingLaunchContinuation, setPendingLaunchContinuation] = useState<
-    string | null
-  >(null);
+  const [pendingLaunchContinuations, setPendingLaunchContinuations] = useState<
+    string[]
+  >([]);
 
   /**
    * The composer's agent chip is the person's own choice. A delegated launch
@@ -4142,6 +5145,7 @@ export default function WorkspaceClient({
       meetingNotes: meetingNotesAgent,
       deepTutor: deepTutorAgent,
       careerOps: careerOpsAgent,
+      openExecutive: openExecutiveAgent,
       tradingAgents: tradingAgentsAgent,
       vibeTrading: vibeTradingAgent,
       stockAnalyst: stockAnalystAgent,
@@ -4165,6 +5169,7 @@ export default function WorkspaceClient({
     setMeetingNotesAgent(snapshot.meetingNotes);
     setDeepTutorAgent(snapshot.deepTutor);
     setCareerOpsAgent(snapshot.careerOps);
+    setOpenExecutiveAgent(snapshot.openExecutive);
     setTradingAgentsAgent(snapshot.tradingAgents);
     setVibeTradingAgent(snapshot.vibeTrading);
     setStockAnalystAgent(snapshot.stockAnalyst);
@@ -4177,7 +5182,9 @@ export default function WorkspaceClient({
   async function launchDelegatedAgent(
     request: AgentLaunchRequestPayload,
   ): Promise<void> {
+    const workerClientMessageId = agentLaunchWorkerClientMessageId(request);
     if (!request.originClientMessageId?.trim()) {
+      awaitedLaunchesRef.current.delete(workerClientMessageId);
       setExternalAgentStatus(
         `${request.agentName} could not start because the originating assistant message is missing.`,
       );
@@ -4278,9 +5285,31 @@ export default function WorkspaceClient({
           if (!careerOpsAgent) await selectCareerOps();
           await launchCareerOps(request.brief);
           return;
+        case "openexecutive":
+          if (!openExecutiveAgent) await selectOpenExecutive();
+          await launchOpenExecutive(request.brief);
+          return;
         case "open-gym":
           await launchOpenGym(request.brief, { quiet: true });
           return;
+        case "trading-agent": {
+          const parsed = tradingAgentsRequestFromBrief(request.brief);
+          if (!parsed.ok) {
+            setExternalAgentStatus(parsed.error);
+            const prepared = await prepareExternalAgentSession("");
+            if (prepared) {
+              await commitExternalAgentTurn(prepared.session, "", {
+                role: "assistant",
+                content: parsed.error,
+                externalAgentOutcome: "failed",
+              });
+            }
+            return;
+          }
+          if (!tradingAgentsAgent) await selectTradingAgents();
+          await launchTradingAgents(parsed.request);
+          return;
+        }
         case "vibe-trading":
           if (!vibeTradingAgent) await selectVibeTrading();
           await launchVibeTrading(request.brief);
@@ -4311,6 +5340,12 @@ export default function WorkspaceClient({
         case "bolt-slides":
           await launchBoltSlides(request.brief);
           return;
+        case "classroom":
+          await launchClassroom(request.brief, []);
+          return;
+        case "gods-eye":
+          await launchGodsEye(request.brief, { quiet: true });
+          return;
         case "resource2skill":
           await launchResource2Skill(request.brief);
           return;
@@ -4322,6 +5357,9 @@ export default function WorkspaceClient({
           break;
         case "openscience":
           await launchOpenscience(request.brief);
+          return;
+        case "praxist":
+          await launchPraxist(request.brief);
           return;
         case "inbox-zero":
           await launchInboxZero(request.brief);
@@ -4352,30 +5390,44 @@ export default function WorkspaceClient({
   const agentLaunchQueue = useAgentLaunchQueue({
     submit: (request) => void launchDelegatedAgent(request),
     scopeKey: activeChatId,
-    ready: !isStreaming && launchingExternalAgent === null,
+    ready:
+      !chatContentLoading &&
+      !delegatedAgentLaunching &&
+      launchingExternalAgent === null &&
+      agentActivity.connection !== "connecting" &&
+      agentActivity.connection !== "streaming" &&
+      agentActivity.connection !== "waiting",
     onLaunched: (request) => {
       // openGym presents its own visible result. Waiting for a private hand-back
       // would append a second Thinking/synthesis row after the card finishes.
-      if (request.agentId === OPEN_GYM_AGENT_ID) {
-        awaitedLaunchRef.current = null;
+      if (
+        request.agentId === OPEN_GYM_AGENT_ID ||
+        request.agentId === GODS_EYE_AGENT_ID
+      ) {
+        awaitedLaunchesRef.current.delete(
+          agentLaunchWorkerClientMessageId(request),
+        );
         return;
       }
-      launchHopsRef.current += 1;
-      awaitedLaunchRef.current = request.awaitResult
-        ? {
-            agentName: request.agentName,
-            knownRunIds: new Set(
-              messages.flatMap((message) => {
-                const runId = assistantExternalAgentRunId(message);
-                return runId ? [runId] : [];
-              }),
-            ),
-            runId: null,
-          }
-        : null;
+      const origin = request.originClientMessageId ?? request.requestId;
+      if (!launchRoundOriginsRef.current.has(origin)) {
+        launchRoundOriginsRef.current.add(origin);
+        launchHopsRef.current += 1;
+      }
+      if (request.awaitResult) {
+        const workerClientMessageId = agentLaunchWorkerClientMessageId(request);
+        awaitedLaunchesRef.current.set(workerClientMessageId, {
+          agentName: request.agentName,
+          requestId: request.requestId,
+          workerClientMessageId,
+          runId: null,
+        });
+      }
     },
-    onDismissed: () => {
-      awaitedLaunchRef.current = null;
+    onDismissed: (request) => {
+      awaitedLaunchesRef.current.delete(
+        agentLaunchWorkerClientMessageId(request),
+      );
       setExternalAgentStatus("");
     },
   });
@@ -4383,9 +5435,10 @@ export default function WorkspaceClient({
   useEffect(() => {
     if (agentLaunchScopeRef.current === activeChatId) return;
     agentLaunchScopeRef.current = activeChatId;
-    awaitedLaunchRef.current = null;
+    awaitedLaunchesRef.current.clear();
+    launchRoundOriginsRef.current.clear();
     continuedDelegatedRunsRef.current.clear();
-    setPendingLaunchContinuation(null);
+    setPendingLaunchContinuations([]);
   }, [activeChatId]);
 
   // Messages typed while this chat is working — a streaming turn or an
@@ -4398,7 +5451,12 @@ export default function WorkspaceClient({
   const delegationInFlight =
     agentLaunchQueue.queued ||
     delegatedAgentLaunching ||
-    pendingLaunchContinuation !== null;
+    messages.some(
+      (message) =>
+        message.delegatedAgentRun === true && hasRunningExternalAgent(message),
+    ) ||
+    awaitedLaunchesRef.current.size > 0 ||
+    pendingLaunchContinuations.length > 0;
   const externalRunHoldsQueue =
     hasRunningExternalAgentInActiveChat ||
     delegationInFlight ||
@@ -4429,70 +5487,100 @@ export default function WorkspaceClient({
   // the first run id that was not already in the transcript is this one's — and
   // binding by id means a run the user started themselves can never be mistaken
   // for the chain's next step.
-  useEffect(() => {
-    const awaited = awaitedLaunchRef.current;
-    if (!awaited || awaited.runId) return;
+  useLayoutEffect(() => {
+    if (chatContentLoading) return;
+    const continuedKeys = new Set<string>();
     for (const message of messages) {
-      const runId = assistantExternalAgentRunId(message);
-      if (runId && !awaited.knownRunIds.has(runId)) {
-        awaited.runId = runId;
-        return;
+      if (message.role !== "user" || !message.internalAgentContinuation) {
+        continue;
+      }
+      for (const match of message.content.matchAll(
+        /<!-- agent-launch-result:([^>]+) -->/g,
+      )) {
+        if (match[1]) continuedKeys.add(match[1]);
       }
     }
-  }, [messages]);
 
-  // Restore the private hand-back contract after a page refresh. The child
-  // observer remains mounted (but hidden), while this ref tells its terminal
-  // callback which Super Agent turn is waiting. A result already persisted
-  // before refresh is sent straight into the hidden continuation instead.
-  useLayoutEffect(() => {
-    if (chatContentLoading || pendingLaunchContinuation) return;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const terminalResults: Array<{
+      continuationKey: string;
+      agentName: string;
+      outcome: "completed" | "failed";
+      content: string;
+    }> = [];
+    let runningWorkers = 0;
+    for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index];
       if (message?.role !== "assistant" || message.delegatedAgentRun !== true) {
         continue;
       }
-      if (messages[index + 1]) return;
       const runId = assistantExternalAgentRunId(message);
-      const continuationKey = runId ?? message.id ?? `delegated-${index}`;
+      const continuationKey =
+        message.clientMessageId ?? runId ?? message.id ?? `delegated-${index}`;
       if (message.openGymRun) {
         continuedDelegatedRunsRef.current.add(continuationKey);
-        awaitedLaunchRef.current = null;
-        return;
+        awaitedLaunchesRef.current.delete(continuationKey);
+        continue;
       }
-      if (continuedDelegatedRunsRef.current.has(continuationKey)) return;
       const agentName = message.externalAgentName ?? "The delegated agent";
-      if ((message.externalAgentOutcome ?? "running") === "running") {
-        if (awaitedLaunchRef.current || !runId) return;
-        awaitedLaunchRef.current = {
-          agentName,
-          knownRunIds: new Set(),
-          runId,
-        };
-        return;
+      if (message.externalAgentOutcome === "aborted") {
+        continuedDelegatedRunsRef.current.add(continuationKey);
+        awaitedLaunchesRef.current.delete(continuationKey);
+        continue;
       }
-      const awaited = awaitedLaunchRef.current;
-      awaitedLaunchRef.current = null;
+      if ((message.externalAgentOutcome ?? "running") === "running") {
+        runningWorkers += 1;
+        if (runId) {
+          awaitedLaunchesRef.current.set(continuationKey, {
+            agentName,
+            requestId: continuationKey,
+            workerClientMessageId: continuationKey,
+            runId,
+          });
+        }
+        continue;
+      }
+      awaitedLaunchesRef.current.delete(continuationKey);
+      if (
+        continuedKeys.has(continuationKey) ||
+        continuedDelegatedRunsRef.current.has(continuationKey)
+      ) {
+        continuedDelegatedRunsRef.current.add(continuationKey);
+        continue;
+      }
       continuedDelegatedRunsRef.current.add(continuationKey);
-      launchHopsRef.current = Math.max(1, launchHopsRef.current);
-      setPendingLaunchContinuation(
-        agentLaunchContinuationMessage({
-          agentName: awaited?.agentName ?? agentName,
-          outcome: message.externalAgentOutcome ?? "failed",
-          content: externalAgentCardContent(message),
-        }),
-      );
-      return;
+      terminalResults.push({
+        continuationKey,
+        agentName,
+        outcome:
+          message.externalAgentOutcome === "completed" ? "completed" : "failed",
+        content: externalAgentCardContent(message),
+      });
     }
-  }, [chatContentLoading, messages, pendingLaunchContinuation]);
+    if (terminalResults.length === 0) return;
+    launchHopsRef.current = Math.max(1, launchHopsRef.current);
+    setPendingLaunchContinuations((current) => [
+      ...current,
+      ...terminalResults.map((result, index) =>
+        agentLaunchContinuationMessage({
+          continuationId: result.continuationKey,
+          agentName: result.agentName,
+          outcome: result.outcome,
+          content: result.content,
+          remaining: runningWorkers + terminalResults.length - index - 1,
+        }),
+      ),
+    ]);
+  }, [chatContentLoading, messages]);
 
   // The result of a finished run, handed back as a new turn. It has to wait for
   // the surface to go idle: React has not yet cleared the streaming flags when
   // the run's card reports its outcome, and a submit made then is dropped.
+  const pendingLaunchContinuation = pendingLaunchContinuations[0] ?? null;
   useEffect(() => {
     if (
       !pendingLaunchContinuation ||
-      isStreaming ||
+      steerableTurnActive ||
+      delegatedAgentLaunching ||
       launchingExternalAgent !== null
     )
       return;
@@ -4504,8 +5592,10 @@ export default function WorkspaceClient({
         undefined,
         true,
         () =>
-          setPendingLaunchContinuation((current) =>
-            current === continuation ? null : current,
+          setPendingLaunchContinuations((current) =>
+            current[0] === continuation
+              ? current.slice(1)
+              : current.filter((item) => item !== continuation),
           ),
       );
     }, 0);
@@ -4513,7 +5603,12 @@ export default function WorkspaceClient({
     // handleSubmit is redeclared every render and reads current state when it
     // runs; depending on it here would reschedule this timer on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingLaunchContinuation, isStreaming, launchingExternalAgent]);
+  }, [
+    pendingLaunchContinuation,
+    steerableTurnActive,
+    delegatedAgentLaunching,
+    launchingExternalAgent,
+  ]);
 
   // Garden runtime and external-agent turns are server-owned. Reconcile only
   // the active transcripts while visible; this keeps background work alive
@@ -4545,13 +5640,11 @@ export default function WorkspaceClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeServerChatKey, refreshChatSession]);
 
-  // Tick an elapsed-time counter while an upload is in progress.
+  // One lightweight clock drives elapsed time for every concurrent upload.
   useEffect(() => {
     if (!isUploading) return;
-    const startedAt = Date.now();
-    setUploadElapsedMs(0);
     const id = setInterval(() => {
-      setUploadElapsedMs(Date.now() - startedAt);
+      setUploadClock(Date.now());
     }, 100);
     return () => clearInterval(id);
   }, [isUploading]);
@@ -4631,6 +5724,7 @@ export default function WorkspaceClient({
       setSavedLinks(Array.isArray(data.links) ? data.links : []);
       setNewLinkTitle("");
       setNewLinkUrl("");
+      setLinkComposerOpen(false);
       setLinksExpanded(true);
       setSourceDocsExpanded(true);
       await fetchDocuments();
@@ -4686,80 +5780,73 @@ export default function WorkspaceClient({
     }
   }
 
-  function handleVideoSourceCreated(info: {
+  function handleMediaSourceCreated(info: {
     jobId: string;
     sourceTitle: string;
     sourceRelPath: string;
     sourceSlug: string;
+    mediaKind: "audio" | "video";
   }) {
     // The transcript is now a regular source: refresh the tree and graph so it
     // appears immediately, and surface a Garden Chat system message.
     setSourceDocsExpanded(true);
     void fetchDocuments();
     setGraphRefreshVersion((value) => value + 1);
-    addToast(`Video transcribed: ${info.sourceTitle}`, "success");
+    const mediaLabel = info.mediaKind === "audio" ? "Audio" : "Video";
+    addToast(`${mediaLabel} transcribed: ${info.sourceTitle}`, "success");
     if (activeChatId) {
       updateChatMessages(activeChatId, (previous) => [
         ...previous,
         {
           role: "assistant",
-          content: `Video transcription completed. New source available: **${info.sourceTitle}** (\`${info.sourceRelPath}\`). You can now ask questions about it in this chat.`,
+          content: `${mediaLabel} transcription completed. New source available: **${info.sourceTitle}** (\`${info.sourceRelPath}\`). You can now ask questions about it in this chat.`,
         },
       ]);
     }
   }
 
   function openUploadModal() {
-    // A dismissed upload stays owned by this workspace. Reopen its live
-    // progress instead of clearing the files or replacing its controller.
-    if (isUploading) {
-      setShowUpload(true);
-      return;
-    }
-    uploadCanceledRef.current = false;
-    uploadAbortControllerRef.current = null;
+    // The add action always opens a fresh draft. Running uploads remain
+    // independent rows under Documents and can be reopened from those rows.
+    selectedUploadTaskIdRef.current = null;
+    setSelectedUploadTaskId(null);
     setUploadFiles([]);
-    setUploadStatuses({});
-    setUploadErrors({});
-    setUploadSteps({});
-    setUploadTokenUsage({});
-    setUploadVisionErrors({});
-    setUploadElapsedMs(0);
     setUploadLabel("");
     setIsHandwriting(false);
     setParseWithVlm(false);
+    setParseWithAnydoc(false);
     setGenerateMap(true);
     setIsDragging(false);
     setShowUpload(true);
   }
 
-  async function closeUploadModal() {
-    if (isUploading) {
-      const requestIds = [...uploadRecoveryRequestIdsRef.current];
-      for (const requestId of requestIds) {
-        void (async () => {
-          try {
-            await cancelPendingRuntimeIngest(requestId);
-            const record = runtimeIngestRecoveryRecord(requestId);
-            if (!record) return;
-            if (!record.jobId) {
-              return;
-            }
-            await recoverRuntimeIngest(record, () => undefined);
-          } finally {
-            uploadRecoveryRequestIdsRef.current.delete(requestId);
-          }
-        })().catch(() => undefined);
+  function openUploadTask(taskId: string) {
+    selectedUploadTaskIdRef.current = taskId;
+    setSelectedUploadTaskId(taskId);
+    setShowUpload(true);
+  }
+
+  function cancelUploadTask(taskId: string) {
+    cancelGardenUploadTask(taskId);
+    setShowUpload(false);
+  }
+
+  function closeUploadModal() {
+    if (selectedUploadTaskId) {
+      const task = uploadTasks.find((candidate) => candidate.id === selectedUploadTaskId);
+      if (task?.state === "uploading") {
+        cancelUploadTask(selectedUploadTaskId);
+        return;
       }
-      uploadRuntimeJobIdsRef.current.clear();
-      uploadCanceledRef.current = true;
-      uploadAbortControllerRef.current?.abort();
+      removeGardenUploadTask(selectedUploadTaskId);
     }
+    selectedUploadTaskIdRef.current = null;
+    setSelectedUploadTaskId(null);
     setShowUpload(false);
   }
 
   function continueUploadInBackground() {
-    if (!isUploading) return;
+    if (!selectedUploadTaskId) return;
     setSourceDocsExpanded(true);
     setShowUpload(false);
   }
@@ -4782,384 +5869,27 @@ export default function WorkspaceClient({
   }
 
   function removeUploadFile(index: number) {
-    setUploadFiles((prev) => {
-      const removed = prev[index];
-      if (removed) {
-        const key = fileKey(removed);
-        setUploadStatuses((statuses) => {
-          const next = { ...statuses };
-          delete next[key];
-          return next;
-        });
-        setUploadErrors((errors) => {
-          const next = { ...errors };
-          delete next[key];
-          return next;
-        });
-        setUploadSteps((steps) => {
-          const next = { ...steps };
-          delete next[key];
-          return next;
-        });
-        setUploadTokenUsage((usage) => {
-          const next = { ...usage };
-          delete next[key];
-          return next;
-        });
-        setUploadVisionErrors((errors) => {
-          const next = { ...errors };
-          delete next[key];
-          return next;
-        });
-      }
-      return prev.filter((_, i) => i !== index);
-    });
+    setUploadFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
-  async function handleUpload(e: React.FormEvent) {
+  function handleUpload(e: React.FormEvent) {
     e.preventDefault();
-    if (uploadFiles.length === 0 || isUploading) return;
+    if (uploadFiles.length === 0) return;
 
-    const abortController = new AbortController();
-    uploadAbortControllerRef.current = abortController;
-    uploadCanceledRef.current = false;
-    setIsUploading(true);
-    const initial: Record<string, FileStatus> = {};
-    uploadFiles.forEach((f) => {
-      initial[fileKey(f)] = "pending";
+    const taskId = startGardenUploadTask({
+      clusterSlug,
+      files: uploadFiles,
+      options: {
+        label: uploadLabel.trim(),
+        handwriting: isHandwriting,
+        parseWithVlm: parseWithVlm && vlmStatus.available,
+        parseWithAnydoc: parseWithAnydoc && anydocStatus.available,
+        generateMap,
+      },
     });
-    setUploadStatuses(initial);
-    setUploadErrors({});
-    setUploadSteps({});
-    setUploadTokenUsage({});
-    setUploadVisionErrors({});
-
-    let successCount = 0;
-    let duplicateCount = 0;
-    let snapshotCount = 0;
-    let figureCount = 0;
-    let mapGeneratedCount = 0;
-    const screenshotWarnings: string[] = [];
-    const mapWarnings: string[] = [];
-    // Kept apart from the other warnings so it can be raised first and with a
-    // title: this one is about whether the document can be trusted, not about
-    // how well it was read.
-    const hiddenContentWarnings: string[] = [];
-
-    for (const file of uploadFiles) {
-      if (uploadCanceledRef.current || abortController.signal.aborted) break;
-
-      const key = fileKey(file);
-      setUploadStatuses((prev) => ({ ...prev, [key]: "uploading" }));
-      setUploadSteps((prev) => ({ ...prev, [key]: "Starting…" }));
-
-      // One reader per file, most specific first: the VLM reads pixels, anydoc
-      // reads document packages, handwriting OCR is the fallback for the pages
-      // neither of the first two was asked for.
-      const usesVlm =
-        parseWithVlm &&
-        vlmStatus.available &&
-        VLM_PARSE_FILE_RE.test(file.name);
-      const usesAnydoc =
-        !usesVlm &&
-        parseWithAnydoc &&
-        anydocStatus.available &&
-        ANYDOC_PARSE_FILE_RE.test(file.name);
-      const usesHandwriting =
-        !usesVlm &&
-        !usesAnydoc &&
-        isHandwriting &&
-        HANDWRITING_FILE_RE.test(file.name);
-      const formData = new FormData();
-      formData.append("clusterSlug", clusterSlug);
-      formData.append("file", file);
-      if (uploadLabel.trim())
-        formData.append("sourceLabel", uploadLabel.trim());
-      formData.append("isHandwriting", String(usesHandwriting));
-      formData.append("parseWithVlm", String(usesVlm));
-      formData.append("parseWithAnydoc", String(usesAnydoc));
-      formData.append("generateMap", String(usesHandwriting || generateMap));
-
-      const requestId = crypto.randomUUID();
-      beginRuntimeIngestRecovery({
-        requestId,
-        clusterSlug,
-        filename: file.name,
-        fileKey: key,
-        startedAt: Date.now(),
-      });
-      uploadRecoveryRequestIdsRef.current.add(requestId);
-      let runtimeJobId: string | null = null;
-      let terminalOutcome = false;
-      const continueRuntimeRecovery = () => {
-        const record = runtimeIngestRecoveryRecord(requestId);
-        if (!record) return;
-        void recoverRuntimeIngest(record, (event) => {
-          if (event.type === "progress" && typeof event.step === "string") {
-            setUploadSteps((prev) => ({ ...prev, [key]: event.step as string }));
-          } else if (event.type === "result") {
-            setUploadStatuses((prev) => ({ ...prev, [key]: "done" }));
-            setUploadErrors((prev) => {
-              const next = { ...prev };
-              delete next[key];
-              return next;
-            });
-          } else if (
-            event.type === "error" &&
-            event.canceled !== true
-          ) {
-            const message =
-              typeof event.error === "string" ? event.error : "Upload failed";
-            setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-            setUploadErrors((prev) => ({ ...prev, [key]: message }));
-            addToast(`${file.name}: ${message}`);
-          }
-        })
-          .then((outcome) => {
-            if (!outcome?.terminalEvent) return;
-            uploadRecoveryRequestIdsRef.current.delete(requestId);
-            if (runtimeJobId) uploadRuntimeJobIdsRef.current.delete(runtimeJobId);
-            void fetchDocuments();
-            setGraphRefreshVersion((value) => value + 1);
-          })
-          .catch(() => undefined);
-      };
-      try {
-        const res = await fetch("/api/ingest", {
-          method: "POST",
-          headers: {
-            "X-Breadboard-Ingest-Cluster-Slug": clusterSlug,
-            "X-Breadboard-Ingest-File-Size": String(file.size),
-            "X-Breadboard-Ingest-Request-Id": requestId,
-          },
-          body: formData,
-          signal: abortController.signal,
-        });
-        const bound = bindRuntimeIngestResponse(requestId, res);
-        runtimeJobId = bound?.jobId ?? null;
-        if (runtimeJobId) uploadRuntimeJobIdsRef.current.add(runtimeJobId);
-
-        // The route streams Server-Sent Events ("data: {…}\n\n"): { type:
-        // "progress", step } updates while the pipeline runs, then a final
-        // { type: "result" } or { type: "error" }. A non-streaming body (e.g.
-        // a 400/401/500 JSON error) is handled in the !res.body branch below.
-        if (!res.ok || !res.body) {
-          terminalOutcome = true;
-          forgetRuntimeIngestRecovery(requestId);
-          let message = "Upload failed";
-          try {
-            const data = await res.json();
-            if (typeof data?.error === "string" && data.error.trim()) {
-              message = data.error.trim();
-            }
-          } catch {
-            // Fall back to the generic message.
-          }
-          setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-          setUploadErrors((prev) => ({ ...prev, [key]: message }));
-          addToast(`${file.name}: ${message}`);
-          continue;
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let result: Record<string, unknown> | null = null;
-        let streamError = "";
-        let canceledEvent = false;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const payload = line.slice(6);
-            if (payload === "[DONE]") continue;
-
-            try {
-              const event = JSON.parse(payload) as {
-                type: "progress" | "usage" | "result" | "error";
-                step?: string;
-                error?: string;
-                canceled?: boolean;
-                tokenUsage?: IngestTokenUsage;
-                visionError?: string;
-                [key: string]: unknown;
-              };
-
-              if (event.tokenUsage) {
-                setUploadTokenUsage((prev) => ({
-                  ...prev,
-                  [key]: event.tokenUsage!,
-                }));
-              }
-              if (
-                typeof event.visionError === "string" &&
-                event.visionError.trim()
-              ) {
-                setUploadVisionErrors((prev) => ({
-                  ...prev,
-                  [key]: `${file.name}: ${event.visionError!.trim()}`,
-                }));
-              }
-
-              if (event.type === "progress" && typeof event.step === "string") {
-                const step = event.step;
-                setUploadSteps((prev) => ({ ...prev, [key]: step }));
-              } else if (event.type === "result") {
-                result = event;
-              } else if (event.type === "error") {
-                if (event.canceled) canceledEvent = true;
-                streamError =
-                  typeof event.error === "string"
-                    ? event.error
-                    : "Upload failed";
-              }
-            } catch {
-              // malformed event — skip
-            }
-          }
-        }
-
-        if (canceledEvent) {
-          terminalOutcome = true;
-          forgetRuntimeIngestRecovery(requestId);
-          uploadCanceledRef.current = true;
-          break;
-        }
-
-        if (result?.success) {
-          terminalOutcome = true;
-          forgetRuntimeIngestRecovery(requestId);
-          setUploadStatuses((prev) => ({ ...prev, [key]: "done" }));
-          setUploadErrors((prev) => {
-            const next = { ...prev };
-            delete next[key];
-            return next;
-          });
-          if (result.duplicate === true) {
-            duplicateCount++;
-            addToast(
-              `${file.name} is already in Documents; duplicate upload skipped`,
-            );
-          } else {
-            successCount++;
-            snapshotCount +=
-              typeof result.imageCount === "number" ? result.imageCount : 0;
-            figureCount +=
-              typeof result.figureCount === "number" ? result.figureCount : 0;
-            if (result.mapGenerated === true) {
-              mapGeneratedCount++;
-            }
-            if (typeof result.screenshotWarning === "string") {
-              screenshotWarnings.push(
-                `${file.name}: ${result.screenshotWarning}`,
-              );
-            }
-            if (typeof result.mapGenerationWarning === "string") {
-              mapWarnings.push(`${file.name}: ${result.mapGenerationWarning}`);
-            }
-            if (typeof result.hiddenContentWarning === "string") {
-              hiddenContentWarnings.push(result.hiddenContentWarning);
-            }
-          }
-        } else {
-          if (streamError) {
-            terminalOutcome = true;
-            forgetRuntimeIngestRecovery(requestId);
-            const message = streamError;
-            setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-            setUploadErrors((prev) => ({ ...prev, [key]: message }));
-            addToast(`${file.name}: ${message}`);
-          } else {
-            continueRuntimeRecovery();
-          }
-        }
-      } catch (error) {
-        const aborted =
-          abortController.signal.aborted ||
-          (error instanceof DOMException && error.name === "AbortError");
-        if (aborted) break;
-
-        continueRuntimeRecovery();
-      } finally {
-        if (runtimeJobId) uploadRuntimeJobIdsRef.current.delete(runtimeJobId);
-        if (terminalOutcome) {
-          uploadRecoveryRequestIdsRef.current.delete(requestId);
-        }
-      }
-    }
-
-    const canceled =
-      uploadCanceledRef.current || abortController.signal.aborted;
-
-    if (!canceled && (successCount > 0 || duplicateCount > 0)) {
-      const readerLabel = vlmUploadEnabled
-        ? "VLM parsing"
-        : anydocUploadEnabled
-          ? "anydoc conversion"
-          : isHandwriting && hasHandwritingCompatibleFile
-            ? "handwriting OCR"
-            : "";
-      const generationLabel = !generateMap
-        ? readerLabel || "no map generation"
-        : mapWarnings.length > 0 && mapGeneratedCount === 0
-          ? "source saving; map generation needs retry"
-          : mapWarnings.length > 0
-            ? "partial map generation"
-            : readerLabel
-              ? `${readerLabel} and map generation`
-              : "map generation";
-      if (successCount > 0) {
-        addToast(
-          `Added ${successCount} file${successCount > 1 ? "s" : ""} with ${generationLabel}${figureCount > 0 ? `, ${figureCount} figure${figureCount === 1 ? "" : "s"}` : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""}`,
-          "success",
-          "Upload complete",
-        );
-        // Ahead of the extraction warnings: the message already names the file,
-        // and it is the one a user should read before acting on the document.
-        for (const warning of hiddenContentWarnings) {
-          addToast(warning, "error", "Hidden content detected");
-        }
-        for (const warning of screenshotWarnings) addToast(warning);
-        for (const warning of mapWarnings) addToast(warning);
-      }
-      fetchDocuments();
-      void fetchLearnStatus();
-      setSourceDocsExpanded(true);
-      setGraphRefreshVersion((v) => v + 1);
-    } else if (canceled) {
-      if (successCount > 0) {
-        fetchDocuments();
-        void fetchLearnStatus();
-        setSourceDocsExpanded(true);
-        setGraphRefreshVersion((v) => v + 1);
-        addToast(
-          `Upload canceled after ${successCount} file${successCount > 1 ? "s were" : " was"} added`,
-        );
-      } else {
-        addToast("Upload canceled");
-      }
-      setUploadStatuses({});
-      setUploadErrors({});
-      setUploadSteps({});
-      setUploadVisionErrors({});
-      setUploadFiles([]);
-      setUploadLabel("");
-      setIsHandwriting(false);
-      setParseWithVlm(false);
-      setGenerateMap(true);
-      setIsDragging(false);
-    }
-
-    uploadAbortControllerRef.current = null;
-    uploadCanceledRef.current = false;
-    setIsUploading(false);
+    selectedUploadTaskIdRef.current = taskId;
+    setSelectedUploadTaskId(taskId);
+    setSourceDocsExpanded(true);
   }
 
   // ── Chat attachments ────────────────────────────────────────────────────────
@@ -5550,6 +6280,7 @@ export default function WorkspaceClient({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setOpenExecutiveAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setStockAnalystAgent(null);
@@ -5948,6 +6679,7 @@ export default function WorkspaceClient({
               // evaluated when the proposed map reaches the review boundary.
               skipManualReview:
                 endpoint === "plan" ? false : learnSkipManualReviewRef.current,
+              userInstruction: learnUserInstruction.trim() || undefined,
               ...body,
             }),
           },
@@ -5994,6 +6726,9 @@ export default function WorkspaceClient({
           setLearnDocumentMenuOpen(false);
           setLearnSyllabusSlug(null);
           setLearnSyllabusMenuOpen(false);
+          setLearnUserInstruction("");
+          setLearnUserInstructionDraft("");
+          setLearnUserInstructionOpen(false);
         }
         await fetchLearnStatus();
         await fetchDocuments();
@@ -6059,6 +6794,7 @@ export default function WorkspaceClient({
       learnIncludedSourceSlugs,
       learnSourceOnly,
       learnSyllabusSlug,
+      learnUserInstruction,
     ],
   );
 
@@ -6109,6 +6845,10 @@ export default function WorkspaceClient({
   async function handleLearnPrimary() {
     if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
       return;
+    if (learnUserInstruction.trim() && hasExistingLearnContent) {
+      handleFullRebuild();
+      return;
+    }
     if (learnState?.job?.status === "awaiting_confirmation") {
       if (hasExistingLearnContent) {
         await handleRepairIssues();
@@ -6219,6 +6959,10 @@ export default function WorkspaceClient({
   async function handleRepairIssues() {
     if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
       return;
+    if (learnUserInstruction.trim() && hasExistingLearnContent) {
+      handleFullRebuild();
+      return;
+    }
     if (learnState?.job?.status === "awaiting_confirmation") {
       const cancelled = await postLearnAction("cancel", {
         expectedJobId: learnState.job.id,
@@ -6226,6 +6970,26 @@ export default function WorkspaceClient({
       if (!cancelled) return;
     }
     await postLearnAction("regenerate", { mode: "repair" });
+  }
+
+  async function handleGuidedLearnRun() {
+    const instruction = learnUserInstructionDraft.trim();
+    if (
+      !instruction ||
+      learnBusy ||
+      learnCancelBusy ||
+      isLearnActive(learnState?.job?.status)
+    ) {
+      return;
+    }
+    setLearnUserInstruction(instruction);
+    setLearnUserInstructionDraft(instruction);
+    setLearnUserInstructionOpen(false);
+    if (hasExistingLearnContent) {
+      setLearnConfirmationAction("full_rebuild");
+      return;
+    }
+    await postLearnAction("plan", { userInstruction: instruction });
   }
 
   function handleFullRebuild() {
@@ -7022,6 +7786,101 @@ export default function WorkspaceClient({
     }
   }
 
+  async function selectOpenExecutive(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/openexecutive/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.cloned !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "OpenExecutive is unavailable.",
+        );
+      }
+      const selected = {
+        id: OPENEXECUTIVE_AGENT_ID,
+        name: OPENEXECUTIVE_AGENT_NAME,
+      };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setStockAnalystAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setFormsmithAgent(null);
+      setOpenExecutiveAgent(selected);
+      if (data.available !== true && typeof data.reason === "string") {
+        setExternalAgentStatus(data.reason);
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "OpenExecutive is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  // Other selectors predate OpenExecutive; this keeps their existing mutual
+  // exclusion behavior without rewriting every selection path.
+  useEffect(() => {
+    if (!openExecutiveAgent) return;
+    if (
+      agentBrowserAgent ||
+      deepResearchAgent ||
+      codexAgent ||
+      openCodeAgent ||
+      openPlanterAgent ||
+      rufloAgent ||
+      agentReachAgent ||
+      getDocAgent ||
+      meetingNotesAgent ||
+      deepTutorAgent ||
+      careerOpsAgent ||
+      tradingAgentsAgent ||
+      vibeTradingAgent ||
+      stockAnalystAgent ||
+      deerFlowAgent ||
+      shortsAgent ||
+      formsmithAgent
+    ) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setOpenExecutiveAgent(null);
+    }
+  }, [
+    agentBrowserAgent,
+    agentReachAgent,
+    careerOpsAgent,
+    codexAgent,
+    deepResearchAgent,
+    deepTutorAgent,
+    deerFlowAgent,
+    formsmithAgent,
+    getDocAgent,
+    meetingNotesAgent,
+    openCodeAgent,
+    openExecutiveAgent,
+    openPlanterAgent,
+    rufloAgent,
+    shortsAgent,
+    stockAnalystAgent,
+    tradingAgentsAgent,
+    vibeTradingAgent,
+  ]);
+
   async function selectCodex(): Promise<ExternalAgentSelection> {
     const selected = { id: CODEX_AGENT_ID, name: CODEX_AGENT_NAME };
     setExternalAgentStatus("");
@@ -7235,9 +8094,68 @@ export default function WorkspaceClient({
     // spent — whether this commit carries a run card or a failure to start.
     settleExternalTurnActivity();
     if (delegatedAgentLaunchRef.current) {
+      const delegatedRequest = delegatedAgentLaunchRef.current;
+      const delegatedMessages =
+        inFlightChatMessagesRef.current.get(session.id) ?? session.messages;
+      const workerClientMessageId = delegatedRequest.workerClientMessageId;
+      if (workerClientMessageId) {
+        const delegatedResult =
+          (assistantMessage.externalAgentOutcome &&
+            assistantMessage.externalAgentOutcome !== "running") ||
+          (!assistantExternalAgentRunId(assistantMessage) &&
+            assistantMessage.content.trim())
+            ? assistantMessage.content
+            : undefined;
+        const delegatedAssistant: Message = {
+          ...assistantMessage,
+          role: "assistant",
+          content: "",
+          clientMessageId: workerClientMessageId,
+          delegatedAgentRun: true,
+          externalAgentName: delegatedRequest.agentName,
+          externalAgentStartedAt:
+            assistantMessage.externalAgentStartedAt ?? createdAt,
+          externalAgentOutcome:
+            assistantMessage.externalAgentOutcome ??
+            (delegatedResult !== undefined ? "failed" : "running"),
+          ...(delegatedResult !== undefined
+            ? { externalAgentResult: delegatedResult }
+            : {}),
+          createdAt: assistantMessage.createdAt ?? createdAt,
+        };
+        const existingAssistantIndex = delegatedMessages.findIndex(
+          (message) =>
+            message.role === "assistant" &&
+            message.clientMessageId === workerClientMessageId,
+        );
+        const nextMessages: Message[] =
+          existingAssistantIndex >= 0
+            ? delegatedMessages.map((message, index) =>
+                index === existingAssistantIndex
+                  ? { ...message, ...delegatedAssistant }
+                  : message,
+              )
+            : [
+                ...delegatedMessages,
+                {
+                  role: "user",
+                  content: delegatedRequest.brief,
+                  clientMessageId: workerClientMessageId,
+                  internalAgentContinuation: true,
+                  createdAt,
+                },
+                delegatedAssistant,
+              ];
+        const runId = assistantExternalAgentRunId(delegatedAssistant);
+        const awaited = awaitedLaunchesRef.current.get(workerClientMessageId);
+        if (awaited && runId) awaited.runId = runId;
+        updateChatMessages(session.id, nextMessages);
+        await persistChatSession(session.id, nextMessages);
+        return;
+      }
       let assistantIndex = -1;
-      for (let index = session.messages.length - 1; index >= 0; index -= 1) {
-        if (session.messages[index]?.role === "assistant") {
+      for (let index = delegatedMessages.length - 1; index >= 0; index -= 1) {
+        if (delegatedMessages[index]?.role === "assistant") {
           assistantIndex = index;
           break;
         }
@@ -7254,7 +8172,7 @@ export default function WorkspaceClient({
           assistantMessage.content.trim())
           ? assistantMessage.content
           : undefined;
-      const nextMessages = session.messages.map((message, index) =>
+      const nextMessages = delegatedMessages.map((message, index) =>
         index === assistantIndex
           ? {
               ...message,
@@ -8380,6 +9298,80 @@ export default function WorkspaceClient({
     }
   }
 
+  async function launchOpenExecutive(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) {
+        setExternalAgentStatus(
+          "Describe the decision, problem, or initiative for the executive team.",
+        );
+      }
+      return;
+    }
+    externalAgentLaunchRef.current = "openexecutive";
+    setLaunchingExternalAgent("openexecutive");
+    setExternalAgentStatus("");
+    const userContent = openExecutiveUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/openexecutive/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The OpenExecutive run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          openExecutiveRun: {
+            runId: String(data.run.runId),
+            task: typeof data.task === "string" ? data.task : task,
+          },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The OpenExecutive task could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
   async function launchVibeTrading(task: string) {
     if (!task || externalAgentLaunchRef.current) {
       if (!task) {
@@ -8737,6 +9729,91 @@ export default function WorkspaceClient({
           content: `The hardware blueprint could not start: ${
             error instanceof Error ? error.message : "unknown error"
           }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * God's Eye carries the tasking in the command. A quiet launch (a Super
+   * Agent delegation) keeps the run's card chrome hidden and lets the framed
+   * globe stand as the answer.
+   */
+  async function launchGodsEye(
+    task: string,
+    options: { userContent?: string; quiet?: boolean } = {},
+  ) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Tell God's Eye where to look.");
+      return;
+    }
+    externalAgentLaunchRef.current = "gods-eye";
+    setLaunchingExternalAgent("gods-eye");
+    setExternalAgentStatus("");
+    const normalizedTask = task.trim();
+    const userContent =
+      options.userContent?.trim() || godsEyeUserMessage(normalizedTask);
+    const launchClientMessageId = crypto.randomUUID();
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...transcriptForRetriedTurn(prepared.session),
+      {
+        id: `gods-eye-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/gods-eye/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task: normalizedTask,
+          model,
+          chatSessionId: prepared.session.id,
+          clientMessageId: launchClientMessageId,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(typeof data?.error === "string" ? data.error : "The God's Eye run could not start.");
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          godsEyeRun: {
+            runId: String(data.run.runId),
+            task: normalizedTask,
+            ...(options.quiet === true ? { quiet: true } : {}),
+          },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content:
+            "God's Eye could not be started: " +
+            (error instanceof Error ? error.message : "unknown error"),
         },
         prepared.title,
       );
@@ -9584,6 +10661,70 @@ export default function WorkspaceClient({
     }
   }
 
+  async function launchPraxist(task: string) {
+    const taskPath = parsePraxistTaskPath(task);
+    if (!taskPath || externalAgentLaunchRef.current) {
+      if (!taskPath) setExternalAgentStatus("Add the absolute Praxist task-project directory.");
+      return;
+    }
+    externalAgentLaunchRef.current = "praxist";
+    setLaunchingExternalAgent("praxist");
+    setExternalAgentStatus("");
+    const userContent = praxistUserMessage(taskPath);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...transcriptForRetriedTurn(prepared.session),
+      {
+        id: `praxist-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/praxist/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task: taskPath, model, chatSessionId: prepared.session.id }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(typeof data?.error === "string" ? data.error : "The Praxist run could not start.");
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          praxistRun: { runId: String(data.run.runId), task: taskPath },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Praxist run could not start: ${error instanceof Error ? error.message : "unknown error"}`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
   async function launchHyperframes(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
       if (!brief)
@@ -9813,6 +10954,88 @@ export default function WorkspaceClient({
     }
   }
 
+  /**
+   * Classroom carries the lesson in the command and takes the attachments as
+   * its material. The classroom itself lives on OpenMAIC's local server and
+   * comes back as a link and an artifact of this Garden's chat.
+   */
+  async function launchClassroom(brief: string, attachments: readonly ChatAttachment[]) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Tell Classroom what to teach.");
+      return;
+    }
+    externalAgentLaunchRef.current = "classroom";
+    setLaunchingExternalAgent("classroom");
+    setExternalAgentStatus("");
+    const userContent = classroomUserMessage(brief);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...transcriptForRetriedTurn(prepared.session),
+      {
+        id: "classroom-pending-" + crypto.randomUUID(),
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+        attachments: chatMessageAttachments(attachments),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/classroom/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          attachments,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The classroom could not be started.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          classroomRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content:
+            "The classroom could not be started: " +
+            (error instanceof Error ? error.message : "unknown error"),
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
   async function launchBoltSlides(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
       if (!brief) setExternalAgentStatus("Tell Bolt Slides what the deck is about.");
@@ -9978,7 +11201,9 @@ export default function WorkspaceClient({
     const userContent = codexUserMessage(task);
     const delegatedRequest = delegatedAgentLaunchRef.current;
     const clientMessageId =
-      delegatedRequest?.originClientMessageId ?? crypto.randomUUID();
+      delegatedRequest
+        ? agentLaunchWorkerClientMessageId(delegatedRequest)
+        : crypto.randomUUID();
     const persistedAttachments = chatMessageAttachments(attachments);
     const userMessageFields = persistedAttachments.length
       ? {
@@ -10010,7 +11235,10 @@ export default function WorkspaceClient({
           gardenSlug: clusterSlug,
           chatSessionId: prepared.session.id,
           clientMessageId,
-          attachToExistingTurn: Boolean(delegatedRequest),
+          attachToExistingTurn: Boolean(
+            delegatedRequest && !delegatedRequest.workerClientMessageId,
+          ),
+          delegatedAgentRun: Boolean(delegatedRequest?.workerClientMessageId),
           attachments: attachments.filter(
             (attachment) => attachment.type === "image",
           ),
@@ -10304,8 +11532,13 @@ export default function WorkspaceClient({
       candidate.messages.some(ownsRun),
     );
     if (!session) return;
+    // Several workers can settle in the same render. Merge into the latest
+    // in-flight transcript rather than each callback's render-time snapshot,
+    // or the second completion would overwrite the first one.
+    const baseMessages =
+      inFlightChatMessagesRef.current.get(session.id) ?? session.messages;
     const completedAtMs = Date.now();
-    const nextMessages = session.messages.map((message) => {
+    const nextMessages = baseMessages.map((message) => {
       if (!ownsRun(message)) return message;
       const responseDurationMs = externalAgentResponseDurationMs({
         baseDurationMs: message.responseDurationMs,
@@ -10331,39 +11564,56 @@ export default function WorkspaceClient({
         ...(result.state ? { externalAgentState: result.state } : {}),
       };
     });
-    setChatStreaming(session.id, false);
+    setChatStreaming(
+      session.id,
+      steerableTurnActive ||
+        nextMessages.some(
+          (message) =>
+            message.role === "assistant" &&
+            assistantExternalAgentRunId(message) !== null &&
+            (message.externalAgentOutcome ?? "running") === "running",
+        ),
+    );
     updateChatMessages(session.id, nextMessages);
     void persistChatSession(session.id, nextMessages);
 
-    if (session.messages.some((message) => ownsRun(message) && message.openGymRun)) {
-      continuedDelegatedRunsRef.current.add(runId);
-      if (awaitedLaunchRef.current?.runId === runId) {
-        awaitedLaunchRef.current = null;
-      }
-      setPendingLaunchContinuation(null);
+    const owner = baseMessages.find(
+      (message) => ownsRun(message) && message.role === "assistant",
+    );
+    const continuationKey = owner?.clientMessageId ?? runId;
+    if (owner?.openGymRun) {
+      continuedDelegatedRunsRef.current.add(continuationKey);
+      awaitedLaunchesRef.current.delete(continuationKey);
       return;
     }
 
     // If the assistant started this run and asked to hear how it went, hand the
     // outcome back as a new turn. Matching on the bound run id keeps a run the
     // user started themselves out of the chain.
-    const awaited = awaitedLaunchRef.current;
-    if (awaited?.runId !== runId) return;
-    awaitedLaunchRef.current = null;
-    continuedDelegatedRunsRef.current.add(runId);
+    const awaitedEntry = [...awaitedLaunchesRef.current.entries()].find(
+      ([, awaited]) => awaited.runId === runId,
+    );
+    if (!awaitedEntry) return;
+    const [workerClientMessageId, awaited] = awaitedEntry;
+    awaitedLaunchesRef.current.delete(workerClientMessageId);
+    if (continuedDelegatedRunsRef.current.has(workerClientMessageId)) return;
+    continuedDelegatedRunsRef.current.add(workerClientMessageId);
     if (launchHopsRef.current >= MAX_AGENT_LAUNCH_HOPS) {
       setExternalAgentStatus(
         `${awaited.agentName} finished. The assistant has handed off ${launchHopsRef.current} times in a row, so it is waiting for you before going further.`,
       );
       return;
     }
-    setPendingLaunchContinuation(
+    setPendingLaunchContinuations((current) => [
+      ...current,
       agentLaunchContinuationMessage({
+        continuationId: workerClientMessageId,
         agentName: awaited.agentName,
         outcome: result.outcome,
         content: result.content,
+        remaining: awaitedLaunchesRef.current.size,
       }),
-    );
+    ]);
   }
 
   async function handleSubmit(
@@ -10372,7 +11622,9 @@ export default function WorkspaceClient({
     attachmentOverride?: readonly ChatAttachment[],
     internalAgentContinuation = false,
     onTurnStarted?: () => void,
+    turnOptions?: { textSelection?: ChatTextSelectionReference },
   ) {
+    const textSelection = turnOptions?.textSelection;
     // Only a retry sets the branch it is replacing, and only a retry passes a
     // history. Anything else that reaches a launcher appends as usual.
     if (historyOverride === undefined) retryBranchRef.current = null;
@@ -10384,7 +11636,7 @@ export default function WorkspaceClient({
         : [];
     if (
       (!text && pendingAttachments.length === 0) ||
-      isStreaming ||
+      (internalAgentContinuation ? steerableTurnActive : isStreaming) ||
       launchingExternalAgent ||
       openGymRoutingRef.current
     )
@@ -10395,7 +11647,9 @@ export default function WorkspaceClient({
     // running and drops any launch still waiting to be confirmed.
     if (textOverride === undefined) {
       launchHopsRef.current = 0;
-      awaitedLaunchRef.current = null;
+      launchRoundOriginsRef.current.clear();
+      awaitedLaunchesRef.current.clear();
+      setPendingLaunchContinuations([]);
       agentLaunchQueue.reset();
     }
 
@@ -10403,7 +11657,9 @@ export default function WorkspaceClient({
     // agent the person's composer currently has selected. Letting it enter the
     // routing cascade below can send the hand-back into that agent instead of
     // starting the Super Agent synthesis, leaving the delegating row terminal.
-    if (!internalAgentContinuation) {
+    // A selected-text question is likewise bound to its excerpt: it is always
+    // answered here, never routed into a launcher or an external agent.
+    if (!internalAgentContinuation && !textSelection) {
     // Refuse an impossible combination before anything is dispatched. The
     // branches below are a priority cascade, so without this a second runtime
     // agent or a stacked skill would be silently swallowed into the winner's
@@ -10423,6 +11679,7 @@ export default function WorkspaceClient({
         (meetingNotesAgent && "meeting-notes") ||
         (deepTutorAgent && "deep-tutor") ||
         (careerOpsAgent && "career-ops") ||
+        (openExecutiveAgent && "openexecutive") ||
         (tradingAgentsAgent && "trading-agent") ||
         (shortsAgent && "shorts") ||
         (formsmithAgent && "formsmith") ||
@@ -10629,6 +11886,14 @@ export default function WorkspaceClient({
       return;
     }
 
+    const godsEyeTask = taskFromGodsEyeCommand(text);
+    if (godsEyeTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchGodsEye(godsEyeTask);
+      return;
+    }
+
     const openGymTask = taskFromOpenGymCommand(text);
     if (openGymTask !== null) {
       setInput("");
@@ -10685,6 +11950,16 @@ export default function WorkspaceClient({
       return;
     }
 
+    // Classroom reads the attachments as its material, so they go with it.
+    const classroomBrief = taskFromClassroomCommand(text);
+    if (classroomBrief !== null) {
+      const classroomMaterial = pendingAttachments;
+      setInput("");
+      setChatAttachments([]);
+      void launchClassroom(classroomBrief, classroomMaterial);
+      return;
+    }
+
     const productionBrief = briefFromOpenMontageCommand(text);
     if (productionBrief !== null) {
       setInput("");
@@ -10706,6 +11981,27 @@ export default function WorkspaceClient({
       setInput("");
       setChatAttachments([]);
       void launchOpenscience(openscienceTask);
+      return;
+    }
+    const openExecutiveTask = taskFromOpenExecutiveCommand(text);
+    if (openExecutiveTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected =
+          openExecutiveAgent ?? (await selectOpenExecutive());
+        if (selected && openExecutiveTask) {
+          await launchOpenExecutive(openExecutiveTask);
+        }
+      })();
+      return;
+    }
+
+    const praxistTask = taskFromPraxistCommand(text);
+    if (praxistTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchPraxist(praxistTask);
       return;
     }
 
@@ -10850,6 +12146,12 @@ export default function WorkspaceClient({
       void launchCareerOps(text);
       return;
     }
+    if (openExecutiveAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchOpenExecutive(text);
+      return;
+    }
     if (deerFlowAgent) {
       setInput("");
       void launchDeerFlow(text);
@@ -10925,6 +12227,7 @@ export default function WorkspaceClient({
       content: displayText,
       createdAt: turnCreatedAt,
       ...(internalAgentContinuation ? { internalAgentContinuation: true } : {}),
+      ...(textSelection ? { textSelection } : {}),
       ...(attachmentNames.length > 0 ? { attachmentNames } : {}),
       ...(pendingAttachments.length > 0
         ? { attachments: chatMessageAttachments(pendingAttachments) }
@@ -10976,14 +12279,21 @@ export default function WorkspaceClient({
     }
 
     const sessionId = session.id;
-    if (streamingChatIdsRef.current.has(sessionId)) {
+    if (
+      streamingChatIdsRef.current.has(sessionId) &&
+      !internalAgentContinuation
+    ) {
       abandonTurn();
       return;
     }
     // Past every launcher: this turn is answered here, and the history above
     // already excludes the retried turn, so the launcher hand-off is spent.
     retryBranchRef.current = null;
-    const history = historyOverride ?? session.messages;
+    const history =
+      historyOverride ??
+      (internalAgentContinuation
+        ? (inFlightChatMessagesRef.current.get(sessionId) ?? session.messages)
+        : session.messages);
     // The canonical first-turn pipeline replaces "New chat" with the title
     // returned by its dedicated plain-LLM request. Do not race it with a
     // browser-side heuristic when this transcript is persisted.
@@ -10999,12 +12309,35 @@ export default function WorkspaceClient({
       createdAt: turnCreatedAt,
       sources: [],
       thinking: "",
+      // The answer of an "Ask here" turn belongs to its highlight, not to the
+      // transcript; carrying the anchor is what routes it into the popover.
+      ...(textSelection ? { textSelection } : {}),
     };
-    const messagesWithAssistant = () => [
-      ...nextMessages,
-      ...steerContext.messages,
-      { ...assistantMsg },
-    ];
+    const messagesWithAssistant = () => {
+      const composed = [
+        ...nextMessages,
+        ...steerContext.messages,
+        { ...assistantMsg },
+      ];
+      // A background worker can finish while Hermes streams an interim
+      // synthesis. Preserve the worker's latest terminal metadata whenever the
+      // stream republishes its own snapshot of the transcript.
+      const liveTranscript = inFlightChatMessagesRef.current.get(sessionId);
+      if (!liveTranscript) return composed;
+      const liveExternalByRunId = new Map(
+        liveTranscript.flatMap((message) => {
+          const runId = assistantExternalAgentRunId(message);
+          return message.role === "assistant" && runId
+            ? [[runId, message] as const]
+            : [];
+        }),
+      );
+      return composed.map((message) => {
+        const runId = assistantExternalAgentRunId(message);
+        const live = runId ? liveExternalByRunId.get(runId) : undefined;
+        return live ? { ...message, ...live } : message;
+      });
+    };
     let finalMessages = messagesWithAssistant();
 
     setInput("");
@@ -11021,7 +12354,9 @@ export default function WorkspaceClient({
       const checkpoint = await reserveGardenTurnCheckpoint(
         sessionId,
         clientMessageId,
-        userMsg,
+        textSelection
+          ? { ...userMsg, selectedText: textSelection.quote }
+          : userMsg,
       );
       userMsg.id = checkpoint.userMessageId;
       assistantMsg.id = checkpoint.assistantMessageId;
@@ -11030,7 +12365,7 @@ export default function WorkspaceClient({
       addToast("Chat was not saved");
     }
     if (!checkpointSaved) {
-      setChatStreaming(sessionId, false);
+      setChatStreaming(sessionId, awaitedLaunchesRef.current.size > 0);
       updateChatMessages(sessionId, history);
       if (activeSteerContextRef.current === steerContext) {
         activeSteerContextRef.current = null;
@@ -11155,6 +12490,24 @@ export default function WorkspaceClient({
     let agentFailed = false;
     let agentCompleted = false;
     let agentReportedError = false;
+    // A selected-text question goes to the model wrapped in its excerpt and
+    // the response it was selected from, so the answer stays bound to those
+    // exact words; the transcript keeps only the words the person typed.
+    const selectionSourceContent = textSelection
+      ? history.find(
+          (message) =>
+            message.role === "assistant" &&
+            (message.id === textSelection.sourceMessageId ||
+              message.clientMessageId === textSelection.sourceMessageId),
+        )?.content
+      : undefined;
+    const runtimeText = textSelection
+      ? chatTextSelectionQuestionPrompt(
+          text,
+          textSelection,
+          selectionSourceContent,
+        )
+      : text || "Please review the attached file(s).";
     try {
       // A drafted turn already raised Thinking when the message went up.
       agentSignal = agentSignal ?? agentActivity.start();
@@ -11165,7 +12518,7 @@ export default function WorkspaceClient({
           // For the last user message, send the real typed text (attachments add context separately)
           messages: nextMessages.map(({ role, content }, idx) =>
             idx === nextMessages.length - 1 && role === "user"
-              ? { role, content: text || "Please review the attached file(s)." }
+              ? { role, content: runtimeText }
               : { role, content },
           ),
           clusterSlug,
@@ -11240,7 +12593,12 @@ export default function WorkspaceClient({
               | { type: "replace"; text: string }
               | { type: "segment"; text: string; streamed: boolean }
               | { type: "thinking"; text: string }
-              | { type: "tool"; toolName?: string; status?: string }
+              | {
+                  type: "tool";
+                  toolName?: string;
+                  status?: string;
+                  uiResources?: unknown;
+                }
               | { type: "permission"; description?: string; requestId?: string }
               | { type: "error"; error?: string }
               | { type: "runtime"; backend: string; fallback: boolean }
@@ -11281,6 +12639,18 @@ export default function WorkspaceClient({
               assistantMsg.sources = event.sources;
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
+            } else if (event.type === "tool" && event.status === "completed") {
+              const resources = normalizeGenerativeUiResources(event.uiResources);
+              if (resources.length) {
+                assistantMsg.uiResources = [
+                  ...(assistantMsg.uiResources ?? []).filter(
+                    (current) => !resources.some((next) => next.id === current.id),
+                  ),
+                  ...resources,
+                ];
+                finalMessages = messagesWithAssistant();
+                updateChatMessages(sessionId, finalMessages);
+              }
             } else if (event.type === "delta") {
               Object.assign(
                 assistantMsg,
@@ -11373,7 +12743,7 @@ export default function WorkspaceClient({
       // Only a first turn names a chat, and the name it gets is generated on
       // the server during that turn, so this is the one send worth asking for.
       if (history.length === 0) void refreshChatTitles();
-      setChatStreaming(sessionId, false);
+      setChatStreaming(sessionId, awaitedLaunchesRef.current.size > 0);
       if (
         agentCompleted &&
         !agentReportedError &&
@@ -11464,16 +12834,37 @@ export default function WorkspaceClient({
     useAnydocAvailability(showUpload && hasAnydocCompatibleFile);
   const anydocUploadEnabled =
     parseWithAnydoc && hasAnydocCompatibleFile && anydocStatus.available;
+  const selectedUploadTask = selectedUploadTaskId
+    ? (uploadTasks.find((task) => task.id === selectedUploadTaskId) ?? null)
+    : null;
+  const isViewingUploadTask = selectedUploadTask !== null;
+  const modalUploadFiles = selectedUploadTask?.files ?? uploadFiles;
+  const modalUploadStatuses = selectedUploadTask?.statuses ?? {};
+  const modalUploadErrors = selectedUploadTask?.errors ?? {};
+  const modalUploadSteps = selectedUploadTask?.steps ?? {};
+  const modalUploadTokenUsage = selectedUploadTask?.tokenUsage ?? {};
+  const modalUploadVisionErrors = selectedUploadTask?.visionErrors ?? {};
+  const modalIsUploading = selectedUploadTask?.state === "uploading";
+  const modalUploadElapsedMs = selectedUploadTask
+    ? Math.max(
+        0,
+        (selectedUploadTask.completedAt ?? uploadClock) -
+          selectedUploadTask.startedAt,
+      )
+    : 0;
+  const activeUploadTasks = uploadTasks.filter(
+    (task) => task.state === "uploading",
+  );
   const allDoneOrError =
-    uploadFiles.length > 0 &&
-    uploadFiles.every((f) => {
-      const s = uploadStatuses[fileKey(f)];
+    modalUploadFiles.length > 0 &&
+    modalUploadFiles.every((f) => {
+      const s = modalUploadStatuses[fileKey(f)];
       return s === "done" || s === "error";
     });
   const ingestionTokenUsage = sumIngestTokenUsage(
-    Object.values(uploadTokenUsage),
+    Object.values(modalUploadTokenUsage),
   );
-  const ingestionVisionErrors = Object.values(uploadVisionErrors).filter(
+  const ingestionVisionErrors = Object.values(modalUploadVisionErrors).filter(
     (error) => error.trim().length > 0,
   );
 
@@ -11506,6 +12897,11 @@ export default function WorkspaceClient({
   const learnEligibleSourceDocuments = sourceDocuments.filter(
     (doc) => doc.slug !== learnSyllabusSlug,
   );
+  const learnEligibleSourceGroups = LEARN_SOURCE_KINDS.map((kind) => ({
+    kind,
+    label: learnSourceKindLabel(kind),
+    sources: sourceDocuments.filter((doc) => learnSourceKind(doc) === kind),
+  })).filter((group) => group.sources.length > 0);
   const effectiveLearnIncludedSourceSlugs =
     learnIncludedSourceSlugs === null
       ? learnEligibleSourceDocuments.map((doc) => doc.slug)
@@ -11757,6 +13153,7 @@ export default function WorkspaceClient({
     const job = learnState?.job ?? null;
     const status = job?.status ?? "idle";
     const active = isLearnActive(status);
+    const hasLearnUserInstruction = Boolean(learnUserInstruction.trim());
     const learnHumanizerActive =
       learnHumanizerRequestBusy ||
       learnState?.humanizer?.status === "running" ||
@@ -11848,7 +13245,7 @@ export default function WorkspaceClient({
     const statusMessage = active
       ? null
       : status === "complete"
-        ? "Lessons complete."
+        ? null
         : status === "failed"
           ? null
           : status === "cancelled"
@@ -11871,22 +13268,24 @@ export default function WorkspaceClient({
         : job?.currentStep ||
           activeStageMessage[status] ||
           (active ? "Creating lessons" : "");
-    const statusDetails = [
-      stageMessage || null,
-      job?.currentSectionTitle ? `Section: ${job.currentSectionTitle}.` : null,
-      job?.currentPageTitle ? `Page: ${job.currentPageTitle}.` : null,
-      !hasSelectedLearnSources
-        ? learnSyllabusDocument
-          ? "The syllabus is reserved for planning; select at least one other document to teach from."
-          : `No source documents selected from ${sourceDocuments.length} available.`
-        : null,
-      status === "awaiting_confirmation" && !staleReviewForExistingGarden
-        ? "Pipeline paused for review; timer stopped."
-        : null,
-      paused
-        ? "Timer stopped. Everything written so far is kept and the run continues from here."
-        : null,
-    ].filter((detail): detail is string => Boolean(detail));
+    const statusDetails = status === "complete"
+      ? []
+      : [
+          stageMessage || null,
+          job?.currentSectionTitle ? `Section: ${job.currentSectionTitle}.` : null,
+          job?.currentPageTitle ? `Page: ${job.currentPageTitle}.` : null,
+          !hasSelectedLearnSources
+            ? learnSyllabusDocument
+              ? "The syllabus is reserved for planning; select at least one other source to teach from."
+              : `No sources selected from ${sourceDocuments.length} available.`
+            : null,
+          status === "awaiting_confirmation" && !staleReviewForExistingGarden
+            ? "Pipeline paused for review; timer stopped."
+            : null,
+          paused
+            ? "Timer stopped. Everything written so far is kept and the run continues from here."
+            : null,
+        ].filter((detail): detail is string => Boolean(detail));
     const learnTokenUsage = job?.tokenUsage;
     const learnElapsedMs = currentLearnElapsedMs(
       {
@@ -11909,7 +13308,7 @@ export default function WorkspaceClient({
     if (!shouldShowPanel) return null;
 
     return (
-      <section className="bb-neu-learn-tray neu-surface-raised mx-auto mt-4 max-h-[55vh] w-[calc(100%_-_2rem)] max-w-5xl shrink-0 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3">
+      <section className="bb-neu-learn-tray neu-surface-raised mx-auto mt-4 max-h-[55vh] w-[calc(100%_-_2rem)] max-w-7xl shrink-0 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3">
         <div className="flex flex-col gap-2">
           <div className="flex min-h-8 items-start justify-between gap-3">
             <div className="flex h-8 shrink-0 items-center gap-2">
@@ -11924,12 +13323,13 @@ export default function WorkspaceClient({
                     type="button"
                     onClick={() => {
                       setLearnSyllabusMenuOpen(false);
+                      setLearnUserInstructionOpen(false);
                       setLearnDocumentMenuOpen((open) => !open);
                     }}
                     className="neu-button flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-gray-800 px-2 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
                     aria-expanded={learnDocumentMenuOpen}
                     aria-haspopup="menu"
-                    title="Choose which source documents Learn may use"
+                    title="Choose which documents, links, videos, and audio Learn may use"
                   >
                     <svg
                       className="h-3.5 w-3.5"
@@ -11950,7 +13350,7 @@ export default function WorkspaceClient({
                         d="M14.25 3.75v3h3M9.5 11h5M9.5 14.5h5"
                       />
                     </svg>
-                    Documents {learnTeachingSourceSlugs.length}/
+                    Sources {learnTeachingSourceSlugs.length}/
                     {learnEligibleSourceDocuments.length}
                     <svg
                       className={`h-3 w-3 transition-transform ${learnDocumentMenuOpen ? "rotate-180" : ""}`}
@@ -11968,18 +13368,18 @@ export default function WorkspaceClient({
                   {learnDocumentMenuOpen ? (
                     <ViewportPopover
                       anchorRef={learnDocumentMenuButtonRef}
-                      ariaLabel="Documents included in Learn"
+                      ariaLabel="Sources included in Learn"
                       className="neu-popover fixed z-[100] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-lg border border-gray-800 bg-gray-950 p-2"
                       onClose={() => setLearnDocumentMenuOpen(false)}
                     >
                       <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-2">
                         <div>
                           <p className="text-xs font-medium text-gray-200">
-                            Documents for Learn
+                            Sources for Learn
                           </p>
                           <p className="mt-0.5 text-[10px] text-gray-600">
-                            The syllabus is reserved for planning. Unchecked
-                            documents are excluded from this run.
+                            Select documents, links, video transcripts, and
+                            audio transcripts. Unchecked sources are excluded.
                           </p>
                         </div>
                         <button
@@ -12003,58 +13403,67 @@ export default function WorkspaceClient({
                             : "Select all"}
                         </button>
                       </div>
-                      <div className="max-h-56 space-y-1 overflow-y-auto">
-                        {sourceDocuments.map((doc) => {
-                          const isSyllabus = doc.slug === learnSyllabusSlug;
-                          const checked =
-                            effectiveLearnIncludedSourceSlugSet.has(doc.slug);
-                          const fileLabel =
-                            doc.sourcePdf ||
-                            doc.sourceFile ||
-                            doc.name ||
-                            doc.title;
-                          return (
-                            <label
-                              key={doc.slug}
-                              className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${
-                                isSyllabus
-                                  ? "cursor-not-allowed bg-gray-900/50 opacity-60"
-                                  : "cursor-pointer hover:bg-gray-900"
-                              }`}
-                              title={
-                                isSyllabus
-                                  ? "Used as the syllabus and excluded from teaching documents"
-                                  : undefined
-                              }
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() =>
-                                  toggleLearnSourceDocument(doc.slug)
-                                }
-                                disabled={
-                                  learnDocumentSelectionLocked || isSyllabus
-                                }
-                                className="mt-0.5 h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
-                              />
-                              <span className="min-w-0">
-                                <span className="block truncate text-xs text-gray-300">
-                                  {fileLabel}
-                                </span>
-                                {isSyllabus ? (
-                                  <span className="mt-0.5 block text-[10px] text-gray-500">
-                                    Used as syllabus — not teaching material
-                                  </span>
-                                ) : doc.description ? (
-                                  <span className="mt-0.5 block truncate text-[10px] text-gray-600">
-                                    {doc.description}
-                                  </span>
-                                ) : null}
-                              </span>
-                            </label>
-                          );
-                        })}
+                      <div className="max-h-64 space-y-2 overflow-y-auto">
+                        {learnEligibleSourceGroups.map((group) => (
+                          <div key={group.kind}>
+                            <p className="px-2 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-gray-600">
+                              {group.label}
+                            </p>
+                            <div className="space-y-1">
+                              {group.sources.map((doc) => {
+                                const isSyllabus = doc.slug === learnSyllabusSlug;
+                                const checked =
+                                  effectiveLearnIncludedSourceSlugSet.has(doc.slug);
+                                const fileLabel =
+                                  doc.sourcePdf ||
+                                  doc.sourceFile ||
+                                  doc.name ||
+                                  doc.title;
+                                return (
+                                  <label
+                                    key={doc.slug}
+                                    className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${
+                                      isSyllabus
+                                        ? "cursor-not-allowed bg-gray-900/50 opacity-60"
+                                        : "cursor-pointer hover:bg-gray-900"
+                                    }`}
+                                    title={
+                                      isSyllabus
+                                        ? "Used as the syllabus and excluded from teaching sources"
+                                        : `${learnSourceKindLabel(group.kind).replace(/s$/, "")} source`
+                                    }
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() =>
+                                        toggleLearnSourceDocument(doc.slug)
+                                      }
+                                      disabled={
+                                        learnDocumentSelectionLocked || isSyllabus
+                                      }
+                                      className="mt-0.5 h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                                    />
+                                    <span className="min-w-0">
+                                      <span className="block truncate text-xs text-gray-300">
+                                        {fileLabel}
+                                      </span>
+                                      {isSyllabus ? (
+                                        <span className="mt-0.5 block text-[10px] text-gray-500">
+                                          Used as syllabus — not teaching material
+                                        </span>
+                                      ) : doc.description ? (
+                                        <span className="mt-0.5 block truncate text-[10px] text-gray-600">
+                                          {doc.description}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                       {learnDocumentSelectionLocked ? (
                         <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
@@ -12070,6 +13479,7 @@ export default function WorkspaceClient({
                     type="button"
                     onClick={() => {
                       setLearnDocumentMenuOpen(false);
+                      setLearnUserInstructionOpen(false);
                       setLearnSyllabusMenuOpen((open) => !open);
                     }}
                     className="neu-button flex h-[30px] w-full min-w-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-gray-800 px-2 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
@@ -12386,6 +13796,200 @@ export default function WorkspaceClient({
                     </ViewportPopover>
                   ) : null}
                 </div>
+                <div className="relative shrink-0">
+                  <button
+                    ref={learnUserInstructionButtonRef}
+                    type="button"
+                    onClick={() => {
+                      setLearnDocumentMenuOpen(false);
+                      setLearnSyllabusMenuOpen(false);
+                      setLearnUserInstructionDraft(learnUserInstruction);
+                      setLearnUserInstructionOpen((open) => !open);
+                    }}
+                    disabled={learnBusy || active}
+                    className={`neu-button relative flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border transition-[color,border-color,transform] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 ${
+                      hasLearnUserInstruction
+                        ? "border-emerald-700/70 text-emerald-300 hover:border-emerald-600 hover:text-emerald-200"
+                        : "border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-200"
+                    }`}
+                    aria-label={
+                      hasLearnUserInstruction
+                        ? "Edit Learn request"
+                        : "Guide Learn with a request"
+                    }
+                    aria-expanded={learnUserInstructionOpen}
+                    aria-haspopup="dialog"
+                    title={
+                      active
+                        ? "A Learn run is already in progress"
+                        : hasLearnUserInstruction
+                          ? "Edit the request attached to Learn"
+                          : "Tell Learn what to focus on, include, exclude, or redo"
+                    }
+                  >
+                    <svg
+                      className="h-4 w-4"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={1.8}
+                      aria-hidden="true"
+                    >
+                      <circle cx="12" cy="12" r="8.75" />
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M9.8 9.25a2.35 2.35 0 1 1 3.45 2.08c-.8.42-1.25.9-1.25 1.92M12 16.55h.01"
+                      />
+                    </svg>
+                    {hasLearnUserInstruction ? (
+                      <span
+                        className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-400 ring-2 ring-gray-950"
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                  </button>
+                  {learnUserInstructionOpen ? (
+                    <ViewportPopover
+                      anchorRef={learnUserInstructionButtonRef}
+                      ariaLabel="Guide Learn"
+                      role="dialog"
+                      className="neu-popover fixed z-[100] w-[390px] max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-xl border border-gray-800 bg-gray-950 p-3"
+                      onClose={() => setLearnUserInstructionOpen(false)}
+                    >
+                      <div className="flex items-start justify-between gap-3 border-b border-gray-800 pb-2.5">
+                        <div>
+                          <p className="text-xs font-semibold text-gray-100">
+                            Guide Learn
+                          </p>
+                          <p className="mt-1 text-[11px] leading-4 text-gray-500">
+                            Give the pipeline one natural-language request. It
+                            can change scope, emphasis, order, or what gets
+                            redone.
+                          </p>
+                        </div>
+                        {hasLearnUserInstruction ? (
+                          <span className="shrink-0 rounded-full border border-emerald-800/70 bg-emerald-950/40 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
+                            Attached
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-2.5 grid grid-cols-2 gap-1.5">
+                        {LEARN_USER_INSTRUCTION_EXAMPLES.map((example) => (
+                          <button
+                            key={example.label}
+                            type="button"
+                            onClick={() =>
+                              setLearnUserInstructionDraft(example.text)
+                            }
+                            className="neu-button min-w-0 rounded-lg border border-gray-800 px-2.5 py-2 text-left transition-[border-color,transform] hover:border-gray-700 active:scale-[0.98]"
+                          >
+                            <span className="block text-[10px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                              {example.label}
+                            </span>
+                            <span className="mt-0.5 block truncate text-[11px] text-gray-300">
+                              {example.text}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+
+                      <label
+                        htmlFor="learn-user-instruction"
+                        className="mt-3 block text-[10px] font-medium uppercase tracking-[0.08em] text-gray-500"
+                      >
+                        Your request
+                      </label>
+                      <textarea
+                        ref={learnUserInstructionInputRef}
+                        id="learn-user-instruction"
+                        value={learnUserInstructionDraft}
+                        onChange={(event) =>
+                          setLearnUserInstructionDraft(event.target.value)
+                        }
+                        onKeyDown={(event) => {
+                          if (
+                            (event.metaKey || event.ctrlKey) &&
+                            event.key === "Enter"
+                          ) {
+                            event.preventDefault();
+                            void handleGuidedLearnRun();
+                          }
+                        }}
+                        maxLength={LEARN_USER_INSTRUCTION_MAX_CHARS}
+                        rows={4}
+                        placeholder="For example: Redo only the topics after Maxwell's equations, and keep everything before that unchanged."
+                        aria-describedby="learn-user-instruction-help"
+                        className="neu-control mt-1.5 min-h-24 w-full resize-y rounded-lg border border-gray-800 bg-gray-950 px-3 py-2.5 text-xs leading-5 text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                      />
+                      <div
+                        id="learn-user-instruction-help"
+                        className="mt-1.5 flex items-start justify-between gap-3 text-[10px] leading-4 text-gray-600"
+                      >
+                        <span>
+                          Source and syllabus limits still apply. Press Ctrl/⌘
+                          + Enter to run.
+                        </span>
+                        <span className="shrink-0 tabular-nums">
+                          {learnUserInstructionDraft.length}/
+                          {LEARN_USER_INSTRUCTION_MAX_CHARS.toLocaleString()}
+                        </span>
+                      </div>
+
+                      {hasExistingLearnContent ? (
+                        <p className="mt-2 rounded-lg border border-gray-800 bg-gray-900/60 px-2.5 py-2 text-[10px] leading-4 text-gray-500">
+                          This garden already has lessons. Running a new request
+                          uses the existing rebuild confirmation before anything
+                          is replaced.
+                        </p>
+                      ) : null}
+
+                      <div className="mt-3 flex items-center justify-between border-t border-gray-800 pt-2.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLearnUserInstruction("");
+                            setLearnUserInstructionDraft("");
+                          }}
+                          disabled={
+                            !learnUserInstructionDraft &&
+                            !learnUserInstruction
+                          }
+                          className="text-[11px] font-medium text-gray-500 transition-colors hover:text-gray-200 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Clear
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleGuidedLearnRun()}
+                          disabled={
+                            !learnUserInstructionDraft.trim() || !canStart
+                          }
+                          className="neu-button-primary flex h-8 items-center gap-1.5 rounded-lg bg-white px-3 text-xs font-semibold text-gray-950 transition-[background-color,transform] hover:bg-gray-100 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {hasExistingLearnContent
+                            ? "Review rebuild"
+                            : "Run request"}
+                          <svg
+                            className="h-3.5 w-3.5"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="m9 5 7 7-7 7"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                    </ViewportPopover>
+                  ) : null}
+                </div>
                 <label className="flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-gray-500">
                   <input
                     type="checkbox"
@@ -12422,7 +14026,11 @@ export default function WorkspaceClient({
                     type="button"
                     onClick={handleRepairIssues}
                     disabled={!canStart}
-                    title="Repairs only failing pages and components; unaffected content is preserved"
+                    title={
+                      hasLearnUserInstruction
+                        ? "Run the attached request through a confirmed garden rebuild"
+                        : "Repairs only failing pages and components; unaffected content is preserved"
+                    }
                     className="neu-button-primary flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap px-3 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {learnBusy ? (
@@ -12443,7 +14051,13 @@ export default function WorkspaceClient({
                         />
                       </svg>
                     )}
-                    {learnBusy ? "Repairing..." : "Repair issues"}
+                    {learnBusy
+                      ? hasLearnUserInstruction
+                        ? "Starting..."
+                        : "Repairing..."
+                      : hasLearnUserInstruction
+                        ? "Run request"
+                        : "Repair issues"}
                   </button>
                 )}
                 {hasExistingLearnContent &&
@@ -12491,10 +14105,14 @@ export default function WorkspaceClient({
                     {learnBusy || active ? (
                       <Spinner className="h-3.5 w-3.5" />
                     ) : null}
-                    {shouldRepairFromPrimaryAction
+                    {hasLearnUserInstruction && hasExistingLearnContent
                       ? learnBusy
-                        ? "Repairing..."
-                        : "Repair issues"
+                        ? "Starting..."
+                        : "Run request"
+                      : shouldRepairFromPrimaryAction
+                        ? learnBusy
+                          ? "Repairing..."
+                          : "Repair issues"
                       : status === "failed"
                         ? learnBusy
                           ? shouldRestartFailedPlanning ||
@@ -12883,9 +14501,6 @@ export default function WorkspaceClient({
             >
               Open lessons
             </Link>
-            <span className="text-xs text-gray-600">
-              {learnState?.latestTextbookVersionId ?? job?.id}
-            </span>
           </div>
         )}
       </section>
@@ -13035,19 +14650,6 @@ export default function WorkspaceClient({
                   </div>
                 )}
               </div>
-              <svg
-                className="w-3.5 h-3.5 text-gray-600 shrink-0 mt-0.5"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.5}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-                />
-              </svg>
               <div className="flex-1 min-w-0">
                 <Link
                   href={documentHref}
@@ -13628,7 +15230,7 @@ export default function WorkspaceClient({
           onClick={() => setSourceDocsExpanded((v) => !v)}
           aria-expanded={sourceDocsExpanded}
           aria-controls="garden-source-documents"
-          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors ${sourceDocsExpanded ? "bb-neu-accordion-open" : ""}`}
+          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 hover:text-white transition-colors ${sourceDocsExpanded ? "bb-neu-accordion-open" : ""}`}
         >
           <div className="flex items-center gap-2">
             <svg
@@ -13745,66 +15347,68 @@ export default function WorkspaceClient({
               </div>
             )}
             <div className="max-h-44 overflow-y-auto">
-              {isUploading && (
+              {activeUploadTasks.length > 0 && (
                 <div className="border-b border-gray-800/70 py-1">
-                  {uploadFiles.map((file) => {
-                    const key = fileKey(file);
-                    const status = uploadStatuses[key] ?? "pending";
-                    const step = uploadSteps[key];
-                    const error = uploadErrors[key];
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={openUploadModal}
-                        className="group flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-gray-800/50"
-                        aria-label={`View upload progress for ${file.name}`}
-                        title="View upload progress"
-                      >
-                        {status === "done" ? (
-                          <svg
-                            className="h-4 w-4 shrink-0 text-green-400"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={2.5}
-                            aria-hidden="true"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="m4.5 12.75 6 6 9-13.5"
-                            />
-                          </svg>
-                        ) : status === "error" ? (
-                          <span
-                            className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-red-400"
-                            aria-hidden="true"
-                          >
-                            !
+                  {activeUploadTasks.flatMap((task) =>
+                    task.files.map((file) => {
+                      const key = fileKey(file);
+                      const status = task.statuses[key] ?? "pending";
+                      const step = task.steps[key];
+                      const error = task.errors[key];
+                      return (
+                        <button
+                          key={`${task.id}:${key}`}
+                          type="button"
+                          onClick={() => openUploadTask(task.id)}
+                          className="group flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-gray-800/50"
+                          aria-label={`View upload progress for ${file.name}`}
+                          title="View upload progress"
+                        >
+                          {status === "done" ? (
+                            <svg
+                              className="h-4 w-4 shrink-0 text-green-400"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={2.5}
+                              aria-hidden="true"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="m4.5 12.75 6 6 9-13.5"
+                              />
+                            </svg>
+                          ) : status === "error" ? (
+                            <span
+                              className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-red-400"
+                              aria-hidden="true"
+                            >
+                              !
+                            </span>
+                          ) : (
+                            <Spinner className="h-4 w-4 shrink-0 text-gray-500" />
+                          )}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-xs text-gray-300 group-hover:text-white">
+                              {file.name}
+                            </span>
+                            <span
+                              className={`block truncate text-[11px] ${status === "error" ? "text-red-400" : "text-gray-600"}`}
+                            >
+                              {status === "done"
+                                ? "Uploaded"
+                                : status === "error"
+                                  ? error || "Upload failed"
+                                  : status === "uploading"
+                                    ? step || "Uploading…"
+                                    : "Waiting to upload…"}
+                            </span>
                           </span>
-                        ) : (
-                          <Spinner className="h-4 w-4 shrink-0 text-gray-500" />
-                        )}
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-xs text-gray-300 group-hover:text-white">
-                            {file.name}
-                          </span>
-                          <span
-                            className={`block truncate text-[11px] ${status === "error" ? "text-red-400" : "text-gray-600"}`}
-                          >
-                            {status === "done"
-                              ? "Uploaded"
-                              : status === "error"
-                                ? error || "Upload failed"
-                                : status === "uploading"
-                                  ? step || "Uploading…"
-                                  : "Waiting to upload…"}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
+                        </button>
+                      );
+                    }),
+                  )}
                 </div>
               )}
               {loadingDocs ? (
@@ -13848,8 +15452,13 @@ export default function WorkspaceClient({
 
       <div className="border-t border-gray-800 shrink-0">
         <button
-          onClick={() => setLinksExpanded((v) => !v)}
-          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors ${linksExpanded ? "bb-neu-accordion-open" : ""}`}
+          onClick={() => {
+            if (linksExpanded) setLinkComposerOpen(false);
+            setLinksExpanded((v) => !v);
+          }}
+          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 hover:text-white transition-colors ${linksExpanded ? "bb-neu-accordion-open" : ""}`}
+          aria-expanded={linksExpanded}
+          aria-controls="garden-links-panel"
         >
           <div className="flex items-center gap-2">
             <svg
@@ -13869,6 +15478,33 @@ export default function WorkspaceClient({
             {savedLinks.length > 0 ? ` (${savedLinks.length})` : ""}
           </div>
           <div className="flex items-center gap-1.5">
+            {isOwner && (
+              <span
+                role="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setLinksExpanded(true);
+                  setLinkComposerOpen(true);
+                }}
+                className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
+                aria-label="Add link"
+                title="Add link"
+              >
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 4.5v15m7.5-7.5h-15"
+                  />
+                </svg>
+              </span>
+            )}
             <svg
               className={`w-3.5 h-3.5 transition-transform duration-200 ${linksExpanded ? "" : "rotate-180"}`}
               fill="none"
@@ -13885,62 +15521,10 @@ export default function WorkspaceClient({
           </div>
         </button>
         {linksExpanded && (
-          <div className="bb-neu-accordion-panel border-t border-gray-800">
-            {isOwner && (
-              <form
-                onSubmit={handleSaveLink}
-                className="space-y-2 border-b border-gray-800 px-3 py-3"
-              >
-                <input
-                  type="text"
-                  value={newLinkTitle}
-                  onChange={(e) => setNewLinkTitle(e.target.value)}
-                  placeholder="Link name"
-                  className="neu-control h-8 w-full rounded-md border border-gray-800 bg-gray-950 px-2.5 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
-                  aria-label="Link name"
-                />
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newLinkUrl}
-                    onChange={(e) => setNewLinkUrl(e.target.value)}
-                    placeholder="https://..."
-                    className="neu-control h-8 min-w-0 flex-1 rounded-md border border-gray-800 bg-gray-950 px-2.5 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
-                    aria-label="Link URL"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!newLinkUrl.trim() || savingLink}
-                    className="neu-button-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                    aria-label="Save link"
-                    title="Save link"
-                  >
-                    {savingLink ? (
-                      <Spinner className="h-3.5 w-3.5" />
-                    ) : (
-                      <svg
-                        className="h-3.5 w-3.5"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={2}
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M12 4.5v15m7.5-7.5h-15"
-                        />
-                      </svg>
-                    )}
-                  </button>
-                </div>
-                {savingLink ? (
-                  <p className="text-[11px] text-gray-600">
-                    Converting link to Markdown...
-                  </p>
-                ) : null}
-              </form>
-            )}
+          <div
+            id="garden-links-panel"
+            className="bb-neu-accordion-panel border-t border-gray-800"
+          >
             <div className="max-h-56 overflow-y-auto">
               {linksLoading ? (
                 <div className="flex justify-center py-6">
@@ -14032,10 +15616,13 @@ export default function WorkspaceClient({
       <div className="border-t border-gray-800 shrink-0">
         <button
           type="button"
-          onClick={() => setVideosExpanded((value) => !value)}
-          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors ${videosExpanded ? "bb-neu-accordion-open" : ""}`}
-          aria-expanded={videosExpanded}
-          aria-controls="garden-videos-panel"
+          onClick={() => {
+            if (mediaExpanded) setMediaComposerOpen(false);
+            setMediaExpanded((value) => !value);
+          }}
+          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 hover:text-white transition-colors ${mediaExpanded ? "bb-neu-accordion-open" : ""}`}
+          aria-expanded={mediaExpanded}
+          aria-controls="garden-media-panel"
         >
           <div className="flex items-center gap-2">
             <svg
@@ -14051,27 +15638,60 @@ export default function WorkspaceClient({
                 d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 6.75h9A2.25 2.25 0 0 1 15.75 9v6A2.25 2.25 0 0 1 13.5 17.25h-9A2.25 2.25 0 0 1 2.25 15V9A2.25 2.25 0 0 1 4.5 6.75Z"
               />
             </svg>
-            Videos
+            Video &amp; audio
           </div>
-          <svg
-            className={`w-3.5 h-3.5 transition-transform duration-200 ${videosExpanded ? "" : "rotate-180"}`}
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="m4.5 15.75 7.5-7.5 7.5 7.5"
-            />
-          </svg>
+          <div className="flex items-center gap-1.5">
+            {isOwner && (
+              <span
+                role="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMediaExpanded(true);
+                  setMediaComposerOpen(true);
+                }}
+                className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
+                aria-label="Add video or audio"
+                title="Add video or audio"
+              >
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 4.5v15m7.5-7.5h-15"
+                  />
+                </svg>
+              </span>
+            )}
+            <svg
+              className={`w-3.5 h-3.5 transition-transform duration-200 ${mediaExpanded ? "" : "rotate-180"}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m4.5 15.75 7.5-7.5 7.5 7.5"
+              />
+            </svg>
+          </div>
         </button>
-        {videosExpanded && (
+        {mediaExpanded && (
           <GardenVideoImport
             clusterSlug={clusterSlug}
             isOwner={isOwner}
-            onSourceCreated={handleVideoSourceCreated}
+            composerOpen={mediaComposerOpen}
+            composerPresentation="modal"
+            onComposerClose={() => setMediaComposerOpen(false)}
+            onComposerSubmitted={() => setMediaComposerOpen(false)}
+            onSourceCreated={handleMediaSourceCreated}
           />
         )}
       </div>
@@ -14080,7 +15700,7 @@ export default function WorkspaceClient({
         <button
           type="button"
           onClick={() => setArtifactsExpanded((value) => !value)}
-          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors ${artifactsExpanded ? "bb-neu-accordion-open" : ""}`}
+          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 hover:text-white transition-colors ${artifactsExpanded ? "bb-neu-accordion-open" : ""}`}
           aria-expanded={artifactsExpanded}
           aria-controls="garden-artifacts-panel"
         >
@@ -14128,7 +15748,12 @@ export default function WorkspaceClient({
           {/* Garden chat is the top of its own surface: always leave to the
               dashboard. Routing it through the nav trail made it and the Quartz
               garden each other's back target, which is a loop with no exit. */}
-          <Link
+          {/* This is deliberately a native anchor instead of Next's Link. The
+              workspace owns many long-lived streams and observers; handing its
+              teardown to a client transition can leave the first click waiting
+              on that tree. A document navigation leaves on the first click and
+              still gives modified clicks normal browser behavior. */}
+          <a
             href="/dashboard"
             className="text-gray-500 hover:text-white transition-colors text-sm flex items-center gap-1.5"
           >
@@ -14146,7 +15771,7 @@ export default function WorkspaceClient({
               />
             </svg>
             Back to dashboard
-          </Link>
+          </a>
           <span className="text-gray-700">/</span>
           <Link
             href={
@@ -14312,9 +15937,10 @@ export default function WorkspaceClient({
           openPanel={sidePanel}
           panels={GARDEN_PANELS}
           onNewChat={handleNewChat}
-          onTogglePanel={(panel) =>
-            setSidePanel((current) => (current === panel ? null : panel))
-          }
+          onTogglePanel={(panel) => {
+            setProductPanel(null);
+            setSidePanel((current) => (current === panel ? null : panel));
+          }}
           onOpenSearch={() => setSearchOpen(true)}
           onOpenChat={(chat) => {
             if (chat.pending) {
@@ -14650,6 +16276,7 @@ export default function WorkspaceClient({
                 greeting={chatGreeting.greeting}
                 greetingSuggestions={chatGreeting.suggestions}
                 onSelectSuggestion={fillComposerWithPrompt}
+                onGenerativeUiAction={handleGenerativeUiAction}
                 chatSessionId={activeChatId}
                 isStreaming={isStreaming || delegationInFlight}
                 loadingChats={chatContentLoading}
@@ -14660,12 +16287,19 @@ export default function WorkspaceClient({
                 onPermissionDecision={(decision) =>
                   void agentActivity.respondToPermission(decision)
                 }
+                pendingClarification={agentActivity.pendingClarification}
+                onClarificationAnswer={(answer) =>
+                  void agentActivity.respondToClarification(answer)
+                }
                 onEditMessage={handleEditUserMessage}
                 onDeleteMessage={handleDeleteUserMessage}
                 onRetryAssistant={handleRetryAssistant}
                 branchGroups={branchGroups}
                 onSwitchBranch={switchBranch}
                 onExternalAgentTerminal={handleExternalAgentTerminal}
+                annotationsByMessage={annotationsByMessage}
+                onTextSelection={receiveTextSelection}
+                onOpenAnnotation={openAnnotation}
                 inlineArtifactRetireVersion={inlineArtifactRetireVersion}
                 delegationInFlight={delegationInFlight}
                 transcriptScrollRef={transcriptScrollRef}
@@ -14675,17 +16309,9 @@ export default function WorkspaceClient({
             </main>
             <ChatMessageRail
               surface="garden-chat"
-              conversationKey={activeChatId}
               items={railItems}
               scrollRef={transcriptScrollRef}
               bridge={transcriptVirtual}
-              onReply={async (text) => {
-                if (isStreaming || externalRunHoldsQueue) {
-                  queueFollowUp(text);
-                  return;
-                }
-                await handleSubmit(text);
-              }}
             />
             <ChatJumpToBottom
               visible={transcriptAwayFromBottom}
@@ -14697,6 +16323,64 @@ export default function WorkspaceClient({
               onJump={jumpToNewestMessage}
             />
           </div>
+
+          {selectionMenu ? (
+            <ChatSelectionMenu
+              selection={selectionMenu}
+              highlighted={selectionIsHighlighted}
+              highlightColor={selectionHighlightColor}
+              onHighlightColor={applySelectionHighlight}
+              onRemoveHighlight={removeSelectionHighlight}
+              onAskInChat={
+                canAskSelection
+                  ? () => beginSelectionQuestion("chat")
+                  : undefined
+              }
+              onAskHere={
+                canAskSelection
+                  ? () => beginSelectionQuestion("inline")
+                  : undefined
+              }
+              onClose={() => setSelectionMenu(null)}
+            />
+          ) : null}
+          {openInlineAnswer && openInlineThread ? (
+            <InlineSelectionAnswerPopover
+              anchor={openInlineAnswer.anchor}
+              question={openInlineThread.question}
+              answer={openInlineThread.answer}
+              pending={openInlineThread.pending}
+              usage={openInlineThread.usage}
+              responseDurationMs={openInlineThread.responseDurationMs}
+              startedAt={openInlineThread.startedAt}
+              answerMessageId={openInlineThread.answerMessageId}
+              annotations={
+                openInlineThread.answerMessageId
+                  ? annotationsByMessage.get(openInlineThread.answerMessageId)
+                  : undefined
+              }
+              onSelection={receiveTextSelection}
+              onOpenAnnotation={openAnnotation}
+              onClose={() => setOpenInlineAnswer(null)}
+              onDelete={() =>
+                deleteInlineSelection(openInlineThread.selection.id)
+              }
+              onStop={
+                openInlineThread.pending && steerableTurnActive
+                  ? agentActivity.abort
+                  : undefined
+              }
+              onAskAgain={
+                canAskSelection && !isStreaming && !chatContentLoading
+                  ? (question: string) =>
+                      askInlineSelectionAgain(
+                        openInlineThread.selection,
+                        question,
+                      )
+                  : undefined
+              }
+            />
+          ) : null}
 
           {/* Input area */}
           <div
@@ -14762,13 +16446,20 @@ export default function WorkspaceClient({
               className="hidden"
             />
 
+            {composerSelection ? (
+              <SelectionComposerContext
+                selection={composerSelection}
+                onCancel={cancelSelectionQuestion}
+              />
+            ) : null}
             <AssistantComposer
+              capabilitySessionId={activeChatId}
               capabilitySurface="garden_chat"
               capabilityGardenSlug={clusterSlug}
               className="mx-auto w-full max-w-5xl"
               value={input}
               onChange={setInput}
-              onSubmit={handleSubmit}
+              onSubmit={submitComposer}
               onRunWorkflow={runWorkflowAutomation}
               history={sentMessages}
               onPaste={handleChatPaste}
@@ -14805,6 +16496,7 @@ export default function WorkspaceClient({
               onQueueSteer={queueFollowUp}
               onStop={steerableTurnActive ? agentActivity.abort : undefined}
               permissionPending={Boolean(agentActivity.pendingPermission)}
+              clarificationPending={Boolean(agentActivity.pendingClarification)}
               // Distilling a book blocks the composer for minutes, so what it
               // is doing takes the status line while it runs.
               statusMessage={attachmentDistillStatus ?? externalAgentStatus}
@@ -14830,9 +16522,12 @@ export default function WorkspaceClient({
               onSelectResource2Skill={() => {}}
               onSelectMatraix={() => {}}
               onSelectBoltSlides={() => {}}
+              onSelectClassroom={() => {}}
+              onSelectGodsEye={() => {}}
               onSelectOpenMontage={() => {}}
               onSelectOpenwork={() => {}}
               onSelectOpenscience={() => {}}
+              onSelectPraxist={() => {}}
               onSelectInboxZero={() => {}}
               onSelectVimax={() => {}}
               onSelectVoxDirector={() => {}}
@@ -14870,6 +16565,12 @@ export default function WorkspaceClient({
               }}
               careerOpsAgent={careerOpsAgent}
               onSelectCareerOps={() => void selectCareerOps()}
+              openExecutiveAgent={openExecutiveAgent}
+              onSelectOpenExecutive={() => void selectOpenExecutive()}
+              onClearOpenExecutive={() => {
+                setOpenExecutiveAgent(null);
+                setExternalAgentStatus("");
+              }}
               onClearCareerOps={() => {
                 setCareerOpsAgent(null);
                 setExternalAgentStatus("");
@@ -14943,7 +16644,19 @@ export default function WorkspaceClient({
           </div>
         </div>
 
-        {sidePanel ? (
+        {productPanel ? (
+          <SidePanelDock
+            label="Product details"
+            defaultWidth={460}
+            storageKey="breadboard:garden-workspace:panel-width"
+          >
+            <ProductDetailsPanel
+              selection={productPanel}
+              onClose={() => setProductPanel(null)}
+              onAction={handleGenerativeUiAction}
+            />
+          </SidePanelDock>
+        ) : sidePanel ? (
           <SidePanelDock
             label={PANEL_TITLES[sidePanel]}
             defaultWidth={460}
@@ -14990,6 +16703,106 @@ export default function WorkspaceClient({
           onClose={() => setSearchOpen(false)}
           onSelect={openChatById}
         />
+      ) : null}
+
+      {linkComposerOpen ? (
+        <div
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setLinkComposerOpen(false);
+          }}
+        >
+          <form
+            onSubmit={handleSaveLink}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="garden-link-composer-title"
+            className="bb-modal-panel neu-dialog w-full max-w-md overflow-hidden rounded-2xl border"
+          >
+            <div className="flex items-center justify-between border-b border-gray-800 px-5 py-3.5">
+              <div>
+                <h2
+                  id="garden-link-composer-title"
+                  className="text-base font-semibold text-white"
+                >
+                  Add link
+                </h2>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  Save a web page as a source in {clusterName}.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLinkComposerOpen(false)}
+                className="neu-button-icon rounded-full p-1.5 text-gray-500"
+                aria-label="Close link dialog"
+              >
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 18 18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-gray-400">Name</span>
+                <input
+                  type="text"
+                  value={newLinkTitle}
+                  onChange={(event) => setNewLinkTitle(event.target.value)}
+                  placeholder="Link name"
+                  autoFocus
+                  className="neu-control h-10 w-full rounded-lg border border-gray-800 bg-gray-950 px-3 text-sm text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                  aria-label="Link name"
+                />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-gray-400">URL</span>
+                <input
+                  type="url"
+                  value={newLinkUrl}
+                  onChange={(event) => setNewLinkUrl(event.target.value)}
+                  placeholder="https://..."
+                  required
+                  className="neu-control h-10 w-full rounded-lg border border-gray-800 bg-gray-950 px-3 text-sm text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                  aria-label="Link URL"
+                />
+              </label>
+              {savingLink ? (
+                <p className="text-xs text-gray-500">
+                  Converting link to Markdown...
+                </p>
+              ) : null}
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-gray-800 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setLinkComposerOpen(false)}
+                className="neu-button px-4 py-1.5 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!newLinkUrl.trim() || savingLink}
+                className="neu-button-primary flex items-center gap-2 px-4 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {savingLink ? <Spinner className="h-3.5 w-3.5" /> : null}
+                Save link
+              </button>
+            </div>
+          </form>
+        </div>
       ) : null}
 
       {/* ── New markdown note modal ─────────────────────────────────────────── */}
@@ -15447,13 +17260,15 @@ export default function WorkspaceClient({
           className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(e) => {
             if (e.target !== e.currentTarget) return;
-            if (isUploading) continueUploadInBackground();
+            if (modalIsUploading) continueUploadInBackground();
             else closeUploadModal();
           }}
         >
           <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
             <div className="mb-5">
-              <h2 className="text-lg font-semibold">Add documents</h2>
+              <h2 className="text-lg font-semibold">
+                {isViewingUploadTask ? "Upload status" : "Add documents"}
+              </h2>
               <p className="text-sm text-gray-500 mt-0.5">{clusterName}</p>
             </div>
 
@@ -15471,16 +17286,23 @@ export default function WorkspaceClient({
               <div
                 onDragOver={(e) => {
                   e.preventDefault();
+                  if (isViewingUploadTask) return;
                   setIsDragging(true);
                 }}
                 onDragLeave={() => setIsDragging(false)}
-                onDrop={handleFileDrop}
+                onDrop={(e) => {
+                  if (isViewingUploadTask) {
+                    e.preventDefault();
+                    return;
+                  }
+                  handleFileDrop(e);
+                }}
                 className={[
                   "rounded-xl border-2 border-dashed transition-colors",
                   isDragging ? "border-white/40 bg-white/5" : "border-gray-800",
                 ].join(" ")}
               >
-                {uploadFiles.length === 0 ? (
+                {modalUploadFiles.length === 0 ? (
                   <div
                     onClick={() => fileInputRef.current?.click()}
                     className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-sm cursor-pointer text-gray-500 hover:text-gray-400 transition-colors"
@@ -15510,11 +17332,11 @@ export default function WorkspaceClient({
                   </div>
                 ) : (
                   <div className="p-3 space-y-1.5">
-                    {uploadFiles.map((f, i) => {
+                    {modalUploadFiles.map((f, i) => {
                       const key = fileKey(f);
-                      const status = uploadStatuses[key];
-                      const error = uploadErrors[key];
-                      const step = uploadSteps[key];
+                      const status = modalUploadStatuses[key];
+                      const error = modalUploadErrors[key];
+                      const step = modalUploadSteps[key];
                       return (
                         <div
                           key={key}
@@ -15560,7 +17382,7 @@ export default function WorkspaceClient({
                                 Failed
                               </span>
                             )}
-                            {!isUploading && (
+                            {!isViewingUploadTask && (
                               <button
                                 type="button"
                                 onClick={() => removeUploadFile(i)}
@@ -15596,7 +17418,7 @@ export default function WorkspaceClient({
                         </div>
                       );
                     })}
-                    {!isUploading && !allDoneOrError && (
+                    {!isViewingUploadTask && !allDoneOrError && (
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
@@ -15611,15 +17433,15 @@ export default function WorkspaceClient({
 
               <DocumentIngestionVisionError errors={ingestionVisionErrors} />
 
-              {(isUploading || ingestionTokenUsage.startedCalls > 0) && (
+              {(modalIsUploading || ingestionTokenUsage.startedCalls > 0) && (
                 <DocumentIngestionTokenUsage
                   usage={ingestionTokenUsage}
-                  pending={isUploading}
+                  pending={modalIsUploading}
                 />
               )}
 
               {/* Parse using VLM (local HunyuanOCR GGUF) */}
-              {hasVlmCompatibleFile && !allDoneOrError && (
+              {!isViewingUploadTask && hasVlmCompatibleFile && !allDoneOrError && (
                 <VlmParseOption
                   checked={parseWithVlm}
                   onChange={(next) => {
@@ -15627,18 +17449,20 @@ export default function WorkspaceClient({
                     // The two page readers are alternatives, not a stack.
                     if (next) setIsHandwriting(false);
                   }}
-                  disabled={isUploading}
+                  disabled={false}
                   status={vlmStatus}
                   loading={vlmStatusLoading}
                 />
               )}
 
               {/* Parse with anydoc (local document → Markdown converter) */}
-              {hasAnydocCompatibleFile && !allDoneOrError && (
+              {!isViewingUploadTask &&
+                hasAnydocCompatibleFile &&
+                !allDoneOrError && (
                 <AnydocParseOption
                   checked={parseWithAnydoc}
                   onChange={setParseWithAnydoc}
-                  disabled={isUploading}
+                  disabled={false}
                   status={anydocStatus}
                   loading={anydocStatusLoading}
                   overriddenByVlm={vlmUploadEnabled}
@@ -15646,7 +17470,9 @@ export default function WorkspaceClient({
               )}
 
               {/* Handwriting checkbox */}
-              {hasHandwritingCompatibleFile && !allDoneOrError && (
+              {!isViewingUploadTask &&
+                hasHandwritingCompatibleFile &&
+                !allDoneOrError && (
                 <label
                   className={`flex items-start gap-2.5 select-none ${
                     vlmUploadEnabled ? "cursor-not-allowed" : "cursor-pointer"
@@ -15659,7 +17485,7 @@ export default function WorkspaceClient({
                       setIsHandwriting(e.target.checked);
                       if (e.target.checked) setGenerateMap(true);
                     }}
-                    disabled={isUploading || vlmUploadEnabled}
+                    disabled={vlmUploadEnabled}
                     className="mt-0.5 w-4 h-4 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-50"
                   />
                   <span>
@@ -15678,13 +17504,13 @@ export default function WorkspaceClient({
               )}
 
               {/* Map generation toggle */}
-              {!allDoneOrError && (
+              {!isViewingUploadTask && !allDoneOrError && (
                 <label className="flex items-center gap-2.5 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={handwritingUploadEnabled || generateMap}
                     onChange={(e) => setGenerateMap(e.target.checked)}
-                    disabled={isUploading || handwritingUploadEnabled}
+                    disabled={handwritingUploadEnabled}
                     className="w-4 h-4 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-50"
                   />
                   <div>
@@ -15701,7 +17527,7 @@ export default function WorkspaceClient({
               )}
 
               {/* Source label */}
-              {!allDoneOrError && (
+              {!isViewingUploadTask && !allDoneOrError && (
                 <div>
                   <label className="block text-sm text-gray-400 mb-1.5">
                     Source label{" "}
@@ -15712,14 +17538,14 @@ export default function WorkspaceClient({
                     value={uploadLabel}
                     onChange={(e) => setUploadLabel(e.target.value)}
                     placeholder="e.g. Lecture 3, Chapter 5"
-                    disabled={isUploading}
                     className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors disabled:opacity-50"
                   />
                 </div>
               )}
 
               {/* Elapsed timer */}
-              {(isUploading || (allDoneOrError && uploadElapsedMs > 0)) && (
+              {(modalIsUploading ||
+                (allDoneOrError && modalUploadElapsedMs > 0)) && (
                 <div className="flex items-center justify-center gap-1.5 text-xs text-gray-400 tabular-nums">
                   <svg
                     className="w-3.5 h-3.5"
@@ -15735,8 +17561,8 @@ export default function WorkspaceClient({
                     />
                   </svg>
                   <span>
-                    {isUploading ? "Elapsed" : "Done in"}{" "}
-                    {formatElapsed(uploadElapsedMs)}
+                    {modalIsUploading ? "Elapsed" : "Done in"}{" "}
+                    {formatElapsed(modalUploadElapsedMs)}
                   </span>
                 </div>
               )}
@@ -15749,22 +17575,19 @@ export default function WorkspaceClient({
                     onClick={closeUploadModal}
                     className="neu-button flex-1 py-2.5 text-sm disabled:opacity-40"
                   >
-                    {allDoneOrError
-                      ? "Close"
-                      : isUploading
-                        ? "Cancel upload"
+                    {modalIsUploading
+                      ? "Cancel upload"
+                      : isViewingUploadTask
+                        ? "Close"
                         : "Cancel"}
                   </button>
-                  {!allDoneOrError && (
+                  {!isViewingUploadTask && (
                     <button
                       type="submit"
-                      disabled={uploadFiles.length === 0 || isUploading}
+                      disabled={uploadFiles.length === 0}
                       className="neu-button-primary flex flex-1 items-center justify-center gap-2 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {isUploading && <Spinner />}
-                      {isUploading
-                        ? `Uploading… (${Object.values(uploadStatuses).filter((s) => s === "done").length}/${uploadFiles.length})`
-                        : `Upload ${uploadFiles.length > 0 ? `${uploadFiles.length} file${uploadFiles.length > 1 ? "s" : ""}` : ""}`}
+                      {`Upload ${uploadFiles.length > 0 ? `${uploadFiles.length} file${uploadFiles.length > 1 ? "s" : ""}` : ""}`}
                     </button>
                   )}
                 </div>
@@ -15777,6 +17600,11 @@ export default function WorkspaceClient({
       {learnConfirmationAction ? (
         <LearnConfirmationDialog
           action={learnConfirmationAction}
+          request={
+            learnConfirmationAction === "full_rebuild"
+              ? learnUserInstruction.trim() || undefined
+              : undefined
+          }
           onCancel={() => setLearnConfirmationAction(null)}
           onConfirm={() => void handleConfirmLearnDestructiveAction()}
         />
@@ -15787,7 +17615,7 @@ export default function WorkspaceClient({
       <Toaster
         toasts={toasts}
         onDismiss={dismissToast}
-        onOpenChat={openChatById}
+        onOpenChat={openChatFromNotification}
         onReplyToChat={replyToChatFromNotification}
       />
     </div>

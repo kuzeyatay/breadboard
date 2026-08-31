@@ -106,13 +106,19 @@ test("a healthy startup ends on a welcome that is dismissed by hand", () => {
   // Two stacked slots are what makes one greeting cross-fade into the next.
   assert.equal(html.match(/class="welcome-word"/g)?.length, 2);
   assert.match(html, /id="welcome-continue"/);
-  assert.match(html, /Click to continue/);
+  assert.match(html, /aria-label="Continue to Breadboard"/);
+  assert.doesNotMatch(html, /press space to continue/i);
+  assert.doesNotMatch(css, /welcome-hint|hint-arrive|hint-breathe/);
   assert.match(html, /id="dissolve-bloom"/);
 
-  // Only "ready" starts the wait for the welcome, and only the button closes it.
+  // Only "ready" starts the wait for the welcome; the button's click and the
+  // undisplayed space shortcut are what close it.
   assert.match(script, /if \(state\.phase === "ready"\) beginWelcomeGate\(\)/);
   assert.match(script, /welcomeContinue\.addEventListener\("click"/);
+  assert.match(script, /window\.addEventListener\("keydown"/);
+  assert.match(script, /event\.key !== " "/);
   assert.match(script, /api\.continueToDashboard\(\)/);
+  assert.match(script, /const GREETING_HOLD_MS = 4_200;/);
 
   // Right-to-left scripts have to be marked, or Arabic and Hebrew render their
   // words in the wrong order.

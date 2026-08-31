@@ -12,6 +12,7 @@
 // The client then observes that run rather than owning whether it exists.
 
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import {
   ApiError,
   apiErrorResponse,
@@ -35,7 +36,7 @@ import {
 } from "@/lib/hermes/run-store.ts";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 import { getConversationById } from "@/lib/conversations/store.ts";
-import { attachExternalAgentRun } from "@/lib/conversations/external-agent-turns.ts";
+import { recordExternalAgentTurn } from "@/lib/conversations/external-agent-turns.ts";
 import {
   abortRun as abortMaxResearchRun,
   startRun as startMaxResearchRun,
@@ -48,9 +49,11 @@ import {
   type CapabilitySurface,
 } from "@/lib/hermes/capability-combinations.ts";
 import {
-  countAgentLaunchRequests,
   recordAgentLaunchRequest,
+  releaseAgentLaunchRequestSlot,
+  reserveAgentLaunchRequestSlot,
 } from "@/lib/hermes/agent-launch-store.ts";
+import { MAX_PARALLEL_AGENT_LAUNCHES } from "@/lib/hermes/agent-launch.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -187,17 +190,18 @@ export async function POST(request: Request) {
       );
     }
 
-    // One assistant message can own one inline run card. If the model needs a
-    // chain, the completed run returns in a later turn where the next card has
-    // its own owner. Accepting two here would either overwrite the first card
-    // or force one of the prompts into a synthetic user message.
-    if (countAgentLaunchRequests(run.id) > 0) {
+    // Independent workers get distinct hidden transcript turns, so a Super
+    // Agent may staff a small batch in one response. The ceiling prevents a
+    // model loop from turning one user message into an unbounded fan-out.
+    if (!reserveAgentLaunchRequestSlot(run.id)) {
       throw new ApiError(
-        409,
-        "agent_launch_one_per_turn",
-        "This assistant turn already delegated one runtime agent. Wait for its result before starting another.",
+        429,
+        "agent_launch_batch_limit_reached",
+        `This assistant turn already launched ${MAX_PARALLEL_AGENT_LAUNCHES} workers. Finish the batch with those results before starting another round.`,
       );
     }
+    try {
+      const workerClientMessageId = `agent-launch-${randomUUID()}`;
 
     // Max Research is read-only, approval-free, and commonly takes close to an
     // hour. Start it at the authenticated tool boundary instead of asking the
@@ -219,7 +223,7 @@ export async function POST(request: Request) {
       const dispatch = parseRuntimeRunDispatch(run);
       const maxRun = await startMaxResearchRun({
         userId: session.user_id,
-        requestId: originClientMessageId,
+        requestId: workerClientMessageId,
         question: brief,
         model:
           dispatch.model?.modelID ?? dispatch.modelIdentity?.modelID ?? "",
@@ -232,15 +236,23 @@ export async function POST(request: Request) {
         query: brief,
       };
       try {
-        attachExternalAgentRun({
+        recordExternalAgentTurn({
           conversation,
-          clientMessageId: originClientMessageId,
+          clientMessageId: workerClientMessageId,
+          surface,
+          // Private worker turns are hidden by metadata, not by violating the
+          // canonical store's non-empty message contract. Keep the exact brief
+          // that was sealed into the Runtime launch so replay and audit retain
+          // what this worker was actually asked to do.
+          userContent: brief,
           run: startedRun,
+          delegatedAgentRun: true,
+          internalAgentContinuation: true,
         });
         observeMaxResearchConversationTurn({
           userId: session.user_id,
           conversationId: conversation.id,
-          clientMessageId: originClientMessageId,
+          clientMessageId: workerClientMessageId,
           runId: maxRun.runId,
         });
       } catch (error) {
@@ -253,6 +265,7 @@ export async function POST(request: Request) {
 
     const queued = recordAgentLaunchRequest({
       runId: run.id,
+      workerClientMessageId,
       agentId: agent.id,
       agentName: agent.name,
       command: agent.command,
@@ -283,22 +296,25 @@ export async function POST(request: Request) {
         tool: TOOL,
       },
     });
-    return NextResponse.json({
-      ok: true,
-      data: {
-        status: "queued",
-        agent: agent.name,
-        agentId: agent.id,
-        requestId: queued.requestId,
-        confirmationRequired: agent.requiresLaunchApproval,
-        effect: startedRun
-          ? `${agent.name} is running privately. Its card is not shown to the user.`
-          : `${agent.name} starts privately after this turn. Its card is not shown to the user.`,
-        continuation:
-          "You will be given its result as a new internal turn. Summarize it in your own response and present any artifact or file it produced.",
-        instruction: `Do not ask for approval, mention a run card, or invent output. Briefly say that you are checking with ${agent.name}; when its result returns, speak as the Super Agent and summarize it.`,
-      },
-    });
+      return NextResponse.json({
+        ok: true,
+        data: {
+          status: "queued",
+          agent: agent.name,
+          agentId: agent.id,
+          requestId: queued.requestId,
+          confirmationRequired: agent.requiresLaunchApproval,
+          effect: startedRun
+            ? `${agent.name} is running privately as part of this batch. Its card is not shown to the user.`
+            : `${agent.name} starts privately after this turn as part of this batch. Its card is not shown to the user.`,
+          continuation:
+            "Each worker result is returned as a new internal turn. Summarize useful results as they arrive, say when other workers are still running, and present any artifact or file produced.",
+          instruction: `Do not ask for approval, mention a run card, or invent output. Briefly say that you are checking with ${agent.name}; when its result returns, speak as the Super Agent and summarize it.`,
+        },
+      });
+    } finally {
+      releaseAgentLaunchRequestSlot(run.id);
+    }
   } catch (error) {
     return apiErrorResponse(error);
   }

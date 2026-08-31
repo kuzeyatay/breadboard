@@ -33,6 +33,10 @@ const eslintConfig = defineConfig([
     "openscience-state/**",
     "openscience-workspace/**",
     "openwork-runtime/**",
+    "runtime-v2/**",
+    // Compiled capture helper, speech environment and model cache, demonstration
+    // recordings, and each learned workflow's compiled form. Created on demand.
+    "runtime/**",
     "openwork-state/**",
     "openwork-workspace/**",
     "postiz/**",

@@ -181,70 +181,18 @@ body[data-phase="failed"] .stage-halo {
   }
 }
 
-/* The whole scene is the button; the label only says so. */
+/* The whole scene is the button, with an accessible name but no visual prompt. */
 .welcome-continue {
   position: absolute;
-  display: grid;
   inset: 0;
   border: 0;
   background: none;
   cursor: pointer;
   padding: 0;
-  place-items: center;
-}
-
-.welcome-hint {
-  color: var(--ink-muted);
-  font-size: 0.76rem;
-  font-weight: 500;
-  letter-spacing: 0.19em;
-  opacity: 0;
-  text-transform: uppercase;
-  /* Far enough below the greeting to read as a separate invitation, close
-     enough to belong to it. `translate` keeps the offset out of `transform`,
-     which the arrive animation owns. */
-  translate: 0 clamp(6rem, 12vh, 8.5rem);
-  animation:
-    hint-arrive 760ms ease 1.25s both,
-    hint-breathe 3.6s ease-in-out 2.1s infinite;
-  transition: color 220ms ease;
-}
-
-.welcome-continue:hover .welcome-hint {
-  color: var(--ink);
 }
 
 .welcome-continue:focus-visible {
   outline: none;
-}
-
-.welcome-continue:focus-visible .welcome-hint {
-  border-radius: 999px;
-  outline: 2px solid rgba(73, 109, 94, 0.55);
-  outline-offset: 12px;
-}
-
-@keyframes hint-arrive {
-  from {
-    opacity: 0;
-    transform: translateY(7px);
-  }
-
-  to {
-    opacity: 0.62;
-    transform: none;
-  }
-}
-
-@keyframes hint-breathe {
-  0%,
-  100% {
-    opacity: 0.58;
-  }
-
-  50% {
-    opacity: 1;
-  }
 }
 
 /* ── Dissolve ─────────────────────────────────────────────────────────────── */
@@ -309,12 +257,6 @@ body[data-stage="dissolving"] .welcome-stage {
   opacity: 0;
   filter: blur(12px);
   transform: scale(1.07);
-}
-
-body[data-stage="dissolving"] .welcome-hint {
-  opacity: 0;
-  animation: none;
-  transition: opacity 240ms ease;
 }
 
 body[data-stage="dissolving"] .dissolve-bloom {
@@ -461,10 +403,6 @@ button:hover {
   .welcome-word.is-leaving {
     animation-duration: 240ms;
     animation-name: word-leave-plain;
-  }
-
-  .welcome-hint {
-    animation: hint-arrive 240ms ease 600ms both;
   }
 
   body[data-stage="dissolving"] .welcome-stage,

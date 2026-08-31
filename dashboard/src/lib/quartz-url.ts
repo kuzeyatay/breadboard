@@ -57,6 +57,34 @@ export function resolveQuartzBaseUrl(): string {
 
 export const QUARTZ_BASE_URL = resolveQuartzBaseUrl();
 
+type QuartzTheme = 'light' | 'dark';
+
+function isQuartzTheme(value: unknown): value is QuartzTheme {
+  return value === 'light' || value === 'dark';
+}
+
+export function quartzUrlWithTheme(url: string, theme: unknown): string {
+  if (!isQuartzTheme(theme)) return url;
+
+  try {
+    const themedUrl = new URL(url);
+    themedUrl.searchParams.set('theme', theme);
+    return themedUrl.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Seed Quartz with the dashboard theme before its first paint. The regular
+ * postMessage bridge still keeps an already-loaded frame in sync when the
+ * user changes themes later.
+ */
+export function quartzUrlWithAppTheme(url: string): string {
+  if (typeof document === 'undefined') return url;
+  return quartzUrlWithTheme(url, document.documentElement.dataset.theme);
+}
+
 export function quartzUrl(...segments: string[]): string {
   const baseUrl = resolveQuartzBaseUrl();
   const path = segments

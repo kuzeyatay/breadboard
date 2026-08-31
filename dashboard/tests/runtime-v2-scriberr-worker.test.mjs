@@ -9,6 +9,7 @@ import esbuild from "esbuild";
 import {
   executeScriberrGardenJob,
   expectedScriberrGardenInputCount,
+  resolveScriberrGardenDatabasePath,
   validateScriberrGardenExecutionScope,
   validateScriberrGardenRequest,
 } from "../scripts/runtime-v2-scriberr-executor.mjs";
@@ -171,6 +172,24 @@ test("worker request and authority schemas are exact and path-free", () => {
     videoId: "dQw4w9WgXcQ",
     canonicalUrl: "http://127.0.0.1/private",
   }));
+});
+
+test("worker resolves the historical development database used by Next", async () => {
+  const root = fs.mkdtempSync(path.join((await import("node:os")).tmpdir(), "bb-scriberr-db-"));
+  const sourceRoot = path.join(root, "dashboard", "src");
+  const databasePath = path.join(root, "dashboard", "db", "brain.db");
+  fs.mkdirSync(sourceRoot, { recursive: true });
+  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+  fs.writeFileSync(databasePath, "test");
+  try {
+    assert.equal(resolveScriberrGardenDatabasePath({
+      dataRoot: root,
+      repositoryRoot: root,
+      sourceRoot,
+    }), databasePath);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("probe worker loads only the attested staged source and reports bounded health", async () => {

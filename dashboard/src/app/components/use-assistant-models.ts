@@ -45,6 +45,28 @@ export interface UseAssistantModelsOptions {
   eager?: boolean;
 }
 
+// A reconnect used to overwrite the complete Google subscription catalog with
+// one bootstrap model. Repair that already-persisted state once when any model
+// picker encounters it. The lone row may be the stale subscription snapshot
+// itself or OpenRouter's vendor-scoped fallback after the subscription row was
+// lost entirely, so both shapes count as the same truncated Google catalog.
+let subscriptionCatalogRepairAttempted = false;
+
+function modelIds(rows: readonly { id?: unknown }[]): string[] {
+  return rows
+    .map((item) => (typeof item?.id === "string" ? item.id : null))
+    .filter((id): id is string => Boolean(id));
+}
+
+function googleSubscriptionCatalogLooksTruncated(ids: readonly string[]): boolean {
+  return ids.filter(
+    (id) =>
+      /^cliproxy\/gemini-/i.test(id) ||
+      /^openrouter\/google\/gemini-/i.test(id) ||
+      /^google\/gemini-/i.test(id),
+  ).length === 1;
+}
+
 export function useAssistantModels(
   options: UseAssistantModelsOptions = {},
 ): AssistantModelsState {
@@ -62,12 +84,25 @@ export function useAssistantModels(
     inFlight.current = true;
     setModelsLoading(true);
     try {
-      const rows = await loadAssistantModelCatalog({ force });
-      const ids = Array.isArray(rows)
-        ? rows
-            .map((item: { id?: unknown }) => (typeof item?.id === "string" ? item.id : null))
-            .filter((id: string | null): id is string => Boolean(id))
-        : [];
+      let rows = await loadAssistantModelCatalog({ force });
+      let ids = Array.isArray(rows) ? modelIds(rows) : [];
+      if (
+        !subscriptionCatalogRepairAttempted &&
+        googleSubscriptionCatalogLooksTruncated(ids)
+      ) {
+        subscriptionCatalogRepairAttempted = true;
+        try {
+          const repaired = await fetch("/api/cliproxy/sync", { method: "POST" });
+          if (repaired.ok) {
+            invalidateAssistantModelCatalog();
+            rows = await loadAssistantModelCatalog({ force: true });
+            ids = Array.isArray(rows) ? modelIds(rows) : [];
+          }
+        } catch {
+          // The subscription service is optional and may still be starting.
+          // Keep the catalog already loaded; a later reconnect will sync it.
+        }
+      }
       if (ids.length > 0) setModels(mergeAssistantModels(ids));
       loaded.current = true;
     } catch {

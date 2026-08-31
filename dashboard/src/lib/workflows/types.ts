@@ -4,6 +4,14 @@ export type LocalWorkflowSummary = {
   active: boolean;
   updatedAt: string | null;
   nodeCount: number;
+  source?: "canvas" | "demonstration";
+  stepCount?: number;
+  inputs?: Array<{
+    name: string;
+    label: string;
+    type: "string" | "number" | "date" | "file" | "folder";
+    required: boolean;
+  }>;
 };
 
 export type WorkflowRunResponse = {

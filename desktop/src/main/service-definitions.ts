@@ -638,6 +638,9 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       HERMES_DASHBOARD_SESSION_TOKEN: persistent.hermesSessionToken,
       BREADBOARD_INTERNAL_URL: urls.dashboard,
       BREADBOARD_HERMES_TOOL_SECRET: persistent.hermesToolSecret,
+      // `delegate_task` children hired with `[persona: <slug>]` resolve the
+      // slug from the same catalog the dashboard reads.
+      AGENCY_AGENTS_PATH: resolveAgencyAgentsPath(paths),
       OPENAI_BASE_URL: urls.chatmockV1,
       OPENAI_API_KEY: "local",
       CHATMOCK_BASE_URL: urls.chatmockV1,

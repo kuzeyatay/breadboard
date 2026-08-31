@@ -145,6 +145,7 @@ function setupPanel(root: HTMLElement) {
 
   function openPanel() {
     panel!.hidden = false
+    toggle!.hidden = true
     toggle!.setAttribute("aria-expanded", "true")
     if (!intelligenceLoaded) {
       intelligenceLoaded = true
@@ -157,6 +158,7 @@ function setupPanel(root: HTMLElement) {
   }
   function closePanel() {
     panel!.hidden = true
+    toggle!.hidden = false
     toggle!.setAttribute("aria-expanded", "false")
   }
   toggle.addEventListener("click", () => (panel.hidden ? openPanel() : closePanel()))
@@ -783,9 +785,7 @@ function setupPanel(root: HTMLElement) {
               updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : "",
               active: record.active === true,
               responseStartedAt:
-                typeof record.responseStartedAt === "string"
-                  ? record.responseStartedAt
-                  : undefined,
+                typeof record.responseStartedAt === "string" ? record.responseStartedAt : undefined,
               messages: Array.isArray(record.messages)
                 ? (record.messages as QuartzSessionItem["messages"])
                 : [],
@@ -1198,19 +1198,15 @@ function setupPanel(root: HTMLElement) {
   }
 
   /** Reattach a replaced/reloaded Quartz page to its server-owned run. */
-  async function reconnectActiveSession(
-    session: QuartzSessionItem,
-    generation: number,
-  ) {
+  async function reconnectActiveSession(session: QuartzSessionItem, generation: number) {
     if (
       disposed ||
       generation !== viewGeneration ||
       state.sessionId !== session.id ||
       !session.active
-    ) return
-    let assistantEl = messages!.querySelector<HTMLElement>(
-      ".breadboard-ai-assistant:last-of-type",
     )
+      return
+    let assistantEl = messages!.querySelector<HTMLElement>(".breadboard-ai-assistant:last-of-type")
     if (!assistantEl) assistantEl = addMessage("assistant", "…")
     setBusy(true)
     clearError()
@@ -1402,7 +1398,29 @@ function setupPanel(root: HTMLElement) {
   if (state.sessionId) void restoreTranscript()
 }
 
+function notifyDashboardQuartzReady() {
+  if (window.parent === window) return
+
+  const postReady = () => {
+    // Run after the iframe's load event so the dashboard has installed its
+    // publication-gap watchdog before this successful document cancels it.
+    window.setTimeout(() => {
+      window.parent.postMessage(
+        {
+          type: "second-brain:quartz-ready",
+          path: window.location.pathname,
+        },
+        "*",
+      )
+    }, 0)
+  }
+
+  if (document.readyState === "complete") postReady()
+  else window.addEventListener("load", postReady, { once: true })
+}
+
 document.addEventListener("nav", () => {
+  notifyDashboardQuartzReady()
   for (const root of Array.from(document.querySelectorAll<HTMLElement>(".breadboard-ai"))) {
     if (root.dataset.wired === "1") continue
     root.dataset.wired = "1"

@@ -1,7 +1,7 @@
 "use client";
 
-// Garden Chat video import panel: upload a local video file or paste a YouTube
-// URL (mutually exclusive), submit for asynchronous Scriberr transcription,
+// Garden Chat media import panel: upload a local video/audio file or paste a
+// YouTube URL (mutually exclusive), submit for asynchronous Scriberr transcription,
 // and follow the job through a persistent progress card that survives page
 // refreshes. On completion the transcript Markdown lives under the garden's
 // sources/ folder and the parent workspace is notified to refresh its tree.
@@ -17,18 +17,20 @@ import {
 import Link from "next/link";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import {
+  ACCEPTED_AUDIO_EXTENSIONS,
   ACCEPTED_VIDEO_EXTENSIONS,
-  VIDEO_FILE_ACCEPT_ATTR,
+  MEDIA_FILE_ACCEPT_ATTR,
   formatBytes,
   formatElapsed,
   formatVideoDuration,
   hasActiveJob,
   isTerminalJob,
+  mediaKindForFilename,
   nextPollDelayMs,
   stageIndexForStatus,
   stagesForInputKind,
   statusLabel,
-  validateVideoFile,
+  validateMediaFile,
   validateYouTubeInput,
 } from "@/lib/video-transcription-ui";
 import type { PublicVideoTranscriptionJob } from "@/lib/scriberr/types";
@@ -58,11 +60,16 @@ interface HealthInfo {
 export interface GardenVideoImportProps {
   clusterSlug: string;
   isOwner: boolean;
+  composerOpen?: boolean;
+  composerPresentation?: "inline" | "modal";
+  onComposerClose?: () => void;
+  onComposerSubmitted?: () => void;
   onSourceCreated?: (info: {
     jobId: string;
     sourceTitle: string;
     sourceRelPath: string;
     sourceSlug: string;
+    mediaKind: "audio" | "video";
   }) => void;
 }
 
@@ -73,6 +80,10 @@ function Spinner({ className = "h-3.5 w-3.5" }: { className?: string }) {
 export default function GardenVideoImport({
   clusterSlug,
   isOwner,
+  composerOpen = true,
+  composerPresentation = "inline",
+  onComposerClose,
+  onComposerSubmitted,
   onSourceCreated,
 }: GardenVideoImportProps) {
   const [jobs, setJobs] = useState<PublicVideoTranscriptionJob[]>([]);
@@ -116,9 +127,13 @@ export default function GardenVideoImport({
           if (jobsLoaded) {
             onSourceCreatedRef.current?.({
               jobId: job.id,
-              sourceTitle: job.sourceTitle ?? "Video transcript",
+              sourceTitle: job.sourceTitle ?? "Media transcript",
               sourceRelPath: job.outputRelativePath,
               sourceSlug: job.sourceSlug,
+              mediaKind:
+                job.inputKind === "youtube"
+                  ? "video"
+                  : mediaKindForFilename(job.originalFilename ?? ""),
             });
           }
         }
@@ -210,6 +225,15 @@ export default function GardenVideoImport({
     return () => window.clearInterval(id);
   }, [jobs]);
 
+  useEffect(() => {
+    if (!composerOpen || composerPresentation !== "modal") return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onComposerClose?.();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [composerOpen, composerPresentation, onComposerClose]);
+
   const selectFile = useCallback((file: File | null) => {
     setSubmitError(null);
     setDuplicateNotice(null);
@@ -222,7 +246,7 @@ export default function GardenVideoImport({
     setYoutubeUrl("");
     setUrlError(null);
     setPreview(null);
-    const validation = validateVideoFile(file, CLIENT_MAX_UPLOAD_BYTES);
+    const validation = validateMediaFile(file, CLIENT_MAX_UPLOAD_BYTES);
     setFileError(validation.ok ? null : (validation.message ?? null));
     setSelectedFile(file);
   }, []);
@@ -298,7 +322,7 @@ export default function GardenVideoImport({
       let res: Response;
       if (selectedFile) {
         const form = new FormData();
-        form.append("video", selectedFile, selectedFile.name);
+        form.append("media", selectedFile, selectedFile.name);
         res = await fetch(apiBase, { method: "POST", body: form });
       } else {
         res = await fetch(apiBase, {
@@ -321,7 +345,7 @@ export default function GardenVideoImport({
         setDuplicateNotice(
           data.source
             ? `Already imported as “${data.source.title ?? data.source.sourceRelPath}”.`
-            : "This video is already being transcribed.",
+            : "This media file is already being transcribed.",
         );
       }
       setSelectedFile(null);
@@ -332,6 +356,7 @@ export default function GardenVideoImport({
       if (fileInputRef.current) fileInputRef.current.value = "";
       pollStartedAtRef.current = Date.now();
       applyJobs(await fetchJobs());
+      onComposerSubmitted?.();
     } catch {
       setSubmitError("Failed to start transcription.");
     } finally {
@@ -339,10 +364,10 @@ export default function GardenVideoImport({
     }
   };
 
-  const postJobAction = async (jobId: string, action: "cancel" | "retry") => {
+  const cancelJob = async (jobId: string) => {
     setBusyJobId(jobId);
     try {
-      const res = await fetch(`${apiBase}/${encodeURIComponent(jobId)}/${action}`, {
+      const res = await fetch(`${apiBase}/${encodeURIComponent(jobId)}/cancel`, {
         method: "POST",
       });
       if (res.ok) {
@@ -358,10 +383,10 @@ export default function GardenVideoImport({
 
   const healthIssues: string[] = [];
   if (health && !health.enabled) {
-    healthIssues.push("Video transcription is disabled (VIDEO_TRANSCRIPTION_ENABLED).");
+    healthIssues.push("Media transcription is disabled (VIDEO_TRANSCRIPTION_ENABLED).");
   }
   if (health?.enabled && !health.scriberr.ok) {
-    healthIssues.push("Scriberr is not reachable — start Scriberr to transcribe videos.");
+    healthIssues.push("Scriberr is not reachable — start Scriberr to transcribe media.");
   }
   if (health?.enabled && !health.ytdlp.ok) {
     healthIssues.push("yt-dlp not found — YouTube previews will be limited.");
@@ -370,12 +395,21 @@ export default function GardenVideoImport({
     healthIssues.push("ffprobe not found — uploads cannot be validated.");
   }
 
-  const visibleJobs = jobs.slice(0, 6);
+  // This panel is a source library, not an error log. Failed and cancelled
+  // attempts remain available to the transcription backend, but do not become
+  // durable-looking source rows in the garden sidebar.
+  const visibleJobs = jobs
+    .filter((job) => job.status !== "failed" && job.status !== "cancelled")
+    .slice(0, 6);
 
-  return (
-    <div id="garden-videos-panel" className="bb-neu-accordion-panel border-t border-gray-800">
-      {isOwner && (
-        <div className="space-y-3 border-b border-gray-800 px-3 py-3">
+  const composer = isOwner && composerOpen ? (
+        <div
+          className={
+            composerPresentation === "modal"
+              ? "space-y-3 px-5 py-4"
+              : "space-y-3 border-b border-gray-800 px-3 py-3"
+          }
+        >
           {healthIssues.length > 0 && (
             <div className="space-y-0.5">
               {healthIssues.map((issue) => (
@@ -386,7 +420,7 @@ export default function GardenVideoImport({
             </div>
           )}
 
-          {/* Video file upload */}
+          {/* Video or audio file upload */}
           <div
             onDragOver={(event) => {
               event.preventDefault();
@@ -404,11 +438,11 @@ export default function GardenVideoImport({
             <input
               ref={fileInputRef}
               type="file"
-              accept={VIDEO_FILE_ACCEPT_ATTR}
+              accept={MEDIA_FILE_ACCEPT_ATTR}
               onChange={handleFileChange}
               className="hidden"
-              id="garden-video-file-input"
-              aria-label="Video file"
+              id="garden-media-file-input"
+              aria-label="Video or audio file"
             />
             {selectedFile ? (
               <div className="flex items-center justify-between gap-2 text-left">
@@ -428,8 +462,8 @@ export default function GardenVideoImport({
                     if (fileInputRef.current) fileInputRef.current.value = "";
                   }}
                   className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
-                  aria-label="Remove selected video"
-                  title="Remove selected video"
+                  aria-label="Remove selected media file"
+                  title="Remove selected media file"
                 >
                   <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
@@ -438,17 +472,20 @@ export default function GardenVideoImport({
               </div>
             ) : (
               <label
-                htmlFor="garden-video-file-input"
+                htmlFor="garden-media-file-input"
                 className="block cursor-pointer"
               >
                 <span className="text-xs text-gray-400">
-                  Drop a video here or{" "}
+                  Drop video or audio here, or{" "}
                   <span className="text-blue-900 underline underline-offset-2 transition-colors hover:text-blue-700">
                     choose a file
                   </span>
                 </span>
                 <span className="mt-1 block text-[10px] text-gray-600">
-                  Accepted: {ACCEPTED_VIDEO_EXTENSIONS.join(" ")}
+                  Video: {ACCEPTED_VIDEO_EXTENSIONS.join(" ")}
+                </span>
+                <span className="block text-[10px] text-gray-600">
+                  Audio: {ACCEPTED_AUDIO_EXTENSIONS.join(" ")}
                 </span>
               </label>
             )}
@@ -527,16 +564,80 @@ export default function GardenVideoImport({
             className="neu-button flex h-8 w-full items-center justify-center gap-2 rounded-md border border-gray-800 text-xs font-medium text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             {submitting ? <Spinner /> : null}
-            Transcribe video
+            {selectedFile
+              ? `Transcribe ${mediaKindForFilename(selectedFile.name)}`
+              : youtubeUrl.trim()
+                ? "Transcribe video"
+                : "Transcribe media"}
           </button>
           {submitError && <p className="text-[11px] text-red-400">{submitError}</p>}
           {duplicateNotice && (
             <p className="text-[11px] text-amber-400/90">{duplicateNotice}</p>
           )}
         </div>
-      )}
+  ) : null;
 
-      {/* Job progress cards + recent videos */}
+  return (
+    <>
+      {composerPresentation === "modal" && composer ? (
+        <div
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) onComposerClose?.();
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="garden-media-composer-title"
+            className="bb-modal-panel neu-dialog flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border"
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-5 py-3.5">
+              <div>
+                <h2
+                  id="garden-media-composer-title"
+                  className="text-base font-semibold text-white"
+                >
+                  Add video or audio
+                </h2>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  Upload media or paste a YouTube link to transcribe it.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onComposerClose}
+                className="neu-button-icon rounded-full p-1.5 text-gray-500"
+                aria-label="Close video or audio dialog"
+              >
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 18 18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div className="min-h-0 overflow-y-auto">{composer}</div>
+          </section>
+        </div>
+      ) : null}
+
+      <div
+        id="garden-media-panel"
+        className="bb-neu-accordion-panel border-t border-gray-800"
+      >
+        {composerPresentation === "inline" ? composer : null}
+
+      {/* Job progress cards + recent media */}
       <div className="max-h-72 overflow-y-auto">
         {!jobsLoaded ? (
           <div className="flex justify-center py-6">
@@ -544,27 +645,35 @@ export default function GardenVideoImport({
           </div>
         ) : visibleJobs.length === 0 ? (
           <div className="px-4 py-6 text-center">
-            <p className="text-xs text-gray-600">No videos yet.</p>
+            <p className="text-xs text-gray-600">No video or audio yet.</p>
           </div>
         ) : (
-          <ul className="divide-y divide-gray-800/70">
+          <ul>
             {visibleJobs.map((job) => {
               const stages = stagesForInputKind(job.inputKind);
               const currentIndex = stageIndexForStatus(job.inputKind, job.status);
               const active = !isTerminalJob(job);
               return (
-                <li key={job.id} className="px-3 py-2.5">
-                  <div className="flex items-center justify-between gap-2">
+                <li
+                  key={job.id}
+                  className="group px-4 py-2 transition-colors hover:bg-gray-900"
+                >
+                  {job.status === "completed" && job.sourceSlug ? (
+                    <Link
+                      href={`/garden/${clusterSlug}?note=${encodeURIComponent(job.sourceSlug)}`}
+                      className="block truncate text-xs font-medium text-cyan-100 transition-colors hover:text-white"
+                      title={job.sourceTitle ?? "Open transcript source"}
+                    >
+                      {job.sourceTitle ?? "Media transcript"}
+                    </Link>
+                  ) : (
                     <p
-                      className="min-w-0 truncate text-xs font-medium text-gray-200"
+                      className="truncate text-xs font-medium text-gray-200"
                       title={job.sourceTitle ?? undefined}
                     >
-                      {job.sourceTitle ?? "Video"}
+                      {job.sourceTitle ?? "Media"}
                     </p>
-                    <span className="shrink-0 text-[10px] uppercase tracking-wider text-gray-600">
-                      {job.inputKind === "youtube" ? "YouTube" : "Upload"}
-                    </span>
-                  </div>
+                  )}
 
                   {active && (
                     <div className="mt-1.5">
@@ -605,7 +714,7 @@ export default function GardenVideoImport({
                       </ol>
                       <button
                         type="button"
-                        onClick={() => void postJobAction(job.id, "cancel")}
+                        onClick={() => void cancelJob(job.id)}
                         disabled={busyJobId === job.id}
                         className="mt-1.5 rounded border border-gray-800 px-2 py-0.5 text-[10px] text-gray-500 transition-colors hover:border-red-900 hover:text-red-400 disabled:opacity-40"
                       >
@@ -615,39 +724,9 @@ export default function GardenVideoImport({
                   )}
 
                   {job.status === "completed" && (
-                    <div className="mt-1 flex items-center justify-between gap-2">
-                      <p className="min-w-0 truncate text-[10px] text-gray-600">
-                        {job.outputRelativePath}
-                      </p>
-                      {job.sourceSlug && (
-                        <Link
-                          href={`/garden/${clusterSlug}?note=${encodeURIComponent(job.sourceSlug)}`}
-                          className="shrink-0 text-[10px] text-cyan-300 underline underline-offset-2 hover:text-white"
-                        >
-                          Open source
-                        </Link>
-                      )}
-                    </div>
-                  )}
-
-                  {job.status === "failed" && (
-                    <div className="mt-1">
-                      <p className="text-[11px] text-red-400">
-                        {job.errorMessage ?? "Transcription failed."}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => void postJobAction(job.id, "retry")}
-                        disabled={busyJobId === job.id}
-                        className="mt-1 rounded border border-gray-800 px-2 py-0.5 text-[10px] text-gray-500 transition-colors hover:border-gray-600 hover:text-white disabled:opacity-40"
-                      >
-                        Retry
-                      </button>
-                    </div>
-                  )}
-
-                  {job.status === "cancelled" && (
-                    <p className="mt-1 text-[10px] text-gray-600">Cancelled.</p>
+                    <p className="mt-0.5 truncate text-[10px] text-gray-600">
+                      Transcript source
+                    </p>
                   )}
                 </li>
               );
@@ -655,6 +734,7 @@ export default function GardenVideoImport({
           </ul>
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }

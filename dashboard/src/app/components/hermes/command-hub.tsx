@@ -38,11 +38,11 @@ import { AGENT_TARS_SLASH_COMMAND } from "@/lib/ui-tars/identity.ts";
 import { AGENT_BROWSER_SLASH_COMMAND } from "@/lib/agent-browser/identity.ts";
 import { AGENT_REACH_COMMAND } from "@/lib/agent-reach/identity.ts";
 import { CAREER_OPS_COMMAND } from "@/lib/career-ops/identity.ts";
+import { OPENEXECUTIVE_COMMAND } from "@/lib/openexecutive/identity.ts";
 import { OPEN_GYM_COMMAND } from "@/lib/open-gym/identity.ts";
 import { VIBE_TRADING_COMMAND } from "@/lib/vibe-trading/identity.ts";
 import { STOCK_ANALYST_COMMAND } from "@/lib/stock-analyst/identity.ts";
 import { DEER_FLOW_COMMAND } from "@/lib/deer-flow/identity.ts";
-import { TRADINGAGENTS_COMMAND } from "@/lib/tradingagents/identity.ts";
 import { SHORTS_COMMAND } from "@/lib/shorts/identity.ts";
 import { FORMSMITH_COMMAND } from "@/lib/shaper/identity.ts";
 import { DEEP_RESEARCH_SLASH_COMMAND } from "@/lib/deep-research/identity.ts";
@@ -57,9 +57,12 @@ import { HYPERFRAMES_COMMAND } from "@/lib/hyperframes/identity.ts";
 import { RESOURCE2SKILL_COMMAND } from "@/lib/resource2skill/identity.ts";
 import { MATRAIX_COMMAND } from "@/lib/matraix/identity.ts";
 import { BOLT_SLIDES_COMMAND } from "@/lib/bolt-slides/identity.ts";
+import { CLASSROOM_COMMAND } from "@/lib/classroom/identity.ts";
+import { GODS_EYE_COMMAND } from "@/lib/gods-eye/identity.ts";
 import { OPENMONTAGE_COMMAND } from "@/lib/openmontage/identity.ts";
 import { OPENWORK_COMMAND } from "@/lib/openwork/identity.ts";
 import { OPENSCIENCE_COMMAND } from "@/lib/openscience/identity.ts";
+import { PRAXIST_COMMAND } from "@/lib/praxist/identity.ts";
 import { MAX_RESEARCH_COMMAND } from "@/lib/max-research/identity.ts";
 import { INBOX_ZERO_COMMAND } from "@/lib/inbox-zero/identity.ts";
 import { VIMAX_COMMAND } from "@/lib/vimax/identity.ts";
@@ -114,6 +117,12 @@ const Resource2SkillSettingsDialog = dynamic(
 const BoltSlidesSettingsDialog = dynamic(() => import("./bolt-slides-settings-dialog"), {
   ssr: false,
 });
+const ClassroomSettingsDialog = dynamic(() => import("./classroom-settings-dialog"), {
+  ssr: false,
+});
+const GodsEyeSettingsDialog = dynamic(() => import("./gods-eye-settings-dialog"), {
+  ssr: false,
+});
 const MatraixSettingsDialog = dynamic(() => import("./matraix-settings-dialog"), {
   ssr: false,
 });
@@ -140,11 +149,6 @@ const WardrobeSettingsDialog = dynamic(
 
 const InboxZeroSettingsDialog = dynamic(
   () => import("./inbox-zero-settings-dialog"),
-  { ssr: false },
-);
-
-const TradingAgentsSettingsDialog = dynamic(
-  () => import("./tradingagents-settings-dialog"),
   { ssr: false },
 );
 
@@ -229,7 +233,7 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: (item: CommandHubItem) => void;
-  /** Runs one of the user's saved automations as a chat turn. */
+  /** Stages one of the user's saved automations in the chat composer. */
   onRunWorkflow?: (workflow: LocalWorkflowSummary) => void;
   /** Opens Settings → MCP for server setup and management. */
   onOpenMcpSettings?: () => void;
@@ -250,8 +254,15 @@ interface Props {
   onSelectDeepTutor?: () => void;
   /** When provided, selecting Career Ops inserts its canonical command. */
   onSelectCareerOps?: () => void;
+  /** When provided, selecting OpenExecutive inserts its canonical command. */
+  onSelectOpenExecutive?: () => void;
   /** When provided, selecting openGym inserts its canonical command. */
   onSelectOpenGym?: () => void;
+  /**
+   * Kept for composer compatibility with direct `/agents:trading-agent`
+   * invocations. Trading Agent is intentionally not a user-selectable palette
+   * entry; Super Agent can route a firm analysis to it directly.
+   */
   onSelectTradingAgents?: () => void;
   /**
    * Shorts, like Trading Agent, is selected rather than typed after: it takes a
@@ -283,12 +294,18 @@ interface Props {
   onSelectMatraix?: () => void;
   /** When provided, selecting Bolt Slides inserts its canonical command. */
   onSelectBoltSlides?: () => void;
+  /** When provided, selecting Classroom inserts its canonical command. */
+  onSelectClassroom?: () => void;
+  /** When provided, selecting God's Eye inserts its canonical command. */
+  onSelectGodsEye?: () => void;
   /** When provided, selecting OpenMontage inserts its canonical command. */
   onSelectOpenMontage?: () => void;
   /** When provided, selecting OpenWork inserts its canonical command. */
   onSelectOpenwork?: () => void;
   /** When provided, selecting OpenScience inserts its canonical command. */
   onSelectOpenscience?: () => void;
+  /** Inserts the command for an existing Praxist task-project directory. */
+  onSelectPraxist?: () => void;
   onSelectMaxResearch?: () => void;
   /** When provided, selecting Inbox Zero inserts its canonical command. */
   onSelectInboxZero?: () => void;
@@ -464,8 +481,8 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectMeetingNotes,
       onSelectDeepTutor,
       onSelectCareerOps,
+      onSelectOpenExecutive,
       onSelectOpenGym,
-      onSelectTradingAgents,
       onSelectShorts,
       onSelectFormsmith,
       onSelectVibeTrading,
@@ -480,9 +497,12 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectResource2Skill,
       onSelectMatraix,
       onSelectBoltSlides,
+      onSelectClassroom,
+      onSelectGodsEye,
       onSelectOpenMontage,
       onSelectOpenwork,
       onSelectOpenscience,
+      onSelectPraxist,
       onSelectMaxResearch,
       onSelectInboxZero,
       onSelectVimax,
@@ -529,12 +549,13 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const [resource2SkillSettingsOpen, setResource2SkillSettingsOpen] = useState(false);
     const [matraixSettingsOpen, setMatraixSettingsOpen] = useState(false);
     const [boltSlidesSettingsOpen, setBoltSlidesSettingsOpen] = useState(false);
+    const [classroomSettingsOpen, setClassroomSettingsOpen] = useState(false);
+    const [godsEyeSettingsOpen, setGodsEyeSettingsOpen] = useState(false);
     const [openMontageSettingsOpen, setOpenMontageSettingsOpen] = useState(false);
     const [openworkSettingsOpen, setOpenworkSettingsOpen] = useState(false);
     const [openscienceSettingsOpen, setOpenscienceSettingsOpen] = useState(false);
     const [wardrobeSettingsOpen, setWardrobeSettingsOpen] = useState(false);
     const [inboxZeroSettingsOpen, setInboxZeroSettingsOpen] = useState(false);
-    const [tradingAgentsSettingsOpen, setTradingAgentsSettingsOpen] = useState(false);
     // The agent whose generic settings panel is open, if any.
     const [agentSettingsFor, setAgentSettingsFor] = useState<string | null>(null);
     const [recents, setRecents] = useState<string[]>([]);
@@ -782,14 +803,6 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         CAREER_OPS_COMMAND,
         "job search offer evaluation cv resume cover letter application tracker interview salary recruiter ats portal scan",
       );
-    const showTradingAgents =
-      surface !== "quartz_ai" &&
-      Boolean(onSelectTradingAgents) &&
-      matchesAgentSearch(
-        "Trading Agent",
-        TRADINGAGENTS_COMMAND,
-        "tradingagents stock ticker market trading finance shares equity crypto invest analyst fundamentals sentiment news portfolio risk buy sell hold",
-      );
     const showShorts =
       surface !== "quartz_ai" &&
       Boolean(onSelectShorts) &&
@@ -926,13 +939,29 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         OPENSCIENCE_COMMAND,
         "research science experiment hypothesis literature paper arxiv pubmed uniprot pdb ensembl chembl pubchem openalex biology physics chemistry machine learning training dataset simulation analysis plot figure notebook python",
       );
+    const showOpenExecutive =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectOpenExecutive) &&
+      matchesAgentSearch(
+        "OpenExecutive",
+        OPENEXECUTIVE_COMMAND,
+        "executive strategy chief of staff leadership decision analysis committee specialist operations finance legal marketing sales engineering research",
+      );
+    const showPraxist =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectPraxist) &&
+      matchesAgentSearch(
+        "Praxist",
+        PRAXIST_COMMAND,
+        "autonomous research development experiment measurable task project multi agent generations findings frontier",
+      );
 
     const showMaxResearch =
       Boolean(onSelectMaxResearch) &&
       matchesAgentSearch(
         "Max Research",
         MAX_RESEARCH_COMMAND,
-        "research everything exhaustive all five agents deep web internet papers literature workspace experiment reconcile one answer long thorough max",
+        "research everything exhaustive all six agents deep web internet papers literature workspace experiment reconcile one answer long thorough max",
       );
     const showInboxZero =
       surface !== "quartz_ai" &&
@@ -1056,14 +1085,31 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         BOLT_SLIDES_COMMAND,
         "deck slides presentation pitch keynote talk slideshow present presenter interactive web react animated builds",
       );
+    const showClassroom =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectClassroom) &&
+      matchesAgentSearch(
+        "Classroom",
+        CLASSROOM_COMMAND,
+        "classroom lesson teach course class lecture tutor learn quiz simulation openmaic students teacher education",
+      );
+    const showGodsEye =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectGodsEye) &&
+      matchesAgentSearch(
+        "God's Eye",
+        GODS_EYE_COMMAND,
+        "globe earth satellite satellites aircraft flights ships vessels earthquakes fires cameras cctv osint world map live tracking thermal night vision spy view",
+      );
     const hasVisibleAgents =
+      showGodsEye ||
       showAgentTars ||
       showAgentBrowser ||
       showAgentReach ||
       showGetDoc ||
       showCareerOps ||
+      showOpenExecutive ||
       showOpenGym ||
-      showTradingAgents ||
       showVibeTrading ||
       showStockAnalyst ||
       showDeerFlow ||
@@ -1080,6 +1126,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       showResource2Skill ||
       showMatraix ||
       showBoltSlides ||
+      showClassroom ||
       showOpenMontage ||
       showOpenwork ||
       showOpenscience ||
@@ -1838,6 +1885,41 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                       </li>
                       ) }]
                       : []),
+                    ...(showOpenExecutive
+                      ? [{ name: "OpenExecutive", node: (
+                      <li key="openexecutive"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:openexecutive"))}
+                      >
+                        <button
+                          id="openexecutive-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectOpenExecutive?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{OPENEXECUTIVE_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Runs an executive team of specialists to analyze complex decisions, challenge assumptions, and turn the result into an actionable recommendation.
+                          </span>
+                        </button>
+                        <AgentSettingsButton
+                          name="OpenExecutive"
+                          onOpen={() => {
+                            setAgentSettingsFor("openexecutive");
+                            onOpenChange(false);
+                          }}
+                        />
+                        <FavoriteBox
+                          color={highlightColorForId("agent:openexecutive")}
+                          onColorChange={(color) => setHighlightId("agent:openexecutive", color)}
+                          label="Choose OpenExecutive highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
                     ...(showOpenGym
                       ? [{ name: "openGym", node: (
                       <li key="open-gym"
@@ -1862,41 +1944,6 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                           color={highlightColorForId("agent:open-gym")}
                           onColorChange={(color) => setHighlightId("agent:open-gym", color)}
                           label="Choose openGym highlight color"
-                        />
-                      </li>
-                      ) }]
-                      : []),
-                    ...(showTradingAgents
-                      ? [{ name: "Trading Agent", node: (
-                      <li key="trading-agent"
-                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
-                        style={capabilityHighlightStyle(highlightColorForId("agent:trading-agent"))}
-                      >
-                        <button
-                          id="tradingagents-entry"
-                          type="button"
-                          onClick={() => {
-                            onSelectTradingAgents?.();
-                            onOpenChange(false);
-                          }}
-                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
-                        >
-                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{TRADINGAGENTS_COMMAND}</span>
-                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Puts a whole analyst firm on one company: market, sentiment, news and fundamentals, argued by a bull and a bear, then judged by a risk team. Asks for a symbol and a date instead of a message.
-                          </span>
-                        </button>
-                        <AgentSettingsButton
-                          name="Trading Agent"
-                          onOpen={() => {
-                            setTradingAgentsSettingsOpen(true);
-                            onOpenChange(false);
-                          }}
-                        />
-                        <FavoriteBox
-                          color={highlightColorForId("agent:trading-agent")}
-                          onColorChange={(color) => setHighlightId("agent:trading-agent", color)}
-                          label="Choose Trading Agent highlight color"
                         />
                       </li>
                       ) }]
@@ -2343,6 +2390,76 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                       </li>
                       ) }]
                       : []),
+                    ...(showGodsEye
+                      ? [{ name: "God's Eye", node: (
+                      <li key="gods-eye"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:gods-eye"))}
+                      >
+                        <button
+                          id="gods-eye-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectGodsEye?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{GODS_EYE_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Aims a photorealistic live globe &mdash; aircraft, ships, satellites, quakes, cameras &mdash; at whatever you name, framed right in the chat.
+                          </span>
+                        </button>
+                        <AgentSettingsButton
+                          name="God's Eye"
+                          onOpen={() => {
+                            setGodsEyeSettingsOpen(true);
+                            onOpenChange(false);
+                          }}
+                        />
+                        <FavoriteBox
+                          color={highlightColorForId("agent:gods-eye")}
+                          onColorChange={(color) => setHighlightId("agent:gods-eye", color)}
+                          label="Choose God's Eye highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
+                    ...(showClassroom
+                      ? [{ name: "Classroom", node: (
+                      <li key="classroom"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:classroom"))}
+                      >
+                        <button
+                          id="classroom-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectClassroom?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{CLASSROOM_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Teaches a topic or your attached documents as an interactive classroom &mdash; slides with an AI teacher, quizzes, simulations, and project work.
+                          </span>
+                        </button>
+                        <AgentSettingsButton
+                          name="Classroom"
+                          onOpen={() => {
+                            setClassroomSettingsOpen(true);
+                            onOpenChange(false);
+                          }}
+                        />
+                        <FavoriteBox
+                          color={highlightColorForId("agent:classroom")}
+                          onColorChange={(color) => setHighlightId("agent:classroom", color)}
+                          label="Choose Classroom highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
                     ...(showMatraix
                       ? [{ name: "MatrAIx", node: (
                       <li key="matraix"
@@ -2500,7 +2617,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{MAX_RESEARCH_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Puts all five research agents on one question — the indexed web, the open internet, the papers, and a workspace that runs things — then reconciles what they found into one answer. Long.
+                            Puts all six research agents on one question — the indexed web, the open internet, the papers, a workspace that runs things, and an autonomous R&amp;D project — then reconciles what they found into one answer. Long.
                           </span>
                         </button>
                         <FavoriteBox
@@ -2542,6 +2659,34 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                           color={highlightColorForId("agent:openscience")}
                           onColorChange={(color) => setHighlightId("agent:openscience", color)}
                           label="Choose OpenScience highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
+                    ...(showPraxist
+                      ? [{ name: "Praxist", node: (
+                      <li key="praxist"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:praxist"))}
+                      >
+                        <button
+                          id="praxist-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectPraxist?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{PRAXIST_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Runs an existing measurable Praxist task project through its multi-agent, multi-generation research loop. Add the absolute task directory after the command.
+                          </span>
+                        </button>
+                        <FavoriteBox
+                          color={highlightColorForId("agent:praxist")}
+                          onColorChange={(color) => setHighlightId("agent:praxist", color)}
+                          label="Choose Praxist highlight color"
                         />
                       </li>
                       ) }]
@@ -3124,6 +3269,12 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         {surface === "quartz_ai" ? null : boltSlidesSettingsOpen ? (
           <BoltSlidesSettingsDialog onClose={() => setBoltSlidesSettingsOpen(false)} />
         ) : null}
+        {surface === "quartz_ai" ? null : classroomSettingsOpen ? (
+          <ClassroomSettingsDialog onClose={() => setClassroomSettingsOpen(false)} />
+        ) : null}
+        {surface === "quartz_ai" ? null : godsEyeSettingsOpen ? (
+          <GodsEyeSettingsDialog onClose={() => setGodsEyeSettingsOpen(false)} />
+        ) : null}
         {surface === "quartz_ai" ? null : matraixSettingsOpen ? (
           <MatraixSettingsDialog onClose={() => setMatraixSettingsOpen(false)} />
         ) : null}
@@ -3141,9 +3292,6 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         ) : null}
         {surface === "quartz_ai" ? null : openworkSettingsOpen ? (
           <OpenworkSettingsDialog onClose={() => setOpenworkSettingsOpen(false)} />
-        ) : null}
-        {surface === "quartz_ai" ? null : tradingAgentsSettingsOpen ? (
-          <TradingAgentsSettingsDialog onClose={() => setTradingAgentsSettingsOpen(false)} />
         ) : null}
         {surface === "quartz_ai" ? null : agentSettingsFor ? (
           <AgentSettingsDialog

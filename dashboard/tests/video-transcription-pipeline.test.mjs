@@ -49,6 +49,25 @@ function createFakeScriberr({ failTranscription = false, malformedTranscript = f
       return;
     }
 
+    if (
+      req.method === "POST" &&
+      (url === "/api/v1/transcription/upload" ||
+        url === "/api/v1/transcription/upload-video")
+    ) {
+      req.resume();
+      req.on("end", () => {
+        const job = {
+          id: `scr-${state.jobs.size + 1}`,
+          status: "uploaded",
+          title: null,
+          polls: 0,
+        };
+        state.jobs.set(job.id, job);
+        send(200, { id: job.id, status: job.status, title: job.title });
+      });
+      return;
+    }
+
     const startMatch = url.match(/^\/api\/v1\/transcription\/([^/]+)\/start$/);
     if (req.method === "POST" && startMatch) {
       const job = state.jobs.get(startMatch[1]);
@@ -279,6 +298,40 @@ test("YouTube job runs end-to-end: submit, poll, transcript, markdown in sources
     // The runner passed through the visible stages.
     assert.equal(done.progressPercent, 100);
     assert.equal(harness.counters.ingestUserId, 1);
+  } finally {
+    await fake.close();
+    harness.cleanup();
+  }
+});
+
+test("MP3 job uses Scriberr audio upload and writes an audio Markdown source", async () => {
+  const fake = await createFakeScriberr();
+  const harness = makeHarness(fake);
+  const mediaPath = path.join(harness.tempDir, "lecture.mp3");
+  fs.writeFileSync(mediaPath, "fake-mp3-bytes");
+  try {
+    const job = harness.store.createJob({
+      clusterId: 1,
+      gardenSlug: "physics",
+      userId: 1,
+      inputKind: "upload",
+      originalFilename: "lecture.mp3",
+      sourceTitle: "Audio Lecture",
+      mediaTempPath: mediaPath,
+      mediaSha256: "ab".repeat(32),
+    });
+    const done = await harness.runner.runExact(job.id, "start");
+    assert.equal(done.status, "completed");
+    const sourcePath = path.join(
+      harness.contentDir,
+      "physics",
+      "sources",
+      "audio-lecture.md",
+    );
+    const content = fs.readFileSync(sourcePath, "utf8");
+    assert.match(content, /source_type: "audio_upload"/);
+    assert.match(content, /Uploaded audio file/);
+    assert.match(content, /tags: \[source, audio, transcript\]/);
   } finally {
     await fake.close();
     harness.cleanup();

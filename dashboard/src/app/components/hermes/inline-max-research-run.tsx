@@ -4,7 +4,7 @@
 //
 // A run here is measured in tens of minutes, so the card's real job is not the
 // answer at the end — it is making a long silence legible while it works. What
-// it shows is the roster: which of the five were commissioned, why each, and
+// it shows is the roster: which of the six were commissioned, why each, and
 // where each one currently stands. A run that says nothing for forty minutes is
 // indistinguishable from one that has died, and the difference matters most
 // exactly when the wait is longest.
@@ -43,6 +43,7 @@ const LABEL: Record<string, string> = {
   agent_reach: "Agent Reach",
   get_doc: "Get Doc",
   openscience: "OpenScience",
+  praxist: "Praxist",
   aris: "ARIS",
 };
 
@@ -55,6 +56,23 @@ const STATE_TEXT: Record<ParticipantState, string> = {
   aborted: "stopped",
 };
 
+/**
+ * The run's position in a few words, for a label rather than a card: who is
+ * still working once the plan is known, otherwise the stage itself.
+ */
+export function describeStage(
+  stage: string,
+  participants: readonly Pick<ParticipantRow, "participant" | "state">[],
+): string {
+  const working = participants
+    .filter((row) => row.state === "planned" || row.state === "running")
+    .map((row) => LABEL[row.participant] ?? row.participant);
+  if (stage === "Commissioned" && working.length) {
+    return `${working.join(", ")} working`;
+  }
+  return stage;
+}
+
 export default function InlineMaxResearchRun({
   runId,
   query,
@@ -64,6 +82,7 @@ export default function InlineMaxResearchRun({
   persistedDurationMs,
   onTerminal,
   onRetry,
+  onStage,
 }: {
   runId: string;
   query: string;
@@ -73,6 +92,12 @@ export default function InlineMaxResearchRun({
   persistedDurationMs?: number;
   onTerminal?: (result: ExternalAgentTerminalResult) => void;
   onRetry?: () => void;
+  /**
+   * Where the run is, in a few words, for a surface that hides this card. A
+   * delegated run draws nothing of its own, so without this the row that
+   * launched it shows the same label for the whole hour it can take.
+   */
+  onStage?: (stage: string) => void;
 }) {
   const terminalAtMount =
     persistedOutcome && persistedOutcome !== "running" ? persistedOutcome : null;
@@ -97,6 +122,17 @@ export default function InlineMaxResearchRun({
   useEffect(() => {
     onTerminalRef.current = onTerminal;
   }, [onTerminal]);
+
+  const onStageRef = useRef(onStage);
+  useEffect(() => {
+    onStageRef.current = onStage;
+  }, [onStage]);
+  useEffect(() => {
+    if (!onStageRef.current || terminalAtMount) return;
+    onStageRef.current(
+      status === "running" ? describeStage(stage, participants) : "",
+    );
+  }, [stage, participants, status, terminalAtMount]);
 
   const settle = useCallback(
     (outcome: ExternalAgentOutcome, content: string) => {

@@ -23,6 +23,8 @@ const STANDING: Record<MaxResearchParticipant, string> = {
     "The primary scholarly literature, with free full texts saved to artifacts. Strongest on method and provenance, which is the only place a widely repeated figure's origin can be checked; weakest on currency, since publication lags.",
   openscience:
     "Its own workspace: code, data and small experiments. Strongest where a question can be settled by doing rather than reading, and its observations are first-hand rather than reported; weakest in scope, since it ran one thing under one set of conditions.",
+  praxist:
+    "A prepared measurable R&D task executed by a multi-agent, multi-generation research loop. Strongest on accepted experimental findings with preserved run artifacts; weakest when the configured task only partially overlaps the question, which must be stated rather than generalized away.",
   aris: "Methodology rather than evidence. It contributes the local harness's research workflow, and contributes no findings of its own — nothing it says is a fact about the world, and it must never be cited as one.",
 };
 
@@ -172,7 +174,7 @@ export function maxResearchSynthesisPrompt(input: {
     // internal names for parts of this machine; a reader has no idea what they
     // are, and the attribution a reader actually needs is to the study or
     // publisher, which is a fact about the world rather than about the run.
-    "Never name a participant in the answer. `deep_research`, `agent_reach`, `get_doc`, `openscience` and `aris` are internal names for parts of this system, and a reader does not know what they are. Attribute a finding to its source — the study, the dataset, the publisher — not to whichever participant retrieved it. The one exception is the line about what went unread, which is about the run rather than the world, and even there name the part of the record — the open internet, the primary literature, the workspace — rather than the participant.",
+    "Never name a participant in the answer. `deep_research`, `agent_reach`, `get_doc`, `openscience`, `praxist` and `aris` are internal names for parts of this system, and a reader does not know what they are. Attribute a finding to its source — the study, the dataset, the publisher, or the named experiment — not to whichever participant retrieved it. The one exception is the line about what went unread, which is about the run rather than the world, and even there name the part of the record — the open internet, the primary literature, the workspace, the configured R&D task — rather than the participant.",
     "",
     standard,
     "",
@@ -188,7 +190,7 @@ export function maxResearchSynthesisPrompt(input: {
  * What the run covered, for the answer's own header and the evidence panel.
  *
  * Deliberately counts participants that produced nothing as well: a run where
- * three of five failed is a different answer from one where all five worked,
+ * three of six failed is a different answer from one where all six worked,
  * and the reader is entitled to know which they are holding.
  */
 export function coverageSummary(results: readonly ParticipantResult[]): {

@@ -54,11 +54,15 @@ const FORCED_REAP_TIMEOUT: Duration = Duration::from_secs(1);
 const CHILD_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SUPERVISOR_ACTIVATION_RECORD: &[u8] = b"{\"type\":\"activate\",\"protocolVersion\":1}\n";
 const MEBIBYTE_BYTES: u64 = 1024 * 1024;
-pub(crate) const DEVELOPMENT_SYSTEM_COMMIT_RESERVE_MB: u64 = 4 * 1024;
+// Development system-commit reserve: max(2 GiB, 5% of the commit limit
+// bounded to 1-4 GiB) plus a 256 MiB guard band. Keep in sync with
+// `admission.rs` and `runtime-supervisor/src/main.rs`.
+pub(crate) const DEVELOPMENT_SYSTEM_COMMIT_RESERVE_MB: u64 = 2 * 1024;
 const SYSTEM_COMMIT_RESERVE_FLOOR_BYTES: u64 =
     DEVELOPMENT_SYSTEM_COMMIT_RESERVE_MB * MEBIBYTE_BYTES;
-const SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES: u64 = 1536 * MEBIBYTE_BYTES;
-const SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES: u64 = 8 * 1024 * MEBIBYTE_BYTES;
+const SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES: u64 = 1024 * MEBIBYTE_BYTES;
+const SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES: u64 = 4 * 1024 * MEBIBYTE_BYTES;
+const SYSTEM_COMMIT_DERIVED_RESERVE_DIVISOR: u64 = 20;
 const SYSTEM_COMMIT_RESERVE_GUARD_BAND_BYTES: u64 = 256 * MEBIBYTE_BYTES;
 const SYSTEM_COMMIT_DYNAMIC_BURST_MULTIPLIER: u64 = 4;
 const SYSTEM_COMMIT_DYNAMIC_BURST_MAX_BYTES: u64 = 32 * 1024 * MEBIBYTE_BYTES;
@@ -800,6 +804,9 @@ impl TrustedProcessEnvironment {
                 }
                 breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterCareerOps => {
                     "outer-career-ops-worker"
+                }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterOpenExecutive => {
+                    "outer-openexecutive-worker"
                 }
                 breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::SystemLocation => {
                     "system-location-worker"
@@ -1727,6 +1734,12 @@ fn safe_supervisor_failure(code: &str, untrusted_message: &str) -> ProcessSuperv
             "Service process could not be resumed after containment",
         ),
         "WAIT_FAILED" => ("WAIT_FAILED", "Service process exit wait failed"),
+        // Minted by this crate, not parsed from a supervisor record: the
+        // supervisor died before it could report anything at all.
+        "SUPERVISION_LOST" => (
+            "SUPERVISION_LOST",
+            "Service process supervisor exited before reporting its tree exit",
+        ),
         "EXIT_QUERY_FAILED" => (
             "EXIT_QUERY_FAILED",
             "Service process exit status could not be read",
@@ -2067,7 +2080,7 @@ impl RunningProcessOwner {
                 return ProcessSpawnAttempt::NotCreated {
                     launch: Box::new(launch),
                     error,
-                }
+                };
             }
         };
         let entrypoint_argument = match worker_entrypoint_argument(launch.entrypoint.as_ref()) {
@@ -2076,7 +2089,7 @@ impl RunningProcessOwner {
                 return ProcessSpawnAttempt::NotCreated {
                     launch: Box::new(launch),
                     error,
-                }
+                };
             }
         };
         let working_directory_argument =
@@ -2086,7 +2099,7 @@ impl RunningProcessOwner {
                     return ProcessSpawnAttempt::NotCreated {
                         launch: Box::new(launch),
                         error: ProcessOwnerError::Path(error),
-                    }
+                    };
                 }
             };
         let mut command = Command::new(launch.supervisor.absolute());
@@ -2152,7 +2165,7 @@ impl RunningProcessOwner {
                 return ProcessSpawnAttempt::NotCreated {
                     launch: Box::new(launch),
                     error: ProcessOwnerError::Spawn(error),
-                }
+                };
             }
         };
         let supervisor_pid = child.id();
@@ -2346,7 +2359,7 @@ impl RunningProcessOwner {
             Some(_) => {
                 return Err(ProcessOwnerError::InvalidState(
                     "a different listener ownership inspection remains outstanding",
-                ))
+                ));
             }
             None => {
                 let request_id = self.listener_inspection_sequence.checked_add(1).ok_or(
@@ -2509,7 +2522,7 @@ impl RunningProcessOwner {
                 SupervisorRead::End => return Err(ProcessOwnerError::MissingTerminalReceipt),
                 SupervisorRead::Io(error) => return Err(ProcessOwnerError::Control(error)),
                 SupervisorRead::Protocol(message) => {
-                    return Err(ProcessOwnerError::Protocol(message))
+                    return Err(ProcessOwnerError::Protocol(message));
                 }
             };
             let encoded_bytes = line.len();
@@ -2837,6 +2850,111 @@ impl RunningProcessOwner {
         };
         self.exit_confirmation_minted = true;
         Ok(receipt)
+    }
+
+    /// Mints the one tree-exit receipt for a supervisor that closed its event
+    /// stream without ever emitting a terminal record.
+    ///
+    /// The pinned supervisor owns the target tree through a Job Object created
+    /// with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (see
+    /// `runtime-supervisor/src/main.rs`), so its own death closes the sole
+    /// handle to that job and Windows terminates every resident. The
+    /// supervisor's exit is therefore the same zero-residency proof the receipt
+    /// would have relayed, delivered by the kernel instead of by the cleanup
+    /// epilogue. This path accepts nothing weaker: the reader must be at EOF
+    /// **and** the supervisor process must be reaped within its bounded
+    /// deadline. A caller that cannot show both keeps the live owner and may
+    /// retry, exactly as it does for a transient `confirm_exit` failure.
+    ///
+    /// What is lost with the record is only diagnostics — final accounting, the
+    /// target exit code, commit-guard evidence — so the receipt is deliberately
+    /// classified `SupervisorFailure` with incomplete accounting and can never
+    /// become worker-completion authority.
+    pub fn confirm_supervision_lost(&mut self) -> Result<ProcessTreeExit, ProcessOwnerError> {
+        if self.exit_confirmation_minted {
+            return Err(ProcessOwnerError::InvalidState(
+                "tree-exit authority was already minted",
+            ));
+        }
+        if self.terminal_seen || self.observed_terminal.is_some() || self.pending_terminal.is_some()
+        {
+            return Err(ProcessOwnerError::InvalidState(
+                "supervision-lost authority cannot supersede an observed terminal receipt",
+            ));
+        }
+        // EOF is what separates a lost supervisor from a merely quiet one. A
+        // reader still holding the pipe proves nothing about residency, so an
+        // empty-but-connected channel must stay a plain wait timeout.
+        match recv_supervisor_read_until(&self.events, Instant::now()) {
+            Err(ProcessOwnerError::MissingTerminalReceipt) | Ok(SupervisorRead::End) => {}
+            Ok(SupervisorRead::Record(_)) => {
+                return Err(ProcessOwnerError::InvalidState(
+                    "supervisor event stream still had records to read",
+                ));
+            }
+            Ok(SupervisorRead::Io(error)) => return Err(ProcessOwnerError::Control(error)),
+            Ok(SupervisorRead::Protocol(message)) => {
+                self.supervisor_protocol_poisoned = true;
+                return Err(ProcessOwnerError::Protocol(message));
+            }
+            Err(error) => return Err(error),
+        }
+        // Reaping the supervisor is the containment proof itself: until it is
+        // gone its job handle is open and the tree may still be resident.
+        let status =
+            wait_for_child_exit(&mut self.child, self.launch.limits.supervisor_exit_timeout)?;
+        let failure = safe_supervisor_failure(
+            "SUPERVISION_LOST",
+            "supervisor exited before its terminal record",
+        );
+        self.persist_supervision_lost_diagnostic(&failure, status);
+        let receipt = ProcessTreeExit {
+            generation: Some(ProcessAuthorityGeneration::Live(self.generation.clone())),
+            started_boundary_accepted: self.started_boundary_accepted,
+            supervisor_pid: self.supervisor_pid,
+            root_pid: self.root_pid,
+            purpose: self.launch.purpose.clone(),
+            root_exit_code: None,
+            classification: ProcessExitClassification::SupervisorFailure,
+            failure: Some(failure),
+            stop_outcome: None,
+            // No epilogue ran, so peak commit is genuinely unknown. Reporting
+            // it as complete would let a lost supervisor forge accounting.
+            accounting: ProcessTreeAccounting {
+                peak_private_commit_bytes: None,
+                complete: false,
+            },
+            system_commit_guard: None,
+            supervisor_error_count: 0,
+            cleanup_error_count: 0,
+            worker_protocol_fault: self.worker_protocol_fault,
+        };
+        self.exit_confirmation_minted = true;
+        Ok(receipt)
+    }
+
+    /// Bounded private evidence only, exactly like
+    /// [`Self::persist_supervisor_failure_diagnostic`]: a logging I/O failure
+    /// must never consume or invalidate the receipt being minted.
+    fn persist_supervision_lost_diagnostic(
+        &self,
+        failure: &ProcessSupervisorFailure,
+        status: ExitStatus,
+    ) {
+        let supervisor_exit = match status.code() {
+            Some(code) => code.to_string(),
+            None => "unavailable".to_owned(),
+        };
+        let diagnostic = format!(
+            "{} supervisor-exit-code={supervisor_exit}",
+            supervisor_failure_diagnostic(failure)
+        );
+        let _ = self
+            .launch
+            .persist_service_diagnostic("supervisor", &diagnostic);
+        let _ = self
+            .launch
+            .persist_worker_diagnostic("supervisor", &diagnostic);
     }
 }
 
@@ -3307,13 +3425,13 @@ fn parse_system_commit_guard_evidence(
             _ => {
                 return Err(ProcessOwnerError::Protocol(
                     "system commit guard receipt contained an invalid termination reason",
-                ))
+                ));
             }
         }),
         _ => {
             return Err(ProcessOwnerError::Protocol(
                 "system commit guard receipt omitted its termination reason",
-            ))
+            ));
         }
     };
     let evidence = ProcessSystemCommitGuardEvidence {
@@ -3337,10 +3455,11 @@ fn parse_system_commit_guard_evidence(
         maximum_observed_effective_reserve_bytes: number("maximumObservedEffectiveReserveBytes")?,
         termination_reason,
     };
-    let expected_derived = (evidence.launch_system_commit_limit_bytes / 10).clamp(
-        SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES,
-        SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES,
-    );
+    let expected_derived =
+        (evidence.launch_system_commit_limit_bytes / SYSTEM_COMMIT_DERIVED_RESERVE_DIVISOR).clamp(
+            SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES,
+            SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES,
+        );
     let expected_launch_reserve = SYSTEM_COMMIT_RESERVE_FLOOR_BYTES
         .max(expected_derived)
         .max(evidence.trusted_reserve_bytes);
@@ -3361,7 +3480,7 @@ fn parse_system_commit_guard_evidence(
     ) {
         (None, None, None, None) => None,
         (Some(commit), Some(limit), Some(free), applied_limit) => {
-            let derived = (limit / 10).clamp(
+            let derived = (limit / SYSTEM_COMMIT_DERIVED_RESERVE_DIVISOR).clamp(
                 SYSTEM_COMMIT_DERIVED_RESERVE_MIN_BYTES,
                 SYSTEM_COMMIT_DERIVED_RESERVE_MAX_BYTES,
             );
@@ -3388,7 +3507,7 @@ fn parse_system_commit_guard_evidence(
         _ => {
             return Err(ProcessOwnerError::Protocol(
                 "system commit guard receipt had an incomplete pre-resume sample",
-            ))
+            ));
         }
     };
     let initial_effective_hard = pre_resume
@@ -3506,7 +3625,7 @@ impl ProcessOwnerTerminal {
             _ => {
                 return Err(ProcessOwnerError::Protocol(
                     "terminal receipt had an invalid event type",
-                ))
+                ));
             }
         };
         let root_pid = Some(bounded_pid(value.get("rootPid"))?);
@@ -3553,13 +3672,13 @@ impl ProcessOwnerTerminal {
                 _ => {
                     return Err(ProcessOwnerError::Protocol(
                         "terminal receipt contained an invalid stop outcome",
-                    ))
+                    ));
                 }
             }),
             Some(_) => {
                 return Err(ProcessOwnerError::Protocol(
                     "terminal receipt contained an invalid stop outcome",
-                ))
+                ));
             }
         };
         let zero_resident_confirmed = value
@@ -3593,7 +3712,7 @@ impl ProcessOwnerTerminal {
             Some(_) => {
                 return Err(ProcessOwnerError::Protocol(
                     "terminal receipt contained invalid supervisor errors",
-                ))
+                ));
             }
         };
         let cleanup_error_count = match value.get("cleanupErrors") {
@@ -3601,13 +3720,13 @@ impl ProcessOwnerTerminal {
             None => {
                 return Err(ProcessOwnerError::Protocol(
                     "failure receipt omitted cleanup error accounting",
-                ))
+                ));
             }
             Some(Value::Array(errors)) => errors.len(),
             Some(_) => {
                 return Err(ProcessOwnerError::Protocol(
                     "failure receipt contained invalid cleanup errors",
-                ))
+                ));
             }
         };
         Ok(Self {
@@ -4300,7 +4419,7 @@ mod tests {
         termination_reason: Option<&str>,
     ) -> Value {
         let commit_limit_mb = 40_000;
-        let derived_reserve_mb = 4_000;
+        let derived_reserve_mb = 2_000;
         let effective_reserve_mb = 4_096;
         let launch_effective_hard_mb =
             8_192u64.min(launch_free_mb.saturating_sub(effective_reserve_mb + 256));
@@ -4313,7 +4432,7 @@ mod tests {
         });
         let effective_hard_mb = pre_resume_effective_hard_mb.unwrap_or(launch_effective_hard_mb);
         serde_json::json!({
-            "architectureReserveFloorBytes": 4_096 * MEBIBYTE_BYTES,
+            "architectureReserveFloorBytes": 2_048 * MEBIBYTE_BYTES,
             "launchDerivedReserveBytes": derived_reserve_mb * MEBIBYTE_BYTES,
             "trustedReserveBytes": 4_096 * MEBIBYTE_BYTES,
             "launchEffectiveReserveBytes": effective_reserve_mb * MEBIBYTE_BYTES,

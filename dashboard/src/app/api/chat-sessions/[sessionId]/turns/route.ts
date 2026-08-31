@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 
 import { authOptions } from "@/lib/auth-options";
 import { normalizeChatMessageAttachments } from "@/lib/chat-attachments";
+import { normalizeChatTextSelectionReference } from "@/lib/chat-text-selection";
 import {
   ensureConversationForLegacyChatSession,
   presentConversationMessage,
@@ -72,6 +73,9 @@ export async function POST(
       body.inlineSelection && typeof body.inlineSelection === "object"
         ? body.inlineSelection
         : undefined;
+    const textSelection = normalizeChatTextSelectionReference(
+      body.textSelection,
+    );
 
     const conversation = ensureConversationForLegacyChatSession(
       numericSessionId,
@@ -92,6 +96,7 @@ export async function POST(
         ...(attachments.length ? { attachments } : {}),
         ...(selectedText ? { selectedText } : {}),
         ...(inlineSelection ? { inlineSelection } : {}),
+        ...(textSelection ? { textSelection } : {}),
       },
     });
 

@@ -183,7 +183,10 @@ async function getSourcePdfContext(
   }
 
   const markdownPath = resolveSourcePdfMarkdownPath(clusterDir, documentSlug);
-  if (!markdownPath || !fs.existsSync(/* turbopackIgnore: true */ markdownPath)) {
+  if (
+    !markdownPath ||
+    !fs.existsSync(/* turbopackIgnore: true */ markdownPath)
+  ) {
     return NextResponse.json({ error: "Document not found" }, { status: 404 });
   }
 
@@ -377,7 +380,7 @@ export async function PUT(
       );
       await publishQuartzAfterMutation(
         `update source PDF ${context.clusterSlug}/${context.documentSlug}`,
-        { userId: context.userId },
+        { userId: context.userId, gardenSlug: context.clusterSlug },
       );
 
       return NextResponse.json({

@@ -623,7 +623,7 @@ export async function POST(request: Request) {
           }
           await publishQuartzAfterMutation(
             `harmonize chat page into ${placementDecision.targetSlug}`,
-            { userId },
+            { userId, gardenSlug: normalizedClusterSlug },
           );
 
           return NextResponse.json({
@@ -681,7 +681,7 @@ export async function POST(request: Request) {
       }
       await publishQuartzAfterMutation(
         `save chat page in ${normalizedClusterSlug}`,
-        { userId },
+        { userId, gardenSlug: normalizedClusterSlug },
       );
 
       return NextResponse.json({
@@ -849,7 +849,7 @@ export async function POST(request: Request) {
 
     await publishQuartzAfterMutation(
       `save textbook pages in ${normalizedClusterSlug}`,
-      { userId },
+      { userId, gardenSlug: normalizedClusterSlug },
     );
 
     return NextResponse.json({ success: true, notes: savedNotes });

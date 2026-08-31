@@ -15,7 +15,7 @@ selects the first-party `image-to-3d` skill on its own, the same way an attached
 video selects Watch:
 
 ```
-turn-service.ts  premortem → visualizer → agent-loop → watch → image-to-3d → messaging
+turn-service.ts  premortem → factcheck → patent disclosure → visualizer → agent-loop → watch → image-to-3d → Spotify → audio-analysis → diagram → GitHub Explorer → humanize → messaging → Goal
 ```
 
 Two rules keep that from firing on every screenshot:

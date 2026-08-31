@@ -535,6 +535,31 @@ export function validateRuntimeV2CareerOpsRequest(value) {
   return value;
 }
 
+export function validateRuntimeV2OpenExecutiveRequest(value) {
+  if (
+    !exactRecord(value, [
+      "task",
+      "model",
+      "reasoningEffort",
+      "baseUrl",
+      "maxIterations",
+      "committeeReview",
+      "conversationContext",
+    ]) ||
+    !boundedText(value.task, 128 * 1024) ||
+    value.task.length > 100_000 ||
+    !boundedString(value.model, 256) ||
+    !EFFORTS.has(value.reasoningEffort) ||
+    !baseUrl(value.baseUrl) ||
+    !Number.isSafeInteger(value.maxIterations) ||
+    value.maxIterations < 1 ||
+    value.maxIterations > 30 ||
+    typeof value.committeeReview !== "boolean" ||
+    !boundedText(value.conversationContext, 32 * 1024, { empty: true })
+  ) fail("The canonical Open Executive Runtime request is invalid.");
+  return value;
+}
+
 export function validateRuntimeV2AgentReachRequest(value) {
   if (
     !exactRecord(value, [
@@ -558,6 +583,16 @@ export function validateRuntimeV2AgentReachRequest(value) {
   return value;
 }
 
+export function validateRuntimeV2PraxistRequest(value) {
+  if (
+    !exactRecord(value, ["taskPath", "model", "baseUrl"]) ||
+    !absoluteDirectory(value.taskPath) ||
+    !boundedString(value.model, 256) ||
+    !baseUrl(value.baseUrl)
+  ) fail("The canonical Praxist Runtime request is invalid.");
+  return value;
+}
+
 export function validateRuntimeV2MaxResearchRequest(value) {
   if (
     !exactRecord(value, [
@@ -567,6 +602,7 @@ export function validateRuntimeV2MaxResearchRequest(value) {
       "baseUrl",
       "conversationContext",
       "openscienceEnabled",
+      "praxistTaskPath",
     ]) ||
     !boundedText(value.question, 16 * 1024) ||
     value.question.length > 8_000 ||
@@ -574,6 +610,7 @@ export function validateRuntimeV2MaxResearchRequest(value) {
     !EFFORTS.has(value.reasoningEffort) ||
     !baseUrl(value.baseUrl) ||
     typeof value.openscienceEnabled !== "boolean" ||
+    (value.praxistTaskPath !== null && !absoluteDirectory(value.praxistTaskPath)) ||
     !boundedText(value.conversationContext, 80 * 1024, { empty: true }) ||
     value.conversationContext.length > 20_000
   ) fail("The canonical Max Research Runtime request is invalid.");
@@ -1532,7 +1569,9 @@ const REQUEST_VALIDATORS = Object.freeze({
   opencode: validateRuntimeV2OpenCodeRequest,
   "trading-agent": validateRuntimeV2TradingAgentRequest,
   "career-ops": validateRuntimeV2CareerOpsRequest,
+  openexecutive: validateRuntimeV2OpenExecutiveRequest,
   "agent-reach": validateRuntimeV2AgentReachRequest,
+  praxist: validateRuntimeV2PraxistRequest,
   "agent-tars": validateRuntimeV2AgentTarsRequest,
   openwork: validateRuntimeV2OpenworkRequest,
   shorts: validateRuntimeV2ShortsRequest,
@@ -1569,7 +1608,9 @@ const MANAGER_MODULES = Object.freeze({
   opencode: ["lib", "opencode", "run-manager.ts"],
   "trading-agent": ["lib", "tradingagents", "run-manager.ts"],
   "career-ops": ["lib", "career-ops", "run-manager.ts"],
+  openexecutive: ["lib", "openexecutive", "run-manager.ts"],
   "agent-reach": ["lib", "agent-reach", "run-manager.ts"],
+  praxist: ["lib", "praxist", "run-manager.ts"],
   "agent-tars": ["lib", "ui-tars", "runtime-worker-run-manager.ts"],
   openwork: ["lib", "openwork", "run-manager.ts"],
   shorts: ["lib", "shorts", "run-manager.ts"],
@@ -1670,12 +1711,27 @@ export const RUNTIME_V2_OUTER_AGENT_WORKER_ADAPTERS = Object.freeze({
     scopePrefix: "oa_career_ops_",
     maximumInputs: 0,
   }),
+  openexecutive: Object.freeze({
+    id: "openexecutive",
+    workerKind: "outer-openexecutive-node",
+    jobType: "openexecutive-run",
+    scopePrefix: "oa_openexecutive_",
+    maximumInputs: 0,
+  }),
   "agent-reach": Object.freeze({
     id: "agent-reach",
     workerKind: "outer-agent-reach-node",
     jobType: "agent-reach-run",
     scopePrefix: "oa_agent_reach_",
     maximumInputs: 0,
+  }),
+  praxist: Object.freeze({
+    id: "praxist",
+    workerKind: "outer-praxist-node",
+    jobType: "praxist-run",
+    scopePrefix: "oa_praxist_",
+    maximumInputs: 0,
+    maximumProjectionBytes: 4 * 1024 * 1024,
   }),
   "agent-tars": Object.freeze({
     id: "agent-tars",
@@ -1860,7 +1916,9 @@ export function expectedRuntimeV2OuterAgentInputCount(adapterId, request) {
       "openscience",
       "trading-agent",
       "career-ops",
+      "openexecutive",
       "agent-reach",
+      "praxist",
       "agent-tars",
       "openwork",
       "shorts",
@@ -2125,6 +2183,19 @@ export async function executeRuntimeV2OuterAgentAdapter({
       conversationContext: request.conversationContext,
       apiKey: trustedSecret("CHATMOCK_API_KEY"),
     });
+  } else if (adapterId === "openexecutive") {
+    local = manager.startRuntimeWorkerRun({
+      ...base,
+      task: request.task,
+      model: request.model,
+      reasoningEffort: request.reasoningEffort,
+      baseUrl: request.baseUrl,
+      maxIterations: request.maxIterations,
+      committeeReview: request.committeeReview,
+      conversationContext: request.conversationContext,
+      apiKey: trustedSecret("CHATMOCK_API_KEY"),
+      runtimeDataRoot: launch.dataRoot,
+    });
   } else if (adapterId === "agent-reach") {
     local = manager.startRuntimeWorkerRun({
       ...base,
@@ -2134,6 +2205,15 @@ export async function executeRuntimeV2OuterAgentAdapter({
       baseUrl: request.baseUrl,
       maxSteps: request.maxSteps,
       conversationContext: request.conversationContext,
+      apiKey: trustedSecret("CHATMOCK_API_KEY"),
+      runtimeWorkspacePath: launch.workspacePath,
+    });
+  } else if (adapterId === "praxist") {
+    local = manager.startRuntimeWorkerRun({
+      ...base,
+      taskPath: request.taskPath,
+      model: request.model,
+      baseUrl: request.baseUrl,
       apiKey: trustedSecret("CHATMOCK_API_KEY"),
       runtimeWorkspacePath: launch.workspacePath,
     });
@@ -2347,6 +2427,7 @@ export async function executeRuntimeV2OuterAgentAdapter({
       baseUrl: request.baseUrl,
       conversationContext: request.conversationContext,
       openscienceEnabled: request.openscienceEnabled,
+      praxistTaskPath: request.praxistTaskPath,
     });
   } else if (adapterId === "wardrobe") {
     local = manager.startRuntimeWorkerRun({

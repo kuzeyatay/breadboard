@@ -9,6 +9,10 @@ import {
 import { readConnectedAppTokens } from "../connected-apps/vault.ts";
 import { findNangoIntegration } from "../nango/catalog.ts";
 import { ApiError } from "../hermes/route-core.ts";
+import {
+  selectSpotifyPhoneDevice,
+  type SpotifyConnectDevice,
+} from "./devices.ts";
 
 export const SPOTIFY_CONNECTION_SLUG = "spotify";
 export const SPOTIFY_SKILL_SLUG = "spotify";
@@ -236,6 +240,44 @@ export async function spotifyCurrentPlaybackState(
     shuffle: playback.shuffle_state === true,
     deviceId: providerDeviceId,
   };
+}
+
+export async function spotifyPhonePlaybackDevice(
+  userId: number,
+): Promise<SpotifyConnectDevice | null> {
+  const payload = await spotifyApiRequest({
+    userId,
+    method: "GET",
+    endpoint: "/v1/me/player/devices",
+  });
+  return selectSpotifyPhoneDevice(payload);
+}
+
+export async function activateSpotifyPhonePlayback(input: {
+  userId: number;
+  device: SpotifyConnectDevice;
+  play: boolean;
+}): Promise<SpotifyConnectDevice> {
+  if (input.device.isActive) return input.device;
+  await spotifyApiRequest({
+    userId: input.userId,
+    method: "PUT",
+    endpoint: "/v1/me/player",
+    body: {
+      device_ids: [input.device.id],
+      play: input.play,
+    },
+  });
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const current = await spotifyPhonePlaybackDevice(input.userId);
+    if (current?.id === input.device.id && current.isActive) return current;
+  }
+  throw new ApiError(
+    502,
+    "spotify_phone_activation_failed",
+    "Spotify could not make your phone the active playback device.",
+  );
 }
 
 export async function searchSpotifyTracks(

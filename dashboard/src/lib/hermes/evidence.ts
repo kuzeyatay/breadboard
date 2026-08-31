@@ -162,6 +162,7 @@ export function evidenceKindForTool(toolName: string): EvidenceKind {
     name === "exasearch" ||
     name === "searxngsearch" ||
     name === "parallelsearch" ||
+    name === "productsearch" ||
     name === "searchweb" ||
     name === "webquery" ||
     name === "internetsearch" ||

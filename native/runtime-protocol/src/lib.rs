@@ -2127,6 +2127,8 @@ pub enum TrustedWorkerEnvironmentSource {
     OuterOpencode,
     TradingAgent,
     OuterCareerOps,
+    #[serde(rename = "outer-openexecutive")]
+    OuterOpenExecutive,
     SystemLocation,
     Chatmock,
     Vimax,
@@ -5060,6 +5062,7 @@ mod tests {
                 "outer-opencode-node",
                 "outer-trading-agent-node",
                 "outer-career-ops-node",
+                "outer-openexecutive-node",
                 "system-location-node",
                 "claude-account-node",
                 "chatmock-login-node",
@@ -5069,7 +5072,9 @@ mod tests {
                 "outer-open-gym-node",
                 "agent-reach-setup-node",
                 "gbrain-sync-node",
+                "thought-topology-node",
                 "outer-agent-reach-node",
+                "outer-praxist-node",
                 "outer-agent-tars-node",
                 "outer-legal-node",
                 "sf3d-node",
@@ -5248,7 +5253,7 @@ mod tests {
                 "image-search-node",
                 "image-search-google",
                 TrustedWorkerEnvironmentSource::ImageSearchGoogle,
-                (0, 0),
+                (1, 1),
             ),
             (
                 "interactive-visualizer-node",
@@ -5296,6 +5301,12 @@ mod tests {
                 "outer-career-ops-node",
                 "career-ops-run",
                 TrustedWorkerEnvironmentSource::OuterCareerOps,
+                (0, 0),
+            ),
+            (
+                "outer-openexecutive-node",
+                "openexecutive-run",
+                TrustedWorkerEnvironmentSource::OuterOpenExecutive,
                 (0, 0),
             ),
             (
@@ -5355,6 +5366,12 @@ mod tests {
             (
                 "outer-agent-reach-node",
                 "agent-reach-run",
+                TrustedWorkerEnvironmentSource::OuterAgentReach,
+                (0, 0),
+            ),
+            (
+                "outer-praxist-node",
+                "praxist-run",
                 TrustedWorkerEnvironmentSource::OuterAgentReach,
                 (0, 0),
             ),

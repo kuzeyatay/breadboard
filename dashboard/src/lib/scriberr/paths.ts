@@ -24,9 +24,36 @@ export const SUPPORTED_VIDEO_EXTENSIONS = [
   ".m4v",
 ] as const;
 
+export const SUPPORTED_AUDIO_EXTENSIONS = [
+  ".mp3",
+  ".wav",
+  ".flac",
+  ".m4a",
+  ".aac",
+  ".ogg",
+] as const;
+
+export const SUPPORTED_MEDIA_EXTENSIONS = [
+  ...SUPPORTED_VIDEO_EXTENSIONS,
+  ...SUPPORTED_AUDIO_EXTENSIONS,
+] as const;
+
 export function isSupportedVideoExtension(filename: string): boolean {
   const ext = path.extname(filename).toLowerCase();
   return (SUPPORTED_VIDEO_EXTENSIONS as readonly string[]).includes(ext);
+}
+
+export function isSupportedAudioExtension(filename: string): boolean {
+  const ext = path.extname(filename).toLowerCase();
+  return (SUPPORTED_AUDIO_EXTENSIONS as readonly string[]).includes(ext);
+}
+
+export function isSupportedMediaExtension(filename: string): boolean {
+  return isSupportedVideoExtension(filename) || isSupportedAudioExtension(filename);
+}
+
+export function mediaKindForFilename(filename: string): "audio" | "video" {
+  return isSupportedAudioExtension(filename) ? "audio" : "video";
 }
 
 /**

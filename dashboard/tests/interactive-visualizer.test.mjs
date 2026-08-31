@@ -35,6 +35,15 @@ import {
 } from "../src/lib/hermes/interactive-visualizer-intent.ts";
 import { resolveCommandMessage } from "../src/lib/hermes/commands.ts";
 import { interactiveVisualizerConfig } from "../src/lib/hermes/interactive-visualizer-config.ts";
+import { executeInteractiveVisualizerPublication } from
+  "../scripts/runtime-v2-interactive-visualizer-executor.mjs";
+import {
+  readFencedInteractiveVisualizerBundle,
+  validateInteractiveVisualizerRuntimeResult,
+} from "../src/lib/hermes/interactive-visualizer-browser.ts";
+import * as customModule from "../src/lib/hermes/interactive-visualizer-custom.ts";
+import * as runtimeModule from "../src/lib/hermes/interactive-visualizer-runtime.ts";
+import * as validatorModule from "../src/lib/hermes/interactive-visualizer-validator.ts";
 
 const sdkImport = 'import { defineVisualizer } from "@breadboard/interactive-visualizer-sdk"\n';
 
@@ -498,6 +507,63 @@ test("schema-2 custom visualizers pass the real responsive browser gate", { time
   }
 });
 
+test("the overflow probe ignores SVG geometry and text but still catches a real CSS overflow", { timeout: 150_000 }, async () => {
+  // Chrome reports scrollWidth/clientWidth on SVG <text> nodes (16/12 for a
+  // fully visible glyph), and getBoundingClientRect on SVG children is not
+  // clipped by the <svg> viewport. Both once counted as page overflow and
+  // failed every viewport of a correct Coulomb package.
+  const fixture = customWaveFixture();
+  fixture.package.files["index.html"] = fixture.package.files["index.html"].replace(
+    '<section class="stage" aria-label="Animated wave reflection"><canvas></canvas></section>',
+    '<section class="stage" aria-label="Animated wave reflection"><canvas></canvas></section>' +
+      '<svg class="diagram" viewBox="0 0 900 360" role="img" aria-label="Force diagram">' +
+      '<line x1="-400" y1="180" x2="1300" y2="180" stroke="currentColor" stroke-width="4"></line>' +
+      '<g><circle cx="300" cy="180" r="38" fill="none" stroke="currentColor"></circle>' +
+      '<text x="300" y="180" text-anchor="middle" dominant-baseline="central">+</text>' +
+      '<text x="300" y="244" text-anchor="middle">q₁ = +2.0 µC</text></g></svg>',
+  );
+  fixture.package.files["styles.css"] +=
+    ".diagram{display:block;width:100%;height:auto;overflow:hidden;background:var(--viz-panel)}";
+  const compiled = compileCustomInteractiveVisualizerPackage(fixture.plan, fixture.package);
+  assert.ok(compiled.package, compiled.validation.errors.join("\n"));
+  const bundle = await bundleCustomInteractiveVisualizer(compiled.package);
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-custom-svg-overflow-"));
+  try {
+    const result = await runInteractiveVisualizerBrowserTests({
+      html: bundle.html,
+      mode: "2d",
+      outputDir,
+      runtimeSessionId: 91_005,
+    });
+    assert.equal(result.passed, true, JSON.stringify(result.checks, null, 2));
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+
+  // A CSS box that really does leave the page must still fail.
+  const overflowing = customWaveFixture();
+  overflowing.package.files["styles.css"] += ".stage{width:2400px}";
+  const compiledOverflow = compileCustomInteractiveVisualizerPackage(overflowing.plan, overflowing.package);
+  assert.ok(compiledOverflow.package, compiledOverflow.validation.errors.join("\n"));
+  const overflowBundle = await bundleCustomInteractiveVisualizer(compiledOverflow.package);
+  const overflowDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-custom-css-overflow-"));
+  try {
+    const result = await runInteractiveVisualizerBrowserTests({
+      html: overflowBundle.html,
+      mode: "2d",
+      outputDir: overflowDir,
+      runtimeSessionId: 91_006,
+    });
+    assert.equal(result.passed, false);
+    assert.ok(
+      result.checks.some((check) => /^browser mount/.test(check.name) && /overflow=true/.test(check.detail ?? "")),
+      JSON.stringify(result.checks, null, 2),
+    );
+  } finally {
+    fs.rmSync(overflowDir, { recursive: true, force: true });
+  }
+});
+
 test("schema-2 custom visualizers receive pinned Three.js and an accessible WebGL fallback", { timeout: 90_000 }, async () => {
   const fixture = customThreeFixture();
   const compiled = compileCustomInteractiveVisualizerPackage(fixture.plan, fixture.package);
@@ -950,6 +1016,92 @@ test("visualization intent selects the reviewed skill automatically without wide
   assert.equal(interactiveVisualizerConfig({
     INTERACTIVE_VISUALIZER_MAX_ATTEMPTS: "99",
   }).maxAttempts, 3);
+});
+
+test("the Coulomb package the model shipped passes the worker and the Next gate as schema 2", { timeout: 120_000 }, async () => {
+  // The exact package the model produced for "/interactive-visualizer-in-chat
+  // of coulomb force and charge" on 2026-08-30. The runtime worker passed it
+  // through the real browser gate three times; the Next side then discarded
+  // every result because its manifest check only knew schemaVersion 1.
+  const fixture = JSON.parse(fs.readFileSync(
+    new URL("./fixtures/interactive-visualizer/coulomb-force-lab.json", import.meta.url),
+    "utf8",
+  ));
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-coulomb-gate-"));
+  const identity = {
+    jobId: "job_coulomb_gate",
+    attempt: 1,
+    workerInstanceId: "worker_coulomb_gate",
+  };
+  const outputDir = path.join(
+    dataRoot,
+    "runtime", "jobs", identity.jobId, "attempts", "1", identity.workerInstanceId,
+    "workspace", "interactive-visualizer-output",
+  );
+  fs.mkdirSync(outputDir, { recursive: true });
+  try {
+    const result = await executeInteractiveVisualizerPublication({
+      plan: fixture.plan,
+      packageValue: fixture.package,
+      outputDir,
+      modules: { custom: customModule, runtime: runtimeModule, validator: validatorModule },
+      timeoutMs: interactiveVisualizerConfig().browserScenarioTimeoutMs,
+    });
+    assert.equal(
+      result.status,
+      "ready",
+      JSON.stringify({ errors: result.validation.errors, checks: result.tests?.checks }, null, 2),
+    );
+    assert.equal(result.manifest.schemaVersion, 2);
+    assert.equal(result.customPackage, true);
+    assert.equal(result.tests.passed, true);
+    assert.ok(result.tests.viewports.length >= 3, result.tests.viewports.join(", "));
+    const outputRelativePath = path.relative(dataRoot, result.outputPath).split(path.sep).join("/");
+    // Exactly what runtime-v2-interactive-visualizer-worker.mjs writes to result.json.
+    const durable = {
+      protocolVersion: 1,
+      identity,
+      completionSequence: 13,
+      result: {
+        status: result.status,
+        validation: result.validation,
+        manifest: result.manifest,
+        sourceHash: result.sourceHash,
+        tests: result.tests,
+        bundleHash: result.bundleHash,
+        outputRelativePath,
+        customPackage: result.customPackage,
+      },
+    };
+    const accepted = validateInteractiveVisualizerRuntimeResult(
+      { ...identity, lastWorkerSequence: 13 },
+      durable,
+    );
+    assert.equal(accepted.status, "ready");
+    assert.equal(accepted.manifest.schemaVersion, 2);
+    assert.equal(accepted.outputRelativePath, outputRelativePath);
+    // The same fence checks the Next side runs before publishing, against
+    // the real file the worker wrote. On 2026-08-30 this read rejected a
+    // passing bundle with a bare "unavailable"; the reason must now be named.
+    const previousDataDir = process.env.BREADBOARD_DATA_DIR;
+    process.env.BREADBOARD_DATA_DIR = dataRoot;
+    let bundle;
+    try {
+      bundle = readFencedInteractiveVisualizerBundle(identity, outputRelativePath);
+      fs.writeFileSync(result.outputPath, "");
+      assert.throws(
+        () => readFencedInteractiveVisualizerBundle(identity, outputRelativePath),
+        /unavailable: bundle is empty/,
+      );
+    } finally {
+      if (previousDataDir === undefined) delete process.env.BREADBOARD_DATA_DIR;
+      else process.env.BREADBOARD_DATA_DIR = previousDataDir;
+    }
+    assert.match(bundle, /Coulomb/);
+    assert.equal(bundle.includes("<link rel=\"stylesheet\""), false);
+  } finally {
+    fs.rmSync(dataRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 });
 
 test("viewer uses an opaque-origin script-only sandbox and strict message validation", () => {

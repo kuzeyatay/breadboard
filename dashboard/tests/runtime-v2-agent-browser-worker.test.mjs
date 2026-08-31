@@ -11,7 +11,10 @@ import {
   loadRuntimeV2AgentBrowserLaunch,
   parseRuntimeV2AgentBrowserStopRecord,
 } from "../scripts/runtime-v2-agent-browser-worker.mjs";
-import { sealRuntimeV2AgentBrowserCommand } from "../scripts/runtime-v2-agent-browser-executor.mjs";
+import {
+  parseRuntimeV2AgentBrowserAuthProbe,
+  sealRuntimeV2AgentBrowserCommand,
+} from "../scripts/runtime-v2-agent-browser-executor.mjs";
 
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workerPath = path.join(
@@ -20,11 +23,15 @@ const workerPath = path.join(
   "runtime-v2-agent-browser-worker.mjs",
 );
 
-function fixture(modelBaseUrl, scope = {
-  userId: 7,
-  gardenId: null,
-  conversationId: `abr_${"b".repeat(32)}`,
-}) {
+function fixture(
+  modelBaseUrl,
+  scope = {
+    userId: 7,
+    gardenId: null,
+    conversationId: `abr_${"b".repeat(32)}`,
+  },
+  options = {},
+) {
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-agent-browser-worker-"));
   const identity = {
     jobId: `job_${"a".repeat(64)}`,
@@ -52,6 +59,8 @@ function fixture(modelBaseUrl, scope = {
       "const args = process.argv.slice(2);",
       'if (args[0] === "screenshot") {',
       "  fs.writeFileSync(args[1], Buffer.from([137,80,78,71,13,10,26,10,1]));",
+      '} else if (args.includes("eval") && ' + JSON.stringify(options.authRequired === true) + ') {',
+      '  process.stdout.write(JSON.stringify(JSON.stringify({ required: true, url: "https://accounts.example.com/login", origin: "https://accounts.example.com", title: "Sign in" })) + "\\n");',
       '} else if (args[0] !== "close") {',
       '  process.stdout.write("command completed\\n");',
       "}",
@@ -270,6 +279,84 @@ test("model commands cannot escape the sealed Runtime session or private workspa
       () => sealRuntimeV2AgentBrowserCommand(command),
       /sealed browser-action surface|Runtime authority|sibling Runtime session|local worker file/u,
     );
+  }
+});
+
+test("sign-in probes accept only a bounded, self-consistent web origin", () => {
+  const payload = {
+    required: true,
+    url: "https://accounts.example.com/login?continue=%2Finbox",
+    origin: "https://accounts.example.com",
+    title: "Sign in",
+  };
+  assert.deepEqual(
+    parseRuntimeV2AgentBrowserAuthProbe(JSON.stringify(JSON.stringify(payload))),
+    {
+      url: payload.url,
+      origin: payload.origin,
+      title: payload.title,
+    },
+  );
+  assert.equal(
+    parseRuntimeV2AgentBrowserAuthProbe(JSON.stringify({ ...payload, required: false })),
+    null,
+  );
+  assert.equal(
+    parseRuntimeV2AgentBrowserAuthProbe(
+      JSON.stringify({ ...payload, origin: "https://lookalike.example" }),
+    ),
+    null,
+  );
+  assert.equal(
+    parseRuntimeV2AgentBrowserAuthProbe(
+      JSON.stringify({ ...payload, url: "file:///C:/Users/person/secret.txt" }),
+    ),
+    null,
+  );
+});
+
+test("a detected sign-in page stops before a second model step and emits a durable handoff", async () => {
+  let calls = 0;
+  const server = await modelServer(() => {
+    calls += 1;
+    return {
+      choices: [{
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "tool-auth",
+            type: "function",
+            function: {
+              name: "agent_browser",
+              arguments: JSON.stringify({ command: "agent-browser open https://example.com/inbox" }),
+            },
+          }],
+        },
+      }],
+    };
+  });
+  const current = fixture(server.url, undefined, { authRequired: true });
+  try {
+    const launched = launchWorker(current);
+    launched.child.stdin.end();
+    const exit = await launched.completed;
+    assert.deepEqual({ code: exit.code, signal: exit.signal }, { code: 1, signal: null }, exit.stderr);
+    assert.equal(calls, 1);
+    const artifact = JSON.parse(
+      fs.readFileSync(path.join(current.artifactRoot, "run.json"), "utf8"),
+    );
+    assert.equal(artifact.status, "failed");
+    const auth = artifact.events.find((event) => event.type === "auth.required");
+    assert.deepEqual(auth?.payload, {
+      url: "https://accounts.example.com/login",
+      origin: "https://accounts.example.com",
+      title: "Sign in",
+    });
+    assert.equal(artifact.events.at(-1)?.type, "run.failed");
+  } finally {
+    fs.rmSync(current.dataRoot, { recursive: true, force: true });
+    await server.close();
   }
 });
 

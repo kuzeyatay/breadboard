@@ -69,6 +69,30 @@ test("missing scope fails closed at the HTTP boundary", async () => {
   await s.stop();
 });
 
+test("bounded authenticated embedding reuses the adapter provider identity", async () => {
+  const s = await boot(":memory:");
+  const res = await fetch(`http://127.0.0.1:${s.port}/embed`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}` },
+    body: JSON.stringify({ texts: ["Gauss law electric flux", "divergence theorem surface flux"] }),
+  });
+  const body = await res.json();
+  expect(res.status).toBe(200);
+  expect(body.data.model).toBe("hash");
+  expect(body.data.dimension).toBe(64);
+  expect(body.data.vectors).toHaveLength(2);
+  expect(body.data.vectors[0]).toHaveLength(64);
+
+  const oversized = await fetch(`http://127.0.0.1:${s.port}/embed`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}` },
+    body: JSON.stringify({ texts: new Array(65).fill("bounded") }),
+  });
+  expect(oversized.status).toBe(400);
+  expect((await oversized.json()).error).toBe("invalid_embedding_batch");
+  await s.stop();
+});
+
 test("errors never contain a stack, path, or secret", async () => {
   const s = await boot(":memory:");
   const res = await fetch(`http://127.0.0.1:${s.port}/search`, {

@@ -6,8 +6,11 @@ import path from "node:path";
 import PDFDocument from "pdfkit";
 import { PDFParse } from "pdf-parse";
 import {
+  DEFAULT_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
   DEFAULT_SOURCE_FORMULA_REVIEW_TIMEOUT_MS,
+  MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
   MAX_SOURCE_FORMULA_REVIEW_TIMEOUT_MS,
+  MIN_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
   MIN_SOURCE_FORMULA_REVIEW_TIMEOUT_MS,
   SOURCE_FORMULA_REVIEW_FINAL_ATTEMPT_ALLOWANCE_MS,
   SOURCE_FORMULA_REVIEW_SCHEDULING_MARGIN_MS,
@@ -24,6 +27,7 @@ import {
   sourceVisualSourceIdentityMapPath,
   sourceFormulaTopologyReviewPageReceipts,
   sourceFormulaReviewTimeoutMs,
+  sourceVisualDetectionTimeoutMs,
   extractSourceVisuals,
   validateSourceFormulaReviewSet,
 } from "../src/lib/source-visuals.ts";
@@ -59,6 +63,23 @@ test("formula-review logical timeout covers the full bounded transport schedule"
   assert.equal(
     sourceFormulaReviewTimeoutMs(String(MAX_SOURCE_FORMULA_REVIEW_TIMEOUT_MS + 1)),
     MAX_SOURCE_FORMULA_REVIEW_TIMEOUT_MS,
+  );
+});
+
+test("source-visual detection gives Sol Ultra one bounded three-minute request", () => {
+  assert.equal(
+    DEFAULT_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
+    MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
+  );
+  assert.equal(sourceVisualDetectionTimeoutMs(""), 180_000);
+  assert.equal(sourceVisualDetectionTimeoutMs("45000"), 45_000);
+  assert.equal(
+    sourceVisualDetectionTimeoutMs("1"),
+    MIN_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
+  );
+  assert.equal(
+    sourceVisualDetectionTimeoutMs(String(MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS + 1)),
+    MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
   );
 });
 
@@ -516,9 +537,6 @@ test("source visual detection preserves ambiguous provider failures after one cr
       name: "AbortError",
       code: "ABORT_ERR",
     }),
-    Object.assign(new Error("HTTP 502 without a request receipt"), {
-      status: 502,
-    }),
     new Error("Response ended prematurely after partial output"),
   ];
 
@@ -553,6 +571,68 @@ test("source visual detection preserves ambiguous provider failures after one cr
       fs.rmSync(root, { recursive: true, force: true });
     }
   }
+});
+
+test("source visual detection retries every HTTP 502 until the page scan succeeds", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-extract-502-retry-"));
+  const priorDelay = process.env.SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS;
+  process.env.SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS = "1";
+  try {
+    const [page] = seedPageImages(root, "garden", 1);
+    const progress = [];
+    let calls = 0;
+    const client = fakeClient(async () => {
+      calls += 1;
+      if (calls <= 2) {
+        throw Object.assign(new Error("HTTP 502 without a request receipt"), {
+          status: 502,
+        });
+      }
+      return { choices: [{ message: { content: "[]" } }] };
+    });
+
+    const found = await extractSourceVisuals({
+      client,
+      model: "gpt-5.6-sol",
+      contentPath: root,
+      gardenSlug: "garden",
+      sourceId: "source-502",
+      sourceIndex: 1,
+      pageImageUrls: [page],
+      onProgress: (step) => progress.push(step),
+    });
+
+    assert.deepEqual(found, []);
+    assert.equal(calls, 3);
+    assert.ok(progress.some((step) => /retry 1/.test(step)));
+    assert.ok(progress.some((step) => /retry 2/.test(step)));
+    const cached = JSON.parse(fs.readFileSync(
+      path.join(root, "garden", ".breadboard", "source-visual-scan-cache.json"),
+      "utf8",
+    ));
+    assert.deepEqual(cached.sources["source-502"][page].detections, []);
+  } finally {
+    if (priorDelay === undefined) {
+      delete process.env.SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS;
+    } else {
+      process.env.SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS = priorDelay;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("source analysis retry loop distinguishes its local timeout from job cancellation", () => {
+  const source = fs.readFileSync(
+    new URL("../src/lib/source-visuals.ts", import.meta.url),
+    "utf8",
+  );
+  const retryBoundary = source.slice(
+    source.indexOf("async function createSourceModelCompletionWithHttp502Retry"),
+    source.indexOf("const TYPE_LETTER"),
+  );
+  assert.match(retryBoundary, /const locallyTimedOut = controller\.signal\.aborted/);
+  assert.match(retryBoundary, /!isSourceModelHttp502\(error\) && !locallyTimedOut/);
+  assert.match(retryBoundary, /input\.checkpoint\?\.\(\)/);
 });
 
 test("extractSourceVisuals treats a successful empty detection as genuinely no figures (no throw)", async () => {

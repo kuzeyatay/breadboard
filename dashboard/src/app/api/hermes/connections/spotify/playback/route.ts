@@ -8,11 +8,13 @@ import {
   requireEnabled,
 } from "@/lib/hermes/route-helpers.ts";
 import {
+  activateSpotifyPhonePlayback,
   getSpotifyPlaybackIntent,
   spotifyApiRequest,
   spotifyConnectionStatus,
   spotifyCurrentPlaybackState,
   spotifyLibraryContains,
+  spotifyPhonePlaybackDevice,
 } from "@/lib/spotify/service.ts";
 import { spotifyQueueStep } from "@/lib/spotify/queue.ts";
 
@@ -81,15 +83,26 @@ export async function GET(request: Request) {
     const conversation = getConversationForUser(publicId, userId);
     const status = spotifyConnectionStatus(userId);
     const intent = getSpotifyPlaybackIntent(userId, conversation.id);
-    const current = status.connected && intent
-      ? await spotifyCurrentPlaybackState(userId).catch(() => null)
-      : null;
+    const [current, phone] = status.connected && intent
+      ? await Promise.all([
+          spotifyCurrentPlaybackState(userId).catch(() => null),
+          spotifyPhonePlaybackDevice(userId).catch(() => null),
+        ])
+      : [null, null];
     const playback =
-      current && intent?.queueUris.includes(current.track.uri) ? current : null;
+      current &&
+      phone?.isActive &&
+      current.deviceId === phone.id &&
+      intent?.queueUris.includes(current.track.uri)
+        ? current
+        : null;
     return NextResponse.json({
       ...status,
       intent,
       playback,
+      phone: phone
+        ? { name: phone.name, type: phone.type, isActive: phone.isActive }
+        : null,
       library: status.connected
         ? await libraryState(userId, playback?.track.id ?? intent?.track.id).catch(
             () => null,
@@ -109,7 +122,21 @@ export async function POST(request: Request) {
     const publicId = typeof body.conversation === "string" ? body.conversation : "";
     const conversation = getConversationForUser(publicId, userId);
     const action = typeof body.action === "string" ? body.action : "";
-    const playerDeviceId = () => deviceId(body.deviceId);
+    const playerDeviceId = async (options?: {
+      activate?: boolean;
+      play?: boolean;
+    }) => {
+      const phone = await spotifyPhonePlaybackDevice(userId);
+      if (!phone) return deviceId(body.deviceId);
+      if (options?.activate === false || phone.isActive) return phone.id;
+      return (
+        await activateSpotifyPhonePlayback({
+          userId,
+          device: phone,
+          play: options?.play === true,
+        })
+      ).id;
+    };
 
     if (action === "play") {
       const intent = getSpotifyPlaybackIntent(userId, conversation.id);
@@ -120,7 +147,7 @@ export async function POST(request: Request) {
         userId,
         method: "PUT",
         endpoint: "/v1/me/player/play",
-        query: { device_id: playerDeviceId() },
+        query: { device_id: await playerDeviceId({ activate: false }) },
         body: { uris: intent.queueUris },
       });
       return NextResponse.json({ ok: true, revision: intent.revision });
@@ -133,7 +160,7 @@ export async function POST(request: Request) {
         endpoint: "/v1/me/player/shuffle",
         query: {
           state: body.enabled === true,
-          device_id: playerDeviceId(),
+          device_id: await playerDeviceId(),
         },
       });
       return NextResponse.json({ ok: true });
@@ -145,7 +172,9 @@ export async function POST(request: Request) {
         method: "PUT",
         endpoint:
           action === "pause" ? "/v1/me/player/pause" : "/v1/me/player/play",
-        query: { device_id: playerDeviceId() },
+        query: {
+          device_id: await playerDeviceId({ play: action === "resume" }),
+        },
       });
       return NextResponse.json({ ok: true });
     }
@@ -175,7 +204,7 @@ export async function POST(request: Request) {
         userId,
         method: "PUT",
         endpoint: "/v1/me/player/play",
-        query: { device_id: playerDeviceId() },
+        query: { device_id: await playerDeviceId() },
         body: { uris: step.playbackUris },
       });
       if (before?.isPlaying === false) {
@@ -183,7 +212,7 @@ export async function POST(request: Request) {
           userId,
           method: "PUT",
           endpoint: "/v1/me/player/pause",
-          query: { device_id: playerDeviceId() },
+          query: { device_id: await playerDeviceId() },
         });
       }
       const playback = await playbackAtTrack(userId, step.targetId);
@@ -210,7 +239,7 @@ export async function POST(request: Request) {
         endpoint: "/v1/me/player/seek",
         query: {
           position_ms: Math.round(positionMs),
-          device_id: playerDeviceId(),
+          device_id: await playerDeviceId(),
         },
       });
       return NextResponse.json({

@@ -25,15 +25,17 @@ const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComp
       <span class="markdown-action-status" aria-live="polite" />
 
       <div class="markdown-editor-modal" hidden>
-        <div class="markdown-editor-panel">
+        <div
+          class="markdown-editor-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="markdown-editor-dialog-title"
+        >
           <div class="markdown-editor-header">
             <div>
               <p class="markdown-editor-kicker">Markdown</p>
-              <h2>Edit note</h2>
+              <h2 id="markdown-editor-dialog-title">Edit note</h2>
             </div>
-            <button class="markdown-editor-close" type="button" aria-label="Close editor">
-              Close
-            </button>
           </div>
           <div class="markdown-editor-fields">
             <label class="markdown-editor-field">
@@ -133,7 +135,6 @@ MarkdownActions.css = `
 }
 
 .markdown-action-button,
-.markdown-editor-close,
 .markdown-editor-image,
 .markdown-editor-video,
 .markdown-editor-whiteboard,
@@ -155,7 +156,6 @@ MarkdownActions.css = `
 }
 
 .markdown-action-button:hover,
-.markdown-editor-close:hover,
 .markdown-editor-image:hover,
 .markdown-editor-video:hover,
 .markdown-editor-whiteboard:hover,
@@ -237,18 +237,21 @@ MarkdownActions.css = `
   justify-content: center;
   padding: 1rem;
   background: rgba(0, 0, 0, 0.58);
-  backdrop-filter: blur(4px);
+}
+
+body:has(.markdown-editor-modal:not([hidden])) .breadboard-ai-toggle {
+  display: none;
 }
 
 .markdown-editor-panel {
   display: flex;
   flex-direction: column;
-  width: min(58rem, calc(100vw - 2rem));
-  height: min(42rem, calc(100vh - 2rem));
+  width: min(80rem, calc(100vw - 3rem));
+  height: min(52rem, calc(100vh - 3rem));
   border: 1px solid var(--lightgray);
   border-radius: 8px;
   background: var(--light);
-  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.28);
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -466,6 +469,13 @@ function sbWriteEditorDraft(draftSlug, draft) {
 function sbClearEditorDraft() {
   try { sessionStorage.removeItem(SB_EDITOR_DRAFT_KEY) } catch (e) {}
 }
+function sbReportEditorState(open) {
+  if (window.parent === window) return
+  window.parent?.postMessage({
+    type: "second-brain:markdown-editor-state",
+    open: Boolean(open),
+  }, "*")
+}
 function sbParseTags(value) {
   return String(value || "").split(/[#,]/).map(function (tag) { return tag.trim() }).filter(Boolean)
 }
@@ -587,6 +597,7 @@ function sbCreateTagField(box, input) {
   return field
 }
 document.addEventListener("nav", () => {
+  sbReportEditorState(false)
   for (const actions of document.querySelectorAll(".markdown-actions")) {
     if (actions.dataset.bound === "true") continue
     actions.dataset.bound = "true"
@@ -613,7 +624,6 @@ document.addEventListener("nav", () => {
     const youtubeInsert = actions.querySelector(".markdown-editor-youtube-insert")
     const youtubeCancel = actions.querySelector(".markdown-editor-youtube-cancel")
     const editorStatus = actions.querySelector(".markdown-editor-status")
-    const close = actions.querySelector(".markdown-editor-close")
     const cancel = actions.querySelector(".markdown-editor-cancel")
     const save = actions.querySelector(".markdown-editor-save")
 
@@ -712,12 +722,14 @@ document.addEventListener("nav", () => {
       else if (tagsInput) tagsInput.value = value.tags || ""
       textarea.value = value.body || ""
       modal.hidden = false
+      sbReportEditorState(true)
       textarea.focus()
       saveDraft()
     }
 
     const hideModal = () => {
       if (modal) modal.hidden = true
+      sbReportEditorState(false)
     }
     const closeEditor = () => {
       sbClearEditorDraft()
@@ -737,6 +749,7 @@ document.addEventListener("nav", () => {
       else if (tagsInput) tagsInput.value = restoredDraft.tags || ""
       textarea.value = restoredDraft.body || ""
       modal.hidden = false
+      sbReportEditorState(true)
     }
 
     edit?.addEventListener("click", () => {
@@ -968,11 +981,7 @@ document.addEventListener("nav", () => {
       closeEditor()
     }
 
-    close?.addEventListener("click", dismissEditor)
     cancel?.addEventListener("click", dismissEditor)
-    modal?.addEventListener("click", (event) => {
-      if (event.target === modal) dismissEditor()
-    })
   }
 })
 
@@ -1019,6 +1028,7 @@ window.addEventListener("message", (event) => {
       else if (tagsInput) tagsInput.value = sbFormatTags(sbParseTags(nextTags))
       if (textarea) textarea.value = nextBody
       if (modal) modal.hidden = false
+      sbReportEditorState(true)
       textarea?.focus()
       sbWriteEditorDraft(data.slug, currentDraft())
       setStatus("")
@@ -1032,6 +1042,7 @@ window.addEventListener("message", (event) => {
     if (data.ok) {
       sbClearEditorDraft()
       if (modal) modal.hidden = true
+      sbReportEditorState(false)
     }
     window.setTimeout(() => { setStatus("") }, 1800)
   }

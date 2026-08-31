@@ -1,4 +1,4 @@
-import { BrowserWindow, app } from "electron";
+import { BrowserWindow, app, screen } from "electron";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -225,6 +225,8 @@ export class WindowManager {
   private startupContinued = false;
   private readonly startupContinueWaiters = new Set<() => void>();
   private dashboardPreload: DashboardPreload | null = null;
+  /** The floating recording controller, while a demonstration is being taught. */
+  private teachControllerWindow: BrowserWindow | null = null;
   private recoverySceneShownAt = 0;
   private currentTheme: BreadboardWindowTheme;
   private readonly localPageRecovery = new WeakMap<
@@ -820,6 +822,83 @@ export class WindowManager {
     this.revealWhenReady(window);
     void this.loadThroughLoadingScene(window, targetUrl);
     return window;
+  }
+
+  /**
+   * The small always-on-top window that controls a teaching session.
+   *
+   * While someone is demonstrating a task they are working in another
+   * application, not in Breadboard, so the recording indicator, the elapsed
+   * time and the Finish button have to be somewhere they can still see and
+   * reach. A compact floating window is what the desktop shell is for; the page
+   * inside it is an ordinary local Breadboard route, so the browser build keeps
+   * working with an in-page controller instead.
+   *
+   * It is deliberately small and corner-parked: a recording controller that
+   * covers the thing being recorded defeats itself.
+   */
+  openTeachControllerWindow(targetUrl: string): BrowserWindow | null {
+    if (!isNavigationAllowed(this.options.allowed, targetUrl)) return null;
+    const existing = this.teachControllerWindow;
+    if (existing && !existing.isDestroyed()) {
+      existing.show();
+      existing.focus();
+      return existing;
+    }
+
+    const window = new BrowserWindow({
+      width: 320,
+      height: 132,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      frame: false,
+      transparent: false,
+      alwaysOnTop: true,
+      skipTaskbar: false,
+      show: false,
+      title: "Recording a demonstration",
+      backgroundColor: "#141414",
+      webPreferences: {
+        preload: this.options.preloadPath,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    hardenWindow(window, this.options.allowed, (url) => this.openPopupWindow(url));
+    // Above ordinary windows without stealing focus from the application the
+    // person is demonstrating in.
+    window.setAlwaysOnTop(true, "floating");
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+
+    const display = screen.getPrimaryDisplay().workArea;
+    window.setBounds({
+      x: Math.max(display.x, display.x + display.width - 340),
+      y: display.y + 20,
+      width: 320,
+      height: 132,
+    });
+
+    window.once("ready-to-show", () => {
+      if (!window.isDestroyed()) window.showInactive();
+    });
+    window.once("closed", () => {
+      if (this.teachControllerWindow === window) this.teachControllerWindow = null;
+    });
+
+    this.teachControllerWindow = window;
+    void window.loadURL(targetUrl).catch(() => undefined);
+    return window;
+  }
+
+  closeTeachControllerWindow(): boolean {
+    const window = this.teachControllerWindow;
+    this.teachControllerWindow = null;
+    if (!window || window.isDestroyed()) return false;
+    window.destroy();
+    return true;
   }
 
   /**

@@ -132,6 +132,19 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(composer, /aria-busy=\{stopping\}/);
   assert.match(composer, /h-11 w-11/);
   assert.match(runtimePanel, /disabled=\{conversationLocked\}/);
+  assert.match(
+    runtimePanel,
+    /placeholder=\{\s*runInFlight \? "Follow up\." : \(placeholder \?\? "Ask the agent…"\)\s*\}/,
+  );
+  // A live durable run outlasts a disconnected browser stream. It must keep
+  // the same Stop affordance and present-tense transcript state as a locally
+  // connected run.
+  assert.match(runtimePanel, /persistedRunActive \|\|\s*runState === "submitting"/);
+  assert.match(terminal, /persistedRunActive=\{Boolean\(session\.activeRunId\)\}/);
+  assert.match(
+    terminal,
+    /const currentChatActive =\s*Boolean\(session\.activeRunId\) \|\|/,
+  );
 });
 
 test("a working external agent holds the composer and the queue", () => {
@@ -214,7 +227,10 @@ test("a working external agent holds the composer and the queue", () => {
   assert.match(runtimePanel, /stops\.map\(async \(\{ url, clientMessageId \}\)/);
   assert.match(runtimePanel, /const abortExternalRuns = useCallback\(/);
   assert.match(runtimePanel, /externalAgentAbortUrls\(\[message\]\)/);
-  assert.match(runtimePanel, /deepResearchAbortTerminalResult\(payload\)/);
+  // Every agent abort response is normalized through the shared parser. Deep
+  // Research used to be special-cased here, which made newer delegated agents
+  // (including Max Research) unable to settle their hidden row from Stop.
+  assert.match(runtimePanel, /externalAgentAbortTerminalResult\(payload\)/);
   assert.match(
     runtimePanel,
     /onExternalAgentTerminal\?\.\(clientMessageId, terminal\)/,
@@ -236,7 +252,7 @@ test("a working external agent holds the composer and the queue", () => {
     terminal,
     /continuedDelegatedTurnsRef\.current\.add\(clientMessageId\)/,
   );
-  assert.match(terminal, /setPendingLaunchContinuation\(null\)/);
+  assert.match(terminal, /setPendingLaunchContinuations\(\[\]\)/);
   assert.match(terminal, /onStopRequested=\{handleStopRequested\}/);
   assert.match(terminal, /message\.externalAgentOutcome === "aborted"/);
   assert.match(terminal, /result\.outcome === "aborted"/);

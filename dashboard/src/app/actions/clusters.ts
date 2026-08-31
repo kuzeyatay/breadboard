@@ -62,6 +62,7 @@ export interface Cluster {
   repo_name: string | null;
   /** Coding agents in this garden query the graft index of that repository. */
   graft_enabled: boolean;
+  thought_topology_enabled: boolean;
 }
 
 export type ClusterVisibility = "private" | "organization" | "public";
@@ -89,6 +90,7 @@ type ClusterRow = Omit<
   | "repo_connected"
   | "repo_name"
   | "graft_enabled"
+  | "thought_topology_enabled"
 > & {
   visibility?: string | null;
   organization_id?: number | null;
@@ -101,6 +103,7 @@ type ClusterRow = Omit<
   last_viewed_at?: string | null;
   repo_path?: string | null;
   graft_enabled?: number | null;
+  thought_topology_enabled?: number | null;
 };
 
 function normalizeVisibility(
@@ -161,7 +164,12 @@ function toCluster(
   noteCount: number,
   userId?: number,
 ): Cluster {
-  const { repo_path: repoPath, graft_enabled: graftEnabled, ...safeRow } = row;
+  const {
+    repo_path: repoPath,
+    graft_enabled: graftEnabled,
+    thought_topology_enabled: topologyEnabled,
+    ...safeRow
+  } = row;
   const isOwner =
     typeof userId === "number" ? row.user_id === userId : Boolean(row.isOwner);
   const visibility = normalizeVisibility(row.visibility);
@@ -189,6 +197,7 @@ function toCluster(
     repo_name: isOwner && repoPath ? path.basename(repoPath) : null,
     // Gardens created before the column read as on, which is the default.
     graft_enabled: graftEnabled !== 0,
+    thought_topology_enabled: topologyEnabled === 1,
   };
 }
 
@@ -362,7 +371,10 @@ export async function createCluster(
 
     try {
       db.prepare(
-        "INSERT INTO clusters (user_id, name, slug, description, visibility, border_color, folder) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        `INSERT INTO clusters (
+          user_id, name, slug, description, visibility, border_color, folder,
+          thought_topology_enabled, thought_topology_revision
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)`,
       ).run(
         userId,
         name,
@@ -385,7 +397,10 @@ export async function createCluster(
     }
 
     refreshPrivateQuartzIndex(userId);
-    await publishQuartzAfterMutation(`create cluster ${slug}`, { userId });
+    await publishQuartzAfterMutation(`create cluster ${slug}`, {
+      userId,
+      gardenSlug: slug,
+    });
     revalidatePath("/dashboard");
     revalidatePath("/garden");
     return slug;
@@ -439,6 +454,7 @@ export async function updateClusterDetails(
     refreshPublicQuartzIndex();
     await publishQuartzAfterMutation(`update cluster ${cluster.slug}`, {
       userId,
+      gardenSlug: cluster.slug,
     });
     revalidatePath("/dashboard");
     revalidatePath("/garden");
@@ -919,9 +935,11 @@ export async function forkCluster(
              card_width,
              card_height,
              chat_accessible,
-             fork_allowed
+             fork_allowed,
+             thought_topology_enabled,
+             thought_topology_revision
            )
-           VALUES (?, ?, ?, ?, 'private', ?, ?, ?, 0, 0)`,
+           VALUES (?, ?, ?, ?, 'private', ?, ?, ?, 0, 0, 1, 0)`,
         ).run(
           userId,
           source.name,
@@ -942,7 +960,10 @@ export async function forkCluster(
     }
 
     refreshPrivateQuartzIndex(userId);
-    await publishQuartzAfterMutation(`fork cluster ${targetSlug}`, { userId });
+    await publishQuartzAfterMutation(`fork cluster ${targetSlug}`, {
+      userId,
+      gardenSlug: targetSlug,
+    });
     revalidatePath("/dashboard");
     revalidatePath("/garden");
     revalidatePath(`/gardens/${targetSlug}`);

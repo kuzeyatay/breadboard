@@ -116,16 +116,14 @@ export function VlmParseOption({
       <span>
         <span className="block text-sm text-gray-400">Parse using VLM</span>
         <span className="block text-[11px] text-gray-600 mt-0.5">
-          {loading
-            ? "Checking for the local OCR model…"
-            : usable
-              ? `Reads every page with HunyuanOCR (${status.source || "local GGUF"}) and writes structured Markdown — headings, tables, formulas, and figures cropped out of the page. Runs locally, so it uses no ChatMock quota.${
-                  status.running
-                    ? ""
-                    : " The model server starts on first use, which downloads the weights once."
-                }`
-              : vlmUnavailableReason(status)}
+          Uses a local OCR model to read each page and turn it into structured
+          notes, preserving headings, tables, formulas, and figures.
         </span>
+        {!usable && (
+          <span className="block text-[11px] text-gray-600 mt-0.5">
+            {loading ? "Checking for the local OCR model…" : vlmUnavailableReason(status)}
+          </span>
+        )}
       </span>
     </label>
   );

@@ -45,6 +45,7 @@ export type LearnWorkerRequest =
       sourceOnly: boolean;
       includeSourceSnapshots: boolean;
       autoConfirmTopicMap: boolean;
+      userInstruction?: string;
     })
   | (LearnWorkerModelRequest & {
       operation: "generate";
@@ -71,6 +72,7 @@ export type LearnWorkerRequest =
       syllabusSourceId?: string;
       sourceOnly: boolean;
       includeSourceSnapshots: boolean;
+      userInstruction?: string;
     })
   | (LearnWorkerCommonRequest & {
       operation: "humanizer";

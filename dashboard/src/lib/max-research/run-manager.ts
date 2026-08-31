@@ -1,4 +1,4 @@
-// The Max Research run: five agents against one question, one answer out.
+// The Max Research run: six agents against one question, one answer out.
 //
 // Shaped like every other run manager here — an in-memory run, a sequenced
 // event log, `startRun` / `getEventsSince` / `isTerminal` / `abortRun` — so the
@@ -60,6 +60,26 @@ interface RunState {
 
 const runs = new Map<string, RunState>();
 
+/**
+ * Evidence copied into the terminal checkpoint when only synthesis fails.
+ *
+ * Runtime V2 disposes the coordinator process after a terminal failure, so an
+ * in-memory `results` array is not retained at all. Four useful participant
+ * outputs at this bound remain comfortably inside the worker's 1 MiB durable
+ * projection while leaving enough room for the rest of the event history.
+ */
+const MAX_RETAINED_FINDING_CHARS = 24_000;
+
+function retainedFindings(results: readonly ParticipantResult[]) {
+  return results
+    .filter((result) => result.status === "completed" && result.output.trim())
+    .map((result) => ({
+      participant: result.participant,
+      output: result.output.trim().slice(0, MAX_RETAINED_FINDING_CHARS),
+      ...(result.reason ? { limitation: result.reason } : {}),
+    }));
+}
+
 /** Runs are held only while a surface might still ask about them. */
 const RETENTION_MS = 6 * 60 * 60_000;
 const MAX_RUNS = 40;
@@ -100,6 +120,7 @@ export interface StartRunInput {
   reasoningEffort: string;
   baseUrl: string;
   conversationContext?: string;
+  praxistTaskPath?: string | null;
   /** Injected by tests so the orchestration can be exercised without services. */
   runtimeFor?: typeof participantRuntime;
   /** Injected by tests. Writes the final answer from the synthesis prompt. */
@@ -193,7 +214,15 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     await Promise.all(
       plan.assignments.map(async (assignment) => {
         const state = await runtimeFor(assignment.participant)
-          .available()
+          .available({
+            userId: run.userId,
+            model: input.model,
+            reasoningEffort: input.reasoningEffort,
+            baseUrl: input.baseUrl,
+            ...(input.conversationContext ? { conversationContext: input.conversationContext } : {}),
+            ...(input.praxistTaskPath ? { praxistTaskPath: input.praxistTaskPath } : {}),
+            signal: run.controller.signal,
+          })
           .catch(() => ({
             available: false,
             reason: "The runtime is unreachable.",
@@ -267,6 +296,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
             ...(input.conversationContext
               ? { conversationContext: input.conversationContext }
               : {}),
+            ...(input.praxistTaskPath ? { praxistTaskPath: input.praxistTaskPath } : {}),
             signal: run.controller.signal,
           },
         );
@@ -329,11 +359,10 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
       abort(run);
       return;
     }
-    // The research all succeeded; only the last model call did not. Losing it
-    // here would throw away every agent's work over one transient upstream
-    // failure — which a live run did — so the findings stay on the run and
-    // travel with the failure, and `resynthesizeRun` can finish the job without
-    // commissioning anything again.
+    // Source collection produced evidence; only the last model call did not.
+    // Seal the actual text into the terminal event, not merely its character
+    // count. Runtime V2 destroys this worker after failure, so without that
+    // durable copy neither a continuation nor a later recovery can use it.
     run.status = "failed";
     emit(run, "run.failed", {
       error:
@@ -342,10 +371,12 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
           : "The findings could not be reconciled.",
       findingsRetained: true,
       resynthesizable: true,
+      retainedFindings: retainedFindings(run.results),
       findings: run.results.map((result) => ({
         participant: result.participant,
         status: result.status,
         characters: result.output.length,
+        ...(result.reason ? { reason: result.reason } : {}),
       })),
     });
     return;
@@ -359,6 +390,15 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     run.status = "failed";
     emit(run, "run.failed", {
       error: "The reconciliation produced no answer.",
+      findingsRetained: true,
+      resynthesizable: true,
+      retainedFindings: retainedFindings(run.results),
+      findings: run.results.map((result) => ({
+        participant: result.participant,
+        status: result.status,
+        characters: result.output.length,
+        ...(result.reason ? { reason: result.reason } : {}),
+      })),
     });
     return;
   }
@@ -532,7 +572,7 @@ export function getRun(
 /**
  * Reconcile a run's existing findings again, without re-running anything.
  *
- * The expensive half of a Max Research run is the five agents; the cheap half
+ * The expensive half of a Max Research run is the six agents; the cheap half
  * is the single call that reconciles them. When only the cheap half fails there
  * is no reason to repeat the expensive one, and every reason not to.
  */
@@ -587,6 +627,7 @@ export async function resynthesizeRun(input: {
           : "The findings could not be reconciled.",
       findingsRetained: true,
       resynthesizable: true,
+      retainedFindings: retainedFindings(run.results),
     });
     return { status: run.status, answer: "" };
   }

@@ -159,6 +159,77 @@ test("maps a completed tool part to tool.completed success", () => {
   assert.equal(event?.payload.location, "C:\\work\\note.md");
 });
 
+test("projects only valid product_search output onto a completed tool event", () => {
+  const resource = {
+    schemaVersion: 1,
+    kind: "product-search",
+    renderer: "product-carousel",
+    id: "product-search:event",
+    title: "Product results",
+    createdAt: "2026-08-31T10:00:00.000Z",
+    actions: ["open-details", "find-similar", "compare", "visit"],
+    data: {
+      query: "headphones",
+      sources: [{
+        id: "source:event",
+        title: "Product page",
+        url: "https://shop.example/product",
+        site: "shop.example",
+        accessedAt: "2026-08-31T10:00:00.000Z",
+      }],
+      products: [{
+        id: "product:event",
+        title: "Quiet Headphones",
+        merchant: "Example",
+        url: "https://shop.example/product",
+        sourceIds: ["source:event"],
+      }],
+    },
+  };
+  const event = normalizeHermesEvent(
+    {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: {
+          type: "tool",
+          tool: "product_search",
+          callID: "product-call",
+          state: {
+            status: "completed",
+            output: JSON.stringify({ uiResources: [resource] }),
+          },
+        },
+      },
+    },
+    "s1",
+  );
+  assert.equal(event?.type, "tool.completed");
+  assert.equal(event?.payload.uiResources?.length, 1);
+  assert.equal(event?.payload.uiResources?.[0].renderer, "product-carousel");
+
+  const wrongTool = normalizeHermesEvent(
+    {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: {
+          type: "tool",
+          tool: "web_search",
+          callID: "web-call",
+          state: {
+            status: "completed",
+            output: JSON.stringify({ uiResources: [resource] }),
+          },
+        },
+      },
+    },
+    "s1",
+  );
+  assert.equal(wrongTool?.type, "tool.completed");
+  assert.equal(wrongTool?.payload.uiResources, undefined);
+});
+
 test("maps an errored tool part to tool.completed failure", () => {
   const event = normalizeHermesEvent(
     {

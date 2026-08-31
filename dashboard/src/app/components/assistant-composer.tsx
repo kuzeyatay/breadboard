@@ -59,6 +59,7 @@ import MeetingRecorderBar from '@/app/components/hermes/meeting-recorder-bar';
 import type { MeetingRecording } from '@/lib/meeting-notes/use-meeting-recorder';
 import { DEEP_TUTOR_COMMAND } from '@/lib/deep-tutor/identity.ts';
 import { CAREER_OPS_COMMAND } from '@/lib/career-ops/identity.ts';
+import { OPENEXECUTIVE_COMMAND } from '@/lib/openexecutive/identity.ts';
 import { OPEN_GYM_COMMAND } from '@/lib/open-gym/identity.ts';
 import { TRADINGAGENTS_AGENT_ID, TRADINGAGENTS_COMMAND } from '@/lib/tradingagents/identity.ts';
 import { VIBE_TRADING_COMMAND } from '@/lib/vibe-trading/identity.ts';
@@ -98,9 +99,12 @@ import { HYPERFRAMES_COMMAND } from '@/lib/hyperframes/identity.ts';
 import { RESOURCE2SKILL_COMMAND } from '@/lib/resource2skill/identity.ts';
 import { MATRAIX_COMMAND } from '@/lib/matraix/identity.ts';
 import { BOLT_SLIDES_COMMAND } from '@/lib/bolt-slides/identity.ts';
+import { CLASSROOM_COMMAND } from '@/lib/classroom/identity.ts';
+import { GODS_EYE_COMMAND } from '@/lib/gods-eye/identity.ts';
 import { OPENMONTAGE_COMMAND } from '@/lib/openmontage/identity.ts';
 import { OPENWORK_COMMAND } from '@/lib/openwork/identity.ts';
 import { OPENSCIENCE_COMMAND } from '@/lib/openscience/identity.ts';
+import { PRAXIST_COMMAND } from '@/lib/praxist/identity.ts';
 import { MAX_RESEARCH_COMMAND } from '@/lib/max-research/identity.ts';
 import { INBOX_ZERO_COMMAND } from '@/lib/inbox-zero/identity.ts';
 import { VIMAX_COMMAND } from '@/lib/vimax/identity.ts';
@@ -119,9 +123,22 @@ import { imageFilesFromClipboard } from '@/lib/chat-attachments';
 import { composerSegments } from '@/lib/composer-links';
 import { modelAttachmentHref } from '@/lib/model-attachments';
 import ModelCubeIcon from '@/app/components/model-cube-icon';
+import SignInRequiredCard from '@/app/components/sign-in-required-card';
 
 /** What the goal card's play button sends when a goal has stalled. */
 const GOAL_CONTINUATION_MESSAGE = 'Continue working on the goal.';
+
+function workflowComposerPrompt(workflow: Pick<LocalWorkflowSummary, 'name'>): string {
+  return `Run the ${workflow.name} automation`;
+}
+
+function workflowInputFromComposer(value: string, stagedPrompt: string): string {
+  const draft = value.trim();
+  if (draft.toLocaleLowerCase().startsWith(stagedPrompt.toLocaleLowerCase())) {
+    return draft.slice(stagedPrompt.length).replace(/^[\s,.:;—-]*(?:but\s+)?/iu, '').trim();
+  }
+  return draft;
+}
 
 export interface ComposerAttachment {
   name: string;
@@ -145,7 +162,7 @@ interface Props {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
-  /** Invokes a saved automation with the current composer text as input. */
+  /** Invokes the selected automation with the editable instruction in the composer. */
   onRunWorkflow?: (workflow: LocalWorkflowSummary, input: string) => void | Promise<void>;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   /**
@@ -226,6 +243,11 @@ interface Props {
   stopPending?: boolean;
   permissionPending?: boolean;
   /**
+   * The model is waiting on a question. Enter then sends the draft as the
+   * answer instead of queueing it behind the run.
+   */
+  clarificationPending?: boolean;
+  /**
    * Active Agent TARS (browser operator). When set, a chip shows in the composer
    * and the host routes sends to a browser run instead of the chat model.
    */
@@ -269,6 +291,9 @@ interface Props {
   careerOpsAgent?: { id: string; name: string } | null;
   onClearCareerOps?: () => void;
   onSelectCareerOps?: () => void;
+  openExecutiveAgent?: { id: string; name: string } | null;
+  onClearOpenExecutive?: () => void;
+  onSelectOpenExecutive?: () => void;
   /** Inserts openGym's canonical command; the command owns the run. */
   onSelectOpenGym?: () => void;
   /**
@@ -344,12 +369,18 @@ interface Props {
   onSelectMatraix?: () => void;
   /** Bolt Slides too: the command carries the deck brief and its flags. */
   onSelectBoltSlides?: () => void;
+  /** Classroom likewise: the command carries the lesson brief and its flags. */
+  onSelectClassroom?: () => void;
+  /** God's Eye likewise: the command carries the tasking brief. */
+  onSelectGodsEye?: () => void;
   /** OpenMontage likewise: the command carries the whole production brief. */
   onSelectOpenMontage?: () => void;
   /** OpenWork likewise: the command carries the task for its workspace. */
   onSelectOpenwork?: () => void;
   /** OpenScience likewise: the command carries the research goal. */
   onSelectOpenscience?: () => void;
+  /** Praxist takes the absolute directory of an existing task project. */
+  onSelectPraxist?: () => void;
   onSelectMaxResearch?: () => void;
   /** Inbox Zero likewise: the command carries the instruction for the mailbox. */
   onSelectInboxZero?: () => void;
@@ -488,6 +519,7 @@ export default function AssistantComposer({
   onStop,
   stopPending = false,
   permissionPending = false,
+  clarificationPending = false,
   browserAgent,
   onClearBrowserAgent,
   onSelectBrowserAgent,
@@ -510,6 +542,9 @@ export default function AssistantComposer({
   careerOpsAgent,
   onClearCareerOps,
   onSelectCareerOps,
+  openExecutiveAgent,
+  onClearOpenExecutive,
+  onSelectOpenExecutive,
   onSelectOpenGym,
   vibeTradingAgent,
   onClearVibeTrading,
@@ -547,9 +582,12 @@ export default function AssistantComposer({
   onSelectResource2Skill,
   onSelectMatraix,
   onSelectBoltSlides,
+  onSelectClassroom,
+  onSelectGodsEye,
   onSelectOpenMontage,
   onSelectOpenwork,
   onSelectOpenscience,
+  onSelectPraxist,
   onSelectMaxResearch,
   onSelectInboxZero,
   onSelectVimax,
@@ -585,6 +623,10 @@ export default function AssistantComposer({
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('account');
   const [showCommandHub, setShowCommandHub] = useState(false);
   const [showSlashCommands, setShowSlashCommands] = useState(false);
+  // The workflow stays selected while its generated sentence is edited. That is
+  // what lets "...but change the entered name to Mike" become bounded run input
+  // instead of falling back to an unrelated chat turn.
+  const [pendingWorkflow, setPendingWorkflow] = useState<LocalWorkflowSummary | null>(null);
   // The token the caret was in when the picker opened — the picker's filter,
   // which is not the whole box once the sentence has a body after the token.
   const [slashQuery, setSlashQuery] = useState('');
@@ -635,6 +677,36 @@ export default function AssistantComposer({
   const internalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   useImperativeHandle(textareaRef, () => internalTextareaRef.current as HTMLTextAreaElement);
 
+  const pendingWorkflowPrompt = pendingWorkflow
+    ? workflowComposerPrompt(pendingWorkflow)
+    : null;
+
+  // Clearing the draft clears the selection. Other edits are the run instruction
+  // and remain visibly attached to the workflow by the chip rendered below.
+  useEffect(() => {
+    if (pendingWorkflowPrompt !== null && !value.trim()) {
+      setPendingWorkflow(null);
+    }
+  }, [pendingWorkflowPrompt, value]);
+
+  function submitMessage() {
+    if (
+      pendingWorkflow &&
+      pendingWorkflowPrompt !== null &&
+      Boolean(value.trim()) &&
+      onRunWorkflow
+    ) {
+      const workflow = pendingWorkflow;
+      const input = workflowInputFromComposer(value, pendingWorkflowPrompt);
+      setPendingWorkflow(null);
+      onChange('');
+      window.setTimeout(() => internalTextareaRef.current?.focus(), 0);
+      void onRunWorkflow(workflow, input);
+      return;
+    }
+    onSubmit();
+  }
+
   // Voice mode has to send through the host's own submit so a spoken turn is an
   // ordinary chat message. `onSubmit` reads the host's draft state, which only
   // holds the transcript one render after `onChange` — so the send waits for the
@@ -642,10 +714,10 @@ export default function AssistantComposer({
   const pendingVoiceSendRef = useRef<string | null>(null);
   const composerValueRef = useRef(value);
   const onChangeRef = useRef(onChange);
-  const onSubmitRef = useRef(onSubmit);
+  const onSubmitRef = useRef(submitMessage);
   composerValueRef.current = value;
   onChangeRef.current = onChange;
-  onSubmitRef.current = onSubmit;
+  onSubmitRef.current = submitMessage;
 
   useEffect(() => {
     if (pendingVoiceSendRef.current === null || pendingVoiceSendRef.current !== value) return;
@@ -886,7 +958,10 @@ export default function AssistantComposer({
     runState === 'stopping';
   // Anything still working on this conversation — a chat turn or an external
   // agent run — makes the next message a queued one rather than a send.
-  const runInFlight = activeRun || externalRunActive;
+  // A run blocked on its own question is not "in flight" from the composer's
+  // point of view: it wants the draft now, and the send path delivers it as the
+  // answer. So neither the queue nor Stop takes over while the question is open.
+  const runInFlight = (activeRun || externalRunActive) && !clarificationPending;
   const stopping = runState === 'stopping' || stopPending;
   // Transcript loading holds messages for the same reason as an active run: a
   // direct send would race history restoration and could be overwritten by it.
@@ -1168,6 +1243,7 @@ export default function AssistantComposer({
     onSelectMeetingNotes ? 'meeting-notes' : null,
     onSelectDeepTutor ? 'deep-tutor' : null,
     onSelectCareerOps ? 'career-ops' : null,
+    onSelectOpenExecutive ? 'openexecutive' : null,
     onSelectOpenGym ? 'open-gym' : null,
     onSelectTradingAgents ? 'trading-agent' : null,
     onSelectShorts ? 'shorts' : null,
@@ -1184,9 +1260,12 @@ export default function AssistantComposer({
     onSelectResource2Skill ? 'resource2skill' : null,
     onSelectMatraix ? 'matraix' : null,
     onSelectBoltSlides ? 'bolt-slides' : null,
+    onSelectClassroom ? 'classroom' : null,
+    onSelectGodsEye ? 'gods-eye' : null,
     onSelectOpenMontage ? 'openmontage' : null,
     onSelectOpenwork ? 'openwork' : null,
     onSelectOpenscience ? 'openscience' : null,
+    onSelectPraxist ? 'praxist' : null,
     onSelectMaxResearch ? 'max-research' : null,
     onSelectInboxZero ? 'inbox-zero' : null,
     onSelectVimax ? 'vimax' : null,
@@ -1201,6 +1280,11 @@ export default function AssistantComposer({
 
   return (
     <div className={className}>
+      <SignInRequiredCard
+        key={`${capabilitySurface}:${capabilitySessionId ?? 'unscoped'}`}
+        surface={capabilitySurface}
+        sessionId={capabilitySessionId}
+      />
       <div className="neu-composer relative rounded-[30px] p-2">
         <SlashCommandMenu
           ref={slashCommandMenuRef}
@@ -1224,6 +1308,28 @@ export default function AssistantComposer({
         {headerContent ? (
           <div className="mb-1 border-b border-[var(--line)] px-1 pb-1.5">
             {headerContent}
+          </div>
+        ) : null}
+        {pendingWorkflow ? (
+          <div className="flex items-center px-2 pb-1.5 pt-0.5">
+            <span
+              className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--paper-surface)] px-2 py-1 text-[10px] text-[var(--ink-muted)]"
+              title="Your edited message will be used as input for this workflow"
+            >
+              <span className="font-medium text-[var(--botanical)]">Workflow</span>
+              <span className="max-w-52 truncate">{pendingWorkflow.name}</span>
+              <button
+                type="button"
+                onClick={() => setPendingWorkflow(null)}
+                className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                aria-label={`Clear ${pendingWorkflow.name} workflow selection`}
+                title="Send this as a normal chat message instead"
+              >
+                <svg aria-hidden className="h-2.5 w-2.5" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path strokeLinecap="round" d="m3 3 6 6m0-6-6 6" />
+                </svg>
+              </button>
+            </span>
           </div>
         ) : null}
         {attachments.length > 0 ? (
@@ -1520,6 +1626,29 @@ export default function AssistantComposer({
                   className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
                   aria-label={`Clear ${careerOpsAgent.name}`}
                   title="Clear Career Ops"
+                >
+                  <svg aria-hidden className="h-2.5 w-2.5" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path strokeLinecap="round" d="m3 3 6 6m0-6-6 6" />
+                  </svg>
+                </button>
+              ) : null}
+            </span>
+          </div>
+        ) : null}
+        {openExecutiveAgent ? (
+          <div className="flex items-center px-2 pb-1.5 pt-0.5">
+            <span
+              className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--paper-surface)] px-2 py-1 text-[10px] text-[var(--ink-muted)]"
+              title={`${OPENEXECUTIVE_COMMAND} · virtual executive team`}
+            >
+              <span className="truncate font-mono font-medium text-[var(--botanical)]">{OPENEXECUTIVE_COMMAND}</span>
+              {onClearOpenExecutive ? (
+                <button
+                  type="button"
+                  onClick={() => onClearOpenExecutive()}
+                  className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                  aria-label={`Clear ${openExecutiveAgent.name}`}
+                  title="Clear Open Executive"
                 >
                   <svg aria-hidden className="h-2.5 w-2.5" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
                     <path strokeLinecap="round" d="m3 3 6 6m0-6-6 6" />
@@ -1859,10 +1988,14 @@ export default function AssistantComposer({
             }}
             onSelect={insertCommand}
             onRunWorkflow={onRunWorkflow ? (workflow) => {
-              const workflowInput = value.trim() === '/' ? '' : value.trim();
-              onChange('');
-              window.setTimeout(() => internalTextareaRef.current?.focus(), 0);
-              void onRunWorkflow(workflow, workflowInput);
+              const prompt = workflowComposerPrompt(workflow);
+              setPendingWorkflow(workflow);
+              onChange(prompt);
+              window.setTimeout(() => {
+                const node = internalTextareaRef.current;
+                node?.focus();
+                node?.setSelectionRange(prompt.length, prompt.length);
+              }, 0);
             } : undefined}
             onOpenMcpSettings={() => {
               setSettingsInitialTab('mcp');
@@ -1877,6 +2010,7 @@ export default function AssistantComposer({
             onSelectMeetingNotes={onSelectMeetingNotes ? () => insertCommandToken(MEETING_NOTES_COMMAND) : undefined}
             onSelectDeepTutor={onSelectDeepTutor ? () => insertCommandToken(DEEP_TUTOR_COMMAND) : undefined}
             onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMAND) : undefined}
+            onSelectOpenExecutive={onSelectOpenExecutive ? () => insertCommandToken(OPENEXECUTIVE_COMMAND) : undefined}
             onSelectOpenGym={onSelectOpenGym ? () => insertCommandToken(OPEN_GYM_COMMAND) : undefined}
             onSelectVibeTrading={onSelectVibeTrading ? () => insertCommandToken(VIBE_TRADING_COMMAND) : undefined}
             onSelectStockAnalyst={onSelectStockAnalyst ? () => insertCommandToken(STOCK_ANALYST_COMMAND) : undefined}
@@ -1893,9 +2027,12 @@ export default function AssistantComposer({
             onSelectResource2Skill={onSelectResource2Skill ? () => insertCommandToken(RESOURCE2SKILL_COMMAND) : undefined}
             onSelectMatraix={onSelectMatraix ? () => insertCommandToken(MATRAIX_COMMAND) : undefined}
             onSelectBoltSlides={onSelectBoltSlides ? () => insertCommandToken(BOLT_SLIDES_COMMAND) : undefined}
+            onSelectClassroom={onSelectClassroom ? () => insertCommandToken(CLASSROOM_COMMAND) : undefined}
+            onSelectGodsEye={onSelectGodsEye ? () => insertCommandToken(GODS_EYE_COMMAND) : undefined}
             onSelectOpenMontage={onSelectOpenMontage ? () => insertCommandToken(OPENMONTAGE_COMMAND) : undefined}
             onSelectOpenwork={onSelectOpenwork ? () => insertCommandToken(OPENWORK_COMMAND) : undefined}
             onSelectOpenscience={onSelectOpenscience ? () => insertCommandToken(OPENSCIENCE_COMMAND) : undefined}
+            onSelectPraxist={onSelectPraxist ? () => insertCommandToken(PRAXIST_COMMAND) : undefined}
             onSelectMaxResearch={onSelectMaxResearch ? () => insertCommandToken(MAX_RESEARCH_COMMAND) : undefined}
             onSelectInboxZero={onSelectInboxZero ? () => insertCommandToken(INBOX_ZERO_COMMAND) : undefined}
             onSelectVimax={onSelectVimax ? () => insertCommandToken(VIMAX_COMMAND) : undefined}
@@ -1948,6 +2085,19 @@ export default function AssistantComposer({
               <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 3.75 5.25 6v5.25c0 4.14 2.83 7.98 6.75 9 3.92-1.02 6.75-4.86 6.75-9V6L12 3.75Z" />
                 <path strokeLinecap="round" d="M12 8.25v4.5m0 3h.008" />
+              </svg>
+            </span>
+          ) : null}
+
+          {activeRun && clarificationPending ? (
+            <span
+              className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--botanical)] sm:flex"
+              title="The agent is waiting for your answer"
+              aria-label="The agent is waiting for your answer"
+            >
+              <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <circle cx="12" cy="12" r="8.25" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 9.75a2.25 2.25 0 1 1 3.4 1.94c-.7.42-1.15.95-1.15 1.81v.25m0 2.75h.008" />
               </svg>
             </span>
           ) : null}
@@ -2033,6 +2183,9 @@ export default function AssistantComposer({
                     value={value}
                     onChange={(event) => {
                       const next = event.target.value;
+                      if (pendingWorkflowPrompt !== null && !next.trim()) {
+                        setPendingWorkflow(null);
+                      }
                       onChange(next);
                       // Typing in a leading slash token opens the direct command
                       // picker, never the full capability manager — including
@@ -2074,7 +2227,7 @@ export default function AssistantComposer({
                         return;
                       }
                       if (!canSubmit || isSending || disabled) return;
-                      onSubmit();
+                      submitMessage();
                     }}
                     onPaste={handlePaste}
                     onScroll={syncCommandBackdrop}
@@ -2378,6 +2531,7 @@ export default function AssistantComposer({
             compact={compact}
             textareaRef={internalTextareaRef}
             onOpenVoiceMode={voiceMessages ? () => setVoiceOpen(true) : undefined}
+            runtimeSessionId={capabilitySessionId}
           />
 
           {/* An external agent used to leave this a send button on the grounds
@@ -2408,7 +2562,7 @@ export default function AssistantComposer({
                 ? submitFormAgent()
                 : queueHeld
                   ? queueSteer()
-                  : onSubmit()
+                  : submitMessage()
             }
             disabled={
               !canSend ||

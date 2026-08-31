@@ -108,13 +108,17 @@ test("the inline variant stays an artifact while embedding its sandbox in the re
   assert.match(cards, /<InlineInteractiveVisualizer/);
   assert.match(embed, /sandbox="allow-scripts"/);
   assert.match(embed, /host-presentation/);
-  assert.match(embed, /Open .* in the artifact viewer/);
+  assert.doesNotMatch(embed, /Open .* in the artifact viewer/);
+  assert.match(embed, /INITIAL_INLINE_HEIGHT = 420/);
+  assert.match(embed, /MIN_INLINE_HEIGHT = 280/);
+  assert.match(embed, /min-h-\[17\.5rem\]/);
   assert.match(
     embed,
     /if \(!artifact\.previewAvailable \|\| artifact\.status !== "ready"\) \{\s*return null;/,
   );
   assert.doesNotMatch(embed, /`Building \$\{artifact\.title\}/);
   assert.match(runtime, /data-presentation="inline"/);
+  assert.match(runtime, /data-presentation="inline"[^\n]+min-height:0/);
   assert.match(runtime, /data\.presentation==="inline"/);
   assert.match(customRuntime, /CUSTOM_INTERACTIVE_VISUALIZER_SCHEMA_VERSION = 2/);
   assert.match(customRuntime, /box-shadow/);
@@ -147,7 +151,7 @@ test("the inline variant stays an artifact while embedding its sandbox in the re
   }
 });
 
-test("the inline visualizer keeps its artifact card directly below the embed", () => {
+test("the inline visualizer keeps its clickable artifact card directly below the embed", () => {
   const cards = source("../src/app/components/hermes/inline-artifact-cards.tsx");
   const embed = source("../src/app/components/hermes/inline-interactive-visualizer.tsx");
   const branchStart = cards.indexOf(
@@ -167,15 +171,15 @@ test("the inline visualizer keeps its artifact card directly below the embed", (
   );
   assert.match(inlineBranch, /artifact\.status === "ready"/);
   assert.match(inlineBranch, /artifact\.previewAvailable/);
-  assert.match(
-    inlineBranch,
-    /onOpen=\{\(\) => context\.setOpenId\(artifact\.id\)\}/,
-  );
+  // The card is the single viewer entry point; the embed no longer repeats it
+  // with a floating corner control.
+  assert.doesNotMatch(inlineBranch, /onOpen=/);
   assert.match(cards, /function InlineArtifactFileCard/);
-  assert.match(embed, /onClick=\{onOpen\}/);
+  assert.match(cards, /onClick=\{\(\) => void context\.openArtifact\(artifact\.id\)\}/);
+  assert.doesNotMatch(embed, /onClick=\{onOpen\}/);
   assert.match(
     embed,
-    /aria-label=\{`Open \$\{artifact\.title\} in the artifact viewer`\}/,
+    /aria-label=\{`\$\{artifact\.title\} interactive visualization`\}/,
   );
 });
 
@@ -199,7 +203,7 @@ test("the in-chat visualizer cannot complete without its current-run artifact", 
   );
   assert.ok(gateIndex >= 0);
   assert.ok(
-    gateIndex < eventStream.indexOf("          emit(event);", gateIndex),
+    gateIndex < eventStream.indexOf("if (forwardEvent) emit(event);", gateIndex),
     "the artifact gate must run before the upstream idle event is emitted",
   );
   assert.match(

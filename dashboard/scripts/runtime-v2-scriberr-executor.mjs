@@ -9,7 +9,10 @@ import { createSealedRuntimeV2QuartzPublishExecutor } from "./runtime-v2-quartz-
 
 const PROTOCOL_VERSION = 1;
 const JOB_ID = /^vtj-[a-z0-9-]{8,80}$/u;
-const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".mkv", ".webm", ".m4v"]);
+const MEDIA_EXTENSIONS = new Set([
+  ".mp4", ".mov", ".mkv", ".webm", ".m4v",
+  ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg",
+]);
 const MAX_TEXT_BYTES = 4096;
 
 function fail(message) {
@@ -167,19 +170,29 @@ async function importSource(layout, relative) {
   return import(pathToFileURL(path.join(layout.sourceRoot, ...relative.split("/"))).href);
 }
 
-async function openStore(layout) {
-  await import("./runtime-v2-scriberr-import-hook.mjs");
-  const [{ default: Database }, storeModule] = await Promise.all([
-    import(pathToFileURL(layout.databaseModulePath).href),
-    importSource(layout, "lib/scriberr/job-store.ts"),
-  ]);
-  const databasePath = path.join(layout.dataRoot, "database", "brain.db");
+export function resolveScriberrGardenDatabasePath(layout) {
+  const historicalDevelopmentData =
+    samePath(layout.dataRoot, layout.repositoryRoot) &&
+    samePath(layout.sourceRoot, path.join(layout.repositoryRoot, "dashboard", "src"));
+  const databasePath = historicalDevelopmentData
+    ? path.join(layout.dataRoot, "dashboard", "db", "brain.db")
+    : path.join(layout.dataRoot, "database", "brain.db");
   const metadata = fs.lstatSync(databasePath);
   if (!metadata.isFile() || metadata.isSymbolicLink() ||
       !pathWithin(layout.dataRoot, databasePath) ||
       !samePath(fs.realpathSync.native(databasePath), databasePath)) {
     fail("The Breadboard database is unavailable or indirect.");
   }
+  return databasePath;
+}
+
+async function openStore(layout) {
+  await import("./runtime-v2-scriberr-import-hook.mjs");
+  const [{ default: Database }, storeModule] = await Promise.all([
+    import(pathToFileURL(layout.databaseModulePath).href),
+    importSource(layout, "lib/scriberr/job-store.ts"),
+  ]);
+  const databasePath = resolveScriberrGardenDatabasePath(layout);
   const database = new Database(databasePath);
   database.pragma("busy_timeout = 30000");
   database.pragma("foreign_keys = ON");
@@ -201,7 +214,7 @@ async function sealDurableUpload(layout, launch, store, inputPath, signal) {
   const blob = launch.inputBlobs[0];
   if (!blob || blob.sha256 !== job.mediaSha256) fail("The Scriberr upload digest does not match its durable job.");
   const extension = path.extname(job.originalFilename ?? "").toLowerCase();
-  if (!VIDEO_EXTENSIONS.has(extension)) fail("The durable Scriberr upload extension is invalid.");
+  if (!MEDIA_EXTENSIONS.has(extension)) fail("The durable Scriberr upload extension is invalid.");
   const jobRoot = path.join(layout.mediaRoot, job.id);
   if (!pathWithin(layout.mediaRoot, jobRoot) || samePath(layout.mediaRoot, jobRoot)) fail("Invalid Scriberr media root.");
   ensureDirectContainedDirectory(layout.mediaRoot, jobRoot, "Scriberr job media root");

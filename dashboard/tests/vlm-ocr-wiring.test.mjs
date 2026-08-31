@@ -11,6 +11,7 @@ const statusRoute = source('../src/app/api/vlm-ocr/status/route.ts');
 const option = source('../src/app/components/vlm-parse-option.tsx');
 const workspace = source('../src/app/gardens/[clusterSlug]/workspace-client.tsx');
 const dashboard = source('../src/app/dashboard/dashboard-client.tsx');
+const gardenUploadStore = source('../src/lib/garden-upload-store.ts');
 const envExample = source('../.env.example');
 
 test('both upload panels offer the option and post it to the ingest route', () => {
@@ -20,28 +21,38 @@ test('both upload panels offer the option and post it to the ingest route', () =
   ]) {
     assert.match(client, /from "@\/app\/components\/vlm-parse-option"/, name);
     assert.match(client, /<VlmParseOption/, name);
+    // It is not offered when the model server cannot be reached.
+    assert.match(client, /vlmStatus\.available/, name);
+  }
+  for (const [name, uploader] of [
+    ['persistent garden upload engine', gardenUploadStore],
+    ['dashboard', dashboard],
+  ]) {
     assert.match(
-      client,
+      uploader,
       /formData\.append\("parseWithVlm", String\(usesVlm\)\)/,
       name,
     );
     // The option only applies to files that rasterize into pages.
-    assert.match(client, /VLM_PARSE_FILE_RE\.test\(file\.name\)/, name);
-    // It is not offered when the model server cannot be reached.
-    assert.match(client, /vlmStatus\.available/, name);
+    assert.match(uploader, /VLM_PARSE_FILE_RE\.test\(file\.name\)/, name);
   }
 });
 
 test('the two page readers are mutually exclusive in both panels', () => {
   for (const client of [workspace, dashboard]) {
     assert.match(client, /if \(next\) setIsHandwriting\(false\)/);
+    assert.match(
+      client,
+      /disabled=\{(?:isUploading \|\| )?vlmUploadEnabled\}/,
+    );
+  }
+  for (const uploader of [gardenUploadStore, dashboard]) {
     // Handwriting OCR yields to the VLM on every file the VLM claims. It now
     // also yields to anydoc, which sits between them — see anydoc-wiring.
     assert.match(
-      client,
-      /const usesHandwriting =\s*!usesVlm &&[\s\S]{0,40}isHandwriting &&\s*HANDWRITING_FILE_RE\.test\(file\.name\)/,
+      uploader,
+      /const usesHandwriting =\s*!usesVlm &&[\s\S]{0,140}(?:isHandwriting|options\.handwriting) &&\s*HANDWRITING_FILE_RE\.test\(file\.name\)/,
     );
-    assert.match(client, /disabled=\{isUploading \|\| vlmUploadEnabled\}/);
   }
 });
 
@@ -91,9 +102,13 @@ test('the status route probes without starting a download', () => {
   assert.match(statusRoute, /await requireUserId\(\)/);
 });
 
-test('the option explains itself when the model is unavailable', () => {
+test('the option explains the local reader and reports when it is unavailable', () => {
+  assert.match(option, /Uses a local OCR model to read each page/);
+  assert.match(option, /preserving headings, tables, formulas, and figures/);
   assert.match(option, /VLM_OCR_ENABLED=true/);
   assert.match(option, /No OCR model server at/);
+  assert.doesNotMatch(option, /Reads every page with HunyuanOCR/);
+  assert.doesNotMatch(option, /downloads the weights once/);
 });
 
 test('.env.example documents the option and its llama.cpp requirement', () => {

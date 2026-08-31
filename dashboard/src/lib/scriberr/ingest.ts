@@ -34,6 +34,7 @@ export interface TranscriptIngestInput {
   markdownBody: string;
   plainText: string;
   metadata: Record<string, string | string[]>;
+  mediaKind: "audio" | "video";
   youtubeVideoId?: string | null;
   mediaSha256?: string | null;
   jobId: string;
@@ -50,10 +51,11 @@ export interface TranscriptIngestResult {
 function fallbackExtraction(
   title: string,
   plainText: string,
+  mediaKind: "audio" | "video",
 ): KnowledgeExtraction {
   const summary = plainText.trim()
     ? plainText.trim().replace(/\s+/g, " ").slice(0, 300)
-    : `Imported video transcript ${title}.`;
+    : `Imported ${mediaKind} transcript ${title}.`;
   return {
     documentTitle: title,
     summary,
@@ -102,7 +104,7 @@ export async function ingestTranscriptSource(
       client,
       model: DEFAULT_MODEL,
       title: input.sourceTitle,
-      sourceType: "video",
+      sourceType: input.mediaKind,
       sourceLabel: input.sourceLabel,
       pages,
       text: input.plainText,
@@ -110,7 +112,11 @@ export async function ingestTranscriptSource(
     });
   } catch {
     // ChatMock being down must not block the faithful transcript source.
-    extraction = fallbackExtraction(input.sourceTitle, input.plainText);
+    extraction = fallbackExtraction(
+      input.sourceTitle,
+      input.plainText,
+      input.mediaKind,
+    );
   }
 
   const sourceTitle = resolveCollisionFreeTitle({
@@ -129,7 +135,7 @@ export async function ingestTranscriptSource(
     clusterSlug: input.clusterSlug,
     sourceTitle,
     sourceFileName: input.sourceFileName,
-    sourceType: "video",
+    sourceType: input.mediaKind,
     sourceLabel: input.sourceLabel,
     markdownText: input.markdownBody,
     plainText: input.plainText,
@@ -173,5 +179,6 @@ export async function resumeTranscriptIndexing({
   }
   await publishQuartzAfterMutation(`re-index video transcript in ${clusterSlug}`, {
     userId,
+    gardenSlug: clusterSlug,
   });
 }

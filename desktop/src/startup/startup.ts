@@ -91,7 +91,9 @@ const WELCOME_GREETINGS: WelcomeGreeting[] = [
   { text: "Chào mừng", lang: "vi" },
 ];
 
-const GREETING_HOLD_MS = 2_600;
+// The 620ms entrance leaves a long, quiet plateau for each translation to be
+// read before the next crossfade begins.
+const GREETING_HOLD_MS = 4_200;
 const WELCOME_REVEAL_DELAY_MS = 420;
 /** With the chime leading it in, the greeting waits a beat longer so the sound
  *  starts first and the word lands into it. It costs nothing in real
@@ -384,6 +386,17 @@ welcomeContinue.addEventListener("click", (event) => {
     keyboardActivated ? null : event.clientX,
     keyboardActivated ? null : event.clientY,
   );
+});
+// Keep Space as a convenient, undisplayed shortcut from anywhere on the
+// screen. The bloom has no point to grow from on a key, so it opens from the
+// middle. `dissolve` ignores the synthetic click a focused button would still
+// raise on the key's release.
+window.addEventListener("keydown", (event) => {
+  if (stage !== "welcome") return;
+  if (event.key !== " " && event.key !== "Spacebar") return;
+  if (event.repeat) return;
+  event.preventDefault();
+  dissolve(null, null);
 });
 retryButton.addEventListener("click", async () => {
   const serviceId = failedServiceId;

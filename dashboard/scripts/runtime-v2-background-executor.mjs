@@ -11,6 +11,7 @@ const BACKGROUND_OPERATIONS = new Set([
   "email-poll",
   "review-scheduler",
   "caldav-sync",
+  "calendar-reminders",
   "ifixai-maintenance",
 ]);
 const GATEWAYS = new Set(["telegram", "whatsapp"]);
@@ -232,6 +233,13 @@ async function runBackgroundOperation(request, sourceRoot) {
         sourceUrl(sourceRoot, "lib/calendar/caldav-scheduler.ts")
       );
       const result = await runDueCaldavSyncs();
+      return { operation: request.operation, ...result };
+    }
+    case "calendar-reminders": {
+      const { runCalendarReminders } = await import(
+        sourceUrl(sourceRoot, "lib/calendar/reminders.ts")
+      );
+      const result = await runCalendarReminders();
       return { operation: request.operation, ...result };
     }
     case "ifixai-maintenance": {

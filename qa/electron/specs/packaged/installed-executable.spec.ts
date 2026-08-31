@@ -148,7 +148,7 @@ test("explicit installed executable keeps production hardening and exits cleanly
 
     await expect(
       startupPage.getByRole("button", {
-        name: "Welcome to Breadboard. Click to continue.",
+        name: "Welcome to Breadboard. Press space to continue.",
         exact: true,
       }),
     ).toBeVisible({ timeout: 10 * 60_000 });

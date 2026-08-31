@@ -185,6 +185,18 @@ export class HermesRpcClient {
     });
   }
 
+  /**
+   * Observe every event frame on this connection, for any session. Returns
+   * the unsubscribe. Unlike `events()` this does not open the socket: frames
+   * arrive only while some request or stream keeps the connection up.
+   */
+  subscribe(listener: (event: RawHermesEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
   async *events(
     liveSessionId: string,
     signal?: AbortSignal,

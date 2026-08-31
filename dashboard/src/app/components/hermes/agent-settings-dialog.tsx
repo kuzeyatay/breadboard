@@ -19,6 +19,10 @@ import { findConfigurableAgent } from "@/lib/agent-settings/catalog.ts";
 const CareerOpsSetup = dynamic(() => import("@/app/components/agents/career-ops-setup"), {
   ssr: false,
 });
+const OpenExecutiveSetup = dynamic(
+  () => import("@/app/components/agents/openexecutive-setup"),
+  { ssr: false },
+);
 const DeepTutorSetup = dynamic(() => import("@/app/components/agents/deep-tutor-setup"), {
   ssr: false,
 });
@@ -122,6 +126,15 @@ export default function AgentSettingsDialog({
                 Workspace
               </h3>
               <CareerOpsSetup />
+            </section>
+          ) : null}
+
+          {agent.id === "openexecutive" ? (
+            <section className="space-y-2">
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-muted)]">
+                Runtime
+              </h3>
+              <OpenExecutiveSetup />
             </section>
           ) : null}
 

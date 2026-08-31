@@ -73,6 +73,7 @@ compression) after those exclusions.
 | `diagram-design` | https://github.com/cathrynlavery/diagram-design | `main` | `09df49d8d1a1c7fb2efdfcdc7a2a0713534350a6` |
 | `emilkowalski-skills` | https://github.com/emilkowalski/skills | `main` | `de33dbed000212b54400a33767d1e4d03654db2a` |
 | `goal` | https://github.com/secemp9/goal | `main` | `0161050d73ee1b3ec71d92ef88a3c0d0725ed65f` |
+| `gods-eye-view` | https://github.com/bilawalsidhu/gods-eye-view | `main` | `314a0e1c2ef668cb110674b737e19a44ff6fc1ef` |
 | `hallmark` | https://github.com/nutlope/hallmark | `main` | `13ac0ec7e148655948100b6396439e481361d690` |
 | `harvey-labs` | https://github.com/harveyai/harvey-labs | `main` | `55510f0e609ffa5cf6f5df17d9a813ce4bb33d0c` |
 | `hermes-agent` | https://github.com/nousresearch/hermes-agent | `main` | `4f5c688775a4ba850d7d3adc5dfd54efcf39ebd3` |
@@ -90,15 +91,19 @@ compression) after those exclusions.
 | `nango` | https://github.com/NangoHQ/nango.git | `master` | `ddd0b201cd7ac31c2a5e278da531f1a065203abd` |
 | `oh-my-hermes` | https://github.com/rlaope/oh-my-hermes | `main` | `080030ccef0d3c15123a3f7478b671a0d2ddcf22` |
 | `open-alpha-arena` | https://github.com/etrobot/open-alpha-arena | `main` | `15d47c1d48969f63419954927478cdad8a36a6b2` |
+| `OpenExecutive` | https://github.com/SenteLabsAI/OpenExecutive | `main` | `755d8ec13083bc231b2d9c331af48ff5df902a81` |
 | `opencode` | https://github.com/anomalyco/opencode | `dev` | `017a5977d2107092007623e507fc5c6eb337d3b2` |
 | `openGym` | https://github.com/arvids-unavailable/openGym | `main` | `c42ba6b98e3776af5981f20c05ba392238799670` |
 | `OpenMontage` | https://github.com/calesthio/OpenMontage | `main` | `4eab34c5cfcccaa4f1970554928feccce73ee930` |
 | `OpenPlanter` | https://github.com/ShinMegamiBoson/OpenPlanter | `main` | `81d75620ff50a69f576bc19a8bb17738e952387a` |
+| `openmaic` | https://github.com/THU-MAIC/OpenMAIC | `main` | `dfebbcf33f3a56064129903faeab70a9e4243146` |
 | `openscience` | https://github.com/synthetic-sciences/openscience | `main` | `74ee13cdd1e086effd7a616a7c0bbad678bc5e51` |
 | `openwork` | https://github.com/different-ai/openwork | `dev` | `776a0646be968842f73d523f3c56372a9ee4ed82` |
+| `patent-disclosure-skill` | https://github.com/handsomestWei/patent-disclosure-skill | `main` | `ecd62fdb45b9792bb5fb2ebe8dc61157e04faab0` |
 | `penecho` | https://github.com/penecho/penecho | `main` | `5d14d54b5a8d06dab4cb6a865f2547556e5ff842` |
 | `postiz-app` | https://github.com/gitroomhq/postiz-app | `main` | `cf4c432c00c9db775ea1b1f12480a8e2b89aec32` |
 | `premortem` | https://github.com/expectedparrot/premortem | `main` | `724247b820e2bab3613e1055d990ee0efc963a83` |
+| `PRAXIST` | https://github.com/sapientinc/PRAXIST | `main` | `7af6a26747ed8ce23b7147ec3243ad21c8346679` |
 | `prompt-engineering-guide` | https://github.com/dair-ai/prompt-engineering-guide | `main` | `57673726396dd94acb23bdb1e67f27c78ee85a8e` |
 | `pxpipe` | https://github.com/teamchong/pxpipe | `main` | `fdae9c336a6bc2213173e23ffb776018493ae768` |
 | `Resource2Skill` | https://github.com/microsoft/Resource2Skill | `main` | `7f101b4cfe214cc496d085a34efac528a17cc375` |

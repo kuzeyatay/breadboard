@@ -546,6 +546,39 @@ export function normalizeHermesEvent(
       }];
     }
 
+    // Hermes `clarify`: the model is blocked mid-turn on a question for the
+    // user. A request without an id could never be answered, so it is dropped
+    // rather than shown as a card nobody can close.
+    case "clarify.request": {
+      const question = asString(payload.question)?.trim() ?? "";
+      const requestId = asString(payload.request_id) ?? asString(payload.id);
+      if (!question || !requestId) return [];
+      const choices = Array.isArray(payload.choices)
+        ? payload.choices
+            .filter((value): value is string => typeof value === "string")
+            .map((value) => value.trim())
+            .filter(Boolean)
+            .slice(0, 4)
+        : [];
+      return [{
+        type: "clarify.requested",
+        sessionId: publicSessionId,
+        timestamp,
+        payload: { requestId, question, choices },
+      }];
+    }
+
+    case "clarify.expire": {
+      const requestId = asString(payload.request_id) ?? asString(payload.id);
+      if (!requestId) return [];
+      return [{
+        type: "clarify.expired",
+        sessionId: publicSessionId,
+        timestamp,
+        payload: { requestId },
+      }];
+    }
+
     case "message.complete": {
       const status = terminalStatus(payload.status);
       const rawText = asString(payload.text) ?? "";

@@ -350,8 +350,8 @@ The Runtime V2 admission governor reads the system-wide Windows
 retains exact byte counters, rounds committed bytes up and the limit down for
 conservative MiB admission, and samples once inside the serialized durable
 admission transaction. Packaged mode preserves the fixed 8 GiB reserve.
-Development modes preserve the larger of 4 GiB or a bounded 10% of the current
-commit limit, plus a 256 MiB guard band. Their supervised process trees receive
+Development modes preserve the larger of 2 GiB or 5% of the current commit
+limit (bounded to 1-4 GiB), plus a 256 MiB guard band. Their supervised process trees receive
 the matching live system-commit guard and retain their manifest hard ceilings;
 all trees may tighten their ceiling as pressure rises, but only the sealed
 dashboard profile may expand after launch or terminate solely because the

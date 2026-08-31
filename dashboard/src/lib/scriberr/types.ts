@@ -117,7 +117,7 @@ export interface NormalizedTranscript {
   title: string;
   language: string | null;
   durationSeconds: number | null;
-  sourceType: "video_upload" | "youtube";
+  sourceType: "audio_upload" | "video_upload" | "youtube";
   segments: NormalizedTranscriptSegment[];
   speakers: string[];
   transcriptionModel: string | null;

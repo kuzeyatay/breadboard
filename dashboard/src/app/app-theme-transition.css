@@ -1,0 +1,41 @@
+/* Theme changes are occasional, whole-screen state changes. A snapshot
+   crossfade keeps the palette from flashing while every layout box stays put. */
+html[data-theme-transition="true"]::view-transition-group(root),
+html[data-theme-transition="true"]::view-transition-old(root),
+html[data-theme-transition="true"]::view-transition-new(root) {
+  animation-duration: 200ms;
+  animation-timing-function: var(
+    --neu-easing,
+    cubic-bezier(0.23, 1, 0.32, 1)
+  );
+}
+
+html[data-theme-transition="true"]::view-transition-old(root) {
+  animation-name: bb-theme-fade-out;
+  mix-blend-mode: normal;
+}
+
+html[data-theme-transition="true"]::view-transition-new(root) {
+  animation-name: bb-theme-fade-in;
+  mix-blend-mode: normal;
+}
+
+@keyframes bb-theme-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes bb-theme-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme-transition="true"]::view-transition-group(root),
+  html[data-theme-transition="true"]::view-transition-old(root),
+  html[data-theme-transition="true"]::view-transition-new(root) {
+    animation-duration: 100ms;
+  }
+}

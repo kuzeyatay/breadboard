@@ -162,7 +162,7 @@ export async function POST(request: Request) {
       if (totalConverted > 0) {
         await publishQuartzAfterMutation(
           `migrate visual placeholders in ${cluster.slug}`,
-          { userId },
+          { userId, gardenSlug: cluster.slug },
         );
       }
 

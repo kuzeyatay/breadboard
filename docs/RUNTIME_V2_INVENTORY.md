@@ -242,6 +242,7 @@ join key is `runtime-agent:<profile-id>`; all 37 primary IDs exist in the finali
 | `runtime-agent:wardrobe` | `wardrobe` | `/api/wardrobe/runs` |
 | `runtime-agent:matraix` | `matraix` | `/api/matraix/runs` |
 | `runtime-agent:bolt-slides` | `bolt_slides` | `/api/bolt-slides/runs` |
+| `runtime-agent:classroom` | `classroom` | `/api/classroom/runs` |
 | `runtime-agent:agent-tars` | `agent_tars` | `/api/ui-tars/agents/[agentId]/runs` |
 
 Each corresponding JSON row includes its real service/job dependencies, process and

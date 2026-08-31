@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Customer Lookup</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 40px; color: #111; background: #fff; }
+      h1 { font-size: 20px; }
+      label { display: block; margin: 18px 0 6px; font-size: 14px; }
+      input { font-size: 16px; padding: 8px 10px; width: 320px; }
+      button { font-size: 16px; padding: 9px 18px; margin-top: 14px; margin-right: 8px; }
+      #detail { display: none; margin-top: 28px; padding: 16px; border: 1px solid #999; max-width: 420px; }
+      #detail h2 { font-size: 16px; margin: 0 0 8px; }
+      #sent { display: none; margin-top: 16px; color: #0a7; }
+    </style>
+  </head>
+  <body>
+    <!--
+      A benign local page used as the target of the teach-by-demonstration
+      acceptance test. It has exactly what the scenario needs: one field whose
+      value changes between runs, one action, and one visible result that says
+      the task worked.
+
+      Nothing in Breadboard knows about this page. It is a target, not a
+      supported application.
+    -->
+    <h1>Customer Lookup</h1>
+
+    <label for="customer">Customer name</label>
+    <input id="customer" name="customer" type="text" aria-label="Customer name" />
+
+    <div>
+      <button id="search" type="button">Search</button>
+      <button id="send" type="button">Send invoice</button>
+    </div>
+
+    <div id="detail" role="region" aria-label="Customer detail">
+      <h2>Customer detail</h2>
+      <p id="detailName">—</p>
+      <p id="detailStatus">Active account</p>
+    </div>
+
+    <p id="sent">Invoice sent.</p>
+
+    <script>
+      const field = document.getElementById("customer");
+      const detail = document.getElementById("detail");
+      const detailName = document.getElementById("detailName");
+      const sent = document.getElementById("sent");
+
+      document.getElementById("search").addEventListener("click", () => {
+        const value = field.value.trim();
+        if (!value) return;
+        detailName.textContent = value;
+        detail.style.display = "block";
+        // Recorded so the test can prove what the workflow actually did, rather
+        // than inferring it from a screenshot.
+        window.__lookups = window.__lookups || [];
+        window.__lookups.push(value);
+      });
+
+      // The consequential action. The test asserts this counter stays at zero
+      // when an approval is rejected.
+      document.getElementById("send").addEventListener("click", () => {
+        window.__sends = (window.__sends || 0) + 1;
+        sent.style.display = "block";
+      });
+    </script>
+  </body>
+</html>

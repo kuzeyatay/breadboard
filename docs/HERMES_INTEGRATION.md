@@ -16,9 +16,39 @@ Breadboard is the control plane and durable system of record. It owns:
 - validation and execution of terminal, Garden, artifact, MCP, and GBrain tools.
 
 Hermes receives a bounded system prompt, selected model/reasoning settings, and
-the first-party `breadboard` toolset. Its native memory and coding context are
-disabled in the embedded profile. A lost Hermes live session can be reconstructed
-from Breadboard's canonical transcript.
+the first-party `breadboard` toolset plus `web`, `tokenjuice`, `delegation`,
+and `clarify`.
+Its native memory and coding context are disabled in the embedded profile. A
+lost Hermes live session can be reconstructed from Breadboard's canonical
+transcript.
+
+`delegation` exposes Hermes's own `delegate_task`: children inherit the
+session's toolsets (never more), run under their own task id, and authorize
+every Breadboard tool call under the root session. The plugin resolves a child
+task id to the root through `tools.delegate_tool.resolve_root_task_id` and
+sends the child id in `X-Agent-Subagent-ID` for audit only; the per-turn
+capability decision governs the child's calls exactly as it governs the
+parent's. `[persona: <slug>]` at the start of a delegated goal hires an
+agency-agents specialist; the Hermes process needs `AGENCY_AGENTS_PATH` for the
+slug to resolve, which both launchers set.
+
+`clarify` lets the model ask the user a question mid-turn and wait. The
+gateway's `clarify.request` becomes the normalized `clarify.requested` event
+(`clarify.expire` → `clarify.expired`); surfaces show it as a card with the
+choices as buttons and a text field, and a message typed into the composer
+while the question is open is sent as the answer rather than queued. Answers
+go through `POST /api/hermes/clarifications/:requestId` → runtime
+`resolveClarification` → `clarify.respond`, and are stored in the transcript
+as a course correction on the response in progress. A reconnect recovers the
+open question from `session.turn_result` (`waiting_for_clarification`). Turns
+with no one watching — delivery channels and hooks, `interactive: false` on
+`startRun` — are answered by the adapter itself with a standing "choose and
+continue" instruction so nothing blocks on the tool's one-hour timeout.
+
+Both launchers also turn on Hermes's tool-loop hard stop
+(`tool_loop_guardrails.hard_stop_enabled`): a tool call repeated unchanged
+after five identical failures, or one tool failing eight times in a turn,
+ends the turn with a message instead of running out the iteration budget.
 
 ## Request flow
 
@@ -54,7 +84,7 @@ The main route groups are:
 /api/hermes/sessions
 /api/hermes/sessions/[sessionId]/messages|events|steer|abort
 /api/hermes/permissions/[requestId]
-/api/hermes/tools/agent-loop|artifacts|capabilities|garden|mcp|memory|premortem|terminal|watch
+/api/hermes/tools/agent-loop|artifacts|capabilities|garden|mcp|memory|patent-disclosure|premortem|terminal|watch
 ```
 
 Quartz uses `/api/quartz-ai/*` as its public/authenticated proxy and never calls
@@ -107,6 +137,24 @@ deliberately through Breadboard's own scheduler.
 
 Runtime: `agent-loop-engineering-kit/.venv` (Python 3.11+, PyYAML, jsonschema),
 overridable with `BREADBOARD_AGENT_LOOP_ROOT` and `BREADBOARD_AGENT_LOOP_PYTHON`.
+
+## Patent disclosure guidance
+
+The cloned [Patent Disclosure Skill](https://github.com/handsomestWei/patent-disclosure-skill)
+lives at `patent-disclosure-skill/`, pinned to commit `ecd62fd`. Terminal and
+Garden Chat can select the reviewed `patent-disclosure-skill` wrapper and open
+its text guidance through the read-only `patent_disclosure_guide` tool. Strong
+patent drafting, patent-reading, figure-planning and office-action-response
+requests select the wrapper automatically; `/patent-disclosure-skill` selects
+it explicitly.
+
+The packaged closure contains only tracked text under `prompts/`, `references/`,
+`docs/` and `examples/`, plus the upstream root guidance and notices. Python,
+shell, CAD, browser automation, installers, generated images and mutable output
+directories are excluded and cannot be reached through the tool. Breadboard's
+workspace, Office, artifact, image and web capabilities remain the execution
+surface. See [PATENT_DISCLOSURE_INTEGRATION.md](./PATENT_DISCLOSURE_INTEGRATION.md)
+for the full capability and security contract.
 
 ## Configuration and startup
 

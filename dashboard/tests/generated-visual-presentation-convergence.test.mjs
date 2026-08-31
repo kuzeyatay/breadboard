@@ -74,7 +74,6 @@ const interiorPeak = (id) => ({
     },
   },
 });
-
 function convergenceDefinition() {
   return {
     schemaVersion: 1,
@@ -399,7 +398,7 @@ function convergenceDefinition() {
   };
 }
 
-test("Learn generated visuals expose the flat control-first camera contract", () => {
+test("Learn generated visuals expose the flat visual-first camera contract", () => {
   const sdk = fs.readFileSync(sdkPath, "utf8");
   const generator = fs.readFileSync(generatorPath, "utf8");
   const compiler = fs.readFileSync(compilerPath, "utf8");
@@ -431,24 +430,28 @@ test("Learn generated visuals expose the flat control-first camera contract", ()
   );
   assert.match(runtime, /element\("h1"/);
   assert.ok(
-    runtime.indexOf("app.appendChild(controlsHost)") <
+    runtime.indexOf("app.appendChild(scenesHost)") <
       runtime.indexOf("app.appendChild(valuesHost)"),
   );
   assert.ok(
     runtime.indexOf("app.appendChild(valuesHost)") <
-      runtime.indexOf("app.appendChild(scenesHost)"),
+      runtime.indexOf("app.appendChild(controlsHost)"),
   );
   assert.match(runtime, /control\.initial\.order: controlId=/);
   assert.match(runtime, /control\.initial\.not_rendered: controlId=/);
-  assert.match(runtime, /control\.initial\.mobile_viewport_out_of_frame: controlId=/);
-  assert.match(runtime, /data(?:set)?\.controlPrecedesScenes/);
-  assert.match(runtime, /data(?:set)?\.controlMobileInitialViewportVisible/);
+  assert.doesNotMatch(runtime, /control\.initial\.mobile_viewport_out_of_frame: controlId=/);
+  assert.match(runtime, /data(?:set)?\.controlFollowsScenes/);
+  assert.doesNotMatch(runtime, /data(?:set)?\.controlPrecedesScenes/);
+  assert.match(runtime, /element\("p", "gv-sr", definition\.description\)/);
+  assert.doesNotMatch(runtime, /element\("p", undefined, definition\.description\)/);
+  assert.match(runtime, /supplementaryTextHost\.appendChild\(host\)/);
+  assert.match(runtime, /let statusRendered = false/);
   assert.match(runtime, /addEventListener\("pointerdown"/);
   assert.match(runtime, /addEventListener\(\s*"wheel"/);
   assert.match(runtime, /addEventListener\("keydown"/);
   assert.match(runtime, /event\.key === "Home"/);
   assert.match(runtime, /prefers-reduced-motion/);
-  assert.match(runtime, /\.gv-status h3,\.gv-status strong,\.gv-status p \{ overflow-wrap:anywhere; \}/);
+  assert.match(runtime, /\.gv-status \{ display:flex;[^}]*border-block:1px solid var\(--viz-line\)/);
   assert.match(runtime, /visibilitychange/);
   assert.match(runtime, /document\.title\s*=\s*definition\.title/);
   assert.match(
@@ -464,7 +467,11 @@ test("Learn generated visuals expose the flat control-first camera contract", ()
   assert.match(wrapper, /breadboard-generated-visual:theme/);
   assert.match(wrapper, /addEventListener\("themechange"/);
   assert.doesNotMatch(wrapper, /element\("h4",\s*"bgv-title"/);
+  assert.doesNotMatch(wrapper, /bgv-provenance|Generated visual · v|Sources:/);
   assert.match(wrapperStyle, /background:\s*transparent/);
+  assert.match(wrapperStyle, /\.bgv-meta\s*\{[^}]*justify-content:\s*flex-end/s);
+  assert.match(generator, /Match the in-chat interactive visualizer presentation/);
+  assert.match(generator, /Prefer exactly one scene/);
   assert.match(generator, /projection\?:\"orthographic\"\|\"perspective\"/);
   assert.match(generator, /interaction\?:\"fixed\"\|\"orbit\"/);
   assert.match(generator, /legacy default is projection:/);
@@ -685,7 +692,7 @@ setTimeout(() => {
   const controlsIndex = rootChildren.findIndex((node) => node.classList.contains("gv-controls"));
   const valuesIndex = rootChildren.findIndex((node) => node.classList.contains("gv-values"));
   const scenesIndex = rootChildren.findIndex((node) => node.classList.contains("gv-scenes"));
-  document.body.dataset.flatHierarchy = String(document.querySelectorAll("h1").length === 1 && headerIndex === 0 && headerIndex < controlsIndex && controlsIndex < valuesIndex && valuesIndex < scenesIndex);
+  document.body.dataset.flatHierarchy = String(document.querySelectorAll("h1").length === 1 && headerIndex === 0 && headerIndex < scenesIndex && scenesIndex < valuesIndex && valuesIndex < controlsIndex);
   document.body.dataset.toolbarAccessible = String(Array.from(document.querySelectorAll(".gv-transport")).every((button) => button.getAttribute("aria-label") && button.querySelector("svg")));
   document.body.dataset.visualDominant = String((document.querySelector(".gv-scenes .gv-svg")?.getBoundingClientRect().height || 0) >= (requestedAuditWidth <= 400 ? 295 : 380));
   const lightBackground = getComputedStyle(document.documentElement).getPropertyValue("--viz-bg").trim();

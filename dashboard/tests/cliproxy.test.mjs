@@ -17,6 +17,9 @@ delete process.env.CLIPROXY_BASE_URL;
 
 const config = await import("../src/lib/cliproxy/config.ts");
 const claudeCode = await import("../src/lib/claude-code.ts");
+const { cliproxyModelIdsFromPayload } = await import(
+  "../src/lib/cliproxy/management.ts"
+);
 
 test.after(() => {
   fs.rmSync(scratchHome, { recursive: true, force: true });
@@ -343,11 +346,41 @@ test("environment API keys do not configure pay-per-token providers", () => {
   assert.match(settings, /provider\.id === "openrouter"/);
 });
 
+test("Google reconnect sync uses the fresh rich model catalog", () => {
+  const management = source("src/lib/cliproxy/management.ts");
+  assert.match(
+    management,
+    /searchParams\.set\("client_version", "breadboard"\)/,
+  );
+
+  assert.deepEqual(
+    cliproxyModelIdsFromPayload({
+      models: [
+        { slug: "gemini-3.7-flash-high", visibility: "list" },
+        { id: "gemini-3.7-flash-low" },
+        { slug: "gemini-3.7-flash-low" },
+        { slug: "internal-hidden-model", visibility: "hide" },
+      ],
+    }),
+    ["gemini-3.7-flash-high", "gemini-3.7-flash-low"],
+  );
+  assert.deepEqual(
+    cliproxyModelIdsFromPayload({
+      data: [{ id: "gemini-2.5-pro" }, { id: "gemini-2.5-flash" }],
+    }),
+    ["gemini-2.5-pro", "gemini-2.5-flash"],
+  );
+});
+
 test("model labels drop the routing prefix", async () => {
   const { formatAssistantModelName } = await import("../src/lib/ai-models.ts");
   // A column of "cliproxy/claude-…" buries the part that tells them apart. The
   // provider is still on screen — as the section heading the model sits under.
   assert.equal(formatAssistantModelName("cliproxy/claude-fable-5"), "Claude Fable 5");
+  assert.equal(
+    formatAssistantModelName("openrouter/google/gemini-3.7-flash-high"),
+    "Gemini 3.7 Flash High",
+  );
   assert.equal(formatAssistantModelName("gpt-5.6-sol"), "GPT-5.6 Sol");
   assert.equal(formatAssistantModelName("default"), "Background model");
 });

@@ -276,9 +276,9 @@ function snnUnits() {
 }
 
 describe("Learning Unit Contract — clustering (Fix 1)", () => {
-  test("clusters 14 units into 4-7 real multi-subsection sections", () => {
+  test("clusters 14 units into real multi-subsection sections without a fixed total", () => {
     const clusters = clusterUnitsIntoSections(snnUnits());
-    assert.ok(clusters.length >= 4 && clusters.length <= 7, `got ${clusters.length} sections`);
+    assert.ok(clusters.length > 0, `got ${clusters.length} sections`);
     const single = clusters.filter((c) => c.unitIds.length <= 1);
     assert.ok(single.length * 4 <= clusters.length, `too many single-subsection sections: ${single.length}/${clusters.length}`);
     // No section exceeds the cap.
@@ -307,7 +307,7 @@ describe("Learning Unit Contract — clustering (Fix 1)", () => {
     const map = learningMapFromUnits(snnUnits(), {
       gardenId: "g", title: "Spiking Neural Networks", summary: "s", sourceOnly: true, createdAt: "2026-07-04T00:00:00Z",
     });
-    assert.ok(map.sections.length >= 4 && map.sections.length <= 7);
+    assert.ok(map.sections.length > 0);
     const totalSubs = map.sections.reduce((n, s) => n + s.subsections.length, 0);
     assert.equal(totalSubs, 14);
     // Subsections carry source visuals and one-to-five reusable concepts.
@@ -316,6 +316,66 @@ describe("Learning Unit Contract — clustering (Fix 1)", () => {
     assert.ok(map.sections.flatMap((s) => s.subsections).every((s) =>
       s.conceptTags.length >= 1 && s.conceptTags.length <= 5 && s.conceptTags.every(isValidPublicConceptSlug)));
   });
+
+  test("a long curriculum grows past seven sections instead of being merged down", () => {
+    const template = snnUnits().find((unit) => unit.role === "core_concept");
+    const units = Array.from({ length: 80 }, (_, index) => ({
+      ...structuredClone(template),
+      id: `LONG-${index + 1}`,
+      title: `Teaching step ${index + 1}`,
+      learningQuestion: `What must the learner understand in step ${index + 1}?`,
+      newConcepts: [`Concept ${index + 1}`],
+      semanticConcepts: [],
+    }));
+    const clusters = clusterUnitsIntoSections(units);
+    assert.equal(clusters.length, 16);
+    assert.ok(clusters.every((cluster) => cluster.unitIds.length === 5));
+    assert.deepEqual(clusterDepthProblems(clusters), []);
+  });
+});
+
+test("model-authored curricula may use more than seven coherent sections", () => {
+  const roles = ["core_concept", "mechanism", "application", "formula"];
+  const template = modelAuthoredSpine()[0];
+  const authored = Array.from({ length: 24 }, (_, index) => {
+    const ordinal = index + 1;
+    const sectionOrdinal = Math.floor(index / 2) + 1;
+    const anchor = `S1.P${ordinal}`;
+    return {
+      ...structuredClone(template),
+      id: `U${ordinal}`,
+      title: `Authored unit ${ordinal}`,
+      role: roles[index % roles.length],
+      learningQuestion: `What source-grounded idea ${ordinal} must the learner understand?`,
+      newConcepts: [`Concept ${ordinal}`],
+      sourceAnchors: [anchor],
+      semanticConcepts: [{
+        slug: `concept-${ordinal}`,
+        preferredLabel: `Concept ${ordinal}`,
+        role: "primary",
+        aliases: [],
+        evidenceAnchors: [anchor],
+      }],
+      sectionPlan: {
+        id: `S${sectionOrdinal}`,
+        title: `Coherent section ${sectionOrdinal}`,
+        purpose: `Teach the related ideas in section ${sectionOrdinal}.`,
+      },
+    };
+  });
+  const units = normalizeLearningUnits(authored, { modelAuthoredOnly: true });
+  assert.deepEqual(validateLearningUnitContracts(units, {
+    requireModelAuthoredSemantics: true,
+    requireModelAuthoredSections: true,
+  }), []);
+  const map = learningMapFromModelAuthoredUnits(units, {
+    gardenId: "large-course",
+    title: "Large course",
+    summary: "A syllabus-sized curriculum.",
+    sourceOnly: true,
+    createdAt: "2026-08-31T00:00:00.000Z",
+  });
+  assert.equal(map.sections.length, 12);
 });
 
 describe("Learning Unit Contract — atomic Zettelkasten handles (Fix 6/7)", () => {

@@ -71,7 +71,10 @@ import {
   ConversationStoreError,
   type ConversationRow,
 } from "./store.ts";
-import { generateAndApplyConversationTitle } from "./title-service.ts";
+import {
+  generateAndApplyConversationTitle,
+  shouldGenerateConversationTitleForTurn,
+} from "./title-service.ts";
 import { scheduleMemoryProfileSynthesisForConversation } from "./memory-profile.ts";
 import type { CurrentLocationSnapshot } from "../current-location.ts";
 import { renderCurrentLocationContext } from "../hermes/current-location-context.ts";
@@ -340,10 +343,12 @@ export async function startDirectProviderTurn(
   const preDispatchReserved =
     !reservation.isNew &&
     isPreDispatchReservedAssistant(reservation.assistantMessage);
-  if (
-    (reservation.isNew || preDispatchReserved) &&
-    reservation.userMessage.order_index === 0
-  ) {
+  if (shouldGenerateConversationTitleForTurn({
+    currentTitle: reservation.conversation.title,
+    userOrderIndex: reservation.userMessage.order_index,
+    reservationIsNew: reservation.isNew,
+    preDispatchReserved,
+  })) {
     const { baseURL } = resolveChatmockBaseUrl(input.request);
     const titledConversation = await generateAndApplyConversationTitle({
       conversation: reservation.conversation,

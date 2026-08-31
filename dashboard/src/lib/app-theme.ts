@@ -261,9 +261,66 @@ function writeStorage(key: string, value: string): void {
   }
 }
 
-export function rememberEffectiveAppTheme(theme: AppTheme): void {
-  document.documentElement.dataset.theme = theme;
+let activeThemeTransition: ViewTransition | null = null;
+let pendingAppTheme: AppTheme | null = null;
+let themeTransitionSequence = 0;
+
+/**
+ * Paint a changed theme as a short crossfade. The first render stays instant:
+ * the inline layout script has already selected its theme before this module
+ * runs, and animating hydration would turn a correct first paint into a flash.
+ */
+export function rememberEffectiveAppTheme(
+  theme: AppTheme,
+  options: { animate?: boolean } = {},
+): void {
   writeStorage(APP_THEME_STORAGE_KEY, theme);
+
+  const root = document.documentElement;
+  const currentTheme = root.dataset.theme;
+  if (pendingAppTheme === theme) return;
+  if (currentTheme === theme && pendingAppTheme === null) return;
+
+  const canAnimate =
+    options.animate !== false &&
+    isAppTheme(currentTheme) &&
+    currentTheme !== theme &&
+    document.visibilityState !== "hidden" &&
+    typeof document.startViewTransition === "function";
+  const sequence = ++themeTransitionSequence;
+
+  activeThemeTransition?.skipTransition();
+  activeThemeTransition = null;
+  pendingAppTheme = null;
+
+  if (!canAnimate) {
+    delete root.dataset.themeTransition;
+    root.dataset.theme = theme;
+    return;
+  }
+
+  root.dataset.themeTransition = "true";
+  pendingAppTheme = theme;
+  try {
+    const transition = document.startViewTransition(() => {
+      if (sequence !== themeTransitionSequence) return;
+      root.dataset.theme = theme;
+    });
+    activeThemeTransition = transition;
+    void transition.finished
+      .catch(() => undefined)
+      .then(() => {
+        if (sequence !== themeTransitionSequence) return;
+        activeThemeTransition = null;
+        pendingAppTheme = null;
+        delete root.dataset.themeTransition;
+      });
+  } catch {
+    activeThemeTransition = null;
+    pendingAppTheme = null;
+    delete root.dataset.themeTransition;
+    root.dataset.theme = theme;
+  }
 }
 
 /**

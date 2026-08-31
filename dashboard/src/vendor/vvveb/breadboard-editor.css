@@ -20,6 +20,48 @@
   background: #fff;
 }
 
+/* Keep editing affordances precise without washing large containers in blue. */
+#vvveb-builder #select-box,
+#vvveb-builder #highlight-box {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+#vvveb-builder #highlight-box {
+  border: 1px dashed rgba(37, 99, 235, 0.72);
+}
+
+#vvveb-builder #select-box {
+  border-color: rgba(37, 99, 235, 0.82);
+}
+
+#vvveb-builder #select-box.resizable .resize > div {
+  width: 8px;
+  height: 8px;
+  margin: -4px;
+  border: 1px solid #2563eb;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+  touch-action: none;
+}
+
+/* Flow-layout HTML boxes resize from their stable top-left corner. SVG
+   geometry supports all eight handles because its transform can move edges. */
+#vvveb-builder #select-box.breadboard-resize-html .resize .top-left,
+#vvveb-builder #select-box.breadboard-resize-html .resize .top-center,
+#vvveb-builder #select-box.breadboard-resize-html .resize .top-right,
+#vvveb-builder #select-box.breadboard-resize-html .resize .center-left,
+#vvveb-builder #select-box.breadboard-resize-html .resize .bottom-left {
+  display: none;
+}
+
+body.breadboard-is-resizing,
+body.breadboard-is-resizing * {
+  cursor: nwse-resize !important;
+  user-select: none !important;
+}
+
 @media (max-width: 900px) {
   #top-panel .responsive-btns,
   #designer-mode-btn,

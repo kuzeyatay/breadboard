@@ -8,6 +8,7 @@
 // nothing", never "what should this field be".
 
 import type { AgentSettingValues, Dimensions } from "./catalog.ts";
+import { isClassroomAgentMode, type ClassroomAgentMode } from "../classroom/identity.ts";
 import {
   DEFAULT_BREADTH,
   DEFAULT_DEPTH,
@@ -461,5 +462,30 @@ export function boltSlidesDefaults(values: AgentSettingValues): BoltSlidesSettin
   return {
     slides: count(values, "slides", BOLT_SLIDES_DEFAULT_SLIDES),
     theme: isBoltSlidesTheme(theme) ? theme : "auto",
+  };
+}
+
+
+// ---- Classroom -------------------------------------------------------------
+
+export interface ClassroomSettingsDefaults {
+  tts: boolean;
+  images: boolean;
+  webSearch: boolean;
+  agentMode: ClassroomAgentMode;
+}
+
+/**
+ * Stored lesson defaults, in the shape `parseClassroomRequest` fills its
+ * unsaid fields from. A mode the catalog no longer offers falls back to the
+ * pipeline rather than being passed through to a server that would refuse it.
+ */
+export function classroomDefaults(values: AgentSettingValues): ClassroomSettingsDefaults {
+  const mode = values.agentMode;
+  return {
+    tts: flag(values, "tts", false),
+    images: flag(values, "images", false),
+    webSearch: flag(values, "webSearch", false),
+    agentMode: isClassroomAgentMode(mode) ? mode : "default",
   };
 }

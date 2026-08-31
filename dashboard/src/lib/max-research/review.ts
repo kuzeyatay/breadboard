@@ -62,7 +62,7 @@ export function maxResearchReviewPrompt(input: {
     // The findings below are labelled with internal participant ids, and a
     // repair that cites one by name puts it in front of a reader who has no
     // idea what it means.
-    "Never name a participant. `deep_research`, `agent_reach`, `get_doc`, `openscience` and `aris` are internal names for parts of this system. If the draft names one, replace it with the source that finding actually came from; if you are adding a citation, cite the study or publisher, never the participant.",
+    "Never name a participant. `deep_research`, `agent_reach`, `get_doc`, `openscience`, `praxist` and `aris` are internal names for parts of this system. If the draft names one, replace it with the source that finding actually came from; if you are adding a citation, cite the study, publisher, dataset or named experiment, never the participant.",
     "",
     "Return only the finished answer. No preamble, no list of what you changed, no note that you reviewed it.",
     "",

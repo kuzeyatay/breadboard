@@ -261,3 +261,39 @@ export function matchingLearnSourceNormalizationReceipt(input: {
   }
   return receipt;
 }
+
+/**
+ * Rebind a verified normalization receipt when only the reviewed-formula
+ * manifest changes. The raw source bytes must still match the receipt's exact
+ * post-normalization records, so a later user edit can never be laundered into
+ * the older pre-normalization binding.
+ */
+export function rebindLearnSourceNormalizationReceipt(input: {
+  gardenDir: string;
+  expectedCombinedSourceSetHash: string;
+  sourceIds: readonly string[];
+  current: readonly LearnSourceBindingRecord[];
+}): LearnSourceNormalizationReceipt | null {
+  const receipt = readLearnSourceNormalizationReceipt(input.gardenDir);
+  if (
+    !receipt ||
+    JSON.stringify(receipt.sourceIds) !== JSON.stringify(input.sourceIds) ||
+    JSON.stringify(receipt.after) !== JSON.stringify(canonicalRecords(input.current))
+  ) {
+    return null;
+  }
+  if (
+    receipt.expectedCombinedSourceSetHash ===
+    input.expectedCombinedSourceSetHash
+  ) {
+    return receipt;
+  }
+  return writeLearnSourceNormalizationReceipt({
+    gardenDir: input.gardenDir,
+    expectedCombinedSourceSetHash: input.expectedCombinedSourceSetHash,
+    sourceIds: receipt.sourceIds,
+    before: receipt.before,
+    after: receipt.after,
+    createdAt: receipt.createdAt,
+  });
+}

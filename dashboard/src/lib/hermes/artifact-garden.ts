@@ -206,6 +206,7 @@ export async function publishArtifactToGarden(
       `publish artifact ${input.clusterSlug}/${slug}`,
       {
         userId: input.userId,
+        gardenSlug: input.clusterSlug,
       },
     );
 
@@ -273,7 +274,7 @@ export async function unpublishArtifactFromGarden(
     refreshClusterIndex(root, input.clusterSlug.trim());
     await publishQuartzAfterMutation(
       `remove artifact ${input.clusterSlug}/${input.documentSlug}`,
-      { userId: input.userId },
+      { userId: input.userId, gardenSlug: input.clusterSlug },
     );
   } finally {
     lease.release();

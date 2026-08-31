@@ -154,6 +154,12 @@ export const WATCH_TOOLS = ["watch_run"] as const;
 // outside this conversation's workspace, and `fetch` accepts http(s) only.
 export const FACTCHECK_TOOLS = ["factcheck_run"] as const;
 
+// Read-only access to the pinned patent-disclosure pack's routed prompts,
+// schemas, examples and explanatory docs. The server owns the source root and
+// accepts only reviewed text paths; scripts and arbitrary filesystem paths are
+// not part of this tool.
+export const PATENT_DISCLOSURE_TOOLS = ["patent_disclosure_guide"] as const;
+
 // First-party single-image 3D reconstruction on the local Stable Fast 3D
 // runtime. The tool has no image argument that carries data: it names a picture
 // already attached to this conversation, and the server resolves the bytes from
@@ -166,6 +172,11 @@ export const IMAGE_TO_3D_TOOLS = ["image_to_3d"] as const;
 // carrying or pointing at a file: the server resolves the stored bytes from a
 // message the caller owns, so no path the model wrote is ever opened.
 export const AUDIO_ANALYSIS_TOOLS = ["audio_analyze", "audio_compare"] as const;
+
+// Provider-backed identification of one audio attachment from this exact
+// conversation. The server resolves the blob reference and owns the provider
+// credential; the model can neither upload raw bytes nor choose a URL/path.
+export const MUSIC_RECOGNITION_TOOLS = ["music_recognize"] as const;
 
 // Guarded Manim Community rendering. Generated source executes only inside a
 // pinned, network-disabled container and the server imports the verified MP4.
@@ -233,6 +244,11 @@ export const WORLDMONITOR_TOOLS = [
 // monitor there is no user-owned state behind it to change.
 export const IMAGE_SEARCH_TOOLS = ["image_search"] as const;
 
+// Sourced product discovery. This is a read over public product pages; the
+// route returns a versioned Breadboard UI resource as data, never component
+// code or third-party HTML.
+export const PRODUCT_SEARCH_TOOLS = ["product_search"] as const;
+
 // The map at /map, and the geographic state behind it. Every one of these is a
 // read of an external open-data service (Photon, Nominatim, Valhalla, Overpass)
 // plus a write to Breadboard's own conversation-scoped geographic state — the
@@ -253,25 +269,35 @@ export const MAP_TOOLS = [
   "map_get_selected_place",
 ] as const;
 
-// Spotify's first-party browser player. Search is read-only; play records a
-// track queue for the conversation's inline Web Playback SDK device. Neither
-// tool can target or open the native Spotify application.
+// Spotify's first-party connected-app tools. Search is read-only; play can
+// start or control playback on the user's available phone and records new
+// queues for the conversation's inline player.
 export const SPOTIFY_TOOLS = [
   "spotify_search",
   "spotify_play",
   "spotify_create_playlist",
 ] as const;
 
-// The calendar at /calendar. Read-only on purpose: the tools reach the store's
-// query methods and none of its writes, so an agent can answer any question
-// about the user's schedule and cannot alter it. The user id comes from the
-// verified session, never from an argument.
+// The calendar at /calendar. Hermes can read and manage events, including
+// turning "remind me" requests into real calendar entries. The user id comes
+// from the verified session, never from an argument, and the CalendarStore
+// still enforces ownership and read-only subscription boundaries.
 export const CALENDAR_TOOLS = [
   "calendar_list_calendars",
   "calendar_agenda",
   "calendar_search_events",
   "calendar_get_event",
+  "calendar_create_event",
+  "calendar_update_event",
+  "calendar_delete_event",
 ] as const;
+
+/** Calendar operations that persist a change, for audit and UI descriptions. */
+export const CALENDAR_WRITE_TOOLS: readonly string[] = [
+  "calendar_create_event",
+  "calendar_update_event",
+  "calendar_delete_event",
+];
 
 // The Plan board at /plan. Unlike the calendar this scope writes: the board is
 // meant to be kept by the assistant as well as by the user, which is the whole
@@ -422,14 +448,17 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...DOCUMENT_SKILL_TOOLS,
       ...PREMORTEM_TOOLS,
       ...FACTCHECK_TOOLS,
+      ...PATENT_DISCLOSURE_TOOLS,
       ...IMAGE_TO_3D_TOOLS,
       ...AUDIO_ANALYSIS_TOOLS,
+      ...MUSIC_RECOGNITION_TOOLS,
       ...MANIM_TOOLS,
       ...AGENT_LOOP_TOOLS,
       ...OMH_TOOLS,
       ...MESSAGING_TOOLS,
       ...WORLDMONITOR_TOOLS,
       ...IMAGE_SEARCH_TOOLS,
+      ...PRODUCT_SEARCH_TOOLS,
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
@@ -458,15 +487,18 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...DOCUMENT_SKILL_TOOLS,
     ...PREMORTEM_TOOLS,
     ...FACTCHECK_TOOLS,
+    ...PATENT_DISCLOSURE_TOOLS,
     ...WATCH_TOOLS,
     ...IMAGE_TO_3D_TOOLS,
     ...AUDIO_ANALYSIS_TOOLS,
+    ...MUSIC_RECOGNITION_TOOLS,
     ...MANIM_TOOLS,
     ...AGENT_LOOP_TOOLS,
     ...OMH_TOOLS,
     ...MESSAGING_TOOLS,
     ...WORLDMONITOR_TOOLS,
     ...IMAGE_SEARCH_TOOLS,
+    ...PRODUCT_SEARCH_TOOLS,
     ...MAP_TOOLS,
     ...SPOTIFY_TOOLS,
     ...CALENDAR_TOOLS,

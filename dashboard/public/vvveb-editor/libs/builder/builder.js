@@ -1177,8 +1177,8 @@ Vvveb.Builder = {
 							SelectBox.style.top  = (pos.top - (self.frameDoc.scrollTop ?? 0)  - self.selectPadding) + "px"; 
 							SelectBox.style.left = (pos.left - (self.frameDoc.scrollLeft ?? 0) - self.selectPadding) + "px";
 
-							SelectBox.style.width = ((target.offsetWidth ?? target.clientWidth) + self.selectPadding * 2) + "px"; 			
-							SelectBox.style.height = ((target.offsetHeight ?? target.clientHeight) + self.selectPadding * 2) + "px";
+							SelectBox.style.width = ((target.offsetWidth || target.clientWidth || target.getBoundingClientRect().width) + self.selectPadding * 2) + "px"; 			
+							SelectBox.style.height = ((target.offsetHeight || target.clientHeight || target.getBoundingClientRect().height) + self.selectPadding * 2) + "px";
 						}
 				}
 				
@@ -1406,8 +1406,8 @@ Vvveb.Builder = {
 				
 			SelectBox.style.top  = top + "px"; 
 			SelectBox.style.left = (pos.left - (self.frameDoc.scrollLeft ?? 0) - self.selectPadding) + "px"; 			
-			SelectBox.style.width = ((target.offsetWidth ?? target.clientWidth) + self.selectPadding * 2) + "px"; 			
-			SelectBox.style.height = ((target.offsetHeight ?? target.clientHeight) + self.selectPadding * 2) + "px";
+			SelectBox.style.width = ((target.offsetWidth || target.clientWidth || target.getBoundingClientRect().width) + self.selectPadding * 2) + "px"; 			
+			SelectBox.style.height = ((target.offsetHeight || target.clientHeight || target.getBoundingClientRect().height) + self.selectPadding * 2) + "px";
 			SelectBox.style.display = "block";
 
 			//move actions toolbar to bottom if there is no space on top
@@ -1442,9 +1442,10 @@ Vvveb.Builder = {
 
 				self.highlightEl = target = event.target;
 				let pos = offset(target);
-				let height = target.offsetHeight;
+				let bounds = target.getBoundingClientRect();
+				let height = target.offsetHeight || target.clientHeight || bounds.height;
 				let halfHeight = Math.max(height / 2, 5);
-				let width = target.offsetWidth;
+				let width = target.offsetWidth || target.clientWidth || bounds.width;
 				let halfWidth = Math.max(width / 2, 5);
 				let prepend = true;
 				

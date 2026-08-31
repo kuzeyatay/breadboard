@@ -152,6 +152,47 @@ test("maps destructive approval requests without a session-wide grant", () => {
   assert.equal(event.payload.requestId, "runtime-1:approval");
 });
 
+test("maps a clarify question to a pickable card and drops one nobody could answer", () => {
+  const [event] = normalize({
+    type: "clarify.request",
+    session_id: "live-1",
+    payload: {
+      question: "Which deployment target?",
+      choices: ["staging", " prod ", "", 42, "a", "b", "c"],
+      request_id: "rq-1",
+    },
+  });
+  assert.equal(event.type, "clarify.requested");
+  assert.equal(event.sessionId, "runtime-1");
+  assert.equal(event.payload.requestId, "rq-1");
+  assert.equal(event.payload.question, "Which deployment target?");
+  assert.deepEqual(event.payload.choices, ["staging", "prod", "a", "b"]);
+
+  const [freeText] = normalize({
+    type: "clarify.request",
+    session_id: "live-1",
+    payload: { question: "What should the title be?", request_id: "rq-2" },
+  });
+  assert.deepEqual(freeText.payload.choices, []);
+
+  assert.deepEqual(
+    normalize({
+      type: "clarify.request",
+      session_id: "live-1",
+      payload: { question: "Orphaned?" },
+    }),
+    [],
+  );
+
+  const [expired] = normalize({
+    type: "clarify.expire",
+    session_id: "live-1",
+    payload: { request_id: "rq-1" },
+  });
+  assert.equal(expired.type, "clarify.expired");
+  assert.equal(expired.payload.requestId, "rq-1");
+});
+
 test("emits an unstreamed completion suffix before the terminal status", () => {
   const state = createHermesEventNormalizationState();
   normalizeHermesEvent(

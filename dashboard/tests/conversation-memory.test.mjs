@@ -16,6 +16,9 @@ const runtime = await import("../src/lib/hermes/runtime-store.ts");
 const capability = await import("../src/lib/hermes/capability-token.ts");
 const gardenTools = await import("../src/lib/hermes/garden-tools.ts");
 const toolScopes = await import("../src/lib/hermes/tool-scopes.ts");
+const messaging = await import("../src/lib/hermes/messaging-service.ts");
+const { getTelegramStore } = await import("../src/lib/telegram/instance.ts");
+const { getWhatsAppStore } = await import("../src/lib/whatsapp/instance.ts");
 
 after(() => {
   db.close();
@@ -91,6 +94,100 @@ function finishTurn(conversationRow, clientMessageId, surface, userText, assista
   });
   return reserved;
 }
+
+test("a proactive assistant message can open the canonical conversation", () => {
+  const chat = conversation(1, "Telegram reminder");
+  const first = store.appendConversationAssistantMessage({
+    conversation: chat,
+    clientMessageId: "external-outbound-telegram-test-001",
+    surface: "dashboard_terminal",
+    content: "⏰ In 20 minutes: Control systems",
+    metadata: {
+      externalMessaging: true,
+      externalMessagingChannel: "telegram",
+      externalMessagingDirection: "outbound",
+      externalMessagingKind: "reminder",
+    },
+  });
+  const retry = store.appendConversationAssistantMessage({
+    conversation: chat,
+    clientMessageId: "external-outbound-telegram-test-001",
+    surface: "dashboard_terminal",
+    content: "⏰ In 20 minutes: Control systems",
+    metadata: { ignoredOnIdempotentReplay: true },
+  });
+
+  assert.equal(first.id, retry.id, "replaying the persistence step must not duplicate it");
+  assert.equal(first.role, "assistant");
+  assert.equal(first.status, "complete");
+  assert.equal(first.order_index, 0);
+  assert.equal(store.listRecentConversationMessages(chat.id)[0].content, first.content);
+
+  const followUp = store.reserveConversationTurn({
+    conversation: store.getConversationById(chat.id),
+    clientMessageId: "telegram-follow-up-test-001",
+    surface: "dashboard_terminal",
+    content: "Is this class streamed?",
+  });
+  assert.equal(followUp.userMessage.order_index, 1);
+  assert.equal(followUp.assistantMessage.order_index, 2);
+});
+
+test("a delivered Telegram reminder is bound to the conversation containing it", async () => {
+  const telegram = getTelegramStore();
+  telegram.upsertChat({
+    chatId: "123456789",
+    userId: 1,
+    contactLabel: "Alice",
+    contactHandle: "@alice",
+    isGroup: false,
+  });
+
+  const chat = await messaging.recordDeliveredOwnerMessage({
+    channel: "telegram",
+    userId: 1,
+    target: { chatId: "123456789", label: "Alice" },
+    text: "⏰ In 20 minutes: Control systems\n13:30 – 15:30\n📍 Gemini-Noord 1.610",
+    kind: "reminder",
+  });
+
+  assert.equal(telegram.getChat("123456789").conversation_id, chat.id);
+  const messages = store.listConversationMessages(chat.id);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].role, "assistant");
+  assert.match(messages[0].content, /Gemini-Noord 1\.610/);
+  assert.deepEqual(JSON.parse(messages[0].metadata), {
+    externalMessaging: true,
+    externalMessagingChannel: "telegram",
+    externalMessagingDirection: "outbound",
+    externalMessagingKind: "reminder",
+  });
+});
+
+test("a delivered WhatsApp reminder is bound to the conversation containing it", async () => {
+  const whatsapp = getWhatsAppStore();
+  whatsapp.upsertChat({
+    chatId: "31600000000@s.whatsapp.net",
+    userId: 1,
+    contactLabel: "Alice",
+    contactNumber: "31600000000",
+    isGroup: false,
+  });
+
+  const chat = await messaging.recordDeliveredOwnerMessage({
+    channel: "whatsapp",
+    userId: 1,
+    target: { chatId: "31600000000@s.whatsapp.net", label: "Alice" },
+    text: "▶️ Starting now: Control systems\n13:30 – 15:30",
+    kind: "reminder",
+  });
+
+  assert.equal(whatsapp.getChat("31600000000@s.whatsapp.net").conversation_id, chat.id);
+  const [message] = store.listConversationMessages(chat.id);
+  assert.equal(message.role, "assistant");
+  assert.match(message.content, /Starting now: Control systems/);
+  assert.equal(JSON.parse(message.metadata).externalMessagingChannel, "whatsapp");
+});
 
 test("a failed turn keeps the tokens it spent", () => {
   const chat = conversation();

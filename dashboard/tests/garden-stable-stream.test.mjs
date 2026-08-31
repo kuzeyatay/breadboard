@@ -6,6 +6,22 @@ import Database from "better-sqlite3";
 
 import { reserveLegacyGardenAssistantTurn } from "../src/lib/conversations/store.ts";
 import { applyGardenStableTextEvent } from "../src/lib/hermes/garden-stable-stream.ts";
+import { assistantVisibleContent } from "../src/lib/hermes/assistant-visible-content.ts";
+
+test("public thinking prose is ordinary text until the durable answer arrives", () => {
+  const notes = [
+    "I will inspect the runtime first.",
+    "Now I will inspect the diagram tools.",
+  ];
+  assert.equal(
+    assistantVisibleContent("", notes),
+    "I will inspect the runtime first.\n\nNow I will inspect the diagram tools.",
+  );
+  assert.equal(
+    assistantVisibleContent("Here is the stable diagram.", notes),
+    "Here is the stable diagram.",
+  );
+});
 
 test("two Hermes narration segments never become disappearing answer text", () => {
   let message = { role: "assistant", content: "", thinking: "" };
@@ -21,12 +37,28 @@ test("two Hermes narration segments never become disappearing answer text", () =
   assert.equal(message.content, "");
   assert.match(message.thinking, /inspect the runtime/u);
   assert.match(message.thinking, /inspect the diagram tools/u);
+  assert.deepEqual(message.progressNotes, [
+    "I will inspect the runtime first.",
+    "Now I will inspect the diagram tools.",
+  ]);
 
   message = applyGardenStableTextEvent(message, {
     type: "replace",
     text: "Here is the stable diagram.",
   });
   assert.equal(message.content, "Here is the stable diagram.");
+  assert.equal(message.progressNotes.length, 2);
+});
+
+test("legacy segment boundaries retain public progress without clearing answer text", () => {
+  const message = applyGardenStableTextEvent(
+    { role: "assistant", content: "Already stable" },
+    { type: "segment", text: "I checked the calendar connection." },
+  );
+  assert.equal(message.content, "Already stable");
+  assert.deepEqual(message.progressNotes, [
+    "I checked the calendar connection.",
+  ]);
 });
 
 test("legacy fallback deltas continue to stream normally", () => {
@@ -139,4 +171,8 @@ test("both Garden surfaces use the stable text projection", () => {
   assert.match(adapter, /clearInterval\(heartbeat\)/u);
   assert.match(workspace, /applyGardenStableTextEvent/u);
   assert.match(assistant, /applyGardenStableTextEvent/u);
+  assert.match(workspace, /assistantVisibleContent/u);
+  assert.match(assistant, /assistantVisibleContent/u);
+  assert.doesNotMatch(workspace, /progressNotes=\{msg\.progressNotes\}/u);
+  assert.doesNotMatch(assistant, /progressNotes=\{message\.progressNotes\}/u);
 });

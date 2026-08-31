@@ -1,5 +1,8 @@
 import db from "../db.ts";
-import { finishExternalAgentTurn } from "../conversations/external-agent-turns.ts";
+import {
+  finishExternalAgentTurn,
+  reconcileExternalAgentTerminalTiming,
+} from "../conversations/external-agent-turns.ts";
 import {
   getTerminalResult,
   setRunTerminalHandler,
@@ -10,6 +13,7 @@ interface RunningMaxResearchTurn {
   conversationId: number;
   clientMessageId: string;
   runId: string;
+  outcome: string;
 }
 
 function persistTerminalResult(
@@ -42,7 +46,7 @@ export function observeMaxResearchConversationTurn(input: {
   });
 }
 
-function runningTurns(input: {
+function maxResearchTurns(input: {
   userId: number;
   conversationId?: number;
   runId?: string;
@@ -51,7 +55,6 @@ function runningTurns(input: {
     "conversation.user_id = ?",
     "message.role = 'assistant'",
     "json_extract(message.metadata, '$.externalAgentRun.kind') = 'max_research'",
-    "json_extract(message.metadata, '$.externalAgentOutcome') = 'running'",
   ];
   const values: Array<number | string> = [input.userId];
   if (input.conversationId !== undefined) {
@@ -66,7 +69,8 @@ function runningTurns(input: {
     SELECT
       message.conversation_id AS conversationId,
       message.client_message_id AS clientMessageId,
-      json_extract(message.metadata, '$.externalAgentRun.runId') AS runId
+      json_extract(message.metadata, '$.externalAgentRun.runId') AS runId,
+      json_extract(message.metadata, '$.externalAgentOutcome') AS outcome
     FROM conversation_messages AS message
     JOIN conversations AS conversation ON conversation.id = message.conversation_id
     WHERE ${filters.join(" AND ")}
@@ -82,10 +86,20 @@ async function reconcileTurns(
     try {
       const result = await getTerminalResult(userId, turn.runId);
       if (!result) {
-        observeMaxResearchConversationTurn({ userId, ...turn });
+        if (turn.outcome === "running") {
+          observeMaxResearchConversationTurn({ userId, ...turn });
+        }
         continue;
       }
-      persistTerminalResult(turn, result);
+      if (turn.outcome === "running") {
+        persistTerminalResult(turn, result);
+      } else {
+        reconcileExternalAgentTerminalTiming({
+          conversationId: turn.conversationId,
+          clientMessageId: turn.clientMessageId,
+          terminalAtMs: result.terminalAtMs,
+        });
+      }
       reconciled += 1;
     } catch {
       // Loading a transcript must remain available during a transient runtime
@@ -100,17 +114,62 @@ export async function reconcileMaxResearchConversation(
   userId: number,
   conversationId: number,
 ): Promise<number> {
-  return reconcileTurns(userId, runningTurns({ userId, conversationId }));
+  return reconcileTurns(userId, maxResearchTurns({ userId, conversationId }));
 }
+
+/**
+ * Record that a person stopped the run, ahead of the runtime's own word on it.
+ *
+ * The runtime reports a cancelled job as `run.aborted` and every observer
+ * turns that into the same "Stopped." — which cannot tell a Stop button from a
+ * run cancelled underneath the person. The first terminal write on a turn
+ * wins, so the abort route writes the reason before it asks the runtime to
+ * cancel; the transcript then says who stopped it, and the row that delegated
+ * can say "You stopped Max Research" rather than only that it stopped.
+ */
+export function markMaxResearchRunStoppedByUser(
+  userId: number,
+  runId: string,
+): number {
+  let sealed = 0;
+  for (const turn of maxResearchTurns({ userId, runId })) {
+    if (turn.outcome !== "running") continue;
+    try {
+      finishExternalAgentTurn({
+        conversationId: turn.conversationId,
+        clientMessageId: turn.clientMessageId,
+        outcome: "aborted",
+        content: MAX_RESEARCH_STOPPED_BY_USER,
+      });
+      sealed += 1;
+    } catch {
+      // A concurrent terminal event won the race; that result is already the
+      // more authoritative one.
+    }
+  }
+  return sealed;
+}
+
+/** Shared with the session abort route and the transcript's outcome note. */
+export const MAX_RESEARCH_STOPPED_BY_USER = "Stopped by the user.";
 
 /** Settle the transcript before an abort response releases the Stop control. */
 export async function reconcileMaxResearchRun(
   userId: number,
   runId: string,
 ): Promise<MaxResearchTerminalResult | null> {
-  const turns = runningTurns({ userId, runId });
+  const turns = maxResearchTurns({ userId, runId });
   const result = await getTerminalResult(userId, runId);
   if (!result) return null;
-  for (const turn of turns) persistTerminalResult(turn, result);
+  for (const turn of turns) {
+    if (turn.outcome === "running") persistTerminalResult(turn, result);
+    else {
+      reconcileExternalAgentTerminalTiming({
+        conversationId: turn.conversationId,
+        clientMessageId: turn.clientMessageId,
+        terminalAtMs: result.terminalAtMs,
+      });
+    }
+  }
   return result;
 }

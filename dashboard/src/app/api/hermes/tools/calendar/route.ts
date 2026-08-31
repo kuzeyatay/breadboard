@@ -16,8 +16,14 @@ import {
 } from "@/lib/hermes/runtime-store.ts";
 import { CALENDAR_TOOLS } from "@/lib/hermes/tool-scopes.ts";
 import { agenda, getEvent, listCalendars, searchEvents } from "@/lib/calendar/agent-query.ts";
+import {
+  createCalendarEvent,
+  deleteCalendarEvent,
+  updateCalendarEvent,
+} from "@/lib/calendar/agent-actions.ts";
 import { getCalendarStore } from "@/lib/calendar/instance.ts";
 import { CalendarError } from "@/lib/calendar/store.ts";
+import { rememberEventPeople } from "@/lib/contacts/calendar-capture.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -27,9 +33,10 @@ export const runtime = "nodejs";
  * browser API: it authenticates with the same short-lived capability token the
  * gateway mints, which pins the user, the surface and the conversation.
  *
- * Reads only. The user id comes from the verified session rather than from the
- * arguments, so a tool call cannot name somebody else's calendar, and the store
- * scopes every query by it a second time.
+ * The user id comes from the verified session rather than from the arguments,
+ * so a tool call cannot name somebody else's calendar, and the store scopes
+ * every read and write by it a second time. Subscribed calendars remain
+ * read-only because CalendarStore rejects writes to them.
  */
 export async function POST(request: Request) {
   let runtimeSessionId: number | null = null;
@@ -126,6 +133,18 @@ function executeCalendarTool(
       return searchEvents(store, userId, args);
     case "calendar_get_event":
       return getEvent(store, userId, args);
+    case "calendar_create_event": {
+      const result = createCalendarEvent(store, userId, args);
+      rememberEventPeople(userId, result.event);
+      return result;
+    }
+    case "calendar_update_event": {
+      const result = updateCalendarEvent(store, userId, args);
+      rememberEventPeople(userId, result.event);
+      return result;
+    }
+    case "calendar_delete_event":
+      return deleteCalendarEvent(store, userId, args);
     default:
       throw new ApiError(400, "calendar_unknown_tool", `Unhandled tool ${tool}.`);
   }

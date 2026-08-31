@@ -12,11 +12,17 @@ import ChatMarkdown from "@/app/components/chat-markdown";
 import { useYoloMode } from "@/app/components/use-yolo-mode";
 import { normalizeChatTokenUsage } from "@/lib/chat-token-usage";
 import { appendBoundedAgentRunEvent } from "@/lib/agent-run-history";
+import {
+  showSignInRequest,
+  type SignInStartResult,
+} from "@/app/components/sign-in-required-card";
+import type { BrowserProfileState } from "@/lib/agent-browser/service.ts";
 import type {
   ExternalAgentOutcome,
   ExternalAgentTerminalOutcome,
 } from "@/lib/conversations/external-agent-runs";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
+import type { HermesSurface } from "@/lib/hermes/config.ts";
 
 interface RunEvent {
   sequenceNumber: number;
@@ -31,6 +37,12 @@ interface PendingApproval {
   target: string;
   explanation: string;
   risk: string;
+}
+
+interface AuthRequired {
+  url: string;
+  origin?: string;
+  title?: string;
 }
 
 const RISK_STYLE: Record<string, string> = {
@@ -49,6 +61,7 @@ function summarize(event: RunEvent): string {
     return `${payload.estimated === true ? "~" : ""}${payload.totalTokens ?? 0} tokens`;
   }
   if (event.type === "observation.page") return String(payload.url ?? "");
+  if (event.type === "auth.required") return `sign-in required: ${payload.origin ?? payload.url ?? ""}`;
   if (event.type === "action.proposed") return `${payload.action ?? ""} ${payload.target ?? ""}`.trim();
   if (event.type === "action.completed") return String(payload.summary ?? "done");
   if (event.type === "approval.requested") return `needs approval: ${payload.action ?? ""} ${payload.target ?? ""}`.trim();
@@ -67,6 +80,7 @@ const STREAMED_EVENT_TYPES = [
   "agent.usage",
   "observation.page",
   "observation.screenshot",
+  "auth.required",
   "action.proposed",
   "action.completed",
   "approval.requested",
@@ -83,6 +97,8 @@ export default function InlineAgentBrowserRun({
   task,
   persistedContent = "",
   persistedOutcome,
+  signInSurface = "garden_chat",
+  signInSessionId = null,
   onTerminal,
   onRetry,
 }: {
@@ -91,6 +107,9 @@ export default function InlineAgentBrowserRun({
   task: string;
   persistedContent?: string;
   persistedOutcome?: ExternalAgentOutcome;
+  /** Composer that owns the user-controlled sign-in handoff. */
+  signInSurface?: HermesSurface;
+  signInSessionId?: string | number | null;
   onTerminal?: (result: {
     outcome: ExternalAgentTerminalOutcome;
     content: string;
@@ -106,6 +125,7 @@ export default function InlineAgentBrowserRun({
   const [result, setResult] = useState(persistedContent);
   const [shot, setShot] = useState<string | null>(null);
   const [pageUrl, setPageUrl] = useState<string | null>(null);
+  const [authRequired, setAuthRequired] = useState<AuthRequired | null>(null);
   const [pending, setPending] = useState<PendingApproval | null>(null);
   const [deciding, setDeciding] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -138,6 +158,17 @@ export default function InlineAgentBrowserRun({
       const url = (event.payload as { url?: string }).url;
       if (url) setPageUrl(url);
     }
+    if (event.type === "auth.required") {
+      const payload = event.payload as Partial<AuthRequired>;
+      if (typeof payload.url === "string" && /^https?:\/\//iu.test(payload.url)) {
+        setAuthRequired({
+          url: payload.url,
+          ...(typeof payload.origin === "string" ? { origin: payload.origin } : {}),
+          ...(typeof payload.title === "string" ? { title: payload.title } : {}),
+        });
+        setStatus("waiting_for_sign_in");
+      }
+    }
     if (event.type === "approval.requested") {
       setPending(event.payload as unknown as PendingApproval);
       setStatus("awaiting_approval");
@@ -165,6 +196,93 @@ export default function InlineAgentBrowserRun({
       onTerminalRef.current?.({ outcome, content });
     }
   }, [task]);
+
+  useEffect(() => {
+    if (!authRequired) return;
+    const requestId = `agent-browser-sign-in:${runId}`;
+
+    async function readProfile(): Promise<BrowserProfileState> {
+      const response = await fetch("/api/agent-browser/browser-profile", {
+        cache: "no-store",
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.profile) {
+        throw new Error("Breadboard could not read the browser sign-in profile.");
+      }
+      return data.profile as BrowserProfileState;
+    }
+
+    async function waitUntilRunReleasesBrowser(): Promise<BrowserProfileState> {
+      // auth.required is immediately followed by a terminal run event, but the
+      // Runtime and browser process finish independently. Ask it to stop as a
+      // harmless idempotent nudge, then wait for the profile lock to clear.
+      await fetch(`${base}/abort`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }).catch(() => undefined);
+      const deadline = Date.now() + 15_000;
+      let profile = await readProfile();
+      while (profile.runInProgress && Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        profile = await readProfile();
+      }
+      if (profile.runInProgress) {
+        throw new Error("The browser task is still closing. Wait a moment and try again.");
+      }
+      if (!profile.runtimeAvailable || !profile.browserFound) {
+        throw new Error("A compatible sign-in browser is not available right now.");
+      }
+      return profile;
+    }
+
+    async function startSignIn(): Promise<SignInStartResult> {
+      const profile = await waitUntilRunReleasesBrowser();
+      const response = await fetch("/api/agent-browser/browser-profile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "open", url: authRequired!.url }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        const code = typeof data?.error === "string" ? data.error : "";
+        if (code === "run_in_progress") {
+          throw new Error("The browser task is still closing. Wait a moment and try again.");
+        }
+        if (code === "browser_not_found") {
+          throw new Error("No compatible Chrome or Edge browser was found.");
+        }
+        throw new Error("Breadboard could not open the sign-in window.");
+      }
+      const opened = data?.profile as BrowserProfileState | undefined;
+      return { browserName: opened?.browserName ?? profile.browserName };
+    }
+
+    async function finishSignIn(): Promise<void> {
+      const profile = await readProfile();
+      if (!profile.windowOpen) return;
+      const response = await fetch("/api/agent-browser/browser-profile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "close" }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok && data?.error !== "unmanaged_sign_in_window") {
+        throw new Error("Breadboard could not close the sign-in window.");
+      }
+    }
+
+    showSignInRequest({
+      id: requestId,
+      surface: signInSurface,
+      sessionId: signInSessionId,
+      url: authRequired.url,
+      browserName: null,
+      startSignIn,
+      finishSignIn,
+      retry: onRetry,
+    });
+  }, [authRequired, base, onRetry, runId, signInSessionId, signInSurface]);
 
   useEffect(() => {
     // A finished turn already carries its result, and its run is long gone from

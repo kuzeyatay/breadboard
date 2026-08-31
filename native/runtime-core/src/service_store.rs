@@ -79,7 +79,9 @@ pub enum DurableServiceStoreError {
         "retained launch authority for service {service_id} generation {generation} was not found"
     )]
     RetainedLaunchNotFound { service_id: String, generation: u64 },
-    #[error("retained launch authority for service {service_id} generation {generation} has no running process")]
+    #[error(
+        "retained launch authority for service {service_id} generation {generation} has no running process"
+    )]
     RetainedLaunchNotRunning { service_id: String, generation: u64 },
     #[error(
         "retained authority for service {service_id} generation {generation} is in phase {phase:?}, which cannot perform {operation}"
@@ -237,6 +239,39 @@ impl RetainedServiceAuthority {
         macro_rules! confirm {
             ($authority:expr, $variant:ident) => {
                 match $authority.confirm_exit(terminal) {
+                    Ok(exit) => Ok(exit),
+                    Err(transition) => {
+                        let (authority, error) = transition.into_parts();
+                        Err((Self::$variant(authority), error))
+                    }
+                }
+            };
+        }
+        match self {
+            Self::Claimed(authority) => confirm!(authority, Claimed),
+            Self::Residency(authority) => confirm!(authority, Residency),
+            Self::Starting(authority) => confirm!(authority, Starting),
+            Self::Ready(authority) => confirm!(authority, Ready),
+            Self::Resident(authority) => confirm!(authority, Resident),
+            Self::Stopping(authority) => confirm!(authority, Stopping),
+            authority @ (Self::NotCreated(_) | Self::Uncertain(_) | Self::Exited(_)) => Err((
+                authority,
+                ProcessOwnerError::InvalidLaunch(
+                    "retained service authority has no confirmable process owner",
+                ),
+            )),
+        }
+    }
+
+    // The supervision-lost mirror of `confirm_exit`, with the same linear
+    // authority discipline: a refused transition returns the complete phase.
+    #[allow(clippy::result_large_err)]
+    fn confirm_supervision_lost(
+        self,
+    ) -> Result<ServiceTreeExitAuthority, (Self, ProcessOwnerError)> {
+        macro_rules! confirm {
+            ($authority:expr, $variant:ident) => {
+                match $authority.confirm_supervision_lost() {
                     Ok(exit) => Ok(exit),
                     Err(transition) => {
                         let (authority, error) = transition.into_parts();
@@ -4133,9 +4168,9 @@ mod tests {
                 AdmissionPolicy::for_runtime_mode(RuntimeMode::Hot),
                 || {
                     Ok(SystemCommit {
-                        // The Hot reserve is 4,352 MiB at this commit limit;
+                        // The Hot reserve is 2,304 MiB at this commit limit;
                         // equality after Hermes' 1,536 MiB estimate must fail.
-                        total_mb: 40_221 - 5_888,
+                        total_mb: 40_221 - 3_840,
                         limit_mb: 40_221,
                     })
                 },
@@ -4145,8 +4180,8 @@ mod tests {
             panic!("real commit pressure must still reject Hermes")
         };
         assert_eq!(denial.resource, "windows_commit");
-        assert_eq!(denial.required_headroom_mb, 5_888);
-        assert_eq!(denial.available_headroom_mb, 5_888);
+        assert_eq!(denial.required_headroom_mb, 3_840);
+        assert_eq!(denial.available_headroom_mb, 3_840);
         assert_eq!(active_service_reservations(&store), 1);
         assert_eq!(active_service_leases(&store, "spotify-playback"), 1);
         assert_eq!(active_service_leases(&store, "hermes"), 0);
@@ -6515,7 +6550,7 @@ impl JobStore {
                 return Err(DurableServiceIntentTransitionError {
                     claim: Box::new(claim),
                     error: DurableServiceStoreError::InvalidIntent("acknowledge service stop"),
-                })
+                });
             }
         };
         // Table -> connection is the global order used by every phase and
@@ -6698,6 +6733,85 @@ impl JobStore {
                 ));
             }
             phase => match phase.confirm_exit(terminal) {
+                Ok(exit) => exit,
+                Err((phase, error)) => {
+                    entry.phase = Some(phase);
+                    return Err(error.into());
+                }
+            },
+        };
+        let result = {
+            let (start, tree_exit, accepted_stop) = exit.parts();
+            self.finish_durable_service_tree_exit_inner(start, tree_exit, accepted_stop, now_ms)
+        };
+        match result {
+            Ok(snapshot) => {
+                launches.active.remove(&key);
+                Ok(snapshot)
+            }
+            Err(error) => {
+                launches
+                    .active
+                    .get_mut(&key)
+                    .expect("failed tree-exit finalization must retain its table entry")
+                    .phase = Some(RetainedServiceAuthority::Exited(exit));
+                Err(error)
+            }
+        }
+    }
+
+    /// Finalizes a retained live phase whose supervisor closed its event stream
+    /// without ever emitting a terminal record.
+    ///
+    /// This is not a weaker form of
+    /// [`Self::confirm_and_finish_retained_durable_service_exit`]: the
+    /// supervisor holds the target Job Object open with
+    /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so its own reaped exit is a real
+    /// OS proof that the tree is zero-resident. Only the supervisor's
+    /// *diagnostics* are lost, which is why the receipt this mints is always
+    /// classified as a supervision failure. Recovery is identical: a refused
+    /// confirmation restores the live phase, and a failed transaction retains
+    /// the exit proof for an idempotent retry.
+    pub fn finish_retained_durable_service_supervision_lost(
+        &self,
+        service_id: &str,
+        service_generation: u64,
+        now_ms: u64,
+    ) -> Result<DurableServiceSnapshot, DurableServiceStoreError> {
+        validate_retained_launch_key(service_id, service_generation)?;
+        let mut launches = self
+            .service_launches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (service_id.to_owned(), service_generation);
+        let Some(entry) = launches.active.get_mut(&key) else {
+            return Err(DurableServiceStoreError::RetainedLaunchNotFound {
+                service_id: service_id.into(),
+                generation: service_generation,
+            });
+        };
+        let Some(phase) = entry.phase.take() else {
+            return Err(RetainedServiceAuthorities::phase_mismatch(
+                service_id,
+                service_generation,
+                None,
+                "finish supervision-lost exit",
+            ));
+        };
+        let exit = match phase {
+            RetainedServiceAuthority::Exited(exit) => exit,
+            phase @ (RetainedServiceAuthority::NotCreated(_)
+            | RetainedServiceAuthority::Uncertain(_)) => {
+                let current = phase.phase();
+                entry.phase = Some(phase);
+                return Err(RetainedServiceAuthorities::phase_mismatch(
+                    service_id,
+                    service_generation,
+                    Some(current),
+                    "finish supervision-lost exit",
+                ));
+            }
+            phase => match phase.confirm_supervision_lost() {
                 Ok(exit) => exit,
                 Err((phase, error)) => {
                     entry.phase = Some(phase);

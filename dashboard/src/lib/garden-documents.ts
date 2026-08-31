@@ -117,7 +117,7 @@ export async function createGardenDocument(
   );
   await publishQuartzAfterMutation(
     `create document ${clusterSlug}/${created.relPath.replace(/\.md$/i, "")}`,
-    { userId: input.userId },
+    { userId: input.userId, gardenSlug: clusterSlug },
   );
   return created;
 }

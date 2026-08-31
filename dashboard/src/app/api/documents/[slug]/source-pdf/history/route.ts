@@ -249,7 +249,7 @@ export async function DELETE(
       );
       await publishQuartzAfterMutation(
         `restore source PDF ${context.clusterSlug}/${context.documentSlug}`,
-        { userId: context.userId },
+        { userId: context.userId, gardenSlug: context.clusterSlug },
       );
 
       return new Response(pdfBytes, {

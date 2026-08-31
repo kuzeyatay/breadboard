@@ -336,6 +336,7 @@ export async function POST(request: Request) {
         `AI edit markdown ${cluster.slug}/${slug}`,
         {
           userId,
+          gardenSlug: cluster.slug,
         },
       );
 

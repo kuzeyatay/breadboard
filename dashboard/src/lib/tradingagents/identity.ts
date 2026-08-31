@@ -1,12 +1,14 @@
 // The TradingAgents agent's chat identity and its request model.
 //
-// Every other runtime agent in Breadboard takes a sentence. This one does not:
+// Most runtime agents in Breadboard take a sentence. This one does not:
 // the cloned framework analyses one instrument on one date with a chosen set of
 // analysts and a chosen debate depth, and there is no prompt anywhere in its
-// graph that free text could reach. So the request is a typed object, the
-// composer refuses free typing while the agent is selected (see
-// assistant-composer.tsx), and the chat message is rendered FROM the object
-// rather than parsed into one.
+// graph that free text could reach. So user-selected runs use a typed object,
+// the composer refuses free typing while the agent is selected (see
+// assistant-composer.tsx), and the chat message is rendered FROM the object.
+// Super Agent is the deliberate second entry point: it supplies a compact
+// symbol/date brief which `tradingAgentsRequestFromBrief` turns into the same
+// validated object with conservative defaults.
 //
 // `parseTradingAgentsCommand` still exists for the reverse direction: a pasted
 // or historical `/agents:trading-agent NVDA 2026-08-04` selects the agent and
@@ -238,4 +240,56 @@ export function parseTradingAgentsCommand(
   if (/\bcrypto\b/i.test(remaining)) partial.assetType = "crypto";
 
   return { partial };
+}
+
+/**
+ * Turn a Super Agent delegation brief into the typed request the graph needs.
+ *
+ * The model is instructed to lead with the exchange symbol, optionally followed
+ * by an ISO date. Everything else uses the same defaults as the form. Keeping
+ * this conversion here means the launch surfaces cannot drift from the route's
+ * validation rules, and a guessed company name can never leak into the ticker
+ * path as free-form text.
+ */
+export function tradingAgentsRequestFromBrief(
+  value: string,
+  options: { today?: string } = {},
+): TradingAgentsRequestResult {
+  const brief = value.trim();
+  const parsed = parseTradingAgentsCommand(
+    `${TRADINGAGENTS_COMMAND} ${brief}`,
+  );
+  const partial = parsed?.partial ?? {};
+  const labelledTicker =
+    /\b(?:ticker|symbol)\s*[:=]?\s*\$?(\^?[A-Za-z0-9][A-Za-z0-9.\-^]{0,14})\b/i.exec(
+      brief,
+    )?.[1];
+  const cashTaggedTicker =
+    /(?:^|\s)\$(\^?[A-Za-z0-9][A-Za-z0-9.\-^]{0,14})(?=\s|$)/.exec(
+      brief,
+    )?.[1];
+  const ticker = partial.ticker ?? labelledTicker ?? cashTaggedTicker;
+  if (!ticker) {
+    return {
+      ok: false,
+      error:
+        'Trading Agent needs an exchange symbol. Put it first or write "ticker: SYMBOL", for example "NVDA 2026-08-30".',
+    };
+  }
+
+  const today = options.today ?? todayIso();
+  return validateTradingAgentsRequest(
+    {
+      ...DEFAULT_TRADINGAGENTS_REQUEST,
+      ...partial,
+      ticker,
+      tradeDate: partial.tradeDate ?? today,
+      assetType:
+        partial.assetType ??
+        (/\bcrypto\b/i.test(brief) || /-(?:USD|USDT|EUR)$/i.test(ticker)
+          ? "crypto"
+          : "stock"),
+    },
+    { today },
+  );
 }

@@ -148,9 +148,11 @@ function insertGarden(userId: number, pending: PendingGarden): void {
        card_height,
        chat_accessible,
        fork_allowed,
-       folder
+       folder,
+       thought_topology_enabled,
+       thought_topology_revision
      )
-     VALUES (?, ?, ?, ?, 'private', ?, ?, ?, 0, 0, ?)`,
+     VALUES (?, ?, ?, ?, 'private', ?, ?, ?, 0, 0, ?, 1, 0)`,
   ).run(
     userId,
     manifest.name,
@@ -201,6 +203,12 @@ async function republish(
     refreshPrivateQuartzIndex(userId);
     const { publishQuartzAfterMutation } = await import("../quartz-publish.ts");
     await publishQuartzAfterMutation(reason, { userId });
+    const { invalidateThoughtTopologyAfterMutation } = await import(
+      "../thought-topology/state.ts"
+    );
+    for (const slug of slugs) {
+      await invalidateThoughtTopologyAfterMutation(slug, reason);
+    }
   } catch (error) {
     console.error("[transfer] import succeeded but republishing failed", error);
   }

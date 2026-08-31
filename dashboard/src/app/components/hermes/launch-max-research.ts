@@ -7,7 +7,7 @@
 // drift apart.
 //
 // The turn is recorded the moment the run starts rather than when it finishes.
-// The card is where a person watches five agents work, and a chat that stayed
+// The card is where a person watches six agents work, and a chat that stayed
 // empty until the end would hide the only part of an hour-long run they can act
 // on while it happens.
 

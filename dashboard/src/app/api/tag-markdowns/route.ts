@@ -359,6 +359,7 @@ export async function POST(request: Request) {
         refreshClusterIndex(contentPath, cluster.slug);
         await publishQuartzAfterMutation(`retag markdowns in ${cluster.slug}`, {
           userId,
+          gardenSlug: cluster.slug,
         });
       }
     } finally {

@@ -7,6 +7,8 @@ export interface GardenTurnCheckpointMessage {
   attachments?: unknown[];
   selectedText?: string;
   inlineSelection?: unknown;
+  /** Selected-text ("Ask in chat"/"Ask here") anchor for this question. */
+  textSelection?: unknown;
 }
 
 export interface GardenTurnCheckpoint {

@@ -94,6 +94,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const config = JSON.parse(graph.dataset.cfg || "{}");
     config.repelForce = Math.max(Number(config.repelForce) || 0, 4);
     config.fontSize = Math.min(Number(config.fontSize) || 0.72, 0.72);
+    const topology = window.__breadboardThoughtTopologyBootstrap;
+    if (topology) {
+      config.mode = topology.mode;
+      config.preview = true;
+      if (topology.mode === "thought-topology") config.topologyUrl = topology.url;
+    }
     graph.dataset.cfg = JSON.stringify(config);
   } catch {}
 });
@@ -188,13 +194,21 @@ function injectPreviewShell(
   clusterSlug: string,
   refresh: string,
   origin: string,
+  topologyMode: 'links' | 'thought-topology',
 ): string {
   const baseHref = quartzUrl(clusterSlug);
   const contentIndexUrl = proxyUrl(origin, 'contentIndex', refresh, clusterSlug);
   const prescriptUrl = proxyUrl(origin, 'prescript', refresh, clusterSlug);
   const postscriptUrl = proxyUrl(origin, 'postscript', refresh, clusterSlug);
+  const topologyUrl = new URL('/api/thought-topology', origin);
+  topologyUrl.searchParams.set('clusterSlug', clusterSlug);
   const headInjection = [
     PREVIEW_THEME_SCRIPT,
+    `<script>window.__breadboardThoughtTopologyBootstrap=${JSON.stringify({
+      mode: topologyMode,
+      url: topologyUrl.toString(),
+      preview: true,
+    }).replace(/</g, '\\u003c')};</script>`,
     PREVIEW_LAYOUT_SCRIPT,
     `<base href="${baseHref}">`,
     `<style>${PREVIEW_STYLE}</style>`,
@@ -368,6 +382,7 @@ export async function GET(request: NextRequest) {
       cluster.slug,
       refresh,
       browserRequestOrigin(request),
+      cluster.thought_topology_enabled === 1 ? 'thought-topology' : 'links',
     );
 
     return new NextResponse(injectedHtml, {

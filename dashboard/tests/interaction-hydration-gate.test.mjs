@@ -173,6 +173,33 @@ test("both terminal headers accept the hydration bridge's standalone click", () 
   }
 });
 
+test("a pre-hydration anchor keeps its native first click", { skip }, () => {
+  document.body.innerHTML =
+    '<a id="dashboard" href="/dashboard"><span id="dashboard-label">Dashboard</span></a>';
+  delete window.__breadboardInteractionHydration;
+  window.eval(interactionHydrationBootstrapScript);
+  const defaultPreventedAtTarget = [];
+  const dashboard = document.querySelector("#dashboard");
+  dashboard.addEventListener("click", (event) => {
+    defaultPreventedAtTarget.push(event.defaultPrevented);
+    // Keep jsdom on this test document. The bridge must not be the code that
+    // prevents the anchor's native action before this target listener runs.
+    event.preventDefault();
+  });
+
+  document.querySelector("#dashboard-label").dispatchEvent(
+    new window.MouseEvent("click", { bubbles: true, cancelable: true }),
+  );
+
+  assert.deepEqual(defaultPreventedAtTarget, [false]);
+  window.__breadboardInteractionHydration.finish();
+  assert.deepEqual(
+    defaultPreventedAtTarget,
+    [false],
+    "the anchor click should not be queued and replayed after hydration",
+  );
+});
+
 test(
   "a pre-hydration click opens a pointer-driven terminal without double-opening after hydration",
   { skip },

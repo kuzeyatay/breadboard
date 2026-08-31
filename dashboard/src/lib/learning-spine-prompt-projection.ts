@@ -10,6 +10,7 @@ export interface LearningSpinePromptArtifact extends PromptRecord {
 
 export interface LearningSpinePlanningPacketInput {
   sourceOnly: boolean;
+  userInstruction?: string;
   syllabus: unknown;
   syllabusCoverage: unknown;
   sourceMap: unknown;
@@ -105,6 +106,9 @@ export function projectCanonicalLearningSpinePacket(
 
   return {
     sourceOnly: input.sourceOnly,
+    ...(input.userInstruction
+      ? { userInstruction: input.userInstruction }
+      : {}),
     syllabus: input.syllabus,
     syllabusCoverage: input.syllabusCoverage,
     sourceMap: {

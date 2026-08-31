@@ -16,6 +16,8 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { isSameTabNavigationClick, rememberWorkflowReturnPath } from '@/lib/workflows/navigation';
 import ChatImageResults from './chat-image-results';
+import type { ChatHighlightColor } from '@/lib/chat-highlights';
+import { resolveChatTextSelectionAnchor } from '@/lib/chat-text-selection';
 
 interface Props {
   content: string;
@@ -28,6 +30,11 @@ export interface ChatTextAnnotation {
   id: string;
   start: number;
   end: number;
+  kind?: 'answer' | 'highlight';
+  color?: ChatHighlightColor;
+  quote?: string;
+  prefix?: string;
+  suffix?: string;
 }
 
 interface HastNode {
@@ -332,6 +339,21 @@ function CopyableBlockquote({
   );
 }
 
+type MarkdownTableProps = ComponentProps<'table'> & { node?: unknown };
+
+function MarkdownTable({ node, ...props }: MarkdownTableProps) {
+  // Keep the table semantic and let its full-width wrapper own horizontal
+  // overflow. Making the table itself a block prevents the browser's table
+  // layout algorithm from expanding it to the width of the chat message.
+  void node;
+
+  return (
+    <div className="chat-table-scroll">
+      <table {...props} />
+    </div>
+  );
+}
+
 const baseComponents = {
   a: ({ children, href }: { children?: ReactNode; href?: string }) => {
     const isWorkflowLink = href === '/workflows' || href?.startsWith('/workflows?');
@@ -359,20 +381,61 @@ const baseComponents = {
   ),
   pre: MarkdownPre,
   blockquote: CopyableBlockquote,
+  table: MarkdownTable,
 } satisfies Components;
 
+function annotationNodeClasses(node: HastNode): unknown[] {
+  const className = node.properties?.className;
+  return Array.isArray(className) ? className : [className];
+}
+
+function annotationNodeIsSkipped(node: HastNode): boolean {
+  return annotationNodeClasses(node).some(
+    (value) =>
+      value === 'math-inline' ||
+      value === 'math-display' ||
+      value === 'language-image-results',
+  );
+}
+
+function annotationPlainText(tree: HastNode): string {
+  let text = '';
+  function visit(node: HastNode) {
+    if (node.type === 'text' && typeof node.value === 'string') {
+      text += node.value;
+      return;
+    }
+    if (annotationNodeIsSkipped(node)) return;
+    for (const child of node.children ?? []) visit(child);
+  }
+  visit(tree);
+  return text;
+}
+
 function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
-  const sorted = [...annotations]
-    .filter(
-      (annotation) =>
-        Number.isSafeInteger(annotation.start) &&
-        Number.isSafeInteger(annotation.end) &&
-        annotation.start >= 0 &&
-        annotation.end > annotation.start,
-    )
-    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const valid = [...annotations].filter(
+    (annotation) =>
+      Number.isSafeInteger(annotation.start) &&
+      Number.isSafeInteger(annotation.end) &&
+      annotation.start >= 0 &&
+      annotation.end > annotation.start,
+  );
 
   return () => (tree: HastNode) => {
+    const text = annotationPlainText(tree);
+    const sorted = valid
+      .flatMap((annotation) => {
+        if (!annotation.quote) return [annotation];
+        const span = resolveChatTextSelectionAnchor(text, {
+          start: annotation.start,
+          end: annotation.end,
+          quote: annotation.quote,
+          prefix: annotation.prefix,
+          suffix: annotation.suffix,
+        });
+        return span ? [{ ...annotation, ...span }] : [];
+      })
+      .sort((left, right) => left.start - right.start || left.end - right.end);
     let offset = 0;
     const started = new Set<string>();
 
@@ -381,13 +444,7 @@ function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
       const nextChildren: HastNode[] = [];
       for (const child of parent.children) {
         if (child.type !== 'text' || typeof child.value !== 'string') {
-          const classNames = Array.isArray(child.properties?.className)
-            ? child.properties.className
-            : [child.properties?.className];
-          const isMath = classNames.some(
-            (value) => value === 'math-inline' || value === 'math-display',
-          );
-          if (!isMath) visit(child);
+          if (!annotationNodeIsSkipped(child)) visit(child);
           nextChildren.push(child);
           continue;
         }
@@ -418,6 +475,10 @@ function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
             tagName: 'mark',
             properties: {
               'data-chat-selection-id': annotation.id,
+              'data-chat-selection-kind': annotation.kind ?? 'answer',
+              ...(annotation.kind === 'highlight'
+                ? { 'data-chat-highlight-color': annotation.color ?? 'blue' }
+                : {}),
               ...(isRoot ? { 'data-chat-selection-root': 'true' } : {}),
             },
             children: [{ type: 'text', value: child.value.slice(start, end) }],
@@ -465,13 +526,21 @@ function ChatMarkdown({
         const annotationId = String(
           (props as Record<string, unknown>)['data-chat-selection-id'] ?? '',
         );
+        const annotationKind =
+          (props as Record<string, unknown>)['data-chat-selection-kind'] === 'highlight'
+            ? 'highlight'
+            : 'answer';
         return (
           <mark
             {...props}
             className="bb-chat-text-highlight"
             role="button"
             tabIndex={0}
-            aria-label="Open answer for highlighted text"
+            aria-label={
+              annotationKind === 'highlight'
+                ? 'Open highlight options'
+                : 'Open answer for highlighted text'
+            }
             onClick={(event) => {
               event.stopPropagation();
               if (annotationId) {
@@ -531,7 +600,12 @@ export function chatTextAnnotationsEqual(
     (annotation, index) =>
       annotation.id === b[index].id &&
       annotation.start === b[index].start &&
-      annotation.end === b[index].end,
+      annotation.end === b[index].end &&
+      annotation.kind === b[index].kind &&
+      annotation.color === b[index].color &&
+      annotation.quote === b[index].quote &&
+      annotation.prefix === b[index].prefix &&
+      annotation.suffix === b[index].suffix,
   );
 }
 

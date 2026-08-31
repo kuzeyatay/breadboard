@@ -83,15 +83,24 @@ test("ingestion streams actual usage and both document-upload interfaces render 
   assert.match(dashboard, /<DocumentIngestionTokenUsage/);
   assert.match(workspace, /<DocumentIngestionTokenUsage/);
   assert.match(dashboard, /usage=\{ingestionTokenUsage\}[\s\S]*?pending=\{isUploading\}/);
-  assert.match(workspace, /usage=\{ingestionTokenUsage\}[\s\S]*?pending=\{isUploading\}/);
+  assert.match(
+    workspace,
+    /usage=\{ingestionTokenUsage\}[\s\S]*?pending=\{modalIsUploading\}/,
+  );
   assert.ok(
     dashboard.indexOf("<DocumentIngestionTokenUsage", dashboard.indexOf("uploadFiles.map")) <
       dashboard.indexOf("hasHandwritingCompatibleFile", dashboard.indexOf("uploadFiles.map")),
     "dashboard usage summary should sit between the file area and ingestion options",
   );
   assert.ok(
-    workspace.indexOf("<DocumentIngestionTokenUsage", workspace.indexOf("uploadFiles.map")) <
-      workspace.indexOf("{/* Handwriting checkbox */}", workspace.indexOf("uploadFiles.map")),
+    workspace.indexOf(
+      "<DocumentIngestionTokenUsage",
+      workspace.indexOf("modalUploadFiles.map"),
+    ) <
+      workspace.indexOf(
+        "{/* Handwriting checkbox */}",
+        workspace.indexOf("modalUploadFiles.map"),
+      ),
     "workspace usage summary should sit between the file area and ingestion options",
   );
   assert.match(panel, /Input[\s\S]*?Output[\s\S]*?Reasoning[\s\S]*?Total/);

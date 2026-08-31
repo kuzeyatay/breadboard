@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-import { runRuntimeV2FiniteMcpWorker } from "./runtime-v2-finite-mcp-worker-core.mjs";
+import {
+  canonicalRuntimeInput,
+  runRuntimeV2FiniteMcpWorker,
+} from "./runtime-v2-finite-mcp-worker-core.mjs";
 
 const CONNECT_TIMEOUT_MS = 20_000;
 const CALL_TIMEOUT_MS = 30_000;
@@ -69,12 +72,37 @@ function googleEntry() {
   return { entry: canonicalEntry, cwd: path.dirname(path.dirname(canonicalEntry)) };
 }
 
-function secret(name) {
-  const value = process.env[name]?.trim() ?? "";
-  if (!value || Buffer.byteLength(value, "utf8") > 4_096 || /[\u0000\r\n]/u.test(value)) {
+function credential(value, pattern) {
+  if (
+    typeof value !== "string" ||
+    value !== value.trim() ||
+    Buffer.byteLength(value, "utf8") > 4_096 ||
+    !pattern.test(value)
+  ) {
     throw new Error("Google image search is not configured.");
   }
   return value;
+}
+
+function credentials(launch) {
+  const file = canonicalRuntimeInput(launch, 0);
+  const metadata = fs.lstatSync(file);
+  if (metadata.size < 1 || metadata.size > 16 * 1024) {
+    throw new Error("Google image search is not configured.");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    throw new Error("Google image search is not configured.");
+  }
+  if (!exactRecord(parsed, ["apiKey", "searchEngineId"])) {
+    throw new Error("Google image search is not configured.");
+  }
+  return {
+    apiKey: credential(parsed.apiKey, /^\S{10,512}$/u),
+    searchEngineId: credential(parsed.searchEngineId, /^[A-Za-z0-9:_-]{3,256}$/u),
+  };
 }
 
 function parseDimensions(value) {
@@ -165,10 +193,11 @@ function normalizeCloneResult(result, request) {
 async function executeImageSearch(launch, signal) {
   let trusted;
   try {
+    const saved = credentials(launch);
     trusted = {
       ...googleEntry(),
-      apiKey: secret("BREADBOARD_GOOGLE_IMAGES_API_KEY"),
-      searchEngineId: secret("BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID"),
+      apiKey: saved.apiKey,
+      searchEngineId: saved.searchEngineId,
     };
   } catch {
     return {
@@ -236,7 +265,8 @@ if (launchedAsEntry) {
   void runRuntimeV2FiniteMcpWorker({
     name: "runtime-v2-image-search-worker",
     validateRequest: validateImageSearchRequest,
-    expectedInputCount: () => 0,
+    expectedInputCount: () => 1,
+    maximumInputBytes: 16 * 1024,
     execute: executeImageSearch,
   });
 }

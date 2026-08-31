@@ -88,7 +88,7 @@ const ESCAPE_PATTERNS: Array<{ pattern: RegExp; message: string }> = [
 const BASE_STYLE = `
 :root{color-scheme:light dark;--viz-bg:#fbfaf7;--viz-panel:#f1f2f4;--viz-control:#efefed;--viz-control-hover:#e5e5e2;--viz-text:#171717;--viz-muted:#70706e;--viz-line:rgba(20,24,22,.14);--viz-accent:#3157c8;--viz-accent-text:#fff;--viz-font:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 html[data-theme="dark"]{--viz-bg:#0f0f10;--viz-panel:#17181d;--viz-control:#242426;--viz-control-hover:#303033;--viz-text:#f4f4f2;--viz-muted:#aaa9a6;--viz-line:rgba(255,255,255,.14);--viz-accent:#4568d8;--viz-accent-text:#fff}
-*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--viz-bg);color:var(--viz-text);font-family:var(--viz-font)}body{padding:clamp(10px,2.4vw,28px)}button,input,select{font:inherit;color:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--viz-accent);outline-offset:3px}canvas,svg{display:block;max-width:100%}[hidden]{display:none!important}[data-action]{isolation:isolate;line-height:0}[data-action]>svg{display:block;max-width:55%;max-height:55%;margin:auto}#app{width:100%;max-width:920px;margin:0 auto}#app>*{min-width:0}html[data-presentation="inline"],html[data-presentation="inline"] body{background:transparent}html[data-presentation="inline"] body{padding:4px 0 8px}html[data-presentation="inline"] #app{max-width:none}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--viz-bg);color:var(--viz-text);font-family:var(--viz-font)}body{padding:clamp(10px,2.4vw,28px)}button,input,select{font:inherit;color:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--viz-accent);outline-offset:3px}canvas,svg{display:block;max-width:100%}[hidden]{display:none!important}[data-action]{isolation:isolate;line-height:0}[data-action]>svg{display:block;max-width:55%;max-height:55%;margin:auto}#app{width:100%;max-width:920px;margin:0 auto}#app>*{min-width:0}html[data-presentation="inline"],html[data-presentation="inline"] body{min-height:0;background:transparent}html[data-presentation="inline"] body{padding:4px 0 8px}html[data-presentation="inline"] #app{max-width:none}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 `;
 
@@ -476,7 +476,12 @@ export async function bundleCustomInteractiveVisualizer(
   });
   const inspectOverflow=()=>{
     const viewport=html.clientWidth;
-    const overflowing=[...document.body.querySelectorAll("*")].some(node=>{const rect=node.getBoundingClientRect(),style=getComputedStyle(node);return rect.right>viewport+2||rect.left<-2||(style.overflowX==="visible"&&node.scrollWidth>node.clientWidth+2)});
+    // Only CSS boxes can overflow the page. Geometry inside an <svg> is
+    // clipped by its viewport, and scrollWidth/clientWidth carry no layout
+    // meaning on SVG nodes: Chrome reports a fully visible <text> as
+    // scrollWidth 16 / clientWidth 12, which once failed every viewport of a
+    // correct package and sent the model through three needless rewrites.
+    const overflowing=[...document.body.querySelectorAll("*")].some(node=>{if(node.ownerSVGElement)return false;const rect=node.getBoundingClientRect();if(rect.right>viewport+2||rect.left<-2)return true;return node instanceof HTMLElement&&getComputedStyle(node).overflowX==="visible"&&node.scrollWidth>node.clientWidth+2});
     html.dataset.breadboardOverflow=overflowing?"true":"false";
   };
   let overflowTimer=0;const startupFrame=requestAnimationFrame(()=>{

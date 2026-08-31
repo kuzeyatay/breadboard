@@ -107,7 +107,7 @@ export function locate(root: SelectorRoot, selector: SemanticSelector): Locator 
 export const SELECTORS = {
   startup: {
     loading: role("region", "Loading Breadboard", true),
-    continue: role("button", "Welcome to Breadboard. Click to continue.", true),
+    continue: role("button", "Welcome to Breadboard. Press space to continue.", true),
     retry: role("button", "Retry", true),
     openLogs: role("button", "Open logs", true),
     copyDiagnostics: role("button", "Copy diagnostics", true),

@@ -1014,7 +1014,8 @@ test("candidate envelope fails closed and the Council-visible prompt discloses t
   assert.match(system, /A spatial scene is exactly/);
   assert.match(system, /spatialRepresentationRequirement is the reviewed route constraint after final learner-action precedence.*not a stale necessity score or earlier rationale.*actual spatial scene.*diagram node-link graph, flowchart, state-transition graph, or plot.*requiresSurfacePrimitive.*requiresVectorPrimitive/i);
   assert.match(system, /diagram edge may use strength as an authored numeric expression.*abs\(strength\) clamped to 0\.5-6.*single option.*exclusive emphasized branch.*combined\/both\/all\/sum\/total\/\+ option.*union/i);
-  assert.match(system, /trusted runtime renders every exact immutable control before numeric outputs and observable scenes.*DOM order and rendered visibility at mobile.*sourceCode cannot and must not duplicate, reposition, or replace/i);
+  assert.match(system, /trusted runtime renders the dominant visual first, then compact numeric or status results, then every exact immutable control in reviewed order.*sourceCode cannot and must not duplicate, reposition, or replace/i);
+  assert.match(system, /Match the in-chat interactive visualizer presentation.*one dominant plot, diagram, spatial model, animation, timeline, or table.*do not add annotation or formula scenes.*Prefer exactly one scene/is);
   assert.match(system, /displayed direction is multiplied by an uncontrolled signed scalar.*fixed-sign assumption.*opposite sign.*unsigned\/field term.*sign-dependent reversal/i);
   assert.match(system, /labelMode\?.*legend_only/);
   assert.match(system, /Projection overlap is a hard failure even when world coordinates differ.*named source-essential points, vector arrowheads, endpoints, and inline labels.*every exact desktop and narrow-mobile state.*labelMode:"legend_only"/i);
@@ -1150,7 +1151,7 @@ test("candidate envelope fails closed and the Council-visible prompt discloses t
   );
   assert.match(
     userPacket.highPriorityRepairInstructions.join(" "),
-    /Preserve the immutable control exactly once.*trusted SDK runtime.*before outputs and scenes.*candidate fields cannot author DOM order.*Do not duplicate a selector/i,
+    /Preserve the immutable control exactly once.*trusted SDK runtime.*primary visual first.*compact result.*then those controls.*candidate fields cannot author DOM order.*Do not duplicate a selector/i,
   );
   assert.match(
     userPacket.highPriorityRepairInstructions.join(" "),

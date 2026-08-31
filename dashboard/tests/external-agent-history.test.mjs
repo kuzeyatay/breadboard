@@ -350,6 +350,43 @@ test("a delegated worker keeps its Super Agent message while storing the result 
   assert.equal(replayedFields.externalAgentResult, "The verified recommendation.");
 });
 
+test("a private delegated worker persists its sealed brief as a valid hidden turn", () => {
+  const chat = conversation();
+  const brief = "Research the hypertrophy evidence and reconcile the findings.";
+  const parent = store.reserveConversationTurn({
+    conversation: chat,
+    clientMessageId: "super-agent-parent-turn",
+    surface: "dashboard_terminal",
+    content: brief,
+  });
+  const recorded = turns.recordExternalAgentTurn({
+    conversation: chat,
+    clientMessageId: "agent-launch-private-max-research",
+    surface: "dashboard_terminal",
+    userContent: brief,
+    run: {
+      kind: "max_research",
+      runId: "max-research-private-run",
+      query: brief,
+    },
+    delegatedAgentRun: true,
+    internalAgentContinuation: true,
+  });
+
+  assert.equal(recorded.userMessage.content, brief);
+  const userMetadata = store.presentConversationMessage(recorded.userMessage).metadata;
+  assert.equal(userMetadata.internalAgentContinuation, true);
+  const assistantMetadata = store.presentConversationMessage(
+    recorded.assistantMessage,
+  ).metadata;
+  assert.equal(assistantMetadata.delegatedAgentRun, true);
+  assert.equal(assistantMetadata.externalAgentOutcome, "running");
+  assert.equal(
+    store.getConversationMessageById(parent.assistantMessage.id).status,
+    "pending",
+  );
+});
+
 test("a server-started Max Research run preserves a later Super Agent hand-off", () => {
   const chat = conversation();
   const clientMessageId = "delegated-max-research-pending-origin";
@@ -772,6 +809,57 @@ test("a background terminal event uses runtime time instead of the later chat re
   assert.equal(
     store.presentConversationMessage(finished).metadata.responseDurationMs,
     runtimeDurationMs,
+  );
+});
+
+test("legacy Max Research timing is repaired without changing its saved failure", () => {
+  const chat = conversation();
+  const clientMessageId = "max-research-legacy-clock";
+  const recorded = turns.recordExternalAgentTurn({
+    conversation: chat,
+    clientMessageId,
+    surface: "dashboard_terminal",
+    userContent: "/agents:max-research investigate muscle hypertrophy",
+    run: {
+      kind: "max_research",
+      runId: "max-research-legacy-clock-run",
+      query: "investigate muscle hypertrophy",
+    },
+  });
+  const startedAt = Date.parse(
+    store.presentConversationMessage(recorded.assistantMessage).metadata
+      .externalAgentStartedAt,
+  );
+  const parentDurationMs = 42_000;
+  const runtimeDurationMs = 21 * 60_000 + 45_000;
+  const legacyMetadata = {
+    ...store.presentConversationMessage(recorded.assistantMessage).metadata,
+    externalAgentOutcome: "failed",
+    responseDurationMs: 41 * 60_000,
+    responseStartedAt: new Date(startedAt - parentDurationMs).toISOString(),
+  };
+  delete legacyMetadata.externalAgentBaseDurationMs;
+  db.prepare(`
+    UPDATE conversation_messages
+    SET content = ?, status = 'failed', metadata = ?
+    WHERE id = ?
+  `).run(
+    "Sources could not be fetched.",
+    JSON.stringify(legacyMetadata),
+    recorded.assistantMessage.id,
+  );
+
+  const repaired = turns.reconcileExternalAgentTerminalTiming({
+    conversationId: chat.id,
+    clientMessageId,
+    terminalAtMs: startedAt + runtimeDurationMs,
+  });
+  const presented = store.presentConversationMessage(repaired);
+  assert.equal(presented.content, "Sources could not be fetched.");
+  assert.equal(presented.metadata.externalAgentOutcome, "failed");
+  assert.equal(
+    presented.metadata.responseDurationMs,
+    parentDurationMs + runtimeDurationMs,
   );
 });
 

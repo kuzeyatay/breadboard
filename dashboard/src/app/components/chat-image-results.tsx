@@ -27,6 +27,11 @@ interface ImageResults {
 
 const MAX_ITEMS = 10;
 
+export function wrappedImageIndex(index: number, delta: -1 | 1, itemCount: number): number {
+  if (!Number.isInteger(index) || !Number.isInteger(itemCount) || itemCount < 1) return 0;
+  return (index + delta + itemCount) % itemCount;
+}
+
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
@@ -34,6 +39,12 @@ function asString(value: unknown): string {
 function httpUrl(value: unknown): string {
   const raw = asString(value);
   return /^https?:\/\//i.test(raw) ? raw : '';
+}
+
+function imageDimension(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : undefined;
 }
 
 // Tolerant on purpose: while the answer streams, the fenced block exists with
@@ -56,6 +67,8 @@ function parseImageResults(code: string): ImageResults | null {
       const image = httpUrl(raw.image);
       const thumb = httpUrl(raw.thumb);
       if (!image && !thumb) return [];
+      const width = imageDimension(raw.w);
+      const height = imageDimension(raw.h);
       return [
         {
           title: asString(raw.title),
@@ -63,8 +76,7 @@ function parseImageResults(code: string): ImageResults | null {
           thumb,
           page: httpUrl(raw.page),
           site: asString(raw.site),
-          w: typeof raw.w === 'number' ? raw.w : undefined,
-          h: typeof raw.h === 'number' ? raw.h : undefined,
+          ...(width && height ? { w: width, h: height } : {}),
         },
       ];
     })
@@ -108,7 +120,7 @@ function GridThumb({ item }: { item: ImageResultItem }) {
   const src = source === 'image' ? item.image : item.thumb;
   if (source === 'failed' || !src) {
     return (
-      <span className="flex h-full w-full items-center justify-center rounded-[18px] bg-[var(--paper-raised)]">
+      <span className="flex min-h-36 w-full items-center justify-center rounded-[18px] bg-[var(--paper-raised)]">
         <svg
           aria-hidden
           className="h-6 w-6 text-[var(--ink-muted)]"
@@ -129,7 +141,9 @@ function GridThumb({ item }: { item: ImageResultItem }) {
     <img
       alt={item.title}
       src={src}
-      className="h-full w-full cursor-zoom-in rounded-[18px] object-cover"
+      width={item.w}
+      height={item.h}
+      className="block h-auto w-full cursor-zoom-in rounded-[18px]"
       loading="lazy"
       onError={() => {
         setSource((current) =>
@@ -168,14 +182,19 @@ function Lightbox({
   onClose: () => void;
 }) {
   const item = items[index];
-  const hasPrevious = index > 0;
-  const hasNext = index < items.length - 1;
+  const canNavigate = items.length > 1;
+  const previousIndex = wrappedImageIndex(index, -1, items.length);
+  const nextIndex = wrappedImageIndex(index, 1, items.length);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
-      if (event.key === 'ArrowRight' && index < items.length - 1) onNavigate(index + 1);
-      if (event.key === 'ArrowLeft' && index > 0) onNavigate(index - 1);
+      if (event.key === 'ArrowRight' && items.length > 1) {
+        onNavigate(wrappedImageIndex(index, 1, items.length));
+      }
+      if (event.key === 'ArrowLeft' && items.length > 1) {
+        onNavigate(wrappedImageIndex(index, -1, items.length));
+      }
     };
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -188,7 +207,7 @@ function Lightbox({
 
   if (!item || typeof document === 'undefined') return null;
 
-  const next = hasNext ? items[index + 1] : null;
+  const next = canNavigate ? items[nextIndex] : null;
 
   return createPortal(
     <div
@@ -213,26 +232,26 @@ function Lightbox({
       <span className="absolute left-1/2 top-5 -translate-x-1/2 text-sm tabular-nums text-white/80">
         {index + 1} / {items.length}
       </span>
-      {hasPrevious ? (
+      {canNavigate ? (
         <button
           type="button"
-          onClick={() => onNavigate(index - 1)}
+          onClick={() => onNavigate(previousIndex)}
           aria-label="Previous image"
-          className="absolute left-4 top-1/2 z-[1] flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 focus-visible:outline-2 focus-visible:outline-white"
+          className="absolute left-4 top-1/2 z-[2] flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/35 bg-black/70 text-white shadow-lg backdrop-blur-sm transition hover:border-white/60 hover:bg-black/90 focus-visible:outline-2 focus-visible:outline-white"
         >
-          <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
           </svg>
         </button>
       ) : null}
-      {hasNext ? (
+      {canNavigate ? (
         <button
           type="button"
-          onClick={() => onNavigate(index + 1)}
+          onClick={() => onNavigate(nextIndex)}
           aria-label="Next image"
-          className="absolute right-4 top-1/2 z-[1] flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 focus-visible:outline-2 focus-visible:outline-white"
+          className="absolute right-4 top-1/2 z-[2] flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/35 bg-black/70 text-white shadow-lg backdrop-blur-sm transition hover:border-white/60 hover:bg-black/90 focus-visible:outline-2 focus-visible:outline-white"
         >
-          <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
             <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
           </svg>
         </button>
@@ -242,7 +261,7 @@ function Lightbox({
         // viewer — a preview that is also a second next button.
         <button
           type="button"
-          onClick={() => onNavigate(index + 1)}
+          onClick={() => onNavigate(nextIndex)}
           aria-label="Next image preview"
           className="absolute right-0 top-1/2 hidden h-2/5 w-16 -translate-y-1/2 overflow-hidden rounded-l-lg opacity-60 transition hover:opacity-90 sm:block"
         >
@@ -284,14 +303,14 @@ function ChatImageResults({ code }: { code: string }) {
 
   return (
     <div className="chat-image-results" data-selection-exclude>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-2">
+      <div className="columns-2 gap-2">
         {results.items.map((item, index) => (
           <button
             key={`${item.image}-${index}`}
             type="button"
             onClick={() => setOpenIndex(index)}
             title={item.title}
-            className="neu-surface-raised aspect-square cursor-zoom-in overflow-hidden rounded-[22px] border border-[var(--line)] p-1 transition hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
+            className="mb-2 block w-full break-inside-avoid cursor-zoom-in overflow-hidden rounded-[18px] border-0 bg-transparent p-0 align-top transition hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
           >
             <GridThumb item={item} />
           </button>

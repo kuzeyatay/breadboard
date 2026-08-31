@@ -2,10 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import {
   RuntimeJobControlError,
+  abandonRuntimeJobInput,
   cancelRuntimeJob,
   inspectRuntimeJob,
   readRuntimeJobOutput,
+  reserveRuntimeJobInput,
   submitRuntimeJob,
+  uploadRuntimeJobInput,
   type RuntimeJobAuthority,
   type RuntimeJobSnapshot,
 } from "../supervisor-control.ts";
@@ -15,6 +18,7 @@ import {
   type ImageSearchResult,
   type ImageSearchRuntimeScope,
 } from "./image-search-service.ts";
+import type { GoogleImageCredentials } from "./image-search-credentials.ts";
 import { ImageSearchServiceError } from "./image-search-errors.ts";
 
 const GOOGLE_JOB_TIMEOUT_MS = 120_000;
@@ -168,6 +172,7 @@ function imageResult(value: unknown): ImageSearchResult {
 export async function runGoogleImageSearch(
   args: CanonicalImageSearchRequest,
   scope: ImageSearchRuntimeScope | undefined,
+  credentials: GoogleImageCredentials,
   signal?: AbortSignal,
 ): Promise<ImageSearchResult> {
   if (!scope) {
@@ -177,14 +182,44 @@ export async function runGoogleImageSearch(
     );
   }
   const authority = runtimeAuthority(scope);
+  const credentialBytes = Buffer.from(JSON.stringify(credentials), "utf8");
+  if (credentialBytes.byteLength < 1 || credentialBytes.byteLength > 16 * 1024) {
+    throw new ImageSearchServiceError(
+      "image_search_unconfigured",
+      "The saved Google Images credentials are invalid.",
+    );
+  }
+  let credentialUploadId: string | null = null;
+  let credentialInputAdopted = false;
   let submittedJobId: string | null = null;
   let terminal = false;
   try {
+    const reservation = await reserveRuntimeJobInput(authority, {
+      gardenId: authority.gardenId,
+      conversationId: authority.conversationId,
+      displayName: "google-images-credentials.json",
+      mediaType: "application/json",
+      declaredSizeBytes: credentialBytes.byteLength,
+    });
+    credentialUploadId = reservation.uploadId;
+    await uploadRuntimeJobInput(
+      authority,
+      reservation,
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(credentialBytes);
+          controller.close();
+        },
+      }),
+      signal,
+    );
     const initial = await submitRuntimeJob(authority, {
       jobType: "image-search-google",
       idempotencyKey: `image-search-google:${randomUUID()}`,
       requestPayload: args,
+      inputUploads: [{ uploadId: reservation.uploadId }],
     });
+    credentialInputAdopted = true;
     submittedJobId = initial.jobId;
     const job = await completedGoogleImageJob(authority, initial, signal);
     terminal = true;
@@ -222,6 +257,9 @@ export async function runGoogleImageSearch(
   } finally {
     if (submittedJobId !== null && !terminal) {
       await cancelRuntimeJob(authority, submittedJobId).catch(() => undefined);
+    }
+    if (credentialUploadId !== null && !credentialInputAdopted) {
+      await abandonRuntimeJobInput(authority, credentialUploadId).catch(() => undefined);
     }
   }
 }

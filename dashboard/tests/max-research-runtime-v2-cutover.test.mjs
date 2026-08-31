@@ -33,6 +33,7 @@ function request(overrides = {}) {
     baseUrl: "http://127.0.0.1:8765/v1",
     conversationContext: "Earlier context that must survive the boundary.",
     openscienceEnabled: false,
+    praxistTaskPath: null,
     ...overrides,
   };
 }
@@ -76,6 +77,7 @@ export function startRuntimeWorkerRun(input) {
       baseUrl: input.baseUrl,
       conversationContext: input.conversationContext,
       openscienceEnabled: input.openscienceEnabled,
+      praxistTaskPath: input.praxistTaskPath,
       runId: input.runtimeJobId,
       userId: input.userId,
     },
@@ -278,7 +280,12 @@ test("model reconciliation cancellation is immediate and oversized JSON is fence
       });
     };
     const controller = new AbortController();
-    const pending = completeText({ ...request(), prompt: "reconcile", signal: controller.signal });
+    const pending = completeText({
+      ...request(),
+      prompt: "reconcile",
+      signal: controller.signal,
+      fetchImpl: globalThis.fetch,
+    });
     controller.abort(new DOMException("stopped", "AbortError"));
     await assert.rejects(pending, /stopped|abort/iu);
     assert.equal(calls, 1, "an aborted synthesis must not retry");
@@ -292,7 +299,11 @@ test("model reconciliation cancellation is immediate and oversized JSON is fence
       });
     };
     await assert.rejects(
-      completeText({ ...request(), prompt: "reconcile" }),
+      completeText({
+        ...request(),
+        prompt: "reconcile",
+        fetchImpl: globalThis.fetch,
+      }),
       /exceeded its bound/,
     );
     assert.equal(calls, 1, "a protocol-size violation must not be retried");

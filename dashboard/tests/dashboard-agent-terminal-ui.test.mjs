@@ -84,8 +84,20 @@ test("the header conceals on close the way it reveals on open", () => {
     terminal,
     /headerClosing\s*\n?\s*\? "terminal-boot-conceal"\s*\n?\s*: "terminal-boot-reveal"/,
   );
-  // The unmount waits for the last staggered item (380ms delay + 320ms run).
-  assert.match(terminal, /setTimeout\(\(\) => \{[\s\S]*?\}, 760\)/);
+  // Exit starts immediately, uses the compositor-only close curve, and
+  // unmounts with the dock rather than trailing it for most of a second.
+  assert.match(terminal, /const DOCK_CLOSE_MS = 240/);
+  assert.match(terminal, /const DOCK_CLOSE_EASING = "var\(--neu-easing\)"/);
+  assert.match(terminal, /\}, DOCK_CLOSE_MS\)/);
+  assert.match(terminal, /animationDelay: headerClosing \? "0ms" : "40ms"/);
+  assert.match(
+    globals,
+    /\.terminal-boot-conceal \{\s*animation: terminal-boot-conceal 0\.2s var\(--neu-easing\) both;/,
+  );
+  assert.doesNotMatch(
+    globals,
+    /@keyframes terminal-boot-conceal[\s\S]{0,300}?filter:/,
+  );
 });
 
 // The dock is the heaviest box on the page and the page behind it measures it,
@@ -128,11 +140,27 @@ test("the brown terminal header toggles fully open and fully closed", () => {
   );
   assert.match(
     terminal,
-    /const target = open\s*\? openHeight\(preferredOpenHeightRef\.current\)\s*: COLLAPSED_HEIGHT/,
+    /const target = open \? openHeight\(null\) : COLLAPSED_HEIGHT/,
+  );
+  assert.match(terminal, /const box = Math\.max\(openHeight\(null\), MIN_HEIGHT\)/);
+  assert.doesNotMatch(
+    terminal,
+    /const target = open\s*\? openHeight\(preferredOpenHeightRef\.current\)/,
   );
   assert.match(terminal, /aria-label=\{isOpen \? undefined : `Open terminal\$\{unreadSuffix\}`\}/);
   assert.match(terminal, /event\.key === "Enter" \|\| event\.key === " "/);
   assert.match(terminal, /toggleDock\(true\)/);
+
+  // The legacy fallback follows the same contract for pointer, hydration-click,
+  // and keyboard paths instead of reviving the last dragged height.
+  assert.equal(
+    legacyTerminal.match(/setHeight\(maxHeight\(\)\)/g)?.length,
+    3,
+  );
+  assert.doesNotMatch(
+    legacyTerminal,
+    /setHeight\(preferredOpenHeightRef\.current \?\? defaultOpenHeight\(\)\)/,
+  );
 });
 
 test("opening the terminal puts the native caret in the chat field", () => {
@@ -147,14 +175,17 @@ test("opening the terminal puts the native caret in the chat field", () => {
   );
 });
 
-test("the terminal always starts collapsed and uses saved height only after opening", () => {
+test("the terminal always starts collapsed without reopening to a stale height", () => {
   for (const source of [terminal, legacyTerminal]) {
     assert.match(source, /useState\(COLLAPSED_HEIGHT\)/);
-    assert.match(source, /preferredOpenHeightRef\.current = clampHeight\(saved(?:Height)?\)/);
     assert.doesNotMatch(source, /setHeight\(clampHeight\(saved(?:Height)?\)\)/);
   }
+  assert.match(
+    terminal,
+    /preferredOpenHeightRef\.current = clampHeight\(saved(?:Height)?\)/,
+  );
+  assert.doesNotMatch(legacyTerminal, /preferredOpenHeightRef|HEIGHT_KEY/);
   assert.match(terminal, /if \(height < minOpenHeight\(\)\) return/);
-  assert.match(legacyTerminal, /if \(height <= COLLAPSED_HEIGHT \+ 8\) return/);
 });
 
 test("the collapsed terminal bar has no implementation-status copy", () => {
@@ -389,7 +420,7 @@ test("initial transcript and Recents loading use the same multi-pass drawn ring"
   assert.doesNotMatch(breadboardLoader, /animate-spin/);
   assert.match(
     globals,
-    /\.bb-loader-sketch \{[\s\S]{0,320}?stroke-dasharray: 1;[\s\S]{0,160}?animation: bb-loader-trace 2820ms linear var\(--bb-loader-sketch-delay, 0ms\) infinite/,
+    /\.bb-loader-sketch \{[\s\S]{0,320}?stroke-dasharray: 1;[\s\S]{0,160}?animation: bb-loader-trace 2820ms linear var\(--bb-loader-sketch-delay, 0ms\)\s+infinite/,
   );
   assert.match(
     globals,
@@ -449,9 +480,13 @@ test("a message queues while its chat is still loading", () => {
   assert.match(runtime, /runInFlight: queueHeld/);
   assert.match(runtime, /queueDisabled=\{Boolean\(disabled\)\}/);
 
-  // The wait is shown on the send button, not in the box: the placeholder is
-  // the ordinary invitation and the field takes typing throughout.
-  assert.match(runtime, /placeholder=\{placeholder \?\? "Ask the agent…"\}/);
+  // Transcript loading is shown on the send button, not in the box. Only an
+  // answer in flight changes the ordinary invitation into follow-up copy.
+  assert.match(
+    runtime,
+    /runInFlight \? "Follow up\." : \(placeholder \?\? "Ask the agent…"\)/,
+  );
+  assert.doesNotMatch(runtime, /conversationLoading \? "Follow up\."/);
   assert.doesNotMatch(runtime, /loadingTranscript \? "Loading this chat…"/);
   assert.match(runtime, /loading=\{conversationLoading\}/);
   assert.match(composer, /\(isSending \|\| loading\) && !canQueueFollowUp/);

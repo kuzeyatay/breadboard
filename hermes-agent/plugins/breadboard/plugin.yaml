@@ -39,10 +39,12 @@ provides_tools:
   - gadget_revise
   - premortem_run
   - factcheck_run
+  - patent_disclosure_guide
   - watch_run
   - image_to_3d
   - audio_analyze
   - audio_compare
+  - music_recognize
   - manim_create
   - omh_run
   - capability_gap
@@ -88,6 +90,9 @@ provides_tools:
   - calendar_agenda
   - calendar_search_events
   - calendar_get_event
+  - calendar_create_event
+  - calendar_update_event
+  - calendar_delete_event
   - plan_list_projects
   - plan_board
   - plan_search_tasks
@@ -110,3 +115,17 @@ provides_tools:
   - workspace_list
   - workspace_search
   - image_search
+  - product_search
+  - artifact_import
+  - artifact_search
+  - artifact_image_generate
+  - garden_list_files
+  - garden_create_folder
+  - garden_move_page
+  - garden_rename_folder
+  - garden_delete_folder
+  - save_memory
+  - skill_lesson
+  - humanize_text
+  - humanize_status
+  - agent_loop_run

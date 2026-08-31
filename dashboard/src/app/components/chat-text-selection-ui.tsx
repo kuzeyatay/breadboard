@@ -19,6 +19,10 @@ import {
   chatTextSelectionDraft,
   type ChatTextSelectionReference,
 } from "@/lib/chat-text-selection";
+import {
+  CHAT_HIGHLIGHT_COLORS,
+  type ChatHighlightColor,
+} from "@/lib/chat-highlights";
 import type { ChatTokenUsage } from "@/lib/chat-token-usage";
 
 export interface FloatingAnchorRect {
@@ -169,13 +173,21 @@ export const SelectableAssistantMarkdown = memo(
 
 export function ChatSelectionMenu({
   selection,
+  highlighted,
+  highlightColor,
+  onHighlightColor,
+  onRemoveHighlight,
   onAskInChat,
   onAskHere,
   onClose,
 }: {
   selection: ChatTextSelectionCandidate;
-  onAskInChat: () => void;
-  onAskHere: () => void;
+  highlighted: boolean;
+  highlightColor?: ChatHighlightColor;
+  onHighlightColor: (color: ChatHighlightColor) => void;
+  onRemoveHighlight: () => void;
+  onAskInChat?: () => void;
+  onAskHere?: () => void;
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -196,7 +208,10 @@ export function ChatSelectionMenu({
   }, [onClose]);
 
   if (typeof document === "undefined") return null;
-  const width = 222;
+  const width = Math.min(
+    onAskInChat && onAskHere ? (highlighted ? 390 : 360) : highlighted ? 190 : 160,
+    window.innerWidth - 20,
+  );
   const left = Math.max(
     10,
     Math.min(window.innerWidth - width - 10, selection.anchor.left),
@@ -205,27 +220,74 @@ export function ChatSelectionMenu({
   return createPortal(
     <div
       ref={menuRef}
-      className="bb-chat-selection-menu fixed z-[120] flex overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-1 shadow-[0_12px_34px_rgba(45,48,40,0.2)]"
+      // Above the inline answer popover (z-[121]): the same menu serves text
+      // selected inside an "Ask here" answer, and under it the menu is dead.
+      className="bb-chat-selection-menu fixed z-[130] flex overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-1 shadow-[0_12px_34px_rgba(45,48,40,0.2)]"
       style={{ left, top, width }}
       role="toolbar"
-      aria-label="Ask about selected text"
+      aria-label="Selected text actions"
       onPointerDown={(event: ReactPointerEvent) => event.preventDefault()}
     >
-      <button
-        type="button"
-        onClick={onAskInChat}
-        className="flex-1 rounded-lg px-3 py-2 text-xs font-medium text-[var(--ink-heading)] transition hover:bg-[var(--paper-strong)]"
+      <div
+        className="flex shrink-0 items-center gap-0.5 px-1"
+        role="group"
+        aria-label="Highlight color"
       >
-        Ask in chat
-      </button>
-      <span className="my-1 w-px bg-[var(--line)]" aria-hidden />
-      <button
-        type="button"
-        onClick={onAskHere}
-        className="flex-1 rounded-lg px-3 py-2 text-xs font-medium text-[var(--ink-heading)] transition hover:bg-[var(--selection-yellow)]"
-      >
-        Ask here
-      </button>
+        <span className="px-1 text-[11px] font-medium text-[var(--ink-muted)]">
+          Highlight
+        </span>
+        {CHAT_HIGHLIGHT_COLORS.map((color) => {
+          const selected = highlighted && highlightColor === color.id;
+          return (
+            <button
+              key={color.id}
+              type="button"
+              onClick={() => onHighlightColor(color.id)}
+              aria-label={`Highlight ${color.label.toLowerCase()}`}
+              aria-pressed={selected}
+              title={color.label}
+              className="bb-chat-highlight-color grid h-7 w-6 place-items-center rounded-md transition-[background-color,transform] duration-150 ease-out hover:bg-[var(--paper-strong)] active:scale-[0.94]"
+            >
+              <span
+                className="bb-chat-highlight-swatch h-3.5 w-3.5 rounded-full"
+                data-highlight-color={color.id}
+                aria-hidden
+              />
+            </button>
+          );
+        })}
+        {highlighted ? (
+          <button
+            type="button"
+            onClick={onRemoveHighlight}
+            aria-label="Remove highlight"
+            title="Remove highlight"
+            className="grid h-7 w-6 place-items-center rounded-md text-base leading-none text-[var(--ink-muted)] transition-[background-color,color,transform] duration-150 ease-out hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] active:scale-[0.94]"
+          >
+            <span aria-hidden>&times;</span>
+          </button>
+        ) : null}
+      </div>
+      {onAskInChat && onAskHere ? (
+        <>
+          <span className="my-1 w-px bg-[var(--line)]" aria-hidden />
+          <button
+            type="button"
+            onClick={onAskInChat}
+            className="flex-1 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-medium text-[var(--ink-heading)] transition-[background-color,transform] duration-150 ease-out hover:bg-[var(--paper-strong)] active:scale-[0.97]"
+          >
+            Ask in chat
+          </button>
+          <span className="my-1 w-px bg-[var(--line)]" aria-hidden />
+          <button
+            type="button"
+            onClick={onAskHere}
+            className="flex-1 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-medium text-[var(--ink-heading)] transition-[background-color,transform] duration-150 ease-out hover:bg-[var(--selection-yellow)] active:scale-[0.97]"
+          >
+            Ask here
+          </button>
+        </>
+      ) : null}
     </div>,
     document.body,
   );
@@ -286,6 +348,8 @@ export function QuotedChatSelection({
   );
 }
 
+const NO_ANSWER_ANNOTATIONS: readonly ChatTextAnnotation[] = [];
+
 export function InlineSelectionAnswerPopover({
   anchor,
   question,
@@ -294,6 +358,10 @@ export function InlineSelectionAnswerPopover({
   usage,
   responseDurationMs,
   startedAt,
+  answerMessageId,
+  annotations,
+  onSelection,
+  onOpenAnnotation,
   onClose,
   onDelete,
   onStop,
@@ -306,6 +374,15 @@ export function InlineSelectionAnswerPopover({
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   startedAt?: string;
+  /**
+   * The answer's own message id. When present (with the two handlers below)
+   * the answer body is selectable like any transcript message, so a follow-up
+   * can be highlighted or asked about inside an answer — recursively.
+   */
+  answerMessageId?: string;
+  annotations?: readonly ChatTextAnnotation[];
+  onSelection?: (selection: ChatTextSelectionCandidate) => void;
+  onOpenAnnotation?: (annotationId: string, anchor: FloatingAnchorRect) => void;
   onClose: () => void;
   onDelete: () => void;
   onStop?: () => void;
@@ -331,7 +408,18 @@ export function InlineSelectionAnswerPopover({
 
   useEffect(() => {
     function closeOnOutsidePointer(event: PointerEvent) {
-      if (!popoverRef.current?.contains(event.target as Node)) onClose();
+      const target = event.target as Node | null;
+      if (popoverRef.current?.contains(target)) return;
+      // The selection menu floats above this popover for text selected inside
+      // the answer; choosing an action there must not tear down the popover it
+      // is acting on.
+      if (
+        target instanceof Element &&
+        target.closest(".bb-chat-selection-menu")
+      ) {
+        return;
+      }
+      onClose();
     }
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
@@ -509,7 +597,20 @@ export function InlineSelectionAnswerPopover({
         ) : null}
         {answer ? (
           <div className="mt-1">
-            <ChatMarkdown content={answer} compact />
+            {answerMessageId && onSelection && onOpenAnnotation ? (
+              // The answer is a message like any other: selecting text inside
+              // it summons the same menu, so an answer can be highlighted and
+              // asked about in place — "Ask here" all the way down.
+              <SelectableAssistantMarkdown
+                content={answer}
+                sourceMessageId={answerMessageId}
+                annotations={annotations ?? NO_ANSWER_ANNOTATIONS}
+                onSelection={onSelection}
+                onOpenAnnotation={onOpenAnnotation}
+              />
+            ) : (
+              <ChatMarkdown content={answer} compact />
+            )}
           </div>
         ) : pending ? null : (
           <p className="text-sm leading-6 text-[var(--ink-muted)]">

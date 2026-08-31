@@ -8,6 +8,7 @@ import {
   learnSourceBindingRecord,
   matchingLearnSourceNormalizationReceipt,
   readLearnSourceNormalizationReceipt,
+  rebindLearnSourceNormalizationReceipt,
   sourceSetHashForBindingRecords,
   writeLearnSourceNormalizationReceipt,
 } from "../src/lib/learn-source-normalization-receipt.ts";
@@ -88,6 +89,44 @@ test("a later source edit cannot reuse the normalization receipt", () => {
         expectedCombinedSourceSetHash: "b".repeat(64),
         sourceIds: ["generic-source"],
         current: after,
+      }),
+      null,
+    );
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("a formula-manifest change can rebind only an exact current source", () => {
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-source-normalization-"));
+  try {
+    const before = [record("- [[generated-topic|Visible label]]")];
+    const after = [record("- Visible label")];
+    writeLearnSourceNormalizationReceipt({
+      gardenDir,
+      expectedCombinedSourceSetHash: HASH,
+      sourceIds: ["generic-source"],
+      before,
+      after,
+      createdAt: "2026-01-02T03:04:06.000Z",
+    });
+
+    const rebound = rebindLearnSourceNormalizationReceipt({
+      gardenDir,
+      expectedCombinedSourceSetHash: "b".repeat(64),
+      sourceIds: ["generic-source"],
+      current: after,
+    });
+    assert.ok(rebound);
+    assert.equal(rebound.expectedCombinedSourceSetHash, "b".repeat(64));
+    assert.deepEqual(rebound.before, before);
+    assert.deepEqual(rebound.after, after);
+    assert.equal(
+      rebindLearnSourceNormalizationReceipt({
+        gardenDir,
+        expectedCombinedSourceSetHash: "c".repeat(64),
+        sourceIds: ["generic-source"],
+        current: [record("- Visible label\n\nUser-authored change")],
       }),
       null,
     );

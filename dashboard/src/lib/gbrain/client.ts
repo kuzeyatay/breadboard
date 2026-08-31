@@ -42,6 +42,12 @@ export interface AdapterHealth {
   chunks: number;
 }
 
+export interface AdapterEmbeddingResponse {
+  model: string;
+  dimension: number;
+  vectors: number[][];
+}
+
 export class GBrainAdapterError extends Error {
   code: string;
   constructor(code: string) {
@@ -185,6 +191,13 @@ export class GBrainClient {
     warnings: string[];
   }> {
     return this.call("/graph", { scope, pageId, sourceId, limit }, signal);
+  }
+
+  embed(texts: string[], signal?: AbortSignal): Promise<AdapterEmbeddingResponse> {
+    if (texts.length < 1 || texts.length > 64) {
+      return Promise.reject(new GBrainAdapterError("invalid_embedding_batch"));
+    }
+    return this.call("/embed", { texts }, signal);
   }
 
   registerSource(

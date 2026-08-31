@@ -306,3 +306,16 @@ test("both transports can carry a file", () => {
   assert.match(telegramClient, /slice\(0, 1_024\)/);
   assert.match(service, /text\.length > 1_024/);
 });
+
+test("every delivered outbound message opens the Terminal continuation it is bound to", () => {
+  assert.match(service, /export async function recordDeliveredOwnerMessage/);
+  assert.match(service, /createConversation\(\{/);
+  assert.match(service, /appendConversationAssistantMessage\(\{/);
+  assert.match(service, /externalMessagingDirection: input\.direction/);
+  assert.match(service, /store\.bindConversation\(input\.target\.chatId, conversation\.id\)/);
+  assert.match(service, /continuationConversationId: continuation\.public_id/);
+  assert.ok(
+    service.indexOf("await deliverWhatsApp") < service.indexOf("await recordDeliveredOwnerMessage"),
+    "only a provider-accepted message should be represented as delivered",
+  );
+});

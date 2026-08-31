@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 
 import type { ExternalAgentRun } from "../conversations/external-agent-runs.ts";
 import type { ExternalAgentCall } from "./evidence.ts";
+import { MAX_PARALLEL_AGENT_LAUNCHES } from "./agent-launch.ts";
 
 type ServerStartedAgentRun = Extract<
   ExternalAgentRun,
@@ -28,7 +29,7 @@ type ServerStartedAgentRun = Extract<
 >;
 
 /** Requests kept per run. A turn that asks for more than this is looping. */
-const MAX_REQUESTS_PER_RUN = 8;
+const MAX_REQUESTS_PER_RUN = MAX_PARALLEL_AGENT_LAUNCHES;
 /** Runs kept in memory at once, oldest evicted first. */
 const MAX_TRACKED_RUNS = 64;
 
@@ -37,6 +38,8 @@ export interface AgentLaunchRequest {
   id: number;
   /** Stable id the client echoes back when it confirms or refuses. */
   requestId: string;
+  /** Distinct hidden transcript turn that owns this worker and its result. */
+  workerClientMessageId: string;
   runId: string;
   agentId: string;
   agentName: string;
@@ -68,6 +71,7 @@ export interface AgentLaunchRequest {
 interface AgentLaunchStoreState {
   nextId: number;
   byRun: Map<string, AgentLaunchRequest[]>;
+  reservationsByRun: Map<string, number>;
 }
 
 // The tool endpoint that records a launch and the SSE endpoint that drains it
@@ -81,7 +85,12 @@ const storeGlobal = globalThis as typeof globalThis & {
 };
 const store =
   storeGlobal.__breadboardAgentLaunchStore ??
-  { nextId: 1, byRun: new Map<string, AgentLaunchRequest[]>() };
+  {
+    nextId: 1,
+    byRun: new Map<string, AgentLaunchRequest[]>(),
+    reservationsByRun: new Map<string, number>(),
+  };
+store.reservationsByRun ??= new Map<string, number>();
 storeGlobal.__breadboardAgentLaunchStore = store;
 
 function evictOldestRun(): void {
@@ -91,6 +100,7 @@ function evictOldestRun(): void {
 
 export interface RecordAgentLaunchInput {
   runId: string;
+  workerClientMessageId?: string;
   agentId: string;
   agentName: string;
   command: string;
@@ -117,9 +127,13 @@ export function recordAgentLaunchRequest(
   if (!store.byRun.has(input.runId) && store.byRun.size >= MAX_TRACKED_RUNS) {
     evictOldestRun();
   }
+  const requestId = randomUUID();
   const request: AgentLaunchRequest = {
     id: store.nextId++,
-    requestId: randomUUID(),
+    requestId,
+    workerClientMessageId:
+      input.workerClientMessageId?.trim().slice(0, 128) ||
+      `agent-launch-${requestId}`,
     runId: input.runId,
     agentId: input.agentId,
     agentName: input.agentName,
@@ -174,13 +188,30 @@ export function countAgentLaunchRequests(runId: string): number {
   return (store.byRun.get(runId) ?? []).length;
 }
 
+/** Atomically reserve capacity while a server-started worker is being created. */
+export function reserveAgentLaunchRequestSlot(runId: string): boolean {
+  const used = countAgentLaunchRequests(runId);
+  const reserved = store.reservationsByRun.get(runId) ?? 0;
+  if (used + reserved >= MAX_REQUESTS_PER_RUN) return false;
+  store.reservationsByRun.set(runId, reserved + 1);
+  return true;
+}
+
+export function releaseAgentLaunchRequestSlot(runId: string): void {
+  const reserved = store.reservationsByRun.get(runId) ?? 0;
+  if (reserved <= 1) store.reservationsByRun.delete(runId);
+  else store.reservationsByRun.set(runId, reserved - 1);
+}
+
 /** Drop a finished run's requests once its stream has ended. */
 export function clearAgentLaunchRequests(runId: string): void {
   store.byRun.delete(runId);
+  store.reservationsByRun.delete(runId);
 }
 
 /** Test seam: forget everything, so one case cannot leak into the next. */
 export function resetAgentLaunchRequests(): void {
   store.byRun.clear();
+  store.reservationsByRun.clear();
   store.nextId = 1;
 }

@@ -27,6 +27,7 @@ export type TranscriptSourceInfo =
       kind: "upload";
       originalFilename: string;
       mediaSha256: string | null;
+      mediaKind: "audio" | "video";
     };
 
 export interface TranscriptMarkdownResult {
@@ -153,7 +154,7 @@ export function buildTranscriptMarkdown({
     });
   }
 
-  const title = transcript.title.trim() || "Video transcript";
+  const title = transcript.title.trim() || "Media transcript";
   const durationSeconds = transcript.durationSeconds;
   const useHours =
     (durationSeconds ?? 0) >= 3600 ||
@@ -170,7 +171,11 @@ export function buildTranscriptMarkdown({
     }
     info.push(`- **Original video:** ${source.canonicalUrl}`);
   } else {
-    info.push("- **Source:** Uploaded video file");
+    info.push(
+      source.mediaKind === "audio"
+        ? "- **Source:** Uploaded audio file"
+        : "- **Source:** Uploaded video file",
+    );
     info.push(`- **Original filename:** ${source.originalFilename}`);
     if (durationSeconds !== null) {
       info.push(`- **Duration:** ${formatDuration(durationSeconds)}`);
@@ -221,11 +226,22 @@ export function buildTranscriptMarkdown({
 
   // ── Frontmatter metadata for the existing source pipeline ─────────────────
   const metadata: Record<string, string | string[]> = {
-    source_type: source.kind === "youtube" ? "youtube" : "video_upload",
+    source_type:
+      source.kind === "youtube"
+        ? "youtube"
+        : source.mediaKind === "audio"
+          ? "audio_upload"
+          : "video_upload",
     transcription_engine: "scriberr",
     transcribed_at: transcribedAt,
     content_hash: `sha256:${contentHash}`,
-    tags: ["source", "video", "transcript"],
+    tags: [
+      "source",
+      source.kind === "upload" && source.mediaKind === "audio"
+        ? "audio"
+        : "video",
+      "transcript",
+    ],
   };
   if (transcript.transcriptionModel) {
     metadata.transcription_model = yamlSafe(transcript.transcriptionModel);

@@ -179,6 +179,7 @@
         "workflow:memory-autofetch",
         "workflow:review",
         "workflow:caldav-sync",
+        "workflow:calendar-reminders",
         "workflow:runtime-recovery",
         "workflow:ifixai-maintenance",
         "recovery:external-agent-runs"
@@ -267,8 +268,8 @@
       "softCommitLimitMb": 1024,
       "hardCommitLimitMb": 1536,
       "maximumConcurrency": 2,
-      "minimumInputBlobs": 0,
-      "maximumInputBlobs": 0,
+      "minimumInputBlobs": 1,
+      "maximumInputBlobs": 1,
       "workspacePolicy": "private-per-job",
       "readyTimeoutMs": 30000,
       "heartbeatTimeoutMs": 30000,
@@ -470,6 +471,29 @@
       "heartbeatTimeoutMs": 30000,
       "gracefulCancellationMs": 60000,
       "maximumRuntimeMs": 43200000,
+      "exitAfterJob": true
+    },
+    {
+      "kind": "outer-openexecutive-node",
+      "jobTypes": ["openexecutive-run"],
+      "capabilityIds": ["runtime-agent:openexecutive"],
+      "submissionAuthority": "user",
+      "environmentSource": "outer-openexecutive",
+      "allowedExecutable": "runtimes/node/node.exe",
+      "allowedEntrypoint": "dashboard/scripts/runtime-v2-openexecutive-worker.mjs",
+      "protocolVersion": 1,
+      "resourceClass": "large-generation",
+      "estimatedColdStartCommitMb": 2048,
+      "softCommitLimitMb": 4096,
+      "hardCommitLimitMb": 6144,
+      "maximumConcurrency": 1,
+      "minimumInputBlobs": 0,
+      "maximumInputBlobs": 0,
+      "workspacePolicy": "private-per-job",
+      "readyTimeoutMs": 30000,
+      "heartbeatTimeoutMs": 30000,
+      "gracefulCancellationMs": 60000,
+      "maximumRuntimeMs": 7200000,
       "exitAfterJob": true
     },
     {
@@ -686,6 +710,39 @@
       "exitAfterJob": true
     },
     {
+      "kind": "thought-topology-node",
+      "jobTypes": ["thought-topology"],
+      "capabilityIds": ["workflow:thought-topology"],
+      "submissionAuthority": "user",
+      "environmentSource": "gbrain-sync",
+      "serviceDependencies": [
+        {
+          "serviceId": "gbrain",
+          "condition": "always"
+        },
+        {
+          "serviceId": "chatmock",
+          "condition": "always"
+        }
+      ],
+      "allowedExecutable": "runtimes/node/node.exe",
+      "allowedEntrypoint": "dashboard/scripts/runtime-v2-thought-topology-worker.mjs",
+      "protocolVersion": 1,
+      "resourceClass": "document-processing",
+      "estimatedColdStartCommitMb": 1024,
+      "softCommitLimitMb": 2048,
+      "hardCommitLimitMb": 3072,
+      "maximumConcurrency": 1,
+      "minimumInputBlobs": 0,
+      "maximumInputBlobs": 0,
+      "workspacePolicy": "private-per-job",
+      "readyTimeoutMs": 30000,
+      "heartbeatTimeoutMs": 30000,
+      "gracefulCancellationMs": 30000,
+      "maximumRuntimeMs": 1800000,
+      "exitAfterJob": true
+    },
+    {
       "kind": "outer-agent-reach-node",
       "jobTypes": ["agent-reach-run"],
       "capabilityIds": ["runtime-agent:agent-reach"],
@@ -706,6 +763,29 @@
       "heartbeatTimeoutMs": 30000,
       "gracefulCancellationMs": 30000,
       "maximumRuntimeMs": 28800000,
+      "exitAfterJob": true
+    },
+    {
+      "kind": "outer-praxist-node",
+      "jobTypes": ["praxist-run"],
+      "capabilityIds": ["runtime-agent:praxist"],
+      "submissionAuthority": "user",
+      "environmentSource": "outer-agent-reach",
+      "allowedExecutable": "runtimes/node/node.exe",
+      "allowedEntrypoint": "dashboard/scripts/runtime-v2-praxist-worker.mjs",
+      "protocolVersion": 1,
+      "resourceClass": "large-generation",
+      "estimatedColdStartCommitMb": 2048,
+      "softCommitLimitMb": 4096,
+      "hardCommitLimitMb": 6144,
+      "maximumConcurrency": 1,
+      "minimumInputBlobs": 0,
+      "maximumInputBlobs": 0,
+      "workspacePolicy": "private-per-job",
+      "readyTimeoutMs": 30000,
+      "heartbeatTimeoutMs": 30000,
+      "gracefulCancellationMs": 60000,
+      "maximumRuntimeMs": 43200000,
       "exitAfterJob": true
     },
     {

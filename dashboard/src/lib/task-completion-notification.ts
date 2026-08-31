@@ -1,6 +1,17 @@
 export const TASK_COMPLETION_NOTIFICATION_EVENT =
   "breadboard:task-completed";
 
+/**
+ * An answer finished in the chat the person was already looking at. No notice
+ * is wanted for it, anywhere: the corner inbox uses this to mark the answer
+ * seen for every window before its next poll could announce it.
+ */
+export const CHAT_RESPONSE_SEEN_EVENT = "breadboard:chat-response-seen";
+
+export interface ChatResponseSeenDetail {
+  chatId: string;
+}
+
 const MAX_TASK_LABEL_LENGTH = 78;
 
 export interface TaskCompletionNotificationDetail {
@@ -100,7 +111,16 @@ function notifyChatResponse(
   options: TaskCompletionNotificationOptions,
 ): void {
   if (typeof window === "undefined") return;
-  if (isTaskChatActivelyViewed(options)) return;
+  if (isTaskChatActivelyViewed(options)) {
+    if (options.chatId !== undefined && options.chatId !== null) {
+      window.dispatchEvent(
+        new CustomEvent<ChatResponseSeenDetail>(CHAT_RESPONSE_SEEN_EVENT, {
+          detail: { chatId: String(options.chatId) },
+        }),
+      );
+    }
+    return;
+  }
   window.dispatchEvent(
     new CustomEvent<TaskCompletionNotificationDetail>(
       TASK_COMPLETION_NOTIFICATION_EVENT,

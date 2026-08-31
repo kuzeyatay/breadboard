@@ -71,6 +71,7 @@ import {
   externalAgentCallsForRun,
   listAgentLaunchRequestsAfter,
 } from "./agent-launch-store.ts";
+import { carriedExternalAgentsForContinuation } from "../conversations/delegated-agent-provenance.ts";
 import { acquireDetachedEventPump } from "./detached-event-pump.ts";
 import {
   findAgencyAgent,
@@ -87,6 +88,8 @@ import { retrieveDocumentAttachments } from "../colpali/retrieval.ts";
 import { visualizerCommandText } from "./interactive-visualizer-intent.ts";
 import { premortemCommandText } from "./premortem-intent.ts";
 import { factcheckCommandText } from "./factcheck-intent.ts";
+import { patentDisclosureCommandText } from "./patent-disclosure-intent.ts";
+import { PATENT_DISCLOSURE_SKILL } from "./patent-disclosure-source.ts";
 import { agentLoopCommandText } from "./agent-loop-intent.ts";
 import { messagingCommandText } from "./messaging-intent.ts";
 import { humanizeCommandText } from "./humanize-intent.ts";
@@ -110,6 +113,10 @@ import {
   tracksFromAttachments,
 } from "../audio-analyzer/tracks.ts";
 import {
+  MUSIC_RECOGNITION_SKILL,
+  renderMusicRecognitionContext,
+} from "../music-recognition/context.ts";
+import {
   hasReconstructableAttachment,
   reconstructableFromAttachments,
   renderImageTo3dContext,
@@ -119,6 +126,10 @@ import {
   smallTalkEventStream,
 } from "../chat-small-talk.ts";
 import { quartzAssistantSelectionPromptContext } from "../quartz-assistant-selection.ts";
+import {
+  normalizeGenerativeUiResources,
+  type GenerativeUiResource,
+} from "../generative-ui/contracts.ts";
 
 type GardenChatPayload = {
   clusterSlug?: unknown;
@@ -308,8 +319,14 @@ export async function openGardenAgentChat(
     authenticated: true,
     priorMessages: messages,
   });
-  const visualizerSelection = visualizerCommandText({
+  const patentDisclosureSelection = patentDisclosureCommandText({
     text: factcheckSelection.text,
+    surface: "garden_chat",
+    authenticated: true,
+    priorMessages: messages,
+  });
+  const visualizerSelection = visualizerCommandText({
+    text: patentDisclosureSelection.text,
     surface: "garden_chat",
     authenticated: true,
     priorMessages: messages,
@@ -389,9 +406,10 @@ export async function openGardenAgentChat(
     runtimeKind: session.runtimeKind,
     activeAgentSlug: conversation.active_agency_agent_slug,
   };
-  // An automatic selection must never cost the user their turn: if the 3D
-  // runtime is not installed here, the same message is resolved again without
-  // it and the person gets an ordinary answer rather than an error.
+  // An automatic selection must never cost the user their turn. If an
+  // auto-selected capability is unavailable here, resolve the same message
+  // again without it. Patent selection is upstream of agent-loop selection,
+  // so its fallback starts from the fact-check selection text.
   const resolved = await resolveCommandMessage(
     userId,
     messagingSelection.text,
@@ -399,6 +417,7 @@ export async function openGardenAgentChat(
     commandContext,
   ).catch(async (error: unknown) => {
     if (
+      !patentDisclosureSelection.automatic &&
       !imageTo3dSelection.automatic &&
       !spotifySelection.automatic &&
       !audioSelection.automatic &&
@@ -409,7 +428,9 @@ export async function openGardenAgentChat(
     return await resolveCommandMessage(
       userId,
       messagingCommandText({
-        text: agentLoopSelection.text,
+        text: patentDisclosureSelection.automatic
+          ? factcheckSelection.text
+          : agentLoopSelection.text,
         surface: "garden_chat",
         authenticated: true,
         priorMessages: messages,
@@ -421,6 +442,8 @@ export async function openGardenAgentChat(
   decision.selectedConditionalSkills = resolved.invocations
     .filter((item) => item.kind === "skill")
     .map((item) => item.slug);
+  const automaticPatentDisclosure = patentDisclosureSelection.automatic &&
+    decision.selectedConditionalSkills.includes(PATENT_DISCLOSURE_SKILL);
   decision.selectedConnections = resolved.invocations
     .filter((item) => item.kind === "mcp")
     .map((item) => item.slug);
@@ -497,6 +520,7 @@ export async function openGardenAgentChat(
       commands: resolved.invocations,
       automaticPremortem: premortemSelection.automatic,
       automaticFactcheck: factcheckSelection.automatic,
+      automaticPatentDisclosure,
       automaticInteractiveVisualizer: visualizerSelection.automatic,
       automaticDiagramDesign: diagramSelection.automatic,
       automaticGithubExplorer: githubExplorerSelection.automatic,
@@ -596,6 +620,9 @@ export async function openGardenAgentChat(
       decision.selectedConditionalSkills.includes(AUDIO_ANALYSIS_SKILL)
         ? renderAudioAnalysisContext(tracksFromAttachments(userId, attachments))
         : "",
+      decision.selectedConditionalSkills.includes(MUSIC_RECOGNITION_SKILL)
+        ? renderMusicRecognitionContext(tracksFromAttachments(userId, attachments))
+        : "",
       gardenTurnContext(
         clusterSlug,
         chatSessionId,
@@ -624,6 +651,9 @@ export async function openGardenAgentChat(
       ...(githubExplorerSelection.automatic
         ? [{ slug: GITHUB_EXPLORER_SKILL }]
         : []),
+      ...(automaticPatentDisclosure
+        ? [{ slug: PATENT_DISCLOSURE_SKILL }]
+        : []),
       ...(premortemSelection.automatic ? [{ slug: "premortem" }] : []),
       ...(factcheckSelection.automatic ? [{ slug: "bullshit-detector" }] : []),
       ...(messagingSelection.automatic ? [{ slug: "send-to-my-phone" }] : []),
@@ -642,13 +672,18 @@ export async function openGardenAgentChat(
   // only the second is visible: the hand-back arrives as a hidden message, so
   // the answer the user reads belongs to a run that queued nothing and called
   // no tool. Carry the delegation across that seam, or the one turn anybody
-  // opens the evidence panel on shows no trace of whose work it is. Read before
-  // the new run begins, so this is still the turn that did the delegating.
+  // opens the evidence panel on shows no trace of whose work it is. The hidden
+  // worker turn is durable across a long run and a server restart; the live
+  // queue remains only as a compatibility fallback.
   const carriedDelegations =
     payload.internalAgentContinuation === true
-      ? externalAgentCallsForRun(getLatestRuntimeRun(session.row.id)?.id).map(
-          (call) => ({ ...call, carried: true }),
-        )
+      ? carriedExternalAgentsForContinuation({
+          continuationText: text,
+          messages: memory.recentMessages,
+          launchCalls: externalAgentCallsForRun(
+            getLatestRuntimeRun(session.row.id)?.id,
+          ),
+        })
       : [];
   const runtimeText =
     resolved.text ||
@@ -929,6 +964,7 @@ function legacyGardenEventStream(
       const narrationSegments: string[] = [];
       const evidence: EvidenceRecord[] = [];
       const toolCalls: Array<Record<string, unknown>> = [];
+      const uiResources: GenerativeUiResource[] = [];
       let tokenUsage: unknown;
       let lastArtifactEventId = 0;
       let lastAgentLaunchRequestId = 0;
@@ -943,6 +979,7 @@ function legacyGardenEventStream(
           emit({
             type: "agent_launch",
             requestId: request.requestId,
+            workerClientMessageId: request.workerClientMessageId,
             agentId: request.agentId,
             agentName: request.agentName,
             command: request.command,
@@ -1182,7 +1219,17 @@ function legacyGardenEventStream(
               success: event.payload.success,
               summary: event.payload.summary,
               completedAt: event.timestamp,
+              ...(event.payload.uiResources?.length
+                ? { uiResources: event.payload.uiResources }
+                : {}),
             });
+            for (const resource of normalizeGenerativeUiResources(
+              event.payload.uiResources,
+            )) {
+              if (!uiResources.some((existing) => existing.id === resource.id)) {
+                uiResources.push(resource);
+              }
+            }
             evidence.push({
               id: `evidence-${event.payload.toolCallId}`,
               kind: /(?:^|\s)(?:test|lint|typecheck)(?:\s|$)/i.test(
@@ -1231,6 +1278,22 @@ function legacyGardenEventStream(
               gardenId: session.row.garden_id,
               payload: { permission: event.payload.permission },
             });
+          }
+          if (event.type === "clarify.requested") {
+            emit({ type: "clarify", ...event.payload });
+            recordAuditEvent({
+              eventType: "clarify.requested",
+              runtimeSessionId: session.row.id,
+              userId: session.row.user_id,
+              gardenId: session.row.garden_id,
+              payload: {
+                requestId: event.payload.requestId,
+                choiceCount: event.payload.choices.length,
+              },
+            });
+          }
+          if (event.type === "clarify.expired") {
+            emit({ type: "clarify_expired", requestId: event.payload.requestId });
           }
           if (event.type === "error")
             emit({ type: "error", error: event.payload.message });
@@ -1296,6 +1359,10 @@ function legacyGardenEventStream(
                 tokenUsage,
                 metadata: {
                   calls: toolCalls,
+                  ...(uiResources.length ? { uiResources } : {}),
+                  ...(narrationSegments.length
+                    ? { progressNotes: narrationSegments }
+                    : {}),
                   verification,
                   ...(responseDurationMs !== undefined
                     ? { responseDurationMs }
@@ -1350,6 +1417,9 @@ function legacyGardenEventStream(
             error: "garden_event_stream_failed",
             metadata: {
               calls: toolCalls,
+              ...(narrationSegments.length
+                ? { progressNotes: narrationSegments }
+                : {}),
               runtimeStatus: "failed",
               runtimeError: failureMessage,
             },

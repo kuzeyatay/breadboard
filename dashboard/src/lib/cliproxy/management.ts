@@ -235,13 +235,59 @@ function basename(value: string): string {
   return value.split(/[\\/]/).pop() ?? "";
 }
 
+/**
+ * Normalize both CLIProxyAPI model-catalog shapes.
+ *
+ * The ordinary OpenAI-compatible endpoint returns `data[].id`; the richer
+ * client catalog returns `models[]` and may call the same field `slug`. A
+ * reconnect must accept the latter or a successful fresh discovery looks
+ * empty and the old minimal snapshot wins.
+ */
+export function cliproxyModelIdsFromPayload(payload: unknown): string[] {
+  const record =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : null;
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray(record?.models)
+      ? record.models
+      : Array.isArray(record?.data)
+        ? record.data
+        : [];
+
+  return [
+    ...new Set(
+      rows.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") return [];
+        const model = entry as Record<string, unknown>;
+        if (String(model.visibility ?? "").toLowerCase() === "hide") return [];
+        const value =
+          typeof model.id === "string"
+            ? model.id
+            : typeof model.slug === "string"
+              ? model.slug
+              : "";
+        const id = value.trim();
+        return id ? [id] : [];
+      }),
+    ),
+  ];
+}
+
 /** Model ids the proxy can currently serve, i.e. what the signed-in accounts grant. */
 async function listCliproxyModels(): Promise<string[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(`${cliproxyBaseUrl()}/models`, {
+    const catalogUrl = new URL(`${cliproxyBaseUrl()}/models`);
+    // CLIProxyAPI treats any client_version query as a fresh rich-catalog
+    // request. This matters immediately after Google OAuth: the minimal endpoint
+    // may still hold the small bootstrap list and used to overwrite every
+    // Gemini model Breadboard had already discovered.
+    catalogUrl.searchParams.set("client_version", "breadboard");
+    response = await fetch(catalogUrl, {
       headers: { Authorization: `Bearer ${cliproxyApiKey()}` },
       cache: "no-store",
       signal: controller.signal,
@@ -255,16 +301,9 @@ async function listCliproxyModels(): Promise<string[]> {
   if (!response.ok) {
     throw new CliproxyRequestError(response.status, `HTTP ${response.status}`);
   }
-  const payload = (await response.json().catch(() => null)) as { data?: unknown } | null;
-  if (!Array.isArray(payload?.data)) return [];
-
-  return payload.data
-    .map((entry) =>
-      entry && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string"
-        ? (entry as { id: string }).id
-        : null,
-    )
-    .filter((id): id is string => Boolean(id));
+  return cliproxyModelIdsFromPayload(
+    await response.json().catch(() => null),
+  );
 }
 
 /**

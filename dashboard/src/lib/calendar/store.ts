@@ -554,6 +554,7 @@ export class CalendarStore {
     }
 
     const fields = this.normalizeEventFields(userId, input, null);
+    this.requireWritableCalendar(userId, fields.calendarId);
     const eventId = this.insertEventRow(userId, {
       ...fields,
       uid: typeof input.uid === "string" && input.uid.trim() ? input.uid.trim() : randomUUID(),

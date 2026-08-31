@@ -2,17 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
+  ACCEPTED_AUDIO_EXTENSIONS,
+  ACCEPTED_MEDIA_EXTENSIONS,
   ACCEPTED_VIDEO_EXTENSIONS,
+  MEDIA_FILE_ACCEPT_ATTR,
   VIDEO_FILE_ACCEPT_ATTR,
   formatBytes,
   formatElapsed,
   formatVideoDuration,
   hasActiveJob,
+  isAcceptedAudioFilename,
+  isAcceptedMediaFilename,
   isAcceptedVideoFilename,
   nextPollDelayMs,
   stageIndexForStatus,
   stagesForInputKind,
   statusLabel,
+  validateMediaFile,
   validateVideoFile,
   validateYouTubeInput,
 } from "../src/lib/video-transcription-ui.ts";
@@ -28,7 +34,7 @@ test("stage lists match the documented progressions for both input kinds", () =>
   assert.deepEqual(
     stagesForInputKind("upload").map((stage) => stage.label),
     [
-      "Validating video",
+      "Validating media",
       "Uploading to Scriberr",
       "Transcribing",
       "Formatting transcript",
@@ -92,7 +98,13 @@ test("file validation covers type, emptiness, and size", () => {
   assert.equal(validateVideoFile({ name: "a.mp4", size: 0 }, 100).ok, false);
   assert.equal(validateVideoFile({ name: "a.mp4", size: 200 }, 100).ok, false);
   assert.equal(isAcceptedVideoFilename("clip.M4V"), true);
-  assert.equal(VIDEO_FILE_ACCEPT_ATTR, ACCEPTED_VIDEO_EXTENSIONS.join(","));
+  assert.equal(validateMediaFile({ name: "lecture.mp3", size: 10 }, 100).ok, true);
+  assert.equal(validateMediaFile({ name: "voice.OGG", size: 10 }, 100).ok, true);
+  assert.equal(isAcceptedAudioFilename("podcast.MP3"), true);
+  assert.equal(isAcceptedMediaFilename("podcast.flac"), true);
+  assert.equal(MEDIA_FILE_ACCEPT_ATTR, ACCEPTED_MEDIA_EXTENSIONS.join(","));
+  assert.equal(VIDEO_FILE_ACCEPT_ATTR, MEDIA_FILE_ACCEPT_ATTR);
+  assert.ok(ACCEPTED_AUDIO_EXTENSIONS.includes(".mp3"));
 });
 
 test("display formatting helpers", () => {
@@ -106,21 +118,23 @@ test("display formatting helpers", () => {
 
 // ── Component structure (source-level assertions, matching repo UI tests) ──
 
-test("both input methods render in the same video-import panel", () => {
+test("video, audio, and YouTube inputs render in the same media-import panel", () => {
   assert.match(componentSource, /type="file"/);
-  assert.match(componentSource, /accept=\{VIDEO_FILE_ACCEPT_ATTR\}/);
+  assert.match(componentSource, /accept=\{MEDIA_FILE_ACCEPT_ATTR\}/);
   assert.match(componentSource, /aria-label="YouTube URL"/);
-  assert.match(componentSource, /Accepted: \{ACCEPTED_VIDEO_EXTENSIONS\.join\(" "\)\}/);
+  assert.match(componentSource, /Video: \{ACCEPTED_VIDEO_EXTENSIONS\.join\(" "\)\}/);
+  assert.match(componentSource, /Audio: \{ACCEPTED_AUDIO_EXTENSIONS\.join\(" "\)\}/);
+  assert.match(componentSource, /form\.append\("media", selectedFile/);
   assert.match(componentSource, /onDrop=\{handleDrop\}/, "drag-and-drop supported");
 });
 
-test("video warnings are unboxed and the file chooser is a dark-blue link", () => {
+test("media warnings are unboxed and the file chooser is a dark-blue link", () => {
   assert.match(componentSource, /className="space-y-0\.5"/);
   assert.match(componentSource, /text-amber-600/);
   assert.doesNotMatch(componentSource, /border border-amber-900/);
   assert.doesNotMatch(componentSource, /bg-amber-950/);
-  const chooserStart = componentSource.indexOf("Drop a video here or");
-  const chooserEnd = componentSource.indexOf("Accepted:", chooserStart);
+  const chooserStart = componentSource.indexOf("Drop video or audio here");
+  const chooserEnd = componentSource.indexOf("Audio:", chooserStart);
   const chooser = componentSource.slice(chooserStart, chooserEnd);
   assert.match(chooser, /text-blue-900 underline/);
   assert.doesNotMatch(chooser, /text-cyan-300/);
@@ -137,14 +151,17 @@ test("inputs are mutually exclusive in both directions", () => {
   );
 });
 
-test("progress card exposes stages, elapsed time, cancel, and retry", () => {
+test("active progress stays actionable while failed history stays out of the source list", () => {
   assert.match(componentSource, /stagesForInputKind\(job\.inputKind\)/);
   assert.match(componentSource, /formatElapsed\(job\.createdAt, nowMs\)/);
-  assert.match(componentSource, /postJobAction\(job\.id, "cancel"\)/);
-  assert.match(componentSource, /postJobAction\(job\.id, "retry"\)/);
-  assert.match(componentSource, /job\.errorMessage/);
-  assert.match(componentSource, /job\.outputRelativePath/);
-  assert.match(componentSource, /Open source/);
+  assert.match(componentSource, /cancelJob\(job\.id\)/);
+  assert.match(
+    componentSource,
+    /filter\(\(job\) => job\.status !== "failed" && job\.status !== "cancelled"\)/,
+  );
+  assert.doesNotMatch(componentSource, /postJobAction\(job\.id, "retry"\)/);
+  assert.doesNotMatch(componentSource, /job\.errorMessage/);
+  assert.match(componentSource, /Transcript source/);
 });
 
 test("jobs are restored on mount and polling is single-loop with terminal stop", () => {
@@ -160,7 +177,7 @@ test("completion notifies the workspace to refresh the source tree", () => {
     new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(workspace, /handleVideoSourceCreated/);
+  assert.match(workspace, /handleMediaSourceCreated/);
   assert.match(workspace, /fetchDocuments\(\);/);
-  assert.match(workspace, /Video transcription completed/);
+  assert.match(workspace, /transcription completed/);
 });

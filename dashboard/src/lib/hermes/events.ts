@@ -3,6 +3,10 @@ import {
   extractWebsitesFromPayload,
   type EvidenceWebsite,
 } from "./evidence.ts";
+import {
+  generativeUiResourcesFromToolOutput,
+  type GenerativeUiResource,
+} from "../generative-ui/contracts.ts";
 
 // Normalized agent-event contract shared between the Breadboard backend and all
 // three interactive UIs, plus the translation from Hermes's raw event
@@ -110,6 +114,7 @@ export type NormalizedAgentEvent =
         location?: string;
         details?: Record<string, unknown>;
         websites?: EvidenceWebsite[];
+        uiResources?: GenerativeUiResource[];
       };
     }
   | {
@@ -171,6 +176,29 @@ export type NormalizedAgentEvent =
         sourcePath?: string;
         destinationPath?: string;
         allowSession: boolean;
+      };
+    }
+  | {
+      // Hermes `clarify`: the model paused mid-turn to ask the user a question
+      // and stays blocked until an answer (or the runtime's own timeout)
+      // arrives. `choices` is empty for a free-text question.
+      type: "clarify.requested";
+      sessionId: string;
+      timestamp: string;
+      payload: {
+        requestId: string;
+        question: string;
+        choices: string[];
+      };
+    }
+  | {
+      // The runtime stopped waiting; a card still showing this request should
+      // close without an answer.
+      type: "clarify.expired";
+      sessionId: string;
+      timestamp: string;
+      payload: {
+        requestId: string;
       };
     }
   | {
@@ -369,6 +397,9 @@ export function normalizeHermesEvent(
       }
       if (status === "completed" || status === "error") {
         const websites = toolWebsites(toolName, state);
+        const uiResources = status === "completed"
+          ? generativeUiResourcesFromToolOutput(toolName, state?.output)
+          : [];
         return {
           type: "tool.completed",
           sessionId,
@@ -382,6 +413,7 @@ export function normalizeHermesEvent(
             ...(websites.length > 0
               ? { websites, details: { toolName, websites } }
               : {}),
+            ...(uiResources.length > 0 ? { uiResources } : {}),
           },
         };
       }

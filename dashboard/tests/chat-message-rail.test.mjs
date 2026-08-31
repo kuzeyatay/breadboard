@@ -1,8 +1,8 @@
-// The message rail down the right edge of a transcript.
+// The rail of sent messages down the right edge of a transcript.
 //
 // Two claims are worth pinning down, and neither can be read off the source.
-// The rail has to name both sides of the visible conversation, so a tick is a
-// landmark rather than a scroll fraction. And the tick it lights has
+// The rail has to name every message the reader sent and nothing else, so a
+// tick is a landmark rather than a scroll fraction. And the tick it lights has
 // to keep moving as the reader scrolls — the rule is "the nearest question",
 // not "the last one passed", because one answer here is routinely several
 // screens tall and "last passed" leaves the highlight frozen through all of it.
@@ -37,7 +37,6 @@ fs.writeFileSync(
   `export {
      default as ChatMessageRail,
      nearestRailTick,
-     railPreview,
      railFocusLine,
      summarise,
    } from "@/app/components/chat-message-rail";\n`,
@@ -62,7 +61,7 @@ await esbuild.build({
 const require = module.createRequire(import.meta.url);
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
-const { ChatMessageRail, nearestRailTick, railPreview, railFocusLine, summarise } =
+const { ChatMessageRail, nearestRailTick, railFocusLine, summarise } =
   require(bundle);
 
 /** A bridge no list has claimed, which is all a server render ever sees. */
@@ -88,25 +87,24 @@ function render(items) {
 
 // ── What the rail draws ─────────────────────────────────────────────────────
 
-test("the rail carries one tick per visible chat message", () => {
+test("the rail carries one tick per message the reader sent", () => {
   const markup = render([
-    { rowIndex: 0, label: "What is a breadboard?", role: "user" },
-    { rowIndex: 1, label: "A reusable prototyping board.", role: "assistant" },
-    { rowIndex: 2, label: "Show me an example", role: "user" },
+    { rowIndex: 0, label: "What is a breadboard?" },
+    { rowIndex: 2, label: "Show me an example" },
+    { rowIndex: 4, label: "Now quiz me" },
   ]);
 
   const ticks = markup.match(/aria-label="Go to message /g) ?? [];
-  const answers = markup.match(/aria-label="Go to AI response /g) ?? [];
-  assert.equal(ticks.length, 2, "user turns remain named landmarks");
-  assert.equal(answers.length, 1, "AI responses are landmarks too");
+  assert.equal(ticks.length, 3, "one tick per sent message");
   assert.match(markup, /data-tick-count="3"/);
-  assert.match(markup, /data-message-role="assistant"/);
+  // Answers are what the reader scrolls through, not what they navigate by.
+  assert.doesNotMatch(markup, /rowIndex="1"/);
 });
 
 test("a tick is never anonymous", () => {
   const markup = render([
-    { rowIndex: 0, label: "What is a breadboard?", role: "user" },
-    { rowIndex: 2, label: "Show me an example", role: "user" },
+    { rowIndex: 0, label: "What is a breadboard?" },
+    { rowIndex: 2, label: "Show me an example" },
   ]);
 
   assert.match(
@@ -121,9 +119,7 @@ test("a tick is never anonymous", () => {
 // one enormous answer. The rail earns its place most here, so a minimum of two
 // ticks would hide it in precisely the case it is most useful.
 test("a single question still gets its tick", () => {
-  const markup = render([
-    { rowIndex: 0, label: "Research every TU/e team", role: "user" },
-  ]);
+  const markup = render([{ rowIndex: 0, label: "Research every TU/e team" }]);
   assert.match(markup, /data-tick-count="1"/);
   assert.match(markup, /aria-label="Go to message 1 of 1: Research every TU\/e team"/);
 });
@@ -134,8 +130,8 @@ test("an empty transcript has nothing to point at, so no rail", () => {
 
 test("the rail opens on its first tick and says which one that is", () => {
   const markup = render([
-    { rowIndex: 0, label: "First", role: "user" },
-    { rowIndex: 2, label: "Second", role: "assistant" },
+    { rowIndex: 0, label: "First" },
+    { rowIndex: 2, label: "Second" },
   ]);
 
   assert.match(markup, /data-active-tick="0"/);
@@ -156,14 +152,6 @@ test("the label is trimmed to something recognisable, never left empty", () => {
   // cut mid-sentence — the chip wraps to three lines to hold it.
   const question = "suggests bands that are similar to Radiohead, ideally ones with the same sense of melancholy";
   assert.equal(summarise(question), question);
-});
-
-test("AI response previews keep the complete answer without an ellipsis", () => {
-  const answer = `${"complete response ".repeat(80)}final sentence`;
-  const preview = railPreview({ rowIndex: 1, label: answer, role: "assistant" });
-  assert.equal(preview, answer.trim());
-  assert.ok(preview.endsWith("final sentence"));
-  assert.ok(!preview.endsWith("…"));
 });
 
 // ── Which tick is the one being read ────────────────────────────────────────
@@ -274,20 +262,9 @@ test("every transcript the rail was asked for actually mounts it", () => {
       !text.slice(listAt, text.indexOf("/>", listAt)).includes("<ChatMessageRail"),
       `${relativePath} keeps the rail outside the virtualizer`,
     );
-    // Both sides of the visible conversation get a tick.
+    // Only sent messages get a tick.
     assert.match(text, /role === ["']user["']/, relativePath);
-    assert.match(text, /role === ["']assistant["']/, relativePath);
-    assert.match(railTag, /onReply=/, `${relativePath} registers inline replies`);
   }
-});
-
-test("the AI preview is larger, scrollable, and owns a reply form", () => {
-  const rail = source("src/app/components/chat-message-rail.tsx");
-  assert.match(rail, /max-h-\[min\(70vh,42rem\)\]/);
-  assert.match(rail, /w-\[min\(36rem,calc\(100vw-5rem\)\)\]/);
-  assert.match(rail, /flex-1 overflow-y-auto overscroll-contain/);
-  assert.match(rail, /Reply in this chat/);
-  assert.match(rail, /await onReply\(text, item\)/);
 });
 
 test("the rail speaks row indices, not message indices", () => {

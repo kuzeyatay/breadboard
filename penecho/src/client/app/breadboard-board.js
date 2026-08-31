@@ -14,6 +14,7 @@
 // An edit is written once the board has been quiet for a moment, and never
 // later than BOARD_SAVE_MAX_WAIT_MS after the first unsaved change.
   const BOARD_ID_PATTERN = /^\d{10,16}-[a-zA-Z0-9-]{8,64}$/,
+    BREADBOARD_BOARD_READY_MESSAGE = "penecho:board-ready",
     BOARD_SAVE_IDLE_MS = 2000,
     BOARD_SAVE_MAX_WAIT_MS = 15000,
     BOARD_VIEW_POLL_MS = 4000,
@@ -35,6 +36,12 @@
   }
   function boardViewSignature() {
     return `${state.scale.toFixed(4)}:${Math.round(state.panX)}:${Math.round(state.panY)}`;
+  }
+  function announceBreadboardBoardReady() {
+    if (window.parent === window) return;
+    // The parent validates both this window and its origin. The payload only
+    // identifies the already-requested board and contains no canvas content.
+    window.parent.postMessage({ type:BREADBOARD_BOARD_READY_MESSAGE, boardId:board.id }, "*");
   }
   /**
    * Called from the canvas history layer on every committed change. Marks the
@@ -137,6 +144,7 @@
     updateSnapshotLocationUi();
     board.view = boardViewSignature();
     board.bound = true;
+    announceBreadboardBoardReady();
     // Panning and zooming never touch the undo history, but where the reader
     // left the board is part of what the card has to remember. Sampling the
     // viewport is cheap; serializing the canvas to compare it would not be.

@@ -25,6 +25,12 @@ import {
   imageSearchMode,
   searchImages,
 } from "../src/lib/hermes/image-search-service.ts";
+import {
+  clearGoogleImageCredentials,
+  googleImageCredentialsStatus,
+  readGoogleImageCredentials,
+  storeGoogleImageCredentials,
+} from "../src/lib/hermes/image-search-credentials.ts";
 import { validateImageSearchRequest } from "../scripts/runtime-v2-image-search-worker.mjs";
 
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,7 +53,11 @@ after(() => {
 const entry = path.join(outDirectory, "entry.jsx");
 fs.writeFileSync(
   entry,
-  `export { default as ChatMarkdown } from "@/app/components/chat-markdown";\n`,
+  [
+    `export { default as ChatMarkdown } from "@/app/components/chat-markdown";`,
+    `export { wrappedImageIndex } from "@/app/components/chat-image-results";`,
+    "",
+  ].join("\n"),
   "utf8",
 );
 
@@ -69,7 +79,7 @@ await esbuild.build({
 const require = module.createRequire(import.meta.url);
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
-const { ChatMarkdown } = require(bundle);
+const { ChatMarkdown, wrappedImageIndex } = require(bundle);
 
 // ── wiring ──────────────────────────────────────────────────────────────────
 
@@ -151,16 +161,45 @@ test("the display contract ships as a system prompt section whenever the tool is
   );
 });
 
-test("the non-secret Runtime configuration marker selects the Google worker", () => {
-  const saved = process.env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED;
+test("saved profile credentials select the Google worker", () => {
+  assert.equal(imageSearchMode(false), "keyless");
+  assert.equal(imageSearchMode(true), "google");
+});
+
+test("Google image-search credentials are encrypted and scoped to one profile", () => {
+  const credentialsDirectory = path.join(outDirectory, "google-image-credentials");
+  const savedDirectory = process.env.BREADBOARD_GOOGLE_IMAGES_CREDENTIALS_DIR;
+  const savedSecret = process.env.NEXTAUTH_SECRET;
+  process.env.BREADBOARD_GOOGLE_IMAGES_CREDENTIALS_DIR = credentialsDirectory;
+  process.env.NEXTAUTH_SECRET = "test-only-google-images-vault-secret";
   try {
-    process.env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED = "";
-    assert.equal(imageSearchMode(), "keyless", "no keys must mean zero-setup keyless search");
-    process.env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED = "true";
-    assert.equal(imageSearchMode(), "google");
+    assert.deepEqual(googleImageCredentialsStatus(41), {
+      available: true,
+      configured: false,
+    });
+    const credentials = {
+      apiKey: "AIzaSyD-example-google-images-key",
+      searchEngineId: "012345678901234567890:abcdef-ghij",
+    };
+    storeGoogleImageCredentials(41, credentials);
+    assert.deepEqual(readGoogleImageCredentials(41), credentials);
+    assert.equal(readGoogleImageCredentials(42), null, "another profile cannot inherit the key");
+    assert.deepEqual(googleImageCredentialsStatus(41), {
+      available: true,
+      configured: true,
+    });
+    const stored = fs.readFileSync(path.join(credentialsDirectory, "user-41.json"), "utf8");
+    assert.doesNotMatch(stored, /AIzaSyD|abcdef-ghij/u, "the credential file must be sealed");
+    clearGoogleImageCredentials(41);
+    assert.equal(readGoogleImageCredentials(41), null);
   } finally {
-    if (saved === undefined) delete process.env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED;
-    else process.env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED = saved;
+    if (savedDirectory === undefined) {
+      delete process.env.BREADBOARD_GOOGLE_IMAGES_CREDENTIALS_DIR;
+    } else {
+      process.env.BREADBOARD_GOOGLE_IMAGES_CREDENTIALS_DIR = savedDirectory;
+    }
+    if (savedSecret === undefined) delete process.env.NEXTAUTH_SECRET;
+    else process.env.NEXTAUTH_SECRET = savedSecret;
   }
 });
 
@@ -183,11 +222,17 @@ test("Google image search is a fenced disposable Runtime job with sealed credent
     "utf8",
   );
   assert.doesNotMatch(service + runtime, /StdioClientTransport|node:child_process|\bspawn\s*\(/u);
+  assert.match(service, /readGoogleImageCredentials/u);
   assert.match(runtime, /jobType:\s*"image-search-google"/u);
+  assert.match(runtime, /inputUploads:\s*\[\{ uploadId: reservation\.uploadId \}\]/u);
   assert.match(runtime, /cancelRuntimeJob\(authority/u);
   assert.match(worker, /StdioClientTransport/u);
-  assert.match(worker, /BREADBOARD_GOOGLE_IMAGES_API_KEY/u);
-  assert.doesNotMatch(service + runtime, /BREADBOARD_GOOGLE_IMAGES_API_KEY|SEARCH_ENGINE_ID/u);
+  assert.match(worker, /canonicalRuntimeInput\(launch, 0\)/u);
+  assert.match(worker, /expectedInputCount:\s*\(\) => 1/u);
+  assert.doesNotMatch(
+    service + runtime + worker,
+    /BREADBOARD_GOOGLE_IMAGES_API_KEY|BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID/u,
+  );
 
   const canonical = { query: "red panda", count: 5, safe: null, startIndex: null };
   assert.equal(validateImageSearchRequest(canonical), canonical);
@@ -197,6 +242,45 @@ test("Google image search is a fenced disposable Runtime job with sealed credent
     { ...canonical, query: " red panda" },
     { ...canonical, startIndex: 92 },
   ]) assert.throws(() => validateImageSearchRequest(invalid), /canonical Google image-search request/);
+});
+
+test("the Profile page owns Google image-generation credential setup", () => {
+  const page = fs.readFileSync(
+    path.join(dashboardRoot, "src", "app", "profile", "page.tsx"),
+    "utf8",
+  );
+  const client = fs.readFileSync(
+    path.join(dashboardRoot, "src", "app", "profile", "profile-client.tsx"),
+    "utf8",
+  );
+  const route = fs.readFileSync(
+    path.join(dashboardRoot, "src", "app", "api", "profile", "google-images", "route.ts"),
+    "utf8",
+  );
+  assert.match(page, /googleImageGenerationCredentialsStatus\(userId\)/u);
+  assert.match(client, /title="Google Image Generation"/u);
+  assert.match(client, /Google AI Studio/u);
+  assert.doesNotMatch(client, /Programmable Search Engine ID/u);
+  assert.match(client, /\/api\/profile\/google-images/u);
+  assert.match(route, /requireUserId\(\)/u);
+  assert.match(route, /storeGoogleImageGenerationCredentials/u);
+  assert.doesNotMatch(
+    route,
+    /readGoogleImageGenerationCredentials/u,
+    "the settings API never returns a key",
+  );
+});
+
+test("the image viewer keeps both navigation directions available", () => {
+  assert.equal(wrappedImageIndex(0, -1, 6), 5, "left from the first image wraps to the last");
+  assert.equal(wrappedImageIndex(5, 1, 6), 0, "right from the last image wraps to the first");
+
+  const viewer = fs.readFileSync(
+    path.join(dashboardRoot, "src", "app", "components", "chat-image-results.tsx"),
+    "utf8",
+  );
+  assert.match(viewer, /aria-label="Previous image"[\s\S]{0,800}stroke="#fff"/u);
+  assert.match(viewer, /aria-label="Next image"[\s\S]{0,800}stroke="#fff"/u);
 });
 
 // ── rendering ───────────────────────────────────────────────────────────────
@@ -227,14 +311,37 @@ function renderMessage(content) {
   return renderToStaticMarkup(React.createElement(ChatMarkdown, { content }));
 }
 
-test("an image-results block renders as a grid of zoomable cards, not as code", () => {
+test("an image-results block renders as a proportional masonry gallery, not as code", () => {
   const html = renderMessage(
     ["Assuming you mean the **Grumman F-11 Tiger**:", "", "```image-results", JSON.stringify(RESULTS), "```"].join("\n"),
   );
   assert.ok(html.includes('class="chat-image-results"'));
+  assert.ok(
+    html.includes('class="columns-2 gap-2"'),
+    "the gallery keeps at most two large images across",
+  );
+  assert.ok(
+    html.includes('width="1200" height="800"'),
+    "known source dimensions preserve the original aspect ratio before loading",
+  );
+  assert.ok(!html.includes("aspect-square"), "gallery cards must not force square crops");
+  assert.ok(
+    html.includes("block h-auto w-full cursor-zoom-in rounded-[18px]"),
+    "gallery images size their height from their original proportions",
+  );
   // The zoom cursor rides both the card and its img — globals.css forces
   // `cursor: default` on markdown imgs, so the img must carry its own.
   assert.equal((html.match(/<button[^>]*cursor-zoom-in/g) ?? []).length, 2, "one card per item");
+  assert.equal(
+    (html.match(/neu-surface-raised/g) ?? []).length,
+    0,
+    "image cards have no raised white frame",
+  );
+  assert.equal(
+    (html.match(/<button[^>]*border-0[^>]*bg-transparent[^>]*p-0/g) ?? []).length,
+    2,
+    "image cards have no border or padding",
+  );
   assert.ok(html.includes("https://example.com/f11-full.jpg"));
   assert.ok(html.includes("https://example.com/blue-full.jpg"));
   // The grid replaces the code block entirely.

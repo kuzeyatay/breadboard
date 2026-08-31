@@ -8,12 +8,24 @@ use serde::{Deserialize, Serialize};
 pub const ADMISSION_RESERVE_FLOOR_MB: u64 = 8 * 1024;
 
 // Development admission and the Hot dashboard's live supervisor guard share
-// this formula: preserve at least 4 GiB, otherwise 10% of the machine's commit
-// limit (bounded to 1.5-8 GiB), plus a 256 MiB sampling/growth guard. Every
+// this formula: preserve at least 2 GiB, otherwise 5% of the machine's commit
+// limit (bounded to 1-4 GiB), plus a 256 MiB sampling/growth guard. Every
 // process tree still has its independently enforced manifest hard limit.
-const DEVELOPMENT_RESERVE_FLOOR_MB: u64 = 4 * 1024;
-const DEVELOPMENT_DERIVED_RESERVE_MIN_MB: u64 = 1536;
-const DEVELOPMENT_DERIVED_RESERVE_MAX_MB: u64 = 8 * 1024;
+//
+// Development machines routinely run editors, browsers, and several Node
+// toolchains next to Breadboard, so a 48 GiB commit limit with ~7 GiB free
+// is ordinary rather than dangerous. The earlier 4 GiB / 10% floor (about
+// 5.1 GiB on such a machine) plus the hot dashboard's 3 GiB cold-start
+// estimate refused to start the required workspace at all; the current
+// formula (about 2.7 GiB) keeps a real safety margin above the commit limit
+// while letting the workspace come up. Packaged builds keep the fixed 8 GiB
+// architecture reserve above. The same constants live in
+// `process_owner.rs` and `runtime-supervisor/src/main.rs`; change all three
+// together.
+const DEVELOPMENT_RESERVE_FLOOR_MB: u64 = 2 * 1024;
+const DEVELOPMENT_DERIVED_RESERVE_MIN_MB: u64 = 1024;
+const DEVELOPMENT_DERIVED_RESERVE_MAX_MB: u64 = 4 * 1024;
+const DEVELOPMENT_RESERVE_DIVISOR: u64 = 20;
 const DEVELOPMENT_RESERVE_GUARD_MB: u64 = 256;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -207,7 +219,7 @@ impl AdmissionPolicy {
         match self.reserve_strategy {
             AdmissionReserveStrategy::Fixed => self.minimum_reserve_mb,
             AdmissionReserveStrategy::Development => {
-                let derived_reserve_mb = (commit_limit_mb / 10).clamp(
+                let derived_reserve_mb = (commit_limit_mb / DEVELOPMENT_RESERVE_DIVISOR).clamp(
                     DEVELOPMENT_DERIVED_RESERVE_MIN_MB,
                     DEVELOPMENT_DERIVED_RESERVE_MAX_MB,
                 );
@@ -351,11 +363,11 @@ mod tests {
             AdmissionDecision::Admitted
         );
 
-        // 40,221 MiB derives the 4,352 MiB guarded development reserve.
+        // 40,221 MiB derives the 2,304 MiB guarded development reserve.
         // Equality with that reserve plus Hermes' 1,536 MiB estimate remains
         // fail-closed even though the static class gate is disabled.
         let exact_allowance = SystemCommit {
-            total_mb: 40_221 - 5_888,
+            total_mb: 40_221 - 3_840,
             limit_mb: 40_221,
         };
         let AdmissionDecision::Denied(pressure) = policy.decide(request, exact_allowance, &load)
@@ -363,8 +375,8 @@ mod tests {
             panic!("actual commit pressure must still deny the second tree")
         };
         assert_eq!(pressure.resource, "windows_commit");
-        assert_eq!(pressure.required_headroom_mb, 5_888);
-        assert_eq!(pressure.available_headroom_mb, 5_888);
+        assert_eq!(pressure.required_headroom_mb, 3_840);
+        assert_eq!(pressure.available_headroom_mb, 3_840);
     }
 
     #[test]
@@ -423,7 +435,7 @@ mod tests {
         let estimate = 3_072;
 
         for (commit_limit_mb, protected_reserve_mb) in
-            [(20 * 1024, 4_352), (60 * 1024, 6_400), (100 * 1024, 8_448)]
+            [(20 * 1024, 2_304), (60 * 1024, 3_328), (100 * 1024, 4_352)]
         {
             let required = protected_reserve_mb + estimate;
             let request = AdmissionRequest {
@@ -520,7 +532,7 @@ mod tests {
         assert_eq!(packaged.required_headroom_mb, 12_288);
         assert_eq!(packaged.available_headroom_mb, 9_249);
 
-        let development_required = 4_352 + 4_096;
+        let development_required = 2_304 + 4_096;
         let equality = SystemCommit {
             total_mb: recorded.limit_mb - development_required,
             limit_mb: recorded.limit_mb,

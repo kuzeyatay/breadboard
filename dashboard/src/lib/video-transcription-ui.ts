@@ -17,15 +17,45 @@ export const ACCEPTED_VIDEO_EXTENSIONS = [
   ".m4v",
 ] as const;
 
-export const VIDEO_FILE_ACCEPT_ATTR = ACCEPTED_VIDEO_EXTENSIONS.join(",");
+export const ACCEPTED_AUDIO_EXTENSIONS = [
+  ".mp3",
+  ".wav",
+  ".flac",
+  ".m4a",
+  ".aac",
+  ".ogg",
+] as const;
+
+export const ACCEPTED_MEDIA_EXTENSIONS = [
+  ...ACCEPTED_VIDEO_EXTENSIONS,
+  ...ACCEPTED_AUDIO_EXTENSIONS,
+] as const;
+
+export const MEDIA_FILE_ACCEPT_ATTR = ACCEPTED_MEDIA_EXTENSIONS.join(",");
+
+/** @deprecated Prefer MEDIA_FILE_ACCEPT_ATTR for the combined media picker. */
+export const VIDEO_FILE_ACCEPT_ATTR = MEDIA_FILE_ACCEPT_ATTR;
 
 export function isAcceptedVideoFilename(name: string): boolean {
   const lower = name.toLowerCase();
   return ACCEPTED_VIDEO_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
+export function isAcceptedAudioFilename(name: string): boolean {
+  const lower = name.toLowerCase();
+  return ACCEPTED_AUDIO_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+export function isAcceptedMediaFilename(name: string): boolean {
+  return isAcceptedVideoFilename(name) || isAcceptedAudioFilename(name);
+}
+
+export function mediaKindForFilename(name: string): "audio" | "video" {
+  return isAcceptedAudioFilename(name) ? "audio" : "video";
+}
+
 const UPLOAD_STAGES: Array<{ status: VideoTranscriptionStatus; label: string }> = [
-  { status: "validating", label: "Validating video" },
+  { status: "validating", label: "Validating media" },
   { status: "uploading", label: "Uploading to Scriberr" },
   { status: "transcribing", label: "Transcribing" },
   { status: "formatting_markdown", label: "Formatting transcript" },
@@ -128,6 +158,29 @@ export function validateVideoFile(
     return {
       ok: false,
       message: `Unsupported file type. Accepted: ${ACCEPTED_VIDEO_EXTENSIONS.join(" ")}`,
+    };
+  }
+  if (file.size <= 0) {
+    return { ok: false, message: "This file is empty." };
+  }
+  if (file.size > maxUploadBytes) {
+    return {
+      ok: false,
+      message: `File is too large (limit ${formatBytes(maxUploadBytes)}).`,
+    };
+  }
+  return { ok: true };
+}
+
+
+export function validateMediaFile(
+  file: { name: string; size: number },
+  maxUploadBytes: number,
+): VideoInputValidation {
+  if (!isAcceptedMediaFilename(file.name)) {
+    return {
+      ok: false,
+      message: `Unsupported file type. Accepted: ${ACCEPTED_MEDIA_EXTENSIONS.join(" ")}`,
     };
   }
   if (file.size <= 0) {

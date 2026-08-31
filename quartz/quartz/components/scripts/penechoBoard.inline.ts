@@ -19,6 +19,8 @@ interface BoardReference {
 const LOCAL_HOST = /^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i
 const DEFAULT_PENECHO_PORT = "8092"
 const VIEW_HEARTBEAT_MS = 20_000
+const FRAME_READY_TIMEOUT_MS = 30_000
+const FRAME_READY_MESSAGE = "penecho:board-ready"
 
 interface ServerResolution {
   url: string | null
@@ -175,15 +177,13 @@ function boardUrl(server: string, board: BoardReference): string {
 
 function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: () => void } {
   const card = element("section", "penecho-board")
+  card.classList.add("penecho-board--loading")
   card.dataset.boardId = board.id
   card.style.setProperty("--penecho-board-height", `${board.height}px`)
   const viewId = crypto.randomUUID()
 
   const header = element("header", "penecho-board-header")
-  const heading = element("div", "penecho-board-heading")
-  heading.appendChild(element("p", "penecho-board-kicker", "Whiteboard"))
-  heading.appendChild(element("h4", "penecho-board-title", board.title))
-  header.appendChild(heading)
+  header.appendChild(element("h4", "penecho-board-title", board.title))
 
   const expand = element("button", "penecho-board-action", "Expand") as HTMLButtonElement
   expand.type = "button"
@@ -192,8 +192,14 @@ function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: 
   card.appendChild(header)
 
   const surface = element("div", "penecho-board-surface")
+  surface.setAttribute("aria-busy", "true")
   const placeholder = element("div", "penecho-board-placeholder")
-  placeholder.appendChild(element("p", "penecho-board-placeholder-text", "Opening the board…"))
+  placeholder.setAttribute("role", "status")
+  placeholder.setAttribute("aria-live", "polite")
+  const loadingIndicator = element("span", "penecho-board-loading-indicator")
+  loadingIndicator.setAttribute("aria-hidden", "true")
+  placeholder.appendChild(loadingIndicator)
+  placeholder.appendChild(element("p", "penecho-board-placeholder-text", "Starting whiteboard…"))
   const retry = element("button", "penecho-board-action", "Try again") as HTMLButtonElement
   retry.type = "button"
   retry.hidden = true
@@ -207,10 +213,50 @@ function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: 
   let heartbeat: number | null = null
   let heartbeatRequest: Promise<void> | null = null
   let mountPromise: Promise<void> | null = null
-  const setMessage = (message: string, retryable: boolean) => {
+  let frameReadyTimeout: number | null = null
+  let expectedFrameOrigin = ""
+  const setMessage = (message: string, retryable: boolean, loading = false) => {
     placeholder.querySelector(".penecho-board-placeholder-text")!.textContent = message
     retry.hidden = !retryable
+    loadingIndicator.hidden = !loading
+    card.classList.toggle("penecho-board--loading", loading)
+    card.classList.toggle("penecho-board--error", retryable)
+    surface.setAttribute("aria-busy", String(loading))
   }
+  const clearFrameReadyTimeout = () => {
+    if (frameReadyTimeout === null) return
+    window.clearTimeout(frameReadyTimeout)
+    frameReadyTimeout = null
+  }
+  const markFrameReady = () => {
+    if (!frame || disposed) return
+    clearFrameReadyTimeout()
+    card.classList.remove("penecho-board--loading", "penecho-board--error")
+    card.classList.add("penecho-board--ready")
+    surface.setAttribute("aria-busy", "false")
+  }
+  const failFrame = (message: string) => {
+    if (disposed || card.classList.contains("penecho-board--ready")) return
+    clearFrameReadyTimeout()
+    frame?.remove()
+    frame = null
+    expectedFrameOrigin = ""
+    card.classList.remove("penecho-board--mounted", "penecho-board--ready")
+    setMessage(message, true)
+  }
+  const onFrameMessage = (event: MessageEvent) => {
+    const data = event.data as { type?: unknown; boardId?: unknown } | null
+    if (
+      !frame ||
+      event.source !== frame.contentWindow ||
+      event.origin !== expectedFrameOrigin ||
+      data?.type !== FRAME_READY_MESSAGE ||
+      data.boardId !== board.id
+    )
+      return
+    markFrameReady()
+  }
+  window.addEventListener("message", onFrameMessage)
 
   const startHeartbeat = () => {
     if (heartbeat !== null || disposed) return
@@ -230,8 +276,7 @@ function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: 
     if (frame || disposed) return Promise.resolve()
     if (mountPromise) return mountPromise
     mountPromise = (async () => {
-      retry.hidden = true
-      setMessage("Opening the board…", false)
+      setMessage("Starting whiteboard…", false, true)
       const resolution = await resolveServer(board.server, viewId)
       if (resolution.leaseAcknowledged) {
         if (disposed) {
@@ -250,6 +295,7 @@ function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: 
       let source: string
       try {
         source = boardUrl(resolution.url, board)
+        expectedFrameOrigin = new URL(source).origin
       } catch {
         if (leaseAcknowledged) {
           leaseAcknowledged = false
@@ -258,12 +304,35 @@ function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: 
         setMessage("The whiteboard server address is invalid.", true)
         return
       }
-      frame = element("iframe", "penecho-board-frame") as HTMLIFrameElement
-      frame.title = board.title
-      frame.src = source
-      frame.allow = "clipboard-read; clipboard-write"
-      surface.appendChild(frame)
+      setMessage("Loading whiteboard…", false, true)
+      const mountedFrame = element("iframe", "penecho-board-frame") as HTMLIFrameElement
+      frame = mountedFrame
+      mountedFrame.title = board.title
+      mountedFrame.src = source
+      mountedFrame.allow = "clipboard-read; clipboard-write"
+      // Current managed PenEcho builds send a board-ready message after the
+      // requested snapshot has been restored. The load event remains a
+      // compatibility fallback for externally managed or older servers.
+      if (!resolution.leaseAcknowledged)
+        mountedFrame.addEventListener(
+          "load",
+          () => {
+            if (frame === mountedFrame) markFrameReady()
+          },
+          { once: true },
+        )
+      mountedFrame.addEventListener(
+        "error",
+        () => {
+          if (frame === mountedFrame) failFrame("The whiteboard could not be loaded.")
+        },
+        { once: true },
+      )
+      surface.appendChild(mountedFrame)
       card.classList.add("penecho-board--mounted")
+      frameReadyTimeout = window.setTimeout(() => {
+        if (frame === mountedFrame) failFrame("The whiteboard is taking too long to load.")
+      }, FRAME_READY_TIMEOUT_MS)
     })().finally(() => {
       mountPromise = null
     })
@@ -327,6 +396,8 @@ function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: 
     expand.removeEventListener("click", onExpand)
     header.removeEventListener("click", toggle)
     document.removeEventListener("keydown", onKeyDown)
+    window.removeEventListener("message", onFrameMessage)
+    clearFrameReadyTimeout()
     if (heartbeat !== null) window.clearInterval(heartbeat)
     heartbeat = null
     spacer?.remove()

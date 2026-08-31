@@ -597,7 +597,7 @@ export async function PATCH(
     refreshClusterIndex(context.contentPath, context.clusterSlug);
     await publishQuartzAfterMutation(
       `update document ${context.clusterSlug}/${context.slug}`,
-      { userId: context.userId },
+      { userId: context.userId, gardenSlug: context.clusterSlug },
     );
 
     return json({ success: true, slug: context.slug, title, flagColor, tags });
@@ -721,7 +721,7 @@ export async function DELETE(
     refreshClusterIndex(context.contentPath, context.clusterSlug);
     await publishQuartzAfterMutation(
       `delete document ${context.clusterSlug}/${context.slug}`,
-      { userId: context.userId },
+      { userId: context.userId, gardenSlug: context.clusterSlug },
     );
     return json({ success: true, slug: context.slug, deletedSlugs });
   } finally {

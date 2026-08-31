@@ -3,8 +3,12 @@ import type { Stats } from "node:fs";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import type Database from "better-sqlite3";
 import db from "../db.ts";
-import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import {
+  externalRuntimeFilesystem as fs,
+  externalRuntimePortableRealpath,
+} from "../external-runtime-filesystem.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
+import { withTransientFileOpenRetry } from "../resilient-fs.ts";
 import { artifactRenderer } from "./artifact-renderers.ts";
 import {
   ArtifactImportError,
@@ -708,18 +712,19 @@ export async function createImportedArtifact(
   let authorizedRoot: string;
   let sourcePath: string;
   try {
-    authorizedRoot = fs.realpathSync(path.resolve(input.authorizedRoot));
+    authorizedRoot = withTransientFileOpenRetry(() =>
+      externalRuntimePortableRealpath(path.resolve(input.authorizedRoot)));
     const requested = path.isAbsolute(input.filePath)
       ? path.resolve(input.filePath)
       : path.resolve(authorizedRoot, input.filePath);
-    if (fs.lstatSync(requested).isSymbolicLink()) {
+    if (withTransientFileOpenRetry(() => fs.lstatSync(requested)).isSymbolicLink()) {
       throw new ArtifactStoreError(
         400,
         "artifact_import_symlink",
         "Symbolic links cannot be imported as artifacts.",
       );
     }
-    sourcePath = fs.realpathSync(requested);
+    sourcePath = withTransientFileOpenRetry(() => externalRuntimePortableRealpath(requested));
   } catch (error) {
     if (error instanceof ArtifactStoreError) throw error;
     throw new ArtifactStoreError(
@@ -747,14 +752,15 @@ export async function createImportedArtifact(
       const requested = path.isAbsolute(input.previewFilePath)
         ? path.resolve(input.previewFilePath)
         : path.resolve(authorizedRoot, input.previewFilePath);
-      if (fs.lstatSync(requested).isSymbolicLink()) {
+      if (withTransientFileOpenRetry(() => fs.lstatSync(requested)).isSymbolicLink()) {
         throw new ArtifactStoreError(
           400,
           "artifact_import_symlink",
           "Symbolic links cannot be imported as artifacts.",
         );
       }
-      previewSourcePath = fs.realpathSync(requested);
+      previewSourcePath = withTransientFileOpenRetry(() =>
+        externalRuntimePortableRealpath(requested));
     } catch (error) {
       if (error instanceof ArtifactStoreError) throw error;
       throw new ArtifactStoreError(
@@ -1086,18 +1092,19 @@ export async function importArtifactVersion(input: ImportArtifactVersionInput): 
   let authorizedRoot: string;
   let sourcePath: string;
   try {
-    authorizedRoot = fs.realpathSync(path.resolve(input.authorizedRoot));
+    authorizedRoot = withTransientFileOpenRetry(() =>
+      externalRuntimePortableRealpath(path.resolve(input.authorizedRoot)));
     const requested = path.isAbsolute(input.filePath)
       ? path.resolve(input.filePath)
       : path.resolve(authorizedRoot, input.filePath);
-    if (fs.lstatSync(requested).isSymbolicLink()) {
+    if (withTransientFileOpenRetry(() => fs.lstatSync(requested)).isSymbolicLink()) {
       throw new ArtifactStoreError(
         400,
         "artifact_import_symlink",
         "Symbolic links cannot be imported as artifacts.",
       );
     }
-    sourcePath = fs.realpathSync(requested);
+    sourcePath = withTransientFileOpenRetry(() => externalRuntimePortableRealpath(requested));
   } catch (error) {
     if (error instanceof ArtifactStoreError) throw error;
     throw new ArtifactStoreError(
@@ -1121,14 +1128,15 @@ export async function importArtifactVersion(input: ImportArtifactVersionInput): 
       const requested = path.isAbsolute(input.previewFilePath)
         ? path.resolve(input.previewFilePath)
         : path.resolve(authorizedRoot, input.previewFilePath);
-      if (fs.lstatSync(requested).isSymbolicLink()) {
+      if (withTransientFileOpenRetry(() => fs.lstatSync(requested)).isSymbolicLink()) {
         throw new ArtifactStoreError(
           400,
           "artifact_import_symlink",
           "Symbolic links cannot be imported as artifacts.",
         );
       }
-      previewSourcePath = fs.realpathSync(requested);
+      previewSourcePath = withTransientFileOpenRetry(() =>
+        externalRuntimePortableRealpath(requested));
     } catch (error) {
       if (error instanceof ArtifactStoreError) throw error;
       throw new ArtifactStoreError(

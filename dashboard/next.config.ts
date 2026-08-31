@@ -97,6 +97,7 @@ const dataTraceExcludes = [
   "openscience-state/**",
   "openscience-workspace/**",
   "openwork-runtime/**",
+  "runtime-v2/**",
   "openwork-state/**",
   "openwork-workspace/**",
   "postiz/**",
@@ -176,6 +177,7 @@ const nextConfig: NextConfig = {
     'better-sqlite3',
     'pdf-parse',
     'pdfkit',
+    'shazamio-core',
   ],
   outputFileTracingExcludes: {
     // Never trace mutable data or local secrets into a (standalone) build:
@@ -203,6 +205,12 @@ const nextConfig: NextConfig = {
       'node_modules/pdfjs-dist/legacy/web/pdf_viewer.mjs',
       'node_modules/pdfjs-dist/legacy/web/pdf_viewer.mjs.map',
       'node_modules/pdfjs-dist/legacy/web/images/**/*',
+    ],
+    '/api/music-recognition/recognize': [
+      'node_modules/shazamio-core/**/*',
+    ],
+    '/api/hermes/tools/music-recognition': [
+      'node_modules/shazamio-core/**/*',
     ],
   },
   outputFileTracingRoot: bundlerRoot,

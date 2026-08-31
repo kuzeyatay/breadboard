@@ -14,6 +14,11 @@ export const IPC_CHANNELS = {
   startupContinue: "breadboard:startup-continue",
   startupAwaitDashboard: "breadboard:startup-await-dashboard",
   startupState: "breadboard:startup-state",
+  // The floating recording controller shown while a workflow is being taught by
+  // demonstration. It has to stay visible over the application being
+  // demonstrated, which only the shell can arrange.
+  openTeachController: "breadboard:open-teach-controller",
+  closeTeachController: "breadboard:close-teach-controller",
 } as const;
 
 /**

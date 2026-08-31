@@ -5,6 +5,7 @@ import { executeLearnOperationForRoute } from "breadboard-learn-operation-runtim
 import {
   InvalidLearnRouteBodyError,
   isLearnRouteConflict,
+  parseLearnUserInstruction,
   readLearnRouteJsonObject,
 } from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
@@ -22,6 +23,7 @@ export async function POST(
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) return NextResponse.json({ error: "QUARTZ_CONTENT_PATH not configured" }, { status: 500 });
     const body = await readLearnRouteJsonObject(request);
+    const userInstruction = parseLearnUserInstruction(body);
     let operation;
     try {
       operation = parseStartLearnOperationRequest(cluster.slug, body);
@@ -52,6 +54,7 @@ export async function POST(
       syllabusSourceId,
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,
+      userInstruction,
     }, `full rebuild for ${cluster.slug}`);
     if (execution.accepted) {
       return NextResponse.json(

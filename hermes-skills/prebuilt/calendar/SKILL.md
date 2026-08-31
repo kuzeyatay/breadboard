@@ -1,18 +1,21 @@
 ---
 name: calendar
-description: Read and query the user's own calendar at /calendar — what is on today or any other day, whether they are free, when something next happens, who is invited and who accepted, how a series repeats. Use for "what's on my calendar", "am I free Thursday", "when do I next meet X", "how many meetings this week", "who's coming to the review", "what did I have on last Tuesday".
+description: Read and manage the user's own calendar at /calendar — create real reminders and events, reschedule or edit them, remove them, check availability, find when something happens, inspect attendees, and understand recurring series. Use for "remind me tomorrow", "put this on my calendar", "move my dentist appointment", "cancel that meeting", "what's on my calendar", and "am I free Thursday".
 license: MIT
 allowed-tools:
   - calendar_list_calendars
   - calendar_agenda
   - calendar_search_events
   - calendar_get_event
+  - calendar_create_event
+  - calendar_update_event
+  - calendar_delete_event
 ---
 
 # Calendar
 
-The user's own schedule, the same events `/calendar` draws. Four tools, all of
-them reads.
+The user's own schedule, the same events `/calendar` draws. The tools can read,
+create, update and delete events.
 
 breadboard:
   category: featured
@@ -22,29 +25,40 @@ breadboard:
     - calendar_agenda
     - calendar_search_events
     - calendar_get_event
+    - calendar_create_event
+    - calendar_update_event
+    - calendar_delete_event
   requiredArtifactKinds: []
   requiredRuntimes: []
   requiredMcpServers: []
   optionalMcpServers: []
 
-## You can read the calendar, not change it
+## Write when the user asks
 
-There is no tool here that creates, moves, reschedules or deletes anything, and
-that is deliberate.
+Calendar requests are actions, not promises. When the user says "remind me to
+submit the form tomorrow", call `calendar_create_event` and put a real event on
+tomorrow's date before saying it is saved. When they give no time, create an
+all-day event by passing a bare `YYYY-MM-DD` as `startsAt`; do not invent a time.
+When they give a time but no duration, omit `endsAt` and the event will default
+to 30 minutes. Omit `calendarId` unless the user named a particular calendar.
 
-When the user asks you to add or change an event, say plainly that you can read
-their calendar but not write to it, and that they can make the change at
-`/calendar`. Offer the part you *can* do — checking the slot is free, finding
-what it would collide with, listing who is on the existing invitation. Do not
-look for a way around it: not a terminal command against the database, not an
-ICS file for them to import, unless they ask for that themselves.
+For changes and deletions, locate the event with `calendar_search_events` or
+`calendar_agenda` first and use the returned `eventId`. Only claim a change
+after the write tool succeeds. Subscribed ICS calendars are read-only and the
+write will explain that; do not work around that protection.
 
-## Do not do calendar arithmetic yourself
+For a recurring series, an omitted `scope` means the whole series. Use
+`scope: "instance"` with that occurrence's `recurrenceId` for just one date, or
+`scope: "following"` with its `recurrenceId` for that date and later dates. If
+the user's wording does not make the intended scope clear, ask before changing
+or deleting a series.
+
+## Use the calendar's wall clock
 
 `calendar_agenda` defaults `from` to today and takes `days` for the length of
-the window. "What's on this week" is `{days: 7}` with no dates at all, and
-"tomorrow" is `{from: "<tomorrow>", days: 1}` only if you are certain of the
-date — otherwise ask for the window in days and let the tool anchor it.
+the window. "What's on this week" is `{days: 7}` with no dates at all. For a
+write such as "tomorrow", resolve the date from the runtime's current date and
+pass the resulting `YYYY-MM-DD`; never leave the request as a verbal promise.
 
 Times are timezone-free wall clock, `"2026-08-07T09:00"`, exactly as the user
 typed them into the grid. Do not convert them, do not append a zone, and do not
