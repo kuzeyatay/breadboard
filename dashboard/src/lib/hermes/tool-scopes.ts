@@ -130,6 +130,12 @@ export const MEMORY_TOOLS = ["save_memory", "memory_query"] as const;
 // super-agent turn.
 export const WORKFLOW_PROPOSAL_TOOLS = ["workflow_propose"] as const;
 
+// Direct authoring is a separate grant from unsolicited proposals. The route
+// rechecks the active user's instruction before it writes, so Hermes can obey
+// "create this workflow" while still being unable to turn its own suggestion
+// into a durable automation.
+export const WORKFLOW_AUTHORING_TOOLS = ["workflow_create"] as const;
+
 // A correction learned while using one reviewed skill, kept beside it for next
 // time. Scoped like memory — authenticated conversational surfaces only — and
 // for the same reason: it writes something durable about the user's machine.
@@ -445,6 +451,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...GADGET_TOOLS,
       ...MEMORY_TOOLS,
       ...WORKFLOW_PROPOSAL_TOOLS,
+      ...WORKFLOW_AUTHORING_TOOLS,
       ...DOCUMENT_SKILL_TOOLS,
       ...PREMORTEM_TOOLS,
       ...FACTCHECK_TOOLS,
@@ -484,6 +491,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...GADGET_TOOLS,
     ...MEMORY_TOOLS,
     ...WORKFLOW_PROPOSAL_TOOLS,
+    ...WORKFLOW_AUTHORING_TOOLS,
     ...DOCUMENT_SKILL_TOOLS,
     ...PREMORTEM_TOOLS,
     ...FACTCHECK_TOOLS,

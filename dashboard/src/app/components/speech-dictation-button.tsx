@@ -30,6 +30,8 @@ interface SpeechDictationButtonProps {
   onChange: (value: string) => void;
   disabled?: boolean;
   compact?: boolean;
+  /** Open upward in chat docks and downward when the composer sits at a panel's top. */
+  placement?: "above" | "below";
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   /**
    * Full-screen voice mode: an entry in the microphone's menu, and what
@@ -201,6 +203,7 @@ export default function SpeechDictationButton({
   onChange,
   disabled = false,
   compact = false,
+  placement = "above",
   textareaRef,
   onOpenVoiceMode,
   runtimeSessionId,
@@ -662,6 +665,7 @@ export default function SpeechDictationButton({
   }
 
   const busy = state === "requesting" || state === "transcribing" || state === "reading-file";
+  const popupPosition = placement === "below" ? "top-full mt-2" : "bottom-full mb-2";
   const label =
     musicBusy
       ? "Cancel song identification"
@@ -724,7 +728,7 @@ export default function SpeechDictationButton({
         <div
           role="menu"
           aria-label="Voice options"
-          className="bb-microphone-menu absolute bottom-full right-0 z-[120] mb-2 w-[16.5rem] max-w-[85vw] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-1 shadow-[0_12px_34px_rgba(45,48,40,0.2)]"
+          className={`bb-microphone-menu absolute right-0 z-[120] w-[16.5rem] max-w-[85vw] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-1 shadow-[0_12px_34px_rgba(45,48,40,0.2)] ${popupPosition}`}
         >
           <MicrophoneMenuItem
             title="Dictate live"
@@ -782,7 +786,7 @@ export default function SpeechDictationButton({
       {state === "reading-file" ? (
         <div
           role="status"
-          className="neu-popover absolute bottom-full right-0 z-50 mb-2 flex w-[17.5rem] max-w-[85vw] items-center gap-2.5 rounded-2xl border p-3.5 text-xs leading-5 text-[var(--ink)] shadow-xl"
+          className={`neu-popover absolute right-0 z-50 flex w-[17.5rem] max-w-[85vw] items-center gap-2.5 rounded-2xl border p-3.5 text-xs leading-5 text-[var(--ink)] shadow-xl ${popupPosition}`}
         >
           <BreadboardLoader className="h-4 w-4 shrink-0" />
           <span className="min-w-0 flex-1 truncate">{uploadStatus ?? "Transcribing…"}</span>
@@ -798,7 +802,7 @@ export default function SpeechDictationButton({
       {error || blocked ? (
         <div
           role="alert"
-          className="neu-popover absolute bottom-full right-0 z-50 mb-2 w-[17.5rem] max-w-[85vw] rounded-2xl border p-3.5 text-xs leading-5 text-[var(--ink)] shadow-xl"
+          className={`neu-popover absolute right-0 z-50 w-[17.5rem] max-w-[85vw] rounded-2xl border p-3.5 text-xs leading-5 text-[var(--ink)] shadow-xl ${popupPosition}`}
         >
           <button
             type="button"

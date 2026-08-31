@@ -7,11 +7,26 @@
     margin: 0;
   }
 
-  // In Thought Topology mode the canvas carries its own quiet heading.
+  // Thought Topology replaces the legacy graph title with metadata immediately
+  // above the bordered canvas.
   &[data-active-mode="thought-topology"] > h3,
   &[data-active-mode="topology-pending"] > h3,
   &[data-active-mode="topology-unavailable"] > h3 {
     display: none;
+  }
+
+  & > .thought-topology-meta {
+    display: none;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+    max-width: 32rem;
+  }
+
+  &[data-active-mode="thought-topology"] > .thought-topology-meta,
+  &[data-active-mode="topology-pending"] > .thought-topology-meta,
+  &[data-active-mode="topology-unavailable"] > .thought-topology-meta {
+    display: flex;
   }
 
   & > .graph-outer {
@@ -163,8 +178,8 @@
     }
   }
 
-  // Heading, compact search, and runtime status flow in one quiet column in
-  // the canvas' upper-left. Plain text on the paper; no card.
+  // The overlay keeps its heading, compact search, and runtime status in one
+  // quiet column. Inline graph metadata is laid out above its canvas instead.
   .thought-topology-controls {
     position: absolute;
     z-index: 4;
@@ -673,10 +688,7 @@
 
 // Note sidebars use the same renderer but only need its compact identity; the
 // full explanatory copy remains on Garden and folder surfaces.
-.graph:not(.home-knowledge-graph) > .graph-outer > .thought-topology-controls {
-  top: 0.55rem;
-  left: 0.65rem;
-
+.graph:not(.home-knowledge-graph) > .thought-topology-meta {
   .thought-topology-heading > p {
     display: none;
   }
@@ -707,7 +719,8 @@ html.quartz-graph-preview .tags {
 
 html.quartz-graph-preview .thought-inspector,
 html.quartz-graph-preview .thought-callout,
-html.quartz-graph-preview .thought-topology-controls {
+html.quartz-graph-preview .thought-topology-controls,
+html.quartz-graph-preview .thought-topology-meta {
   display: none !important;
 }
 

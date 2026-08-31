@@ -21,7 +21,10 @@ test("corsHeaders echoes an allowed origin and always sets credentials", () => {
 
 test("corsHeaders falls back to an allowlisted origin for an unknown origin", () => {
   const headers = corsHeaders("http://evil.example.com");
-  assert.notEqual(headers["Access-Control-Allow-Origin"], "http://evil.example.com");
+  assert.notEqual(
+    headers["Access-Control-Allow-Origin"],
+    "http://evil.example.com",
+  );
 });
 
 test("enforceRateLimit allows up to the window limit then throws 429", () => {
@@ -31,7 +34,10 @@ test("enforceRateLimit allows up to the window limit then throws 429", () => {
   for (let i = 0; i < 20; i += 1) {
     enforceRateLimit(key, now);
   }
-  assert.throws(() => enforceRateLimit(key, now), (err) => err instanceof ApiError && err.status === 429);
+  assert.throws(
+    () => enforceRateLimit(key, now),
+    (err) => err instanceof ApiError && err.status === 429,
+  );
 });
 
 test("enforceRateLimit resets after the window", () => {
@@ -92,7 +98,11 @@ test("graph-node requests receive a bounded, garden-scoped map packet", () => {
     [{ source: "lesson", target: "next", relation: "explains" }],
     {
       selectedNodeSlug: "garden-a/lesson",
-      visibleNodeSlugs: ["garden-a/lesson", "garden-a/next", "garden-b/private/other"],
+      visibleNodeSlugs: [
+        "garden-a/lesson",
+        "garden-a/next",
+        "garden-b/private/other",
+      ],
       directNeighborSlugs: ["garden-a/next", "garden-b/private/other"],
       relationshipTypes: ["explains", "unrelated"],
       filters: ["learning"],
@@ -101,22 +111,173 @@ test("graph-node requests receive a bounded, garden-scoped map packet", () => {
     },
   );
   assert.equal(graph.selectedNode.slug, "garden-a/lesson");
-  assert.deepEqual(graph.visibleNodes.map((node) => node.slug), ["garden-a/lesson", "garden-a/next"]);
-  assert.deepEqual(graph.directNeighbors.map((node) => node.slug), ["garden-a/next"]);
+  assert.deepEqual(
+    graph.visibleNodes.map((node) => node.slug),
+    ["garden-a/lesson", "garden-a/next"],
+  );
+  assert.deepEqual(
+    graph.directNeighbors.map((node) => node.slug),
+    ["garden-a/next"],
+  );
   assert.deepEqual(graph.relationshipTypes, ["explains"]);
   assert.equal(graph.depth, 3);
   assert.doesNotMatch(JSON.stringify(graph), /garden-b|Unrelated/);
-  assert.match(quartzSystemContext({ ...pageContext, graph }), /Bounded graph interaction context/);
+  assert.match(
+    quartzSystemContext({ ...pageContext, graph }),
+    /Bounded graph interaction context/,
+  );
+});
+
+test("Quartz forwards the selected Thought Topology line to Hermes with its validated weight", () => {
+  const ready = (text) => ({ state: "ready", text });
+  const topology = {
+    schemaVersion: 1,
+    scoringVersion: "thought-topology-affinity-v1",
+    sourceRevision: "quartz-topology-revision",
+    garden: {
+      id: 1,
+      slug: "garden-a",
+      title: "Garden A",
+      summary: ready("Garden"),
+    },
+    folders: [
+      {
+        id: "folder:$root",
+        path: "",
+        parentId: null,
+        title: "Root",
+        depth: 0,
+        nodeCount: 0,
+        summary: ready("Root"),
+      },
+      {
+        id: "folder:module",
+        path: "module",
+        parentId: "folder:$root",
+        title: "Module",
+        depth: 1,
+        nodeCount: 2,
+        summary: ready("Module"),
+      },
+    ],
+    nodes: [
+      {
+        id: "page:lesson",
+        slug: "garden-a/lesson",
+        relPath: "module/lesson.md",
+        folderId: "folder:module",
+        title: "Lesson",
+        kind: "markdown",
+        knowledgeType: "textbook-page",
+        contentHash: "a",
+        summary: ready("Lesson"),
+        primaryConcepts: [],
+        supportingConcepts: [],
+        claimIds: [],
+        wordCount: 10,
+      },
+      {
+        id: "page:next",
+        slug: "garden-a/next",
+        relPath: "module/next.md",
+        folderId: "folder:module",
+        title: "Next",
+        kind: "markdown",
+        knowledgeType: "textbook-page",
+        contentHash: "b",
+        summary: ready("Next"),
+        primaryConcepts: [],
+        supportingConcepts: [],
+        claimIds: [],
+        wordCount: 10,
+      },
+    ],
+    edges: [
+      {
+        id: "edge:lesson-next",
+        source: "page:lesson",
+        target: "page:next",
+        origin: "inferred",
+        score: 0.87,
+        components: { embedding: 0.8, concept: 0.7, lexical: 0.6 },
+        relationType: "extends",
+        direction: "source-to-target",
+        explanation: ready("Lesson extends into Next."),
+        evidence: [{ kind: "concept", label: "shared concept" }],
+        pairHash: "pair",
+        visual: { width: 3.7, opacity: 0.8, distance: 90, strength: 0.7 },
+      },
+    ],
+    build: {
+      state: "ready",
+      generatedAt: "2026-08-31T00:00:00.000Z",
+      embeddingModel: "test",
+      embeddingDimension: 3,
+      summaryModel: "test",
+      nodePromptVersion: "node",
+      edgePromptVersion: "edge",
+      retrievalMode: "semantic-vector",
+      threshold: 0.68,
+    },
+  };
+  const graph = assembleBoundedGraphContext(
+    "garden-a",
+    [
+      { slug: "lesson", title: "Lesson" },
+      { slug: "next", title: "Next" },
+    ],
+    [{ source: "lesson", target: "next", relation: "extends" }],
+    {
+      selectedNodeSlug: "garden-a/lesson",
+      selectedConnection: {
+        edgeId: "edge:lesson-next",
+        sourceSlug: "garden-a/lesson",
+        targetSlug: "garden-a/next",
+        score: 0.01,
+        explanation: "untrusted browser value",
+      },
+      relationshipTypes: ["extends"],
+      depth: 1,
+    },
+    topology,
+  );
+
+  assert.equal(
+    graph.thoughtTopology.format,
+    "breadboard-thought-topology-property-graph-v1",
+  );
+  assert.equal(graph.selectedConnection.weight, 0.87);
+  assert.equal(
+    graph.selectedConnection.explanation,
+    "Lesson extends into Next.",
+  );
+  assert.doesNotMatch(JSON.stringify(graph), /untrusted browser value/);
+  assert.match(
+    quartzSystemContext({ ...pageContext, graph }),
+    /Thought Topology property graph/,
+  );
 });
 
 test("Quartz browser code calls only dashboard proxy routes and contains no Hermes secret", () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const source = fs.readFileSync(
-    path.resolve(here, "..", "..", "quartz", "quartz", "components", "scripts", "breadboardAI.inline.ts"),
+    path.resolve(
+      here,
+      "..",
+      "..",
+      "quartz",
+      "quartz",
+      "components",
+      "scripts",
+      "breadboardAI.inline.ts",
+    ),
     "utf8",
   );
   assert.match(source, /\/api\/quartz-ai\/chat/);
   assert.match(source, /\/api\/quartz-ai\/events/);
   assert.match(source, /\/api\/quartz-ai\/abort/);
-  assert.doesNotMatch(source, /HERMES_(?:PASSWORD|AUTH|BASE_URL)|127\.0\.0\.1:4096/);
+  assert.doesNotMatch(
+    source,
+    /HERMES_(?:PASSWORD|AUTH|BASE_URL)|127\.0\.0\.1:4096/,
+  );
 });

@@ -35,10 +35,13 @@ export function quartzLabelAlpha(
 
 export function quartzLayoutStorageKey(
   layoutKey: string,
-  revision: string,
+  _revision: string,
   scopeKey: string,
 ): string {
-  return `breadboard:brain-layout:${layoutKey}:${scopeKey}:${revision}`;
+  // Thought Topology homes belong to the profile scope, not one response
+  // revision. A graph refresh may add/remove nodes without discarding the
+  // positions the user deliberately set with a right-button drag.
+  return `breadboard:thought-topology-layout:v2:${layoutKey}:${scopeKey}`;
 }
 
 export function graphSearchMatches(

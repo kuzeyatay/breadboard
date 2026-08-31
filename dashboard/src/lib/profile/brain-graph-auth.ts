@@ -78,14 +78,14 @@ export function buildBrainGraphAccessContext(
   database: Database.Database = db,
 ): BrainGraphAccessContext {
   if (!Number.isInteger(userId) || userId <= 0) {
-    throw new BrainGraphAccessError(401, "unauthorized", "Sign in to view your Knowledge Map.");
+    throw new BrainGraphAccessError(401, "unauthorized", "Sign in to view your Thought Topology.");
   }
 
   const user = database
     .prepare("SELECT username FROM users WHERE id = ?")
     .get(userId) as { username: string } | undefined;
   if (!user) {
-    throw new BrainGraphAccessError(401, "unauthorized", "Sign in to view your Knowledge Map.");
+    throw new BrainGraphAccessError(401, "unauthorized", "Sign in to view your Thought Topology.");
   }
 
   const organizations = listOrganizations(userId, database).map((organization) => ({
@@ -127,7 +127,7 @@ export function parseBrainScope(
   if (requested === "personal") return { kind: "personal" };
   if (requested === "all") return { kind: "all" };
   if (requested !== "organization") {
-    throw new BrainGraphAccessError(400, "invalid_scope", "That Knowledge Map scope is not available.");
+    throw new BrainGraphAccessError(400, "invalid_scope", "That Thought Topology scope is not available.");
   }
 
   const publicId = searchParams.get("organization")?.trim() ?? "";
@@ -136,7 +136,7 @@ export function parseBrainScope(
   );
   if (!organization) {
     // Missing, forged, foreign, and revoked identifiers are intentionally identical.
-    throw new BrainGraphAccessError(404, "scope_not_found", "That Knowledge Map scope is not available.");
+    throw new BrainGraphAccessError(404, "scope_not_found", "That Thought Topology scope is not available.");
   }
   return { kind: "organization", organizationId: organization.publicId };
 }

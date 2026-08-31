@@ -213,6 +213,9 @@ function writeGardenIndex({
       garden_scope: scope,
       graph_clusters: clusterSlugs,
       cluster_order: clusterSlugs,
+      garden_cluster_folders: clusters.map(({ row }) =>
+        (row.folder ?? "").trim(),
+      ),
     }) +
     `## ${title}\n\n` +
     `${description}\n\n` +

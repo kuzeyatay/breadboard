@@ -233,6 +233,10 @@ interface Props {
   onInputChange: (value: string) => void;
   /** Breadboard-owned actions emitted by typed generative UI renderers. */
   onGenerativeUiAction?: (action: GenerativeUiAction) => void;
+  activeProductComparison?: {
+    resourceId: string;
+    productIds: readonly string[];
+  } | null;
   /**
    * Lent by the owner when it needs to focus the composer itself — putting the
    * caret after an opener it just dropped in, for instance. Left out, the panel
@@ -703,6 +707,7 @@ export default function AgentRuntimePanel({
   input,
   onInputChange,
   onGenerativeUiAction,
+  activeProductComparison = null,
   onSubmit,
   beforeComposer,
   onRunWorkflow,
@@ -3590,6 +3595,7 @@ export default function AgentRuntimePanel({
                           <GenerativeUiRenderer
                             resources={message.uiResources}
                             onAction={handleGenerativeUiAction}
+                            activeProductComparison={activeProductComparison}
                           />
                         ) : null}
                         {visibleAssistantContent ||

@@ -32,6 +32,10 @@ export async function PATCH(
     if (typeof body.title === "string") update.title = body.title;
     if (typeof body.prompt === "string") update.prompt = body.prompt;
     if (typeof body.cron === "string") update.cron = body.cron;
+    if (typeof body.model === "string") update.model = body.model;
+    if (typeof body.reasoningEffort === "string") {
+      update.reasoningEffort = body.reasoningEffort;
+    }
     if (typeof body.enabled === "boolean") update.enabled = body.enabled;
     if (body.surface === "garden_chat" || body.surface === "dashboard_terminal") {
       update.surface = body.surface;

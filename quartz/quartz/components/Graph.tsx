@@ -23,6 +23,7 @@ export interface D3Config {
   removeTags: string[]
   showTags: boolean
   includeClusters?: string[]
+  topologyTitle?: string
   focusOnHover?: boolean
   enableRadial?: boolean
 }
@@ -96,6 +97,13 @@ const ThoughtTopologyHeading = () => (
   </div>
 )
 
+const ThoughtTopologyMeta = () => (
+  <div class="thought-topology-meta">
+    <ThoughtTopologyHeading />
+    <div class="thought-topology-status" role="status" aria-live="polite" hidden></div>
+  </div>
+)
+
 const ThoughtCallout = () => (
   <div class="thought-callout" role="status" aria-live="polite" aria-hidden="true"></div>
 )
@@ -142,15 +150,17 @@ export default ((opts?: Partial<GraphOptions>) => {
           (value: unknown): value is string => typeof value === "string" && value.length > 0,
         )
       : undefined
+    const topologyTitle =
+      typeof fm?.title === "string" && fm.title.trim() ? fm.title.trim() : "My garden"
     const localGraph = {
       ...defaultOptions.localGraph,
       ...opts?.localGraph,
-      ...(hasGraphClusterScope ? { scope: "all" as const, includeClusters } : {}),
+      ...(hasGraphClusterScope ? { scope: "all" as const, includeClusters, topologyTitle } : {}),
     }
     const globalGraph = {
       ...defaultOptions.globalGraph,
       ...opts?.globalGraph,
-      ...(hasGraphClusterScope ? { scope: "all" as const, includeClusters } : {}),
+      ...(hasGraphClusterScope ? { scope: "all" as const, includeClusters, topologyTitle } : {}),
     }
     const isHomeVariant = opts?.variant === "home"
     const showGlobalButton = opts?.showGlobalButton ?? true
@@ -161,12 +171,9 @@ export default ((opts?: Partial<GraphOptions>) => {
         data-active-mode={localGraph.mode !== "links" ? "topology-pending" : undefined}
       >
         <h3>{title}</h3>
+        <ThoughtTopologyMeta />
         <div class="graph-outer" data-graph-surface={isHomeVariant ? "garden" : "note-local"}>
           <div class="graph-container" data-cfg={JSON.stringify(localGraph)}></div>
-          <div class="thought-topology-controls">
-            <ThoughtTopologyHeading />
-            <div class="thought-topology-status" role="status" aria-live="polite" hidden></div>
-          </div>
           {showGlobalButton && (
             <button class="global-graph-icon" aria-label="Expand Graph">
               <svg

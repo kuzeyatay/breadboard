@@ -17,6 +17,10 @@ export interface ParsedScheduleRequest {
   title: string;
   /** False when nothing about the timing was recognized and the default applied. */
   recognized: boolean;
+  /** A relative request such as "in 90 minutes" runs once, not every day. */
+  oneShot: boolean;
+  /** Exact fire time for a one-shot request; null for recurring cron schedules. */
+  runAt: string | null;
 }
 
 const DAY_NAMES = [
@@ -45,6 +49,69 @@ interface TimeOfDay {
   hour: number;
   minute: number;
   matched: string | null;
+}
+
+interface RelativeDelay {
+  matched: string;
+  milliseconds: number;
+}
+
+const NUMBER_WORDS: Record<string, number> = {
+  a: 1,
+  an: 1,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+};
+
+const NUMBER_TOKEN = String.raw`(?:\d+(?:\.\d+)?|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)`;
+
+function numberFromToken(value: string): number {
+  return NUMBER_WORDS[value.toLowerCase()] ?? Number(value);
+}
+
+/** Read "in an hour and a half", "after 1.5 hours", and "in 90 minutes". */
+function readRelativeDelay(text: string): RelativeDelay | null {
+  const halfHour = /\b(?:in|after)\s+half\s+(?:an?\s+)?hour\b/i.exec(text);
+  if (halfHour) {
+    return { matched: halfHour[0], milliseconds: 30 * 60_000 };
+  }
+
+  const pattern = new RegExp(
+    String.raw`\b(?:in|after)\s+(${NUMBER_TOKEN})\s*(hours?|hrs?|minutes?|mins?)` +
+      String.raw`(\s*(?:and\s+)?(?:an?\s+)?half)?` +
+      String.raw`(?:\s*(?:and\s+)?(${NUMBER_TOKEN})\s*(minutes?|mins?))?\b`,
+    "i",
+  );
+  const match = pattern.exec(text);
+  if (!match) return null;
+
+  const amount = numberFromToken(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const primaryIsHours = /^h/i.test(match[2]);
+  let minutes = primaryIsHours ? amount * 60 : amount;
+  if (primaryIsHours && match[3]) minutes += 30;
+  if (match[4]) minutes += numberFromToken(match[4]);
+  if (!Number.isFinite(minutes) || minutes <= 0) return null;
+  return {
+    matched: match[0],
+    // The scheduler has minute resolution. Round a fractional minute up so a
+    // request never fires earlier than the person asked.
+    milliseconds: Math.ceil(minutes) * 60_000,
+  };
+}
+
+function cronForOneShot(runAt: Date): string {
+  return `${runAt.getMinutes()} ${runAt.getHours()} ${runAt.getDate()} ${runAt.getMonth() + 1} *`;
 }
 
 function readTimeOfDay(text: string): TimeOfDay {
@@ -84,15 +151,21 @@ function titleFrom(prompt: string): string {
   return `${title.charAt(0).toUpperCase()}${title.slice(1)}`.slice(0, 80);
 }
 
-export function parseScheduleRequest(input: string): ParsedScheduleRequest {
+export function parseScheduleRequest(
+  input: string,
+  now: Date = new Date(),
+): ParsedScheduleRequest {
   const text = input.replace(/\s+/g, " ").trim();
   const lower = text.toLowerCase();
+  const relative = readRelativeDelay(lower);
   const time = readTimeOfDay(lower);
   const consumed: string[] = [];
   if (time.matched) consumed.push(time.matched);
 
   let cron: string;
   let recognized = time.matched !== null;
+  let oneShot = false;
+  let runAt: string | null = null;
 
   const weekdayIndex = DAY_NAMES.findIndex((day) =>
     new RegExp(`\\b(?:every |each |on )?${day}s?\\b`).test(lower),
@@ -104,7 +177,14 @@ export function parseScheduleRequest(input: string): ParsedScheduleRequest {
   const dayOfMonth = /\bon the (\d{1,2})(?:st|nd|rd|th)?\b/.exec(lower);
   const weekly = /\b(?:every|each) week\b|\bweekly\b/.test(lower);
 
-  if (hourly) {
+  if (relative) {
+    const due = new Date(now.getTime() + relative.milliseconds);
+    cron = cronForOneShot(due);
+    recognized = true;
+    oneShot = true;
+    runAt = due.toISOString();
+    consumed.push(relative.matched);
+  } else if (hourly) {
     cron = `${time.minute} * * * *`;
     recognized = true;
     consumed.push("every hour", "each hour", "hourly");
@@ -161,9 +241,35 @@ export function parseScheduleRequest(input: string): ParsedScheduleRequest {
 
   return {
     cron,
-    description: describeCronExpression(cron),
+    description: oneShot ? "Once" : describeCronExpression(cron),
     prompt,
     title: titleFrom(prompt),
     recognized,
+    oneShot,
+    runAt,
   };
+}
+
+const RECURRING_SCHEDULE_CUE =
+  /\b(?:every|each|hourly|daily|weekly|monthly|weekdays?|weekends?|work ?days?)\b/i;
+const SCHEDULE_ACTION_CUE =
+  /\b(?:schedule|start|begin|run|launch|execute|do|remind|send|check|write|create|make|prepare|draft|research|review|summarize|analyse|analyze|build|update|fetch|find|look up)\b/i;
+
+/**
+ * Conservative intent gate for the ordinary chat composer.
+ *
+ * The Scheduled panel can parse any draft and show its assumption. A normal
+ * chat must be stricter: a question that merely mentions "at 3pm" must still
+ * be sent as a question. Only an explicit recurring cadence, or a relative
+ * delay paired with an action verb, is diverted into the scheduler.
+ */
+export function parseExplicitScheduleRequest(
+  input: string,
+  now: Date = new Date(),
+): ParsedScheduleRequest | null {
+  const parsed = parseScheduleRequest(input, now);
+  if (!parsed.recognized) return null;
+  if (RECURRING_SCHEDULE_CUE.test(input)) return parsed;
+  if (parsed.oneShot && SCHEDULE_ACTION_CUE.test(input)) return parsed;
+  return null;
 }

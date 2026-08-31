@@ -263,6 +263,10 @@ test("the profile page carries the about-you fields to the same route", () => {
   assert.match(client, /<IdentityPanel/);
   assert.match(client, /title="About you"/);
   assert.match(client, /What should breadboard call you\?/);
+  assert.match(client, /placeholder="Nikola"/);
+  assert.match(client, /placeholder="Tesla \(optional\)"/);
+  assert.match(client, /\? ", your nickname, which wins over a first name"/);
+  assert.doesNotMatch(client, /— your nickname, which wins over a first name/);
   assert.match(client, /Interests, values, or preferences to keep in mind/);
   assert.match(
     client,

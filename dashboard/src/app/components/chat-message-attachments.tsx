@@ -85,6 +85,13 @@ export default function ChatMessageAttachments({
     ),
     [attachments],
   );
+  const products = useMemo(
+    () => attachments.filter(
+      (attachment): attachment is Extract<ChatMessageAttachment, { type: "product" }> =>
+        attachment.type === "product",
+    ),
+    [attachments],
+  );
   const fileEntries = useMemo(() => {
     const retainedNames = new Set(attachments.map((attachment) => attachment.name));
     return [
@@ -93,7 +100,8 @@ export default function ChatMessageAttachments({
           attachment.type !== "image" &&
           attachment.type !== "model" &&
           attachment.type !== "video" &&
-          attachment.type !== "audio",
+          attachment.type !== "audio" &&
+          attachment.type !== "product",
       ),
       ...attachmentNames
         .filter(
@@ -133,6 +141,7 @@ export default function ChatMessageAttachments({
     models.length === 0 &&
     videos.length === 0 &&
     tracks.length === 0 &&
+    products.length === 0 &&
     fileEntries.length === 0
   ) {
     return null;
@@ -244,6 +253,43 @@ export default function ChatMessageAttachments({
                     : ""}
                 </span>
               </div>
+            ))}
+          </div>
+        ) : null}
+
+        {products.length ? (
+          <div
+            className={`grid max-w-full gap-1.5 ${products.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}
+            data-testid="product-chat-attachments"
+          >
+            {products.map((attachment) => (
+              <article
+                key={attachment.product.id}
+                className="flex min-w-0 max-w-72 items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] p-2 text-left"
+              >
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white">
+                  {attachment.product.imageUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={attachment.product.imageUrl}
+                      alt=""
+                      referrerPolicy="no-referrer"
+                      className="h-full w-full object-contain p-0.5"
+                    />
+                  ) : (
+                    <PaperclipIcon />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="line-clamp-2 text-xs font-medium leading-4 text-[var(--ink-heading)]">
+                    {attachment.product.title}
+                  </p>
+                  <p className="mt-0.5 truncate text-[10px] text-[var(--ink-muted)]">
+                    {attachment.product.merchant}
+                    {attachment.product.price ? ` · ${attachment.product.price.display}` : ""}
+                  </p>
+                </div>
+              </article>
             ))}
           </div>
         ) : null}

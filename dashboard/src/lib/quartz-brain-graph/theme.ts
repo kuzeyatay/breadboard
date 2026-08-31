@@ -21,6 +21,7 @@ const STYLES: Record<BrainNodeKind | OptionalBrainNodeKind, QuartzBrainNodePalet
   user: { light: 0x2563eb, dark: 0x60a5fa, radius: 8.2, halo: 8 },
   organization: { light: 0x15803d, dark: 0x4ade80, radius: 7.2, halo: 7 },
   garden: { light: 0x0e7490, dark: 0x22d3ee, radius: 6.3, halo: 6 },
+  folder: { light: 0x15803d, dark: 0x4ade80, radius: 5.5, halo: 5 },
   source: { light: 0x4f46e5, dark: 0x818cf8, radius: 4.8, halo: 4 },
   page: { light: 0x475569, dark: 0xcbd5e1, radius: 3.8, halo: 3 },
   concept: { light: 0xa16207, dark: 0xfacc15, radius: 3.2, halo: 3 },

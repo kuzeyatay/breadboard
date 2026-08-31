@@ -31,7 +31,15 @@ function createDatabase() {
     );
     CREATE TABLE conversation_messages (
       id INTEGER PRIMARY KEY, conversation_id INTEGER, role TEXT, surface TEXT,
-      status TEXT, metadata TEXT, token_usage TEXT, created_at TEXT
+      status TEXT, metadata TEXT, token_usage TEXT, created_at TEXT,
+      client_message_id TEXT
+    );
+    CREATE TABLE hermes_runtime_sessions (
+      id INTEGER PRIMARY KEY, conversation_id INTEGER
+    );
+    CREATE TABLE hermes_runs (
+      id TEXT PRIMARY KEY, runtime_session_id INTEGER, dispatch_json TEXT,
+      started_at TEXT
     );
     CREATE TABLE hermes_artifacts (
       id TEXT PRIMARY KEY, user_id INTEGER, kind TEXT, status TEXT,
@@ -71,12 +79,21 @@ let nextMessageId = 1;
 function addMessage(
   db,
   conversationId,
-  { role, at, surface = "garden_chat", metadata, usage, status = "complete" },
+  {
+    role,
+    at,
+    surface = "garden_chat",
+    metadata,
+    usage,
+    status = "complete",
+    clientMessageId = `message-${nextMessageId}`,
+  },
 ) {
   db.prepare(
     `INSERT INTO conversation_messages
-       (id, conversation_id, role, surface, status, metadata, token_usage, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, conversation_id, role, surface, status, metadata, token_usage, created_at,
+        client_message_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     nextMessageId++,
     conversationId,
@@ -87,6 +104,7 @@ function addMessage(
     usage ? JSON.stringify(usage) : null,
     // Written as UTC with no offset so 'localtime' is the only conversion in play.
     at,
+    clientMessageId,
   );
 }
 
@@ -391,7 +409,7 @@ test("the hour and weekday histograms are Monday-first and fully sized", () => {
 
 // --------------------------------------------------------------- cost, models
 
-test("cost is summed only over models with a published rate", () => {
+test("every reported token is priced, with the background model as fallback", () => {
   const db = createDatabase();
   addConversation(db, 1);
   // Priced: 1M in + 1M out on Opus 5 is $5 + $25.
@@ -420,20 +438,33 @@ test("cost is summed only over models with a published rate", () => {
 
   const { cost } = readProfileStats(db, 1, { today: "2026-06-02" });
 
-  assert.equal(cost.totalUsd, 30.012);
-  assert.equal(cost.pricedReplies, 2);
-  assert.equal(cost.unpricedReplies, 1, "an unrated model is unpriced, not free");
-  assert.equal(cost.unattributedReplies, 1);
+  assert.equal(cost.totalUsd, 30.024);
+  assert.equal(cost.totalTokens, 2_002_000);
+  assert.equal(cost.pricedReplies, 4);
+  assert.equal(cost.estimatedReplies, 2);
+  assert.equal(cost.estimatedTokens, 1000);
+  assert.equal(cost.fallbackModel, "gpt-5.6-sol");
   assert.deepEqual(
-    cost.models.map((entry) => [entry.label, entry.costUsd]),
-    [["Claude Opus 5", 30], ["future-model", null], ["GPT-5.6 Sol", 0.012]],
+    cost.models.map((entry) => [entry.label, entry.costUsd, entry.estimated]),
+    [
+      ["Claude Opus 5", 30, false],
+      ["future-model", 0.012, true],
+      ["GPT-5.6 Sol", 0.012, false],
+    ],
   );
 });
 
-test("the published GPT-5.6 family rates price every Breadboard tier", () => {
+test("the published OpenAI rates price every built-in Breadboard model", () => {
   const db = createDatabase();
   addConversation(db, 1);
-  for (const model of ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+  for (const model of [
+    "gpt-5.6",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+  ]) {
     addMessage(db, 1, {
       role: "assistant",
       at: "2026-06-01 10:00:00",
@@ -444,9 +475,9 @@ test("the published GPT-5.6 family rates price every Breadboard tier", () => {
 
   const { cost } = readProfileStats(db, 1, { today: "2026-06-02" });
 
-  assert.equal(cost.pricedReplies, 4);
-  assert.equal(cost.unpricedReplies, 0);
-  assert.equal(cost.totalUsd, 63.4);
+  assert.equal(cost.pricedReplies, 6);
+  assert.equal(cost.estimatedReplies, 0);
+  assert.equal(cost.totalUsd, 115.9);
   assert.deepEqual(
     Object.fromEntries(cost.models.map((entry) => [entry.model, entry.costUsd])),
     {
@@ -454,8 +485,121 @@ test("the published GPT-5.6 family rates price every Breadboard tier", () => {
       "gpt-5.6-sol": 24,
       "gpt-5.6-terra": 14,
       "gpt-5.6-luna": 1.4,
+      "gpt-5.5": 35,
+      "gpt-5.4": 17.5,
     },
   );
+});
+
+test("a background-model reply uses the resolved model saved on its runtime run", () => {
+  const db = createDatabase();
+  addConversation(db, 1);
+  addMessage(db, 1, {
+    role: "assistant",
+    at: "2026-06-01 10:00:00",
+    clientMessageId: "resolved-background-turn",
+    metadata: { model: "default" },
+    usage: { inputTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 2_000_000 },
+  });
+  db.prepare(
+    "INSERT INTO hermes_runtime_sessions (id, conversation_id) VALUES (1, 1)",
+  ).run();
+  db.prepare(
+    `INSERT INTO hermes_runs (id, runtime_session_id, dispatch_json, started_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run(
+    "run-1",
+    1,
+    JSON.stringify({
+      clientMessageId: "resolved-background-turn",
+      model: { providerID: "chatmock", modelID: "default" },
+      modelIdentity: { modelID: "cliproxy/gemini-3.7-flash-high" },
+    }),
+    "2026-06-01T10:00:00.000Z",
+  );
+
+  const { cost } = readProfileStats(db, 1, { today: "2026-06-02" });
+
+  assert.equal(cost.pricedReplies, 1);
+  assert.equal(cost.estimatedReplies, 0);
+  assert.equal(cost.totalUsd, 4.5);
+  assert.deepEqual(
+    cost.models.map((entry) => [entry.model, entry.label, entry.costUsd]),
+    [["cliproxy/gemini-3.7-flash-high", "Gemini 3.7 Flash High", 4.5]],
+  );
+});
+
+test("a legacy runtime run falls back to its non-sentinel routed model", () => {
+  const db = createDatabase();
+  addConversation(db, 1);
+  addMessage(db, 1, {
+    role: "assistant",
+    at: "2026-06-01 10:00:00",
+    clientMessageId: "legacy-turn",
+    usage: { inputTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 2_000_000 },
+  });
+  db.prepare(
+    "INSERT INTO hermes_runtime_sessions (id, conversation_id) VALUES (1, 1)",
+  ).run();
+  db.prepare(
+    `INSERT INTO hermes_runs (id, runtime_session_id, dispatch_json, started_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run(
+    "legacy-run",
+    1,
+    JSON.stringify({
+      clientMessageId: "legacy-turn",
+      model: { providerID: "chatmock", modelID: "gpt-5.6-sol" },
+    }),
+    "2026-06-01T10:00:00.000Z",
+  );
+
+  const { cost } = readProfileStats(db, 1, { today: "2026-06-02" });
+
+  assert.equal(cost.pricedReplies, 1);
+  assert.equal(cost.estimatedReplies, 0);
+  assert.equal(cost.totalUsd, 24);
+  assert.equal(cost.models[0].model, "gpt-5.6-sol");
+});
+
+test("a migrated copy cannot charge the same token receipt twice", () => {
+  const db = createDatabase();
+  addConversation(db, 1);
+  addConversation(db, 2);
+  const usage = { inputTokens: 1000, outputTokens: 100, totalTokens: 1100 };
+  addMessage(db, 1, {
+    role: "assistant",
+    at: "2026-06-01 10:00:00",
+    clientMessageId: "canonical-turn",
+    metadata: { model: "gpt-5.6-sol" },
+    usage,
+  });
+  addMessage(db, 1, {
+    role: "assistant",
+    at: "2026-06-01 10:05:00",
+    clientMessageId: "legacy-chat-1-1",
+    metadata: { migrated: true },
+    usage,
+  });
+  const migratedOnlyUsage = { inputTokens: 500, outputTokens: 50, totalTokens: 550 };
+  for (const clientMessageId of ["legacy-chat-2-1", "legacy-chat-2-2"]) {
+    addMessage(db, 2, {
+      role: "assistant",
+      at: "2026-06-01 11:00:00",
+      clientMessageId,
+      metadata: { migrated: true },
+      usage: migratedOnlyUsage,
+    });
+  }
+
+  const stats = readProfileStats(db, 1, { today: "2026-06-02" });
+
+  assert.equal(stats.totals.replies, 2);
+  assert.equal(stats.totals.measuredReplies, 2);
+  assert.equal(stats.totals.tokens, 1650);
+  assert.equal(stats.cost.totalTokens, 1650);
+  assert.ok(Math.abs(stats.cost.totalUsd - 0.009) < 1e-12);
+  assert.equal(stats.cost.estimatedReplies, 1);
 });
 
 test("a model's routing prefix and date stamp do not split it into two rows", () => {

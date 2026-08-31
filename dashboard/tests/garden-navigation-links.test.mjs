@@ -24,3 +24,12 @@ test('the garden preview uses a prefetched client navigation link', () => {
   assert.match(graph, /<Link\s+href=\{graphHref\(clusterSlug\)\}\s+prefetch/);
   assert.doesNotMatch(graph, /<a\s+href=\{graphHref\(clusterSlug\)\}/);
 });
+
+test('Explore All uses a direct private-library navigation on the first click', () => {
+  const dashboard = read('src/app/dashboard/dashboard-client.tsx');
+
+  assert.match(dashboard, /<Link\s+href="\/garden\?view=private"[\s\S]*?prefetch=\{false\}/);
+  assert.match(dashboard, /window\.location\.assign\("\/garden\?view=private"\)/);
+  assert.match(dashboard, />\s*Explore All\s*<\/Link>/);
+  assert.doesNotMatch(dashboard, />\s*View gardens\s*</);
+});

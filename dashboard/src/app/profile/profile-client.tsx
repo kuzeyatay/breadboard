@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { signOut } from "next-auth/react";
+import { RefreshCw } from "lucide-react";
 
 import BackLink from "@/app/components/back-link";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
@@ -872,6 +873,14 @@ function LocationPanel() {
     }
   }
 
+  function toggleLocation() {
+    if (preference.useForAnswers) {
+      turnOffLocation();
+    } else {
+      enableLocation();
+    }
+  }
+
   const checking = requestState === "checking";
   const displayState = checking
     ? "checking"
@@ -920,60 +929,56 @@ function LocationPanel() {
       title="Location"
       hint="Let answers account for where this device is when place genuinely matters. It refreshes automatically while enabled."
     >
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div
-          className="min-w-0 flex-1"
-          role="status"
-          aria-live="polite"
-          aria-busy={checking}
-        >
-          <p className="flex items-center gap-2 text-sm font-medium text-white">
-            <span
-              className={`h-2 w-2 shrink-0 rounded-full ${
-                displayState === "available"
-                  ? "bg-[var(--botanical)]"
-                  : displayState === "checking" || displayState === "stale"
-                    ? "bg-amber-400"
-                    : displayState === "blocked"
-                      ? "bg-red-400"
-                      : "bg-gray-600"
-              }`}
-              aria-hidden
-            />
-            {status.title}
-          </p>
-          <p className="mt-0.5 text-xs leading-5 text-gray-500">{status.detail}</p>
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2">
-          {!preference.useForAnswers ? (
-            <button
-              type="button"
-              onClick={enableLocation}
-              className="neu-button-primary rounded-lg bg-white px-3 py-2 text-xs font-medium text-gray-950 transition-colors hover:bg-gray-100"
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <p
+              className="flex items-center gap-2 text-sm font-medium text-white"
+              role="status"
+              aria-live="polite"
+              aria-busy={checking}
             >
-              Enable
-            </button>
-          ) : (
-            <>
+              <span
+                className={`h-2 w-2 shrink-0 rounded-full ${
+                  displayState === "available"
+                    ? "bg-[var(--botanical)]"
+                    : displayState === "checking" || displayState === "stale"
+                      ? "bg-amber-400"
+                      : displayState === "blocked"
+                        ? "bg-red-400"
+                        : "bg-gray-600"
+                }`}
+                aria-hidden
+              />
+              {status.title}
+            </p>
+            {preference.useForAnswers && (
               <button
                 type="button"
+                aria-label="Refresh location"
+                title="Refresh location"
                 onClick={() => void requestLocation()}
                 disabled={checking}
-                className="neu-button rounded-lg border border-gray-700 px-3 py-2 text-xs text-gray-300 transition-colors hover:text-white disabled:opacity-50"
+                className="inline-flex h-5 w-5 items-center justify-center text-gray-500 transition-colors hover:text-[var(--botanical)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:cursor-wait disabled:opacity-50"
               >
-                {checking ? "Checking…" : "Refresh"}
+                <RefreshCw
+                  className={`h-3.5 w-3.5 ${checking ? "animate-spin" : ""}`}
+                  aria-hidden
+                />
               </button>
-              <button
-                type="button"
-                onClick={turnOffLocation}
-                className="neu-button rounded-lg border border-gray-700 px-3 py-2 text-xs text-gray-400 transition-colors hover:text-white"
-              >
-                Turn off
-              </button>
-            </>
-          )}
+            )}
+          </div>
+          <p className="mt-0.5 text-xs leading-5 text-gray-500" aria-live="polite">
+            {status.detail}
+          </p>
         </div>
+
+        <Switch
+          checked={preference.useForAnswers}
+          label="Use this device's current location in relevant answers"
+          busy={false}
+          onChange={toggleLocation}
+        />
       </div>
 
       {error && (
@@ -1253,10 +1258,10 @@ function IdentityPanel({
   const trimmedFirstName = firstName.trim();
   const greetingName = trimmedNickname || trimmedFirstName || initial.username;
   const greetingSource = trimmedNickname
-    ? " — your nickname, which wins over a first name"
+    ? ", your nickname, which wins over a first name"
     : trimmedFirstName
-      ? " — your first name; a nickname would win over it"
-      : " — your username, until you give it something better";
+      ? ", your first name; a nickname would win over it"
+      : ", your username, until you give it something better";
 
   async function save() {
     setBusy(true);
@@ -1353,7 +1358,7 @@ function IdentityPanel({
               value={firstName}
               maxLength={60}
               autoComplete="given-name"
-              placeholder="Kuzey"
+              placeholder="Nikola"
               onChange={(event) => touch(() => setFirstName(event.target.value))}
               className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
             />
@@ -1365,7 +1370,7 @@ function IdentityPanel({
               value={lastName}
               maxLength={60}
               autoComplete="family-name"
-              placeholder="Optional"
+              placeholder="Tesla (optional)"
               onChange={(event) => touch(() => setLastName(event.target.value))}
               className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
             />
@@ -1784,17 +1789,6 @@ function ModelPanel({ cost }: { cost: ProfileCost }) {
   const max = cost.models.reduce((best, entry) => Math.max(best, entry.replies), 0);
   const compression = cost.compression;
   const saved = compression.savedTokens > 0;
-  const caveats: string[] = [];
-  if (cost.unpricedReplies > 0) {
-    caveats.push(
-      `${formatCount(cost.unpricedReplies)} on models with no published rate here`,
-    );
-  }
-  if (cost.unattributedReplies > 0) {
-    caveats.push(
-      `${formatCount(cost.unattributedReplies)} from before Breadboard recorded which model answered`,
-    );
-  }
 
   return (
     <Card
@@ -1809,18 +1803,16 @@ function ModelPanel({ cost }: { cost: ProfileCost }) {
     >
       <div className={`grid gap-3 ${saved ? "grid-cols-3" : "grid-cols-2"}`}>
         <Stat
-          value={cost.pricedReplies === 0 ? "—" : formatUsd(cost.totalUsd)}
-          label="Spent on answers"
+          value={cost.totalTokens === 0 ? "—" : formatUsd(cost.totalUsd)}
+          label="Estimated list price"
           hint={
-            cost.pricedReplies === 0
+            cost.totalTokens === 0
               ? "Nothing priced yet"
-              : `Across ${formatCount(cost.pricedReplies)} priced replies`
+              : `All ${formatCompact(cost.totalTokens)} tokens priced`
           }
         />
         <Stat
-          value={formatCompact(
-            cost.models.reduce((sum, entry) => sum + entry.outputTokens, 0),
-          )}
+          value={formatCompact(cost.outputTokens)}
           label="Tokens written back"
           hint="The expensive half of the bill"
         />
@@ -1849,26 +1841,13 @@ function ModelPanel({ cost }: { cost: ProfileCost }) {
                 entry.costUsd === null
                   ? "unpriced"
                   : entry.costUsd > 0
-                    ? formatUsd(entry.costUsd)
+                    ? `${entry.estimated ? "est. " : ""}${formatUsd(entry.costUsd)}`
                     : undefined
               }
             />
           ))}
         </div>
       )}
-
-      <p className="neu-inset mt-4 rounded-xl px-3 py-2.5 text-[11px] leading-5 text-gray-500">
-        An upper bound on list prices: cached-token discounts are not subtracted,
-        and a subscription or a model running on this machine costs nothing at all
-        no matter what the rate card says.
-        {caveats.length > 0 && ` Not counted — ${caveats.join("; ")}.`}
-        {saved &&
-          ` Compression is the mirror of that bound: ${formatCount(
-            compression.compressions,
-          )} oversized tool result${compression.compressions === 1 ? "" : "s"} were thinned to ${Math.round(
-            (1 - compression.ratio) * 100,
-          )}% of their size before any model read them, and nothing was lost — the runtime keeps the full text.`}
-      </p>
     </Card>
   );
 }
@@ -2082,141 +2061,6 @@ function AuditFeed({ entries }: { entries: AuditEntry[] }) {
         </ul>
       )}
     </Card>
-  );
-}
-
-// --------------------------------------------------------------------- about
-
-/** One movement of the story: a small title in the margin, prose beside it. */
-function AboutPassage({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="grid gap-2 sm:grid-cols-[minmax(0,8.5rem)_1fr] sm:gap-8">
-      <h3 className="text-[11px] font-semibold uppercase leading-5 tracking-[0.18em] text-[var(--botanical)] sm:pt-1 sm:text-right">
-        {title}
-      </h3>
-      <div className="max-w-3xl space-y-3 text-sm leading-7 text-gray-400">{children}</div>
-    </div>
-  );
-}
-
-/**
- * The story at the bottom of the page: what this thing is, why it exists, and
- * what it can do — written for someone who has never soldered anything.
- */
-function AboutBreadboard() {
-  return (
-    <section className="neu-surface-raised mt-4 rounded-2xl border border-gray-800 p-6 sm:p-8">
-      <header className="mb-8">
-        <h2 className="text-lg font-semibold text-white">About this breadboard</h2>
-      </header>
-
-      <div className="space-y-8">
-        <AboutPassage title="The name">
-          <p>
-            In electronics, a breadboard is a slab of plastic covered in small holes. You press
-            wires and components into it and a circuit comes alive, no solder, nothing glued
-            down. Anything can be pulled out, moved a row over, tried again. This software
-            borrows the name because it works the same way. A conversation that remembers you, a
-            library grown from your documents, a workshop of automated helpers, all pressed into
-            the same holes until they run as one circuit.
-          </p>
-        </AboutPassage>
-
-        <AboutPassage title="Why it exists">
-          <p>
-            Most software that thinks alongside you lives on somebody else’s computer. Your notes
-            sit in their cloud, your questions travel through their wires, and when they switch
-            something off it is gone. Breadboard started from the opposite idea, that the machine
-            on your desk is enough. It was built to take raw material, a textbook, a folder of
-            papers, a recorded lecture, and turn it into knowledge you can walk through like a
-            garden, with every step happening at home, in files you can see, on a disk you own.
-          </p>
-        </AboutPassage>
-
-        <AboutPassage title="How it was built">
-          <p>
-            Not from scratch, and the name is honest about that. The world is full of open source
-            software, programs whose complete recipe is published for anyone to read and reuse.
-            Breadboard is dozens of them, picked one at a time, studied, and wired into a single
-            board. A system that publishes to social networks. Another that researches. Another
-            that edits video. Another that watches the world’s news feeds. When a project could
-            not survive the trip, its ideas were rebuilt here instead. Most of the wiring was
-            done in long conversation with an AI, the same kind of mind the finished board now
-            hosts, one feature at a time, tested, corrected, tried again. The house was raised
-            partly by its own tenant.
-          </p>
-        </AboutPassage>
-
-        <AboutPassage title="The gardens">
-          <p>
-            At the center are gardens. Hand one a document, a PDF, a slide deck, a spreadsheet,
-            even a photograph of a page, and it gets read, its text drawn out and rewritten as a
-            web of small linked notes. Every idea becomes its own page, every relationship a path
-            between pages. What you end up with is a private little website of what you know,
-            browsable like a wiki and published only if you say so. You can also talk to a
-            garden. Ask it a question and it answers from your material, your sources and your
-            notes, not from the general fog of the internet.
-          </p>
-        </AboutPassage>
-
-        <AboutPassage title="The conversation">
-          <p>
-            The chat is the front door, and it is more than a text box. It keeps a durable memory
-            of what matters to you, one you can open, read, and retire entry by entry. It can
-            slip into personas and pass work down a roster of them, like a chief of staff with a
-            staff. It can sit as a council, where several advisors take up your question on their
-            own, review each other without knowing whose work is whose, and hand you a verdict.
-            It can listen through a microphone and answer out loud in a voice trained on this
-            machine. And it does not insist you come to it. Link a WhatsApp or Telegram account
-            and the same conversation carries on from your phone.
-          </p>
-        </AboutPassage>
-
-        <AboutPassage title="The workshop">
-          <p>
-            Behind the chat waits a workshop of specialist agents, each summoned by name. One
-            researches a question across the open web and returns a cited report. One drives a
-            real web browser with its own eyes, clicking and typing while you approve each move.
-            One finds academic papers in open catalogs and brings the PDFs home. One tutors you
-            through a document, patiently. One cuts a long video into short vertical clips, and
-            another writes, narrates, and edits whole films, ending in an actual finished video
-            file. One drafts social media posts, paints artwork for them, and schedules them onto
-            a real calendar. One convenes a simulated trading firm, with analysts, researchers,
-            and a risk desk arguing over a stock. One hunts job listings. One takes a plain
-            electronics request and returns a checked circuit design, pin by pin. Every run
-            leaves artifacts behind, real files that outlive the conversation that made them.
-          </p>
-        </AboutPassage>
-
-        <AboutPassage title="The rooms">
-          <p>
-            And around all of this, rooms. A world monitor that watches news wires, earthquake
-            feeds, and climate instruments. A planner where tasks live on a board and flow into a
-            calendar. A pomodoro timer that rewards a stretch of focus by slowly revealing a
-            watercolor painting. A speed reader that flashes a garden’s prose one word at a time.
-            A whiteboard for thinking with your hands. An optional recall that remembers what
-            crossed your screen, with rooms it is told never to watch.
-          </p>
-        </AboutPassage>
-
-        <AboutPassage title="Where it all lives">
-          <p>
-            Everything above lives on the machine in front of you. The databases are single
-            ordinary files, the notes are plain text you could open in any editor, and the whole
-            thing starts and stops as one desktop application. The AI models are the only
-            borrowed part, reached through a single local doorway that can speak to many
-            providers, and even then what they read and write stays here. There is no sign-up
-            page. The only way in is an invite code handed from one person to another, like a key
-            cut for a specific door. If the internet disappeared tomorrow, your gardens would
-            still open.
-          </p>
-        </AboutPassage>
-      </div>
-
-      <p className="mt-8 text-xs italic text-gray-600">
-        Built slowly, one wire at a time.
-      </p>
-    </section>
   );
 }
 
@@ -2465,7 +2309,7 @@ export default function ProfileClient({
           splits the same sequence wherever the two sides come out even, so the
           void closes no matter what the data does to any single card.
         */}
-        <div className="mt-4 -mb-4 gap-4 lg:columns-2">
+        <div className="mt-4 gap-4 lg:columns-2">
           <Packed>
             <Card title="What came out of it" hint="Artifacts by kind, and the agents you actually run.">
               {artifactKinds.length === 0 ? (
@@ -2505,24 +2349,28 @@ export default function ProfileClient({
           </Packed>
 
           <Packed>
-            <Card
-              title="What it cost to answer you"
-              hint={
-                totals.measuredReplies === 0
-                  ? "No reply has reported its usage yet."
-                  : `Measured across ${formatCount(totals.measuredReplies)} of ${formatCount(totals.replies)} replies.`
-              }
-            >
-              <div className="grid grid-cols-2 gap-3">
-                <Stat value={formatCompact(totals.tokens)} label="Tokens" />
-                <Stat value={formatDuration(totals.thinkingMs)} label="Spent generating" />
-              </div>
-              <p className="mt-3 text-xs text-gray-600">
-                {totals.memories === 0
-                  ? "The assistant has not committed anything to durable memory yet."
-                  : `It also keeps ${formatCount(totals.memories)} thing${totals.memories === 1 ? "" : "s"} about you in durable memory.`}
-              </p>
-            </Card>
+            <div className="space-y-4">
+              <Card
+                title="What it cost to answer you"
+                hint={
+                  totals.measuredReplies === 0
+                    ? "No reply has reported its usage yet."
+                    : `Measured across ${formatCount(totals.measuredReplies)} of ${formatCount(totals.replies)} replies.`
+                }
+              >
+                <div className="grid grid-cols-2 gap-3">
+                  <Stat value={formatCompact(totals.tokens)} label="Tokens" />
+                  <Stat value={formatDuration(totals.thinkingMs)} label="Spent generating" />
+                </div>
+                <p className="mt-3 text-xs text-gray-600">
+                  {totals.memories === 0
+                    ? "The assistant has not committed anything to durable memory yet."
+                    : `It also keeps ${formatCount(totals.memories)} thing${totals.memories === 1 ? "" : "s"} about you in durable memory.`}
+                </p>
+              </Card>
+
+              <ModelPanel cost={stats.cost} />
+            </div>
           </Packed>
 
           <Packed>
@@ -2569,23 +2417,20 @@ export default function ProfileClient({
           </Packed>
         </div>
 
-        {/* ------------------------------------------- models and reliability */}
+        {/* ---------------------------------------- reliability and latency */}
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <ModelPanel cost={stats.cost} />
           <ReliabilityPanel reliability={stats.reliability} />
+          <LatencyPanel latency={stats.latency} />
         </div>
 
-        {/* ----------------------------------------------- latency and memory */}
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <LatencyPanel latency={stats.latency} />
+        {/* --------------------------------------------------------- memory */}
+        <div className="mt-4">
           <MemoryPanel memory={stats.memory} />
         </div>
 
         {/* ------------------------------------------------------ audit feed */}
         <AuditFeed entries={stats.audit} />
 
-        {/* ---------------------------------------------------------- about */}
-        <AboutBreadboard />
       </main>
       )}
     </div>

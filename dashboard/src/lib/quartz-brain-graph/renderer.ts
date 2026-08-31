@@ -14,13 +14,13 @@ import {
   select,
   zoom,
   zoomIdentity,
-  type D3DragEvent,
   type Simulation,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
   type ZoomBehavior,
   type ZoomTransform,
 } from "d3";
+import katex from "katex";
 import {
   Application,
   Circle,
@@ -63,7 +63,7 @@ interface LinkRenderData {
 }
 
 interface StoredLayout {
-  positions?: Record<string, { x: number; y: number }>;
+  permanentHomes?: Record<string, { x: number; y: number }>;
   viewport?: { x: number; y: number; k: number };
 }
 
@@ -118,33 +118,25 @@ function readLayout(key: string): StoredLayout {
 
 function writeLayout(
   key: string,
-  nodes: Iterable<SimNode>,
+  permanentHomes: ReadonlyMap<string, { x: number; y: number }>,
   transform: ZoomTransform,
 ): void {
-  const positions: Record<string, { x: number; y: number }> = {};
-  for (const node of nodes) {
-    if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) continue;
-    positions[node.id] = { x: node.x!, y: node.y! };
+  const serializedHomes: Record<string, { x: number; y: number }> = {};
+  for (const [id, position] of permanentHomes) {
+    if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) continue;
+    serializedHomes[id] = position;
   }
   try {
     localStorage.setItem(
       key,
       JSON.stringify({
-        positions,
+        permanentHomes: serializedHomes,
         viewport: { x: transform.x, y: transform.y, k: transform.k },
       } satisfies StoredLayout),
     );
   } catch {
     // Layout is an enhancement. A blocked/full store must not break the graph.
   }
-}
-
-function seedNode(node: SimNode, width: number, height: number): void {
-  const cluster = node.cluster ?? node.kind;
-  const clusterX = width * (stableUnit(`cluster-x:${cluster}`) - 0.5) * 0.5;
-  const clusterY = height * (stableUnit(`cluster-y:${cluster}`) - 0.5) * 0.44;
-  node.x = clusterX + (stableUnit(`node-x:${node.id}`) - 0.5) * 80;
-  node.y = clusterY + (stableUnit(`node-y:${node.id}`) - 0.5) * 80;
 }
 
 function makeSimulation(
@@ -161,7 +153,7 @@ function makeSimulation(
       forceLink<SimNode, SimLink>(links)
         .id((node) => node.id)
         .distance((link) => {
-          const adjustment = link.graphLink.origin === "gbrain-derived" ? 1.18 : 1;
+          const adjustment = link.graphLink.origin === "gbrain-derived" || link.graphLink.origin === "thought-topology" ? 1.18 : 1;
           return QUARTZ_LINK_DISTANCE * adjustment;
         }),
     )
@@ -187,7 +179,7 @@ function makeSimulation(
   return simulation as Simulation<SimNode, SimLink>;
 }
 
-export async function createQuartzBrainRenderer(
+export async function createThoughtTopologyRenderer(
   host: HTMLElement,
   initialGraph: QuartzBrainGraph,
   initialOptions: QuartzBrainRendererOptions,
@@ -204,12 +196,14 @@ export async function createQuartzBrainRenderer(
   let height = Math.max(360, host.clientHeight);
   let destroyed = false;
   let hoveredId: string | null = null;
+  let hoveredEdgeId: string | null = null;
   let searchQuery = "";
   let searchMatches = new Set<string>();
   let currentTransform = zoomIdentity;
   let animationFrame = 0;
   let settleStartedAt = performance.now();
-  let lastTap: { id: string; at: number } | null = null;
+  let draggingNodeId: string | null = null;
+  let lastRightClick: { id: string; at: number } | null = null;
   const rootStyle = getComputedStyle(document.documentElement);
   const darkMode = document.documentElement.dataset.theme === "dark";
   const labelInk = rootStyle.getPropertyValue("--ink-heading").trim() ||
@@ -264,6 +258,11 @@ export async function createQuartzBrainRenderer(
   app.canvas.style.height = "100%";
   app.canvas.style.display = "block";
 
+  const callout = document.createElement("div");
+  callout.className = "profile-thought-topology-callout";
+  callout.setAttribute("aria-hidden", "true");
+  host.append(callout);
+
   const linkLayer = new Container<Graphics>({ zIndex: 1, isRenderGroup: true });
   const nodeLayer = new Container<Graphics>({ zIndex: 2, isRenderGroup: true });
   const labelLayer = new Container<Text>({ zIndex: 3, isRenderGroup: true });
@@ -274,6 +273,9 @@ export async function createQuartzBrainRenderer(
   const linkRenders = new Map<string, LinkRenderData>();
   let links: SimLink[] = [];
   let priorityLabelIds = new Set<string>();
+  const permanentHomes = new Map<string, { x: number; y: number }>();
+  const returnTargets = new Map<string, { x: number; y: number; pin: boolean }>();
+  let renderedCalloutKey: string | null = null;
 
   function updateLabelPriorities(nextGraph: QuartzBrainGraph): void {
     const budget = nextGraph.nodes.length > 700 ? 42 : nextGraph.nodes.length > 300 ? 64 : 90;
@@ -292,12 +294,18 @@ export async function createQuartzBrainRenderer(
   const stored = readLayout(options.layoutStorageKey);
   for (const source of graph.nodes) {
     const node: SimNode = { ...source };
-    const position = stored.positions?.[source.id];
+    const position = stored.permanentHomes?.[source.id];
     if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
       node.x = position.x;
       node.y = position.y;
+      node.fx = position.x;
+      node.fy = position.y;
+      permanentHomes.set(source.id, position);
     } else {
-      seedNode(node, width, height);
+      // Let d3's deterministic phyllotaxis seed provide the legacy map's
+      // visible scatter before the nodes settle into their clusters.
+      node.x = Number.NaN;
+      node.y = Number.NaN;
     }
     nodes.set(node.id, node);
   }
@@ -311,8 +319,45 @@ export async function createQuartzBrainRenderer(
         : [];
     });
   }
+
+  function distanceToLink(link: SimLink, x: number, y: number): number {
+    const x1 = (link.source.x ?? 0) + width / 2;
+    const y1 = (link.source.y ?? 0) + height / 2;
+    const x2 = (link.target.x ?? 0) + width / 2;
+    const y2 = (link.target.y ?? 0) + height / 2;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const lengthSquared = dx * dx + dy * dy;
+    const unit = lengthSquared === 0
+      ? 0
+      : Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / lengthSquared));
+    return Math.hypot(x - (x1 + unit * dx), y - (y1 + unit * dy));
+  }
   links = rebuildLinks(graph);
   const simulation = makeSimulation([...nodes.values()], links, width, height);
+  const returnForce = () => {
+    for (const [id, target] of returnTargets) {
+      const node = nodes.get(id);
+      if (!node) {
+        returnTargets.delete(id);
+        continue;
+      }
+      const dx = target.x - (node.x ?? target.x);
+      const dy = target.y - (node.y ?? target.y);
+      node.vx = (node.vx ?? 0) + dx * 0.18;
+      node.vy = (node.vy ?? 0) + dy * 0.18;
+      if (Math.hypot(dx, dy) < 0.7 && Math.hypot(node.vx ?? 0, node.vy ?? 0) < 0.4) {
+        node.x = target.x;
+        node.y = target.y;
+        node.vx = 0;
+        node.vy = 0;
+        node.fx = target.pin ? target.x : null;
+        node.fy = target.pin ? target.y : null;
+        returnTargets.delete(id);
+      }
+    }
+  };
+  simulation.force("return-home", returnForce);
 
   function drawStaticNode(render: NodeRenderData): void {
     const style = quartzBrainNodeStyle(render.node.kind, render.node.weight, darkMode);
@@ -381,16 +426,6 @@ export async function createQuartzBrainRenderer(
         hoveredId = null;
         options.onHover?.(null);
         applyVisualState();
-      })
-      .on("pointertap", (event) => {
-        const now = performance.now();
-        if (lastTap?.id === node.id && now - lastTap.at < 360) {
-          lastTap = null;
-          options.onOpen?.(node.id, node.href);
-          return;
-        }
-        lastTap = { id: node.id, at: now };
-        options.onSelect?.(node.id, Boolean(event.shiftKey || event.ctrlKey || event.metaKey));
       });
     nodeLayer.addChild(ring, graphic);
     labelLayer.addChild(label);
@@ -433,9 +468,24 @@ export async function createQuartzBrainRenderer(
           cursor: "pointer",
           label: link.id,
         });
+        graphic.on("pointerover", () => {
+          hoveredEdgeId = link.id;
+          applyVisualState();
+        });
+        graphic.on("pointerleave", () => {
+          if (hoveredEdgeId === link.id) hoveredEdgeId = null;
+          applyVisualState();
+        });
         graphic.on("pointertap", (event) => {
           event.stopPropagation();
-          options.onSelectEdge?.(link.id);
+          const point = app.stage.toLocal(event.global);
+          const closest = [...linkRenders.values()]
+            .filter((candidate) => visible(candidate.link.source.id) && visible(candidate.link.target.id))
+            .sort((left, right) =>
+              distanceToLink(left.link, point.x, point.y) -
+              distanceToLink(right.link, point.x, point.y),
+            )[0];
+          options.onSelectEdge?.(closest?.link.id ?? link.id);
         });
         linkLayer.addChild(graphic);
         linkRenders.set(link.id, { link, graphic, targetAlpha: 0.25 });
@@ -459,12 +509,10 @@ export async function createQuartzBrainRenderer(
     const connectionMode = selectedEdges.size > 0;
     const selectedEndpoints = new Set<string>();
     for (const render of linkRenders.values()) {
-      if (!selectedEdges.has(render.link.id)) continue;
+      if (!selectedEdges.has(render.link.id) && hoveredEdgeId !== render.link.id) continue;
       selectedEndpoints.add(render.link.source.id);
       selectedEndpoints.add(render.link.target.id);
     }
-    const zoomAlpha = quartzLabelAlpha(currentTransform.k);
-
     for (const render of nodeRenders.values()) {
       const id = render.node.id;
       const isVisible = visible(id);
@@ -476,6 +524,7 @@ export async function createQuartzBrainRenderer(
       let alpha = isVisible ? 1 : 0;
       if (isVisible && searching) alpha = isSearch ? 1 : 0.12;
       else if (isVisible && hoveredId) alpha = isFocused ? 1 : 0.2;
+      else if (isVisible && hoveredEdgeId) alpha = isConnectionEndpoint ? 1 : 0.22;
       else if (isVisible && evidenceMode) alpha = isEvidence ? 1 : 0.16;
       else if (isVisible && connectionMode) alpha = isConnectionEndpoint ? 1 : 0.24;
       render.targetAlpha = alpha;
@@ -483,7 +532,7 @@ export async function createQuartzBrainRenderer(
       const anchor = render.node.kind === "user" || render.node.kind === "organization" || render.node.kind === "garden";
       const major = render.node.weight >= 0.35 || anchor;
       const priority = priorityLabelIds.has(id);
-      const forcedLabel = hoveredId === id || isSelected || isEvidence || isConnectionEndpoint || isSearch;
+      const forcedLabel = hoveredId === id || draggingNodeId === id || isSelected || isEvidence || isConnectionEndpoint || isSearch;
       const labelAlpha = quartzLabelAlpha(currentTransform.k, {
         hovered: hoveredId === id,
         selected: isSelected || isEvidence || isConnectionEndpoint,
@@ -513,16 +562,153 @@ export async function createQuartzBrainRenderer(
       const isFocused = focus.activeLinks.has(link.id);
       const isEvidence = evidenceEdges.has(link.id);
       const isSelected = selectedEdges.has(link.id);
-      let alpha = link.graphLink.origin === "gbrain-derived" ? 0.24 : 0.48;
+      const isHovered = hoveredEdgeId === link.id;
+      let alpha = link.graphLink.origin === "gbrain-derived" || link.graphLink.origin === "thought-topology" ? 0.3 : 0.48;
       if (!isVisible) alpha = 0;
-      else if (isSelected) alpha = 1;
+      else if (isSelected || isHovered) alpha = 1;
       else if (searching) alpha = touchesSearch ? 0.96 : 0.06;
       else if (hoveredId) alpha = isFocused ? 1 : 0.1;
+      else if (hoveredEdgeId) alpha = 0.08;
       else if (evidenceMode) alpha = isEvidence ? 1 : 0.075;
       else if (connectionMode) alpha = 0.1;
       render.targetAlpha = alpha;
       render.graphic.eventMode = isVisible ? "static" : "none";
     }
+  }
+
+  function appendMathText(target: HTMLElement, value: string): void {
+    const delimiter = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<!\\)\$((?:\\.|[^$\n])+?)(?<!\\)\$/g;
+    let cursor = 0;
+    for (const match of value.matchAll(delimiter)) {
+      const index = match.index ?? 0;
+      if (index > cursor) target.append(document.createTextNode(value.slice(cursor, index)));
+      const displayMode = match[1] !== undefined || match[2] !== undefined;
+      const formula = match[1] ?? match[2] ?? match[3] ?? match[4] ?? "";
+      const math = document.createElement("span");
+      math.className = displayMode
+        ? "profile-thought-topology-math profile-thought-topology-math-display"
+        : "profile-thought-topology-math";
+      try {
+        katex.render(formula, math, {
+          displayMode,
+          output: "htmlAndMathml",
+          strict: "ignore",
+          throwOnError: true,
+          trust: false,
+        });
+      } catch {
+        math.textContent = match[0];
+      }
+      target.append(math);
+      cursor = index + match[0].length;
+    }
+    if (cursor < value.length) target.append(document.createTextNode(value.slice(cursor)));
+  }
+
+  function calloutLine(tag: "h3" | "p", className: string, value: string): HTMLElement {
+    const line = document.createElement(tag);
+    line.className = className;
+    appendMathText(line, value);
+    return line;
+  }
+
+  function displayRelation(value: string): string {
+    return value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+  }
+
+  function affinityLabel(weight: number): string {
+    const normalized = Math.max(0, Math.min(1, weight / 1.5));
+    return normalized >= 0.72 ? "Strong" : normalized >= 0.42 ? "Moderate" : "Light";
+  }
+
+  function renderNodeCallout(node: SimNode): void {
+    const metadata = node.metadata;
+    const details = [
+      displayRelation(node.kind),
+      metadata.gardenSlug,
+      `${metadata.metrics?.degree ?? 0} connections`,
+    ].filter(Boolean).join(" · ");
+    callout.replaceChildren(
+      calloutLine("h3", "profile-thought-topology-callout-title", node.label),
+      ...(metadata.subtitle
+        ? [calloutLine("p", "profile-thought-topology-callout-summary", metadata.subtitle)]
+        : []),
+      calloutLine("p", "profile-thought-topology-callout-meta", details),
+    );
+  }
+
+  function renderEdgeCallout(link: SimLink): void {
+    const edge = link.graphLink;
+    const normalized = edge.metadata.semanticRelation
+      ? Math.max(0, Math.min(1, edge.weight))
+      : Math.max(0, Math.min(1, edge.weight / 1.5));
+    callout.replaceChildren(
+      calloutLine(
+        "h3",
+        "profile-thought-topology-callout-title",
+        `${link.source.label} ${edge.relation === "contains" || edge.relation === "owns" ? "→" : "↔"} ${link.target.label}`,
+      ),
+      calloutLine(
+        "p",
+        "profile-thought-topology-callout-meta",
+        `${displayRelation(edge.metadata.semanticRelation ?? edge.relation)} · ${affinityLabel(normalized * 1.5)} affinity · ${normalized.toFixed(2)}`,
+      ),
+      calloutLine(
+        "p",
+        "profile-thought-topology-callout-summary",
+        edge.metadata.explanation || (edge.explicit
+          ? `This connection is authored in ${edge.origin}.`
+          : `This connection is inferred from ${edge.origin}.`),
+      ),
+    );
+  }
+
+  function syncFloatingCallout(): void {
+    const selectedNodes = [...(options.selectedNodeIds ?? [])];
+    const selectedEdges = [...(options.selectedEdgeIds ?? [])];
+    const node = hoveredId
+      ? nodes.get(hoveredId)
+      : selectedNodes.length
+        ? nodes.get(selectedNodes[selectedNodes.length - 1])
+        : undefined;
+    const link = !node
+      ? hoveredEdgeId
+        ? linkRenders.get(hoveredEdgeId)?.link
+        : selectedEdges.length
+          ? linkRenders.get(selectedEdges[selectedEdges.length - 1])?.link
+          : undefined
+      : undefined;
+    if (!node && !link) {
+      callout.classList.remove("is-visible");
+      callout.setAttribute("aria-hidden", "true");
+      renderedCalloutKey = null;
+      return;
+    }
+    const key = node ? `node:${node.id}` : `edge:${link!.id}`;
+    if (renderedCalloutKey !== key) {
+      renderedCalloutKey = key;
+      if (node) renderNodeCallout(node);
+      else renderEdgeCallout(link!);
+    }
+    const anchorX = node
+      ? currentTransform.applyX((node.x ?? 0) + width / 2)
+      : currentTransform.applyX(((link!.source.x ?? 0) + (link!.target.x ?? 0)) / 2 + width / 2);
+    const anchorY = node
+      ? currentTransform.applyY((node.y ?? 0) + height / 2)
+      : currentTransform.applyY(((link!.source.y ?? 0) + (link!.target.y ?? 0)) / 2 + height / 2);
+    callout.classList.add("is-visible");
+    callout.setAttribute("aria-hidden", "false");
+    const padding = 12;
+    const calloutWidth = Math.min(callout.offsetWidth || 320, Math.max(180, width - padding * 2));
+    const calloutHeight = callout.offsetHeight || 120;
+    let left = anchorX + 20;
+    if (left + calloutWidth > width - padding) left = anchorX - calloutWidth - 20;
+    left = Math.max(padding, Math.min(width - calloutWidth - padding, left));
+    const top = Math.max(
+      padding,
+      Math.min(height - calloutHeight - padding, anchorY - calloutHeight * 0.22),
+    );
+    callout.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
   }
 
   function renderScene(): void {
@@ -540,7 +726,7 @@ export async function createQuartzBrainRenderer(
       const evidence = options.evidenceEdgeIds?.has(render.link.id) ?? false;
       const color = selected || evidence
         ? edgePalette.selected
-        : graphLink.origin === "gbrain-derived"
+        : graphLink.origin === "gbrain-derived" || graphLink.origin === "thought-topology"
         ? edgePalette.derived
         : graphLink.origin === "buzz" || graphLink.origin === "conversation"
           ? edgePalette.conversation
@@ -549,18 +735,17 @@ export async function createQuartzBrainRenderer(
       const y1 = (source.y ?? 0) + height / 2;
       const x2 = (target.x ?? 0) + width / 2;
       const y2 = (target.y ?? 0) + height / 2;
-      const lineWidth = selected || evidence
-        ? 3
-        : graphLink.origin === "gbrain-derived"
-          ? 0.95
-          : Math.max(1.15, Math.min(2.4, graphLink.weight * 1.25));
+      const normalizedWeight = Math.max(0, Math.min(1, graphLink.weight / 1.5));
+      const restingWidth = 0.8 + normalizedWeight * 4.4;
+      const lineWidth = (selected || evidence ? restingWidth + 1.5 : restingWidth) /
+        Math.max(0.25, currentTransform.k);
       render.graphic
         .clear()
         // A transparent wide stroke makes thin relationships practical to
         // select without visually turning the map into a set of cables.
         .moveTo(x1, y1)
         .lineTo(x2, y2)
-        .stroke({ alpha: 0.001, width: 14, color })
+        .stroke({ alpha: 0.001, width: 14 / Math.max(0.25, currentTransform.k), color })
         .moveTo(x1, y1)
         .lineTo(x2, y2)
         .stroke({
@@ -569,6 +754,7 @@ export async function createQuartzBrainRenderer(
           color,
         });
     }
+    syncFloatingCallout();
     app.renderer.render(app.stage);
   }
 
@@ -606,8 +792,19 @@ export async function createQuartzBrainRenderer(
   }
 
   simulation.on("tick", renderScene).on("end", () => {
+    for (const [id, target] of returnTargets) {
+      const node = nodes.get(id);
+      if (!node) continue;
+      node.x = target.x;
+      node.y = target.y;
+      node.vx = 0;
+      node.vy = 0;
+      node.fx = target.pin ? target.x : null;
+      node.fy = target.pin ? target.y : null;
+    }
+    returnTargets.clear();
     renderScene();
-    writeLayout(options.layoutStorageKey, nodes.values(), currentTransform);
+    writeLayout(options.layoutStorageKey, permanentHomes, currentTransform);
     options.onSettled?.(Math.round(performance.now() - settleStartedAt));
   });
   if (reducedMotion) {
@@ -616,36 +813,131 @@ export async function createQuartzBrainRenderer(
     renderScene();
   }
 
-  const canvasSelection = select<HTMLCanvasElement, SimNode | undefined>(app.canvas);
+  const canvasSelection = select<HTMLCanvasElement, unknown>(app.canvas);
   let dragging = false;
+  type DragState = {
+    node: SimNode;
+    moved: number;
+    permanent: boolean;
+    pointer: { x: number; y: number };
+    start: { x: number; y: number };
+  };
+  let dragState: DragState | null = null;
+  let nextDragIsPermanent = false;
   canvasSelection.call(
-    drag<HTMLCanvasElement, SimNode | undefined>()
+    drag<HTMLCanvasElement, unknown>()
+      .filter((event) => {
+        const accepted = !event.ctrlKey && (event.button === 0 || event.button === 2);
+        if (accepted) nextDragIsPermanent = event.button === 2;
+        return accepted;
+      })
       .container(() => app.canvas)
-      .subject(() => (hoveredId ? nodes.get(hoveredId) : undefined))
-      .on("start", (event: D3DragEvent<HTMLCanvasElement, SimNode, SimNode>) => {
-        if (!event.subject) return;
+      .subject((event) => {
+        const node = hoveredId ? nodes.get(hoveredId) : undefined;
+        return node ? { x: event.x, y: event.y, node } : (undefined as unknown as object);
+      })
+      .on("start", (event) => {
+        const subject = event.subject as { node?: SimNode } | undefined;
+        const node = subject?.node;
+        if (!node) return;
+        const source = event.sourceEvent as MouseEvent | undefined;
+        const permanent = nextDragIsPermanent || source?.button === 2 || Boolean((source?.buttons ?? 0) & 2);
+        nextDragIsPermanent = false;
         dragging = true;
-        if (!event.active && !reducedMotion) simulation.alphaTarget(0.25).restart();
-        event.subject.fx = event.subject.x;
-        event.subject.fy = event.subject.y;
+        draggingNodeId = node.id;
+        returnTargets.delete(node.id);
+        if (!event.active && !reducedMotion) simulation.alphaTarget(0.8).restart();
+        dragState = {
+          node,
+          moved: 0,
+          permanent,
+          pointer: { x: source?.clientX ?? event.x, y: source?.clientY ?? event.y },
+          start: { x: node.x ?? 0, y: node.y ?? 0 },
+        };
+        node.fx = node.x;
+        node.fy = node.y;
+        applyVisualState();
       })
-      .on("drag", (event: D3DragEvent<HTMLCanvasElement, SimNode, SimNode>) => {
-        if (!event.subject) return;
-        event.subject.fx = (event.x - currentTransform.x) / currentTransform.k - width / 2;
-        event.subject.fy = (event.y - currentTransform.y) / currentTransform.k - height / 2;
+      .on("drag", (event) => {
+        if (!dragState) return;
+        const source = event.sourceEvent as PointerEvent | undefined;
+        const clientX = source?.clientX ?? event.x;
+        const clientY = source?.clientY ?? event.y;
+        dragState.moved = Math.max(
+          dragState.moved,
+          Math.hypot(clientX - dragState.pointer.x, clientY - dragState.pointer.y),
+        );
+        if (dragState.moved <= 5) return;
+        const subject = event.subject as { x: number; y: number };
+        const x = dragState.start.x + (event.x - subject.x) / currentTransform.k;
+        const y = dragState.start.y + (event.y - subject.y) / currentTransform.k;
+        dragState.node.x = x;
+        dragState.node.y = y;
+        dragState.node.fx = x;
+        dragState.node.fy = y;
       })
-      .on("end", (event: D3DragEvent<HTMLCanvasElement, SimNode, SimNode>) => {
-        if (!event.subject) return;
+      .on("end", (event) => {
+        if (!dragState) return;
+        const state = dragState;
+        dragState = null;
         dragging = false;
-        if (!event.active) simulation.alphaTarget(0);
-        event.subject.fx = null;
-        event.subject.fy = null;
-        writeLayout(options.layoutStorageKey, nodes.values(), currentTransform);
+        draggingNodeId = null;
+        if (!event.active && !reducedMotion) simulation.alphaTarget(0);
+        if (state.moved <= 5) {
+          const home = permanentHomes.get(state.node.id);
+          state.node.fx = home?.x ?? null;
+          state.node.fy = home?.y ?? null;
+          if (state.permanent) {
+            const now = performance.now();
+            if (lastRightClick?.id === state.node.id && now - lastRightClick.at <= 500) {
+              lastRightClick = null;
+              options.onOpen?.(state.node.id, state.node.href);
+            } else {
+              lastRightClick = { id: state.node.id, at: now };
+            }
+          } else {
+            lastRightClick = null;
+            options.onSelect?.(
+              state.node.id,
+              Boolean(event.sourceEvent?.shiftKey || event.sourceEvent?.ctrlKey || event.sourceEvent?.metaKey),
+            );
+          }
+          applyVisualState();
+          return;
+        }
+        lastRightClick = null;
+        if (state.permanent) {
+          const home = { x: state.node.x ?? state.start.x, y: state.node.y ?? state.start.y };
+          permanentHomes.set(state.node.id, home);
+          state.node.fx = home.x;
+          state.node.fy = home.y;
+          writeLayout(options.layoutStorageKey, permanentHomes, currentTransform);
+        } else if (reducedMotion) {
+          state.node.x = state.start.x;
+          state.node.y = state.start.y;
+          const home = permanentHomes.get(state.node.id);
+          state.node.fx = home?.x ?? null;
+          state.node.fy = home?.y ?? null;
+        } else {
+          state.node.fx = null;
+          state.node.fy = null;
+          returnTargets.set(state.node.id, {
+            ...state.start,
+            pin: permanentHomes.has(state.node.id),
+          });
+          simulation.alpha(0.42).restart();
+        }
+        applyVisualState();
       }),
   );
 
-  const zoomBehavior: ZoomBehavior<HTMLCanvasElement, SimNode | undefined> =
-    zoom<HTMLCanvasElement, SimNode | undefined>()
+  const preventNodeContextMenu = (event: MouseEvent) => {
+    if (hoveredId) event.preventDefault();
+  };
+  app.canvas.addEventListener("contextmenu", preventNodeContextMenu);
+
+  const zoomBehavior: ZoomBehavior<HTMLCanvasElement, unknown> =
+    zoom<HTMLCanvasElement, unknown>()
       .extent([
         [0, 0],
         [width, height],
@@ -658,8 +950,8 @@ export async function createQuartzBrainRenderer(
         app.stage.position.set(transform.x, transform.y);
         applyVisualState();
       })
-      .on("end", () => writeLayout(options.layoutStorageKey, nodes.values(), currentTransform));
-  canvasSelection.call(zoomBehavior);
+      .on("end", () => writeLayout(options.layoutStorageKey, permanentHomes, currentTransform));
+  canvasSelection.call(zoomBehavior).on("dblclick.zoom", null);
 
   if (stored.viewport) {
     const restored = zoomIdentity
@@ -728,7 +1020,10 @@ export async function createQuartzBrainRenderer(
       updateLabelPriorities(nextGraph);
       const nextIds = new Set(nextGraph.nodes.map((node) => node.id));
       for (const id of nodes.keys()) {
-        if (!nextIds.has(id)) nodes.delete(id);
+        if (!nextIds.has(id)) {
+          nodes.delete(id);
+          returnTargets.delete(id);
+        }
       }
       for (const source of nextGraph.nodes) {
         const existing = nodes.get(source.id);
@@ -742,12 +1037,14 @@ export async function createQuartzBrainRenderer(
           node.x = parent.x! + (stableUnit(`expand-x:${node.id}`) - 0.5) * 64;
           node.y = parent.y! + (stableUnit(`expand-y:${node.id}`) - 0.5) * 64;
         } else {
-          seedNode(node, width, height);
+          node.x = Number.NaN;
+          node.y = Number.NaN;
         }
         nodes.set(node.id, node);
       }
       links = rebuildLinks(nextGraph);
       syncRenderObjects();
+      renderedCalloutKey = null;
       searchMatches = graphSearchMatches(graph, searchQuery);
       simulation.nodes([...nodes.values()]);
       const linkForce = simulation.force("link") as ReturnType<typeof forceLink<SimNode, SimLink>>;
@@ -767,7 +1064,7 @@ export async function createQuartzBrainRenderer(
         nextOptions.layoutStorageKey &&
         nextOptions.layoutStorageKey !== options.layoutStorageKey
       ) {
-        writeLayout(options.layoutStorageKey, nodes.values(), currentTransform);
+        writeLayout(options.layoutStorageKey, permanentHomes, currentTransform);
       }
       options = { ...options, ...nextOptions };
       applyVisualState();
@@ -798,7 +1095,15 @@ export async function createQuartzBrainRenderer(
       } catch {
         // See writeLayout.
       }
-      for (const node of nodes.values()) seedNode(node, width, height);
+      permanentHomes.clear();
+      returnTargets.clear();
+      for (const node of nodes.values()) {
+        node.fx = null;
+        node.fy = null;
+        node.x = Number.NaN;
+        node.y = Number.NaN;
+      }
+      simulation.nodes([...nodes.values()]);
       canvasSelection.call(zoomBehavior.transform, zoomIdentity);
       settleStartedAt = performance.now();
       if (reducedMotion) {
@@ -812,14 +1117,16 @@ export async function createQuartzBrainRenderer(
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      writeLayout(options.layoutStorageKey, nodes.values(), currentTransform);
+      writeLayout(options.layoutStorageKey, permanentHomes, currentTransform);
       cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
       simulation.stop();
       canvasSelection.on(".drag", null).on(".zoom", null);
       app.canvas.removeEventListener("webglcontextlost", onContextLost);
       app.canvas.removeEventListener("webglcontextrestored", onContextRestored);
+      app.canvas.removeEventListener("contextmenu", preventNodeContextMenu);
       if (app.canvas.parentElement === host) app.canvas.remove();
+      callout.remove();
       app.destroy(true, { children: true, texture: true, textureSource: true });
     },
   };

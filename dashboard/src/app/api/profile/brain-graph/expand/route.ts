@@ -24,7 +24,7 @@ export async function GET(request: Request) {
     const scope = parseBrainScope(searchParams, context);
     const nodeId = searchParams.get("node")?.trim() ?? "";
     if (!nodeId || nodeId.length > 320) {
-      throw new BrainGraphAccessError(400, "invalid_node", "That Knowledge Map node is not available.");
+      throw new BrainGraphAccessError(400, "invalid_node", "That Thought Topology node is not available.");
     }
     const rawDepth = Number(searchParams.get("depth") ?? 1);
     if (!Number.isInteger(rawDepth) || rawDepth < 1 || rawDepth > 2) {
@@ -48,12 +48,12 @@ export async function GET(request: Request) {
           : 500;
     const message =
       status === 401
-        ? "Sign in to view your Knowledge Map."
+        ? "Sign in to view your Thought Topology."
         : status === 404
-          ? "That Knowledge Map node is not available."
+          ? "That Thought Topology node is not available."
           : status < 500
-            ? "That Knowledge Map expansion is not valid."
-            : "The Knowledge Map could not be expanded.";
+            ? "That Thought Topology expansion is not valid."
+            : "Thought Topology could not be expanded.";
     return NextResponse.json({ error: message }, { status, headers: PRIVATE_HEADERS });
   }
 }

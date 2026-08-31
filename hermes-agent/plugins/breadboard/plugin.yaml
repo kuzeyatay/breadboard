@@ -51,6 +51,7 @@ provides_tools:
   - capability_search
   - memory_query
   - workflow_propose
+  - workflow_create
   - document_skill_read
   - skill_open
   - workflow_run

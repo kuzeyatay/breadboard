@@ -5,6 +5,7 @@ import {
   isHttpUrl,
   normalizeWebsite,
 } from "../hermes/evidence.ts";
+import { generativeUiResourcesFromToolOutput } from "../generative-ui/contracts.ts";
 import type {
   NormalizedAgentEvent,
   PermissionRisk,
@@ -447,6 +448,10 @@ export function normalizeHermesEvent(
           location = normalizedWebsites[0].url;
         }
       }
+      const success = toolSucceeded(payload);
+      const uiResources = success
+        ? generativeUiResourcesFromToolOutput(toolName, payload.result)
+        : [];
       state.activeTools?.delete(toolCallId);
       return [{
         type: "tool.completed",
@@ -455,12 +460,13 @@ export function normalizeHermesEvent(
         payload: {
           toolCallId,
           toolName,
-          success: toolSucceeded(payload),
+          success,
           summary:
             safeSingleLine(payload.summary) ??
             safeSingleLine(payload.error),
           location,
           ...(normalizedWebsites.length > 0 ? { websites: normalizedWebsites } : {}),
+          ...(uiResources.length > 0 ? { uiResources } : {}),
           details: {
             toolName,
             ...(query ? { query } : {}),

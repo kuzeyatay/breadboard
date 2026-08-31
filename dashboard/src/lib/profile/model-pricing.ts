@@ -5,16 +5,10 @@
 // is the hand-maintained bridge between the two, and it is deliberately the
 // only place a rate appears.
 //
-// Two rules keep the number honest rather than merely impressive:
-//
-//   * A model with no entry here is *unpriced*, never free. The profile counts
-//     those replies separately and says so, because a subscription model, a
-//     local model and a model nobody has added a rate for are three different
-//     things that a silent zero would render identical.
-//   * Cached-input and reasoning discounts are not modelled. Providers disagree
-//     about whether cached tokens are already inside the input count, and a
-//     double-subtraction would understate the bill. What comes out is therefore
-//     an upper bound, and the profile says that too.
+// A missing rate remains `null` here so callers can choose an explicit policy.
+// The profile uses the account's background-model rate as its fallback, which
+// keeps every reported token in the estimate without pretending an unknown
+// model has a published price of its own.
 //
 // Rates are USD per million tokens. Add a model by its bare id — the provider
 // prefix and the release-date stamp are stripped before the lookup, so one
@@ -32,11 +26,10 @@ export interface ModelRate {
  * Published list prices, current as of August 2026.
  *
  * OpenAI source: https://developers.openai.com/api/docs/models/compare
+ * Google source: https://ai.google.dev/gemini-api/docs/latest-model
  * Anthropic source: https://www.anthropic.com/pricing
  *
- * These are API list prices, not a claim about what a ChatGPT subscription or
- * a locally hosted model actually bills. The profile explains that distinction
- * beside the estimate.
+ * These are API list prices, not subscription invoices or local runtime costs.
  */
 export const MODEL_RATES: Readonly<Record<string, ModelRate>> = {
   // The unsuffixed alias resolves to Sol and carries the same list price.
@@ -44,6 +37,19 @@ export const MODEL_RATES: Readonly<Record<string, ModelRate>> = {
   "gpt-5.6-sol": { input: 4, output: 20 },
   "gpt-5.6-terra": { input: 2, output: 12 },
   "gpt-5.6-luna": { input: 0.2, output: 1.2 },
+  "gpt-5.5": { input: 5, output: 30 },
+  "gpt-5.4": { input: 2.5, output: 15 },
+  // Google applies the same introductory rate to Gemini 3.6 Flash and 3.7
+  // Flash through December 31, 2026. The proxy's `-high` suffix chooses a
+  // thinking level; it is not a separately priced model.
+  "gemini-3.7-flash": { input: 0.75, output: 3.75 },
+  "gemini-3.7-flash-low": { input: 0.75, output: 3.75 },
+  "gemini-3.7-flash-medium": { input: 0.75, output: 3.75 },
+  "gemini-3.7-flash-high": { input: 0.75, output: 3.75 },
+  "gemini-3.6-flash": { input: 0.75, output: 3.75 },
+  "gemini-3.6-flash-low": { input: 0.75, output: 3.75 },
+  "gemini-3.6-flash-medium": { input: 0.75, output: 3.75 },
+  "gemini-3.6-flash-high": { input: 0.75, output: 3.75 },
   "claude-fable-5": { input: 10, output: 50 },
   // Same model at the same published rate. The pxpipe route saves money by
   // sending far fewer input tokens for the same context, not by buying them

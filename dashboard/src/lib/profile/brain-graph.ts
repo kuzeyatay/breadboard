@@ -1,4 +1,3 @@
-import { resolveGBrainConfig } from "../gbrain/config.ts";
 import {
   brainScopeOptions,
   buildBrainGraphAccessContext,
@@ -20,7 +19,6 @@ import { artifactsBrainSource } from "./brain-graph-sources/artifacts.ts";
 import { buzzBrainSource } from "./brain-graph-sources/buzz.ts";
 import { conversationsBrainSource } from "./brain-graph-sources/conversations.ts";
 import { gardensBrainSource } from "./brain-graph-sources/gardens.ts";
-import { gbrainBrainSource } from "./brain-graph-sources/gbrain.ts";
 import { memoriesBrainSource } from "./brain-graph-sources/memories.ts";
 import { organizationsBrainSource } from "./brain-graph-sources/organizations.ts";
 
@@ -33,7 +31,6 @@ const SOURCES: Array<BrainGraphSourceAdapter<BrainGraphAccessContext>> = [
   memoriesBrainSource,
   artifactsBrainSource,
   buzzBrainSource,
-  gbrainBrainSource,
 ];
 
 function limitsForMode(mode: BrainGraphMode): BrainGraphLimits {
@@ -75,7 +72,7 @@ function tableExists(context: BrainGraphAccessContext, name: string): boolean {
 function capabilities(context: BrainGraphAccessContext) {
   return {
     buzz: tableExists(context, "buzz_rooms"),
-    gbrain: resolveGBrainConfig().mode !== "disabled",
+    thoughtTopology: true,
     organization: context.organizations.length > 0,
     expansion: true,
     pathFinding: true,
@@ -179,7 +176,7 @@ export async function expandBrainGraph(
   const overview = await buildBrainGraph(context, scope, { signal });
   const selected = overview.nodes.find((node) => node.id === nodeId);
   if (!selected) {
-    const error = new Error("That Knowledge Map node is not available.") as Error & {
+    const error = new Error("That Thought Topology node is not available.") as Error & {
       status?: number;
       code?: string;
     };

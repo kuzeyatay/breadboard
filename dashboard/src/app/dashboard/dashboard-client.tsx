@@ -2315,10 +2315,15 @@ export default function DashboardClient({
             </div>
             <div className="flex items-center gap-2">
               <Link
-                href="/garden"
+                href="/garden?view=private"
+                prefetch={false}
+                onNavigate={(event) => {
+                  event.preventDefault();
+                  window.location.assign("/garden?view=private");
+                }}
                 className="neu-button px-4 py-2 text-sm font-medium text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
               >
-                View gardens
+                Explore All
               </Link>
             </div>
           </div>

@@ -14,7 +14,6 @@ import {
   type ChangeEvent,
   type DragEvent,
 } from "react";
-import Link from "next/link";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import {
   ACCEPTED_AUDIO_EXTENSIONS,
@@ -27,8 +26,6 @@ import {
   isTerminalJob,
   mediaKindForFilename,
   nextPollDelayMs,
-  stageIndexForStatus,
-  stagesForInputKind,
   statusLabel,
   validateMediaFile,
   validateYouTubeInput,
@@ -60,10 +57,8 @@ interface HealthInfo {
 export interface GardenVideoImportProps {
   clusterSlug: string;
   isOwner: boolean;
-  composerOpen?: boolean;
-  composerPresentation?: "inline" | "modal";
-  onComposerClose?: () => void;
-  onComposerSubmitted?: () => void;
+  open: boolean;
+  onClose: () => void;
   onSourceCreated?: (info: {
     jobId: string;
     sourceTitle: string;
@@ -80,10 +75,8 @@ function Spinner({ className = "h-3.5 w-3.5" }: { className?: string }) {
 export default function GardenVideoImport({
   clusterSlug,
   isOwner,
-  composerOpen = true,
-  composerPresentation = "inline",
-  onComposerClose,
-  onComposerSubmitted,
+  open,
+  onClose,
   onSourceCreated,
 }: GardenVideoImportProps) {
   const [jobs, setJobs] = useState<PublicVideoTranscriptionJob[]>([]);
@@ -143,7 +136,7 @@ export default function GardenVideoImport({
   );
 
   const fetchJobs = useCallback(async (): Promise<
-    PublicVideoTranscriptionJob[]
+    PublicVideoTranscriptionJob[] | null
   > => {
     try {
       const res = await fetch(apiBase, { cache: "no-store" });
@@ -156,7 +149,7 @@ export default function GardenVideoImport({
     } catch {
       // Polling silently tolerates transient failures.
     }
-    return [];
+    return null;
   }, [apiBase]);
 
   // Restore jobs (and any in-flight progress) on mount.
@@ -165,10 +158,12 @@ export default function GardenVideoImport({
     void (async () => {
       const restored = await fetchJobs();
       if (cancelled) return;
-      for (const job of restored) {
-        if (job.status === "completed") completedSeenRef.current.add(job.id);
+      if (restored) {
+        for (const job of restored) {
+          if (job.status === "completed") completedSeenRef.current.add(job.id);
+        }
+        setJobs(restored);
       }
-      setJobs(restored);
       setJobsLoaded(true);
     })();
     return () => {
@@ -207,7 +202,9 @@ export default function GardenVideoImport({
 
     pollTimerRef.current = window.setTimeout(() => {
       pollTimerRef.current = null;
-      void fetchJobs().then(applyJobs);
+      void fetchJobs().then((nextJobs) => {
+        if (nextJobs) applyJobs(nextJobs);
+      });
     }, delay);
 
     return () => {
@@ -226,13 +223,13 @@ export default function GardenVideoImport({
   }, [jobs]);
 
   useEffect(() => {
-    if (!composerOpen || composerPresentation !== "modal") return;
+    if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onComposerClose?.();
+      if (event.key === "Escape") onClose();
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [composerOpen, composerPresentation, onComposerClose]);
+  }, [onClose, open]);
 
   const selectFile = useCallback((file: File | null) => {
     setSubmitError(null);
@@ -348,6 +345,22 @@ export default function GardenVideoImport({
             : "This media file is already being transcribed.",
         );
       }
+      if (!data.job && !data.duplicate) {
+        setSubmitError("The upload was accepted but no transcription job was created.");
+        return;
+      }
+
+      // The create response is authoritative for the handoff. Paint that job
+      // before clearing the chosen file, then preserve it if the immediate list
+      // read is briefly stale (or the runner has not committed its next state
+      // yet). Without this bridge an accepted upload appeared to vanish.
+      const acceptedJob = data.job ?? null;
+      if (acceptedJob) {
+        applyJobs([
+          acceptedJob,
+          ...jobs.filter((job) => job.id !== acceptedJob.id),
+        ]);
+      }
       setSelectedFile(null);
       setFileError(null);
       setYoutubeUrl("");
@@ -355,8 +368,14 @@ export default function GardenVideoImport({
       setPreview(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       pollStartedAtRef.current = Date.now();
-      applyJobs(await fetchJobs());
-      onComposerSubmitted?.();
+      const refreshedJobs = await fetchJobs();
+      if (refreshedJobs) {
+        applyJobs(
+          acceptedJob && !refreshedJobs.some((job) => job.id === acceptedJob.id)
+            ? [acceptedJob, ...refreshedJobs]
+            : refreshedJobs,
+        );
+      }
     } catch {
       setSubmitError("Failed to start transcription.");
     } finally {
@@ -372,7 +391,8 @@ export default function GardenVideoImport({
       });
       if (res.ok) {
         pollStartedAtRef.current = Date.now();
-        applyJobs(await fetchJobs());
+        const refreshedJobs = await fetchJobs();
+        if (refreshedJobs) applyJobs(refreshedJobs);
       }
     } catch {
       // The next poll shows the true state.
@@ -395,21 +415,12 @@ export default function GardenVideoImport({
     healthIssues.push("ffprobe not found — uploads cannot be validated.");
   }
 
-  // This panel is a source library, not an error log. Failed and cancelled
-  // attempts remain available to the transcription backend, but do not become
-  // durable-looking source rows in the garden sidebar.
-  const visibleJobs = jobs
-    .filter((job) => job.status !== "failed" && job.status !== "cancelled")
+  const activeJobs = jobs
+    .filter((job) => !isTerminalJob(job))
     .slice(0, 6);
 
-  const composer = isOwner && composerOpen ? (
-        <div
-          className={
-            composerPresentation === "modal"
-              ? "space-y-3 px-5 py-4"
-              : "space-y-3 border-b border-gray-800 px-3 py-3"
-          }
-        >
+  const composer = isOwner ? (
+        <div className="space-y-3 px-5 py-4">
           {healthIssues.length > 0 && (
             <div className="space-y-0.5">
               {healthIssues.map((issue) => (
@@ -431,7 +442,7 @@ export default function GardenVideoImport({
             className={[
               "rounded-md border border-dashed px-3 py-3 text-center transition-colors",
               dragActive
-                ? "border-cyan-500/70 bg-cyan-950/10"
+                ? "border-[var(--botanical)] bg-[color-mix(in_srgb,var(--botanical)_8%,transparent)]"
                 : "border-gray-800 hover:border-gray-700",
             ].join(" ")}
           >
@@ -477,7 +488,7 @@ export default function GardenVideoImport({
               >
                 <span className="text-xs text-gray-400">
                   Drop video or audio here, or{" "}
-                  <span className="text-blue-900 underline underline-offset-2 transition-colors hover:text-blue-700">
+                  <span className="text-[var(--botanical)] underline underline-offset-2 transition-colors hover:text-[var(--botanical-hover)]">
                     choose a file
                   </span>
                 </span>
@@ -577,164 +588,135 @@ export default function GardenVideoImport({
         </div>
   ) : null;
 
-  return (
-    <>
-      {composerPresentation === "modal" && composer ? (
-        <div
-          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) onComposerClose?.();
-          }}
-        >
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="garden-media-composer-title"
-            className="bb-modal-panel neu-dialog flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border"
-          >
-            <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-5 py-3.5">
-              <div>
-                <h2
-                  id="garden-media-composer-title"
-                  className="text-base font-semibold text-white"
-                >
-                  Add video or audio
-                </h2>
-                <p className="mt-0.5 text-xs text-gray-500">
-                  Upload media or paste a YouTube link to transcribe it.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={onComposerClose}
-                className="neu-button-icon rounded-full p-1.5 text-gray-500"
-                aria-label="Close video or audio dialog"
-              >
+  const jobProgress = activeJobs.length > 0 ? (
+    <div className="border-t border-gray-800 px-5 py-4">
+      <div className="space-y-1.5">
+        {activeJobs.map((job) => {
+          const displayName =
+            job.originalFilename ?? job.sourceTitle ?? "Media transcription";
+          return (
+            <div
+              key={job.id}
+              className="rounded-lg bg-gray-800/50 px-3 py-2"
+            >
+              <div className="flex items-center gap-2">
                 <svg
-                  className="h-4 w-4"
+                  className="h-4 w-4 shrink-0 text-gray-500"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
-                  strokeWidth={2}
+                  strokeWidth={1.5}
                   aria-hidden="true"
                 >
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    d="M6 18 18 6M6 6l12 12"
+                    d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
                   />
                 </svg>
-              </button>
-            </div>
-            <div className="min-h-0 overflow-y-auto">{composer}</div>
-          </section>
-        </div>
-      ) : null}
-
-      <div
-        id="garden-media-panel"
-        className="bb-neu-accordion-panel border-t border-gray-800"
-      >
-        {composerPresentation === "inline" ? composer : null}
-
-      {/* Job progress cards + recent media */}
-      <div className="max-h-72 overflow-y-auto">
-        {!jobsLoaded ? (
-          <div className="flex justify-center py-6">
-            <Spinner className="h-4 w-4 text-gray-700" />
-          </div>
-        ) : visibleJobs.length === 0 ? (
-          <div className="px-4 py-6 text-center">
-            <p className="text-xs text-gray-600">No video or audio yet.</p>
-          </div>
-        ) : (
-          <ul>
-            {visibleJobs.map((job) => {
-              const stages = stagesForInputKind(job.inputKind);
-              const currentIndex = stageIndexForStatus(job.inputKind, job.status);
-              const active = !isTerminalJob(job);
-              return (
-                <li
-                  key={job.id}
-                  className="group px-4 py-2 transition-colors hover:bg-gray-900"
+                <span className="min-w-0 flex-1 truncate text-xs text-gray-300">
+                  {displayName}
+                </span>
+                <Spinner className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+                <button
+                  type="button"
+                  onClick={() => void cancelJob(job.id)}
+                  disabled={busyJobId === job.id}
+                  className="shrink-0 rounded p-0.5 text-gray-600 transition-colors hover:text-white disabled:opacity-40"
+                  aria-label={`Cancel transcription for ${displayName}`}
+                  title="Cancel transcription"
                 >
-                  {job.status === "completed" && job.sourceSlug ? (
-                    <Link
-                      href={`/garden/${clusterSlug}?note=${encodeURIComponent(job.sourceSlug)}`}
-                      className="block truncate text-xs font-medium text-cyan-100 transition-colors hover:text-white"
-                      title={job.sourceTitle ?? "Open transcript source"}
-                    >
-                      {job.sourceTitle ?? "Media transcript"}
-                    </Link>
-                  ) : (
-                    <p
-                      className="truncate text-xs font-medium text-gray-200"
-                      title={job.sourceTitle ?? undefined}
-                    >
-                      {job.sourceTitle ?? "Media"}
-                    </p>
-                  )}
-
-                  {active && (
-                    <div className="mt-1.5">
-                      <div className="flex items-center gap-2">
-                        <Spinner className="h-3 w-3 text-cyan-400" />
-                        <span className="text-[11px] text-gray-400">
-                          {statusLabel(job)}
-                          {job.progressPercent !== null
-                            ? ` · ${Math.round(job.progressPercent)}%`
-                            : ""}
-                        </span>
-                        <span className="ml-auto text-[10px] text-gray-600">
-                          {formatElapsed(job.createdAt, nowMs)}
-                        </span>
-                      </div>
-                      <ol className="mt-1.5 space-y-0.5">
-                        {stages.map((stage, index) => (
-                          <li
-                            key={stage.status}
-                            className={[
-                              "flex items-center gap-1.5 text-[10px]",
-                              index < currentIndex
-                                ? "text-gray-500 line-through"
-                                : index === currentIndex
-                                  ? "text-cyan-300"
-                                  : "text-gray-700",
-                            ].join(" ")}
-                          >
-                            <span
-                              className={[
-                                "h-1 w-1 rounded-full",
-                                index <= currentIndex ? "bg-cyan-400" : "bg-gray-700",
-                              ].join(" ")}
-                            />
-                            {stage.label}
-                          </li>
-                        ))}
-                      </ol>
-                      <button
-                        type="button"
-                        onClick={() => void cancelJob(job.id)}
-                        disabled={busyJobId === job.id}
-                        className="mt-1.5 rounded border border-gray-800 px-2 py-0.5 text-[10px] text-gray-500 transition-colors hover:border-red-900 hover:text-red-400 disabled:opacity-40"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  )}
-
-                  {job.status === "completed" && (
-                    <p className="mt-0.5 truncate text-[10px] text-gray-600">
-                      Transcript source
-                    </p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
+                  <svg
+                    className="h-3.5 w-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M6 18 18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <div className="mt-1.5 flex items-center gap-2 pl-6 text-[11px] leading-4 text-gray-400">
+                <span className="min-w-0 flex-1 truncate">
+                  {statusLabel(job)}
+                  {job.progressPercent !== null
+                    ? ` · ${Math.round(job.progressPercent)}%`
+                    : ""}
+                </span>
+                <span className="shrink-0 tabular-nums text-gray-600">
+                  {formatElapsed(job.createdAt, nowMs)}
+                </span>
+              </div>
+            </div>
+          );
+        })}
       </div>
-      </div>
-    </>
+    </div>
+  ) : null;
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        id="garden-media-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="garden-media-composer-title"
+        className="bb-modal-panel neu-dialog flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border"
+      >
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-5 py-3.5">
+          <div>
+            <h2
+              id="garden-media-composer-title"
+              className="text-base font-semibold text-white"
+            >
+              Video &amp; audio
+            </h2>
+            <p className="mt-0.5 text-xs text-gray-500">
+              {isOwner
+                ? "Upload media or paste a YouTube link to transcribe it."
+                : "View media imports and transcription progress."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="neu-button-icon rounded-full p-1.5 text-gray-500"
+            aria-label="Close video or audio dialog"
+          >
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M6 18 18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
+        <div className="min-h-0 overflow-y-auto">
+          {composer}
+          {jobProgress}
+        </div>
+      </section>
+    </div>
   );
 }

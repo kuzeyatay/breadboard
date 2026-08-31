@@ -63,6 +63,23 @@ function parseInitialTurn(
     Number.isFinite(Date.parse(turn.responseStartedAt))
       ? turn.responseStartedAt
       : undefined;
+  const preDispatchRecovery = {
+    // Agent mode is the only first-turn path that can be resumed without a
+    // browser-owned provider response body. Keep the mode with the durable
+    // placeholder so a reload cannot accidentally change which runtime owns
+    // the already-submitted prompt.
+    agentMode: turn.agentMode !== false,
+    ...(typeof turn.model === "string" && turn.model.trim()
+      ? { model: turn.model.trim().slice(0, 240) }
+      : {}),
+    ...(typeof turn.reasoningEffort === "string" && turn.reasoningEffort.trim()
+      ? { reasoningEffort: turn.reasoningEffort.trim().slice(0, 32) }
+      : {}),
+    superAgent: turn.superAgent === true,
+    adhdMode: turn.adhdMode === true,
+    personalize: turn.personalize !== false,
+    yoloMode: turn.yoloMode === true,
+  };
   return {
     clientMessageId: requireString(
       turn.clientMessageId,
@@ -82,6 +99,7 @@ function parseInitialTurn(
       ...(turn.internalAgentContinuation === true
         ? { internalAgentContinuation: true }
         : {}),
+      preDispatchRecovery,
     },
   };
 }

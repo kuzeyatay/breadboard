@@ -12,6 +12,7 @@ import {
 } from "@/app/components/hermes/schedule-client";
 import type { ScheduledChatJob } from "@/lib/schedules/types.ts";
 import { scheduleTargetLabel } from "@/lib/schedules/types.ts";
+import { ActiveChatIcon } from "@/app/components/hermes/history-client";
 
 const COLLAPSED_KEY = "breadboard:scheduled-chats-dock:collapsed";
 const REFRESH_INTERVAL_MS = 30_000;
@@ -101,7 +102,7 @@ export default function ScheduledChatsDock() {
 
   if (schedules.length === 0) return null;
 
-  const armed = schedules.filter((job) => job.enabled);
+  const armed = schedules.filter((job) => job.enabled || job.running);
   const next = armed
     .filter((job) => job.nextRunAt)
     .sort((a, b) => Date.parse(a.nextRunAt ?? "") - Date.parse(b.nextRunAt ?? ""))[0];
@@ -153,7 +154,15 @@ export default function ScheduledChatsDock() {
                     }`}
                   />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs font-medium">{job.title}</p>
+                    <p className="flex items-center gap-1.5 truncate text-xs font-medium">
+                      <span className="truncate">{job.title}</span>
+                      {job.running ? (
+                        <ActiveChatIcon
+                          label={`${job.title} is running`}
+                          className="h-3.5 w-3.5 shrink-0"
+                        />
+                      ) : null}
+                    </p>
                     <p className="mt-0.5 truncate text-[11px] text-gray-400">
                       {job.cronDescription}
                     </p>
@@ -161,7 +170,9 @@ export default function ScheduledChatsDock() {
                       New chat in {scheduleTargetLabel(job)}
                     </p>
                     <p className="mt-0.5 text-[11px] text-gray-500">
-                      {job.enabled
+                      {job.running
+                        ? "Running now"
+                        : job.enabled
                         ? `Next ${formatRunTime(job.nextRunAt)} · ${formatRelativeRunTime(job.nextRunAt)}`
                         : "Paused"}
                     </p>

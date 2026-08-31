@@ -526,8 +526,8 @@ export function renderSuperAgentDirective(
   if (inventory.workflows.length) {
     sections.push(
       [
-        "## Automations — run one with `workflow_run`",
-        "These are the user's own saved automations. Call `workflow_run` with the workflow id and the input text when one of them is what the request is asking for.",
+        "## Automations — run with `workflow_run`, create with `workflow_create`",
+        "These are the user's own saved automations. Call `workflow_run` with the workflow id and the input text when one of them is what the request is asking for. When the user explicitly asks you to create and save a new workflow, call `workflow_create` (read its catalog first); the saved result is registered in the Workflows capability page. For an unsolicited automation idea, use `workflow_propose` instead.",
         ...inventory.workflows.map(
           (workflow) =>
             `- ${workflow.id} — ${workflow.name}${workflow.active ? "" : " (inactive)"}`,
@@ -538,7 +538,14 @@ export function renderSuperAgentDirective(
     sections.push(
       [
         "## Automations",
-        "The saved automations could not be read this turn, so `workflow_run` has nothing to run. If the request needs one, say so rather than guessing an id.",
+        "The saved automations could not be read this turn, so `workflow_run` has nothing to run. If the user explicitly asks for a new one, `workflow_create` can still create and register it; otherwise say an existing id could not be resolved rather than guessing one.",
+      ].join("\n"),
+    );
+  } else {
+    sections.push(
+      [
+        "## Automations — create with `workflow_create`",
+        "The user has no saved automations yet. When they explicitly ask you to create and save one, call `workflow_create` (read its catalog first); the result is registered in the Workflows capability page. For an unsolicited automation idea, use `workflow_propose` instead.",
       ].join("\n"),
     );
   }

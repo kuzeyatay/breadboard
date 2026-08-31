@@ -28,6 +28,7 @@ interface QuartzMessage {
   toFolder?: string;
   folder?: string;
   requestId?: string;
+  clusterSlug?: string;
   folderTitle?: string;
   documents?: FolderPdfExportMessage['documents'];
 }
@@ -93,6 +94,7 @@ function isMarkdownDocumentSlug(slug: string, clusterSlug: string): boolean {
 
 export default function LibraryGardenClient({ src, title }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const topologyRequestsRef = useRef(new Set<string>());
   const quartzLease = useQuartzViewLease();
   const [loadedSource, setLoadedSource] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -125,6 +127,50 @@ export default function LibraryGardenClient({ src, title }: Props) {
     function handleMessage(event: MessageEvent) {
       const data = event.data as QuartzMessage;
       if (!data || !data.type) return;
+      if (data.type === 'breadboard:thought-topology-request') {
+        if (event.source !== iframeRef.current?.contentWindow) return;
+        if (!quartzOrigin || event.origin !== quartzOrigin) return;
+        if (
+          typeof data.requestId !== 'string' ||
+          data.requestId.length > 128 ||
+          typeof data.clusterSlug !== 'string' ||
+          !/^[a-z0-9][a-z0-9-]{0,127}$/i.test(data.clusterSlug)
+        )
+          return;
+        const requestId = data.requestId;
+        const clusterSlug = data.clusterSlug;
+        if (topologyRequestsRef.current.has(requestId)) return;
+        topologyRequestsRef.current.add(requestId);
+        void fetch(`/api/thought-topology?clusterSlug=${encodeURIComponent(clusterSlug)}`, {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        })
+          .then(async (response) => {
+            const payload = await response.json().catch(() => ({ enabled: false, mode: 'links' }));
+            iframeRef.current?.contentWindow?.postMessage(
+              {
+                type: 'breadboard:thought-topology-response',
+                requestId,
+                ok: response.ok,
+                payload,
+              },
+              quartzOrigin,
+            );
+          })
+          .catch(() => {
+            iframeRef.current?.contentWindow?.postMessage(
+              {
+                type: 'breadboard:thought-topology-response',
+                requestId,
+                ok: false,
+                payload: { enabled: false, mode: 'links' },
+              },
+              quartzOrigin,
+            );
+          })
+          .finally(() => topologyRequestsRef.current.delete(requestId));
+        return;
+      }
       if (quartzOrigin && event.origin !== quartzOrigin && event.source !== iframeRef.current?.contentWindow) {
         return;
       }

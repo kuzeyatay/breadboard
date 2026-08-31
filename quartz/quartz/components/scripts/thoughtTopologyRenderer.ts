@@ -156,13 +156,19 @@ export async function renderThoughtTopology(
   const debugEnabled = new URLSearchParams(window.location.search).get("topologyTest") === "1"
 
   // --- Surrounding DOM -----------------------------------------------------
-  // The canvas' surface (.graph-outer or .global-graph-outer) owns the
-  // heading/search column, floating callout, and, in the overlay, the close button.
+  // Inline canvases keep their heading and status in the graph metadata row
+  // immediately above the bordered surface. The full-screen surface still owns
+  // its overlay controls, floating callout, and close button.
   const outer = graph.parentElement
-  const sibling = <T extends Element>(selector: string): T | null =>
-    (outer?.querySelector(
+  const graphRoot = graph.closest(".graph") as HTMLElement | null
+  const sibling = <T extends Element>(selector: string): T | null => {
+    const surfaceElement = outer?.querySelector(
       `:scope > ${selector}, :scope > .thought-topology-controls > ${selector}`,
-    ) as T | null) ?? null
+    ) as T | null
+    if (surfaceElement) return surfaceElement
+    if (!outer?.classList.contains("graph-outer")) return null
+    return graphRoot?.querySelector(`:scope > .thought-topology-meta > ${selector}`) as T | null
+  }
   const heading = sibling<HTMLElement>(".thought-topology-heading")
   const headingDescription = heading?.querySelector(
     ":scope > p:not(.thought-topology-analysis)",
@@ -188,7 +194,6 @@ export async function renderThoughtTopology(
   // Thought Topology is an explorable map, not a page-search surface. Keep
   // node search available to the legacy links graph only.
   if (searchPanel) searchPanel.hidden = true
-  const graphRoot = graph.closest(".graph") as HTMLElement | null
   if (graphRoot) graphRoot.dataset.activeMode = "thought-topology"
 
   let width = Math.max(graph.offsetWidth, 1)

@@ -19,6 +19,7 @@ import { ProcessManager } from "./process-manager.ts";
 import { FakeRuntimeClient, type RuntimeClient } from "./runtime-client.ts";
 import { makeRedactor, safeErrorMessage } from "./redaction.ts";
 import type { NormalizedEvent } from "./types.ts";
+import { ComputerUseSignal } from "./computer-use-signal.ts";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -63,10 +64,16 @@ export async function startAdapter(overrides: Partial<AdapterConfig> = {}): Prom
   processes.reapOrphans();
 
   const client = await loadRuntime(config, redact);
-  const runManager = new RunManager(client, screenshots, processes, {
+  let runManager!: RunManager;
+  const computerUseSignal = new ComputerUseSignal({
+    dataDir,
+    onCancel: () => runManager.abortActiveDesktopControls("escape"),
+  });
+  runManager = new RunManager(client, screenshots, processes, {
     maxConcurrentRuns: config.maxConcurrentRuns,
     screenshotRetentionMs: config.screenshotRetentionMs,
     redact,
+    onDesktopControlChange: (active) => computerUseSignal.setActive(active),
   });
 
   const authorized = (req: http.IncomingMessage): boolean => {
@@ -338,6 +345,7 @@ export async function startAdapter(overrides: Partial<AdapterConfig> = {}): Prom
     port,
     async stop() {
       await runManager.shutdown();
+      computerUseSignal.stop();
       // Force-close keep-alive/SSE sockets so close() resolves promptly.
       server.closeAllConnections?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));

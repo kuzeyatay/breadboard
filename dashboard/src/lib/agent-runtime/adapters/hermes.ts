@@ -8,6 +8,7 @@ import {
 import { BREAD_ASSISTANT_IDENTITY } from "../../assistant-identity.ts";
 import {
   attachmentOrderManifest,
+  productAttachmentPromptText,
   type ChatAttachment,
 } from "../../chat-attachments.ts";
 import { modelAttachmentPromptText } from "../../model-attachments.ts";
@@ -187,6 +188,15 @@ function withTextAttachments(
         [
           `<breadboard_attachment name=${JSON.stringify(attachment.name)}${position}>`,
           attachment.text,
+          "</breadboard_attachment>",
+        ].join("\n"),
+      ];
+    }
+    if (attachment.type === "product") {
+      return [
+        [
+          `<breadboard_attachment name=${JSON.stringify(attachment.name)} kind="product"${position}>`,
+          productAttachmentPromptText(attachment),
           "</breadboard_attachment>",
         ].join("\n"),
       ];
@@ -447,6 +457,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "save_memory",
       "memory_query",
       "workflow_propose",
+      "workflow_create",
       "document_skill_read",
       "capability_gap",
       "capability_search",

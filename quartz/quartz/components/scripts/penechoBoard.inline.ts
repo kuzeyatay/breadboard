@@ -19,6 +19,7 @@ interface BoardReference {
 const LOCAL_HOST = /^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i
 const DEFAULT_PENECHO_PORT = "8092"
 const VIEW_HEARTBEAT_MS = 20_000
+const SERVER_PROBE_TIMEOUT_MS = 5_000
 const FRAME_READY_TIMEOUT_MS = 30_000
 const FRAME_READY_MESSAGE = "penecho:board-ready"
 
@@ -131,6 +132,19 @@ async function resolveServer(fallback: string, viewId: string): Promise<ServerRe
     }
   } catch {
     return { url: fallback || null, error: "", leaseAcknowledged: false }
+  }
+}
+
+async function probeServer(server: string): Promise<boolean> {
+  try {
+    await fetch(new URL("/api/config", server), {
+      cache: "no-store",
+      mode: "no-cors",
+      signal: AbortSignal.timeout(SERVER_PROBE_TIMEOUT_MS),
+    })
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -291,6 +305,14 @@ function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: 
         setMessage(resolution.error || "The whiteboard server is not running.", true)
         return
       }
+      // A dashboard with the current lease protocol has already health-checked
+      // its managed server. Older dashboards and direct/external servers have
+      // not, so verify that the destination actually answers before framing it.
+      if (!resolution.leaseAcknowledged && !(await probeServer(resolution.url))) {
+        setMessage("The whiteboard server is not responding.", true)
+        return
+      }
+      if (disposed) return
 
       let source: string
       try {
@@ -310,17 +332,9 @@ function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: 
       mountedFrame.title = board.title
       mountedFrame.src = source
       mountedFrame.allow = "clipboard-read; clipboard-write"
-      // Current managed PenEcho builds send a board-ready message after the
-      // requested snapshot has been restored. The load event remains a
-      // compatibility fallback for externally managed or older servers.
-      if (!resolution.leaseAcknowledged)
-        mountedFrame.addEventListener(
-          "load",
-          () => {
-            if (frame === mountedFrame) markFrameReady()
-          },
-          { once: true },
-        )
+      // PenEcho sends a board-ready message only after it has restored the
+      // requested snapshot. An iframe load event cannot be used here: browsers
+      // also fire it for blocked and unreachable frames.
       mountedFrame.addEventListener(
         "error",
         () => {

@@ -16,6 +16,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
+import { ComputerUseSignal } from "../computer-use-signal.ts";
 import { demonstrationCaptureBackend, teachAvailability } from "./backends.ts";
 import { compileProcedure } from "./compile.ts";
 import { diffProcedures, induceProcedure, induceRevision, type ProcedureDiff } from "./induction.ts";
@@ -68,6 +69,73 @@ const processingRegistry = (): Map<string, Processing> => {
   if (!holder.__breadboardTeachProcessing) holder.__breadboardTeachProcessing = new Map();
   return holder.__breadboardTeachProcessing;
 };
+
+interface ActiveTeachingCapture {
+  userId: number;
+  cancelling: boolean;
+}
+
+type TeachingCaptureGlobals = typeof globalThis & {
+  __breadboardTeachingCaptures?: Map<string, ActiveTeachingCapture>;
+  __breadboardTeachingCaptureSignal?: ComputerUseSignal;
+};
+
+const teachingCaptureRegistry = (): Map<string, ActiveTeachingCapture> => {
+  const holder = globalThis as TeachingCaptureGlobals;
+  if (!holder.__breadboardTeachingCaptures) holder.__breadboardTeachingCaptures = new Map();
+  return holder.__breadboardTeachingCaptures;
+};
+
+/** Red means Bread is observing a demonstration, not operating the computer. */
+const teachingCaptureSignal = (): ComputerUseSignal => {
+  const holder = globalThis as TeachingCaptureGlobals;
+  if (!holder.__breadboardTeachingCaptureSignal) {
+    holder.__breadboardTeachingCaptureSignal = new ComputerUseSignal({
+      producer: "teach-recording",
+      appearance: "red",
+      onCancel: () => {
+        for (const [sessionId, active] of teachingCaptureRegistry()) {
+          if (active.cancelling) continue;
+          active.cancelling = true;
+          void cancelTeaching(active.userId, sessionId).catch((error: unknown) => {
+            const current = teachingCaptureRegistry().get(sessionId);
+            if (current) current.cancelling = false;
+            teachWarn("session", "Escape could not cancel teaching", {
+              sessionId,
+              message: (error as Error).message,
+            });
+          });
+        }
+      },
+    });
+  }
+  return holder.__breadboardTeachingCaptureSignal;
+};
+
+function activateTeachingCaptureIndicator(userId: number, sessionId: string): void {
+  const registry = teachingCaptureRegistry();
+  registry.set(sessionId, { userId, cancelling: false });
+  try {
+    teachingCaptureSignal().setRunActive(sessionId, true);
+  } catch (error) {
+    registry.delete(sessionId);
+    throw error;
+  }
+}
+
+function releaseTeachingCaptureIndicator(sessionId: string): void {
+  teachingCaptureRegistry().delete(sessionId);
+  const signal = (globalThis as TeachingCaptureGlobals).__breadboardTeachingCaptureSignal;
+  if (!signal) return;
+  try {
+    signal.setRunActive(sessionId, false);
+  } catch (error) {
+    teachWarn("session", "teaching indicator cleanup failed", {
+      sessionId,
+      message: (error as Error).message,
+    });
+  }
+}
 
 function audioPath(sessionId: string): string {
   return path.join(sessionRecordingDirectory(sessionId), "narration.webm");
@@ -127,6 +195,8 @@ export async function startTeaching(input: StartTeachingInput): Promise<StartTea
   });
 
   const recordingDirectory = ensureDirectory(sessionRecordingDirectory(row.id));
+  let captureStarted = false;
+  let indicatorActive = false;
 
   try {
     const capture = await demonstrationCaptureBackend().start({
@@ -136,6 +206,17 @@ export async function startTeaching(input: StartTeachingInput): Promise<StartTea
       maxFrames: MAX_FRAMES,
       frameMaxWidth: FRAME_MAX_WIDTH,
     });
+    captureStarted = true;
+
+    try {
+      activateTeachingCaptureIndicator(input.userId, row.id);
+      indicatorActive = true;
+    } catch (error) {
+      // Recording without its visible safety affordance is not allowed.
+      await demonstrationCaptureBackend().cancel(row.id).catch(() => undefined);
+      captureStarted = false;
+      throw error;
+    }
 
     store.updateDemonstration(input.userId, row.id, {
       state: "recording",
@@ -150,6 +231,10 @@ export async function startTeaching(input: StartTeachingInput): Promise<StartTea
       screenDimensions: capture.screenDimensions,
     };
   } catch (error) {
+    if (captureStarted) {
+      await demonstrationCaptureBackend().cancel(row.id).catch(() => undefined);
+    }
+    if (indicatorActive) releaseTeachingCaptureIndicator(row.id);
     store.updateDemonstration(input.userId, row.id, {
       state: "failed",
       error: (error as Error).message,
@@ -164,6 +249,7 @@ export async function pauseTeaching(userId: number, sessionId: string): Promise<
   const row = store.requireDemonstration(userId, sessionId);
   if (row.state !== "recording") throw new Error("That session is not recording.");
   await demonstrationCaptureBackend().pause(sessionId);
+  releaseTeachingCaptureIndicator(sessionId);
   store.updateDemonstration(userId, sessionId, { state: "paused" });
   return store.summarizeDemonstration(store.requireDemonstration(userId, sessionId));
 }
@@ -172,6 +258,12 @@ export async function resumeTeaching(userId: number, sessionId: string): Promise
   const row = store.requireDemonstration(userId, sessionId);
   if (row.state !== "paused") throw new Error("That session is not paused.");
   await demonstrationCaptureBackend().resume(sessionId);
+  try {
+    activateTeachingCaptureIndicator(userId, sessionId);
+  } catch (error) {
+    await demonstrationCaptureBackend().pause(sessionId).catch(() => undefined);
+    throw error;
+  }
   store.updateDemonstration(userId, sessionId, { state: "recording" });
   return store.summarizeDemonstration(store.requireDemonstration(userId, sessionId));
 }
@@ -188,6 +280,7 @@ export async function cancelTeaching(userId: number, sessionId: string): Promise
   store.requireDemonstration(userId, sessionId);
   processingRegistry().get(sessionId)?.controller.abort();
   await demonstrationCaptureBackend().cancel(sessionId);
+  releaseTeachingCaptureIndicator(sessionId);
   const discarded = discardSessionRecording(sessionId);
   await fsp.rm(sessionDirectory(sessionId), { recursive: true, force: true }).catch(() => undefined);
   store.updateDemonstration(userId, sessionId, {
@@ -270,6 +363,7 @@ export async function finishTeaching(userId: number, sessionId: string): Promise
   }
 
   const artifact = await demonstrationCaptureBackend().stop(sessionId);
+  releaseTeachingCaptureIndicator(sessionId);
   store.updateDemonstration(userId, sessionId, {
     state: "processing",
     durationMs: artifact.durationMs,

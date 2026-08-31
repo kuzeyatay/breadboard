@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 const layout =
   await import("../../quartz/quartz/components/scripts/thoughtTopologyLayout.ts");
 const {
+  aggregateThoughtTopologies,
   planThoughtTopology,
   fitTransform,
   placeLabels,
@@ -138,6 +139,76 @@ function edge(id, source, target, score, origin = "inferred") {
     components: { embedding: 0, concept: 0.5, lexical: 0.4 },
   };
 }
+
+test("library topology namespaces Gardens beneath one root without losing their routes or affinities", () => {
+  const physics = fixture([edge("edge:inside", "page:w1", "page:w2", 0.91)]);
+  const signals = fixture([edge("edge:inside", "page:w1", "page:w2", 0.82)]);
+  signals.garden = {
+    ...signals.garden,
+    id: 2,
+    slug: "signals-and-systems",
+    title: "Signals and systems",
+  };
+  signals.nodes = signals.nodes.map((node) => ({
+    ...node,
+    slug: node.slug.replace(/^physics\//, "signals-and-systems/"),
+  }));
+
+  const merged = aggregateThoughtTopologies(
+    "private-library/user-1",
+    "My garden",
+    2,
+    [
+      { clusterSlug: "physics", topology: physics },
+      { clusterSlug: "signals-and-systems", topology: signals },
+    ],
+  );
+  assert.equal(merged.garden.slug, "private-library/user-1");
+  assert.equal(
+    merged.nodes.length,
+    physics.nodes.length + signals.nodes.length,
+  );
+  assert.equal(
+    new Set(merged.nodes.map((node) => node.id)).size,
+    merged.nodes.length,
+  );
+  assert.deepEqual(
+    merged.folders
+      .filter((folder) => folder.depth === 1)
+      .map((folder) => [folder.title, folder.pageSlug]),
+    [
+      ["Physics for EE", "physics"],
+      ["Signals and systems", "signals-and-systems"],
+    ],
+  );
+  assert.ok(
+    merged.edges.every(
+      (item) =>
+        item.source.startsWith("aggregate:") &&
+        item.target.startsWith("aggregate:"),
+    ),
+  );
+
+  const plan = planThoughtTopology(merged);
+  assert.deepEqual(
+    plan.nodes
+      .filter(
+        (node) => node.kind === "folder" && node.folderId === "aggregate:root",
+      )
+      .map((node) => node.label),
+    ["Physics for EE", "Signals and systems"],
+  );
+  assert.ok(
+    plan.hierarchyEdges.some(
+      (item) =>
+        item.source === "garden:private-library/user-1" &&
+        item.target === "aggregate:physics:garden",
+    ),
+  );
+  assert.ok(
+    plan.edges.some((item) => item.id === "aggregate:physics:edge:inside"),
+  );
+});
 
 test("empty and source folders are hidden; the three module folders become stable radial sectors", () => {
   const plan = planThoughtTopology(fixture());

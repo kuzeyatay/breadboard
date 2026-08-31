@@ -43,7 +43,18 @@ function createInitialTurn(responseStartedAt) {
       clientMessageId: "first-turn",
       surface: "dashboard_terminal",
       content: "hi",
-      metadata: { responseStartedAt },
+      metadata: {
+        responseStartedAt,
+        preDispatchRecovery: {
+          agentMode: true,
+          model: "openai/gpt-5.6",
+          reasoningEffort: "high",
+          superAgent: false,
+          adhdMode: false,
+          personalize: true,
+          yoloMode: false,
+        },
+      },
     },
   });
 }
@@ -66,6 +77,15 @@ test("reopening a newly-created chat during dispatch still shows the original Th
   assert.equal(assistant.interrupted, false);
   assert.equal(assistant.responseStartedAt, responseStartedAt);
   assert.equal(assistant.responseDurationMs, undefined);
+  assert.deepEqual(assistant.preDispatchRecovery, {
+    agentMode: true,
+    model: "openai/gpt-5.6",
+    reasoningEffort: "high",
+    superAgent: false,
+    adhdMode: false,
+    personalize: true,
+    yoloMode: false,
+  });
 });
 
 test("a genuinely abandoned pre-dispatch placeholder eventually becomes interrupted", () => {
@@ -76,6 +96,7 @@ test("a genuinely abandoned pre-dispatch placeholder eventually becomes interrup
 
   assert.equal(assistant.pending, false);
   assert.equal(assistant.interrupted, true);
+  assert.equal(assistant.preDispatchRecovery, undefined);
 });
 
 test("claiming the placeholder preserves the send timestamp used by the restored clock", () => {
@@ -92,4 +113,5 @@ test("claiming the placeholder preserves the send timestamp used by the restored
   assert.equal(assistant.pending, true);
   assert.equal(assistant.interrupted, false);
   assert.equal(assistant.responseStartedAt, originalStartedAt);
+  assert.equal(assistant.preDispatchRecovery, undefined);
 });

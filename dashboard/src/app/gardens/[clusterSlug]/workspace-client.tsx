@@ -502,6 +502,7 @@ import { gardenDocumentHref } from "@/lib/garden-document-route";
 import {
   normalizeGenerativeUiResources,
   productForAction,
+  productForResource,
   safeProductUrl,
   type GenerativeUiAction,
   type GenerativeUiResource,
@@ -1450,6 +1451,10 @@ interface ChatTranscriptProps {
   /** An opener was picked: it fills the composer the workspace owns. */
   onSelectSuggestion: (prompt: string) => void;
   onGenerativeUiAction: (action: GenerativeUiAction) => void;
+  activeProductComparison: {
+    resourceId: string;
+    productIds: readonly string[];
+  } | null;
   chatSessionId: number | null;
   isStreaming: boolean;
   loadingChats: boolean;
@@ -1558,6 +1563,7 @@ const ChatTranscript = memo(function ChatTranscript({
   greetingSuggestions,
   onSelectSuggestion,
   onGenerativeUiAction,
+  activeProductComparison,
   chatSessionId,
   isStreaming,
   loadingChats,
@@ -2991,6 +2997,7 @@ const ChatTranscript = memo(function ChatTranscript({
                             <GenerativeUiRenderer
                               resources={msg.uiResources}
                               onAction={onGenerativeUiAction}
+                              activeProductComparison={activeProductComparison}
                             />
                           ) : null}
                           {chatSessionId ? (
@@ -3204,10 +3211,8 @@ export default function WorkspaceClient({
   const [graphRefreshVersion, setGraphRefreshVersion] = useState(0);
   const [docsExpanded, setDocsExpanded] = useState(false);
   const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
-  const [linksExpanded, setLinksExpanded] = useState(false);
-  const [linkComposerOpen, setLinkComposerOpen] = useState(false);
-  const [mediaExpanded, setMediaExpanded] = useState(false);
-  const [mediaComposerOpen, setMediaComposerOpen] = useState(false);
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [mediaDialogOpen, setMediaDialogOpen] = useState(false);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
   const [savedLinks, setSavedLinks] = useState<SavedLinkInfo[]>([]);
   const [linksLoading, setLinksLoading] = useState(true);
@@ -3237,6 +3242,7 @@ export default function WorkspaceClient({
   const [productPanel, setProductPanel] = useState<ProductPanelSelection | null>(
     null,
   );
+  const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [railError, setRailError] = useState<string | null>(null);
   // The rail's deletes ask in the app's own sheet; `confirmDialog` is rendered
@@ -3532,6 +3538,9 @@ export default function WorkspaceClient({
       if (action.type === "product.find-similar") {
         setInput(`Find products similar to ${product.title} from ${product.merchant}.`);
         setProductPanel(null);
+        setChatAttachments((current) =>
+          current.filter((attachment) => attachment.type !== "product"),
+        );
         window.setTimeout(() => textareaRef.current?.focus(), 0);
         return;
       }
@@ -3552,7 +3561,10 @@ export default function WorkspaceClient({
           return {
             resource: action.resource,
             productId: action.productId,
-            compareProductIds: [],
+            compareProductIds:
+              current?.resource.id === action.resource.id
+                ? current.compareProductIds
+                : [],
           };
         }
         const prior = current?.resource.id === action.resource.id
@@ -3560,7 +3572,7 @@ export default function WorkspaceClient({
           : [];
         const compareProductIds = prior.includes(action.productId)
           ? prior.filter((id) => id !== action.productId)
-          : [...prior, action.productId].slice(-4);
+          : [...prior, action.productId].slice(-2);
         return {
           resource: action.resource,
           productId: action.productId,
@@ -3570,6 +3582,19 @@ export default function WorkspaceClient({
     },
     [],
   );
+  useEffect(() => {
+    if (!productPanel) return;
+    const selectedProducts = productPanel.compareProductIds.flatMap((productId) => {
+      const product = productForResource(productPanel.resource, productId);
+      return product
+        ? [{ type: "product" as const, name: product.title, product }]
+        : [];
+    });
+    setChatAttachments((current) => [
+      ...current.filter((attachment) => attachment.type !== "product"),
+      ...selectedProducts,
+    ]);
+  }, [productPanel]);
   // The same greeting engine the terminals use, told which garden it is
   // standing in, so a blank garden chat opens on words about this garden
   // rather than a fixed heading.
@@ -3653,7 +3678,6 @@ export default function WorkspaceClient({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Chat attachments (per-message, sent directly to the AI)
-  const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [extractingAttachments, setExtractingAttachments] = useState(false);
   /** What a blocking document distillation is doing right now, or null. */
   const [attachmentDistillStatus, setAttachmentDistillStatus] = useState<
@@ -5724,8 +5748,6 @@ export default function WorkspaceClient({
       setSavedLinks(Array.isArray(data.links) ? data.links : []);
       setNewLinkTitle("");
       setNewLinkUrl("");
-      setLinkComposerOpen(false);
-      setLinksExpanded(true);
       setSourceDocsExpanded(true);
       await fetchDocuments();
       setGraphRefreshVersion((value) => value + 1);
@@ -6045,7 +6067,18 @@ export default function WorkspaceClient({
   }
 
   function removeChatAttachment(index: number) {
+    const removed = chatAttachments[index];
     setChatAttachments((prev) => prev.filter((_, i) => i !== index));
+    if (removed?.type === "product") {
+      setProductPanel((current) => current
+        ? {
+            ...current,
+            compareProductIds: current.compareProductIds.filter(
+              (productId) => productId !== removed.product.id,
+            ),
+          }
+        : current);
+    }
   }
 
   function toggleSelectedDocument(slug: string) {
@@ -15452,13 +15485,11 @@ export default function WorkspaceClient({
 
       <div className="border-t border-gray-800 shrink-0">
         <button
-          onClick={() => {
-            if (linksExpanded) setLinkComposerOpen(false);
-            setLinksExpanded((v) => !v);
-          }}
-          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 hover:text-white transition-colors ${linksExpanded ? "bb-neu-accordion-open" : ""}`}
-          aria-expanded={linksExpanded}
-          aria-controls="garden-links-panel"
+          type="button"
+          onClick={() => setLinkDialogOpen(true)}
+          className="bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 hover:text-white transition-colors"
+          aria-haspopup="dialog"
+          aria-label="Open links dialog"
         >
           <div className="flex items-center gap-2">
             <svg
@@ -15477,36 +15508,24 @@ export default function WorkspaceClient({
             Links
             {savedLinks.length > 0 ? ` (${savedLinks.length})` : ""}
           </div>
-          <div className="flex items-center gap-1.5">
-            {isOwner && (
-              <span
-                role="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setLinksExpanded(true);
-                  setLinkComposerOpen(true);
-                }}
-                className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
-                aria-label="Add link"
-                title="Add link"
+          <span className="flex items-center gap-1.5" aria-hidden="true">
+            {isOwner ? (
+              <svg
+                className="h-3.5 w-3.5 text-gray-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
               >
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 4.5v15m7.5-7.5h-15"
-                  />
-                </svg>
-              </span>
-            )}
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 4.5v15m7.5-7.5h-15"
+                />
+              </svg>
+            ) : null}
             <svg
-              className={`w-3.5 h-3.5 transition-transform duration-200 ${linksExpanded ? "" : "rotate-180"}`}
+              className="h-3.5 w-3.5 rotate-180 text-gray-600"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -15518,111 +15537,17 @@ export default function WorkspaceClient({
                 d="m4.5 15.75 7.5-7.5 7.5 7.5"
               />
             </svg>
-          </div>
+          </span>
         </button>
-        {linksExpanded && (
-          <div
-            id="garden-links-panel"
-            className="bb-neu-accordion-panel border-t border-gray-800"
-          >
-            <div className="max-h-56 overflow-y-auto">
-              {linksLoading ? (
-                <div className="flex justify-center py-6">
-                  <Spinner className="w-4 h-4 text-gray-700" />
-                </div>
-              ) : savedLinks.length === 0 ? (
-                <div className="px-4 py-6 text-center">
-                  <p className="text-xs text-gray-600">No saved links yet.</p>
-                </div>
-              ) : (
-                <ul className="divide-y divide-gray-800/70">
-                  {savedLinks.map((link) => (
-                    <li
-                      key={link.id}
-                      className="group flex items-center gap-2 px-3 py-2"
-                    >
-                      <a
-                        href={link.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="min-w-0 flex-1 text-left"
-                        title={link.url}
-                      >
-                        <span className="block truncate text-xs font-medium text-gray-300 transition-colors group-hover:text-white">
-                          {link.title}
-                        </span>
-                        <span className="block truncate text-[11px] text-gray-600">
-                          {link.url}
-                        </span>
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => handleCopyLink(link.url)}
-                        className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
-                        aria-label="Copy link"
-                        title="Copy link"
-                      >
-                        <svg
-                          className="h-3.5 w-3.5"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                          strokeWidth={1.8}
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125v-9.75c0-.621.504-1.125 1.125-1.125H8.25m2.25-6.75h8.625c.621 0 1.125.504 1.125 1.125v8.625c0 .621-.504 1.125-1.125 1.125H10.5a1.125 1.125 0 0 1-1.125-1.125V4.125c0-.621.504-1.125 1.125-1.125Z"
-                          />
-                        </svg>
-                      </button>
-                      {isOwner && (
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteLink(link.id)}
-                          disabled={deletingLinkId === link.id}
-                          className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-red-950/30 hover:text-red-400 disabled:opacity-40"
-                          aria-label="Delete link"
-                          title="Delete link"
-                        >
-                          {deletingLinkId === link.id ? (
-                            <Spinner className="h-3.5 w-3.5" />
-                          ) : (
-                            <svg
-                              className="h-3.5 w-3.5"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M6 18 18 6M6 6l12 12"
-                              />
-                            </svg>
-                          )}
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="border-t border-gray-800 shrink-0">
         <button
           type="button"
-          onClick={() => {
-            if (mediaExpanded) setMediaComposerOpen(false);
-            setMediaExpanded((value) => !value);
-          }}
-          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 hover:text-white transition-colors ${mediaExpanded ? "bb-neu-accordion-open" : ""}`}
-          aria-expanded={mediaExpanded}
-          aria-controls="garden-media-panel"
+          onClick={() => setMediaDialogOpen(true)}
+          className="bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 hover:text-white transition-colors"
+          aria-haspopup="dialog"
+          aria-label="Open video and audio dialog"
         >
           <div className="flex items-center gap-2">
             <svg
@@ -15640,36 +15565,24 @@ export default function WorkspaceClient({
             </svg>
             Video &amp; audio
           </div>
-          <div className="flex items-center gap-1.5">
-            {isOwner && (
-              <span
-                role="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setMediaExpanded(true);
-                  setMediaComposerOpen(true);
-                }}
-                className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
-                aria-label="Add video or audio"
-                title="Add video or audio"
+          <span className="flex items-center gap-1.5" aria-hidden="true">
+            {isOwner ? (
+              <svg
+                className="h-3.5 w-3.5 text-gray-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
               >
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 4.5v15m7.5-7.5h-15"
-                  />
-                </svg>
-              </span>
-            )}
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 4.5v15m7.5-7.5h-15"
+                />
+              </svg>
+            ) : null}
             <svg
-              className={`w-3.5 h-3.5 transition-transform duration-200 ${mediaExpanded ? "" : "rotate-180"}`}
+              className="h-3.5 w-3.5 rotate-180 text-gray-600"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -15681,19 +15594,15 @@ export default function WorkspaceClient({
                 d="m4.5 15.75 7.5-7.5 7.5 7.5"
               />
             </svg>
-          </div>
+          </span>
         </button>
-        {mediaExpanded && (
-          <GardenVideoImport
-            clusterSlug={clusterSlug}
-            isOwner={isOwner}
-            composerOpen={mediaComposerOpen}
-            composerPresentation="modal"
-            onComposerClose={() => setMediaComposerOpen(false)}
-            onComposerSubmitted={() => setMediaComposerOpen(false)}
-            onSourceCreated={handleMediaSourceCreated}
-          />
-        )}
+        <GardenVideoImport
+          clusterSlug={clusterSlug}
+          isOwner={isOwner}
+          open={mediaDialogOpen}
+          onClose={() => setMediaDialogOpen(false)}
+          onSourceCreated={handleMediaSourceCreated}
+        />
       </div>
 
       <div className="border-t border-gray-800 shrink-0">
@@ -16277,6 +16186,12 @@ export default function WorkspaceClient({
                 greetingSuggestions={chatGreeting.suggestions}
                 onSelectSuggestion={fillComposerWithPrompt}
                 onGenerativeUiAction={handleGenerativeUiAction}
+                activeProductComparison={productPanel?.compareProductIds.length
+                  ? {
+                      resourceId: productPanel.resource.id,
+                      productIds: productPanel.compareProductIds,
+                    }
+                  : null}
                 chatSessionId={activeChatId}
                 isStreaming={isStreaming || delegationInFlight}
                 loadingChats={chatContentLoading}
@@ -16705,35 +16620,34 @@ export default function WorkspaceClient({
         />
       ) : null}
 
-      {linkComposerOpen ? (
+      {linkDialogOpen ? (
         <div
           className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(event) => {
-            if (event.target === event.currentTarget) setLinkComposerOpen(false);
+            if (event.target === event.currentTarget) setLinkDialogOpen(false);
           }}
         >
-          <form
-            onSubmit={handleSaveLink}
+          <section
             role="dialog"
             aria-modal="true"
             aria-labelledby="garden-link-composer-title"
-            className="bb-modal-panel neu-dialog w-full max-w-md overflow-hidden rounded-2xl border"
+            className="bb-modal-panel neu-dialog flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border"
           >
-            <div className="flex items-center justify-between border-b border-gray-800 px-5 py-3.5">
+            <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-5 py-3.5">
               <div>
                 <h2
                   id="garden-link-composer-title"
                   className="text-base font-semibold text-white"
                 >
-                  Add link
+                  Links
                 </h2>
                 <p className="mt-0.5 text-xs text-gray-500">
-                  Save a web page as a source in {clusterName}.
+                  Save and manage web sources in {clusterName}.
                 </p>
               </div>
               <button
                 type="button"
-                onClick={() => setLinkComposerOpen(false)}
+                onClick={() => setLinkDialogOpen(false)}
                 className="neu-button-icon rounded-full p-1.5 text-gray-500"
                 aria-label="Close link dialog"
               >
@@ -16753,55 +16667,155 @@ export default function WorkspaceClient({
                 </svg>
               </button>
             </div>
-            <div className="space-y-4 px-5 py-4">
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-400">Name</span>
-                <input
-                  type="text"
-                  value={newLinkTitle}
-                  onChange={(event) => setNewLinkTitle(event.target.value)}
-                  placeholder="Link name"
-                  autoFocus
-                  className="neu-control h-10 w-full rounded-lg border border-gray-800 bg-gray-950 px-3 text-sm text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
-                  aria-label="Link name"
-                />
-              </label>
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-400">URL</span>
-                <input
-                  type="url"
-                  value={newLinkUrl}
-                  onChange={(event) => setNewLinkUrl(event.target.value)}
-                  placeholder="https://..."
-                  required
-                  className="neu-control h-10 w-full rounded-lg border border-gray-800 bg-gray-950 px-3 text-sm text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
-                  aria-label="Link URL"
-                />
-              </label>
-              {savingLink ? (
-                <p className="text-xs text-gray-500">
-                  Converting link to Markdown...
-                </p>
+            <div className="min-h-0 overflow-y-auto">
+              {isOwner ? (
+                <form
+                  onSubmit={handleSaveLink}
+                  className="space-y-4 px-5 py-4"
+                >
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-medium text-gray-400">
+                      Name
+                    </span>
+                    <input
+                      type="text"
+                      value={newLinkTitle}
+                      onChange={(event) => setNewLinkTitle(event.target.value)}
+                      placeholder="Link name"
+                      autoFocus
+                      className="neu-control h-10 w-full rounded-lg border border-gray-800 bg-gray-950 px-3 text-sm text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                      aria-label="Link name"
+                    />
+                  </label>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-medium text-gray-400">
+                      URL
+                    </span>
+                    <input
+                      type="url"
+                      value={newLinkUrl}
+                      onChange={(event) => setNewLinkUrl(event.target.value)}
+                      placeholder="https://..."
+                      required
+                      className="neu-control h-10 w-full rounded-lg border border-gray-800 bg-gray-950 px-3 text-sm text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                      aria-label="Link URL"
+                    />
+                  </label>
+                  {savingLink ? (
+                    <p className="text-xs text-gray-500">
+                      Converting link to Markdown...
+                    </p>
+                  ) : null}
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={!newLinkUrl.trim() || savingLink}
+                      className="neu-button-primary flex items-center gap-2 px-4 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {savingLink ? (
+                        <Spinner className="h-3.5 w-3.5" />
+                      ) : null}
+                      Save link
+                    </button>
+                  </div>
+                </form>
               ) : null}
+
+              <div className={isOwner ? "border-t border-gray-800" : ""}>
+                <div className="border-b border-gray-800 px-5 py-2.5">
+                  <h3 className="text-xs font-medium text-gray-400">
+                    Saved links
+                  </h3>
+                </div>
+                {linksLoading ? (
+                  <div className="flex justify-center py-6">
+                    <Spinner className="h-4 w-4 text-gray-700" />
+                  </div>
+                ) : savedLinks.length === 0 ? (
+                  <div className="px-5 py-6 text-center">
+                    <p className="text-xs text-gray-600">
+                      No saved links yet.
+                    </p>
+                  </div>
+                ) : (
+                  <ul className="divide-y divide-gray-800/70">
+                    {savedLinks.map((link) => (
+                      <li
+                        key={link.id}
+                        className="group flex items-center gap-2 px-5 py-3"
+                      >
+                        <a
+                          href={link.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="min-w-0 flex-1 text-left"
+                          title={link.url}
+                        >
+                          <span className="block truncate text-xs font-medium text-gray-300 transition-colors group-hover:text-white">
+                            {link.title}
+                          </span>
+                          <span className="block truncate text-[11px] text-gray-600">
+                            {link.url}
+                          </span>
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyLink(link.url)}
+                          className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+                          aria-label="Copy link"
+                          title="Copy link"
+                        >
+                          <svg
+                            className="h-3.5 w-3.5"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125v-9.75c0-.621.504-1.125 1.125-1.125H8.25m2.25-6.75h8.625c.621 0 1.125.504 1.125 1.125v8.625c0 .621-.504 1.125-1.125 1.125H10.5a1.125 1.125 0 0 1-1.125-1.125V4.125c0-.621.504-1.125 1.125-1.125Z"
+                            />
+                          </svg>
+                        </button>
+                        {isOwner ? (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteLink(link.id)}
+                            disabled={deletingLinkId === link.id}
+                            className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-red-950/30 hover:text-red-400 disabled:opacity-40"
+                            aria-label="Delete link"
+                            title="Delete link"
+                          >
+                            {deletingLinkId === link.id ? (
+                              <Spinner className="h-3.5 w-3.5" />
+                            ) : (
+                              <svg
+                                className="h-3.5 w-3.5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                strokeWidth={2}
+                                aria-hidden="true"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M6 18 18 6M6 6l12 12"
+                                />
+                              </svg>
+                            )}
+                          </button>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
-            <div className="flex items-center justify-end gap-2 border-t border-gray-800 px-5 py-3">
-              <button
-                type="button"
-                onClick={() => setLinkComposerOpen(false)}
-                className="neu-button px-4 py-1.5 text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={!newLinkUrl.trim() || savingLink}
-                className="neu-button-primary flex items-center gap-2 px-4 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {savingLink ? <Spinner className="h-3.5 w-3.5" /> : null}
-                Save link
-              </button>
-            </div>
-          </form>
+          </section>
         </div>
       ) : null}
 

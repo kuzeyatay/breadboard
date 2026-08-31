@@ -7,8 +7,11 @@ import {
   extractChatAttachments,
   imageFilesFromClipboard,
   normalizeChatMessageAttachments,
+  productAttachmentPromptText,
   reusableChatAttachments,
 } from '../src/lib/chat-attachments.ts';
+import { collectUploads } from '../src/lib/conversations/uploads.ts';
+import { parseChatAttachments } from '../src/lib/chat-attachments-request.ts';
 
 test('message attachments retain safe image data while text files retain only their name', () => {
   const dataUrl = 'data:image/png;base64,aGVsbG8=';
@@ -40,6 +43,50 @@ test('regeneration reuses stored images without restoring non-image file content
     ]),
     [{ type: 'image', name: 'pasted-screenshot-1.png', dataUrl }],
   );
+});
+
+test('selected products persist as reusable, prompt-safe chat attachments', () => {
+  const product = {
+    id: 'product:trackpad',
+    title: 'T1 Plus / Wireless Trackpad',
+    merchant: 'ProtoArc',
+    url: 'https://protoarc.example/products/t1-plus',
+    imageUrl: 'https://images.example/t1-plus.png',
+    price: { amount: '49.99', currency: 'USD', display: '$49.99' },
+    availability: 'In stock',
+    attributes: [{ label: 'Connection', value: 'Bluetooth' }],
+    sourceIds: ['source:protoarc'],
+  };
+  const attachment = { type: 'product', name: product.title, product };
+
+  assert.deepEqual(chatMessageAttachments([attachment]), [attachment]);
+  assert.deepEqual(normalizeChatMessageAttachments([attachment]), [attachment]);
+  assert.deepEqual(reusableChatAttachments([attachment]), [attachment]);
+  assert.deepEqual(parseChatAttachments([attachment]), [attachment]);
+  assert.deepEqual(
+    normalizeChatMessageAttachments([{
+      ...attachment,
+      product: { ...product, url: 'javascript:alert(1)' },
+    }]),
+    [],
+  );
+
+  const prompt = productAttachmentPromptText(attachment);
+  assert.match(prompt, /untrusted sourced product data/);
+  assert.match(prompt, /"merchant":"ProtoArc"/);
+  assert.doesNotMatch(prompt, /source:protoarc/);
+
+  assert.deepEqual(collectUploads([{
+    message_id: 17,
+    metadata: JSON.stringify({
+      attachments: [attachment],
+      attachmentNames: [attachment.name],
+    }),
+    created_at: '2026-08-31T10:00:00.000Z',
+    conversation_public_id: 'conversation-products',
+    conversation_title: 'Products',
+    surface: 'dashboard_terminal',
+  }]), []);
 });
 
 test('plain-text documents are attached without a server extraction round trip', async () => {

@@ -7,6 +7,9 @@
 
 import type DatabaseType from "better-sqlite3";
 
+import { DEFAULT_MODEL } from "../ai-models.ts";
+import { DEFAULT_ASSISTANT_REASONING_EFFORT } from "../assistant-reasoning.ts";
+
 type Db = DatabaseType.Database;
 
 export function ensureScheduledChatSchema(db: Db): void {
@@ -20,6 +23,9 @@ export function ensureScheduledChatSchema(db: Db): void {
       surface                TEXT    NOT NULL CHECK (surface IN ('dashboard_terminal','garden_chat')),
       garden_slug            TEXT,
       prompt_slug            TEXT,
+      model                  TEXT    NOT NULL DEFAULT '${DEFAULT_MODEL}',
+      reasoning_effort       TEXT    NOT NULL DEFAULT '${DEFAULT_ASSISTANT_REASONING_EFFORT}',
+      one_shot               INTEGER NOT NULL DEFAULT 0 CHECK (one_shot IN (0, 1)),
       enabled                INTEGER NOT NULL DEFAULT 1,
       next_run_at            TEXT    NOT NULL,
       last_run_at            TEXT,
@@ -53,6 +59,24 @@ export function ensureScheduledChatSchema(db: Db): void {
     "scheduled_chat_jobs",
     "lease_expires_at",
     "lease_expires_at TEXT",
+  );
+  ensureColumn(
+    db,
+    "scheduled_chat_jobs",
+    "model",
+    `model TEXT NOT NULL DEFAULT '${DEFAULT_MODEL}'`,
+  );
+  ensureColumn(
+    db,
+    "scheduled_chat_jobs",
+    "reasoning_effort",
+    `reasoning_effort TEXT NOT NULL DEFAULT '${DEFAULT_ASSISTANT_REASONING_EFFORT}'`,
+  );
+  ensureColumn(
+    db,
+    "scheduled_chat_jobs",
+    "one_shot",
+    "one_shot INTEGER NOT NULL DEFAULT 0 CHECK (one_shot IN (0, 1))",
   );
 }
 

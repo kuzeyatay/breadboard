@@ -1,17 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import Database from "better-sqlite3";
 
 import {
   generativeUiResourcesFromToolOutput,
+  generativeUiResourcesFromVerification,
   normalizeGenerativeUiResource,
   normalizeGenerativeUiResources,
   productForAction,
   safeProductUrl,
 } from "../src/lib/generative-ui/contracts.ts";
+import { backfillGenerativeUiResources } from "../src/lib/generative-ui/backfill.ts";
 import { serializeConversationExport } from "../src/lib/conversations/export.ts";
 import { cloneMessages } from "../src/app/components/hermes/conversation-branches.ts";
-import { jsonLdProductsFromHtml } from "../src/lib/product-search/service.ts";
+import {
+  jsonLdProductsFromHtml,
+  pricedCandidatesFromSearchHtml,
+  productPriceFromHtml,
+  productPriceFromText,
+} from "../src/lib/product-search/service.ts";
 import { composeHermesSystemPrompt } from "../src/lib/hermes/system-prompts.ts";
 
 const productResource = {
@@ -84,6 +92,39 @@ test("only product_search can project a product resource from tool output", () =
   assert.equal(generativeUiResourcesFromToolOutput("product_search", "not json").length, 0);
 });
 
+test("recovers and promotes a historical live product result exactly once", () => {
+  const verification = {
+    evidence: [{
+      success: true,
+      details: {
+        toolName: "product_search",
+        result: { success: true, uiResources: [productResource] },
+      },
+    }],
+  };
+  assert.equal(generativeUiResourcesFromVerification(verification).length, 1);
+
+  const db = new Database(":memory:");
+  db.exec(`
+    CREATE TABLE conversation_messages (
+      id INTEGER PRIMARY KEY,
+      role TEXT NOT NULL,
+      metadata TEXT
+    );
+  `);
+  db.prepare(
+    "INSERT INTO conversation_messages(id, role, metadata) VALUES (1, 'assistant', ?)",
+  ).run(JSON.stringify({ verification }));
+
+  assert.equal(backfillGenerativeUiResources(db), 1);
+  const metadata = JSON.parse(
+    db.prepare("SELECT metadata FROM conversation_messages WHERE id = 1").get().metadata,
+  );
+  assert.equal(metadata.uiResources[0].renderer, "product-carousel");
+  assert.equal(backfillGenerativeUiResources(db), 0);
+  db.close();
+});
+
 test("the product tool owns shopping discovery in Hermes normal tool selection", () => {
   const decision = {
     mode: "knowledge",
@@ -138,6 +179,12 @@ test("controlled actions cannot exceed the resource action grant", () => {
     productForAction({ type: "product.visit", resource, productId: "product:one" }),
     null,
   );
+  const selectable = normalizeGenerativeUiResource(productResource);
+  assert.ok(selectable);
+  assert.equal(
+    productForAction({ type: "product.select", resource: selectable, productId: "product:one" })?.id,
+    "product:one",
+  );
 });
 
 test("branch snapshots deep-clone generative UI resources", () => {
@@ -189,9 +236,67 @@ test("extracts Product JSON-LD without executing or repairing page scripts", () 
   assert.equal(products[0].name, "Acme Quiet One");
 });
 
+test("uses standard merchant metadata when Product JSON-LD omits its price", () => {
+  const price = productPriceFromHtml(`
+    <meta content="49.99" property="product:price:amount">
+    <meta property="product:price:currency" content="USD">
+  `);
+  assert.deepEqual(price, {
+    amount: "49.99",
+    currency: "USD",
+    display: "$49.99",
+  });
+  assert.equal(
+    productPriceFromHtml('<meta property="product:price:amount" content="49.99">'),
+    undefined,
+  );
+  assert.deepEqual(
+    productPriceFromHtml('<script>window.product={"currency":"EUR","currentPrice":"49,99"}</script>'),
+    { amount: "49.99", currency: "EUR", display: "€49.99" },
+  );
+});
+
+test("resolves prices from product-specific search snippets", () => {
+  assert.deepEqual(
+    productPriceFromText("ProtoArc T1 Plus — now US$49.99 with free shipping", "us-en"),
+    { amount: "49.99", currency: "USD", display: "$49.99" },
+  );
+  assert.deepEqual(
+    productPriceFromText("Trackpad aanbieding €49,99", "nl-nl"),
+    { amount: "49.99", currency: "EUR", display: "€49.99" },
+  );
+  assert.equal(productPriceFromText("A trackpad with Bluetooth and USB-C", "us-en"), undefined);
+
+  assert.deepEqual(
+    pricedCandidatesFromSearchHtml(`
+      <div class="result">
+        <a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fshop.example%2Ftrackpad" class="result__a">T1 Plus Trackpad</a>
+        <a class="result__snippet">Buy direct for $49.99 with free shipping.</a>
+      </div>
+    `),
+    [{
+      title: "T1 Plus Trackpad",
+      pageUrl: "https://shop.example/trackpad",
+      priceHint: { amount: "49.99", currency: "USD", display: "$49.99" },
+    }],
+  );
+});
+
 test("the renderer registry and surface wiring stay Breadboard-owned", () => {
   const renderer = readFileSync(
     new URL("../src/app/components/hermes/generative-ui-renderer.tsx", import.meta.url),
+    "utf8",
+  );
+  const carousel = readFileSync(
+    new URL("../src/app/components/hermes/product-carousel.tsx", import.meta.url),
+    "utf8",
+  );
+  const details = readFileSync(
+    new URL("../src/app/components/hermes/product-details-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  const productSearch = readFileSync(
+    new URL("../src/lib/product-search/service.ts", import.meta.url),
     "utf8",
   );
   const runtimePanel = readFileSync(
@@ -209,11 +314,30 @@ test("the renderer registry and surface wiring stay Breadboard-owned", () => {
   assert.match(renderer, /switch \(resource\.renderer\)/);
   assert.match(renderer, /case "product-carousel"/);
   assert.doesNotMatch(renderer, /dangerouslySetInnerHTML|eval\(|new Function|import\(resource/);
+  assert.match(carousel, /touch-pan-x/);
+  assert.match(carousel, /grid-flow-col/);
+  assert.match(carousel, /sm:auto-cols-\[calc\(\(100%_-_3rem\)_\/_2\)\]/);
+  assert.match(carousel, /text-white/);
+  assert.doesNotMatch(carousel, /Product facts come|sourced result/);
+  assert.match(carousel, /aria-pressed=\{compareActive\}/);
+  assert.match(carousel, /compareActive \? "Selected" : "Select"/);
+  assert.match(carousel, /dispatch\("product\.select"/);
+  assert.match(carousel, /group-hover:scale-\[1\.035\]/);
+  assert.doesNotMatch(carousel, /Price on site|Price unavailable/);
+  assert.match(details, /const comparing = compared\.length >= 2/);
+  assert.match(details, /Product comparison/);
+  assert.match(details, /comparisonRows\(compared\)/);
+  assert.doesNotMatch(details, />Sources</);
+  assert.doesNotMatch(details, /Price on site|Price unavailable/);
+  assert.match(productSearch, /`\$\{input\.query\} price buy`/);
+  assert.match(productSearch, /filter\(\(\{ product \}\) => Boolean\(product\.price\)\)/);
   assert.match(runtimePanel, /message\.uiResources\?\.length/);
   for (const surface of [terminal, garden]) {
     assert.match(surface, /<ProductDetailsPanel/);
     assert.match(surface, /<SidePanelDock/);
     assert.match(surface, /onGenerativeUiAction/);
+    assert.match(surface, /type: "product" as const/);
+    assert.match(surface, /slice\(-2\)/);
   }
 });
 

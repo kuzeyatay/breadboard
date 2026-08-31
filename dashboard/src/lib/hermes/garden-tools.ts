@@ -70,10 +70,14 @@ interface ClusterRow {
 }
 
 function loadClusterByIdentifier(gardenId: string | number): ClusterRow | null {
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT id, slug, name, user_id FROM clusters
     WHERE ${typeof gardenId === "number" ? "id" : "slug"} = ?
-  `).get(gardenId) as ClusterRow | undefined;
+  `,
+    )
+    .get(gardenId) as ClusterRow | undefined;
   return row ?? null;
 }
 
@@ -108,44 +112,72 @@ export async function executeGardenTool(input: {
 }): Promise<GardenToolResult> {
   const verified = verifyCapabilityToken(input.rawToken);
   if (!verified.ok) {
-    return { ok: false, tool: input.tool, error: `Capability token ${verified.reason}` };
+    return {
+      ok: false,
+      tool: input.tool,
+      error: `Capability token ${verified.reason}`,
+    };
   }
   const token = verified.token;
 
   if (!tokenAllows(token, { tool: input.tool })) {
-    return { ok: false, tool: input.tool, error: "Tool not permitted for this session's scope." };
+    return {
+      ok: false,
+      tool: input.tool,
+      error: "Tool not permitted for this session's scope.",
+    };
   }
 
   if (input.tool === "garden_list") {
-    const allowed = token.allowedGardenIds ?? (token.activeGardenId ? [token.activeGardenId] : []);
+    const allowed =
+      token.allowedGardenIds ??
+      (token.activeGardenId ? [token.activeGardenId] : []);
     const placeholders = allowed.map(() => "?").join(",");
     const gardens = allowed.length
-      ? db.prepare(`SELECT id, slug, name FROM clusters WHERE id IN (${placeholders}) ORDER BY lower(name), id`)
+      ? db
+          .prepare(
+            `SELECT id, slug, name FROM clusters WHERE id IN (${placeholders}) ORDER BY lower(name), id`,
+          )
           .all(...allowed)
       : [];
     return { ok: true, tool: input.tool, data: { gardens } };
   }
 
-  const requestedGarden = typeof input.args.gardenId === "string" || typeof input.args.gardenId === "number"
-    ? input.args.gardenId
-    : token.gardenId ?? token.activeGardenId;
+  const requestedGarden =
+    typeof input.args.gardenId === "string" ||
+    typeof input.args.gardenId === "number"
+      ? input.args.gardenId
+      : (token.gardenId ?? token.activeGardenId);
   if (requestedGarden === undefined) {
-    return { ok: false, tool: input.tool, error: "Specify a gardenId for this workspace-level request." };
+    return {
+      ok: false,
+      tool: input.tool,
+      error: "Specify a gardenId for this workspace-level request.",
+    };
   }
   if (
     !token.allowedGardenIds &&
     typeof requestedGarden === "string" &&
     !tokenAllows(token, { tool: input.tool, gardenId: requestedGarden })
   ) {
-    return { ok: false, tool: input.tool, error: "Tool not permitted for this session's scope." };
+    return {
+      ok: false,
+      tool: input.tool,
+      error: "Tool not permitted for this session's scope.",
+    };
   }
   const cluster = loadClusterByIdentifier(requestedGarden);
-  if (!cluster) return { ok: false, tool: input.tool, error: "Garden not found." };
+  if (!cluster)
+    return { ok: false, tool: input.tool, error: "Garden not found." };
   const permitted = token.allowedGardenIds
     ? tokenAllows(token, { tool: input.tool, gardenId: cluster.id })
     : tokenAllows(token, { tool: input.tool, gardenId: cluster.slug });
   if (!permitted) {
-    return { ok: false, tool: input.tool, error: "Garden is outside this session's authorized set." };
+    return {
+      ok: false,
+      tool: input.tool,
+      error: "Garden is outside this session's authorized set.",
+    };
   }
 
   try {
@@ -160,7 +192,11 @@ export async function executeGardenTool(input: {
     }
     return await executeReadTool(input.tool, cluster, input.args);
   } catch (error) {
-    return { ok: false, tool: input.tool, error: error instanceof Error ? error.message : "Tool failed." };
+    return {
+      ok: false,
+      tool: input.tool,
+      error: error instanceof Error ? error.message : "Tool failed.",
+    };
   }
 }
 
@@ -169,6 +205,46 @@ async function executeReadTool(
   cluster: ClusterRow,
   args: Record<string, unknown>,
 ): Promise<GardenToolResult> {
+  const topologyGraph = async (
+    start: unknown,
+    overrides: Record<string, unknown> = {},
+  ) => {
+    const [{ readThoughtTopology }, { queryThoughtTopologyGraph }] =
+      await Promise.all([
+        import("../thought-topology/storage.ts"),
+        import("./thought-topology-graph.ts"),
+      ]);
+    const topology = readThoughtTopology(
+      path.join(contentPath(), cluster.slug),
+    );
+    return topology
+      ? queryThoughtTopologyGraph(topology, {
+          start,
+          depth: overrides.depth,
+          limit: overrides.limit,
+          minWeight: overrides.minWeight,
+          relationTypes: overrides.relationTypes,
+          includeHierarchy: overrides.includeHierarchy,
+        })
+      : null;
+  };
+
+  if (tool === "garden_get_graph_neighbors") {
+    const slug = String(args.slug ?? args.pageSlug ?? args.pageId ?? "");
+    const thoughtTopology = await topologyGraph(slug, args);
+    if (thoughtTopology) {
+      if (!thoughtTopology.startNode) {
+        return {
+          ok: false,
+          tool,
+          error: "Node not found in this Garden's Thought Topology.",
+          data: { availableMatches: thoughtTopology.availableMatches ?? [] },
+        };
+      }
+      return { ok: true, tool, data: thoughtTopology };
+    }
+  }
+
   // Lazy-load the heavy knowledge/retrieval modules so the scope-enforcement
   // path (and its tests) never pays for the Quartz publish dependency chain.
   const { scanClusterKnowledge } = await import("../knowledge.ts");
@@ -181,7 +257,12 @@ async function executeReadTool(
       const retrieval = await retrieveGraphRag({
         query,
         gardens: [
-          { slug: cluster.slug, name: cluster.name, rootPath: path.join(contentPath(), cluster.slug), knowledge },
+          {
+            slug: cluster.slug,
+            name: cluster.name,
+            rootPath: path.join(contentPath(), cluster.slug),
+            knowledge,
+          },
         ],
         maxChunks: MAX_RESULTS,
       });
@@ -205,8 +286,11 @@ async function executeReadTool(
     case "garden_get_page":
     case "garden_get_source_excerpt": {
       const slug = String(args.slug ?? args.pageSlug ?? "");
-      const node = knowledge.nodes.find((n) => n.slug === slug || n.relPath === slug);
-      if (!node) return { ok: false, tool, error: "Page not found in this garden." };
+      const node = knowledge.nodes.find(
+        (n) => n.slug === slug || n.relPath === slug,
+      );
+      if (!node)
+        return { ok: false, tool, error: "Page not found in this garden." };
       return {
         ok: true,
         tool,
@@ -219,10 +303,15 @@ async function executeReadTool(
 
     case "garden_get_page_context": {
       const slug = String(args.slug ?? args.pageSlug ?? "");
-      const node = knowledge.nodes.find((n) => n.slug === slug || n.relPath === slug);
-      if (!node) return { ok: false, tool, error: "Page not found in this garden." };
+      const node = knowledge.nodes.find(
+        (n) => n.slug === slug || n.relPath === slug,
+      );
+      if (!node)
+        return { ok: false, tool, error: "Page not found in this garden." };
       const neighbors = knowledge.edges
-        .filter((edge) => edge.source === node.slug || edge.target === node.slug)
+        .filter(
+          (edge) => edge.source === node.slug || edge.target === node.slug,
+        )
         .slice(0, MAX_RESULTS)
         .map((edge) => ({
           related: edge.source === node.slug ? edge.target : edge.source,
@@ -231,12 +320,22 @@ async function executeReadTool(
       return {
         ok: true,
         tool,
-        data: { page: nodeSummary(node), neighbors, backlinks: node.related?.slice(0, MAX_RESULTS) },
+        data: {
+          page: nodeSummary(node),
+          neighbors,
+          backlinks: node.related?.slice(0, MAX_RESULTS),
+          thoughtTopology: await topologyGraph(node.slug, {
+            depth: 1,
+            limit: 20,
+          }),
+        },
       };
     }
 
     case "garden_get_graph_neighbors": {
-      const slug = String(args.slug ?? "");
+      const slug = String(args.slug ?? args.pageSlug ?? args.pageId ?? "");
+      // A Garden still building its first topology remains readable through the
+      // old links, but the response identifies that degraded representation.
       const neighbors = knowledge.edges
         .filter((edge) => edge.source === slug || edge.target === slug)
         .slice(0, MAX_RESULTS)
@@ -244,14 +343,29 @@ async function executeReadTool(
           related: edge.source === slug ? edge.target : edge.source,
           relation: edge.relation,
         }));
-      return { ok: true, tool, data: { slug, neighbors } };
+      return {
+        ok: true,
+        tool,
+        data: {
+          format: "legacy-links",
+          slug,
+          neighbors,
+          topologyPending: true,
+        },
+      };
     }
 
     case "garden_get_learning_spine": {
       const spine = knowledge.nodes
-        .filter((n) => n.type === "textbook-page" || n.breadboardType === "learning")
+        .filter(
+          (n) => n.type === "textbook-page" || n.breadboardType === "learning",
+        )
         .slice(0, 40)
-        .map((n) => ({ slug: n.slug, title: n.title, locations: n.locations?.slice(0, 4) }));
+        .map((n) => ({
+          slug: n.slug,
+          title: n.title,
+          locations: n.locations?.slice(0, 4),
+        }));
       return { ok: true, tool, data: { spine } };
     }
 
@@ -273,7 +387,15 @@ async function executeReadTool(
       const slug = String(args.slug ?? "");
       const node = knowledge.nodes.find((n) => n.slug === slug);
       if (!node) return { ok: false, tool, error: "Source not found." };
-      return { ok: true, tool, data: { slug: node.slug, sourcePdf: node.sourcePdf, anchors: node.sourceAnchors?.slice(0, 12) } };
+      return {
+        ok: true,
+        tool,
+        data: {
+          slug: node.slug,
+          sourcePdf: node.sourcePdf,
+          anchors: node.sourceAnchors?.slice(0, 12),
+        },
+      };
     }
 
     case "garden_get_recent_events": {
@@ -288,13 +410,17 @@ async function executeReadTool(
     case "garden_run_proposal_validation": {
       // Lightweight structural validation the model can call before proposing.
       const target = String(args.pageSlug ?? "");
-      const exists = knowledge.nodes.some((n) => n.slug === target || n.relPath === target);
+      const exists = knowledge.nodes.some(
+        (n) => n.slug === target || n.relPath === target,
+      );
       return {
         ok: true,
         tool,
         data: {
           pageExists: exists,
-          notes: exists ? "Target page exists; a revision proposal is valid." : "Target page not found; propose a new note instead.",
+          notes: exists
+            ? "Target page exists; a revision proposal is valid."
+            : "Target page not found; propose a new note instead.",
         },
       };
     }
@@ -309,11 +435,15 @@ async function executeReadTool(
  * proposal does. Never allowed to fail the mutation that preceded it: GBrain
  * being disabled or misconfigured must not undo a saved or moved note.
  */
-async function resyncGardenRetrieval(clusterId: number, reason: string): Promise<void> {
+async function resyncGardenRetrieval(
+  clusterId: number,
+  reason: string,
+): Promise<void> {
   try {
     const { enqueueGardenSync } = await import("../gbrain/sync.ts");
     enqueueGardenSync(clusterId, reason);
-    const { ensureSyncWorkerStarted } = await import("../gbrain/sync-worker.ts");
+    const { ensureSyncWorkerStarted } =
+      await import("../gbrain/sync-worker.ts");
     // Bounded one-shot Runtime queue kick; it does not start a Next.js timer.
     ensureSyncWorkerStarted();
   } catch {
@@ -336,17 +466,31 @@ async function executeSaveNote(
   args: Record<string, unknown>,
 ): Promise<GardenToolResult> {
   const tool = "garden_save_note";
-  if (token.surface !== "dashboard_terminal" && token.surface !== "garden_chat") {
-    return { ok: false, tool, error: "Saving notes requires a signed-in Breadboard chat." };
+  if (
+    token.surface !== "dashboard_terminal" &&
+    token.surface !== "garden_chat"
+  ) {
+    return {
+      ok: false,
+      tool,
+      error: "Saving notes requires a signed-in Breadboard chat.",
+    };
   }
   if (!Number.isInteger(token.userId) || token.userId !== cluster.user_id) {
-    return { ok: false, tool, error: "Only the Garden's owner can save notes into it." };
+    return {
+      ok: false,
+      tool,
+      error: "Only the Garden's owner can save notes into it.",
+    };
   }
 
-  const title = String(args.title ?? "").trim().slice(0, 300);
+  const title = String(args.title ?? "")
+    .trim()
+    .slice(0, 300);
   const content = String(args.content ?? "");
   if (!title) return { ok: false, tool, error: "A note title is required." };
-  if (!content.trim()) return { ok: false, tool, error: "The note has no content to save." };
+  if (!content.trim())
+    return { ok: false, tool, error: "The note has no content to save." };
 
   // "Rewrite naturally", when the user has it on as a standing preference. A
   // note is written by the server into the garden, so the browser switch cannot
@@ -354,7 +498,11 @@ async function executeSaveNote(
   // and keeps the original: a rewrite must never cost somebody their note.
   const { humanizeStoredText } = await import("../humanizer/auto-server.ts");
   const stored = (
-    await humanizeStoredText(cluster.user_id, content.slice(0, 100000), "garden_note")
+    await humanizeStoredText(
+      cluster.user_id,
+      content.slice(0, 100000),
+      "garden_note",
+    )
   ).text;
 
   const { createGardenDocument } = await import("../garden-documents.ts");
@@ -416,7 +564,10 @@ async function executeStructureTool(
     renameGardenFolder,
   } = await import("../garden-filesystem.ts");
 
-  if (token.surface !== "dashboard_terminal" && token.surface !== "garden_chat") {
+  if (
+    token.surface !== "dashboard_terminal" &&
+    token.surface !== "garden_chat"
+  ) {
     return {
       ok: false,
       tool,
@@ -451,7 +602,11 @@ async function executeStructureTool(
         folder: args.folder,
       });
       await resyncGardenRetrieval(cluster.id, tool);
-      return { ok: true, tool, data: { ...identity, created: true, ...result } };
+      return {
+        ok: true,
+        tool,
+        data: { ...identity, created: true, ...result },
+      };
     }
     if (tool === "garden_move_page") {
       const result = await moveGardenDocument({
@@ -480,7 +635,11 @@ async function executeStructureTool(
         name: args.name ?? args.newName,
       });
       await resyncGardenRetrieval(cluster.id, tool);
-      return { ok: true, tool, data: { ...identity, renamed: true, ...result } };
+      return {
+        ok: true,
+        tool,
+        data: { ...identity, renamed: true, ...result },
+      };
     }
     if (tool === "garden_delete_folder") {
       const result = await deleteGardenFolder({
@@ -517,9 +676,12 @@ function executeProposalTool(
   args: Record<string, unknown>,
 ): GardenToolResult {
   const evidence = Array.isArray(args.evidenceAnchorIds)
-    ? args.evidenceAnchorIds.filter((a): a is string => typeof a === "string").slice(0, 40)
+    ? args.evidenceAnchorIds
+        .filter((a): a is string => typeof a === "string")
+        .slice(0, 40)
     : [];
-  const rationale = typeof args.rationale === "string" ? args.rationale.slice(0, 4000) : null;
+  const rationale =
+    typeof args.rationale === "string" ? args.rationale.slice(0, 4000) : null;
 
   if (tool === "garden_create_note_proposal") {
     const proposal = createProposal({
@@ -567,16 +729,26 @@ function executeProposalTool(
       rationale,
       payload: {
         pageSlug: String(args.pageSlug ?? ""),
-        patchOrReplacement: String(args.patchOrReplacement ?? "").slice(0, 40000),
+        patchOrReplacement: String(args.patchOrReplacement ?? "").slice(
+          0,
+          40000,
+        ),
         affectedConcepts: Array.isArray(args.affectedConcepts)
-          ? args.affectedConcepts.filter((c): c is string => typeof c === "string").slice(0, 40)
+          ? args.affectedConcepts
+              .filter((c): c is string => typeof c === "string")
+              .slice(0, 40)
           : [],
       },
       evidenceAnchors: evidence,
       createdByUserId: token.userId,
       runtimeSessionId: Number(token.breadboardSessionId) || null,
     });
-    return { ok: true, tool, proposalId: proposal.id, data: { proposalId: proposal.id, status: "pending" } };
+    return {
+      ok: true,
+      tool,
+      proposalId: proposal.id,
+      data: { proposalId: proposal.id, status: "pending" },
+    };
   }
 
   if (tool === "garden_propose_visualization") {
@@ -596,7 +768,12 @@ function executeProposalTool(
       createdByUserId: token.userId,
       runtimeSessionId: Number(token.breadboardSessionId) || null,
     });
-    return { ok: true, tool, proposalId: proposal.id, data: { proposalId: proposal.id, status: "pending" } };
+    return {
+      ok: true,
+      tool,
+      proposalId: proposal.id,
+      data: { proposalId: proposal.id, status: "pending" },
+    };
   }
 
   return { ok: false, tool, error: `Unknown proposal tool: ${tool}` };

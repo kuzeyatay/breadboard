@@ -24,6 +24,7 @@ import {
 import { normalizeChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
 import { parseCurrentLocationPayload } from "@/lib/hermes/current-location-context.ts";
 import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
+import { startSessionEventPump } from "@/lib/hermes/event-stream.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -122,6 +123,12 @@ export async function POST(
           clarified: true,
           message: result.message,
         });
+      }
+      if (result.status === "pending" && result.run) {
+        // A retry may have landed after the process that created the run lost
+        // its pump. Re-acquire the durable consumer before telling the browser
+        // to attach, so replay is recovery rather than another stranded turn.
+        startSessionEventPump(result.session);
       }
       return NextResponse.json({
         accepted: result.status === "pending",

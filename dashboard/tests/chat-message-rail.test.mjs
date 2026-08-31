@@ -36,6 +36,7 @@ fs.writeFileSync(
   entry,
   `export {
      default as ChatMessageRail,
+     fallbackRailTick,
      nearestRailTick,
      railFocusLine,
      summarise,
@@ -61,7 +62,7 @@ await esbuild.build({
 const require = module.createRequire(import.meta.url);
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
-const { ChatMessageRail, nearestRailTick, railFocusLine, summarise } =
+const { ChatMessageRail, fallbackRailTick, nearestRailTick, railFocusLine, summarise } =
   require(bundle);
 
 /** A bridge no list has claimed, which is all a server render ever sees. */
@@ -184,6 +185,20 @@ test("a row the virtualizer cannot place is skipped, not read as the top", () =>
   // Treating null as 0 would drag the highlight back to the first question.
   assert.equal(nearestRailTick([null, 6_000, 6_600], 6_100), 1);
   assert.equal(nearestRailTick([null, null], 5_000), 0);
+});
+
+test("missing virtual geometry falls back to the reader's scroll progress", () => {
+  const scroller = { clientHeight: 600, scrollHeight: 3_000, scrollTop: 0 };
+  assert.equal(fallbackRailTick(3, scroller), 0, "the beginning is the first turn");
+  scroller.scrollTop = 1_200;
+  assert.equal(fallbackRailTick(3, scroller), 1, "the middle is not stuck on the first turn");
+  scroller.scrollTop = 2_400;
+  assert.equal(fallbackRailTick(3, scroller), 2, "the bottom is the newest turn");
+  assert.equal(
+    fallbackRailTick(3, { clientHeight: 600, scrollHeight: 500, scrollTop: 0 }),
+    2,
+    "a short transcript is already showing its newest turn",
+  );
 });
 
 // ── Where down the viewport the rail measures from ──────────────────────────

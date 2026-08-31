@@ -67,6 +67,60 @@ test("maps tool lifecycle events and failed structured results", () => {
   assert.equal(completed.payload.success, false);
 });
 
+test("projects a live product_search result onto the native UI event contract", () => {
+  const resource = {
+    schemaVersion: 1,
+    kind: "product-search",
+    renderer: "product-carousel",
+    id: "product-search:live-event",
+    title: "Product results",
+    createdAt: "2026-08-31T10:00:00.000Z",
+    actions: ["open-details", "find-similar", "compare", "visit"],
+    data: {
+      query: "bluetooth trackpad",
+      sources: [{
+        id: "source:live-event",
+        title: "Trackpad product page",
+        url: "https://shop.example/trackpad",
+        site: "shop.example",
+        accessedAt: "2026-08-31T10:00:00.000Z",
+      }],
+      products: [{
+        id: "product:live-event",
+        title: "Bluetooth Trackpad",
+        merchant: "Example",
+        url: "https://shop.example/trackpad",
+        sourceIds: ["source:live-event"],
+      }],
+    },
+  };
+
+  const [completed] = normalize({
+    type: "tool.complete",
+    session_id: "live-1",
+    payload: {
+      tool_id: "product-call",
+      name: "product_search",
+      result: { success: true, uiResources: [resource] },
+    },
+  });
+  assert.equal(completed.type, "tool.completed");
+  assert.equal(completed.payload.success, true);
+  assert.equal(completed.payload.uiResources?.length, 1);
+  assert.equal(completed.payload.uiResources?.[0].renderer, "product-carousel");
+
+  const [wrongTool] = normalize({
+    type: "tool.complete",
+    session_id: "live-1",
+    payload: {
+      tool_id: "web-call",
+      name: "web_search",
+      result: { success: true, uiResources: [resource] },
+    },
+  });
+  assert.equal(wrongTool.payload.uiResources, undefined);
+});
+
 test("a plugin tool_error JSON string is a failure, not a success", () => {
   // hermes-agent/plugins/breadboard returns tool_error() -> a JSON *string*.
   // Reading that as success told the model a denied command had worked.

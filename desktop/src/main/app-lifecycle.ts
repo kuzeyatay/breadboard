@@ -88,6 +88,10 @@ import {
   runtimeStartupFailureReason,
 } from "./runtime-startup-state";
 import { inhibitSystemSleepUntilQuit } from "./sleep-inhibitor";
+import {
+  ComputerUseIndicator,
+  defaultComputerUseOverlayHtmlPath,
+} from "./computer-use-indicator";
 
 export interface StartupFailure {
   serviceId: string;
@@ -191,6 +195,7 @@ export class AppLifecycle {
   };
   private quitting = false;
   private runtimeStopped = false;
+  private computerUseIndicator: ComputerUseIndicator | null = null;
   /** Set only after this process successfully claims a Hot dev checkout. */
   private devInstanceLockRepoRoot: string | null = null;
   private readonly moduleDir: string;
@@ -337,10 +342,12 @@ export class AppLifecycle {
       path.dirname(startupHtmlPath),
       "loading.html",
     );
+    const computerUseOverlayHtmlPath = defaultComputerUseOverlayHtmlPath(this.moduleDir);
     this.allowedOrigins = allowedOriginsFor([
       pathToFileURL(startupHtmlPath).toString(),
       pathToFileURL(recoveryHtmlPath).toString(),
       pathToFileURL(loadingHtmlPath).toString(),
+      pathToFileURL(computerUseOverlayHtmlPath).toString(),
     ]);
     installGlobalSecurity(this.allowedOrigins);
 
@@ -356,7 +363,16 @@ export class AppLifecycle {
       // is written down. A reconnect scene that never lifts is unexplainable
       // without this.
       log: (line) => supervisorLog.write(line),
+      onMainWindowCloseRequested: () => this.computerUseIndicator?.stop(),
     });
+
+    this.computerUseIndicator = new ComputerUseIndicator({
+      dataDir: path.join(this.paths.dataRoot, "ui-tars"),
+      overlayHtmlPath: computerUseOverlayHtmlPath,
+      allowed: this.allowedOrigins,
+      log: (line) => supervisorLog.write(line),
+    });
+    this.computerUseIndicator.start();
 
     this.registerIpcHandlers();
     this.registerExitGuards();
@@ -974,6 +990,7 @@ export class AppLifecycle {
 
   private registerExitGuards(): void {
     app.on("before-quit", (event) => {
+      this.computerUseIndicator?.stop();
       if (this.runtimeStopped) return;
       event.preventDefault();
       if (this.quitting) return;

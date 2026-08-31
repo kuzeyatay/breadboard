@@ -72,6 +72,11 @@ import { useRailResize } from "./use-rail-resize";
 import ChatSearchDialog from "./chat-search-dialog";
 import UploadsPanel from "./uploads-panel";
 import TerminalScheduledPanel from "./terminal-scheduled-panel";
+import {
+  formatRelativeRunTime,
+  notifySchedulesChanged,
+} from "./schedule-client";
+import { parseExplicitScheduleRequest } from "@/lib/schedules/natural-language.ts";
 import HooksPanel from "./hooks-panel";
 import ProcessesPanel from "./processes-panel";
 import {
@@ -87,6 +92,7 @@ import { useLiquidGlassBar } from "./use-liquid-glass-bar";
 import { useTerminalHeaderClickGuard } from "../terminal-header-click-guard";
 import {
   productForAction,
+  productForResource,
   safeProductUrl,
   type GenerativeUiAction,
 } from "@/lib/generative-ui/contracts.ts";
@@ -339,6 +345,8 @@ interface RuntimeHistorySession {
   active: boolean;
   pinned: boolean;
   highlight: string | null;
+  /** Opened by the scheduler; while active it lives in the Scheduled section. */
+  scheduled: boolean;
 }
 
 const HEIGHT_KEY = "breadboard:knowledge-terminal-height";
@@ -872,6 +880,9 @@ function RuntimeTerminal({
       if (action.type === "product.find-similar") {
         setInput(`Find products similar to ${product.title} from ${product.merchant}.`);
         setProductPanel(null);
+        setChatAttachments((current) =>
+          current.filter((attachment) => attachment.type !== "product"),
+        );
         window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
         return;
       }
@@ -892,7 +903,10 @@ function RuntimeTerminal({
           return {
             resource: action.resource,
             productId: action.productId,
-            compareProductIds: [],
+            compareProductIds:
+              current?.resource.id === action.resource.id
+                ? current.compareProductIds
+                : [],
           };
         }
         const prior = current?.resource.id === action.resource.id
@@ -900,7 +914,7 @@ function RuntimeTerminal({
           : [];
         const compareProductIds = prior.includes(action.productId)
           ? prior.filter((id) => id !== action.productId)
-          : [...prior, action.productId].slice(-4);
+          : [...prior, action.productId].slice(-2);
         return {
           resource: action.resource,
           productId: action.productId,
@@ -910,6 +924,35 @@ function RuntimeTerminal({
     },
     [composerTextareaRef],
   );
+  useEffect(() => {
+    if (!productPanel) return;
+    const selectedProducts = productPanel.compareProductIds.flatMap((productId) => {
+      const product = productForResource(productPanel.resource, productId);
+      return product
+        ? [{ type: "product" as const, name: product.title, product }]
+        : [];
+    });
+    setChatAttachments((current) => [
+      ...current.filter((attachment) => attachment.type !== "product"),
+      ...selectedProducts,
+    ]);
+  }, [productPanel]);
+  const removeChatAttachment = useCallback((index: number) => {
+    const removed = chatAttachments[index];
+    setChatAttachments((current) =>
+      current.filter((_, itemIndex) => itemIndex !== index),
+    );
+    if (removed?.type === "product") {
+      setProductPanel((current) => current
+        ? {
+            ...current,
+            compareProductIds: current.compareProductIds.filter(
+              (productId) => productId !== removed.product.id,
+            ),
+          }
+        : current);
+    }
+  }, [chatAttachments]);
   // The lane an opened artifact fills, beside the transcript and inside the
   // dock. Held in state rather than a ref so the viewers below re-render once
   // it exists and can portal into it.
@@ -1630,6 +1673,9 @@ function RuntimeTerminal({
                     Boolean(item.activeRun) ||
                     item.externalAgentActive === true,
                   pinned: item.pinned === true,
+                  scheduled:
+                    typeof item.scheduledChatJobId === "number" &&
+                    item.scheduledChatJobId > 0,
                   // The server already rejected anything outside the palette.
                   highlight:
                     typeof item.highlight === "string" ? item.highlight : null,
@@ -6194,6 +6240,54 @@ function RuntimeTerminal({
         launchRoundOriginsRef.current.clear();
         awaitedLaunchesRef.current.clear();
       }
+      // Plain-language time instructions are scheduler commands, not prompts
+      // for the model to discuss. Keep this conservative and attachment-free:
+      // the parser only returns explicit recurring language or a relative delay
+      // paired with an action ("start this task in an hour and a half").
+      const schedule = textOverride === undefined && chatAttachments.length === 0
+        ? parseExplicitScheduleRequest(text)
+        : null;
+      if (schedule) {
+        setInput("");
+        setAttachmentStatus("");
+        try {
+          const response = await fetch("/api/schedules", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: schedule.title,
+              prompt: schedule.prompt,
+              cron: schedule.cron,
+              oneShot: schedule.oneShot,
+              runAt: schedule.runAt,
+              surface: "dashboard_terminal",
+              model,
+              reasoningEffort,
+            }),
+          });
+          const payload = (await response.json().catch(() => ({}))) as {
+            error?: string;
+          };
+          if (!response.ok) {
+            throw new Error(payload.error ?? "This task could not be scheduled.");
+          }
+          notifySchedulesChanged();
+          setSidePanel("scheduled");
+          setAttachmentStatus(
+            schedule.runAt
+              ? `Scheduled ${formatRelativeRunTime(schedule.runAt)}.`
+              : "Scheduled.",
+          );
+        } catch (cause) {
+          setInput(text);
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "This task could not be scheduled.",
+          );
+        }
+        return;
+      }
       // Refuse an impossible combination before anything is dispatched. The
       // branches below are a priority cascade, so without this a second runtime
       // agent or a stacked skill would be silently swallowed into the winner's
@@ -6722,7 +6816,16 @@ function RuntimeTerminal({
       if ((!text && chatAttachments.length === 0) || runtimeUnavailable || busy)
         return;
       const pendingAttachments = chatAttachments;
-      const displayText = text || "Please review the attached document(s).";
+      const selectedProductCount = pendingAttachments.filter(
+        (attachment) => attachment.type === "product",
+      ).length;
+      const displayText = text || (
+        selectedProductCount > 1
+          ? "Compare the selected products."
+          : selectedProductCount === 1
+            ? "Tell me about the selected product."
+            : "Please review the attached document(s)."
+      );
       const draftSessionId = session.sessionId;
       const draftSubmission = submittedDraftSequence.current + 1;
       submittedDraftSequence.current = draftSubmission;
@@ -8001,6 +8104,7 @@ function RuntimeTerminal({
     updatedAt: item.updatedAt,
     active: item.active,
     pinned: item.pinned,
+    scheduled: item.scheduled,
     highlight: item.highlight,
     unread: unreadChats.has(item.id),
   }));
@@ -8804,6 +8908,12 @@ function RuntimeTerminal({
                 input={input}
                 onInputChange={setInput}
                 onGenerativeUiAction={handleGenerativeUiAction}
+                activeProductComparison={productPanel?.compareProductIds.length
+                  ? {
+                      resourceId: productPanel.resource.id,
+                      productIds: productPanel.compareProductIds,
+                    }
+                  : null}
                 composerTextareaRef={composerTextareaRef}
                 onSubmit={submit}
                 beforeComposer={
@@ -9035,11 +9145,7 @@ function RuntimeTerminal({
                 onPasteFiles={addAttachmentFiles}
                 isAddingDocuments={extractingAttachments}
                 attachments={chatAttachments}
-                onRemoveAttachment={(index) =>
-                  setChatAttachments((current) =>
-                    current.filter((_, itemIndex) => itemIndex !== index),
-                  )
-                }
+                onRemoveAttachment={removeChatAttachment}
                 statusMessage={attachmentStatus}
                 loadingTranscript={session.loadingSession}
                 emptyState={

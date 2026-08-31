@@ -35,7 +35,10 @@ import {
 } from "../hardware/artifact.ts";
 import { hardwareBlueprintRunCardState } from "../hardware/run-card-state.ts";
 import type { HardwareDesign } from "../hardware/types.ts";
-import { normalizeGenerativeUiResources } from "../generative-ui/contracts.ts";
+import {
+  generativeUiResourcesFromVerification,
+  normalizeGenerativeUiResources,
+} from "../generative-ui/contracts.ts";
 
 // Creating a brand-new conversation and dispatching its first turn are two
 // requests. The durable placeholder between them is stored as aborted so a
@@ -200,6 +203,25 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       createdAt: presented.createdAt,
       responseStartedAt,
     });
+    const rawPreDispatchRecovery =
+      metadata.preDispatchRecovery &&
+      typeof metadata.preDispatchRecovery === "object" &&
+      !Array.isArray(metadata.preDispatchRecovery)
+        ? metadata.preDispatchRecovery as Record<string, unknown>
+        : {};
+    const preDispatchRecovery = {
+      agentMode: rawPreDispatchRecovery.agentMode !== false,
+      ...(typeof rawPreDispatchRecovery.model === "string"
+        ? { model: rawPreDispatchRecovery.model }
+        : {}),
+      ...(typeof rawPreDispatchRecovery.reasoningEffort === "string"
+        ? { reasoningEffort: rawPreDispatchRecovery.reasoningEffort }
+        : {}),
+      superAgent: rawPreDispatchRecovery.superAgent === true,
+      adhdMode: rawPreDispatchRecovery.adhdMode === true,
+      personalize: rawPreDispatchRecovery.personalize !== false,
+      yoloMode: rawPreDispatchRecovery.yoloMode === true,
+    };
     const messagePending =
       presented.status === "pending" || recoveringPreDispatch;
     const metadataDuration = Number(metadata.responseDurationMs);
@@ -215,7 +237,10 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     const textSelection = normalizeChatTextSelectionReference(
       metadata.textSelection,
     );
-    const uiResources = normalizeGenerativeUiResources(metadata.uiResources);
+    const persistedUiResources = normalizeGenerativeUiResources(metadata.uiResources);
+    const uiResources = persistedUiResources.length > 0
+      ? persistedUiResources
+      : generativeUiResourcesFromVerification(metadata.verification);
     const normalizeModelChangeLabel = (value: unknown) =>
       typeof value === "string"
         ? value
@@ -332,6 +357,9 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       pending: messagePending,
       failed: presented.status === "failed",
       interrupted: presented.status === "aborted" && !recoveringPreDispatch,
+      ...(presented.role === "assistant" && recoveringPreDispatch
+        ? { preDispatchRecovery }
+        : {}),
       // A turn that paused for permission before dispatch is only actionable
       // while its approval card is on screen — client state that navigation
       // throws away. Surfacing the persisted request lets the transcript

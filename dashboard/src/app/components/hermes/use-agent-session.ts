@@ -22,7 +22,10 @@ import {
   parseAgentLaunchRequest,
   type AgentLaunchRequestPayload,
 } from "@/lib/hermes/agent-launch.ts";
-import type { AssistantReasoningEffort } from "@/lib/assistant-reasoning";
+import {
+  ASSISTANT_REASONING_EFFORTS,
+  type AssistantReasoningEffort,
+} from "@/lib/assistant-reasoning";
 import {
   chatMessageAttachments,
   normalizeChatMessageAttachments,
@@ -283,6 +286,20 @@ export interface AgentMessage {
   humanizerReview?: HumanizerReviewPresentation;
   /** The canonical assistant row exists but its background turn is not done. */
   pending?: boolean;
+  /**
+   * A newly-created chat was durably reserved but its first dispatch was lost
+   * with the page. This allow-listed envelope lets restoration submit that
+   * exact agent turn once; it is never present on ordinary history.
+   */
+  preDispatchRecovery?: {
+    agentMode: boolean;
+    model?: string;
+    reasoningEffort?: AssistantReasoningEffort;
+    superAgent: boolean;
+    adhdMode: boolean;
+    personalize: boolean;
+    yoloMode: boolean;
+  };
   /** The canonical turn ended without an answer. */
   failed?: boolean;
   interrupted?: boolean;
@@ -899,6 +916,33 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
       ) {
         delete normalized.responseStartedAt;
       }
+      if (
+        message.preDispatchRecovery &&
+        typeof message.preDispatchRecovery === "object" &&
+        !Array.isArray(message.preDispatchRecovery)
+      ) {
+        const recovery = message.preDispatchRecovery as Record<string, unknown>;
+        const reasoningEffort =
+          typeof recovery.reasoningEffort === "string" &&
+          ASSISTANT_REASONING_EFFORTS.includes(
+            recovery.reasoningEffort as AssistantReasoningEffort,
+          )
+            ? recovery.reasoningEffort as AssistantReasoningEffort
+            : undefined;
+        normalized.preDispatchRecovery = {
+          agentMode: recovery.agentMode !== false,
+          ...(typeof recovery.model === "string" && recovery.model.trim()
+            ? { model: recovery.model.trim().slice(0, 240) }
+            : {}),
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+          superAgent: recovery.superAgent === true,
+          adhdMode: recovery.adhdMode === true,
+          personalize: recovery.personalize !== false,
+          yoloMode: recovery.yoloMode === true,
+        };
+      } else {
+        delete normalized.preDispatchRecovery;
+      }
       if (message.internalAgentContinuation !== true) {
         delete normalized.internalAgentContinuation;
       }
@@ -1345,6 +1389,13 @@ async function ensureSession(
     branchGroupId?: string;
     textSelection?: ChatTextSelectionReference;
     internalAgentContinuation?: boolean;
+    agentMode: boolean;
+    model?: string;
+    reasoningEffort?: AssistantReasoningEffort;
+    superAgent: boolean;
+    adhdMode: boolean;
+    personalize: boolean;
+    yoloMode: boolean;
   },
 ): Promise<{
   id: string;
@@ -1494,6 +1545,10 @@ export function useAgentSession(
       messages: AgentMessage[];
     }
   >());
+  // A restore effect can be entered more than once while history revalidates.
+  // The server POST is idempotent too, but avoiding duplicate cold-start work
+  // keeps the normal path quiet and leaves replay as the crash-only fallback.
+  const preDispatchRecoveriesRef = useRef(new Set<string>());
   const viewEpochRef = useRef(0);
   const latestSendOptionsRef = useRef<{
     model?: string;
@@ -1642,6 +1697,98 @@ export function useAgentSession(
       transition("running");
 
       void (async () => {
+        const recovery = initial.assistant.preDispatchRecovery;
+        const recoveryKey = expectedClientMessageId
+          ? `${id}:${expectedClientMessageId}`
+          : null;
+        const localSendStillOwnsTurn =
+          expectedClientMessageId &&
+          localInFlightTurnsRef.current.get(id)?.clientMessageId ===
+            expectedClientMessageId;
+        if (
+          recovery?.agentMode === true &&
+          recoveryKey &&
+          !localSendStillOwnsTurn &&
+          !preDispatchRecoveriesRef.current.has(recoveryKey)
+        ) {
+          const user = [...restoredMessages]
+            .reverse()
+            .find(
+              (message) =>
+                message.role === "user" &&
+                message.clientMessageId === expectedClientMessageId,
+            );
+          if (user) {
+            preDispatchRecoveriesRef.current.add(recoveryKey);
+            try {
+              const response = await dispatchAgentMessage(
+                `/api/hermes/sessions/${id}/messages`,
+                {
+                  clientMessageId: expectedClientMessageId,
+                  text: initial.instruction,
+                  responseStartedAt:
+                    initial.assistant.responseStartedAt ??
+                    initial.assistant.createdAt,
+                  surface,
+                  surfaceContext: {
+                    activeGardenSlug: createOptions?.gardenSlug,
+                    activePageSlug: createOptions?.pageSlug,
+                    selectedText: user.textSelection?.quote,
+                  },
+                  model: recovery.model ?? latestSendOptionsRef.current.model,
+                  reasoningEffort:
+                    recovery.reasoningEffort ??
+                    latestSendOptionsRef.current.reasoningEffort,
+                  attachments: user.attachments,
+                  retry: true,
+                  branchGroupId: user.branchGroupId,
+                  textSelection: user.textSelection,
+                  internalAgentContinuation:
+                    user.internalAgentContinuation === true,
+                  superAgent: recovery.superAgent,
+                  adhdMode: recovery.adhdMode,
+                  personalize: recovery.personalize,
+                  yoloMode: recovery.yoloMode,
+                },
+              );
+              if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                throw new Error(
+                  typeof body.error === "string"
+                    ? body.error
+                    : "The reserved message could not be resumed.",
+                );
+              }
+              if (
+                viewEpochRef.current !== viewEpoch ||
+                sessionRef.current !== id
+              ) {
+                monitorBackgroundChatResponse({
+                  surface,
+                  sessionId: id,
+                  instruction: initial.instruction,
+                  clientMessageId: expectedClientMessageId,
+                  getActiveChatId: () => sessionRef.current,
+                });
+                return;
+              }
+            } catch (recoveryError) {
+              preDispatchRecoveriesRef.current.delete(recoveryKey);
+              if (
+                viewEpochRef.current === viewEpoch &&
+                sessionRef.current === id
+              ) {
+                setError(
+                  recoveryError instanceof Error
+                    ? recoveryError.message
+                    : "The reserved message could not be resumed.",
+                );
+                transition("error");
+              }
+              return;
+            }
+          }
+        }
         let delayMs = 600;
         while (
           viewEpochRef.current === viewEpoch &&
@@ -1799,7 +1946,7 @@ export function useAgentSession(
       })();
       return true;
     },
-    [rehydrateAwaitingPermission, surface, transition],
+    [createOptions, rehydrateAwaitingPermission, surface, transition],
   );
 
   useEffect(() => {
@@ -3825,6 +3972,13 @@ export function useAgentSession(
               textSelection: options?.textSelection,
               internalAgentContinuation:
                 options?.internalAgentContinuation === true,
+              agentMode: isAgentModeEnabled(),
+              model: options?.model,
+              reasoningEffort: options?.reasoningEffort,
+              superAgent: superAgentEnabled,
+              adhdMode: isDirectModeEnabled(),
+              personalize: isPersonalizeEnabled(),
+              yoloMode: isYoloModeEnabled(),
             },
           ),
         };

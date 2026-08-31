@@ -28,12 +28,12 @@ function errorResponse(error: unknown): NextResponse {
         : 500;
   const message =
     status === 401
-      ? "Sign in to view your Knowledge Map."
+      ? "Sign in to view your Thought Topology."
       : status === 404
-        ? "That Knowledge Map scope is not available."
+        ? "That Thought Topology scope is not available."
         : status < 500
-          ? "That Knowledge Map request is not valid."
-          : "The Knowledge Map could not be loaded.";
+          ? "That Thought Topology request is not valid."
+          : "Thought Topology could not be loaded.";
   return NextResponse.json({ error: message }, { status, headers: PRIVATE_HEADERS });
 }
 

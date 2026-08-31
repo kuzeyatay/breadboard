@@ -41,6 +41,11 @@ export async function POST(request: Request) {
       surface,
       gardenSlug: surface === "garden_chat" ? gardenSlug : null,
       promptSlug: typeof body.promptSlug === "string" ? body.promptSlug : null,
+      model: typeof body.model === "string" ? body.model : undefined,
+      reasoningEffort:
+        typeof body.reasoningEffort === "string" ? body.reasoningEffort : undefined,
+      oneShot: body.oneShot === true,
+      runAt: typeof body.runAt === "string" ? body.runAt : null,
       enabled: body.enabled !== false,
     });
     return NextResponse.json({ schedule: presentScheduledChatJob(created) }, { status: 201 });

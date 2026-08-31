@@ -68,6 +68,7 @@ interface ManagedRun {
   actionCount: number;
   lastScreenshotId?: string;
   pendingScreenshotWrites: Set<Promise<void>>;
+  desktopControlActive: boolean;
   timeoutTimer?: NodeJS.Timeout;
   done: Promise<void>;
 }
@@ -80,6 +81,7 @@ export interface RunManagerOptions {
   screenshotRetentionMs: number;
   redact: (line: string) => string;
   now?: () => number;
+  onDesktopControlChange?: (active: boolean) => void;
 }
 
 export class RunManagerError extends Error {
@@ -142,6 +144,7 @@ export class RunManager {
       createdAt: new Date(this.nowMs()).toISOString(),
       actionCount: 0,
       pendingScreenshotWrites: new Set(),
+      desktopControlActive: false,
       done: Promise.resolve(),
     };
     this.runs.set(params.runId, run);
@@ -254,7 +257,19 @@ export class RunManager {
       ownBrowser: (pid, profileDir) => {
         this.processes.register(run.state.runId, pid, profileDir);
       },
+      desktopControlStarted: () => this.setDesktopControlActive(run, true),
+      desktopControlStopped: () => this.setDesktopControlActive(run, false),
     };
+  }
+
+  private setDesktopControlActive(run: ManagedRun, active: boolean): void {
+    if (run.desktopControlActive === active) return;
+    run.desktopControlActive = active;
+    this.opts.onDesktopControlChange?.(this.hasActiveDesktopControl());
+  }
+
+  private hasActiveDesktopControl(): boolean {
+    return [...this.runs.values()].some((run) => run.desktopControlActive && !run.state.terminal);
   }
 
   /** Apply policy to a proposed action; pause + await human decision if sensitive. */
@@ -381,6 +396,7 @@ export class RunManager {
 
   private finalizeProcesses(run: ManagedRun): void {
     // Always release the owned browser + approvals for a finished run.
+    this.setDesktopControlActive(run, false);
     this.approvals.invalidateRun(run.state.runId);
     this.processes.killRun(run.state.runId);
   }
@@ -421,6 +437,7 @@ export class RunManager {
       throw new RunManagerError("forbidden");
     }
     if (run.state.terminal) return;
+    this.setDesktopControlActive(run, false);
     if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
     run.abort.abort();
     this.approvals.invalidateRun(runId);
@@ -477,6 +494,13 @@ export class RunManager {
       .filter((s) => s.ownerUserId === userId);
   }
 
+  /** Shell-level cancellation; never starts, approves, or mutates browser runs. */
+  abortActiveDesktopControls(reason = "escape"): number {
+    const active = [...this.runs.values()].filter((run) => run.desktopControlActive && !run.state.terminal);
+    for (const run of active) this.abort(run.state.runId, { reason });
+    return active.length;
+  }
+
   isApprovalError(err: unknown): err is ApprovalError {
     return err instanceof ApprovalError;
   }
@@ -485,6 +509,7 @@ export class RunManager {
     for (const run of this.runs.values()) {
       if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
       if (!run.state.terminal) {
+        this.setDesktopControlActive(run, false);
         run.abort.abort();
         this.approvals.invalidateRun(run.state.runId);
         this.safeTransition(run, "aborted");

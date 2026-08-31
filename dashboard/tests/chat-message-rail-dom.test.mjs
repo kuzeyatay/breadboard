@@ -418,3 +418,75 @@ test("late terminal layout corrections do not leave the first tick stuck", { ski
   await act(async () => { root.unmount(); });
   scroller.remove();
 });
+
+test("rows attaching without a resize or scroll event still update the highlight", { skip }, async () => {
+  // The real virtualizer can replace its absolute children while the sized
+  // list container keeps exactly the same dimensions. ResizeObserver is silent
+  // in that case, and attaching the bridge mutates refs rather than React state.
+  // The rail must notice the DOM geometry becoming available instead of
+  // keeping its initial first-tick fallback.
+  const React = require("react");
+  const { act } = require("react");
+  const { createRoot } = require("react-dom/client");
+
+  const state = { scrollTop: 0 };
+  const scroller = document.createElement("div");
+  Object.defineProperty(scroller, "clientHeight", { value: VIEWPORT });
+  Object.defineProperty(scroller, "scrollHeight", { value: 2_000 });
+  Object.defineProperty(scroller, "scrollTop", {
+    get: () => state.scrollTop,
+    set: (value) => { state.scrollTop = value; },
+  });
+  scroller.getBoundingClientRect = () => ({
+    top: 0, height: VIEWPORT, bottom: VIEWPORT,
+    left: 0, right: 900, width: 900,
+  });
+  const list = document.createElement("div");
+  list.setAttribute("data-chat-virtual-list", "hermes-chat");
+  list.getBoundingClientRect = () => ({
+    top: 0, height: 2_000, bottom: 2_000,
+    left: 0, right: 900, width: 900,
+  });
+  scroller.appendChild(list);
+  document.body.appendChild(scroller);
+
+  const unavailableBridge = { ...BRIDGE, getRowStart: () => null };
+  const root = createRoot(document.getElementById("root"));
+  await act(async () => {
+    root.render(
+      React.createElement(R, {
+        items: [
+          { rowIndex: 0, label: "first question" },
+          { rowIndex: 1, label: "second question" },
+        ],
+        scrollRef: { current: scroller },
+        bridge: unavailableBridge,
+        surface: "t",
+      }),
+    );
+    await new Promise((resolve) => dom.window.requestAnimationFrame(resolve));
+  });
+  assert.equal(litTick(), 0, "without geometry the top still means the first turn");
+
+  const first = document.createElement("div");
+  first.setAttribute("data-index", "0");
+  first.getBoundingClientRect = () => ({
+    top: -1_000, height: 60, bottom: -940,
+    left: 0, right: 900, width: 900,
+  });
+  const second = document.createElement("div");
+  second.setAttribute("data-index", "1");
+  second.getBoundingClientRect = () => ({
+    top: 100, height: 60, bottom: 160,
+    left: 0, right: 900, width: 900,
+  });
+  await act(async () => {
+    list.append(first, second);
+    await new Promise((resolve) => dom.window.requestAnimationFrame(resolve));
+    await new Promise((resolve) => dom.window.requestAnimationFrame(resolve));
+  });
+  assert.equal(litTick(), 1, "the newly mounted visible turn becomes active");
+
+  await act(async () => { root.unmount(); });
+  scroller.remove();
+});

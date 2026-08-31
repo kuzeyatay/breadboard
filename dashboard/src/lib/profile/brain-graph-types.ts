@@ -5,6 +5,7 @@ export type BrainNodeKind =
   | "member"
   | "agent"
   | "garden"
+  | "folder"
   | "source"
   | "page"
   | "concept"
@@ -55,6 +56,7 @@ export type BrainEdgeOrigin =
   | "organization"
   | "buzz"
   | "agent"
+  | "thought-topology"
   | "gbrain-derived";
 
 export type BrainScope =
@@ -96,6 +98,10 @@ export interface BrainEdge {
   weight?: number;
   organizationId?: string;
   gardenId?: string;
+  semanticRelation?: string;
+  direction?: string;
+  explanation?: string;
+  evidence?: string[];
 }
 
 export interface BrainWarning {
@@ -132,7 +138,7 @@ export interface BrainGraphResponse {
   scopeOptions: BrainScopeOption[];
   capabilities: {
     buzz: boolean;
-    gbrain: boolean;
+    thoughtTopology: boolean;
     organization: boolean;
     expansion: boolean;
     pathFinding: boolean;

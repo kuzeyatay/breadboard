@@ -559,6 +559,7 @@ export async function runDesktopTask(
   });
   const returnWindow = await dependencies.getActiveWindow().catch(() => null);
   options.onAgentStart?.(agent);
+  host.desktopControlStarted?.();
 
   const onAbort = () => agent.stop();
   host.signal.addEventListener("abort", onAbort, { once: true });
@@ -583,6 +584,7 @@ export async function runDesktopTask(
     });
     host.signal.removeEventListener("abort", onAbort);
     options.onAgentStop?.(agent);
+    host.desktopControlStopped?.();
     await restoreDesktopReturnWindow(returnWindow);
   }
 

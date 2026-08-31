@@ -22,9 +22,9 @@ export async function runDueScheduledChats(
   ]);
   const store = getScheduledChatJobStore();
   const due = store.claimDue(now);
-  for (const job of due) {
+  await Promise.all(due.map(async (job) => {
     try {
-      const result = await runScheduledChatJob(job);
+      const result = await runScheduledChatJob(job, { waitForCompletion: true });
       store.recordRun(job.id, {
         status: result.status,
         conversationId: result.conversationId,
@@ -43,6 +43,6 @@ export async function runDueScheduledChats(
         at: new Date(),
       });
     }
-  }
+  }));
   return due;
 }

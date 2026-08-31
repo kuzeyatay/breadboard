@@ -37,6 +37,7 @@ import type {
   WorkflowComputerBackend,
   WorkflowStep,
 } from "./types.ts";
+import { ComputerUseSignal } from "../computer-use-signal.ts";
 
 const APPROVAL_TIMEOUT_MS = 30 * 60_000;
 const SETTLE_MS = 550;
@@ -65,6 +66,25 @@ const runRegistry = (): Map<string, ActiveRun> => {
   const holder = globalThis as typeof globalThis & { __breadboardTeachRuns?: Map<string, ActiveRun> };
   if (!holder.__breadboardTeachRuns) holder.__breadboardTeachRuns = new Map();
   return holder.__breadboardTeachRuns;
+};
+
+const replayComputerUseSignal = (): ComputerUseSignal => {
+  const holder = globalThis as typeof globalThis & {
+    __breadboardTeachComputerUseSignal?: ComputerUseSignal;
+  };
+  if (!holder.__breadboardTeachComputerUseSignal) {
+    holder.__breadboardTeachComputerUseSignal = new ComputerUseSignal({
+      producer: "teach",
+      onCancel: () => {
+        for (const active of runRegistry().values()) {
+          if (active.stopped) continue;
+          active.controller.abort();
+          void active.backend.stop().catch(() => undefined);
+        }
+      },
+    });
+  }
+  return holder.__breadboardTeachComputerUseSignal;
 };
 
 class RunStopped extends Error {
@@ -192,10 +212,13 @@ async function executeRun(
 
   let failure: string | null = null;
   let stopped = false;
+  let computerUseActive = false;
 
   try {
     const availability = active.backend.available();
     if (!availability.available) throw new Error(availability.reason ?? "No computer backend is available.");
+    replayComputerUseSignal().setRunActive(active.runId, true);
+    computerUseActive = true;
 
     for (const step of procedure.steps) {
       ensureRunning(active);
@@ -220,6 +243,16 @@ async function executeRun(
     // Control of the machine is released before the run is reported finished, so
     // a completed run can never be a run whose helper is still typing.
     await active.backend.stop().catch(() => undefined);
+    if (computerUseActive) {
+      try {
+        replayComputerUseSignal().setRunActive(active.runId, false);
+      } catch (error) {
+        teachWarn("replay", "computer-use indicator cleanup failed", {
+          runId: active.runId,
+          message: (error as Error).message,
+        });
+      }
+    }
     active.stopped = true;
     runRegistry().delete(active.runId);
   }
