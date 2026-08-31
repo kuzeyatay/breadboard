@@ -33,6 +33,7 @@ import {
   MANIM_TOOLS,
   MAP_TOOLS,
   IMAGE_SEARCH_TOOLS,
+  PRODUCT_SEARCH_TOOLS,
   OFFICE_TOOLS,
   DOCUMENT_TOOLS,
   WATERMARK_TOOLS,
@@ -41,8 +42,10 @@ import {
   PLAN_TOOLS,
   IMAGE_TO_3D_TOOLS,
   AUDIO_ANALYSIS_TOOLS,
+  MUSIC_RECOGNITION_TOOLS,
   PREMORTEM_TOOLS,
   FACTCHECK_TOOLS,
+  PATENT_DISCLOSURE_TOOLS,
   RECALL_TOOLS,
   RESEARCH_TOOLS,
   SPOTIFY_TOOLS,
@@ -225,9 +228,11 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...DOCUMENT_SKILL_TOOLS,
       ...PREMORTEM_TOOLS,
       ...FACTCHECK_TOOLS,
+      ...PATENT_DISCLOSURE_TOOLS,
       ...WATCH_TOOLS,
       ...IMAGE_TO_3D_TOOLS,
       ...AUDIO_ANALYSIS_TOOLS,
+      ...MUSIC_RECOGNITION_TOOLS,
       ...MANIM_TOOLS,
       ...AGENT_LOOP_TOOLS,
       ...OMH_TOOLS,
@@ -235,6 +240,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...RECALL_TOOLS,
       ...WORLDMONITOR_TOOLS,
       ...IMAGE_SEARCH_TOOLS,
+      ...PRODUCT_SEARCH_TOOLS,
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
@@ -722,6 +728,12 @@ function buildToolMap(
   for (const tool of FACTCHECK_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // Patent workflows are knowledge/document work. The bridge only reads a
+  // pinned guidance tree; its route separately requires this exact skill to be
+  // selected for the active authenticated run.
+  for (const tool of PATENT_DISCLOSURE_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // Loop design is a knowledge-work activity: it reads and writes only the
   // session's own workspace, so it does not depend on the turn's coding class.
   for (const tool of AGENT_LOOP_TOOLS) {
@@ -755,6 +767,12 @@ function buildToolMap(
   for (const tool of AUDIO_ANALYSIS_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // Identification has the same attachment boundary as audio analysis. Its
+  // route adds a selected-skill check and is the only code allowed to contact
+  // the configured recognition provider.
+  for (const tool of MUSIC_RECOGNITION_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // Manim receives source, not a host path. Its route validates the selected
   // skill and renders inside a network-disabled container on both chat surfaces.
   for (const tool of MANIM_TOOLS) {
@@ -766,10 +784,11 @@ function buildToolMap(
   for (const tool of RECALL_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
-  // "What is happening in Taiwan" and "what's on my calendar tomorrow" are
-  // plain knowledge turns too, so neither depends on the turn's capability
-  // class. Both are reads: the monitor has no user state at all, and the
-  // calendar tools reach only the store's query methods.
+  // "What is happening in Taiwan", "what's on my calendar tomorrow", and
+  // "remind me tomorrow" are ordinary authenticated conversation turns, so
+  // these integrations do not depend on a filesystem capability class. The
+  // calendar route is session-scoped and its writes stay inside that user's
+  // writable calendars.
   for (const tool of [...WORLDMONITOR_TOOLS, ...CALENDAR_TOOLS]) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
@@ -778,6 +797,12 @@ function buildToolMap(
   // A read over Google's public image index with no user state behind it, so it
   // follows the monitor's rule.
   for (const tool of IMAGE_SEARCH_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
+  // Product research is also an ordinary knowledge turn. Its route is
+  // read-only and projects public product pages into Breadboard's allow-listed
+  // resource contract before anything reaches the transcript.
+  for (const tool of PRODUCT_SEARCH_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
   // "How far is the station" is a plain knowledge turn as well, and it is the
@@ -879,6 +904,7 @@ function buildToolMap(
     // Fetching arbitrary URLs and writing files belongs to a signed-in
     // workspace, not to the anonymous public surface.
     for (const tool of FACTCHECK_TOOLS) map[tool] = false;
+    for (const tool of PATENT_DISCLOSURE_TOOLS) map[tool] = false;
     for (const tool of AGENT_LOOP_TOOLS) map[tool] = false;
     for (const tool of OMH_TOOLS) map[tool] = false;
     for (const tool of MESSAGING_TOOLS) map[tool] = false;
@@ -890,6 +916,7 @@ function buildToolMap(
     // Image search spends a signed-in deployment's Google API quota, and this
     // surface is the anonymous public one.
     for (const tool of IMAGE_SEARCH_TOOLS) map[tool] = false;
+    for (const tool of PRODUCT_SEARCH_TOOLS) map[tool] = false;
     // Geographic state is one signed-in person's map session, and this surface
     // is the anonymous public one.
     for (const tool of MAP_TOOLS) map[tool] = false;

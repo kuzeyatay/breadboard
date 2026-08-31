@@ -19,6 +19,7 @@ import type { ReviewStore } from "./store.ts";
 
 export interface ChannelTarget {
   chatId: string;
+  label: string;
   send: (text: string) => Promise<void>;
 }
 
@@ -47,6 +48,7 @@ export async function resolveChannelTarget(
     if (!chat) return null;
     return {
       chatId: chat.chat_id,
+      label: chat.contact_label || chat.contact_handle || "Telegram",
       send: (text: string) => sendMessage(token, chat.chat_id, text),
     };
   }
@@ -62,6 +64,7 @@ export async function resolveChannelTarget(
     if (!chat) return null;
     return {
       chatId: chat.chat_id,
+      label: chat.contact_label || chat.contact_number || "WhatsApp",
       send: (text: string) => sendRuntimeWhatsAppMessage(userId, chat.chat_id, text),
     };
   }
@@ -125,13 +128,30 @@ export async function sendNextReview(options: {
   }
 
   const card = due[0];
+  const question = formatQuestion({ question: card.question, gardenSlug: card.garden_slug });
   try {
-    await target.send(formatQuestion({ question: card.question, gardenSlug: card.garden_slug }));
+    await target.send(question);
   } catch {
     // A failed send leaves the card due so the next tick retries it. The budget
     // claim is not refunded: a provider that fails repeatedly should not be
     // hammered for the whole daily allowance in one minute.
     return { sent: 0, reason: "no_target" };
+  }
+  try {
+    const { recordDeliveredOwnerMessage } = await import("../hermes/messaging-service.ts");
+    await recordDeliveredOwnerMessage({
+      channel: settings.channel,
+      userId: options.userId,
+      target: { chatId: target.chatId, label: target.label },
+      text: question,
+      kind: "review",
+    });
+  } catch (error) {
+    // The provider has already accepted the question, so it must still be
+    // opened below or the next tick would send a duplicate. Keep the failure
+    // visible in server logs; ordinary operation persists this before the user
+    // can answer.
+    console.error("Could not create the Terminal chat for a review question.", error);
   }
   store.openDelivery({
     cardId: card.id,
@@ -297,7 +317,26 @@ export async function handleInboundReview(options: {
     lines.push("", "I could not grade that automatically, so it comes back soon.");
   }
   lines.push("", `From: ${card.page_title}`);
-  return { handled: true, reply: lines.join("\n") };
+  const reply = lines.join("\n");
+  if (delivery.channel === "whatsapp" || delivery.channel === "telegram") {
+    try {
+      const { recordDeliveredOwnerExchange } = await import("../hermes/messaging-service.ts");
+      await recordDeliveredOwnerExchange({
+        channel: delivery.channel,
+        userId: delivery.user_id,
+        chatId: delivery.chat_id,
+        userText: text,
+        assistantText: reply,
+        clientMessageId: `review-reply-${delivery.id}`,
+        kind: "review",
+      });
+    } catch (error) {
+      // Grading is already durable and the reply should still be delivered.
+      // Losing the transcript is diagnosable; losing the answer is worse.
+      console.error("Could not append a review reply to its Terminal chat.", error);
+    }
+  }
+  return { handled: true, reply };
 }
 
 export function describeDue(due: Date, now: Date): string {

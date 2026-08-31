@@ -85,10 +85,47 @@ export function SpinnerIcon({
 export function ActiveChatIcon({
   label,
   className = "h-3.5 w-3.5",
+  onStop,
+  stopping = false,
 }: {
   label: string;
   className?: string;
+  onStop?: () => void;
+  stopping?: boolean;
 }) {
+  if (onStop) {
+    const chatLabel = label.replace(/\s+is running$/u, "");
+    const actionLabel = stopping ? `Stopping ${chatLabel}` : `Stop ${chatLabel}`;
+    return (
+      <button
+        type="button"
+        onClick={onStop}
+        disabled={stopping}
+        aria-label={actionLabel}
+        aria-busy={stopping}
+        title={actionLabel}
+        className="group/active-chat relative inline-flex shrink-0 items-center justify-center rounded-full text-[var(--botanical)] transition-transform duration-150 [transition-timing-function:cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] disabled:cursor-wait disabled:opacity-55"
+      >
+        {stopping ? (
+          <SpinnerIcon className={className} />
+        ) : (
+          <>
+            {/* A running row should read as loading at a glance. The stop mark
+                replaces the spinner only when somebody points at or focuses
+                the control; permanently stacking both made this tiny icon look
+                like a stray green rectangle inside a circle. */}
+            <SpinnerIcon
+              className={`${className} transition-opacity duration-150 group-hover/active-chat:opacity-20 group-focus-visible/active-chat:opacity-20`}
+            />
+            <span
+              className="absolute h-1.5 w-1.5 rounded-[1.5px] bg-current opacity-0 transition-opacity duration-150 group-hover/active-chat:opacity-100 group-focus-visible/active-chat:opacity-100"
+              aria-hidden
+            />
+          </>
+        )}
+      </button>
+    );
+  }
   return (
     <span
       role="status"

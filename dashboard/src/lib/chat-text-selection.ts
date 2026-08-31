@@ -103,6 +103,83 @@ export function chatTextSelectionsOverlap(
   return left.start < right.end && right.start < left.end;
 }
 
+type ChatTextAnchor = Pick<
+  ChatTextSelectionReference,
+  "start" | "end" | "quote" | "prefix" | "suffix"
+>;
+
+function matchingPrefixLength(left: string, right: string): number {
+  const limit = Math.min(left.length, right.length);
+  let matched = 0;
+  while (matched < limit && left[matched] === right[matched]) matched += 1;
+  return matched;
+}
+
+function matchingSuffixLength(left: string, right: string): number {
+  const limit = Math.min(left.length, right.length);
+  let matched = 0;
+  while (
+    matched < limit &&
+    left[left.length - matched - 1] === right[right.length - matched - 1]
+  ) {
+    matched += 1;
+  }
+  return matched;
+}
+
+/**
+ * Relocate a saved DOM selection in the Markdown text used for annotation.
+ * Rich renderers can omit widget text or inject controls, so the raw offset is
+ * only trusted when it still contains the saved quote. Context disambiguates
+ * repeated phrases when those two text maps drift.
+ */
+export function resolveChatTextSelectionAnchor(
+  text: string,
+  anchor: ChatTextAnchor,
+): { start: number; end: number } | null {
+  const quote = anchor.quote;
+  if (!quote) return null;
+  const prefix = anchor.prefix ?? "";
+  const suffix = anchor.suffix ?? "";
+  const rawPrefix = text.slice(Math.max(0, anchor.start - prefix.length), anchor.start);
+  const rawSuffix = text.slice(
+    anchor.start + quote.length,
+    anchor.start + quote.length + suffix.length,
+  );
+  if (
+    text.slice(anchor.start, anchor.start + quote.length) === quote &&
+    (!prefix || rawPrefix === prefix) &&
+    (!suffix || rawSuffix === suffix)
+  ) {
+    return { start: anchor.start, end: anchor.start + quote.length };
+  }
+
+  let bestStart = -1;
+  let bestContext = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let at = text.indexOf(quote); at >= 0; at = text.indexOf(quote, at + 1)) {
+    const context =
+      matchingSuffixLength(text.slice(Math.max(0, at - prefix.length), at), prefix) +
+      matchingPrefixLength(
+        text.slice(at + quote.length, at + quote.length + suffix.length),
+        suffix,
+      );
+    const distance = Math.abs(at - anchor.start);
+    if (
+      context > bestContext ||
+      (context === bestContext && distance < bestDistance)
+    ) {
+      bestStart = at;
+      bestContext = context;
+      bestDistance = distance;
+    }
+  }
+
+  return bestStart >= 0
+    ? { start: bestStart, end: bestStart + quote.length }
+    : null;
+}
+
 /**
  * Ground an Ask-in-chat/Ask-here turn in the exact excerpt the user selected.
  * The excerpt is serialized as data so text copied from a prior response cannot

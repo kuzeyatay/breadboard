@@ -38,7 +38,7 @@ export default async function GardenPage({
         <div className="relative z-10 flex items-center gap-3 min-w-0">
           <BackLink
             fallbackHref={cluster.isOwner ? `/gardens/${clusterSlug}` : '/dashboard'}
-            fallbackLabel={cluster.isOwner ? 'Back to garden chat' : 'Back to gardens'}
+            fallbackLabel={cluster.isOwner ? 'Back to workspace' : 'Back to gardens'}
           />
           <span className="text-gray-700">/</span>
           <h1 className="text-sm font-semibold text-white truncate max-w-xs">{cluster.name}</h1>

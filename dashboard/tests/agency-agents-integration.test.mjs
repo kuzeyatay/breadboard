@@ -151,6 +151,6 @@ test("turn dispatch applies selection and delegates first-prompt naming to the L
   );
   assert.match(turnService, /content: resolved\.userText/);
   assert.match(turnService, /generateAndApplyConversationTitle\(\{/);
-  assert.match(turnService, /reservation\.userMessage\.order_index === 0/);
+  assert.match(turnService, /shouldGenerateConversationTitleForTurn\(\{/);
   assert.doesNotMatch(conversationStore, /chatTitleFromFirstMessage/);
 });

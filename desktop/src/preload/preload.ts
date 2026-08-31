@@ -17,6 +17,8 @@ export const PRELOAD_IPC_CHANNELS = {
   startupContinue: "breadboard:startup-continue",
   startupAwaitDashboard: "breadboard:startup-await-dashboard",
   startupState: "breadboard:startup-state",
+  openTeachController: "breadboard:open-teach-controller",
+  closeTeachController: "breadboard:close-teach-controller",
 } as const;
 
 export interface StartupServiceView {
@@ -111,6 +113,15 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     /** Resolves false when the choice could not be written down. */
     setStartupSound: (enabled: boolean): Promise<boolean> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setStartupSound, enabled) as Promise<boolean>,
+    // While someone demonstrates a task they are working in another
+    // application, so the recording indicator and the Finish button have to
+    // float above it. The shell owns that window; the page asks for it by
+    // session id and gets false back when the shell will not open one, which is
+    // the signal the browser build uses to fall back to its in-page controller.
+    openTeachController: (sessionId: string): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.openTeachController, sessionId) as Promise<boolean>,
+    closeTeachController: (): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.closeTeachController) as Promise<boolean>,
   };
 }
 

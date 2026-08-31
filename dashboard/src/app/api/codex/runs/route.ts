@@ -56,6 +56,7 @@ export async function POST(request: Request) {
     const clientMessageId =
       typeof body.clientMessageId === "string" ? body.clientMessageId.trim() : "";
     const attachToExistingTurn = body.attachToExistingTurn === true;
+    const delegatedAgentRun = body.delegatedAgentRun === true;
     const requestedEffort =
       typeof body.reasoningEffort === "string"
         ? body.reasoningEffort.trim().toLowerCase()
@@ -170,6 +171,8 @@ export async function POST(request: Request) {
             userContent: codexUserMessage(task),
             run: externalRun,
             attachments,
+            delegatedAgentRun,
+            internalAgentContinuation: delegatedAgentRun,
           });
           // Same first-prompt naming the Terminal gets from the external-turns
           // route: a Garden launch reaches this route instead, and without this

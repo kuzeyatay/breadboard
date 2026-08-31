@@ -121,6 +121,10 @@ function videoFile(name = "clip.mp4", bytes = 1024) {
   return new File([new Uint8Array(bytes).fill(7)], name, { type: "video/mp4" });
 }
 
+function audioFile(name = "lecture.mp3", bytes = 1024) {
+  return new File([new Uint8Array(bytes).fill(7)], name, { type: "audio/mpeg" });
+}
+
 test("unauthenticated/unauthorized garden requests are rejected", async () => {
   const deps = makeDeps({
     requireOwnedGarden: async () => {
@@ -174,6 +178,22 @@ test("valid upload submission is sealed by Runtime without a Next temp path", as
   assert.equal(deps.started.jobId, job.id);
   assert.match(deps.started.upload.uploadId, /^upl-/);
   assert.match(job.mediaSha256, /^[0-9a-f]{64}$/);
+  deps.cleanup();
+});
+
+test("MP3 audio uploads are accepted and queued for transcription", async () => {
+  const deps = makeDeps();
+  const result = await handleCreateVideoTranscription(
+    deps,
+    "physics",
+    uploadRequest({ media: audioFile("Recorded Lecture.MP3") }),
+  );
+  assert.equal(result.status, 202);
+  const job = deps.store.getJob(result.body.job.id);
+  assert.equal(job.inputKind, "upload");
+  assert.equal(job.originalFilename, "Recorded Lecture.mp3");
+  assert.match(job.mediaSha256, /^[0-9a-f]{64}$/);
+  assert.equal(deps.started.upload.sizeBytes, 1024);
   deps.cleanup();
 });
 

@@ -15,8 +15,10 @@ import {
   isAppTheme,
   isAppThemeMode,
   nextAppThemeTransition,
+  rememberEffectiveAppTheme,
   solarTimesForDate,
 } from "../src/lib/app-theme.ts";
+import { quartzUrlWithTheme } from "../src/lib/quartz-url.ts";
 
 const layout = fs.readFileSync(new URL("../src/app/layout.tsx", import.meta.url), "utf8");
 const runtime = fs.readFileSync(
@@ -28,6 +30,10 @@ const dashboard = fs.readFileSync(
   "utf8",
 );
 const globals = fs.readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+const themeTransition = fs.readFileSync(
+  new URL("../src/app/app-theme-transition.css", import.meta.url),
+  "utf8",
+);
 const animation = fs.readFileSync(
   new URL("../src/app/components/navbar-flower-wind.tsx", import.meta.url),
   "utf8",
@@ -43,6 +49,18 @@ const quartzTheme = fs.readFileSync(
 const login = fs.readFileSync(new URL("../src/app/auth/login/page.tsx", import.meta.url), "utf8");
 const profile = fs.readFileSync(
   new URL("../src/app/profile/profile-client.tsx", import.meta.url),
+  "utf8",
+);
+const gardenClient = fs.readFileSync(
+  new URL("../src/app/garden/[clusterSlug]/garden-client.tsx", import.meta.url),
+  "utf8",
+);
+const libraryGardenClient = fs.readFileSync(
+  new URL("../src/app/garden/library-garden-client.tsx", import.meta.url),
+  "utf8",
+);
+const gardenQuartzFrame = fs.readFileSync(
+  new URL("../src/app/garden/garden-quartz-frame.tsx", import.meta.url),
   "utf8",
 );
 
@@ -145,6 +163,69 @@ test("the remembered theme initializes before paint and is configurable from the
   assert.match(profile, /requestCurrentLocationFix\(\{ maxAgeMs: 7 \* 86_400_000 \}\)/);
 });
 
+test("theme changes crossfade without moving the page", () => {
+  assert.match(layout, /import "\.\/app-theme-transition\.css"/);
+  assert.match(runtime, /rememberEffectiveAppTheme\(theme, \{ animate: changed \}\)/);
+  assert.match(themeTransition, /::view-transition-old\(root\)/);
+  assert.match(themeTransition, /::view-transition-new\(root\)/);
+  assert.match(themeTransition, /animation-duration:\s*200ms/);
+  assert.match(themeTransition, /cubic-bezier\(0\.23, 1, 0\.32, 1\)/);
+  assert.match(themeTransition, /prefers-reduced-motion:\s*reduce/);
+  assert.doesNotMatch(themeTransition, /transform:/);
+});
+
+test("a rapid theme reversal interrupts the in-flight crossfade", async () => {
+  const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
+  const stored = new Map();
+  const root = { dataset: { theme: "light" } };
+  const callbacks = [];
+  const finishers = [];
+  let skipped = 0;
+
+  globalThis.window = {
+    localStorage: {
+      setItem(key, value) {
+        stored.set(key, value);
+      },
+    },
+  };
+  globalThis.document = {
+    documentElement: root,
+    visibilityState: "visible",
+    startViewTransition(callback) {
+      callbacks.push(callback);
+      let finish;
+      const finished = new Promise((resolve) => {
+        finish = resolve;
+      });
+      finishers.push(finish);
+      return {
+        finished,
+        skipTransition() {
+          skipped += 1;
+        },
+      };
+    },
+  };
+
+  try {
+    rememberEffectiveAppTheme("dark");
+    rememberEffectiveAppTheme("light");
+    callbacks[0]();
+    finishers[0]();
+    await Promise.resolve();
+
+    assert.equal(skipped, 1);
+    assert.equal(root.dataset.theme, "light");
+    assert.equal(stored.get(APP_THEME_STORAGE_KEY), "light");
+    assert.equal(root.dataset.themeTransition, undefined);
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.document = originalDocument;
+  }
+});
+
 test("dark mode uses charcoal paper and Breadboard's pastel utility bridge", () => {
   assert.match(globals, /:root\[data-theme="dark"\]\s*\{/);
   assert.match(globals, /--paper-bg:\s*#0b0c0a/);
@@ -180,6 +261,24 @@ test("the embedded Quartz reader accepts the dashboard theme message", () => {
   assert.match(quartzTheme, /event\.source !== window\.parent/);
   assert.match(quartzTheme, /message\?\.type !== "breadboard:theme"/);
   assert.match(quartzTheme, /applyTheme\(message\.theme\)/);
+});
+
+test("Quartz iframe URLs carry the dashboard theme before first paint", () => {
+  assert.equal(
+    quartzUrlWithTheme("http://localhost:8081/physics-for-ee/?refresh=12", "light"),
+    "http://localhost:8081/physics-for-ee/?refresh=12&theme=light",
+  );
+  assert.equal(
+    quartzUrlWithTheme("http://localhost:8081/physics-for-ee/?theme=dark", "light"),
+    "http://localhost:8081/physics-for-ee/?theme=light",
+  );
+  assert.equal(
+    quartzUrlWithTheme("http://localhost:8081/physics-for-ee/", "sepia"),
+    "http://localhost:8081/physics-for-ee/",
+  );
+  assert.match(gardenClient, /src=\{[\s\S]*quartzUrlWithAppTheme\(/);
+  assert.match(libraryGardenClient, /src=\{quartzLease\.ready \? quartzUrlWithAppTheme\(src\)/);
+  assert.match(gardenQuartzFrame, /src=\{quartzLease\.ready \? quartzUrlWithAppTheme\(src\)/);
 });
 
 test("the desktop shell is told the day's sunrise and sunset, never the coordinates", () => {

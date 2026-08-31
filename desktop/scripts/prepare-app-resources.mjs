@@ -15,6 +15,7 @@
 //     hermes-skills/              <- reviewed first-party skills (read-only)
 //     agency-agents/              <- bundled specialist persona catalog (read-only)
 //     scientific-agent-skills/    <- pinned K-Dense scientific skills (read-only)
+//     patent-disclosure-skill/     <- pinned patent guidance only (read-only)
 //     auto-claude-code-research-in-sleep/ <- ARIS guide + research skills (read-only)
 //     openGym/                 <- exercise catalogue + upstream notices (read-only)
 //     quartz-template/            <- Quartz program files (no content/public)
@@ -47,6 +48,11 @@ import {
 } from "./packaged-dashboard-input.mjs";
 import { assertVoiceboxArtifactReceipt } from "./voicebox-artifact-receipt.mjs";
 import { stagePinnedVlmOcrRuntime } from "./vlm-ocr-runtime-artifact.mjs";
+import {
+  isPatentDisclosurePackageFile,
+  PATENT_DISCLOSURE_REQUIRED_FILES,
+  PATENT_DISCLOSURE_UPSTREAM_COMMIT,
+} from "./patent-disclosure-package.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(desktopRoot, "..");
@@ -66,6 +72,7 @@ const REVIEWED_LOCAL_SOURCE_COMMITS = Object.freeze({
   penecho: "5d14d54b5a8d06dab4cb6a865f2547556e5ff842",
   googleImages: "e9c515eda45807d80d9ccc993be781d0ee13d47b",
   tradingAgents: "271e8c88a9874cae3f4ba8059b78301c13fa9e18",
+  openExecutive: "755d8ec13083bc231b2d9c331af48ff5df902a81",
   agentReach: "241b02870892525e009bceaa7823d3f7b6c6f617",
   watermarks: "ff5db594f189373b80afde42449b5ad952270c95",
 });
@@ -865,12 +872,18 @@ async function stagePinnedTrackedSourceClosure({
   sourceRoot,
   targetRoot,
   expectedCommit,
+  allowVendoredSnapshot = false,
   include,
   required,
 }) {
   let sourceCommit;
   try {
-    sourceCommit = assertPinnedCleanCheckout({ label, sourceRoot, expectedCommit });
+    sourceCommit = assertPinnedCleanCheckout({
+      label,
+      sourceRoot,
+      expectedCommit,
+      allowVendoredSnapshot,
+    });
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
@@ -2126,6 +2139,32 @@ log("staging TradingAgents immutable worker source");
   writeSourceCommitReceipt(target, sourceCommit);
 }
 
+// OpenExecutive runs through the managed Python environment and ChatMock. Ship
+// only its reviewed core package closure; the web UI, fixtures, checkout data,
+// local configuration, and mutable company memory are not package inputs.
+log("staging OpenExecutive immutable worker source");
+await stagePinnedTrackedSourceClosure({
+  label: "OpenExecutive",
+  sourceRoot: path.join(repoRoot, "OpenExecutive"),
+  targetRoot: path.join(stagingRoot, "OpenExecutive"),
+  expectedCommit: REVIEWED_LOCAL_SOURCE_COMMITS.openExecutive,
+  include: (relative) =>
+    relative === "LICENSE" ||
+    relative === "README.md" ||
+    relative === "packages/core/README.md" ||
+    relative === "packages/core/pyproject.toml" ||
+    relative === "packages/core/uv.lock" ||
+    relative.startsWith("packages/core/openexecutive/"),
+  required: [
+    "LICENSE",
+    "README.md",
+    "packages/core/README.md",
+    "packages/core/pyproject.toml",
+    "packages/core/uv.lock",
+    "packages/core/openexecutive/orchestrator/executive.py",
+  ],
+});
+
 // Career Ops setup copies this immutable seed into its durable data-root
 // workspace. Dependencies and user state are deliberately never staged from
 // the developer checkout.
@@ -2238,6 +2277,7 @@ for (const entry of [
   "runtime-v2-opencode-worker.mjs",
   "runtime-v2-trading-agent-worker.mjs",
   "runtime-v2-career-ops-worker.mjs",
+  "runtime-v2-openexecutive-worker.mjs",
   "runtime-v2-chatmock-login-worker.mjs",
   "runtime-v2-chatmock-login-executor.mjs",
   "runtime-v2-vimax-worker.mjs",
@@ -2250,7 +2290,9 @@ for (const entry of [
   "runtime-v2-agent-reach-setup-executor.mjs",
   "runtime-v2-agent-reach-configure.py",
   "runtime-v2-gbrain-sync-worker.mjs",
+  "runtime-v2-thought-topology-worker.mjs",
   "runtime-v2-agent-reach-worker.mjs",
+  "runtime-v2-praxist-worker.mjs",
   "runtime-v2-agent-tars-worker.mjs",
   "runtime-v2-legal-worker.mjs",
   "runtime-v2-sf3d-worker.mjs",
@@ -2349,6 +2391,10 @@ fs.copyFileSync(
 fs.copyFileSync(
   path.join(repoRoot, "scripts", "tradingagents-bridge.py"),
   path.join(scriptsTarget, "tradingagents-bridge.py"),
+);
+fs.copyFileSync(
+  path.join(repoRoot, "scripts", "openexecutive-bridge.py"),
+  path.join(scriptsTarget, "openexecutive-bridge.py"),
 );
 fs.copyFileSync(
   path.join(repoRoot, "scripts", "shorts-bridge.py"),
@@ -2728,6 +2774,21 @@ copyTree(
   path.join(repoRoot, "hermes-skills", "prebuilt"),
   firstPartySkillsTarget,
 );
+
+// --- Patent Disclosure reviewed guidance closure -------------------------
+// The skill's model-facing procedure needs the routed prompts and schemas, not
+// an implicit shell. Stage only text guidance from the pinned independent
+// checkout; Python tools, package installers, images and mutable outputs stay
+// outside the installed application.
+await stagePinnedTrackedSourceClosure({
+  label: "Patent Disclosure skill",
+  sourceRoot: path.join(repoRoot, "patent-disclosure-skill"),
+  targetRoot: path.join(stagingRoot, "patent-disclosure-skill"),
+  expectedCommit: PATENT_DISCLOSURE_UPSTREAM_COMMIT,
+  allowVendoredSnapshot: true,
+  include: isPatentDisclosurePackageFile,
+  required: PATENT_DISCLOSURE_REQUIRED_FILES,
+});
 
 // --- scientific-agent-skills ---------------------------------------------
 {

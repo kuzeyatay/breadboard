@@ -16,6 +16,7 @@ const SUPER_AGENT_TOOL_LABELS: Readonly<Record<string, string>> = {
   research_record: "Recording research",
   research_status: "Checking research coverage",
   delegate_task: "Starting specialist",
+  clarify: "Asking you a question",
 };
 
 /**
@@ -97,10 +98,103 @@ export function delegatedAgentStartedAtForMessage(
   return requestedAt || undefined;
 }
 
-function delegationLabel(prefix: string, agentName: string): string {
+interface DelegationPresentationMessage {
+  role: "user" | "assistant";
+  content: string;
+  internalAgentContinuation?: boolean;
+  delegatedAgentRun?: boolean;
+  delegatedAgentPreamble?: string;
+  openGymRun?: unknown;
+  godsEyeRun?: unknown;
+  modelChange?: unknown;
+  textSelection?: { mode?: string };
+}
+
+// openGym and God's Eye answer with their own self-contained presentation — a
+// framed animation, a framed globe — so a delegation to them stays a visible
+// row instead of a hidden worker awaiting synthesis.
+function selfPresentingDelegation(message: {
+  openGymRun?: unknown;
+  godsEyeRun?: unknown;
+}): boolean {
+  return Boolean(message.openGymRun || message.godsEyeRun);
+}
+
+function visibleAssistantCandidate(
+  message: DelegationPresentationMessage,
+): boolean {
+  return (
+    message.role === "assistant" &&
+    !(message.delegatedAgentRun === true && !selfPresentingDelegation(message)) &&
+    !message.modelChange &&
+    message.textSelection?.mode !== "inline"
+  );
+}
+
+/**
+ * Internal hand-backs are separate durable turns, but one delegation is one
+ * visible answer. Each continuation therefore supersedes the prior visible
+ * assistant in the same uninterrupted chain; a real user message starts a new
+ * chain and prevents unrelated answers from being folded together.
+ */
+export function supersededDelegationAssistantIndices(
+  messages: readonly DelegationPresentationMessage[],
+): Set<number> {
+  const superseded = new Set<number>();
+  let visibleAssistantIndex = -1;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    if (message.role === "user" && message.internalAgentContinuation !== true) {
+      visibleAssistantIndex = -1;
+      continue;
+    }
+    if (!visibleAssistantCandidate(message)) continue;
+    if (
+      messages[index - 1]?.role === "user" &&
+      messages[index - 1]?.internalAgentContinuation === true &&
+      visibleAssistantIndex >= 0
+    ) {
+      superseded.add(visibleAssistantIndex);
+    }
+    visibleAssistantIndex = index;
+  }
+  return superseded;
+}
+
+/** Keep the original hand-off text in the single row until synthesis speaks. */
+export function delegatedContinuationPreamble(
+  messages: readonly DelegationPresentationMessage[],
+  assistantIndex: number,
+): string {
+  if (
+    messages[assistantIndex]?.role !== "assistant" ||
+    messages[assistantIndex - 1]?.role !== "user" ||
+    messages[assistantIndex - 1]?.internalAgentContinuation !== true
+  ) {
+    return "";
+  }
+  let preamble = "";
+  for (let index = assistantIndex - 2; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role === "user" && message.internalAgentContinuation !== true) {
+      break;
+    }
+    if (!visibleAssistantCandidate(message)) continue;
+    const content =
+      message.delegatedAgentPreamble?.trim() || message.content.trim();
+    if (content) preamble = content;
+  }
+  return preamble;
+}
+
+function agentLabel(agentName: string): string {
   const name = agentName.trim();
-  if (!name) return `${prefix} agent`;
-  return `${prefix} ${name}${/\bagent$/i.test(name) ? "" : " agent"}`;
+  if (!name) return "agent";
+  return `${name}${/\bagent$/i.test(name) ? "" : " agent"}`;
+}
+
+function delegationLabel(prefix: string, agentName: string): string {
+  return `${prefix} ${agentLabel(agentName)}`;
 }
 
 /**
@@ -170,4 +264,129 @@ export function delegatedTurnTotalUsage(
       ? { responseDurationMs: continuation.responseDurationMs }
       : {}),
   };
+}
+
+export type DelegatedWorkerOutcome = "running" | "completed" | "failed" | "aborted";
+
+interface DelegatedWorkerMessage {
+  role: "user" | "assistant";
+  content: string;
+  delegatedAgentRun?: boolean;
+  delegatedAgentPreamble?: string;
+  openGymRun?: unknown;
+  godsEyeRun?: unknown;
+  internalAgentContinuation?: boolean;
+  externalAgentOutcome?: string;
+  externalAgentName?: string;
+  externalAgentResult?: string;
+}
+
+/**
+ * The hidden workers a visible assistant turn delegated to.
+ *
+ * A delegated worker is its own durable turn, but it draws nothing: its rows
+ * sit directly after the assistant that launched it, hidden, until either a
+ * hand-back speaks for it or a real user message starts a new chain. The
+ * launching row is the only thing on screen that can say what became of the
+ * work, so it has to be able to read those rows.
+ */
+export function delegatedWorkersForMessage<T extends DelegatedWorkerMessage>(
+  messages: readonly T[],
+  assistantIndex: number,
+): T[] {
+  if (messages[assistantIndex]?.role !== "assistant") return [];
+  const workers: T[] = [];
+  for (let index = assistantIndex + 1; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    if (message.role === "user") {
+      if (message.internalAgentContinuation === true) continue;
+      break;
+    }
+    if (message.delegatedAgentRun === true && !selfPresentingDelegation(message)) {
+      workers.push(message);
+      continue;
+    }
+    // A visible assistant — a hand-back or a later answer — closes the chain.
+    break;
+  }
+  return workers;
+}
+
+/**
+ * One outcome for a batch: still going while any worker runs; otherwise the
+ * worst result, because a batch with one worker stopped is not a finished one.
+ */
+export function delegatedWorkersOutcome(
+  workers: readonly DelegatedWorkerMessage[],
+): DelegatedWorkerOutcome | undefined {
+  if (workers.length === 0) return undefined;
+  const outcomes = workers.map(
+    (worker) => (worker.externalAgentOutcome ?? "running") as DelegatedWorkerOutcome,
+  );
+  if (outcomes.includes("running")) return "running";
+  if (outcomes.includes("aborted")) return "aborted";
+  if (outcomes.includes("failed")) return "failed";
+  return "completed";
+}
+
+/**
+ * The past-tense hand-off label, telling the truth about how it ended.
+ *
+ * "Delegated to Max Research agent" reads as an answer that came back. When the
+ * worker was stopped or failed and nothing was handed back, the row was the
+ * last word on screen and it said the same thing — a chat that looked finished
+ * while its promised synthesis was never going to arrive.
+ */
+export function delegatedAgentOutcomeLabel(
+  agentName: string,
+  outcome: DelegatedWorkerOutcome | undefined,
+): string {
+  if (outcome === "aborted") return `${agentLabel(agentName)} stopped`;
+  if (outcome === "failed") return `${agentLabel(agentName)} failed`;
+  return delegatedAgentCompletedLabel(agentName);
+}
+
+export function delegatedAgentOutcomeLabelForMessage(
+  message: DelegatedAgentMessageMetadata,
+  outcome: DelegatedWorkerOutcome | undefined,
+): string | undefined {
+  const agentName = delegatedAgentNameForMessage(message);
+  return agentName ? delegatedAgentOutcomeLabel(agentName, outcome) : undefined;
+}
+
+/** What the runtime recorded when a worker was stopped by a person, not by a failure. */
+export const DELEGATED_WORKER_STOPPED_BY_USER = "Stopped by the user.";
+
+/**
+ * A sentence for the row when the delegation ended without a hand-back.
+ *
+ * Stopped runs never come back as a continuation turn (the person asked for
+ * quiet, or the run was cancelled underneath them), so without this line
+ * nothing on screen would ever say the research is not coming. Failed runs do
+ * hand back, but the synthesis can be a while; the line covers that gap and
+ * disappears once the hand-back supersedes the row.
+ */
+export function delegatedWorkersOutcomeNote(
+  workers: readonly DelegatedWorkerMessage[],
+): string | undefined {
+  const outcome = delegatedWorkersOutcome(workers);
+  if (outcome !== "aborted" && outcome !== "failed") return undefined;
+  const ended = workers.filter((worker) => worker.externalAgentOutcome === outcome);
+  const names = [...new Set(ended.map((worker) => worker.externalAgentName?.trim() || "The delegated agent"))];
+  const subject = names.join(" and ");
+  if (outcome === "aborted") {
+    const byUser = ended.every(
+      (worker) => worker.externalAgentResult?.trim() === DELEGATED_WORKER_STOPPED_BY_USER,
+    );
+    return byUser
+      ? `You stopped ${subject} before it returned anything, so there is nothing to synthesize. Retry to run it again.`
+      : `${subject} was stopped before it returned anything, so there is nothing to synthesize. Retry to run it again.`;
+  }
+  const reasons = ended
+    .map((worker) => worker.externalAgentResult?.trim())
+    .filter((reason): reason is string => Boolean(reason))
+    .map((reason) => reason.split("\n")[0]!.slice(0, 240));
+  return reasons.length
+    ? `${subject} failed: ${reasons.join(" ")}`
+    : `${subject} failed before it returned anything.`;
 }

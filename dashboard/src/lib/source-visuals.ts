@@ -19,6 +19,7 @@ import os from "os";
 import crypto from "crypto";
 import type OpenAI from "openai";
 import { PDFParse } from "pdf-parse";
+import { modelTransportFailureEvidence } from "./http-502-retry.ts";
 import { breadSystemPrompt } from "./assistant-identity.ts";
 import { cropPng, resizePngToMaxDimension } from "./png-crop.ts";
 import {
@@ -86,7 +87,16 @@ const SOURCE_IDENTITY_MAP_RELATIVE_PATH = path.join(
   "source-visual-source-index.json",
 );
 const CROPPED_ASSETS_FOLDER = path.join("assets", "source-visuals");
-const DEFAULT_DETECTION_TIMEOUT_MS = 45_000;
+export const MIN_SOURCE_VISUAL_DETECTION_TIMEOUT_MS = 5_000;
+export const MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS = 180_000;
+// Sol Ultra vision calls regularly need more than 45 seconds even for the
+// detector's low-detail 768px page image. Let one unambiguous request finish
+// instead of aborting it and forcing a whole-job retry with unknown transport
+// outcome. The environment override remains strictly bounded.
+export const DEFAULT_SOURCE_VISUAL_DETECTION_TIMEOUT_MS =
+  MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS;
+const DEFAULT_SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS = 2_000;
+const SOURCE_MODEL_HTTP_502_RETRY_MAX_DELAY_MS = 30_000;
 const DETECTOR_VERSION = 3;
 const DETECTION_IMAGE_MAX_DIMENSION = 768;
 const SOURCE_FORMULA_REVIEW_SCHEMA_VERSION = 1;
@@ -421,10 +431,91 @@ interface SourceVisualScanCache {
   sources: Record<string, Record<string, SourceVisualScanEntry>>;
 }
 
-function sourceVisualDetectionTimeoutMs(): number {
-  const parsed = Number(process.env.SOURCE_VISUAL_DETECTION_TIMEOUT_MS);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_DETECTION_TIMEOUT_MS;
-  return Math.max(5_000, Math.min(parsed, 180_000));
+export function sourceVisualDetectionTimeoutMs(
+  raw = process.env.SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
+): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_SOURCE_VISUAL_DETECTION_TIMEOUT_MS;
+  }
+  return Math.max(
+    MIN_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
+    Math.min(parsed, MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS),
+  );
+}
+
+interface SourceModelCompletionResponse {
+  choices: Array<{ message?: { content?: string | null } }>;
+}
+
+function sourceModelHttp502RetryDelayMs(retryNumber: number): number {
+  const configuredBase = Number(process.env.SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS);
+  const baseDelayMs = Number.isFinite(configuredBase) && configuredBase > 0
+    ? Math.min(SOURCE_MODEL_HTTP_502_RETRY_MAX_DELAY_MS, Math.floor(configuredBase))
+    : DEFAULT_SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS;
+  return Math.min(
+    SOURCE_MODEL_HTTP_502_RETRY_MAX_DELAY_MS,
+    baseDelayMs *
+      2 ** Math.min(4, Math.max(0, retryNumber - 1)),
+  );
+}
+
+function isSourceModelHttp502(error: unknown): boolean {
+  return modelTransportFailureEvidence(error).causes.some(
+    ({ httpStatus }) => httpStatus === 502,
+  );
+}
+
+async function waitForSourceModelHttp502Retry(
+  delayMs: number,
+  checkpoint?: () => void,
+): Promise<void> {
+  const deadline = Date.now() + delayMs;
+  while (Date.now() < deadline) {
+    checkpoint?.();
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Math.min(250, Math.max(1, deadline - Date.now()))),
+    );
+  }
+  checkpoint?.();
+}
+
+/** Source-image and formula-review calls are read-only model analyses with no
+ * provider receipt to adopt. An HTTP 502 is therefore safe to replay as the
+ * same immutable request. Give every retry a fresh per-attempt timeout and
+ * keep the Learn cancellation checkpoint live while retrying without a cap. */
+async function createSourceModelCompletionWithHttp502Retry(input: {
+  client: OpenAI;
+  request: unknown;
+  timeoutMs: number;
+  checkpoint?: () => void;
+  onProgress?: (step: string) => void;
+  stageLabel: string;
+}): Promise<SourceModelCompletionResponse> {
+  let retryNumber = 0;
+  for (;;) {
+    input.checkpoint?.();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), input.timeoutMs);
+    try {
+      return await input.client.chat.completions.create(
+        input.request as never,
+        { signal: controller.signal, maxRetries: 0 },
+      ) as unknown as SourceModelCompletionResponse;
+    } catch (error) {
+      const locallyTimedOut = controller.signal.aborted;
+      if (!isSourceModelHttp502(error) && !locallyTimedOut) throw error;
+      retryNumber += 1;
+      const delayMs = sourceModelHttp502RetryDelayMs(retryNumber);
+      input.onProgress?.(
+        `${locallyTimedOut ? "Model request timed out" : "HTTP 502"}; ` +
+          `automatically retrying ${input.stageLabel} (retry ${retryNumber})...`,
+      );
+      await waitForSourceModelHttp502Retry(delayMs, input.checkpoint);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 const TYPE_LETTER: Record<SourceVisualType, string> = {
@@ -3027,10 +3118,8 @@ async function requestSourceFormulaPageReview(
     options.onProgress?.(
       `Reviewing source formulas on ${evidence.sourceId} p.${evidence.pageNumber} (${semanticAttempt}/${SOURCE_FORMULA_REVIEW_MAX_SEMANTIC_ATTEMPTS})...`,
     );
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), sourceFormulaReviewTimeoutMs());
     let rawResponse = "";
-    try {
+    {
       const content: Array<Record<string, unknown>> = [
         { type: "text", text: requestPayload },
         {
@@ -3055,19 +3144,21 @@ async function requestSourceFormulaPageReview(
           },
         );
       }
-      const response = await options.client.chat.completions.create(
-        {
+      const response = await createSourceModelCompletionWithHttp502Retry({
+        client: options.client,
+        request: {
           model: options.model,
           messages: [
             { role: "system", content: SOURCE_FORMULA_REVIEW_SYSTEM_PROMPT },
             { role: "user", content: content as never },
           ],
         },
-        { signal: controller.signal, maxRetries: 0 },
-      );
+        timeoutMs: sourceFormulaReviewTimeoutMs(),
+        checkpoint: options.checkCancelled,
+        onProgress: options.onProgress,
+        stageLabel: `source formula review on ${evidence.sourceId} p.${evidence.pageNumber}`,
+      });
       rawResponse = response.choices[0]?.message?.content ?? "";
-    } finally {
-      clearTimeout(timeout);
     }
     assertNonemptySourceFormulaModelResponse(rawResponse, "formula page review");
 
@@ -4246,12 +4337,11 @@ async function requestSourceFormulaArtifactRecovery(
       "Re-detecting source artifacts on " + evidence.sourceId + " p." + evidence.pageNumber +
         " (" + semanticAttempt + "/" + SOURCE_FORMULA_ARTIFACT_RECOVERY_MAX_SEMANTIC_ATTEMPTS + ")...",
     );
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), sourceFormulaReviewTimeoutMs());
     let rawResponse = "";
-    try {
-      const response = await options.client.chat.completions.create(
-        {
+    {
+      const response = await createSourceModelCompletionWithHttp502Retry({
+        client: options.client,
+        request: {
           model: options.model,
           messages: [
             { role: "system", content: SOURCE_FORMULA_ARTIFACT_RECOVERY_SYSTEM_PROMPT },
@@ -4270,11 +4360,12 @@ async function requestSourceFormulaArtifactRecovery(
             },
           ],
         },
-        { signal: controller.signal, maxRetries: 0 },
-      );
+        timeoutMs: sourceFormulaReviewTimeoutMs(),
+        checkpoint: options.checkCancelled,
+        onProgress: options.onProgress,
+        stageLabel: `formula artifact recovery on ${evidence.sourceId} p.${evidence.pageNumber}`,
+      });
       rawResponse = response.choices[0]?.message?.content ?? "";
-    } finally {
-      clearTimeout(timeout);
     }
     assertNonemptySourceFormulaModelResponse(rawResponse, "formula artifact recovery");
     let recovered: {
@@ -4351,12 +4442,11 @@ async function requestSourceFormulaArtifactTopologyRecovery(
       "Re-detecting formula topology on " + evidence.sourceId + " p." + evidence.pageNumber +
         " (" + semanticAttempt + "/" + SOURCE_FORMULA_ARTIFACT_TOPOLOGY_RECOVERY_MAX_SEMANTIC_ATTEMPTS + ")...",
     );
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), sourceFormulaReviewTimeoutMs());
     let rawResponse = "";
-    try {
-      const response = await options.client.chat.completions.create(
-        {
+    {
+      const response = await createSourceModelCompletionWithHttp502Retry({
+        client: options.client,
+        request: {
           model: options.model,
           messages: [
             { role: "system", content: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_RECOVERY_SYSTEM_PROMPT },
@@ -4375,11 +4465,12 @@ async function requestSourceFormulaArtifactTopologyRecovery(
             },
           ],
         },
-        { signal: controller.signal, maxRetries: 0 },
-      );
+        timeoutMs: sourceFormulaReviewTimeoutMs(),
+        checkpoint: options.checkCancelled,
+        onProgress: options.onProgress,
+        stageLabel: `formula topology recovery on ${evidence.sourceId} p.${evidence.pageNumber}`,
+      });
       rawResponse = response.choices[0]?.message?.content ?? "";
-    } finally {
-      clearTimeout(timeout);
     }
     assertNonemptySourceFormulaModelResponse(rawResponse, "formula topology recovery");
     let recovered: ReturnType<typeof sourceFormulaArtifactTopologyRecoveryResponse>;
@@ -4614,12 +4705,11 @@ async function requestSourceFormulaArtifactTopologyCandidateRepairCandidate(
         " (" + semanticAttempt + "/" +
         SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_MAX_SEMANTIC_ATTEMPTS + ")...",
     );
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), sourceFormulaReviewTimeoutMs());
     let rawResponse = "";
-    try {
-      const response = await options.client.chat.completions.create(
-        {
+    {
+      const response = await createSourceModelCompletionWithHttp502Retry({
+        client: options.client,
+        request: {
           model: options.model,
           messages: [
             { role: "system", content: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_SYSTEM_PROMPT },
@@ -4638,11 +4728,12 @@ async function requestSourceFormulaArtifactTopologyCandidateRepairCandidate(
             },
           ],
         },
-        { signal: controller.signal, maxRetries: 0 },
-      );
+        timeoutMs: sourceFormulaReviewTimeoutMs(),
+        checkpoint: options.checkCancelled,
+        onProgress: options.onProgress,
+        stageLabel: `formula topology candidate ${candidateOrdinal} on ${evidence.sourceId} p.${evidence.pageNumber}`,
+      });
       rawResponse = response.choices[0]?.message?.content ?? "";
-    } finally {
-      clearTimeout(timeout);
     }
     assertNonemptySourceFormulaModelResponse(rawResponse, "formula topology candidate repair");
     let recovered: ReturnType<typeof sourceFormulaArtifactTopologyRecoveryResponse>;
@@ -4801,23 +4892,23 @@ async function requestSourceFormulaArtifactTopologyReview(
       "Independently reviewing formula topology on " + evidence.sourceId + " p." + evidence.pageNumber +
         " (" + semanticAttempt + "/" + SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_MAX_SEMANTIC_ATTEMPTS + ")...",
     );
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), sourceFormulaReviewTimeoutMs());
     let rawResponse = "";
-    try {
-      const response = await options.client.chat.completions.create(
-        {
+    {
+      const response = await createSourceModelCompletionWithHttp502Retry({
+        client: options.client,
+        request: {
           model: options.model,
           messages: [
             { role: "system", content: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_SYSTEM_PROMPT },
             { role: "user", content: content as never },
           ],
         },
-        { signal: controller.signal, maxRetries: 0 },
-      );
+        timeoutMs: sourceFormulaReviewTimeoutMs(),
+        checkpoint: options.checkCancelled,
+        onProgress: options.onProgress,
+        stageLabel: `formula topology review on ${evidence.sourceId} p.${evidence.pageNumber}`,
+      });
       rawResponse = response.choices[0]?.message?.content ?? "";
-    } finally {
-      clearTimeout(timeout);
     }
     assertNonemptySourceFormulaModelResponse(rawResponse, "formula topology review");
     let reviewed: ReturnType<typeof sourceFormulaArtifactTopologyReviewResponse>;
@@ -5484,12 +5575,11 @@ async function requestSourceFormulaArtifactTopologyEmptyInventoryReview(
         evidence.pageNumber + " (" + semanticAttempt + "/" +
         SOURCE_FORMULA_ARTIFACT_TOPOLOGY_EMPTY_INVENTORY_REVIEW_MAX_SEMANTIC_ATTEMPTS + ")...",
     );
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), sourceFormulaReviewTimeoutMs());
     let rawResponse = "";
-    try {
-      const response = await options.client.chat.completions.create(
-        {
+    {
+      const response = await createSourceModelCompletionWithHttp502Retry({
+        client: options.client,
+        request: {
           model: options.model,
           messages: [
             { role: "system", content: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_EMPTY_INVENTORY_REVIEW_SYSTEM_PROMPT },
@@ -5508,11 +5598,12 @@ async function requestSourceFormulaArtifactTopologyEmptyInventoryReview(
             },
           ],
         },
-        { signal: controller.signal, maxRetries: 0 },
-      );
+        timeoutMs: sourceFormulaReviewTimeoutMs(),
+        checkpoint: options.checkCancelled,
+        onProgress: options.onProgress,
+        stageLabel: `empty formula inventory review on ${evidence.sourceId} p.${evidence.pageNumber}`,
+      });
       rawResponse = response.choices[0]?.message?.content ?? "";
-    } finally {
-      clearTimeout(timeout);
     }
     assertNonemptySourceFormulaModelResponse(rawResponse, "empty formula inventory review");
     let parsed: { status: "confirmed" | "rejected"; reason: string };
@@ -5770,12 +5861,11 @@ async function requestSourceFormulaArtifactTopologyConsensusRepairCandidate(
         " (" + semanticAttempt + "/" +
         SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_MAX_SEMANTIC_ATTEMPTS + ")...",
     );
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), sourceFormulaReviewTimeoutMs());
     let rawResponse = "";
-    try {
-      const response = await options.client.chat.completions.create(
-        {
+    {
+      const response = await createSourceModelCompletionWithHttp502Retry({
+        client: options.client,
+        request: {
           model: options.model,
           messages: [
             { role: "system", content: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_SYSTEM_PROMPT },
@@ -5794,11 +5884,12 @@ async function requestSourceFormulaArtifactTopologyConsensusRepairCandidate(
             },
           ],
         },
-        { signal: controller.signal, maxRetries: 0 },
-      );
+        timeoutMs: sourceFormulaReviewTimeoutMs(),
+        checkpoint: options.checkCancelled,
+        onProgress: options.onProgress,
+        stageLabel: `formula consensus candidate ${candidateOrdinal} on ${evidence.sourceId} p.${evidence.pageNumber}`,
+      });
       rawResponse = response.choices[0]?.message?.content ?? "";
-    } finally {
-      clearTimeout(timeout);
     }
     assertNonemptySourceFormulaModelResponse(rawResponse, "formula topology consensus repair");
     let recovered: ReturnType<typeof sourceFormulaArtifactTopologyRecoveryResponse>;
@@ -12362,15 +12453,15 @@ async function detectVisualsOnPage(
   client: OpenAI,
   model: string,
   pngBuffer: Buffer,
+  options: Pick<ExtractSourceVisualsOptions, "checkpoint" | "onProgress"> = {},
+  pageNumber?: number,
 ): Promise<SourceVisualDetection[]> {
   const detectionBuffer =
     resizePngToMaxDimension(pngBuffer, DETECTION_IMAGE_MAX_DIMENSION) ?? pngBuffer;
   const dataUrl = `data:image/png;base64,${detectionBuffer.toString("base64")}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), sourceVisualDetectionTimeoutMs());
-  try {
-    const response = await client.chat.completions.create(
-      {
+  const response = await createSourceModelCompletionWithHttp502Retry({
+    client,
+    request: {
         model,
         messages: [
           { role: "system", content: DETECTION_SYSTEM_PROMPT },
@@ -12386,12 +12477,12 @@ async function detectVisualsOnPage(
           },
         ],
       },
-      { signal: controller.signal, maxRetries: 0 },
-    );
-    return parseDetections(response.choices[0]?.message?.content);
-  } finally {
-    clearTimeout(timeout);
-  }
+    timeoutMs: sourceVisualDetectionTimeoutMs(),
+    checkpoint: options.checkpoint,
+    onProgress: options.onProgress,
+    stageLabel: `source visual scan${pageNumber ? ` for page ${pageNumber}` : ""}`,
+  });
+  return parseDetections(response.choices[0]?.message?.content);
 }
 
 export interface ExtractSourceVisualsOptions {
@@ -12967,7 +13058,13 @@ export async function extractSourceVisuals(
     if (!reusedCachedScan) {
       try {
         onProgress?.(`Scanning page ${pageNumber || "?"} for figures...`);
-        detections = await detectVisualsOnPage(client, model, pngBuffer);
+        detections = await detectVisualsOnPage(
+          client,
+          model,
+          pngBuffer,
+          { checkpoint, onProgress },
+          pageNumber,
+        );
         sourceCache[pageUrl] = {
           detectorVersion: DETECTOR_VERSION,
           fingerprint,

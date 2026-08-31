@@ -14,9 +14,12 @@ test("the Skills hub lists the user's own workflows and can create one", () => {
   assert.match(panel, /\/api\/workflows\/local/);
   assert.doesNotMatch(panel, /api\.n8n\.io/);
   assert.doesNotMatch(panel, /\/api\/workflows\/templates/);
+  assert.doesNotMatch(panel, /Ready to run/);
+  assert.match(panel, /Teach workflow/);
+  assert.match(panel, /\/workflows\?teach=1/);
 });
 
-test("saved automations execute through the authenticated backend and become chat turns", () => {
+test("saved automations are staged in the composer, then execute as chat turns", () => {
   const listRoute = source("../src/app/api/workflows/local/route.ts");
   const runRoute = source("../src/app/api/workflows/local/[workflowId]/run/route.ts");
   const composer = source("../src/app/components/assistant-composer.tsx");
@@ -29,8 +32,16 @@ test("saved automations execute through the authenticated backend and become cha
   assert.match(listRoute, /listWorkflows/);
   assert.match(runRoute, /requireUserId/);
   assert.match(runRoute, /runWorkflowById/);
-  // The chat-facing surfaces are engine-agnostic and must keep working.
-  assert.match(composer, /onRunWorkflow\(workflow, workflowInput\)/);
+  // Picking a workflow writes an editable confirmation prompt and arms private
+  // composer state. The edited suffix is bounded input for that workflow.
+  assert.match(composer, /const \[pendingWorkflow, setPendingWorkflow\] = useState<LocalWorkflowSummary \| null>\(null\)/);
+  assert.match(composer, /`Run the \$\{workflow\.name\} automation`/);
+  assert.match(composer, /workflowInputFromComposer\(value, pendingWorkflowPrompt\)/);
+  assert.match(composer, /void onRunWorkflow\(workflow, input\)/);
+  assert.doesNotMatch(composer, /value !== pendingWorkflowPrompt/);
+  assert.match(composer, /Your edited message will be used as input for this workflow/);
+  // Sending the untouched prompt still reaches the authenticated run path and
+  // records the external turn in the conversation.
   assert.match(hook, /previewExternalAgentTurn\(\{ clientMessageId, userContent \}\)/);
   assert.doesNotMatch(hook, /Running \$\{workflow\.name\}/);
   assert.match(sessionHook, /external-thinking-\$\{input\.clientMessageId\}/);
@@ -40,6 +51,10 @@ test("saved automations execute through the authenticated backend and become cha
   assert.match(dashboard, /onRunWorkflow=\{runWorkflowAutomation\}/);
   assert.match(garden, /onRunWorkflow=\{runWorkflowAutomation\}/);
   assert.match(workspace, /onRunWorkflow=\{runWorkflowAutomation\}/);
+  assert.match(runRoute, /runWorkflowById/);
+  assert.match(source("../src/lib/workflows/native-execution.ts"), /parseWorkflowInputPrompt/);
+  assert.match(source("../src/lib/workflows/native-execution.ts"), /startDemonstrationRun/);
+  assert.match(source("../src/app/workflows/page.tsx"), /teachOnOpen=\{value\("teach"\) === "1"\}/);
 });
 
 test("workflows are stored by Breadboard itself, not a supervised service", () => {

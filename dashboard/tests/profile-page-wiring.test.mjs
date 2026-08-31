@@ -144,7 +144,7 @@ test("the profile exposes current-location availability without folding it into 
   assert.match(client, /writeStoredCurrentLocationPreference\([\s\S]*?useForAnswers/);
 });
 
-test("an enabled current location is refreshed once when Breadboard initializes", () => {
+test("an enabled current location persists and refreshes throughout the session", () => {
   assert.match(rootLayout, /<CurrentLocationAutoRefresh \/>/);
   assert.match(locationAutoRefresh, /getStoredCurrentLocationPreference\(window\.localStorage\)/);
   assert.match(
@@ -155,11 +155,21 @@ test("an enabled current location is refreshed once when Breadboard initializes"
   assert.match(locationAutoRefresh, /requestCurrentLocationFix\(\{ maxAgeMs: 0 \}\)/);
   assert.match(locationAutoRefresh, /writeStoredCurrentLocationPreference\([\s\S]*?useForAnswers: true/);
   assert.match(locationAutoRefresh, /announceCurrentLocationChange\(\)/);
+  assert.match(locationAutoRefresh, /CURRENT_LOCATION_REFRESH_INTERVAL_MS = 15 \* 60_000/);
+  assert.match(locationAutoRefresh, /window\.setInterval\([\s\S]*?CURRENT_LOCATION_REFRESH_INTERVAL_MS/);
+  assert.match(locationAutoRefresh, /document\.addEventListener\("visibilitychange"/);
+  assert.match(locationAutoRefresh, /refreshCurrentLocationIfDue\(now = Date\.now\(\)\)/);
+  assert.match(
+    locationAutoRefresh,
+    /const latestPreference = getStoredCurrentLocationPreference\(window\.localStorage\);[\s\S]*?if \(!latestPreference\.useForAnswers\) return false;/,
+    "turning location off while a refresh is in flight cannot turn it back on",
+  );
   assert.match(
     locationAutoRefresh,
     /initializationRefresh \?\?= refreshCurrentLocationAtInitialization\(\)/,
     "React remount checks cannot duplicate the initialization request",
   );
+  assert.match(client, /It refreshes automatically while enabled\./);
 });
 
 test("a shell whose browser cannot locate falls back to the operating system", () => {

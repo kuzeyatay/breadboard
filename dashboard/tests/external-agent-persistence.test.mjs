@@ -198,8 +198,15 @@ test("both chat surfaces render a card for every agent that can run there", () =
   }
   assert.match(terminal, /message\.delegatedAgentPreamble/);
   assert.match(garden, /msg\.delegatedAgentPreamble/);
-  assert.match(terminal, /message\.delegatedAgentRun && !message\.openGymRun/);
-  assert.match(garden, /msg\.delegatedAgentRun && !msg\.openGymRun/);
+  // The two self-presenting delegations stay visible; everything else hides.
+  assert.match(
+    terminal,
+    /message\.delegatedAgentRun &&\s+!message\.openGymRun &&\s+!message\.godsEyeRun/,
+  );
+  assert.match(
+    garden,
+    /msg\.delegatedAgentRun &&\s+!msg\.openGymRun &&\s+!msg\.godsEyeRun/,
+  );
   assert.match(terminal, /externalAgentCardContent\(storedMessage\)/);
   assert.match(garden, /externalAgentCardContent\(storedMessage\)/);
 });

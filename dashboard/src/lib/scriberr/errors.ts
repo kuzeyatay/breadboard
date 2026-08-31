@@ -1,4 +1,4 @@
-// Structured errors for the video transcription pipeline. Every failure the
+// Structured errors for the media transcription pipeline. Every failure the
 // browser can see maps to a stable code with a specific, sanitized message —
 // never "Something went wrong", and never internal paths, credentials, command
 // lines, or stack traces.
@@ -37,9 +37,9 @@ export type VideoTranscriptionErrorCode =
 
 const USER_MESSAGES: Record<VideoTranscriptionErrorCode, string> = {
   BREADBOARD_RESOURCE_EXHAUSTED:
-    "Breadboard does not currently have enough available memory to start video transcription.",
+    "Breadboard does not currently have enough available memory to start media transcription.",
   feature_disabled:
-    "Video transcription is disabled. Set VIDEO_TRANSCRIPTION_ENABLED=true and restart the dashboard.",
+    "Media transcription is disabled. Set VIDEO_TRANSCRIPTION_ENABLED=true and restart the dashboard.",
   scriberr_unavailable:
     "Scriberr is not reachable. Start Scriberr and check SCRIBERR_BASE_URL.",
   scriberr_auth_failed:
@@ -60,18 +60,18 @@ const USER_MESSAGES: Record<VideoTranscriptionErrorCode, string> = {
   youtube_download_failed:
     "Downloading the YouTube video failed. The video may require sign-in or be unavailable.",
   media_unsupported:
-    "This file is not a supported video. Supported formats: .mp4, .mov, .mkv, .webm, .m4v.",
+    "This file is not supported. Use video (.mp4, .mov, .mkv, .webm, .m4v) or audio (.mp3, .wav, .flac, .m4a, .aac, .ogg).",
   media_no_audio:
-    "This video has no audio stream, so there is nothing to transcribe.",
-  media_too_large: "This video exceeds the maximum upload size.",
-  media_too_long: "This video exceeds the maximum supported duration.",
+    "This file has no audio stream, so there is nothing to transcribe.",
+  media_too_large: "This media file exceeds the maximum upload size.",
+  media_too_long: "This media file exceeds the maximum supported duration.",
   media_missing:
-    "The uploaded media is no longer available. Upload the video again.",
-  transcription_failed: "Scriberr could not transcribe this video.",
+    "The uploaded media is no longer available. Upload the file again.",
+  transcription_failed: "Scriberr could not transcribe this media file.",
   transcription_timeout:
     "Transcription did not finish within the configured time limit.",
   transcript_unavailable:
-    "Scriberr finished but did not return a transcript for this video.",
+    "Scriberr finished but did not return a transcript for this media file.",
   transcript_malformed:
     "Scriberr returned a transcript Breadboard could not read.",
   transcript_incomplete:
@@ -82,12 +82,12 @@ const USER_MESSAGES: Record<VideoTranscriptionErrorCode, string> = {
     "The transcript was saved, but indexing the new source failed. Retry to finish indexing without re-transcribing.",
   job_interrupted:
     "The transcription job was interrupted (for example by a server restart). Retry to continue.",
-  duplicate_source: "This video already exists as a source in this garden.",
+  duplicate_source: "This media file already exists as a source in this garden.",
   queue_full:
     "Too many transcription jobs are queued for this garden. Wait for one to finish and try again.",
   invalid_input: "The request was invalid.",
   cancelled: "The transcription job was cancelled.",
-  internal_error: "Video transcription failed due to an internal error.",
+  internal_error: "Media transcription failed due to an internal error.",
 };
 
 export function userMessageForCode(code: VideoTranscriptionErrorCode): string {

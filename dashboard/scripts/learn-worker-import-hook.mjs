@@ -35,6 +35,9 @@ registerHooks({
     if (specifier === "server-only") {
       return { url: emptyServerOnly, shortCircuit: true };
     }
+    if (specifier === "next/server") {
+      return nextResolve("next/server.js", context);
+    }
     if (specifier.startsWith("@/")) {
       const aliasBase = path.resolve(sourceRoot, specifier.slice(2));
       const relativeAlias = path.relative(sourceRoot, aliasBase);

@@ -18,6 +18,7 @@ import type {
   GBrainSynthesizeResponse,
   GBrainMode,
   GBrainIndexPage,
+  GBrainEmbeddingResponse,
 } from "../types.ts";
 
 export interface RetrievalBackend {
@@ -27,6 +28,8 @@ export interface RetrievalBackend {
   readonly mode: GBrainMode;
   readonly providerName: string;
   readonly embeddingsAvailable: boolean;
+
+  embedTexts(texts: string[]): Promise<GBrainEmbeddingResponse>;
 
   init(): Promise<void>;
   close(): Promise<void>;

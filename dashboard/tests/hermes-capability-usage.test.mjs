@@ -20,6 +20,10 @@ test("skill-owned tools are attributed to the skill that owns them", () => {
     label: "Watch",
   });
   assert.equal(capabilityForTool("factcheck_run")?.id, "bullshit-detector");
+  assert.equal(
+    capabilityForTool("patent_disclosure_guide")?.id,
+    "patent-disclosure-skill",
+  );
   assert.equal(capabilityForTool("audio_compare")?.id, "audio-analysis");
   assert.equal(capabilityForTool("office_export")?.id, "office");
   // Breadboard's own products are named too, but never as skills: nobody
@@ -76,6 +80,17 @@ test("a skill with no recorded reason falls back to its selector's criterion", (
   });
   assert.equal(summary.used[0].reason, "The message asked for a claim to be checked.");
   assert.equal(summary.used[0].failures, 1);
+
+  const patent = summarizeCapabilityUse({
+    selection: {
+      skills: [{ slug: "patent-disclosure-skill", selection: "automatic" }],
+    },
+    toolCalls: [{ toolName: "patent_disclosure_guide", success: true }],
+  });
+  assert.equal(
+    patent.used[0].reason,
+    "The message asked for patent drafting, analysis, or response work.",
+  );
 });
 
 test("having the catalogue is not using it", () => {

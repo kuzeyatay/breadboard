@@ -81,7 +81,7 @@ test("the retrieval participants are the ones held to a findings bar", async () 
   const { RETRIEVAL_PARTICIPANTS } = await import("../src/lib/max-research/plan.ts");
   assert.deepEqual(
     [...RETRIEVAL_PARTICIPANTS].sort(),
-    ["agent_reach", "deep_research", "get_doc", "openscience"],
+    ["agent_reach", "deep_research", "get_doc", "openscience", "praxist"],
     "ARIS is excluded because it contributes method, not evidence",
   );
 });

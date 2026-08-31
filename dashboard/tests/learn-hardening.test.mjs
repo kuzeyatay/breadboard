@@ -217,6 +217,8 @@ describe("fallback + commentary detectors", () => {
     );
     assert.match(assignmentGate, /else if \(!syllabusUnit\.teachable\)/);
     assert.doesNotMatch(assignmentGate, /availableSourceIds/);
+    assert.match(assignmentGate, /assignedTeachableIds/);
+    assert.match(assignmentGate, /is not covered by any learning unit/);
     assert.match(
       learnSource,
       /unit\.teachable\\` is the sole authorization to create learning units/,
@@ -238,6 +240,108 @@ describe("fallback + commentary detectors", () => {
       generationGate,
       /syllabusUnitAssignmentProblems\(\s*confirmedLearningUnits,\s*map\.syllabusCoverage \?\? null/,
     );
+  });
+
+  test("Learn auto-retries proven HTTP 502 receipts until a Council call succeeds", () => {
+    const learnSource = fs.readFileSync(path.join(process.cwd(), "src/lib/learn.ts"), "utf8");
+    assert.match(
+      learnSource,
+      /lookup\.code === "request_failed"[\s\S]*?lookup\.receipt\?\.dispatchGeneration === 1[\s\S]*?lookup\.receipt\.redispatchAllowed === true/,
+    );
+    assert.match(learnSource, /redispatchReason: "request_failed"/);
+    assert.match(
+      learnSource,
+      /sameReceiptRedispatch\?\.redispatchReason === "request_failed"[\s\S]*?clientRequestRedispatch: true/,
+    );
+
+    const autoRetry = learnSource.slice(
+      learnSource.indexOf("const LEARN_HTTP_502_RETRY_BASE_DELAY_MS"),
+      learnSource.indexOf("async function callCouncilJson"),
+    );
+    assert.match(autoRetry, /for \(;;\)/);
+    assert.match(autoRetry, /error instanceof LearnCouncilHttp502ReceiptError/);
+    assert.match(autoRetry, /http-502-retry:\$\{retryNumber\}/);
+    assert.match(autoRetry, /learnHttp502RetryDelayMs\(retryNumber\)/);
+    assert.match(autoRetry, /await waitForLearnHttp502Retry/);
+
+    const planningDispatch = learnSource.slice(
+      learnSource.indexOf("const dispatchCouncilRequest = async"),
+      learnSource.indexOf("if (ordinaryCheckpoint)"),
+    );
+    assert.match(planningDispatch, /modelHttpStatus\(error\) === 502/);
+    assert.match(planningDispatch, /lookup\.receipt\?\.redispatchAllowed === true/);
+    assert.match(planningDispatch, /clientRequestRedispatch: true/);
+    assert.match(planningDispatch, /lookup\.receipt\?\.redispatchAllowed === false/);
+    assert.match(planningDispatch, /new LearnCouncilHttp502ReceiptError/);
+
+    // A plain SDK/HTTP 502 is not enough: only the exact failed receipt error
+    // crosses the infinite loop, so timeouts and in-flight ambiguity still fail closed.
+    assert.doesNotMatch(autoRetry, /modelHttpStatus\(error\) === 502/);
+  });
+
+  test("a terminal old planning receipt cannot permanently block a changed retry request", () => {
+    const learnSource = fs.readFileSync(path.join(process.cwd(), "src/lib/learn.ts"), "utf8");
+    const terminalMismatch = learnSource.slice(
+      learnSource.indexOf("async function omitTerminallySettledMismatchedPlanningReceipts"),
+      learnSource.indexOf("async function resolveCompletedPlanningReceipt"),
+    );
+    assert.match(terminalMismatch, /row\.request_hash === input\.requestHash/);
+    assert.match(terminalMismatch, /requestId: row\.receipt_request_id/);
+    assert.match(terminalMismatch, /requestHash: row\.request_hash/);
+    assert.match(terminalMismatch, /lookup\.status === 200 && lookup\.result/);
+    assert.match(terminalMismatch, /completePlanningCheckpoint/);
+    assert.match(terminalMismatch, /lookup\.code === "request_failed"/);
+    assert.match(terminalMismatch, /lookup\.receipt\?\.redispatchAllowed === false/);
+    assert.match(terminalMismatch, /unresolved\.push\(candidate\)/);
+    assert.doesNotMatch(terminalMismatch, /receipt_not_found/);
+    assert.match(
+      learnSource,
+      /omitTerminallySettledMismatchedPlanningReceipts\([\s\S]*?resolveUniquePlanningCandidate/,
+    );
+  });
+
+  test("Council dispatch authority retries transient lease uncertainty without authorizing it", () => {
+    const learnSource = fs.readFileSync(path.join(process.cwd(), "src/lib/learn.ts"), "utf8");
+    const ownershipProof = learnSource.slice(
+      learnSource.indexOf("function confirmLearnLeaseForFailureCleanup"),
+      learnSource.indexOf("const LEARN_JOB_HEARTBEAT_INTERVAL_MS"),
+    );
+    assert.match(ownershipProof, /ownership === "owned"\) return true/);
+    assert.match(ownershipProof, /ownership === "lost"\) return false/);
+    assert.match(ownershipProof, /Atomics\.wait/);
+    assert.match(
+      ownershipProof,
+      /function confirmLearnLeaseForCouncilDispatch[\s\S]*?confirmLearnLeaseForFailureCleanup/,
+    );
+    assert.equal(
+      [...learnSource.matchAll(/confirmLearnLeaseForCouncilDispatch\(lease, job\.id\)/g)].length,
+      3,
+    );
+    assert.doesNotMatch(
+      learnSource,
+      /activeLearnCouncilDispatchAuthorities\.set\([\s\S]{0,180}\(\) => !lease\.lost && lease\.heartbeat\(\)/,
+    );
+  });
+
+  test("strict native predecessors do not extend the legacy Council quiescence window", () => {
+    const learnSource = fs.readFileSync(path.join(process.cwd(), "src/lib/learn.ts"), "utf8");
+    const ordinaryLegacyBoundary = learnSource.slice(
+      learnSource.indexOf("const exactLineage = exactFailedLearnCouncilLineage"),
+      learnSource.indexOf("async function promptlessLegacyPlanningInventoryGet"),
+    );
+    assert.match(
+      ordinaryLegacyBoundary,
+      /exactLineage\.filter\([\s\S]*?!hasCompletedNativePlanningCheckpoint\(db, origin\.id\)/,
+    );
+    assert.match(
+      ordinaryLegacyBoundary,
+      /legacyLearnCouncilLineageQuiescenceDelayMs\(lineage, Date\.now\(\)\)/,
+    );
+    assert.match(
+      ordinaryLegacyBoundary,
+      /learn_council_strict_predecessors_excluded_from_legacy_fallback/,
+    );
+    assert.match(ordinaryLegacyBoundary, /Pre-migration jobs/);
   });
 
   test("scrubSourceCommentaryProse repairs document framing without weakening quality", () => {
@@ -390,7 +494,7 @@ describe("routing + terminology helpers", () => {
       ["paper-b"],
     );
     assert.equal(selectLearnSources(sources).length, 2, "an omitted selection means all documents");
-    assert.throws(() => selectLearnSources(sources, []), /Select at least one document/);
+    assert.throws(() => selectLearnSources(sources, []), /Select at least one source/);
     assert.throws(() => selectLearnSources(sources, ["deleted-paper"]), /no longer available/);
   });
 

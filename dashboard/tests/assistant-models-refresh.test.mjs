@@ -44,6 +44,15 @@ test("a failed catalog read leaves the built-in models rather than an empty menu
   assert.match(hook, /if \(ids\.length > 0\) setModels\(mergeAssistantModels\(ids\)\)/);
 });
 
+test("a one-model Google subscription catalog repairs itself after reconnect", () => {
+  assert.match(hook, /googleSubscriptionCatalogLooksTruncated\(ids\)/);
+  assert.match(hook, /fetch\("\/api\/cliproxy\/sync", \{ method: "POST" \}\)/);
+  assert.match(hook, /invalidateAssistantModelCatalog\(\)/);
+  assert.match(hook, /loadAssistantModelCatalog\(\{ force: true \}\)/);
+  assert.match(hook, /\^cliproxy\\\/gemini-/);
+  assert.match(hook, /\^openrouter\\\/google\\\/gemini-/);
+});
+
 test("every model picker reads the catalog from the shared hook", () => {
   for (const surface of SURFACES) {
     const source = read(surface);

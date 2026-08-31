@@ -452,7 +452,7 @@ export default function GardenAgentChat({
    * Max Research on the Garden surface. Same launcher as the Terminal, because
    * the turn is identical on both: one question, no attachments, nothing
    * stacked. Plain language counts here too — a person who typed "max research"
-   * is asking to watch five agents work.
+   * is asking to watch six agents work.
    */
   const routeMaxResearchCommand = useCallback(
     (text: string, options: { branchGroupId?: string } = {}): boolean => {
@@ -1052,6 +1052,7 @@ export default function GardenAgentChat({
           steerError={session.steerError}
           error={session.error}
           pendingPermission={session.pendingPermission}
+          pendingClarification={session.pendingClarification}
           activities={session.activities}
           input={input}
           onInputChange={setInput}
@@ -1067,6 +1068,9 @@ export default function GardenAgentChat({
           onAbort={() => void session.abort()}
           onPermissionDecision={(decision) =>
             void session.respondToPermission(decision)
+          }
+          onClarificationAnswer={(answer) =>
+            void session.respondToClarification(answer)
           }
           onRetryMessage={retryMessage}
           onExternalAgentTerminal={handleExternalAgentTerminal}

@@ -346,7 +346,7 @@ export default function SettingsTelegram({
             id="telegram-allowed"
             value={allowedValue}
             onChange={(event) => setAllowedDraft(event.target.value)}
-            placeholder="@kuzey, 123456789"
+            placeholder="@username, 123456789"
             className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm text-[var(--ink)] outline-none focus:border-[var(--line-strong)]"
           />
           <button

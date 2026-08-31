@@ -23,6 +23,11 @@ import { agencyAgentSlugFromToken } from "./agency-agent-command.ts";
 import { AGENT_REACH_COMMAND } from "../agent-reach/identity.ts";
 import { PARAMETRIC_CAD_COMMAND } from "../cad/identity.ts";
 import { CAREER_OPS_COMMAND } from "../career-ops/identity.ts";
+import {
+  OPENEXECUTIVE_AGENT_ID,
+  OPENEXECUTIVE_AGENT_NAME,
+  OPENEXECUTIVE_COMMAND,
+} from "../openexecutive/identity.ts";
 import { OPEN_GYM_COMMAND } from "../open-gym/identity.ts";
 import { TRADINGAGENTS_COMMAND } from "../tradingagents/identity.ts";
 import { CODEX_COMMAND } from "../codex/identity.ts";
@@ -44,6 +49,7 @@ import { OPENMONTAGE_COMMAND } from "../openmontage/identity.ts";
 import { OPENPLANTER_COMMAND } from "../openplanter/identity.ts";
 import { OPENWORK_COMMAND } from "../openwork/identity.ts";
 import { OPENSCIENCE_COMMAND } from "../openscience/identity.ts";
+import { PRAXIST_COMMAND } from "../praxist/identity.ts";
 import { MAX_RESEARCH_COMMAND } from "../max-research/identity.ts";
 import { SOCIALS_MANAGER_COMMAND } from "../socials-manager/identity.ts";
 import { RUFLO_COMMAND } from "../ruflo/identity.ts";
@@ -56,6 +62,8 @@ import { STOCK_ANALYST_COMMAND } from "../stock-analyst/identity.ts";
 import { VIMAX_COMMAND } from "../vimax/identity.ts";
 import { VOX_DIRECTOR_COMMAND } from "../vox-director/identity.ts";
 import { BOLT_SLIDES_COMMAND } from "../bolt-slides/identity.ts";
+import { CLASSROOM_COMMAND } from "../classroom/identity.ts";
+import { GODS_EYE_COMMAND } from "../gods-eye/identity.ts";
 
 /** Structurally identical to `HermesSurface`, redeclared to keep this module
  * out of the server-only config module's import graph. */
@@ -85,11 +93,10 @@ export interface RuntimeAgentProfile {
   acceptsAttachments: boolean;
   /**
    * True when a super-agent turn may launch this agent itself, through
-   * `agent_launch`. It means one specific thing: sending `<command> <brief>`
-   * through the surface's own submit path starts a run. Agents whose command
-   * only *seeds a form* — Trading Agent's request, Shorts' video — are false,
-   * because a model launch there would open a dialog nobody is looking at and
-   * report a run that never started.
+   * `agent_launch`. It means one specific thing: the surface can turn the
+   * structured delegation into a run. Agents whose required input cannot be
+   * represented by the launch payload — Shorts' video, Formsmith's image — are
+   * false because a model launch could only open an unattended picker.
    */
   launchableByModel: boolean;
   /**
@@ -176,6 +183,10 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
     requiresLaunchApproval: false,
   }),
   profile("career-ops", CAREER_OPS_COMMAND, "Career Ops"),
+  profile(OPENEXECUTIVE_AGENT_ID, OPENEXECUTIVE_COMMAND, OPENEXECUTIVE_AGENT_NAME, {
+    // Advisory analysis stays inside the conversation and its isolated memory.
+    requiresLaunchApproval: false,
+  }),
   profile("open-gym", OPEN_GYM_COMMAND, "openGym", {
     // It reads the local catalogue and writes only the user's private training
     // state plus an artifact in the launching conversation.
@@ -195,9 +206,10 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   }),
   // Trading Agent takes a typed request rather than a message, so a skill or
   // an attachment stacked onto it has nowhere to go — the defaults are right.
-  // Its command only seeds the form, so a model cannot launch it either.
+  // Super Agent can launch it from a validated `SYMBOL [YYYY-MM-DD]` brief.
+  // It reads market data and reports; it cannot place a trade.
   profile("trading-agent", TRADINGAGENTS_COMMAND, "Trading Agent", {
-    launchableByModel: false,
+    requiresLaunchApproval: false,
   }),
   // Vibe Trading is the conversational half of the same domain: the prompt is
   // forwarded verbatim to the cloned service's own agent loop, which is why it
@@ -227,6 +239,7 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   // ~290 skills and scientific-database tools, so a stacked Breadboard skill
   // has nowhere to land — the message is the goal.
   profile("openscience", OPENSCIENCE_COMMAND, "OpenScience"),
+  profile("praxist", PRAXIST_COMMAND, "Praxist"),
   // Max Research is the five research agents run against one question and
   // reconciled into one answer, so it stacks nothing: a Breadboard skill has
   // nowhere to land on a run whose whole body of work happens inside the
@@ -317,6 +330,17 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   // it would have nowhere to go. A delegated launch is safe — it spends model
   // calls, writes into its own workspace, and files one artifact on this chat.
   profile("bolt-slides", BOLT_SLIDES_COMMAND, "Bolt Slides"),
+  // Classroom hands the message to OpenMAIC as the lesson brief and the
+  // attachments as its material — documents and images become the reading the
+  // outline is written from — so it takes files and stacks nothing. A
+  // delegated launch is safe: it spends model calls on a local server, writes
+  // into that server's own data, and files one artifact on this chat.
+  profile("classroom", CLASSROOM_COMMAND, "Classroom", { acceptsAttachments: true }),
+  // God's Eye aims a local globe and answers with a framed view. A delegated
+  // launch is safe: it starts a loopback dev server and spends one model call.
+  profile("gods-eye", GODS_EYE_COMMAND, "God's Eye", {
+    requiresLaunchApproval: false,
+  }),
   // Agent TARS drives a real browser or desktop from the Terminal only; Garden
   // Chat offers the same palette entry as a setup dialog, with no chat runner.
   profile("agent-tars", AGENT_TARS_SLASH_COMMAND, "Agent TARS", {

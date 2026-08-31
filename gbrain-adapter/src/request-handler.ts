@@ -36,6 +36,7 @@ const OPERATION_PATHS = new Set([
   "/retrieve",
   "/synthesize",
   "/graph",
+  "/embed",
 ]);
 
 export interface AdapterRequestHandler {
@@ -229,6 +230,20 @@ export function createAdapterRequestHandler(
 
     try {
       switch (pathName) {
+        case "/embed": {
+          const texts = Array.isArray(body.texts) ? body.texts : [];
+          if (
+            texts.length < 1 ||
+            texts.length > 64 ||
+            texts.some((text) => typeof text !== "string" || text.length < 1 || Buffer.byteLength(text, "utf8") > 16_000) ||
+            texts.reduce((total, text) => total + Buffer.byteLength(String(text), "utf8"), 0) > 256_000
+          ) {
+            return errorResponse("invalid_embedding_batch", 400);
+          }
+          if (!store.embeddingsAvailable) return errorResponse("embedding_unavailable", 503);
+          const result = await admission.run(() => store.embedTexts(texts as string[]));
+          return json({ ok: true, data: result });
+        }
         case "/register-source": {
           const sourceId = String(body.sourceId ?? "");
           const label = String(body.label ?? "");

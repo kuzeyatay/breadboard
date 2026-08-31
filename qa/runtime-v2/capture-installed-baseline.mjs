@@ -338,7 +338,7 @@ try {
   await capture("startup-visible");
 
   const welcome = startup.getByRole("button", {
-    name: "Welcome to Breadboard. Click to continue.",
+    name: "Welcome to Breadboard. Press space to continue.",
   });
   if ((await welcome.count()) > 0) {
     await welcome.waitFor({ state: "visible", timeout: 10 * 60_000 });

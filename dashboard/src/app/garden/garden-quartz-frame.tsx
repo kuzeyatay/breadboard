@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { quartzUrlWithAppTheme } from "@/lib/quartz-url";
 import { useQuartzViewLease } from "./use-quartz-view-lease";
 
 interface Props {
@@ -49,7 +50,7 @@ export default function GardenQuartzFrame({ src, title }: Props) {
 
       <iframe
         key={src}
-        src={quartzLease.ready ? src : undefined}
+        src={quartzLease.ready ? quartzUrlWithAppTheme(src) : undefined}
         className="block h-full w-full border-0 bg-gray-950"
         title={title}
         onLoad={() => {

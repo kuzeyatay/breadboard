@@ -2,14 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import GardenAssistantSwitch from '@/app/components/hermes/garden-assistant-switch';
-import { QUARTZ_BASE_URL, quartzUrl } from '@/lib/quartz-url';
-import {
-  exportFolderPdf,
-  type FolderPdfExportMessage,
-} from '@/lib/folder-pdf-export-client';
+import { QUARTZ_BASE_URL, quartzUrl, quartzUrlWithAppTheme } from '@/lib/quartz-url';
+import { exportFolderPdf, type FolderPdfExportMessage } from '@/lib/folder-pdf-export-client';
 import {
   quartzAssistantSelectionRequest,
+  quartzInlineAnswerStopRequest,
   type QuartzAssistantSelectionRequest,
+  type QuartzInlineAnswerStopRequest,
   type QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
 import { useQuartzViewLease } from '../use-quartz-view-lease';
@@ -32,6 +31,7 @@ interface ActiveMarkdown {
 
 interface QuartzMessage {
   type?: string;
+  open?: boolean;
   slug?: string;
   title?: string;
   body?: string;
@@ -48,6 +48,7 @@ interface QuartzMessage {
   toFolder?: string;
   folder?: string;
   requestId?: string;
+  clusterSlug?: string;
   folderTitle?: string;
   documents?: FolderPdfExportMessage['documents'];
   images?: Array<{
@@ -67,7 +68,11 @@ function decodeQuartzSlug(slug: string): string {
 
 function noteSlugFromQuartzSlug(slug: string, fallbackClusterSlug: string): string {
   const decoded = decodeQuartzSlug(slug);
-  const segments = decoded.replace(/^\/+|\/+$/g, '').trim().split('/').filter(Boolean);
+  const segments = decoded
+    .replace(/^\/+|\/+$/g, '')
+    .trim()
+    .split('/')
+    .filter(Boolean);
   if (segments[0] === 'garden' && segments[1] === fallbackClusterSlug) {
     return segments.slice(2).join('/');
   }
@@ -91,19 +96,22 @@ function isMarkdownDocumentSlug(slug: string, clusterSlug: string): boolean {
     .replace(/^\/+|\/+$/g, '')
     .trim()
     .toLowerCase();
-  const cleanCluster = clusterSlug.replace(/^\/+|\/+$/g, '').trim().toLowerCase();
+  const cleanCluster = clusterSlug
+    .replace(/^\/+|\/+$/g, '')
+    .trim()
+    .toLowerCase();
   return Boolean(
     clean &&
-      clean !== 'index' &&
-      clean !== cleanCluster &&
-      !clean.endsWith('/index') &&
-      !clean.endsWith('/_index') &&
-      !clean.startsWith('tags/'),
+    clean !== 'index' &&
+    clean !== cleanCluster &&
+    !clean.endsWith('/index') &&
+    !clean.endsWith('/_index') &&
+    !clean.startsWith('tags/'),
   );
 }
 
 function quartzUrlWithRefresh(...segments: string[]): string {
-  const url = new URL(quartzUrl(...segments));
+  const url = new URL(quartzUrlWithAppTheme(quartzUrl(...segments)));
   url.searchParams.set('refresh', Date.now().toString());
   return url.toString();
 }
@@ -134,13 +142,17 @@ export default function GardenClient({
   trackPublicView = false,
 }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const quartzDocumentReadyRef = useRef(false);
+  const quartzLastMessageAtRef = useRef(0);
+  const quartzRetryTimerRef = useRef<number | null>(null);
   const quartzLease = useQuartzViewLease();
   const [activeCluster, setActiveCluster] = useState(clusterSlug);
   const [activeMarkdown, setActiveMarkdown] = useState<ActiveMarkdown | null>(() =>
     note ? { cluster: clusterSlug, slug: note, loading: true } : null,
   );
-  const [assistantSelection, setAssistantSelection] =
-    useState<QuartzAssistantSelectionRequest | null>(null);
+  const [assistantSelection, setAssistantSelection] = useState<QuartzAssistantSelectionRequest | null>(null);
+  const [assistantInlineStop, setAssistantInlineStop] = useState<QuartzInlineAnswerStopRequest | null>(null);
+  const [markdownEditorOpen, setMarkdownEditorOpen] = useState(false);
   const activeMarkdownCluster = activeMarkdown?.cluster;
   const activeMarkdownSlug = activeMarkdown?.slug;
   const quartzOrigin = useMemo(() => {
@@ -161,7 +173,9 @@ export default function GardenClient({
   useEffect(() => {
     if (!trackPublicView) return;
 
-    fetch(`/api/clusters/${encodeURIComponent(clusterSlug)}/view`, { method: 'POST' }).catch(() => {
+    fetch(`/api/clusters/${encodeURIComponent(clusterSlug)}/view`, {
+      method: 'POST',
+    }).catch(() => {
       // Popularity is best-effort and should not interrupt reading.
     });
   }, [clusterSlug, trackPublicView]);
@@ -170,13 +184,63 @@ export default function GardenClient({
     function handleMessage(event: MessageEvent) {
       const data = event.data as QuartzMessage;
       if (!data || !data.type) return;
-      if (
-        quartzOrigin &&
-        event.origin !== quartzOrigin &&
-        event.source !== iframeRef.current?.contentWindow
-      ) {
+      const fromQuartz =
+        event.source === iframeRef.current?.contentWindow &&
+        (!quartzOrigin || event.origin === quartzOrigin);
+      if (fromQuartz) {
+        quartzDocumentReadyRef.current = true;
+        quartzLastMessageAtRef.current = Date.now();
+        if (quartzRetryTimerRef.current !== null) {
+          window.clearTimeout(quartzRetryTimerRef.current);
+          quartzRetryTimerRef.current = null;
+        }
+      }
+      if (data.type === 'breadboard:thought-topology-request') {
+        if (event.source !== iframeRef.current?.contentWindow) return;
+        if (!quartzOrigin || event.origin !== quartzOrigin) return;
+        if (typeof data.requestId !== 'string' || data.requestId.length > 128 || data.clusterSlug !== clusterSlug)
+          return;
+        const requestId = data.requestId;
+        void fetch(`/api/thought-topology?clusterSlug=${encodeURIComponent(clusterSlug)}`, {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        })
+          .then(async (response) => {
+            const payload = await response.json().catch(() => ({ enabled: false, mode: 'links' }));
+            iframeRef.current?.contentWindow?.postMessage(
+              {
+                type: 'breadboard:thought-topology-response',
+                requestId,
+                ok: response.ok,
+                payload,
+              },
+              quartzOrigin,
+            );
+          })
+          .catch(() => {
+            iframeRef.current?.contentWindow?.postMessage(
+              {
+                type: 'breadboard:thought-topology-response',
+                requestId,
+                ok: false,
+                payload: { enabled: false, mode: 'links' },
+              },
+              quartzOrigin,
+            );
+          });
         return;
       }
+      if (quartzOrigin && event.origin !== quartzOrigin && event.source !== iframeRef.current?.contentWindow) {
+        return;
+      }
+
+      if (data.type === 'second-brain:markdown-editor-state') {
+        if (event.source !== iframeRef.current?.contentWindow) return;
+        setMarkdownEditorOpen(data.open === true);
+        return;
+      }
+
+      if (data.type === 'second-brain:quartz-ready') return;
 
       const selectionRequest = quartzAssistantSelectionRequest(data);
       if (selectionRequest) {
@@ -185,7 +249,15 @@ export default function GardenClient({
         return;
       }
 
+      const stopRequest = quartzInlineAnswerStopRequest(data);
+      if (stopRequest) {
+        if (event.source !== iframeRef.current?.contentWindow) return;
+        setAssistantInlineStop(stopRequest);
+        return;
+      }
+
       if (data.type === 'second-brain:navigate' && data.slug) {
+        setMarkdownEditorOpen(false);
         const cluster = clusterFromQuartzSlug(data.slug, clusterSlug);
         const slug = noteSlugFromQuartzSlug(data.slug, cluster);
         const nextActiveCluster = cluster || clusterSlug;
@@ -195,7 +267,14 @@ export default function GardenClient({
           window.dispatchEvent(new CustomEvent('sb:active-cluster', { detail: { cluster } }));
         }
         setActiveMarkdown(
-          isMarkdownDocument ? { cluster: nextActiveCluster, slug, title: data.title, loading: true } : null,
+          isMarkdownDocument
+            ? {
+                cluster: nextActiveCluster,
+                slug,
+                title: data.title,
+                loading: true,
+              }
+            : null,
         );
         window.dispatchEvent(
           new CustomEvent('sb:active-note', {
@@ -217,8 +296,7 @@ export default function GardenClient({
         const postToQuartz = (message: object) => {
           iframeRef.current?.contentWindow?.postMessage(message, quartzOrigin || '*');
         };
-        const folderCluster =
-          (typeof data.cluster === 'string' && data.cluster) || clusterSlug;
+        const folderCluster = (typeof data.cluster === 'string' && data.cluster) || clusterSlug;
         const reloadGarden = () => {
           window.setTimeout(() => {
             replaceQuartzLocation(iframeRef.current, quartzUrlWithRefresh(folderCluster));
@@ -236,7 +314,12 @@ export default function GardenClient({
             .then(async (response) => {
               const responseBody = await response.json().catch(() => ({}));
               const ok = response.ok && responseBody.success;
-              postToQuartz({ type: 'second-brain:delete-folder-result', folder, ok, error: responseBody.error });
+              postToQuartz({
+                type: 'second-brain:delete-folder-result',
+                folder,
+                ok,
+                error: responseBody.error,
+              });
               if (ok) reloadGarden();
             })
             .catch(() => {
@@ -265,7 +348,12 @@ export default function GardenClient({
             .then(async (response) => {
               const body = await response.json().catch(() => ({}));
               const ok = response.ok && body.success;
-              postToQuartz({ type: 'second-brain:move-note-result', slug: moveSlug, ok, error: body.error });
+              postToQuartz({
+                type: 'second-brain:move-note-result',
+                slug: moveSlug,
+                ok,
+                error: body.error,
+              });
               if (ok) reloadGarden();
             })
             .catch(() => {
@@ -289,7 +377,12 @@ export default function GardenClient({
           .then(async (response) => {
             const body = await response.json().catch(() => ({}));
             const ok = response.ok && body.success;
-            postToQuartz({ type: 'second-brain:create-folder-result', folder, ok, error: body.error });
+            postToQuartz({
+              type: 'second-brain:create-folder-result',
+              folder,
+              ok,
+              error: body.error,
+            });
             if (ok) reloadGarden();
           })
           .catch(() => {
@@ -328,7 +421,11 @@ export default function GardenClient({
         })
           .then((response) => {
             const ok = response.ok;
-            postToQuartz({ type: 'second-brain:flag-color-result', slug: data.slug, ok });
+            postToQuartz({
+              type: 'second-brain:flag-color-result',
+              slug: data.slug,
+              ok,
+            });
             if (ok) {
               window.setTimeout(() => {
                 iframeRef.current?.contentWindow?.location.reload();
@@ -336,7 +433,11 @@ export default function GardenClient({
             }
           })
           .catch(() => {
-            postToQuartz({ type: 'second-brain:flag-color-result', slug: data.slug, ok: false });
+            postToQuartz({
+              type: 'second-brain:flag-color-result',
+              slug: data.slug,
+              ok: false,
+            });
           });
       }
 
@@ -374,7 +475,9 @@ export default function GardenClient({
             ? {
                 ...(typeof data.title === 'string' ? { title: data.title } : {}),
                 ...(Array.isArray(data.tags)
-                  ? { tags: data.tags.filter((tag: unknown) => typeof tag === 'string') }
+                  ? {
+                      tags: data.tags.filter((tag: unknown) => typeof tag === 'string'),
+                    }
                   : {}),
                 ...(typeof data.body === 'string' ? { body: data.body } : {}),
               }
@@ -565,8 +668,42 @@ export default function GardenClient({
     }
 
     window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      if (quartzRetryTimerRef.current !== null) {
+        window.clearTimeout(quartzRetryTimerRef.current);
+        quartzRetryTimerRef.current = null;
+      }
+    };
   }, [clusterSlug, quartzOrigin]);
+
+  function handleQuartzLoad() {
+    setMarkdownEditorOpen(false);
+    const loadedAt = Date.now();
+    // Quartz can announce navigation just before the iframe's load event.
+    // Preserve that signal for this document, but not one from an older page.
+    quartzDocumentReadyRef.current = quartzLastMessageAtRef.current >= loadedAt - 1_500;
+    if (quartzRetryTimerRef.current !== null) {
+      window.clearTimeout(quartzRetryTimerRef.current);
+    }
+    const loadedSource = iframeRef.current?.src;
+    quartzRetryTimerRef.current = window.setTimeout(() => {
+      quartzRetryTimerRef.current = null;
+      const iframe = iframeRef.current;
+      if (!iframe || quartzDocumentReadyRef.current || iframe.src !== loadedSource) return;
+
+      // Quartz's static server can briefly return its "garden is being
+      // prepared" 404 while a publication swaps in. That document sends no
+      // bridge messages, unlike every real Quartz page. Reload until the
+      // requested page publishes instead of leaving the iframe on that 404.
+      replaceQuartzLocation(
+        iframe,
+        note
+          ? quartzUrlWithRefresh(clusterSlug, ...note.split('/').filter(Boolean))
+          : quartzUrlWithRefresh(clusterSlug),
+      );
+    }, 2_500);
+  }
 
   useEffect(() => {
     if (!activeMarkdownSlug || !activeMarkdownCluster) return;
@@ -639,12 +776,13 @@ export default function GardenClient({
         src={
           quartzLease.ready
             ? note
-              ? quartzUrl(clusterSlug, ...note.split('/').filter(Boolean))
-              : quartzUrl(clusterSlug)
+              ? quartzUrlWithAppTheme(quartzUrl(clusterSlug, ...note.split('/').filter(Boolean)))
+              : quartzUrlWithAppTheme(quartzUrl(clusterSlug))
             : undefined
         }
         className="h-full min-w-0 flex-1 border-0 bg-gray-950"
         title={`${clusterName} garden`}
+        onLoad={handleQuartzLoad}
       />
 
       <GardenAssistantSwitch
@@ -652,8 +790,10 @@ export default function GardenClient({
         activeClusterName={activeCluster === clusterSlug ? clusterName : activeCluster}
         activeMarkdown={activeMarkdown}
         selectedTextRequest={assistantSelection}
+        inlineAnswerStopRequest={assistantInlineStop}
         onInlineAnswerUpdate={postInlineAnswer}
         initialOpen={initialChatOpen}
+        launcherHidden={markdownEditorOpen}
       />
     </div>
   );

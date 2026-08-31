@@ -98,7 +98,7 @@ test.describe.serial("critical actual-Electron user journeys", () => {
         // the standalone path used to win this race by accident.
         await startupPage
           .getByRole("button", {
-            name: "Welcome to Breadboard. Click to continue.",
+            name: "Welcome to Breadboard. Press space to continue.",
           })
           .waitFor({ state: "visible", timeout: 6 * 60_000 });
         const startupState = await startupPage.evaluate(async () => {

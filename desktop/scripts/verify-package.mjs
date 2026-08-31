@@ -12,6 +12,10 @@ import { SOURCE_COMMIT_RECEIPT_NAME } from "./pinned-source-checkout.mjs";
 import { findNestedDashboardRuntimeDuplicates } from "./packaged-dashboard-input.mjs";
 import { voiceboxArtifactReceiptProblems } from "./voicebox-artifact-receipt.mjs";
 import { PINNED_VLM_OCR_RUNTIME } from "./vlm-ocr-runtime-artifact.mjs";
+import {
+  PATENT_DISCLOSURE_REQUIRED_FILES,
+  PATENT_DISCLOSURE_UPSTREAM_COMMIT,
+} from "./patent-disclosure-package.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const problems = [];
@@ -23,6 +27,7 @@ const PINNED_LOCAL_SOURCE_COMMITS = Object.freeze({
   penecho: "5d14d54b5a8d06dab4cb6a865f2547556e5ff842",
   googleImages: "e9c515eda45807d80d9ccc993be781d0ee13d47b",
   tradingAgents: "271e8c88a9874cae3f4ba8059b78301c13fa9e18",
+  openExecutive: "755d8ec13083bc231b2d9c331af48ff5df902a81",
   agentReach: "241b02870892525e009bceaa7823d3f7b6c6f617",
   watermarks: "ff5db594f189373b80afde42449b5ad952270c95",
 });
@@ -2671,6 +2676,7 @@ function checkResourcesRoot(resources, binRoot, label) {
     "runtime-v2-opencode-worker.mjs",
     "runtime-v2-trading-agent-worker.mjs",
     "runtime-v2-career-ops-worker.mjs",
+    "runtime-v2-openexecutive-worker.mjs",
     "runtime-v2-chatmock-login-worker.mjs",
     "runtime-v2-chatmock-login-executor.mjs",
     "runtime-v2-vimax-worker.mjs",
@@ -2683,7 +2689,9 @@ function checkResourcesRoot(resources, binRoot, label) {
     "runtime-v2-agent-reach-setup-executor.mjs",
     "runtime-v2-agent-reach-configure.py",
     "runtime-v2-gbrain-sync-worker.mjs",
+    "runtime-v2-thought-topology-worker.mjs",
     "runtime-v2-agent-reach-worker.mjs",
+    "runtime-v2-praxist-worker.mjs",
     "runtime-v2-agent-tars-worker.mjs",
     "runtime-v2-legal-worker.mjs",
     "runtime-v2-sf3d-worker.mjs",
@@ -2738,6 +2746,7 @@ function checkResourcesRoot(resources, binRoot, label) {
     "runtime-v2-agent-tars-worker.mjs",
     "runtime-v2-deep-research-worker.mjs",
     "runtime-v2-openscience-worker.mjs",
+    "runtime-v2-praxist-worker.mjs",
     "runtime-v2-openwork-worker.mjs",
     "runtime-v2-legal-probe-worker.mjs",
     "runtime-v2-shorts-probe-worker.mjs",
@@ -2984,6 +2993,23 @@ function checkResourcesRoot(resources, binRoot, label) {
     path.join(resources, "app-services", "scripts", "tradingagents-bridge.py"),
     `${label} TradingAgents bridge`,
   );
+  requirePinnedSourceArtifact(
+    path.join(resources, "app-services", "OpenExecutive"),
+    `${label} OpenExecutive reviewed core source`,
+    PINNED_LOCAL_SOURCE_COMMITS.openExecutive,
+    [
+      "LICENSE",
+      "README.md",
+      "packages/core/README.md",
+      "packages/core/pyproject.toml",
+      "packages/core/uv.lock",
+      "packages/core/openexecutive/orchestrator/executive.py",
+    ],
+  );
+  requireFile(
+    path.join(resources, "app-services", "scripts", "openexecutive-bridge.py"),
+    `${label} OpenExecutive bridge`,
+  );
   requireFile(
     path.join(resources, "app-services", "scripts", "shorts-bridge.py"),
     `${label} Shorts bridge`,
@@ -3096,6 +3122,11 @@ function checkResourcesRoot(resources, binRoot, label) {
     ["lib", "gbrain", "config.ts"],
     ["lib", "gbrain", "mapping.ts"],
     ["lib", "gbrain", "types.ts"],
+    ["lib", "thought-topology", "executor.ts"],
+    ["lib", "thought-topology", "builder.ts"],
+    ["lib", "thought-topology", "projection.ts"],
+    ["lib", "thought-topology", "scoring.ts"],
+    ["lib", "thought-topology", "storage.ts"],
   ]) {
     requireFile(
       path.join(dashboard, "worker-src", ...source),
@@ -3418,6 +3449,20 @@ function checkResourcesRoot(resources, binRoot, label) {
       "7b8fac1857eba19d25665825793dfbaf0414c6bf"
   ) {
     problems.push(`${label} Factcheck upstream revision is not pinned`);
+  }
+  const patentDisclosureRoot = path.join(
+    resources,
+    "app-services",
+    "patent-disclosure-skill",
+  );
+  requirePinnedSourceArtifact(
+    patentDisclosureRoot,
+    `${label} Patent Disclosure skill`,
+    PATENT_DISCLOSURE_UPSTREAM_COMMIT,
+    PATENT_DISCLOSURE_REQUIRED_FILES,
+  );
+  if (fs.existsSync(path.join(patentDisclosureRoot, "tools"))) {
+    problems.push(`${label} Patent Disclosure package unexpectedly contains executable tools`);
   }
   for (const script of ["runtime-v2-watch-worker.mjs", "runtime-v2-watch-executor.mjs"]) {
     requireDirectFile(
@@ -5092,6 +5137,7 @@ function checkResourcesRoot(resources, binRoot, label) {
       "interactive_visualizer_revise",
       "interactive_visualizer_rollback",
       "interactive_visualizer_cancel",
+      "product_search",
     ]) {
       if (!source.includes(`"${tool}"`)) {
         problems.push(`${label} Breadboard Hermes plugin source is missing ${tool}`);

@@ -303,6 +303,60 @@ test("queued Runtime Learn state and events bridge the pre-legacy handoff", asyn
   }
 });
 
+test("a cleared garden does not resurrect a stale successful Runtime banner", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-cleared-status-"));
+  try {
+    const state = freshState();
+    const submitted = await cutover.executeLearnOperationForRoute(
+      planRequest(temporaryRoot),
+      "planning",
+    );
+    state.jobs.set(submitted.jobId, snapshot(submitted.jobId, "succeeded"));
+
+    const merged = await cutover.mergeRuntimeV2LearnStatus(
+      { userId: 7, gardenId: "garden-1", contentPath: temporaryRoot },
+      {
+        job: null,
+        hasTextbook: false,
+        latestTextbookVersionId: null,
+        confirmedLearningMapId: null,
+        proposedLearningMap: null,
+      },
+    );
+    assert.equal(merged.job, null);
+    assert.equal(merged.runtimeJob.jobId, submitted.jobId);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("a newer direct Learn job supersedes an older terminal Runtime receipt", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-newer-direct-"));
+  try {
+    const state = freshState();
+    const submitted = await cutover.executeLearnOperationForRoute(
+      planRequest(temporaryRoot),
+      "planning",
+    );
+    state.jobs.set(submitted.jobId, snapshot(submitted.jobId, "succeeded"));
+    const directJob = {
+      id: "learn_newer_direct",
+      model: "gpt-newer",
+      status: "planning",
+      updatedAt: new Date(Date.now() + 1_000).toISOString(),
+    };
+
+    const merged = await cutover.mergeRuntimeV2LearnStatus(
+      { userId: 7, gardenId: "garden-1", contentPath: temporaryRoot },
+      { job: directJob },
+    );
+    assert.deepEqual(merged.job, directJob);
+    assert.equal(merged.runtimeJob.jobId, submitted.jobId);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test("an updated baseline row cannot impersonate the new Runtime Learn handoff", async () => {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-binding-"));
   try {

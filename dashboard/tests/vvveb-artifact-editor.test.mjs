@@ -61,12 +61,16 @@ test("vendored Vvveb page uses an inert inner canvas and the Breadboard bridge",
   const publicRoot = path.resolve(process.cwd(), "public/vvveb-editor");
   const editor = fs.readFileSync(path.join(publicRoot, "index.html"), "utf8");
   const bridge = fs.readFileSync(path.join(publicRoot, "breadboard-bridge.js"), "utf8");
+  const breadboardStyles = fs.readFileSync(path.join(publicRoot, "breadboard-editor.css"), "utf8");
+  const builder = fs.readFileSync(path.join(publicRoot, "libs/builder/builder.js"), "utf8");
   const bridgeSource = fs.readFileSync(
     path.resolve(process.cwd(), "src/vendor/vvveb/breadboard-bridge.js"),
     "utf8",
   );
 
   assert.match(editor, /breadboard-bridge\.js/);
+  assert.doesNotMatch(editor, /img\/logo\.png/);
+  assert.doesNotMatch(editor, /<div class="logo">/);
   assert.match(editor, /id="iframe1" sandbox="allow-same-origin"/);
   assert.doesNotMatch(editor, /id="iframe1"[^>]*allow-scripts/);
   assert.doesNotMatch(editor, /let defaultPages/);
@@ -75,9 +79,16 @@ test("vendored Vvveb page uses an inert inner canvas and the Breadboard bridge",
   assert.match(bridge, /cloneNode\(true\)/);
   assert.match(bridge, /MutationObserver/);
   assert.match(bridge, /breadboard:vvveb-change/);
+  assert.match(bridge, /data-vvveb-svg-text-editor/);
+  assert.match(bridge, /pointer-events: all !important/);
+  assert.match(bridge, /enableElementResizing/);
+  assert.match(bridge, /breadboard-resize-svg/);
+  assert.match(breadboardStyles, /breadboard-resize-html/);
+  assert.match(breadboardStyles, /touch-action: none/);
   assert.match(bridge, /event\.origin !== parentOrigin/);
   assert.doesNotMatch(bridge, /Builder\.getHtml/);
   assert.equal(bridge, bridgeSource);
+  assert.match(builder, /target\.getBoundingClientRect\(\)\.width/);
   assert.equal(fs.existsSync(path.join(publicRoot, "LICENSE")), true);
   assert.equal(fs.existsSync(path.join(publicRoot, "libs/builder/builder.js")), true);
 });

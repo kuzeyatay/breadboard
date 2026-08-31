@@ -8,7 +8,6 @@ interface GeneratedManifestSummary {
   version: number
   title: string
   description: string
-  sourceAnchorIds?: string[]
   previousVersion?: number
 }
 
@@ -174,18 +173,7 @@ function hydrate(code: HTMLElement): HTMLElement {
   frame.srcdoc = sandboxDocument(language)
   card.appendChild(frame)
 
-  const anchors = Array.isArray(manifest.sourceAnchorIds)
-    ? manifest.sourceAnchorIds.filter((item) => typeof item === "string")
-    : []
   const footer = element("footer", "bgv-meta")
-  const provenance = element("div", "bgv-provenance")
-  provenance.appendChild(element("span", "bgv-version", `Generated visual · v${manifest.version}`))
-  if (anchors.length > 0) {
-    provenance.appendChild(
-      element("span", "bgv-sources", `Sources: ${anchors.slice(0, 8).join(", ")}`),
-    )
-  }
-  footer.appendChild(provenance)
   const actions = element("div", "bgv-actions")
   const regenerate = element(
     "button",

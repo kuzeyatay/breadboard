@@ -1,14 +1,21 @@
-import { NextResponse } from 'next/server';
-import { randomUUID } from 'node:crypto';
+import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
-import { externalRuntimeFilesystem as fs } from '@/lib/external-runtime-filesystem';
-import { DEFAULT_MODEL, createChatmockClient, resolveClusterNoteFile } from '@/lib/knowledge';
-import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
-import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
-import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
-import { validateVisualSpec } from '@/lib/visual-spec';
-import { buildCanonicalSourceAnchors } from '@/lib/final-garden-state';
-import { normalizeLearningUnits } from '@/lib/learning-unit-contract';
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import {
+  DEFAULT_MODEL,
+  createChatmockClient,
+  resolveClusterNoteFile,
+} from "@/lib/knowledge";
+import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
+import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
+import {
+  requireOwnedClusterFromSlug,
+  routeErrorResponse,
+} from "@/lib/server-auth";
+import { validateVisualSpec } from "@/lib/visual-spec";
+import { buildCanonicalSourceAnchors } from "@/lib/final-garden-state";
+import { normalizeLearningUnits } from "@/lib/learning-unit-contract";
 import {
   appendGardenEvent,
   findVisualBlockById,
@@ -16,39 +23,39 @@ import {
   listGardenMarkdownFiles,
   replaceVisualBlock,
   saveVisualSpec,
-} from '@/lib/visuals';
+} from "@/lib/visuals";
 import {
   createGeneratedVisualization,
   findGeneratedVisualBlockById,
   loadGeneratedVisualManifest,
   replaceGeneratedVisualBlock,
-} from '@/lib/generated-visuals';
-import { runGeneratedVisualBrowserTestsViaRuntime } from '@/lib/runtime-v2/generated-visual-browser-job';
-import { compileGeneratedVisualizationViaRuntime } from '@/lib/runtime-v2/generated-visual-compiler-job';
+} from "@/lib/generated-visuals";
+import { runGeneratedVisualBrowserTestsViaRuntime } from "@/lib/runtime-v2/generated-visual-browser-job";
+import { compileGeneratedVisualizationViaRuntime } from "@/lib/runtime-v2/generated-visual-compiler-job";
 import {
   loadVisualizationPlan,
   persistedVisualizationOpportunityContractProblems,
-} from '@/lib/visualization-opportunities';
-import { acquireGardenLearnLease } from '@/lib/learn-atomic-promotion';
-import { stableGeneratedVisualCouncilRecoveryRoot } from '@/lib/generated-visual-council-receipts';
+} from "@/lib/visualization-opportunities";
+import { acquireGardenLearnLease } from "@/lib/learn-atomic-promotion";
+import { stableGeneratedVisualCouncilRecoveryRoot } from "@/lib/generated-visual-council-receipts";
 import {
   generatedVisualPublicationPointersMatch,
   legacyVisualPublicationPointersMatch,
-} from '@/lib/generated-visual-publication-coherence';
+} from "@/lib/generated-visual-publication-coherence";
 import {
   createDetachedGardenMutation,
   disposeDetachedGardenMutation,
   promoteDetachedGardenMutation,
   type DetachedGardenMutation,
-} from '@/lib/garden-mutation-transaction';
+} from "@/lib/garden-mutation-transaction";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 // The regenerate button lives on the Quartz garden origin (localhost:8081 /
 // garden.<host>), which is same-site but cross-origin — so cookies flow with
 // credentials: "include", and we must reflect the origin instead of using *.
 function corsHeaders(request: Request): Record<string, string> {
-  const origin = request.headers.get('origin') ?? '';
+  const origin = request.headers.get("origin") ?? "";
   try {
     const url = new URL(origin);
     const allowed =
@@ -56,11 +63,11 @@ function corsHeaders(request: Request): Record<string, string> {
       /^garden\./i.test(url.hostname);
     if (allowed) {
       return {
-        'Access-Control-Allow-Origin': origin,
-        'Access-Control-Allow-Credentials': 'true',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        Vary: 'Origin',
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        Vary: "Origin",
       };
     }
   } catch {
@@ -83,12 +90,16 @@ export async function POST(
     const { cluster, userId } = await requireOwnedClusterFromSlug(gardenId);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
-      return NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500, headers });
+      return NextResponse.json(
+        { error: "QUARTZ_CONTENT_PATH not configured" },
+        { status: 500, headers },
+      );
     }
 
     const body = await request.json().catch(() => ({}));
-    const pageSlug = typeof body.pageSlug === 'string' ? body.pageSlug.trim() : '';
-    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+    const pageSlug =
+      typeof body.pageSlug === "string" ? body.pageSlug.trim() : "";
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
 
     // Generated modules have an explicit version reference in Markdown. Build
     // and validate a replacement artifact first; the current page stays on the
@@ -102,400 +113,505 @@ export async function POST(
     });
     if (!leaseResult.acquired) {
       return NextResponse.json(
-        { error: 'This garden has another active Learn or visualization operation. Try again after it finishes.' },
+        {
+          error:
+            "This garden has another active Learn or visualization operation. Try again after it finishes.",
+        },
         { status: 409, headers },
       );
     }
     const lease = leaseResult.lease;
     try {
-    let generatedFilePath: string | null = null;
-    let generatedContent = '';
-    let generatedBlock: ReturnType<typeof findGeneratedVisualBlockById> = null;
-    if (pageSlug) {
-      const resolved = resolveClusterNoteFile(contentPath, cluster.slug, pageSlug);
-      if (resolved && fs.existsSync(resolved.filePath)) {
-        const candidate = fs.readFileSync(resolved.filePath, 'utf-8');
-        const found = findGeneratedVisualBlockById(candidate, visualId);
-        if (found) {
-          generatedFilePath = resolved.filePath;
-          generatedContent = candidate;
-          generatedBlock = found;
+      let generatedFilePath: string | null = null;
+      let generatedContent = "";
+      let generatedBlock: ReturnType<typeof findGeneratedVisualBlockById> =
+        null;
+      if (pageSlug) {
+        const resolved = resolveClusterNoteFile(
+          contentPath,
+          cluster.slug,
+          pageSlug,
+        );
+        if (resolved && fs.existsSync(resolved.filePath)) {
+          const candidate = fs.readFileSync(resolved.filePath, "utf-8");
+          const found = findGeneratedVisualBlockById(candidate, visualId);
+          if (found) {
+            generatedFilePath = resolved.filePath;
+            generatedContent = candidate;
+            generatedBlock = found;
+          }
         }
       }
-    }
-    if (!generatedFilePath) {
-      for (const candidatePath of listGardenMarkdownFiles(contentPath, cluster.slug)) {
-        const candidate = fs.readFileSync(candidatePath, 'utf-8');
-        if (!candidate.includes(visualId)) continue;
-        const found = findGeneratedVisualBlockById(candidate, visualId);
-        if (found) {
-          generatedFilePath = candidatePath;
-          generatedContent = candidate;
-          generatedBlock = found;
-          break;
+      if (!generatedFilePath) {
+        for (const candidatePath of listGardenMarkdownFiles(
+          contentPath,
+          cluster.slug,
+        )) {
+          const candidate = fs.readFileSync(candidatePath, "utf-8");
+          if (!candidate.includes(visualId)) continue;
+          const found = findGeneratedVisualBlockById(candidate, visualId);
+          if (found) {
+            generatedFilePath = candidatePath;
+            generatedContent = candidate;
+            generatedBlock = found;
+            break;
+          }
         }
       }
-    }
-    if (generatedFilePath && generatedBlock) {
-      const requestedCurrentVersion = Number(body.currentVersion ?? generatedBlock.version);
-      if (requestedCurrentVersion !== generatedBlock.version) {
+      if (generatedFilePath && generatedBlock) {
+        const requestedCurrentVersion = Number(
+          body.currentVersion ?? generatedBlock.version,
+        );
+        if (requestedCurrentVersion !== generatedBlock.version) {
+          return NextResponse.json(
+            {
+              error: `Visualization changed from v${requestedCurrentVersion} to v${generatedBlock.version}; reload before regenerating.`,
+            },
+            { status: 409, headers },
+          );
+        }
+        const currentManifest = loadGeneratedVisualManifest(
+          gardenDir,
+          visualId,
+          generatedBlock.version,
+        );
+        const plan = loadVisualizationPlan(gardenDir);
+        const plannedOpportunity = plan?.opportunities.find(
+          (candidate) => candidate.id === visualId,
+        );
+        if (!currentManifest || !plannedOpportunity) {
+          return NextResponse.json(
+            {
+              error:
+                "The generated visualization manifest or opportunity plan is missing.",
+            },
+            { status: 409, headers },
+          );
+        }
+        const relativePage = path
+          .relative(gardenDir, generatedFilePath)
+          .replace(/\\/g, "/");
+        const opportunity = {
+          ...plannedOpportunity,
+          targetPage: relativePage,
+          targetHeading: currentManifest.targetHeading,
+          insertionAnchor: currentManifest.insertionAnchor,
+        };
+        const contractPath = path.join(
+          gardenDir,
+          ".breadboard",
+          "learning-unit-contract.json",
+        );
+        let currentUnit:
+          | ReturnType<typeof normalizeLearningUnits>[number]
+          | undefined;
+        try {
+          const persistedContract = JSON.parse(
+            fs.readFileSync(contractPath, "utf-8"),
+          );
+          currentUnit = normalizeLearningUnits(persistedContract, {
+            modelAuthoredOnly: true,
+          }).find((unit) => unit.id === opportunity.learningUnitId);
+        } catch {
+          currentUnit = undefined;
+        }
+        if (!currentUnit) {
+          return NextResponse.json(
+            {
+              error:
+                "The current learning-unit contract is missing; regenerate the Learn plan before replacing this visual.",
+            },
+            { status: 409, headers },
+          );
+        }
+        const contractProblems =
+          persistedVisualizationOpportunityContractProblems({
+            unit: currentUnit,
+            opportunity,
+          });
+        if (contractProblems.length > 0) {
+          return NextResponse.json(
+            {
+              error:
+                "The saved visualization opportunity is stale and no longer matches the current learning-unit contract.",
+              details: contractProblems,
+            },
+            { status: 409, headers },
+          );
+        }
+        const availableSourceAnchorIds = new Set(
+          Object.keys(
+            buildCanonicalSourceAnchors(gardenDir, {
+              allowInferredFormulaText: false,
+            }),
+          ),
+        );
+        const opportunitySourceAnchorIds = Array.isArray(
+          opportunity.sourceAnchorIds,
+        )
+          ? opportunity.sourceAnchorIds
+          : [];
+        const missingSourceAnchorIds = opportunitySourceAnchorIds.filter(
+          (anchorId) => !availableSourceAnchorIds.has(anchorId),
+        );
+        if (
+          !Array.isArray(opportunity.sourceAnchorIds) ||
+          missingSourceAnchorIds.length > 0
+        ) {
+          return NextResponse.json(
+            {
+              error:
+                "The saved visualization opportunity references source anchors that are not in the canonical registry.",
+              details: missingSourceAnchorIds,
+            },
+            { status: 409, headers },
+          );
+        }
+        const surrounding = generatedContent.slice(
+          Math.max(0, generatedBlock.index - 4000),
+          generatedBlock.index + generatedBlock.fullMatch.length + 2500,
+        );
+        const { baseURL } = resolveChatmockBaseUrl(request);
+        const client = createChatmockClient(baseURL);
+        let mutation: DetachedGardenMutation | undefined;
+        try {
+          mutation = createDetachedGardenMutation(
+            gardenDir,
+            "visual-regeneration",
+          );
+          const stagedContentPath = mutation.temporaryRoot;
+          const stagedGeneratedFilePath = path.join(
+            mutation.stagingGardenDir,
+            ...relativePage.split("/"),
+          );
+          const result = await createGeneratedVisualization({
+            client,
+            model: DEFAULT_MODEL,
+            gardenDir: mutation.stagingGardenDir,
+            durableRecoveryDir:
+              stableGeneratedVisualCouncilRecoveryRoot(gardenDir),
+            recoveryOwnerId: operationId,
+            opportunity,
+            pageMarkdown: surrounding,
+            availableSourceAnchorIds,
+            abortSignal: request.signal,
+            compilerRunner: (sourceCode, opportunity, signal) =>
+              compileGeneratedVisualizationViaRuntime({
+                userId,
+                gardenId: cluster.slug,
+                sourceCode,
+                opportunity,
+                signal,
+              }),
+            browserTestRunner: ({ definition, outputDir, timeoutMs, signal }) =>
+              runGeneratedVisualBrowserTestsViaRuntime({
+                userId,
+                gardenId: cluster.slug,
+                definition,
+                outputDir,
+                timeoutMs,
+                signal,
+              }),
+            onEvent: (event) =>
+              appendGardenEvent(stagedContentPath, cluster.slug, event.type, {
+                ...event.data,
+                pageId: relativePage.replace(/\.md$/i, ""),
+                regenerationReason: reason || "Learner requested regeneration",
+              }),
+          });
+          if (!result.manifest) {
+            return NextResponse.json(
+              {
+                error: `Replacement did not pass validation; v${generatedBlock.version} remains active.`,
+                details: result.errors,
+              },
+              { status: 422, headers },
+            );
+          }
+
+          const stagedContent = fs.readFileSync(
+            stagedGeneratedFilePath,
+            "utf-8",
+          );
+          const stagedBlock = findGeneratedVisualBlockById(
+            stagedContent,
+            visualId,
+          );
+          if (!stagedBlock || stagedBlock.version !== generatedBlock.version) {
+            return NextResponse.json(
+              {
+                error:
+                  "The detached visualization candidate no longer matches the active Markdown block.",
+              },
+              { status: 409, headers },
+            );
+          }
+          const nextContent = replaceGeneratedVisualBlock(
+            stagedContent,
+            stagedBlock,
+            visualId,
+            result.manifest.version,
+          );
+          const temporaryPath = `${stagedGeneratedFilePath}.visual-${process.pid}-${Date.now()}.tmp`;
+          fs.writeFileSync(temporaryPath, nextContent, "utf-8");
+          fs.renameSync(temporaryPath, stagedGeneratedFilePath);
+          appendGardenEvent(
+            stagedContentPath,
+            cluster.slug,
+            "visualization_regenerated",
+            {
+              visualId,
+              pageId: relativePage.replace(/\.md$/i, ""),
+              kind: "generated_module",
+              oldVersion: generatedBlock.version,
+              newVersion: result.manifest.version,
+              reason,
+              sourceAnchors: result.manifest.sourceAnchorIds,
+            },
+          );
+
+          const promotion = await promoteDetachedGardenMutation({
+            mutation,
+            destinationGardenDir: gardenDir,
+            lease,
+            recoveryOwnerId: operationId,
+            verifyCandidate: (candidateGardenDir) => {
+              const candidateMarkdownPath = path.join(
+                candidateGardenDir,
+                ...relativePage.split("/"),
+              );
+              try {
+                const candidateBlock = findGeneratedVisualBlockById(
+                  fs.readFileSync(candidateMarkdownPath, "utf-8"),
+                  visualId,
+                );
+                return (
+                  candidateBlock?.version === result.manifest!.version &&
+                  generatedVisualPublicationPointersMatch({
+                    gardenDir: candidateGardenDir,
+                    id: visualId,
+                    version: result.manifest!.version,
+                    sourceHash: result.manifest!.sourceHash,
+                    compiledHash: result.manifest!.compiledHash,
+                  })
+                );
+              } catch {
+                return false;
+              }
+            },
+          });
+          if (!promotion.promoted) {
+            return NextResponse.json(
+              {
+                error:
+                  "Visualization regeneration lost its fenced garden lease or the garden changed before commit. The active version was not replaced.",
+                details: [promotion.reason],
+              },
+              { status: 409, headers },
+            );
+          }
+          await publishQuartzAfterMutation(
+            `regenerate generated visual ${visualId} in ${cluster.slug}`,
+            { userId, gardenSlug: cluster.slug },
+          );
+          return NextResponse.json(
+            { success: true, visual: result.manifest },
+            { headers },
+          );
+        } finally {
+          disposeDetachedGardenMutation(mutation);
+        }
+      }
+
+      // Locate the markdown file carrying this visual block.
+      let filePath: string | null = null;
+      let content = "";
+      let block: ReturnType<typeof findVisualBlockById> = null;
+      if (pageSlug) {
+        const resolved = resolveClusterNoteFile(
+          contentPath,
+          cluster.slug,
+          pageSlug,
+        );
+        if (resolved && fs.existsSync(resolved.filePath)) {
+          const candidate = fs.readFileSync(resolved.filePath, "utf-8");
+          const found = findVisualBlockById(candidate, visualId);
+          if (found) {
+            filePath = resolved.filePath;
+            content = candidate;
+            block = found;
+          }
+        }
+      }
+      if (!filePath) {
+        for (const candidatePath of listGardenMarkdownFiles(
+          contentPath,
+          cluster.slug,
+        )) {
+          const candidate = fs.readFileSync(candidatePath, "utf-8");
+          if (!candidate.includes(visualId)) continue;
+          const found = findVisualBlockById(candidate, visualId);
+          if (found) {
+            filePath = candidatePath;
+            content = candidate;
+            block = found;
+            break;
+          }
+        }
+      }
+      if (!filePath || !block) {
         return NextResponse.json(
-          { error: `Visualization changed from v${requestedCurrentVersion} to v${generatedBlock.version}; reload before regenerating.` },
-          { status: 409, headers },
+          { error: `Visual ${visualId} was not found in this garden` },
+          { status: 404, headers },
         );
       }
-      const currentManifest = loadGeneratedVisualManifest(gardenDir, visualId, generatedBlock.version);
-      const plan = loadVisualizationPlan(gardenDir);
-      const plannedOpportunity = plan?.opportunities.find((candidate) => candidate.id === visualId);
-      if (!currentManifest || !plannedOpportunity) {
-        return NextResponse.json(
-          { error: 'The generated visualization manifest or opportunity plan is missing.' },
-          { status: 409, headers },
-        );
-      }
-      const relativePage = path.relative(gardenDir, generatedFilePath).replace(/\\/g, '/');
-      const opportunity = {
-        ...plannedOpportunity,
-        targetPage: relativePage,
-        targetHeading: currentManifest.targetHeading,
-        insertionAnchor: currentManifest.insertionAnchor,
-      };
-      const contractPath = path.join(gardenDir, '.breadboard', 'learning-unit-contract.json');
-      let currentUnit: ReturnType<typeof normalizeLearningUnits>[number] | undefined;
-      try {
-        const persistedContract = JSON.parse(fs.readFileSync(contractPath, 'utf-8'));
-        currentUnit = normalizeLearningUnits(persistedContract, { modelAuthoredOnly: true })
-          .find((unit) => unit.id === opportunity.learningUnitId);
-      } catch {
-        currentUnit = undefined;
-      }
-      if (!currentUnit) {
-        return NextResponse.json(
-          { error: 'The current learning-unit contract is missing; regenerate the Learn plan before replacing this visual.' },
-          { status: 409, headers },
-        );
-      }
-      const contractProblems = persistedVisualizationOpportunityContractProblems({
-        unit: currentUnit,
-        opportunity,
-      });
-      if (contractProblems.length > 0) {
+
+      const existingSpec = validateVisualSpec(block.json).spec;
+      const oldVersion = existingSpec?.version ?? 1;
+      const surrounding = content.slice(
+        Math.max(0, block.index - 2500),
+        block.index + block.fullMatch.length + 1200,
+      );
+
+      if (!lease.heartbeat()) {
         return NextResponse.json(
           {
-            error: 'The saved visualization opportunity is stale and no longer matches the current learning-unit contract.',
-            details: contractProblems,
+            error:
+              "Visualization regeneration lost its fenced garden lease before generation. The active version was not replaced.",
           },
           { status: 409, headers },
         );
       }
-      const availableSourceAnchorIds = new Set(
-        Object.keys(buildCanonicalSourceAnchors(gardenDir, { allowInferredFormulaText: false })),
-      );
-      const opportunitySourceAnchorIds = Array.isArray(opportunity.sourceAnchorIds)
-        ? opportunity.sourceAnchorIds
-        : [];
-      const missingSourceAnchorIds = opportunitySourceAnchorIds.filter(
-        (anchorId) => !availableSourceAnchorIds.has(anchorId),
-      );
-      if (
-        !Array.isArray(opportunity.sourceAnchorIds) ||
-        missingSourceAnchorIds.length > 0
-      ) {
-        return NextResponse.json(
-          {
-            error: 'The saved visualization opportunity references source anchors that are not in the canonical registry.',
-            details: missingSourceAnchorIds,
-          },
-          { status: 409, headers },
-        );
-      }
-      const surrounding = generatedContent.slice(
-        Math.max(0, generatedBlock.index - 4000),
-        generatedBlock.index + generatedBlock.fullMatch.length + 2500,
-      );
-      const { baseURL } = resolveChatmockBaseUrl(request);
-      const client = createChatmockClient(baseURL);
       let mutation: DetachedGardenMutation | undefined;
       try {
         mutation = createDetachedGardenMutation(
           gardenDir,
-          'visual-regeneration',
+          "legacy-visual-regeneration",
         );
-        const stagedContentPath = mutation.temporaryRoot;
-        const stagedGeneratedFilePath = path.join(
+        const relativeMarkdownPath = path.relative(gardenDir, filePath);
+        const stagedFilePath = path.join(
           mutation.stagingGardenDir,
-          ...relativePage.split('/'),
+          relativeMarkdownPath,
         );
-        const result = await createGeneratedVisualization({
-          client,
-          model: DEFAULT_MODEL,
-          gardenDir: mutation.stagingGardenDir,
-          durableRecoveryDir: stableGeneratedVisualCouncilRecoveryRoot(gardenDir),
-          recoveryOwnerId: operationId,
-          opportunity,
-          pageMarkdown: surrounding,
-          availableSourceAnchorIds,
-          abortSignal: request.signal,
-          compilerRunner: (sourceCode, opportunity, signal) =>
-            compileGeneratedVisualizationViaRuntime({
-              userId,
-              gardenId: cluster.slug,
-              sourceCode,
-              opportunity,
-              signal,
-            }),
-          browserTestRunner: ({ definition, outputDir, timeoutMs, signal }) =>
-            runGeneratedVisualBrowserTestsViaRuntime({
-              userId,
-              gardenId: cluster.slug,
-              definition,
-              outputDir,
-              timeoutMs,
-              signal,
-            }),
-          onEvent: (event) => appendGardenEvent(stagedContentPath, cluster.slug, event.type, {
-            ...event.data,
-            pageId: relativePage.replace(/\.md$/i, ''),
-            regenerationReason: reason || 'Learner requested regeneration',
-          }),
-        });
-        if (!result.manifest) {
+        const stagedContent = fs.readFileSync(stagedFilePath, "utf-8");
+        const stagedBlock = findVisualBlockById(stagedContent, visualId);
+        if (!stagedBlock || stagedBlock.json !== block.json) {
           return NextResponse.json(
-            { error: `Replacement did not pass validation; v${generatedBlock.version} remains active.`, details: result.errors },
-            { status: 422, headers },
-          );
-        }
-
-        const stagedContent = fs.readFileSync(stagedGeneratedFilePath, 'utf-8');
-        const stagedBlock = findGeneratedVisualBlockById(stagedContent, visualId);
-        if (!stagedBlock || stagedBlock.version !== generatedBlock.version) {
-          return NextResponse.json(
-            { error: 'The detached visualization candidate no longer matches the active Markdown block.' },
+            {
+              error:
+                "The detached visualization candidate no longer matches the active Markdown block.",
+            },
             { status: 409, headers },
           );
         }
-        const nextContent = replaceGeneratedVisualBlock(
+
+        const { baseURL } = resolveChatmockBaseUrl(request);
+        const client = createChatmockClient(baseURL);
+        const { spec, errors } = await generateVisualSpec(
+          client,
+          DEFAULT_MODEL,
+          {
+            gardenId: cluster.slug,
+            pageId: pageSlug || undefined,
+            pageMarkdown: surrounding,
+            visualOpportunity:
+              reason ||
+              existingSpec?.regenerationPrompt ||
+              `Regenerate the visual "${visualId}".`,
+            existingSpec,
+          },
+        );
+        if (!spec) {
+          appendGardenEvent(
+            mutation.temporaryRoot,
+            cluster.slug,
+            "visualization_failed",
+            {
+              pageId: pageSlug || undefined,
+              visualId,
+              error: errors.join("; ") || "generation failed",
+            },
+          );
+          const failurePromotion = await promoteDetachedGardenMutation({
+            mutation,
+            destinationGardenDir: gardenDir,
+            lease,
+            recoveryOwnerId: operationId,
+          });
+          if (!failurePromotion.promoted) {
+            return NextResponse.json(
+              {
+                error:
+                  "Visualization regeneration lost its fenced garden lease or the garden changed before the failure receipt could commit. The active version was not replaced.",
+                details: [failurePromotion.reason],
+              },
+              { status: 409, headers },
+            );
+          }
+          return NextResponse.json(
+            { error: "The regenerated visual spec was invalid. Try again." },
+            { status: 502, headers },
+          );
+        }
+
+        const nextContent = replaceVisualBlock(
           stagedContent,
           stagedBlock,
-          visualId,
-          result.manifest.version,
+          spec,
         );
-        const temporaryPath = `${stagedGeneratedFilePath}.visual-${process.pid}-${Date.now()}.tmp`;
-        fs.writeFileSync(temporaryPath, nextContent, 'utf-8');
-        fs.renameSync(temporaryPath, stagedGeneratedFilePath);
-        appendGardenEvent(stagedContentPath, cluster.slug, 'visualization_regenerated', {
-          visualId,
-          pageId: relativePage.replace(/\.md$/i, ''),
-          kind: 'generated_module',
-          oldVersion: generatedBlock.version,
-          newVersion: result.manifest.version,
-          reason,
-          sourceAnchors: result.manifest.sourceAnchorIds,
-        });
+        const temporaryPath = `${stagedFilePath}.visual-${process.pid}-${Date.now()}.tmp`;
+        fs.writeFileSync(temporaryPath, nextContent, "utf-8");
+        fs.renameSync(temporaryPath, stagedFilePath);
+        saveVisualSpec(
+          mutation.temporaryRoot,
+          cluster.slug,
+          spec,
+          pageSlug || undefined,
+        );
+        appendGardenEvent(
+          mutation.temporaryRoot,
+          cluster.slug,
+          "visualization_regenerated",
+          {
+            visualId: spec.id,
+            pageId: pageSlug || spec.pageId,
+            oldVersion,
+            newVersion: spec.version,
+            reason: reason || existingSpec?.regenerationPrompt,
+            sourceAnchors: spec.sourceAnchors,
+          },
+        );
 
         const promotion = await promoteDetachedGardenMutation({
           mutation,
           destinationGardenDir: gardenDir,
           lease,
           recoveryOwnerId: operationId,
-          verifyCandidate: (candidateGardenDir) => {
-            const candidateMarkdownPath = path.join(
-              candidateGardenDir,
-              ...relativePage.split('/'),
-            );
-            try {
-              const candidateBlock = findGeneratedVisualBlockById(
-                fs.readFileSync(candidateMarkdownPath, 'utf-8'),
-                visualId,
-              );
-              return (
-                candidateBlock?.version === result.manifest!.version &&
-                generatedVisualPublicationPointersMatch({
-                  gardenDir: candidateGardenDir,
-                  id: visualId,
-                  version: result.manifest!.version,
-                  sourceHash: result.manifest!.sourceHash,
-                  compiledHash: result.manifest!.compiledHash,
-                })
-              );
-            } catch {
-              return false;
-            }
-          },
+          verifyCandidate: (candidateGardenDir) =>
+            legacyVisualPublicationPointersMatch({
+              gardenDir: candidateGardenDir,
+              relativeMarkdownPath,
+              expectedSpec: spec,
+            }),
         });
         if (!promotion.promoted) {
           return NextResponse.json(
             {
-              error: 'Visualization regeneration lost its fenced garden lease or the garden changed before commit. The active version was not replaced.',
+              error:
+                "Visualization regeneration lost its fenced garden lease or the garden changed before commit. The active version was not replaced.",
               details: [promotion.reason],
             },
             { status: 409, headers },
           );
         }
         await publishQuartzAfterMutation(
-          `regenerate generated visual ${visualId} in ${cluster.slug}`,
-          { userId },
+          `regenerate visual ${spec.id} in ${cluster.slug}`,
+          { userId, gardenSlug: cluster.slug },
         );
-        return NextResponse.json({ success: true, visual: result.manifest }, { headers });
+        return NextResponse.json({ success: true, visual: spec }, { headers });
       } finally {
         disposeDetachedGardenMutation(mutation);
       }
-    }
-
-    // Locate the markdown file carrying this visual block.
-    let filePath: string | null = null;
-    let content = '';
-    let block: ReturnType<typeof findVisualBlockById> = null;
-    if (pageSlug) {
-      const resolved = resolveClusterNoteFile(contentPath, cluster.slug, pageSlug);
-      if (resolved && fs.existsSync(resolved.filePath)) {
-        const candidate = fs.readFileSync(resolved.filePath, 'utf-8');
-        const found = findVisualBlockById(candidate, visualId);
-        if (found) {
-          filePath = resolved.filePath;
-          content = candidate;
-          block = found;
-        }
-      }
-    }
-    if (!filePath) {
-      for (const candidatePath of listGardenMarkdownFiles(contentPath, cluster.slug)) {
-        const candidate = fs.readFileSync(candidatePath, 'utf-8');
-        if (!candidate.includes(visualId)) continue;
-        const found = findVisualBlockById(candidate, visualId);
-        if (found) {
-          filePath = candidatePath;
-          content = candidate;
-          block = found;
-          break;
-        }
-      }
-    }
-    if (!filePath || !block) {
-      return NextResponse.json(
-        { error: `Visual ${visualId} was not found in this garden` },
-        { status: 404, headers },
-      );
-    }
-
-    const existingSpec = validateVisualSpec(block.json).spec;
-    const oldVersion = existingSpec?.version ?? 1;
-    const surrounding = content.slice(
-      Math.max(0, block.index - 2500),
-      block.index + block.fullMatch.length + 1200,
-    );
-
-    if (!lease.heartbeat()) {
-      return NextResponse.json(
-        { error: 'Visualization regeneration lost its fenced garden lease before generation. The active version was not replaced.' },
-        { status: 409, headers },
-      );
-    }
-    let mutation: DetachedGardenMutation | undefined;
-    try {
-      mutation = createDetachedGardenMutation(
-        gardenDir,
-        'legacy-visual-regeneration',
-      );
-      const relativeMarkdownPath = path.relative(gardenDir, filePath);
-      const stagedFilePath = path.join(
-        mutation.stagingGardenDir,
-        relativeMarkdownPath,
-      );
-      const stagedContent = fs.readFileSync(stagedFilePath, 'utf-8');
-      const stagedBlock = findVisualBlockById(stagedContent, visualId);
-      if (!stagedBlock || stagedBlock.json !== block.json) {
-        return NextResponse.json(
-          { error: 'The detached visualization candidate no longer matches the active Markdown block.' },
-          { status: 409, headers },
-        );
-      }
-
-      const { baseURL } = resolveChatmockBaseUrl(request);
-      const client = createChatmockClient(baseURL);
-      const { spec, errors } = await generateVisualSpec(client, DEFAULT_MODEL, {
-        gardenId: cluster.slug,
-        pageId: pageSlug || undefined,
-        pageMarkdown: surrounding,
-        visualOpportunity:
-          reason || existingSpec?.regenerationPrompt || `Regenerate the visual "${visualId}".`,
-        existingSpec,
-      });
-      if (!spec) {
-        appendGardenEvent(mutation.temporaryRoot, cluster.slug, 'visualization_failed', {
-          pageId: pageSlug || undefined,
-          visualId,
-          error: errors.join('; ') || 'generation failed',
-        });
-        const failurePromotion = await promoteDetachedGardenMutation({
-          mutation,
-          destinationGardenDir: gardenDir,
-          lease,
-          recoveryOwnerId: operationId,
-        });
-        if (!failurePromotion.promoted) {
-          return NextResponse.json(
-            {
-              error: 'Visualization regeneration lost its fenced garden lease or the garden changed before the failure receipt could commit. The active version was not replaced.',
-              details: [failurePromotion.reason],
-            },
-            { status: 409, headers },
-          );
-        }
-        return NextResponse.json(
-          { error: 'The regenerated visual spec was invalid. Try again.' },
-          { status: 502, headers },
-        );
-      }
-
-      const nextContent = replaceVisualBlock(stagedContent, stagedBlock, spec);
-      const temporaryPath = `${stagedFilePath}.visual-${process.pid}-${Date.now()}.tmp`;
-      fs.writeFileSync(temporaryPath, nextContent, 'utf-8');
-      fs.renameSync(temporaryPath, stagedFilePath);
-      saveVisualSpec(
-        mutation.temporaryRoot,
-        cluster.slug,
-        spec,
-        pageSlug || undefined,
-      );
-      appendGardenEvent(mutation.temporaryRoot, cluster.slug, 'visualization_regenerated', {
-        visualId: spec.id,
-        pageId: pageSlug || spec.pageId,
-        oldVersion,
-        newVersion: spec.version,
-        reason: reason || existingSpec?.regenerationPrompt,
-        sourceAnchors: spec.sourceAnchors,
-      });
-
-      const promotion = await promoteDetachedGardenMutation({
-        mutation,
-        destinationGardenDir: gardenDir,
-        lease,
-        recoveryOwnerId: operationId,
-        verifyCandidate: (candidateGardenDir) =>
-          legacyVisualPublicationPointersMatch({
-            gardenDir: candidateGardenDir,
-            relativeMarkdownPath,
-            expectedSpec: spec,
-          }),
-      });
-      if (!promotion.promoted) {
-        return NextResponse.json(
-          {
-            error: 'Visualization regeneration lost its fenced garden lease or the garden changed before commit. The active version was not replaced.',
-            details: [promotion.reason],
-          },
-          { status: 409, headers },
-        );
-      }
-      await publishQuartzAfterMutation(
-        `regenerate visual ${spec.id} in ${cluster.slug}`,
-        { userId },
-      );
-      return NextResponse.json({ success: true, visual: spec }, { headers });
-    } finally {
-      disposeDetachedGardenMutation(mutation);
-    }
     } finally {
       lease.release();
     }

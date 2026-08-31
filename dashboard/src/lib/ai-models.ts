@@ -192,7 +192,10 @@ function formatClaudeModelName(bare: string): string {
  * selected and sent.
  */
 export function formatAssistantModelName(modelId: string): string {
-  const slash = modelId.indexOf('/');
+  // Routes may be nested (`openrouter/google/gemini-…`). Every path segment
+  // before the last one is routing/vendor metadata already expressed by the
+  // picker section heading, so none of it belongs in the row label.
+  const slash = modelId.lastIndexOf('/');
   const withPrefix = slash < 0 ? modelId : modelId.slice(slash + 1);
   const bare = withPrefix.replace(RELEASE_DATE_SUFFIX, '') || withPrefix;
 
@@ -206,6 +209,10 @@ export function formatAssistantModelName(modelId: string): string {
     return `${formatClaudeModelName(bare.slice(0, -'-efficient'.length))} (Efficient)`;
   }
   if (/^claude-/i.test(bare)) return formatClaudeModelName(bare);
+  // Gemini uses the same dashed word/version convention as Claude. Showing
+  // the raw id made Google the odd section out (`google/gemini-3.7-flash-high`)
+  // while Anthropic and OpenAI already had readable names.
+  if (/^gemini-/i.test(bare)) return formatClaudeModelName(bare);
   return bare.replace(/^gpt-/i, 'GPT-');
 }
 

@@ -23,6 +23,7 @@ import type {
   AgentRuntime,
   CreateRuntimeSessionInput,
   ResolveRuntimeApprovalInput,
+  ResolveRuntimeClarificationInput,
   RestoreRuntimeSessionInput,
   RuntimeSession,
   RuntimeSessionReference,
@@ -57,6 +58,27 @@ const WEB_TOOLSET = "web";
 // Compression happens to any tool's output, so the way back has to be on
 // whenever any tool is.
 const TOKENJUICE_TOOLSET = "tokenjuice";
+// `delegate_task`: Hermes-native fan-out into child agents that inherit this
+// session's toolsets (breadboard + web + tokenjuice; the child list is
+// intersected with the parent's, so a child can never gain a Hermes toolset
+// the session lacks). The Chief-of-Staff and ARIS prompts already instruct the
+// model to call it, and `subagent.*` events are already normalized — the tool
+// itself was the missing piece. Children authorize their Breadboard tool
+// calls under the root session (the plugin resolves child task ids through
+// delegate_tool.resolve_root_task_id), so the per-turn capability decision
+// still governs every call they make.
+const DELEGATION_TOOLSET = "delegation";
+// `clarify`: the model asks the user a question mid-turn and waits. Surfaces
+// render it as a card (choices + typed answer) and relay the answer through
+// `clarify.respond`; headless turns (Telegram, WhatsApp, email, hooks) are
+// answered by the adapter itself so nothing blocks on a person who is not
+// there. Hermes strips it from delegated children.
+const CLARIFY_TOOLSET = "clarify";
+// What a headless turn hears back when the model asks a question no one can
+// answer. Phrased as an instruction so the model continues instead of asking
+// again.
+const HEADLESS_CLARIFY_ANSWER =
+  "No one is available to answer right now. Choose the most reasonable option yourself, say which one you chose and why, and continue.";
 const BREADBOARD_AGENT = "breadboard";
 const CHATMOCK_PROVIDER = "chatmock";
 const TURN_RESULT_POLL_MS = 1_000;
@@ -86,6 +108,11 @@ interface HermesSessionState extends RuntimeSession {
   /** Last per-session approval-bypass value acknowledged by Hermes. */
   yoloMode?: boolean;
   /**
+   * Whether the current turn has a person who can answer a `clarify`
+   * question. Set per run; false for delivery-channel and hook turns.
+   */
+  interactive?: boolean;
+  /**
    * The model the user actually picked, which is not always the one named on
    * the wire: provider-prefixed ids travel as the `default` sentinel. Kept
    * apart from `modelIdentity`, which holds the model that ended up serving.
@@ -103,17 +130,26 @@ interface HermesTurnResult {
   state?:
     | "running"
     | "waiting_for_permission"
+    | "waiting_for_clarification"
     | "completed"
     | "failed"
     | "aborted"
     | "unknown";
   turn_id?: string;
   approval?: unknown;
+  /** The pending `clarify.request` payload, request_id included. */
+  clarify?: unknown;
   payload?: unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function clarifyRequestId(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = value.request_id ?? value.id;
+  return typeof id === "string" && id.trim() ? id.trim() : undefined;
 }
 
 function approvalFingerprint(value: unknown): string | undefined {
@@ -191,6 +227,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   constructor(config: AgentRuntimeConfig["hermes"]) {
     this.config = config;
     this.client = new HermesRpcClient(config);
+    this.client.subscribe((event) => this.answerHeadlessClarify(event));
   }
 
   /**
@@ -403,6 +440,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "manim_create",
       "premortem_run",
       "factcheck_run",
+      "patent_disclosure_guide",
       "watch_run",
       "agent_loop_run",
       "messaging_send",
@@ -427,6 +465,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "spotify_search",
       "spotify_play",
       "spotify_create_playlist",
+      "product_search",
     ];
     const proxy = userId ? proxyMcpDiscovery(userId) : { tools: [], mcp: {} };
     return {
@@ -485,7 +524,13 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         // provider prompt cache stays stable. Keep read-only web lookup
         // available from session creation; Breadboard's per-turn capability
         // decision still tells the model when current evidence is required.
-        enabled_toolsets: [BREADBOARD_TOOLSET, WEB_TOOLSET, TOKENJUICE_TOOLSET],
+        enabled_toolsets: [
+          BREADBOARD_TOOLSET,
+          WEB_TOOLSET,
+          TOKENJUICE_TOOLSET,
+          DELEGATION_TOOLSET,
+          CLARIFY_TOOLSET,
+        ],
         system_prompt: this.systemPrompt(modelIdentity),
         close_on_disconnect: false,
         },
@@ -525,6 +570,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   async startRun(input: StartRuntimeRunInput): Promise<void> {
     const session = this.requireSession(input);
     await this.ensureSessionLease(session);
+    session.interactive = input.interactive !== false;
     const requestedYoloMode = input.yoloMode;
     if (typeof requestedYoloMode === "boolean") {
       await this.setApprovalBypass({
@@ -647,6 +693,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     let recoverySupported = true;
     let streamError: unknown;
     let activeApprovalFingerprint: string | undefined;
+    let activeClarifyRequestId: string | undefined;
     let lastRunningHeartbeatAt = 0;
     const completedToolCallIds = new Set<string>();
     const normalizeWithRecoveredTools = (
@@ -784,6 +831,14 @@ export class HermesRuntimeAdapter implements AgentRuntime {
             if (fingerprint === activeApprovalFingerprint) continue;
             activeApprovalFingerprint = fingerprint;
           }
+          if (raw.type === "clarify.request") {
+            // A reconnect re-synthesizes the pending question from
+            // turn_result; the live frame for the same request must not
+            // mount a second card.
+            const requestId = clarifyRequestId(raw.payload);
+            if (requestId && requestId === activeClarifyRequestId) continue;
+            activeClarifyRequestId = requestId;
+          }
           const normalized = normalizeWithRecoveredTools(raw);
           if (raw.type === "message.complete") {
             const payload = isRecord(raw.payload) ? raw.payload : {};
@@ -850,7 +905,21 @@ export class HermesRuntimeAdapter implements AgentRuntime {
           for (const event of normalized) yield event;
           continue;
         }
+        if (recovered.state === "waiting_for_clarification") {
+          const clarify = isRecord(recovered.clarify) ? recovered.clarify : {};
+          const requestId = clarifyRequestId(clarify);
+          if (requestId && requestId === activeClarifyRequestId) continue;
+          activeClarifyRequestId = requestId;
+          const raw: RawHermesEvent = {
+            type: "clarify.request",
+            session_id: session.liveSessionId,
+            payload: clarify,
+          };
+          for (const event of normalizeWithRecoveredTools(raw)) yield event;
+          continue;
+        }
         activeApprovalFingerprint = undefined;
+        activeClarifyRequestId = undefined;
         if (recovered.state === "running") {
           const heartbeatAt = Date.now();
           if (heartbeatAt - lastRunningHeartbeatAt >= RUNNING_HEARTBEAT_MS) {
@@ -923,6 +992,41 @@ export class HermesRuntimeAdapter implements AgentRuntime {
             ? "session"
             : "once",
     });
+  }
+
+  async resolveClarification(
+    input: ResolveRuntimeClarificationInput,
+  ): Promise<void> {
+    const session = this.requireSession(input);
+    await this.ensureSessionLease(session);
+    await this.client.request("clarify.respond", {
+      session_id: session.liveSessionId,
+      request_id: input.requestId,
+      answer: input.answer,
+    });
+  }
+
+  /**
+   * A `clarify` raised on a turn nobody is watching would block for the
+   * tool's own timeout (an hour by default). Answer it at once with a
+   * standing instruction so the turn continues; interactive turns are left
+   * for the surface to answer.
+   */
+  private answerHeadlessClarify(event: RawHermesEvent): void {
+    if (event.type !== "clarify.request" || !event.session_id) return;
+    const session = [...this.sessions.values()].find(
+      (candidate) => candidate.liveSessionId === event.session_id,
+    );
+    if (!session || session.interactive !== false) return;
+    const requestId = clarifyRequestId(event.payload);
+    if (!requestId) return;
+    void this.client
+      .request("clarify.respond", {
+        session_id: event.session_id,
+        request_id: requestId,
+        answer: HEADLESS_CLARIFY_ANSWER,
+      })
+      .catch(() => undefined);
   }
 
   async setApprovalBypass(

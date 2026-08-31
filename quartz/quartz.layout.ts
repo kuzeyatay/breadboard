@@ -40,6 +40,7 @@ export const defaultContentPageLayout: PageLayout = {
         variant: "home",
         title: "Full Knowledge Map",
         localGraph: {
+          mode: "auto",
           scope: "all",
           clickToNavigate: true,
           scale: 0.82,
@@ -49,6 +50,7 @@ export const defaultContentPageLayout: PageLayout = {
           fontSize: 0.82,
         },
         globalGraph: {
+          mode: "auto",
           scope: "all",
           clickToNavigate: true,
           scale: 1.08,
@@ -65,6 +67,7 @@ export const defaultContentPageLayout: PageLayout = {
         variant: "home",
         title: "Knowledge Map",
         localGraph: {
+          mode: "auto",
           scope: "cluster",
           clickToNavigate: true,
           scale: 0.82,
@@ -74,6 +77,7 @@ export const defaultContentPageLayout: PageLayout = {
           fontSize: 0.82,
         },
         globalGraph: {
+          mode: "auto",
           scope: "cluster",
           clickToNavigate: true,
           scale: 1.08,
@@ -131,6 +135,7 @@ export const defaultListPageLayout: PageLayout = {
         variant: "home",
         title: "Knowledge Map",
         localGraph: {
+          mode: "auto",
           scope: "cluster",
           clickToNavigate: true,
           scale: 0.82,
@@ -140,6 +145,7 @@ export const defaultListPageLayout: PageLayout = {
           fontSize: 0.82,
         },
         globalGraph: {
+          mode: "auto",
           scope: "cluster",
           clickToNavigate: true,
           scale: 1.08,
@@ -149,7 +155,7 @@ export const defaultListPageLayout: PageLayout = {
           fontSize: 0.84,
         },
       }),
-      condition: isClusterIndex,
+      condition: (page) => isGardenOverview(page) || isClusterIndex(page),
     }),
     Component.FolderPdfExport(),
   ],
@@ -174,7 +180,7 @@ export const defaultListPageLayout: PageLayout = {
   right: [
     Component.ConditionalRender({
       component: Component.Graph(),
-      condition: (page) => !isClusterIndex(page),
+      condition: (page) => !isGardenOverview(page) && !isClusterIndex(page),
     }),
   ],
 }

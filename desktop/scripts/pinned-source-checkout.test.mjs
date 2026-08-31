@@ -81,6 +81,58 @@ test("pinned source check accepts only the exact independent clean checkout", ()
   }
 });
 
+test("pinned source check accepts an explicitly receipted vendored snapshot", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-vendored-pin-"));
+  try {
+    git(fixtureRoot, "init", "--quiet");
+    git(fixtureRoot, "config", "user.email", "runtime-v2-test@breadboard.invalid");
+    git(fixtureRoot, "config", "user.name", "Runtime V2 Test");
+    fs.writeFileSync(path.join(fixtureRoot, "root.txt"), "outer\n", "utf8");
+    git(fixtureRoot, "add", "root.txt");
+    git(fixtureRoot, "commit", "--quiet", "-m", "outer fixture");
+    const upstreamCommit = git(fixtureRoot, "rev-parse", "HEAD");
+
+    const vendoredRoot = path.join(fixtureRoot, "vendored-source");
+    fs.mkdirSync(vendoredRoot);
+    fs.writeFileSync(path.join(vendoredRoot, "tracked.txt"), "reviewed\n", "utf8");
+    writeSourceCommitReceipt(vendoredRoot, upstreamCommit);
+    git(fixtureRoot, "add", "vendored-source");
+
+    assert.equal(
+      assertPinnedCleanCheckout({
+        label: "Vendored fixture",
+        sourceRoot: vendoredRoot,
+        expectedCommit: upstreamCommit,
+        allowVendoredSnapshot: true,
+      }),
+      upstreamCommit,
+    );
+    assert.throws(
+      () =>
+        assertPinnedCleanCheckout({
+          label: "Vendored fixture",
+          sourceRoot: vendoredRoot,
+          expectedCommit: upstreamCommit,
+        }),
+      /independent Git checkout/u,
+    );
+
+    fs.writeFileSync(path.join(vendoredRoot, "untracked.txt"), "not reviewed\n", "utf8");
+    assert.throws(
+      () =>
+        assertPinnedCleanCheckout({
+          label: "Vendored fixture",
+          sourceRoot: vendoredRoot,
+          expectedCommit: upstreamCommit,
+          allowVendoredSnapshot: true,
+        }),
+      /must be tracked and match the outer Git index/u,
+    );
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("the app stager and package verifier bind every reviewed local source", () => {
   const scriptsRoot = path.dirname(fileURLToPath(import.meta.url));
   const prepare = fs.readFileSync(

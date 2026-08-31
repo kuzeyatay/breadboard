@@ -2,14 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import GardenAssistantSwitch from '@/app/components/hermes/garden-assistant-switch';
-import { QUARTZ_BASE_URL } from '@/lib/quartz-url';
-import {
-  exportFolderPdf,
-  type FolderPdfExportMessage,
-} from '@/lib/folder-pdf-export-client';
+import { QUARTZ_BASE_URL, quartzUrlWithAppTheme } from '@/lib/quartz-url';
+import { exportFolderPdf, type FolderPdfExportMessage } from '@/lib/folder-pdf-export-client';
 import {
   quartzAssistantSelectionRequest,
+  quartzInlineAnswerStopRequest,
   type QuartzAssistantSelectionRequest,
+  type QuartzInlineAnswerStopRequest,
   type QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
 import { useQuartzViewLease } from './use-quartz-view-lease';
@@ -21,6 +20,7 @@ interface Props {
 
 interface QuartzMessage {
   type?: string;
+  open?: boolean;
   slug?: string;
   title?: string;
   path?: string;
@@ -50,14 +50,20 @@ function decodeQuartzSlug(slug: string): string {
 
 function noteSlugFromQuartzSlug(slug: string, clusterSlug: string): string {
   const decoded = decodeQuartzSlug(slug);
-  const segments = decoded.replace(/^\/+|\/+$/g, '').trim().split('/').filter(Boolean);
+  const segments = decoded
+    .replace(/^\/+|\/+$/g, '')
+    .trim()
+    .split('/')
+    .filter(Boolean);
   if (segments[0] === 'garden' && segments[1] === clusterSlug) return segments.slice(2).join('/');
   if (segments[0] === clusterSlug) return segments.slice(1).join('/');
   return segments.join('/');
 }
 
 function clusterFromQuartzSlug(slug: string): string | null {
-  const clean = decodeQuartzSlug(slug).replace(/^\/+|\/+$/g, '').trim();
+  const clean = decodeQuartzSlug(slug)
+    .replace(/^\/+|\/+$/g, '')
+    .trim();
   if (!clean || clean === 'index' || clean.startsWith('tags/')) return null;
   if (clean === 'public-library' || clean.startsWith('public-library/')) return null;
   if (clean === 'private-library' || clean.startsWith('private-library/')) return null;
@@ -71,14 +77,17 @@ function isMarkdownDocumentSlug(slug: string, clusterSlug: string): boolean {
     .replace(/^\/+|\/+$/g, '')
     .trim()
     .toLowerCase();
-  const cleanCluster = clusterSlug.replace(/^\/+|\/+$/g, '').trim().toLowerCase();
+  const cleanCluster = clusterSlug
+    .replace(/^\/+|\/+$/g, '')
+    .trim()
+    .toLowerCase();
   return Boolean(
     clean &&
-      clean !== 'index' &&
-      clean !== cleanCluster &&
-      !clean.endsWith('/index') &&
-      !clean.endsWith('/_index') &&
-      !clean.startsWith('tags/'),
+    clean !== 'index' &&
+    clean !== cleanCluster &&
+    !clean.endsWith('/index') &&
+    !clean.endsWith('/_index') &&
+    !clean.startsWith('tags/'),
   );
 }
 
@@ -89,8 +98,9 @@ export default function LibraryGardenClient({ src, title }: Props) {
   const [loadFailed, setLoadFailed] = useState(false);
   const [activeCluster, setActiveCluster] = useState<string | null>(null);
   const [activeMarkdown, setActiveMarkdown] = useState<ActiveMarkdown | null>(null);
-  const [assistantSelection, setAssistantSelection] =
-    useState<QuartzAssistantSelectionRequest | null>(null);
+  const [assistantSelection, setAssistantSelection] = useState<QuartzAssistantSelectionRequest | null>(null);
+  const [assistantInlineStop, setAssistantInlineStop] = useState<QuartzInlineAnswerStopRequest | null>(null);
+  const [markdownEditorOpen, setMarkdownEditorOpen] = useState(false);
   const activeMarkdownCluster = activeMarkdown?.cluster;
   const activeMarkdownSlug = activeMarkdown?.slug;
   const quartzOrigin = useMemo(() => {
@@ -115,11 +125,13 @@ export default function LibraryGardenClient({ src, title }: Props) {
     function handleMessage(event: MessageEvent) {
       const data = event.data as QuartzMessage;
       if (!data || !data.type) return;
-      if (
-        quartzOrigin &&
-        event.origin !== quartzOrigin &&
-        event.source !== iframeRef.current?.contentWindow
-      ) {
+      if (quartzOrigin && event.origin !== quartzOrigin && event.source !== iframeRef.current?.contentWindow) {
+        return;
+      }
+
+      if (data.type === 'second-brain:markdown-editor-state') {
+        if (event.source !== iframeRef.current?.contentWindow) return;
+        setMarkdownEditorOpen(data.open === true);
         return;
       }
 
@@ -127,6 +139,13 @@ export default function LibraryGardenClient({ src, title }: Props) {
       if (selectionRequest) {
         if (event.source !== iframeRef.current?.contentWindow) return;
         setAssistantSelection(selectionRequest);
+        return;
+      }
+
+      const stopRequest = quartzInlineAnswerStopRequest(data);
+      if (stopRequest) {
+        if (event.source !== iframeRef.current?.contentWindow) return;
+        setAssistantInlineStop(stopRequest);
         return;
       }
 
@@ -157,7 +176,12 @@ export default function LibraryGardenClient({ src, title }: Props) {
             .then(async (response) => {
               const responseBody = await response.json().catch(() => ({}));
               const ok = response.ok && responseBody.success;
-              postToQuartz({ type: 'second-brain:delete-folder-result', folder, ok, error: responseBody.error });
+              postToQuartz({
+                type: 'second-brain:delete-folder-result',
+                folder,
+                ok,
+                error: responseBody.error,
+              });
               if (ok) reloadGarden();
             })
             .catch(() => {
@@ -186,7 +210,12 @@ export default function LibraryGardenClient({ src, title }: Props) {
             .then(async (response) => {
               const body = await response.json().catch(() => ({}));
               const ok = response.ok && body.success;
-              postToQuartz({ type: 'second-brain:move-note-result', slug: moveSlug, ok, error: body.error });
+              postToQuartz({
+                type: 'second-brain:move-note-result',
+                slug: moveSlug,
+                ok,
+                error: body.error,
+              });
               if (ok) reloadGarden();
             })
             .catch(() => {
@@ -210,7 +239,12 @@ export default function LibraryGardenClient({ src, title }: Props) {
           .then(async (response) => {
             const body = await response.json().catch(() => ({}));
             const ok = response.ok && body.success;
-            postToQuartz({ type: 'second-brain:create-folder-result', folder, ok, error: body.error });
+            postToQuartz({
+              type: 'second-brain:create-folder-result',
+              folder,
+              ok,
+              error: body.error,
+            });
             if (ok) reloadGarden();
           })
           .catch(() => {
@@ -232,6 +266,7 @@ export default function LibraryGardenClient({ src, title }: Props) {
       }
 
       if (data.type !== 'second-brain:navigate' || !data.slug) return;
+      setMarkdownEditorOpen(false);
 
       const cluster = clusterFromQuartzSlug(data.slug);
       if (!cluster) {
@@ -368,11 +403,12 @@ export default function LibraryGardenClient({ src, title }: Props) {
         <iframe
           ref={iframeRef}
           key={src}
-          src={quartzLease.ready ? src : undefined}
+          src={quartzLease.ready ? quartzUrlWithAppTheme(src) : undefined}
           className="block h-full w-full border-0 bg-gray-950"
           title={title}
           onLoad={() => {
             if (!quartzLease.ready) return;
+            setMarkdownEditorOpen(false);
             setLoadFailed(false);
             setLoadedSource(src);
           }}
@@ -385,7 +421,9 @@ export default function LibraryGardenClient({ src, title }: Props) {
         activeClusterName={activeCluster ?? undefined}
         activeMarkdown={activeMarkdown}
         selectedTextRequest={assistantSelection}
+        inlineAnswerStopRequest={assistantInlineStop}
         onInlineAnswerUpdate={postInlineAnswer}
+        launcherHidden={markdownEditorOpen}
       />
     </div>
   );

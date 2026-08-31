@@ -242,6 +242,24 @@ test("directions and place recommendations render the native map in chat", () =>
   }
 });
 
+test("delegated research evidence cannot trigger an inline map", () => {
+  // Max Research hands findings back as a hidden user-role continuation. Map
+  // intent and its freshness timestamp must remain anchored to what the person
+  // actually asked, not phrases such as "close to failure" inside the report.
+  assert.match(
+    runtimePanel,
+    /const userIndex = retryTargetUserMessageIndex\(messages, assistantIndex\)/,
+  );
+  assert.match(
+    runtimePanel,
+    /message\.role === "user" && message\.internalAgentContinuation !== true/,
+  );
+  assert.match(
+    runtimePanel,
+    /messages\[retryTargetUserMessageIndex\(messages, index\)\][\s\S]{0,40}\?\.createdAt/,
+  );
+});
+
 test("map overlays keep literal white text in the light theme", () => {
   assert.equal(
     (inlineMap.match(/text-\[#fff\]/g) ?? []).length,

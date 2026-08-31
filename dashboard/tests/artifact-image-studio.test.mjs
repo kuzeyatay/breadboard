@@ -42,6 +42,9 @@ test("Hermes generates verified image artifacts and renders the full image above
   assert.match(adapter, /"artifact_image_generate"/);
   assert.match(configTool, /export const image_generate = tool/);
   assert.match(configTool, /"artifact_image_generate"/);
+  assert.match(configTool, /ChatGPT is always tried first/);
+  assert.match(configTool, /Google Gemini image generation/);
+  assert.doesNotMatch(configTool, /fallback\.display/);
   assert.match(pythonTool, /"artifact_image_generate"/);
   assert.match(pythonTool, /_IMAGE_GENERATION_REQUEST_TIMEOUT_SECONDS = 8 \* 60/);
   assert.match(
@@ -49,15 +52,39 @@ test("Hermes generates verified image artifacts and renders the full image above
     /tool_name == "artifact_image_generate"[\s\S]*?_DEFAULT_REQUEST_TIMEOUT_SECONDS/,
   );
   assert.match(route, /generateArtifactImage/);
+  assert.match(route, /generateGoogleImage/);
+  assert.match(route, /readGoogleImageGenerationCredentials/);
+  assert.match(route, /provider: "google_image_generation"/);
+  assert.doesNotMatch(route, /google_image_search/);
+  assert.match(route, /image_generation_fallback_unavailable/);
   assert.match(route, /sourceTool: "artifact_image_generate"/);
   assert.match(route, /generationVerified: true/);
   assert.match(route, /verified: artifact\.status === "ready"/);
-  assert.match(prompt, /do not claim image generation is disabled/i);
+  assert.match(prompt, /do not claim image generation is\s+disabled/i);
+  assert.match(prompt, /tries ChatGPT image generation\s+first/i);
+  assert.match(prompt, /Google Gemini\s+image generation/i);
+  assert.match(prompt, /state both\s+provider-specific reasons/i);
+  assert.match(pythonTool, /ChatGPT is always tried/i);
+  assert.match(pythonTool, /Gemini image generation/i);
+  assert.match(pythonTool, /google_image_generation/);
+  assert.doesNotMatch(pythonTool, /fallback\.display/);
   assert.match(inline, /<InlineImageArtifact/);
   assert.match(inline, /className="block h-auto w-full object-contain"/);
-  assert.match(inline, /Artifact actions for/);
+  assert.match(inline, /Artifact details for/);
+  const inlineImageArtifact = inline.slice(
+    inline.indexOf("function InlineImageArtifact"),
+    inline.indexOf("export function InlineArtifactCardsProvider"),
+  );
+  assert.match(inlineImageArtifact, /absolute inset-0 z-\[1\] cursor-pointer/);
+  assert.match(
+    inlineImageArtifact,
+    /bb-neu-artifact-preview-tilted[^\n]*-rotate-3/,
+  );
+  assert.doesNotMatch(inlineImageArtifact, />\s*(?:Open|Close|Edit)\s*</);
+  assert.doesNotMatch(inlineImageArtifact, />\s*Download\s*</);
+  assert.doesNotMatch(inlineImageArtifact, /Delete artifact/);
   assert.ok(
-    inline.indexOf("<img") < inline.indexOf("Artifact actions for"),
+    inline.indexOf("<img") < inline.indexOf("Artifact details for"),
     "the artifact menu should sit below the complete generated image",
   );
   assert.match(database, /source_\$\{legacyPrefix\}_tool/);
@@ -68,6 +95,7 @@ test("Hermes generates verified image artifacts and renders the full image above
 test("the image route keeps credentials server-side and publishes verified child artifacts", () => {
   const route = source("../src/app/api/hermes/artifacts/images/route.ts");
   const service = source("../src/lib/hermes/artifact-image-service.ts");
+  const store = source("../src/lib/hermes/artifact-store.ts");
   const studio = source("../src/app/components/hermes/artifact-image-studio.tsx");
 
   assert.match(route, /requireUserId\(\)/);
@@ -77,6 +105,10 @@ test("the image route keeps credentials server-side and publishes verified child
   assert.match(route, /requireArtifactSource/);
   assert.match(service, /type: "image_generation"/);
   assert.match(service, /createImportedArtifact/);
+  assert.match(service, /dashboardDataDir\(\), "artifact-image-staging"/);
+  assert.match(service, /filePath: stagedName/);
   assert.match(service, /sourceHermesTool: input\.sourceTool/);
+  assert.match(store, /externalRuntimePortableRealpath/);
+  assert.match(store, /withTransientFileOpenRetry/);
   assert.doesNotMatch(studio, /OPENAI_API_KEY|Authorization|apiKey/);
 });

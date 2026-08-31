@@ -1,6 +1,5 @@
 import { getServerSession } from 'next-auth/next';
 import { NextResponse } from 'next/server';
-import { authOptions } from '@/lib/auth-options';
 import db from '@/lib/db';
 import { organizationClusterClause } from '@/lib/organizations/store';
 import { SupervisorResourceExhaustedError } from '@/lib/supervisor-control';
@@ -23,9 +22,12 @@ export interface OwnedCluster {
   visibility: 'private' | 'organization' | 'public';
   border_color: string;
   created_at: string;
+  thought_topology_enabled: number;
+  thought_topology_revision: number;
 }
 
 export async function requireUserId(): Promise<number> {
+  const { authOptions } = await import('@/lib/auth-options');
   const session = await getServerSession(authOptions);
   const userId = Number((session?.user as { id?: string } | undefined)?.id);
 
@@ -80,6 +82,20 @@ export async function requireReadableClusterFromSlug(clusterSlug: string): Promi
 }> {
   const userId = await requireUserId();
   return { userId, cluster: requireReadableCluster(userId, clusterSlug) };
+}
+
+/** Public Gardens remain readable without manufacturing an authenticated id. */
+export async function requireReadableClusterFromSlugOrPublic(clusterSlug: string): Promise<{
+  userId: number | null;
+  cluster: OwnedCluster;
+}> {
+  const slug = clusterSlug.trim();
+  if (!slug) throw new RouteError(400, 'clusterSlug is required');
+  const publicCluster = db.prepare(
+    "SELECT * FROM clusters WHERE slug = ? AND visibility = 'public'",
+  ).get(slug) as OwnedCluster | undefined;
+  if (publicCluster) return { userId: null, cluster: publicCluster };
+  return requireReadableClusterFromSlug(slug);
 }
 
 export function routeErrorResponse(error: unknown): NextResponse {

@@ -2,22 +2,21 @@
 
 /**
  * The thin stack of ticks a transcript floats against its right edge — one per
- * visible message, in conversation order. It answers a question the scrollbar
- * cannot: not "how far down this conversation am I", but "which turn am I
- * looking at, and how do I get back to it". Clicking a tick puts that message
- * at the top of the viewport.
+ * message the reader sent, in the order they sent them. It answers a question
+ * the scrollbar cannot: not "how far down this conversation am I", but "which
+ * of the things I asked am I looking at, and how do I get back to the second
+ * one". Clicking a tick puts that message at the top of the viewport.
  *
- * AI answers are landmarks too. Their larger preview keeps the complete answer
- * available and includes a compact reply field that appends to the same chat.
+ * Only sent messages get a tick. Answers are what the reader scrolls *through*;
+ * their own questions are the landmarks they remember the conversation by, and
+ * one tick per turn keeps the rail short enough to read as a shape.
  */
 
 import {
   useCallback,
   useEffect,
-  useId,
   useRef,
   useState,
-  type FormEvent,
   type RefObject,
 } from "react";
 
@@ -28,11 +27,15 @@ export type ChatMessageRailItem = {
   rowIndex: number;
   /** Shown beside the tick on hover, so a tick is never anonymous. */
   label: string;
-  /** Answers get a complete, replyable preview; questions keep a compact one. */
-  role: "user" | "assistant";
 };
 
-/** One visible message is enough to make the rail useful. */
+/**
+ * One tick is worth drawing. A single question with a very long answer under it
+ * is the commonest shape in this app, and "take me back to what I asked" is
+ * exactly as useful there as it is in a conversation with ten turns — more so,
+ * since there is no other landmark in sight. Only an empty transcript, which
+ * has nothing to point at, draws no rail.
+ */
 const MINIMUM_TICKS = 1;
 
 /**
@@ -42,7 +45,11 @@ const MINIMUM_TICKS = 1;
  */
 const ACTIVE_TOLERANCE = 24;
 
-/** User-message previews stay compact; AI-response previews do not use this. */
+/**
+ * Enough of a message to recognise it by. The chip wraps to at most three
+ * lines, so this is set to roughly what three lines hold — past that the text
+ * would be clipped by the line clamp with no ellipsis of its own to show for it.
+ */
 const LABEL_LIMIT = 160;
 
 type ChatMessageRailProps = {
@@ -52,15 +59,8 @@ type ChatMessageRailProps = {
   bridge: ChatVirtualBridge;
   /** Names this rail for the tests and the QA harness. */
   surface: string;
-  /** Keeps an inline draft attached to the conversation that opened it. */
-  conversationKey?: string | number | null;
   /** Overrides the default placement against the right edge. */
   className?: string;
-  /** Appends a reply through the chat surface that owns this rail. */
-  onReply?: (
-    text: string,
-    item: ChatMessageRailItem,
-  ) => void | Promise<void>;
 };
 
 export function summarise(label: string): string {
@@ -69,107 +69,6 @@ export function summarise(label: string): string {
   return collapsed.length > LABEL_LIMIT
     ? `${collapsed.slice(0, LABEL_LIMIT - 1)}…`
     : collapsed;
-}
-
-/**
- * The text shown in the preview card. AI answers are deliberately never
- * shortened: the card has its own scroll region, so an ellipsis would hide the
- * exact part someone may want to answer. Questions remain compact landmarks.
- */
-export function railPreview(item: ChatMessageRailItem): string {
-  const complete = item.label.trim();
-  if (!complete) {
-    return item.role === "assistant" ? "Empty response" : "Empty message";
-  }
-  return item.role === "assistant" ? complete : summarise(complete);
-}
-
-function InlineRailReply({
-  item,
-  onReply,
-}: {
-  item: ChatMessageRailItem;
-  onReply: NonNullable<ChatMessageRailProps["onReply"]>;
-}) {
-  const inputId = useId();
-  const [value, setValue] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const text = value.trim();
-    if (!text || submitting) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      await onReply(text, item);
-      setValue("");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The reply could not be sent.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <form
-      onSubmit={submit}
-      className="shrink-0 border-t border-[var(--border)] bg-[var(--surface-raised)] p-3"
-    >
-      <label
-        htmlFor={inputId}
-        className="mb-1.5 block text-[11px] font-medium text-[var(--ink-muted)]"
-      >
-        Reply in this chat
-      </label>
-      <div className="flex items-end gap-2">
-        <textarea
-          id={inputId}
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              event.currentTarget.form?.requestSubmit();
-            }
-          }}
-          rows={2}
-          placeholder="Reply to this response…"
-          className="neu-control min-h-14 min-w-0 flex-1 resize-y rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[13px] leading-5 text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--line-strong)]"
-        />
-        <button
-          type="submit"
-          disabled={!value.trim() || submitting}
-          className="neu-button-primary flex h-10 w-10 shrink-0 items-center justify-center rounded-xl disabled:cursor-not-allowed disabled:opacity-45"
-          aria-label={submitting ? "Sending reply" : "Send reply"}
-        >
-          {submitting ? (
-            <span
-              aria-hidden
-              className="h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent"
-            />
-          ) : (
-            <svg
-              aria-hidden
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              className="h-4 w-4"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="m5 12 14-7-4 14-3-6-7-1Z" />
-            </svg>
-          )}
-        </button>
-      </div>
-      {error ? (
-        <p role="alert" className="mt-1.5 text-[11px] text-red-400">
-          {error}
-        </p>
-      ) : null}
-    </form>
-  );
 }
 
 /**
@@ -243,16 +142,15 @@ export default function ChatMessageRail({
   scrollRef,
   bridge,
   surface,
-  conversationKey,
   className,
-  onReply,
 }: ChatMessageRailProps) {
   const railRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<number | null>(null);
-  const hideTimerRef = useRef<number | null>(null);
   const [active, setActive] = useState(0);
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [pinnedIndex, setPinnedIndex] = useState<number | null>(null);
+  /** The tick under the pointer, and how far down the rail its label belongs. */
+  const [hovered, setHovered] = useState<{ index: number; top: number } | null>(
+    null,
+  );
 
   const enabled = items.length >= MINIMUM_TICKS;
 
@@ -376,9 +274,6 @@ export default function ChatMessageRail({
       if (frameRef.current !== null && typeof window !== "undefined") {
         window.cancelAnimationFrame(frameRef.current);
       }
-      if (hideTimerRef.current !== null && typeof window !== "undefined") {
-        window.clearTimeout(hideTimerRef.current);
-      }
     },
     [],
   );
@@ -418,39 +313,21 @@ export default function ChatMessageRail({
     [bridge, scrollRef],
   );
 
-  const cancelHide = useCallback(() => {
-    if (hideTimerRef.current === null || typeof window === "undefined") return;
-    window.clearTimeout(hideTimerRef.current);
-    hideTimerRef.current = null;
+  /** Puts the label chip beside the tick the reader is pointing at or tabbed to. */
+  const showLabel = useCallback((index: number, tick: HTMLElement) => {
+    const container = railRef.current?.parentElement;
+    if (!container) return;
+    const tickBox = tick.getBoundingClientRect();
+    const containerBox = container.getBoundingClientRect();
+    setHovered({
+      index,
+      top: tickBox.top - containerBox.top + tickBox.height / 2,
+    });
   }, []);
-
-  const showLabel = useCallback(
-    (index: number) => {
-      cancelHide();
-      setHoveredIndex(index);
-    },
-    [cancelHide],
-  );
-
-  // Leave enough time to cross the small visual gap between a tick and the
-  // preview. Once the pointer reaches the card, it cancels this close.
-  const scheduleHide = useCallback(() => {
-    if (pinnedIndex !== null || typeof window === "undefined") return;
-    cancelHide();
-    hideTimerRef.current = window.setTimeout(() => {
-      hideTimerRef.current = null;
-      setHoveredIndex(null);
-    }, 180);
-  }, [cancelHide, pinnedIndex]);
 
   if (!enabled) return null;
 
-  const candidateOpenIndex = pinnedIndex ?? hoveredIndex;
-  const openIndex =
-    candidateOpenIndex !== null && candidateOpenIndex < items.length
-      ? candidateOpenIndex
-      : null;
-  const openItem = openIndex === null ? undefined : items[openIndex];
+  const hoveredItem = hovered ? items[hovered.index] : undefined;
 
   return (
     <div
@@ -458,59 +335,31 @@ export default function ChatMessageRail({
       data-chat-message-rail={surface}
       data-tick-count={items.length}
       data-active-tick={active}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          scheduleHide();
-        }
-      }}
     >
-      {/* Kept outside the scrolling track so the track cannot clip it. The card
-          is centred in the transcript viewport, which leaves room for long AI
-          answers to scroll without escaping above or below the screen. */}
-      {openItem ? (
-        <section
-          role="dialog"
-          aria-label={openItem.role === "assistant" ? "AI response preview" : "Your message preview"}
-          onPointerEnter={cancelHide}
-          onPointerLeave={scheduleHide}
-          className="pointer-events-auto absolute right-full top-1/2 mr-3 flex min-h-48 max-h-[min(70vh,42rem)] w-[min(36rem,calc(100vw-5rem))] -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-raised)] text-[var(--ink)] shadow-2xl"
-          data-chat-rail-preview-role={openItem.role}
-        >
-          <header className="flex shrink-0 items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">
-              {openItem.role === "assistant" ? "AI response" : "Your message"}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setPinnedIndex(null);
-                setHoveredIndex(null);
-              }}
-              className="neu-button-icon flex h-7 w-7 items-center justify-center rounded-lg text-[var(--ink-muted)] hover:text-[var(--ink)]"
-              aria-label="Close message preview"
-            >
-              <span aria-hidden className="text-lg leading-none">×</span>
-            </button>
-          </header>
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain whitespace-pre-wrap break-words px-5 py-4 text-[14px] leading-6 [scrollbar-width:thin]">
-            {railPreview(openItem)}
-          </div>
-          {openItem.role === "assistant" && onReply ? (
-            <InlineRailReply
-              key={`${conversationKey ?? surface}:${openItem.rowIndex}`}
-              item={openItem}
-              onReply={onReply}
-            />
-          ) : null}
-        </section>
-      ) : null}
+      {/* The label sits outside the scrolling rail: the rail clips its own
+          overflow on both axes, so a chip drawn inside it would be cut off at
+          the left edge rather than reaching out over the transcript. */}
+      <div
+        className={`absolute right-full mr-2 line-clamp-3 w-max max-w-[24rem] rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] px-3 py-2 text-[13px] leading-snug text-[var(--ink)] shadow-lg transition-opacity duration-150 ${
+          hoveredItem ? "opacity-100" : "opacity-0"
+        }`}
+        style={{ top: hovered?.top ?? 0, transform: "translateY(-50%)" }}
+        aria-hidden
+      >
+        {hoveredItem ? summarise(hoveredItem.label) : ""}
+      </div>
 
       <div
         ref={railRef}
         role="toolbar"
         aria-orientation="vertical"
-        aria-label="Conversation messages"
-        onPointerLeave={scheduleHide}
+        aria-label="Messages you sent"
+        onPointerLeave={() => setHovered(null)}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setHovered(null);
+          }
+        }}
         className="bb-chat-rail-track pointer-events-auto flex max-h-[min(60vh,20rem)] flex-col items-end overflow-y-auto py-1 pl-4 pr-1.5"
       >
         {items.map((item, index) => {
@@ -519,31 +368,18 @@ export default function ChatMessageRail({
             <button
               key={item.rowIndex}
               type="button"
-              onClick={() => {
-                setPinnedIndex(index);
-                jumpTo(item.rowIndex);
-              }}
-              onPointerEnter={() => showLabel(index)}
-              onFocus={() => showLabel(index)}
-              aria-label={
-                item.role === "assistant"
-                  ? `Go to AI response ${index + 1} of ${items.length}`
-                  : `Go to message ${index + 1} of ${items.length}: ${summarise(item.label)}`
-              }
-              aria-expanded={openIndex === index}
+              onClick={() => jumpTo(item.rowIndex)}
+              onPointerEnter={(event) => showLabel(index, event.currentTarget)}
+              onFocus={(event) => showLabel(index, event.currentTarget)}
+              aria-label={`Go to message ${index + 1} of ${items.length}: ${summarise(item.label)}`}
               aria-current={isActive ? "true" : undefined}
-              data-message-role={item.role}
               className="group flex h-3.5 w-8 shrink-0 items-center justify-end"
             >
               <span
                 className={`bb-chat-rail-tick block h-px rounded-full ${
                   isActive
-                    ? item.role === "assistant"
-                      ? "w-6 bg-[var(--botanical)] opacity-100"
-                      : "w-6 bg-[var(--ink)] opacity-100"
-                    : item.role === "assistant"
-                      ? "w-4 bg-[var(--botanical)] opacity-60 group-hover:w-6 group-hover:opacity-100 group-focus-visible:w-6 group-focus-visible:opacity-100"
-                      : "w-4 bg-[var(--ink-muted)] opacity-50 group-hover:w-6 group-hover:opacity-90 group-focus-visible:w-6 group-focus-visible:opacity-90"
+                    ? "w-6 bg-[var(--ink)] opacity-100"
+                    : "w-4 bg-[var(--ink-muted)] opacity-50 group-hover:w-6 group-hover:opacity-90 group-focus-visible:w-6 group-focus-visible:opacity-90"
                 }`}
               />
             </button>

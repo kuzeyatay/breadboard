@@ -92,6 +92,34 @@ export interface ExplicitLearnPlanSelection {
   syllabusSourceId: string | null;
 }
 
+export const MAX_LEARN_USER_INSTRUCTION_CHARS = 4_000;
+
+/**
+ * Optional natural-language direction for a Learn run. It is deliberately
+ * bounded at the route boundary before it can enter a durable worker request
+ * or any model prompt.
+ */
+export function parseLearnUserInstruction(
+  body: Record<string, unknown>,
+): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(body, "userInstruction")) {
+    return undefined;
+  }
+  if (typeof body.userInstruction !== "string") {
+    throw new InvalidLearnRouteBodyError(
+      "Learn guidance must be a string.",
+    );
+  }
+  const instruction = body.userInstruction.trim();
+  if (!instruction) return undefined;
+  if (instruction.length > MAX_LEARN_USER_INSTRUCTION_CHARS) {
+    throw new InvalidLearnRouteBodyError(
+      `Learn guidance must be ${MAX_LEARN_USER_INSTRUCTION_CHARS.toLocaleString()} characters or fewer.`,
+    );
+  }
+  return instruction;
+}
+
 /**
  * Planning must receive the selection the user actually confirmed. Keeping
  * `null` distinct from an absent syllabus prevents a retry or interrupted
@@ -122,7 +150,7 @@ export function parseExplicitLearnPlanSelection(
     const sourceId = candidate.trim();
     if (includedSourceIdSet.has(sourceId)) {
       throw new InvalidLearnRouteBodyError(
-        "Learn planning requires includedSourceIds to contain unique document IDs.",
+        "Learn planning requires includedSourceIds to contain unique source IDs.",
       );
     }
     includedSourceIdSet.add(sourceId);

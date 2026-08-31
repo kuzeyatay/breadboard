@@ -201,7 +201,12 @@ test("upload sources render plain timestamps and upload metadata", () => {
   );
   const result = buildTranscriptMarkdown({
     transcript,
-    source: { kind: "upload", originalFilename: "lecture-1.mp4", mediaSha256: "a".repeat(64) },
+    source: {
+      kind: "upload",
+      originalFilename: "lecture-1.mp4",
+      mediaSha256: "a".repeat(64),
+      mediaKind: "video",
+    },
     transcribedAt: "2026-07-18T12:00:00.000Z",
   });
   assert.match(result.body, /\*\*\[00:00:00\]\*\* Hello from an upload\./);
@@ -209,6 +214,27 @@ test("upload sources render plain timestamps and upload metadata", () => {
   assert.equal(result.metadata.source_type, "video_upload");
   assert.equal(result.metadata.original_filename, "lecture-1.mp4");
   assert.equal(result.metadata.media_sha256, "a".repeat(64));
+});
+
+test("audio uploads render audio provenance in Markdown", () => {
+  const transcript = normalizeScriberrTranscript(
+    rawTranscript([{ start: 0, end: 4, text: "Hello from a podcast.", speaker: null }]),
+    { title: "Podcast 1", sourceType: "audio_upload" },
+  );
+  const result = buildTranscriptMarkdown({
+    transcript,
+    source: {
+      kind: "upload",
+      originalFilename: "podcast-1.mp3",
+      mediaSha256: "b".repeat(64),
+      mediaKind: "audio",
+    },
+    transcribedAt: "2026-08-31T12:00:00.000Z",
+  });
+  assert.match(result.body, /\*\*Source:\*\* Uploaded audio file/);
+  assert.equal(result.metadata.source_type, "audio_upload");
+  assert.deepEqual(result.metadata.tags, ["source", "audio", "transcript"]);
+  assert.equal(result.metadata.original_filename, "podcast-1.mp3");
 });
 
 test("frontmatter metadata carries YouTube provenance", () => {

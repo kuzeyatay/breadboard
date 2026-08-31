@@ -8,6 +8,7 @@ interface Props {
   restoreOwnerKey: string;
   initialPanel?: TerminalPanel | null;
   backdropImage?: string | null;
+  initialChatId?: string | null;
 }
 
 /**

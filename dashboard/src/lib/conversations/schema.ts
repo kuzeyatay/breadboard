@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
+import { ensureChatNotificationSchema } from "../chat-notifications/store.ts";
 
 /**
  * Additive, repeatable migration for Breadboard-owned conversations.
@@ -214,6 +215,8 @@ export function ensureConversationSchema(database: Database.Database): void {
       ON hermes_messages(canonical_message_id) WHERE canonical_message_id IS NOT NULL;
     INSERT OR IGNORE INTO conversation_schema_migrations(version) VALUES (1);
   `);
+
+  ensureChatNotificationSchema(database);
 }
 
 function ensureColumn(

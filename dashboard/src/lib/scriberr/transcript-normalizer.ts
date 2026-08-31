@@ -29,7 +29,7 @@ export function normalizeScriberrTranscript(
     transcriptionModel = null,
   }: {
     title: string;
-    sourceType: "video_upload" | "youtube";
+    sourceType: "audio_upload" | "video_upload" | "youtube";
     fallbackDurationSeconds?: number | null;
     transcriptionModel?: string | null;
   },

@@ -7,6 +7,7 @@ import {
   chatTextSelectionDraft,
   chatTextSelectionsOverlap,
   normalizeChatTextSelectionReference,
+  resolveChatTextSelectionAnchor,
 } from "../src/lib/chat-text-selection.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -55,6 +56,25 @@ test("overlap detection prevents nested clickable highlights", () => {
   );
 });
 
+test("a highlight relocates by quote and context when rendered offsets drift", () => {
+  const rendered =
+    "Repeated phrase belongs above.A rich widget contributes hidden renderer text.Repeated phrase belongs here.";
+  const expectedStart = rendered.lastIndexOf("Repeated phrase");
+  const resolved = resolveChatTextSelectionAnchor(rendered, {
+    // The DOM selection map omitted the rich widget, so this old offset points
+    // at the first copy when replayed directly in the Markdown tree.
+    start: 0,
+    end: "Repeated phrase".length,
+    quote: "Repeated phrase",
+    prefix: "hidden renderer text.",
+    suffix: " belongs here.",
+  });
+  assert.deepEqual(resolved, {
+    start: expectedStart,
+    end: expectedStart + "Repeated phrase".length,
+  });
+});
+
 test("selected-text questions are explicitly grounded in their excerpt", () => {
   const prompt = chatTextSelectionQuestionPrompt(
     "like how many?",
@@ -91,11 +111,18 @@ test("a selection follow-up never owes live web evidence", () => {
   );
 });
 
-test("the transcript exposes both actions and hides inline turns", () => {
+test("the transcript exposes highlight and both question actions", () => {
   const ui = source("src/app/components/chat-text-selection-ui.tsx");
   const panel = source("src/app/components/hermes/agent-runtime-panel.tsx");
+  assert.match(ui, /CHAT_HIGHLIGHT_COLORS\.map/);
+  assert.match(ui, /aria-label="Highlight color"/);
   assert.match(ui, />\s*Ask in chat\s*</);
   assert.match(ui, />\s*Ask here\s*</);
+  assert.match(panel, /CHAT_HIGHLIGHT_STORAGE_PREFIX/);
+  assert.match(panel, /loadChatHighlights/);
+  assert.match(panel, /applySelectionHighlight/);
+  assert.match(panel, /removeSelectionHighlight/);
+  assert.match(panel, /kind: "highlight"/);
   assert.match(panel, /message\.textSelection\?\.mode === "inline"/);
   assert.match(panel, /QuotedChatSelection/);
   assert.match(panel, /InlineSelectionAnswerPopover/);
@@ -166,4 +193,24 @@ test("inline answers use Breadboard's pastel-yellow theme token", () => {
   assert.match(popover, /aria-label="Delete highlight"/);
   assert.match(popover, /onDelete/);
   assert.doesNotMatch(popover, /Asked here/);
+});
+
+test("plain highlights use a neutral treatment instead of Ask here's yellow", () => {
+  const css = source("src/app/globals.css");
+  const markdown = source("src/app/components/chat-markdown.tsx");
+  const palette = source("src/lib/chat-highlights.ts");
+  assert.match(css, /--selection-highlight-blue: #8fc3eb/);
+  assert.match(css, /--selection-highlight-green: #8ed09e/);
+  assert.match(css, /--selection-highlight-pink: #e99abb/);
+  assert.match(css, /--selection-highlight-purple: #b79be9/);
+  assert.match(
+    css,
+    /\.bb-chat-text-highlight\[data-chat-selection-kind="highlight"\][\s\S]*background: var\(--bb-chat-highlight\)/,
+  );
+  assert.match(markdown, /'data-chat-selection-kind': annotation\.kind \?\? 'answer'/);
+  assert.match(markdown, /'data-chat-highlight-color': annotation\.color \?\? 'blue'/);
+  assert.match(markdown, /resolveChatTextSelectionAnchor/);
+  assert.match(markdown, /language-image-results/);
+  assert.match(markdown, /Open highlight options/);
+  assert.doesNotMatch(palette, /yellow/i);
 });

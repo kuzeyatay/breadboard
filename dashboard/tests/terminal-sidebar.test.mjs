@@ -464,7 +464,7 @@ test("the row's one status spot runs spinner, then dot, then nothing", () => {
   // never claims to be working and waiting at once.
   assert.match(
     sidebar,
-    /\{chat\.active \? \([\s\S]{0,200}<ActiveChatIcon[\s\S]{0,200}\) : chat\.unread \? \([\s\S]{0,200}<UnreadChatDot/,
+    /\{chat\.active \? \([\s\S]{0,900}<ActiveChatIcon[\s\S]{0,900}\) : chat\.unread \? \([\s\S]{0,200}<UnreadChatDot/,
   );
   assert.match(sidebar, /unread: boolean;/);
   assert.match(terminal, /unread: unreadChats\.has\(item\.id\)/);
@@ -474,6 +474,24 @@ test("the row's one status spot runs spinner, then dot, then nothing", () => {
   assert.match(historyClient, /export function UnreadChatDot/);
   assert.match(historyClient, /bg-\[var\(--signal-live\)\]/);
   assert.match(historyClient, /shadow-\[0_0_0_1px_var\(--signal-live-ring\)\]/);
+
+  // The status spot is also the stop affordance. At rest it is an unambiguous
+  // loading ring; hover or keyboard focus reveals the square without adding a
+  // second control to the row.
+  assert.match(historyClient, /onStop\?: \(\) => void/);
+  assert.match(historyClient, /aria-label=\{actionLabel\}/);
+  assert.match(historyClient, /group\/active-chat/);
+  assert.match(historyClient, /group-hover\/active-chat:opacity-20/);
+  assert.match(historyClient, /rounded-\[1\.5px\] bg-current opacity-0/);
+  assert.match(historyClient, /group-hover\/active-chat:opacity-100/);
+  assert.match(historyClient, /group-focus-visible\/active-chat:opacity-100/);
+  assert.match(sidebar, /onStopChat\?: \(chat: TerminalSidebarChat\)/);
+  assert.match(sidebar, /onStop=\{onStopChat \? \(\) => onStopChat\(chat\) : undefined\}/);
+  assert.match(terminal, /onStopChat=\{stopHistorySession\}/);
+  assert.match(
+    terminal,
+    /\/api\/hermes\/sessions\/\$\{encodeURIComponent\(item\.id\)\}\/abort/,
+  );
 
   // Read means on screen: the open chat only counts while the dock shows it.
   assert.match(terminal, /const viewingChatId = bodyMounted \? session\.sessionId : null;/);

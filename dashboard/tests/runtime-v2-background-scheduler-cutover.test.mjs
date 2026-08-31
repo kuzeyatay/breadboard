@@ -36,6 +36,7 @@ test("background requests are closed and distinguish internal from user authorit
     "email-poll",
     "review-scheduler",
     "caldav-sync",
+    "calendar-reminders",
     "ifixai-maintenance",
   ]) {
     assert.equal(

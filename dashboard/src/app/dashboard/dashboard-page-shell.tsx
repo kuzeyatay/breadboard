@@ -14,8 +14,10 @@ import DashboardClient from "./dashboard-client";
 
 export default async function DashboardPageShell({
   initialTerminalPanel = null,
+  initialTerminalChatId = null,
 }: {
   initialTerminalPanel?: TerminalPanel | null;
+  initialTerminalChatId?: string | null;
 }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
@@ -54,6 +56,7 @@ export default async function DashboardPageShell({
       initialClusterFolders={clusterFolders}
       navbarShortcuts={getNavbarShortcuts(userId)}
       initialTerminalPanel={initialTerminalPanel}
+      initialTerminalChatId={initialTerminalChatId}
     />
   );
 }

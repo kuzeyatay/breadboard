@@ -113,6 +113,9 @@ test("cancelling a runtime session kills the local children even when the runtim
 test("the abort button and the delete share one stop", () => {
   const abortRoute = read("src/app/api/hermes/sessions/[sessionId]/abort/route.ts");
   assert.match(abortRoute, /stopRuntimeSessionWork\(session\.row\.id, session\)/);
+  assert.match(abortRoute, /cancelRunningExternalAgentRuns\(/);
+  assert.match(abortRoute, /finishExternalAgentTurn\(\{/);
+  assert.match(cancelSource, /clientMessageId: row\.client_message_id/);
   assert.match(sessionCancel, /export async function stopRuntimeSessionWork/);
   assert.match(sessionCancel, /export async function cancelRuntimeSessionWork/);
 });

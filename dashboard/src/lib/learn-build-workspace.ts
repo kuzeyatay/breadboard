@@ -96,6 +96,7 @@ const DURABLE_BREADBOARD_ENTRIES = new Set([
   "source-visual-source-index.json", // durable garden-global S<n> ownership
   "source-formula-reviews", // AI-authored formula fidelity records + PDF-render evidence
   "source-formula-review-set.json", // stable reviewed-formula set/source-hash binding
+  "source-normalization-receipt.json", // exact pre/post source-byte normalization provenance
   "source-anchors.json", // canonical model-selected source-anchor ledger
   // The current confirmed planning contract is an input to generation. Its
   // independent staged copy binds syllabus evidence-recovery before writers

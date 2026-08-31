@@ -68,12 +68,13 @@ test("created artifacts render as persistent response-owned file cards", () => {
   assert.match(cards, /Files created by this response/);
   assert.match(cards, /artifact\.assistantMessageId === ownerMessageId/);
   assert.match(cards, /Open \$\{artifact\.title\}/);
-  assert.match(cards, />\s*Download\s*</);
-  assert.match(cards, /artifact\.downloadAvailable/);
+  assert.doesNotMatch(cards, />\s*Download\s*</);
+  assert.doesNotMatch(cards, /Delete artifact/);
+  assert.doesNotMatch(cards, /artifact\.downloadAvailable/);
   assert.match(cards, /artifact\.previewAvailable/);
   assert.match(
     cards,
-    /artifact\.status !== "archived"/,
+    /artifact\.status === "ready"/,
   );
 });
 
@@ -83,11 +84,48 @@ test("ready video artifacts stay compact until the artifact is opened", () => {
   // player does not take over the assistant response.
   assert.doesNotMatch(cards, /function InlineVideoArtifact/);
   assert.doesNotMatch(cards, /artifact\.kind === "video"[\s\S]*?<InlineVideoArtifact/);
-  assert.match(cards, /artifact\.previewAvailable \? \([\s\S]*?context\.setOpenId\(artifact\.id\)/);
+  assert.match(cards, /artifact\.previewAvailable \? \([\s\S]*?context\.openArtifact\(artifact\.id\)/);
   assert.match(viewer, /artifact\.kind === "video" && onEditVideo/);
 });
 
-test("in-progress artifact builds reserve their finished card with the shared loader", () => {
+test("clicking an open artifact closes it from inline cards and the archive", () => {
+  assert.match(
+    cards,
+    /setOpenId\(\(current\) => \(current === id \? null : id\)\)/,
+  );
+  assert.match(cards, /onClick=\{\(\) => void context\.openArtifact\(artifact\.id\)\}/);
+  assert.match(cards, /context\.openId === artifact\.id \? "Close" : "Open"/);
+  assert.match(
+    artifactPanel,
+    /const toggleOpenArtifact = useCallback\(\(id: string\) => \{\s*setOpenId\(\(current\) => \(current === id \? null : id\)\)/,
+  );
+  assert.match(artifactPanel, /else toggleOpenArtifact\(artifact\.id\)/);
+});
+
+test("the whole image artifact opens while redundant Open and Edit actions stay absent", () => {
+  const imageCard = cards.slice(
+    cards.indexOf("function InlineImageArtifact"),
+    cards.indexOf("export function InlineArtifactCardsProvider"),
+  );
+  assert.match(imageCard, /absolute inset-0 z-\[1\] cursor-pointer/);
+  assert.match(imageCard, /onClick=\{\(\) => void context\.openArtifact\(artifact\.id\)\}/);
+  assert.match(imageCard, /bb-neu-artifact-preview-tilted[^\n]*-rotate-3/);
+  assert.doesNotMatch(imageCard, />\s*(?:Open|Close|Edit)\s*</);
+  assert.doesNotMatch(imageCard, />\s*Download\s*</);
+  assert.doesNotMatch(imageCard, /Delete artifact/);
+});
+
+test("artifact cards use a wider centered lane without card-level download or delete", () => {
+  assert.match(cards, /className="bb-inline-artifact-list mt-3 space-y-2"/);
+  assert.match(globals, /\.bb-inline-artifact-list \{\s*width: 100%;/);
+  assert.match(
+    globals,
+    /@media \(min-width: 64rem\)[\s\S]*?\.bb-inline-artifact-list[\s\S]*?width: min\(64rem, calc\(100% \+ 8rem\)\);[\s\S]*?transform: translateX\(-50%\);/,
+  );
+  assert.doesNotMatch(cards, /deleteArtifactRequest|handleDelete|deletingId|deleteError/);
+});
+
+test("in-progress and failed artifacts do not render artifact UI", () => {
   assert.match(agentSession, /kind: "artifact"/);
   assert.match(agentSession, /`Building \$\{title\}…`/);
   assert.match(activityPanel, /item\.kind === "artifact"/);
@@ -95,25 +133,11 @@ test("in-progress artifact builds reserve their finished card with the shared lo
     activityPanel,
     /stateLabel \?\?[\s\S]*?artifactState\?\.label \?\?[\s\S]*?responseActive/,
   );
-  assert.match(cards, /function ArtifactBloomLoader\(\)/);
-  assert.match(cards, /<BreadboardLoader className="relative h-8 w-8 text-\[var\(--botanical\)\]" \/>/);
-  assert.match(cards, /Your artifact is taking shape/);
   assert.match(
     cards,
-    /artifact\.status === "draft" \|\| artifact\.status === "generating"/,
+    /artifact\.status === "ready"/,
   );
-  assert.match(cards, /<InlineArtifactLoadingCard key=\{artifact\.id\}/);
-});
-
-test("repairing artifacts keep an accessible status without a visible Repairing badge", () => {
-  const loadingCard = cards.slice(
-    cards.indexOf("function InlineArtifactLoadingCard"),
-    cards.indexOf("function InlineImageArtifact"),
-  );
-  assert.match(cards, /if \(lifecycle === "repairing"\) return "Repairing"/);
-  assert.match(loadingCard, /aria-label=\{`\$\{status\} \$\{artifact\.title\}`\}/);
-  assert.match(loadingCard, /status !== "Repairing" \? \(/);
-  assert.match(loadingCard, /\{status\}/);
+  assert.doesNotMatch(cards, /InlineArtifactLoadingCard|ArtifactBloomLoader/);
 });
 
 test("response actions sit below response-owned artifacts on every artifact chat surface", () => {
@@ -344,7 +368,7 @@ test("a Garden artifact overlays the learning-map rail in a resizable reading la
   // The shell cannot intercept the learning map while no artifact is open.
   assert.match(
     globals,
-    /\.bb-garden-artifact-shell:not\(:has\(> \.bb-garden-artifact-lane > \.bb-artifact-dock\)\) \{\s*display: none;/,
+    /\.bb-garden-artifact-shell:not\(\s*:has\(> \.bb-garden-artifact-lane > \.bb-artifact-dock\)\s*\) \{\s*display: none;/,
   );
   assert.match(globals, /\.bb-garden-artifact-lane:empty \{\s*display: none;/);
 

@@ -2535,8 +2535,6 @@ const SECTION_THEMES: SectionTheme[] = [
   { key: "use", title: "When to Use It, and Its Limits", roles: ["application", "limitation", "synthesis"] },
 ];
 
-const MIN_SECTIONS = 4;
-const MAX_SECTIONS = 7;
 const MAX_SUBS_PER_SECTION = 5;
 
 export interface SectionCluster {
@@ -2552,11 +2550,13 @@ function themeForRole(role: LearningUnitRole): SectionTheme {
 }
 
 /**
- * Cluster learning units into 4–7 ordered sections, each normally 2–5
- * subsections. Units are grouped by narrative theme, oversized themes are split,
- * and lone units are merged into the nearest section so "every section has one
- * subsection" cannot happen. A single-subsection section survives only with a
- * recorded reason.
+ * Cluster learning units into as many ordered sections as their teaching arc
+ * needs, each normally containing 2–5 subsections. Units are grouped by
+ * narrative theme, oversized themes are split, and lone units are merged into
+ * the nearest section so "every section has one subsection" cannot happen. A
+ * single-subsection section survives only with a recorded reason. There is no
+ * total-section ceiling: a long curriculum must grow instead of being merged
+ * back into an arbitrary fixed-size map.
  */
 export function clusterUnitsIntoSections(units: LearningUnitContract[]): SectionCluster[] {
   if (units.length === 0) return [];
@@ -2599,25 +2599,7 @@ export function clusterUnitsIntoSections(units: LearningUnitContract[]): Section
   //    do not emit a table-of-contents of one-subsection sections.
   sections = mergeLoneSections(sections);
 
-  // 5) If we somehow have fewer than MIN_SECTIONS but enough units, split the
-  //    largest sections until we reach the floor.
-  sections = growToMinSections(sections);
-
-  // 6) If we have more than MAX_SECTIONS, merge the smallest adjacent pair.
-  while (sections.length > MAX_SECTIONS) {
-    let bestIndex = 0;
-    let bestSize = Infinity;
-    for (let i = 0; i < sections.length - 1; i += 1) {
-      const size = sections[i].unitIds.length + sections[i + 1].unitIds.length;
-      if (size < bestSize) {
-        bestSize = size;
-        bestIndex = i;
-      }
-    }
-    sections = mergeAt(sections, bestIndex);
-  }
-
-  // 7) Any surviving single-subsection section gets a recorded reason.
+  // 5) Any surviving single-subsection section gets a recorded reason.
   for (const section of sections) {
     if (section.unitIds.length === 1 && !section.singleSubsectionReason) {
       section.singleSubsectionReason =
@@ -2664,37 +2646,6 @@ function mergeLoneSections(sections: SectionCluster[]): SectionCluster[] {
       changed = true;
       break;
     }
-    // Don't collapse below the minimum useful spine.
-    if (current.length <= MIN_SECTIONS) break;
-  }
-  return current;
-}
-
-function growToMinSections(sections: SectionCluster[]): SectionCluster[] {
-  let current = [...sections];
-  const totalUnits = current.reduce((sum, section) => sum + section.unitIds.length, 0);
-  // Only attempt to reach the floor if there are genuinely enough units.
-  const reachable = Math.min(MAX_SECTIONS, Math.floor(totalUnits / 2));
-  while (current.length < MIN_SECTIONS && current.length < reachable) {
-    // Split the largest section in half.
-    let largest = 0;
-    for (let i = 1; i < current.length; i += 1) {
-      if (current[i].unitIds.length > current[largest].unitIds.length) largest = i;
-    }
-    const section = current[largest];
-    if (section.unitIds.length < 4) break; // can't split into two >=2 halves
-    const mid = Math.ceil(section.unitIds.length / 2);
-    const first: SectionCluster = {
-      title: `${section.title} (Part 1)`,
-      themeKey: section.themeKey,
-      unitIds: section.unitIds.slice(0, mid),
-    };
-    const second: SectionCluster = {
-      title: `${section.title} (Part 2)`,
-      themeKey: section.themeKey,
-      unitIds: section.unitIds.slice(mid),
-    };
-    current = [...current.slice(0, largest), first, second, ...current.slice(largest + 1)];
   }
   return current;
 }
@@ -3026,8 +2977,8 @@ function modelAuthoredSectionGroups(
     }
   }
   for (const title of duplicateTitles) problems.push(`duplicate model-authored section title "${title}"`);
-  if (groups.length < MIN_SECTIONS || groups.length > MAX_SECTIONS) {
-    problems.push(`model authored ${groups.length} sections; expected ${MIN_SECTIONS}-${MAX_SECTIONS}`);
+  if (groups.length === 0) {
+    problems.push("model authored no sections");
   }
   return { groups, problems: [...new Set(problems)] };
 }
@@ -3073,8 +3024,7 @@ export function validateLearningUnitContracts(
     problems.push(`only ${units.length} learning units; a garden needs a real teaching sequence (>= 8)`);
   }
 
-  // The active source-rich contract asks the model for 15-25 units. At that
-  // depth, collapsing every teaching move to one role is not a harmless label:
+  // At source-rich depth, collapsing every teaching move to one role is not a harmless label:
   // it changes page prompts, visual review, and section semantics. Formula
   // ownership is validated from exact anchors and placements below, so a model
   // must never relabel conceptual/mechanism/application units as `formula`
@@ -3206,12 +3156,7 @@ export function validateLearningUnitContracts(
 /** Section-depth problems derived from a set of clusters (Fix 1). */
 export function clusterDepthProblems(clusters: SectionCluster[]): string[] {
   const problems: string[] = [];
-  if (clusters.length < MIN_SECTIONS) {
-    problems.push(`only ${clusters.length} sections; a normal garden has ${MIN_SECTIONS}-${MAX_SECTIONS}`);
-  }
-  if (clusters.length > MAX_SECTIONS) {
-    problems.push(`${clusters.length} sections; a normal garden has ${MIN_SECTIONS}-${MAX_SECTIONS}`);
-  }
+  if (clusters.length === 0) problems.push("the learning spine has no sections");
   const single = clusters.filter((c) => c.unitIds.length <= 1);
   if (clusters.length > 0 && single.length === clusters.length) {
     problems.push("every section has a single subsection — this is a table of contents, not a learning spine");

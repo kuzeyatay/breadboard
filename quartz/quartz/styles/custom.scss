@@ -275,11 +275,16 @@ button.desktop-explorer {
 
 .search > .search-container > .search-space > *,
 .popover > .popover-inner,
-.markdown-editor-panel,
 .folder-pdf-panel {
   border-color: var(--neu-q-border);
   background: var(--neu-q-surface);
   box-shadow: var(--neu-q-floating-shadow);
+}
+
+.markdown-editor-panel {
+  border-color: var(--neu-q-border);
+  background: var(--neu-q-surface);
+  box-shadow: none;
 }
 
 .search > .search-container > .search-space > input,

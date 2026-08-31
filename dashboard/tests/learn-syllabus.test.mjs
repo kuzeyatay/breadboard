@@ -480,7 +480,7 @@ describe("Learn syllabus API surface", () => {
 
 describe("Learn panel syllabus controls", () => {
   test("the menus escape the Learn tray's scrolling boundary", () => {
-    assert.equal(countMatches(workspaceSource, /<ViewportPopover/g), 2);
+    assert.equal(countMatches(workspaceSource, /<ViewportPopover/g), 3);
     assert.match(viewportPopoverSource, /createPortal\(/);
     assert.match(viewportPopoverSource, /window\.addEventListener\("scroll", place, true\)/);
   });
@@ -531,7 +531,7 @@ describe("Learn panel syllabus controls", () => {
     );
     assert.match(
       workspaceSource,
-      /Documents \{learnTeachingSourceSlugs\.length\}\/\s*\{learnEligibleSourceDocuments\.length\}/,
+      /Sources \{learnTeachingSourceSlugs\.length\}\/\s*\{learnEligibleSourceDocuments\.length\}/,
     );
     assert.match(
       workspaceSource,

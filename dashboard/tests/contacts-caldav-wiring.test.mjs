@@ -47,6 +47,7 @@ const profilePage = source("../src/app/profile/page.tsx");
 const profileClient = source("../src/app/profile/profile-client.tsx");
 const contactsPanel = source("../src/app/profile/contacts-panel.tsx");
 const syncPanel = source("../src/app/profile/calendar-sync-panel.tsx");
+const subscriptionRoute = source("../src/app/api/calendar/subscriptions/route.ts");
 const credentials = source("../src/lib/calendar/caldav-credentials.ts");
 const calendarStore = source("../src/lib/calendar/store.ts");
 const calendarSchema = source("../src/lib/calendar/schema.ts");
@@ -55,6 +56,10 @@ const backgroundExecutor = source("../scripts/runtime-v2-background-executor.mjs
 const ROUTES = [
   "../src/app/api/contacts/route.ts",
   "../src/app/api/contacts/[contactId]/route.ts",
+  "../src/app/api/calendar/calendars/route.ts",
+  "../src/app/api/calendar/calendars/[calendarId]/route.ts",
+  "../src/app/api/calendar/calendars/[calendarId]/refresh/route.ts",
+  "../src/app/api/calendar/subscriptions/route.ts",
   "../src/app/api/calendar/caldav/route.ts",
   "../src/app/api/calendar/caldav/discover/route.ts",
   "../src/app/api/calendar/caldav/connect/route.ts",
@@ -73,6 +78,8 @@ test("every route the panels call exists, authenticates, and does not cache", ()
 test("dynamic route segments are awaited, as Next 16 requires", () => {
   for (const route of [
     "../src/app/api/contacts/[contactId]/route.ts",
+    "../src/app/api/calendar/calendars/[calendarId]/route.ts",
+    "../src/app/api/calendar/calendars/[calendarId]/refresh/route.ts",
     "../src/app/api/calendar/caldav/[calendarId]/route.ts",
   ]) {
     const handler = source(route);
@@ -95,10 +102,12 @@ test("the profile page renders both panels from server-read data", () => {
   assert.match(profilePage, /caldavVaultConfigured\(\)/, "the vault state is read there too");
   assert.match(profilePage, /contactTotal=\{/);
   assert.match(profilePage, /syncedCalendars=\{/);
+  assert.match(profilePage, /calendar\.sourceUrl \|\| calendar\.caldavUrl/);
 
   assert.match(profileClient, /<ContactsPanel initial=\{contacts\}/);
   assert.match(profileClient, /<CalendarSyncPanel/);
   assert.match(profileClient, /initial=\{syncedCalendars\}/);
+  assert.match(syncPanel, /\/api\/calendar\/subscriptions/);
 });
 
 test("writing an event files the people on it", () => {
@@ -159,5 +168,10 @@ test("a subscribed calendar and a synced one stay different things", () => {
     calendarStore,
     /is a subscribed copy, so it cannot also sync both ways/,
     "binding refuses a subscription",
+  );
+  assert.match(
+    subscriptionRoute,
+    /listCalendarsEnsuringDefault\(userId\)/,
+    "a first subscription must not leave the user without a writable calendar",
   );
 });

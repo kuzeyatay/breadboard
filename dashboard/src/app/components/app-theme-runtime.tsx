@@ -39,7 +39,7 @@ function postThemeToFrame(frame: HTMLIFrameElement, theme: AppTheme): void {
 }
 
 function synchronizeTheme(theme: AppTheme): void {
-  document.documentElement.dataset.theme = theme;
+  rememberEffectiveAppTheme(theme);
   // The shell paints the next launch's loading scene from what it is told
   // here, so it hears how the theme was chosen, not only which one it is.
   void desktopThemeBridge()
@@ -88,7 +88,7 @@ export default function AppThemeRuntime() {
       const changed = nextTheme !== theme;
       theme = nextTheme;
       if (changed || reapply) {
-        rememberEffectiveAppTheme(theme);
+        rememberEffectiveAppTheme(theme, { animate: changed });
         synchronizeTheme(theme);
       }
       if (announce && changed) {

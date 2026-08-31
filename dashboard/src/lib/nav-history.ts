@@ -156,7 +156,7 @@ export function consumeBackTo(href: string): void {
 const LABELS: Array<{ match: RegExp; label: string }> = [
   { match: /^\/dashboard(?:\/|$)/, label: 'Back to dashboard' },
   { match: /^\/gardens\/[^/]+\/pdf(?:\/|$)/, label: 'Back to PDF' },
-  { match: /^\/gardens\/[^/]+(?:\/|$)/, label: 'Back to garden chat' },
+  { match: /^\/gardens\/[^/]+(?:\/|$)/, label: 'Back to workspace' },
   { match: /^\/garden\/[^/]+(?:\/|$)/, label: 'Back to garden' },
   { match: /^\/garden(?:\/|$)/, label: 'Back to library' },
   { match: /^\/clusters(?:\/|$)/, label: 'Back to gardens' },

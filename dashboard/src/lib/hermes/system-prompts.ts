@@ -164,6 +164,17 @@ export function composeHermesSystemPrompt(input: {
   if (decision.allowedTools.includes("image_search")) {
     sections.push(readSystemPrompt("image-results"));
   }
+  // Product results are a native resource, not prose with shopping links. The
+  // tool description is intentionally self-contained, but large Hermes turns
+  // can expose dozens of tools and a generic web search otherwise competes for
+  // the same intent. Ship the decision boundary in the turn prompt whenever
+  // the product tool is actually available. Hermes still makes the normal tool
+  // choice; this section tells it which of the overlapping search tools owns a
+  // shopping/recommendation request and which requests should remain ordinary
+  // conversation or web research.
+  if (decision.allowedTools.includes("product_search")) {
+    sections.push(readSystemPrompt("product-search"));
+  }
   sections.push(
     [
       "# server_capability_decision",

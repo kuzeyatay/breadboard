@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@synsci/openscience": "^2.0.22"
+  }
+}

@@ -167,6 +167,13 @@ test("annotation equality reads values, not identities", () => {
     ),
     false,
   );
+  assert.equal(
+    chatTextAnnotationsEqual(
+      [{ id: "x", start: 1, end: 2, quote: "a", color: "blue" }],
+      [{ id: "x", start: 1, end: 2, quote: "b", color: "blue" }],
+    ),
+    false,
+  );
 });
 
 test("the panel hands the memoized rows stable callback identities", () => {

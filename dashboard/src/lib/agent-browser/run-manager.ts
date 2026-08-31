@@ -110,6 +110,7 @@ const EVENT_TYPES = new Set([
   "agent.usage",
   "observation.page",
   "observation.screenshot",
+  "auth.required",
   "action.proposed",
   "action.completed",
   "approval.requested",

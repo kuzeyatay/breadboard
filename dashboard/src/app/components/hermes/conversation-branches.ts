@@ -40,11 +40,22 @@ export function cloneMessages<T extends BranchableMessage>(messages: T[]): T[] {
     const copy = { ...message } as T & {
       sources?: unknown[];
       tools?: unknown[];
+      uiResources?: unknown[];
     };
     if (Array.isArray(copy.sources)) copy.sources = [...copy.sources];
     if (Array.isArray(copy.tools)) {
       copy.tools = copy.tools.map((tool) =>
         tool && typeof tool === "object" ? { ...tool } : tool,
+      );
+    }
+    if (Array.isArray(copy.uiResources)) {
+      // Resources are JSON-only by contract. Branch snapshots must not share
+      // nested product/source arrays, or selecting a comparison in one variant
+      // could mutate another variant before it is persisted.
+      copy.uiResources = copy.uiResources.map((resource) =>
+        resource && typeof resource === "object"
+          ? JSON.parse(JSON.stringify(resource))
+          : resource,
       );
     }
     return copy;

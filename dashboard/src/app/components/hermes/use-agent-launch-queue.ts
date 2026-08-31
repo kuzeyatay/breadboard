@@ -12,7 +12,8 @@
 // it: the request arrives mid-stream and waits until the surface is idle, or the
 // submit would be refused and silently lost. Action-capable agents then wait for
 // confirmation (unless YOLO mode is on); read-only internal delegations can
-// start immediately after the turn and attach their card to that assistant.
+// start immediately. Launch setup is dispatched one head at a time, but each
+// worker then owns a separate hidden turn and continues running concurrently.
 //
 // The parsing and the continuation wording live in lib/hermes/agent-launch.ts.
 
@@ -29,7 +30,10 @@ import {
 
 export {
   MAX_AGENT_LAUNCH_HOPS,
+  MAX_PARALLEL_AGENT_LAUNCHES,
+  agentLaunchContinuationMarker,
   agentLaunchContinuationMessage,
+  agentLaunchWorkerClientMessageId,
   parseAgentLaunchRequest,
   type AgentLaunchRequestPayload,
 } from "@/lib/hermes/agent-launch.ts";
@@ -94,6 +98,7 @@ export function useAgentLaunchQueue(
     // session id. Older builds queued that launch under `null`, marked it seen,
     // and filtered it out forever when the real scope appeared. Claiming it
     // here also repairs such an item during Fast Refresh.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- this migrates queued external events when their durable scope arrives
     setQueue((current) => claimUnscopedAgentLaunchRequests(current, scopeKey));
   }, [scopeKey]);
 
@@ -103,7 +108,7 @@ export function useAgentLaunchQueue(
     // A request rebuilt from a finished turn's evidence and the live request
     // the stream delivered for the same turn and agent are one hand-off.
     const originKey = request.originClientMessageId
-      ? `origin:${request.originClientMessageId}:${request.agentId}`
+      ? `origin:${request.originClientMessageId}:${request.agentId}:${request.brief.trim()}`
       : null;
     if (seenRef.current.has(request.requestId)) return true;
     if (originKey && seenRef.current.has(originKey)) return true;

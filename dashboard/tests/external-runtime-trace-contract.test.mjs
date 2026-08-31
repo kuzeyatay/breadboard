@@ -65,6 +65,8 @@ const externalCloneModules = [
   "src/lib/video-use/runtime.ts",
   "src/lib/video-use/plan.ts",
   "src/lib/wardrobe/runtime.ts",
+  "src/lib/classroom/runtime.ts",
+  "src/lib/gods-eye/runtime.ts",
   "src/lib/shorts/runtime.ts",
   "src/lib/codex/run-manager.ts",
 ];

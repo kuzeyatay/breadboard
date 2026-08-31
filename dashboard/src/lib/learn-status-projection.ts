@@ -65,6 +65,7 @@ const STATUS_SOURCE_ID_BYTE_LIMIT = 4 * 1024;
 const STATUS_JOB_MESSAGE_CHAR_LIMIT = 64 * 1024;
 const STATUS_JOB_TITLE_CHAR_LIMIT = 4 * 1024;
 const STATUS_MODEL_CHAR_LIMIT = 512;
+const STATUS_USER_INSTRUCTION_CHAR_LIMIT = 4_000;
 
 type LearnMode =
   | "plan"
@@ -115,6 +116,7 @@ interface LearnJob {
   sourceSetHash?: string;
   sourceIds: string[];
   syllabusSourceId?: string;
+  userInstruction?: string;
   sourceOnly: boolean;
   includeSourceSnapshots: boolean;
   pausedFromStatus?: LearnStatus;
@@ -172,6 +174,7 @@ interface LearnJobRow {
   source_set_hash: string | null;
   source_ids_json: string | null;
   syllabus_source_id: string | null;
+  user_instruction: string | null;
   source_only: number | null;
   include_source_snapshots: number | null;
   paused_from_status: LearnStatus | null;
@@ -200,6 +203,7 @@ const LEARN_JOB_STATUS_COLUMN_SPECS = [
   ["source_set_hash", "NULL"],
   ["source_ids_json", "'[]'"],
   ["syllabus_source_id", "NULL"],
+  ["user_instruction", "NULL"],
   ["source_only", "1"],
   ["include_source_snapshots", "0"],
   ["paused_from_status", "NULL"],
@@ -654,6 +658,11 @@ function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
     sourceSetHash: row.source_set_hash ?? undefined,
     sourceIds: parseSourceIds(row.source_ids_json),
     syllabusSourceId: row.syllabus_source_id ?? undefined,
+    userInstruction:
+      boundedOptionalStatusText(
+        row.user_instruction,
+        STATUS_USER_INSTRUCTION_CHAR_LIMIT,
+      )?.trim() || undefined,
     sourceOnly: Boolean(row.source_only ?? 1),
     includeSourceSnapshots: Boolean(row.include_source_snapshots ?? 0),
     pausedFromStatus: row.paused_from_status ?? undefined,

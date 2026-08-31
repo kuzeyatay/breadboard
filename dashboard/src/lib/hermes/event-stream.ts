@@ -75,6 +75,7 @@ import {
   type DetachedEventPumpSink,
 } from "./detached-event-pump.ts";
 import { normalizeChatTokenUsage } from "../chat-token-usage.ts";
+import type { GenerativeUiResource } from "../generative-ui/contracts.ts";
 
 type CompletedToolEvent = Extract<
   NormalizedAgentEvent,
@@ -86,8 +87,10 @@ function persistAssistantOnce(
   content: string,
   sources: string[],
   toolCalls: unknown[],
+  progressNotes: string[],
   verification: VerificationSummary,
   runtimeStatus: string,
+  uiResources: GenerativeUiResource[],
   tokenUsage?: unknown,
 ): void {
   let persistedTokenUsage = normalizeChatTokenUsage(tokenUsage) ?? undefined;
@@ -112,8 +115,10 @@ function persistAssistantOnce(
       : undefined;
     const metadata = {
       toolCalls,
+      ...(progressNotes.length ? { progressNotes } : {}),
       verification,
       runtimeStatus,
+      ...(uiResources.length ? { uiResources } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(dispatchedModel ? { model: dispatchedModel } : {}),
     };
@@ -163,7 +168,12 @@ function persistAssistantOnce(
       content,
       sources,
       tokenUsage: persistedTokenUsage,
-      toolCalls: { calls: toolCalls, verification },
+      toolCalls: {
+        calls: toolCalls,
+        progressNotes,
+        verification,
+        ...(uiResources.length ? { uiResources } : {}),
+      },
       runtimeStatus,
     });
     return;
@@ -177,7 +187,12 @@ function persistAssistantOnce(
     content,
     sources,
     tokenUsage: persistedTokenUsage,
-    toolCalls: { calls: toolCalls, verification },
+    toolCalls: {
+      calls: toolCalls,
+      progressNotes,
+      verification,
+      ...(uiResources.length ? { uiResources } : {}),
+    },
     runtimeStatus,
   });
 }
@@ -195,12 +210,13 @@ function driveSessionEventPump(
 
   let assistantText = "";
   // Mid-turn narration segments sealed off the answer buffer (text the model
-  // wrote before/between tool calls). Not persisted as the answer — but the
-  // last one is promoted back if the turn ends with nothing in the buffer, so
-  // an aborted run still shows its partial text instead of an empty message.
+  // wrote before/between tool calls). They remain durable, user-visible progress
+  // notes. The last one is also promoted back if the turn ends with nothing in
+  // the answer buffer, so an aborted run never collapses to an empty message.
   const narrationSegments: string[] = [];
   const sources: string[] = [];
   const toolCalls: Array<Record<string, unknown>> = [];
+  const uiResources: GenerativeUiResource[] = [];
   const evidence: EvidenceRecord[] = [];
   let memorySavesReconciled = false;
   let terminalCommandsReconciled = false;
@@ -209,6 +225,7 @@ function driveSessionEventPump(
   // a failure, not a completed answer.
   let finalStatus = "failed";
   let tokenUsage: unknown;
+  let stableAnswerEmitted = false;
   // The browser deliberately opens this stream before POSTing the prompt so
   // the first text delta cannot be missed. That means there may not be an
   // active run yet, and the upstream session can still deliver a trailing idle
@@ -425,6 +442,31 @@ function driveSessionEventPump(
     ) => {
       sink.emit(encoder.encode(encodeSseEvent(event)));
     };
+    const promoteNarrationFallback = () => {
+      if (!assistantText.trim() && narrationSegments.length) {
+        assistantText = narrationSegments[narrationSegments.length - 1];
+      }
+    };
+    // A raw delta is ambiguous until the model either starts a tool (making it
+    // progress narration) or completes the turn (making it the answer). Hold it
+    // server-side and reveal the answer exactly once at a terminal boundary.
+    // This prevents text from appearing in the answer bubble and then being
+    // erased a moment later when a tool call classifies it as provisional.
+    const emitStableAnswer = () => {
+      if (stableAnswerEmitted) return;
+      promoteNarrationFallback();
+      stableAnswerEmitted = true;
+      emit({
+        type: "assistant.completed",
+        sessionId: session.hermesSessionId,
+        ...(assistantMessageId ? { messageId: assistantMessageId } : {}),
+        timestamp: new Date().toISOString(),
+        payload: {
+          replacementText: assistantText,
+          usage: tokenUsage,
+        },
+      });
+    };
     // A turn dispatched onto a dead runtime session is re-dispatched by
     // startConversationTurn's retry, which rewrites this row's identity. This
     // stream opens before the prompt POST, so that replacement routinely lands
@@ -527,6 +569,7 @@ function driveSessionEventPump(
             timestamp: request.createdAt,
             payload: {
               requestId: request.requestId,
+              workerClientMessageId: request.workerClientMessageId,
               agentId: request.agentId,
               agentName: request.agentName,
               command: request.command,
@@ -566,6 +609,11 @@ function driveSessionEventPump(
           summary: event.payload.summary,
           completedAt: event.timestamp,
         });
+        for (const resource of event.payload.uiResources ?? []) {
+          const existing = uiResources.findIndex((item) => item.id === resource.id);
+          if (existing >= 0) uiResources[existing] = resource;
+          else uiResources.push(resource);
+        }
         const inferredKind =
           /(?:^|\s)(?:test|lint|typecheck)(?:\s|$)/i.test(
             event.payload.summary ?? "",
@@ -667,12 +715,9 @@ function driveSessionEventPump(
         persisted = true;
         finalStatus = status;
         setRuntimeStatus(session.row.id, status);
-        // A turn that sealed everything as narration and then ended (aborted
-        // mid-tool, or an empty completion) still deserves its last words:
-        // promote the final narration segment rather than persist nothing.
-        if (!assistantText.trim() && narrationSegments.length) {
-          assistantText = narrationSegments[narrationSegments.length - 1];
-        }
+        // Keep persistence byte-for-byte aligned with the one stable answer the
+        // client receives, including the answerless/interrupted fallback.
+        promoteNarrationFallback();
         // An unmet web obligation is carried by the verification summary
         // below, never by rewriting the answer. See `reportWebGrounding`.
         // Read from the launch store rather than from what the stream managed
@@ -692,8 +737,10 @@ function driveSessionEventPump(
             assistantText,
             sources,
             toolCalls,
+            narrationSegments,
             verification,
             status,
+            uiResources,
             tokenUsage,
           );
         } catch {
@@ -714,6 +761,12 @@ function driveSessionEventPump(
                   status: status === "aborted" ? "aborted" : "failed",
                   content: assistantText,
                   error: "assistant_persistence_failed",
+                  metadata: {
+                    ...(narrationSegments.length
+                      ? { progressNotes: narrationSegments }
+                      : {}),
+                    ...(uiResources.length ? { uiResources } : {}),
+                  },
                 });
               }
             } catch {
@@ -900,7 +953,11 @@ function driveSessionEventPump(
           lastRuntimeEventAt = Date.now();
           // Only the request itself may leave the turn waiting: once the
           // runtime speaks again the decision has landed, one way or the other.
-          awaitingPermission = event.type === "permission.requested";
+          // A clarify question is the same kind of silence: the model is
+          // blocked on a person, not stuck.
+          awaitingPermission =
+            event.type === "permission.requested" ||
+            event.type === "clarify.requested";
           if (!streamRun) {
             streamRun = getActiveRuntimeRun(session.row.id);
             assistantMessageId ??= activeRunReference().messageId;
@@ -913,6 +970,7 @@ function driveSessionEventPump(
           // completing empty while its real generation continues orphaned.
           if (!streamRun) continue;
 
+          let forwardEvent = true;
           if (event.type === "assistant.delta") {
             if (
               assistantMessageId &&
@@ -924,6 +982,11 @@ function driveSessionEventPump(
             assistantMessageId ??= event.messageId;
             assistantText += event.payload.text;
             sawTurnOutput = sawTurnOutput || event.payload.text.length > 0;
+            // Do not paint an unclassified model segment as an answer. If a
+            // tool follows, the upcoming assistant.segment event presents it
+            // permanently as a progress note; otherwise emitStableAnswer shows
+            // it once as the final response.
+            forwardEvent = false;
           } else if (event.type === "assistant.segment") {
             if (
               assistantMessageId &&
@@ -932,9 +995,10 @@ function driveSessionEventPump(
             ) {
               continue;
             }
-            // The buffer so far is tool-call narration, not the answer. Only
-            // the text streamed after the last seal is persisted as the
-            // message; sealed segments live in the activity surfaces.
+            // The buffer so far is tool-call narration, not the answer. The
+            // segment itself is forwarded only after that classification, so
+            // clients can present it as a permanent progress note without ever
+            // drawing it in the answer bubble first.
             if (event.payload.streamed) {
               const sealed = assistantText.trim()
                 ? assistantText
@@ -955,6 +1019,10 @@ function driveSessionEventPump(
               continue;
             }
             tokenUsage = event.payload.usage;
+            // Completion metadata is emitted together with the stable answer
+            // at the terminal status below. Forwarding it here would let the
+            // browser settle before the response text is committed.
+            forwardEvent = false;
           } else if (event.type === "tool.started") {
             sawTurnOutput = true;
             recordAuditEvent({
@@ -980,6 +1048,17 @@ function driveSessionEventPump(
                 permission: event.payload.permission,
               },
             });
+          } else if (event.type === "clarify.requested") {
+            recordAuditEvent({
+              eventType: "clarify.requested",
+              runtimeSessionId: session.row.id,
+              userId: session.row.user_id,
+              gardenId: session.row.garden_id,
+              payload: {
+                requestId: event.payload.requestId,
+                choiceCount: event.payload.choices.length,
+              },
+            });
           }
           if (
             event.type === "session.status" &&
@@ -999,18 +1078,7 @@ function driveSessionEventPump(
                   missingArtifact.sourceSkill === "office"
                     ? "The requested Office file was not published as an artifact before this turn ended. Please retry the request."
                     : "The required visualizer was not published before this turn ended.";
-                emit({
-                  type: "assistant.completed",
-                  sessionId: session.hermesSessionId,
-                  ...(assistantMessageId
-                    ? { messageId: assistantMessageId }
-                    : {}),
-                  timestamp: new Date().toISOString(),
-                  payload: {
-                    replacementText: assistantText,
-                    usage: tokenUsage,
-                  },
-                });
+                emitStableAnswer();
                 emit({
                   type: "error",
                   sessionId: session.hermesSessionId,
@@ -1045,7 +1113,19 @@ function driveSessionEventPump(
               }
             }
           }
-          emit(event);
+          if (
+            event.type === "session.status" &&
+            (event.payload.status === "idle" ||
+              event.payload.status === "aborted" ||
+              event.payload.status === "failed") &&
+            // A fresh subscription can replay the previous turn's idle frame.
+            // Do not consume this turn's one stable-answer emission before it
+            // has produced anything.
+            (event.payload.status !== "idle" || sawTurnOutput)
+          ) {
+            emitStableAnswer();
+          }
+          if (forwardEvent) emit(event);
           emitArtifactEvents();
           emitAgentLaunchRequests();
 
@@ -1059,6 +1139,7 @@ function driveSessionEventPump(
               // Last chance: after this the stream closes, and an unemitted
               // launch would be a run the agent believes it started.
               emitAgentLaunchRequests();
+              emitStableAnswer();
               // The answer is never rewritten here any more. An unmet web
               // obligation is reported through the verification summary
               // emitted immediately below, which the evidence panel renders;
@@ -1086,6 +1167,7 @@ function driveSessionEventPump(
               event.payload.status === "aborted" ||
               event.payload.status === "failed"
             ) {
+              emitStableAnswer();
               finalize(event.payload.status);
               emit({ type: event.payload.status === "aborted" ? "cancelled" : "done" });
               break;
@@ -1095,6 +1177,7 @@ function driveSessionEventPump(
       } catch (error) {
         if (abandonedBeforeDispatch) return;
         finalStatus = "failed";
+        emitStableAnswer();
         const resourceFailure = runtimeStartupResourceFailure(error);
         emit({
           type: "error",

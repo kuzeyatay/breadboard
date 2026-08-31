@@ -60,8 +60,12 @@ import {
   type ConversationMessageRow,
 } from "./store.ts";
 import { withDelegatedResearchSources } from "./delegated-research-sources.ts";
+import { carriedExternalAgentsForContinuation } from "./delegated-agent-provenance.ts";
 import type { ExternalAgentCall } from "../hermes/evidence.ts";
-import { generateAndApplyConversationTitle } from "./title-service.ts";
+import {
+  generateAndApplyConversationTitle,
+  shouldGenerateConversationTitleForTurn,
+} from "./title-service.ts";
 import {
   composeMemoryContext,
   maintainDurableMemoryFromUserTurn,
@@ -92,6 +96,12 @@ import { officeArtifactRequirement } from "../hermes/office-artifact-requirement
 import { turnCapabilitySelection } from "../hermes/capability-usage.ts";
 import { premortemCommandText } from "../hermes/premortem-intent.ts";
 import { factcheckCommandText } from "../hermes/factcheck-intent.ts";
+import {
+  patentDisclosureCommandText,
+} from "../hermes/patent-disclosure-intent.ts";
+import {
+  PATENT_DISCLOSURE_SKILL,
+} from "../hermes/patent-disclosure-source.ts";
 import { agentLoopCommandText } from "../hermes/agent-loop-intent.ts";
 import { messagingCommandText } from "../hermes/messaging-intent.ts";
 import { watchCommandText } from "../hermes/watch-intent.ts";
@@ -132,6 +142,10 @@ import {
   renderAudioAnalysisContext,
   tracksFromAttachments,
 } from "../audio-analyzer/tracks.ts";
+import {
+  MUSIC_RECOGNITION_SKILL,
+  renderMusicRecognitionContext,
+} from "../music-recognition/context.ts";
 import {
   prepareVideosForWatch,
   recentVideoAttachment,
@@ -345,10 +359,12 @@ export async function startConversationTurn(
   const preDispatchReserved =
     !reservation.isNew &&
     isPreDispatchReservedAssistant(reservation.assistantMessage);
-  if (
-    (reservation.isNew || preDispatchReserved) &&
-    reservation.userMessage.order_index === 0
-  ) {
+  if (shouldGenerateConversationTitleForTurn({
+    currentTitle: reservation.conversation.title,
+    userOrderIndex: reservation.userMessage.order_index,
+    reservationIsNew: reservation.isNew,
+    preDispatchReserved,
+  })) {
     const titledConversation = await generateAndApplyConversationTitle({
       conversation: reservation.conversation,
       firstPrompt: input.text,
@@ -696,13 +712,22 @@ export async function startConversationTurn(
     authenticated: true,
     priorMessages: currentConversationMessages,
   });
+  // Patent work owns its complete routed workflow, including its figures and
+  // evidence search. Select it before generic visualization/diagram routing so
+  // "draw the utility-model figures" does not become a standalone diagram turn.
+  const patentDisclosureSelection = patentDisclosureCommandText({
+    text: factcheckSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    priorMessages: currentConversationMessages,
+  });
   // A model-to-model continuation is exempt: the text is the last agent's
   // report handed back for synthesis, and a report that happens to say
   // "simulation" is not the person asking for an interactive one. Left
   // unexempt, the selection armed the required-artifact gate on a Deep
   // Research handback and the synthesis was replaced by the gate's refusal.
   const visualizerSelection = visualizerCommandText({
-    text: factcheckSelection.text,
+    text: patentDisclosureSelection.text,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -833,11 +858,10 @@ export async function startConversationTurn(
     runtimeKind: session.runtimeKind,
     activeAgentSlug: reservation.conversation.active_agency_agent_slug,
   };
-  // An automatic selection must never cost the user their turn: if Watch or
-  // Image to 3D turns out to be unavailable here — no Python, no ffmpeg, no
-  // GPU, not approved for this mode — the same message is resolved again
-  // without it. Retrying from the agent-loop text drops both, which is correct
-  // because neither adds a prefix unless it selected automatically.
+  // An automatic selection must never cost the user their turn. If an
+  // auto-selected capability is unavailable in this mode, resolve the same
+  // message again without it. Patent selection is upstream of agent-loop
+  // selection, so its fallback starts from the fact-check selection text.
   const resolved = await resolveCommandMessage(
     input.conversation.user_id,
     goalSelection.text,
@@ -846,6 +870,7 @@ export async function startConversationTurn(
   ).catch(async (error: unknown) => {
     if (
       !watchSelection.automatic &&
+      !patentDisclosureSelection.automatic &&
       !imageTo3dSelection.automatic &&
       !spotifySelection.automatic &&
       !audioSelection.automatic &&
@@ -859,7 +884,9 @@ export async function startConversationTurn(
     return await resolveCommandMessage(
       input.conversation.user_id,
       messagingCommandText({
-        text: agentLoopSelection.text,
+        text: patentDisclosureSelection.automatic
+          ? factcheckSelection.text
+          : agentLoopSelection.text,
         surface: input.surface,
         authenticated: true,
         priorMessages: currentConversationMessages,
@@ -873,6 +900,12 @@ export async function startConversationTurn(
   const automaticWatch = watchSelection.automatic &&
     resolved.invocations.some(
       (invocation) => invocation.kind === "skill" && invocation.slug === "watch",
+    );
+  const automaticPatentDisclosure = patentDisclosureSelection.automatic &&
+    resolved.invocations.some(
+      (invocation) =>
+        invocation.kind === "skill" &&
+        invocation.slug === PATENT_DISCLOSURE_SKILL,
     );
   const automaticImageTo3d = imageTo3dSelection.automatic &&
     resolved.invocations.some(
@@ -929,6 +962,7 @@ export async function startConversationTurn(
       commands: resolved.invocations,
       automaticPremortem: premortemSelection.automatic,
       automaticFactcheck: factcheckSelection.automatic,
+      automaticPatentDisclosure,
       automaticInteractiveVisualizer: visualizerSelection.automatic,
       automaticMessaging: messagingSelection.automatic,
       automaticWatch,
@@ -1097,6 +1131,7 @@ export async function startConversationTurn(
       allowedTools: decision.allowedTools,
       automaticPremortem: premortemSelection.automatic,
       automaticFactcheck: factcheckSelection.automatic,
+      automaticPatentDisclosure,
       automaticInteractiveVisualizer: visualizerSelection.automatic,
       automaticWatch,
       automaticImageTo3d,
@@ -1350,6 +1385,17 @@ export async function startConversationTurn(
             ),
           )
         : "",
+      decision.selectedConditionalSkills.includes(MUSIC_RECOGNITION_SKILL)
+        ? renderMusicRecognitionContext(
+            mergeTracks(
+              tracksFromAttachments(input.conversation.user_id, input.attachments),
+              analyzableTracks(input.conversation.user_id, earlierMessages).map((track) => ({
+                ...track,
+                carriedForward: true,
+              })),
+            ),
+          )
+        : "",
       documents.context,
       editableDocuments.context,
       connectedApps.systemContext,
@@ -1474,6 +1520,9 @@ export async function startConversationTurn(
       ...(automaticMusicPlayback ? [{ slug: SPOTIFY_SKILL }] : []),
       ...(automaticAudioAnalysis ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),
       ...(automaticDiagramDesign ? [{ slug: DIAGRAM_DESIGN_SKILL }] : []),
+      ...(automaticPatentDisclosure
+        ? [{ slug: PATENT_DISCLOSURE_SKILL }]
+        : []),
       ...(automaticGithubExplorer ? [{ slug: GITHUB_EXPLORER_SKILL }] : []),
       ...(premortemSelection.automatic ? [{ slug: "premortem" }] : []),
       ...(factcheckSelection.automatic ? [{ slug: "bullshit-detector" }] : []),
@@ -1510,13 +1559,18 @@ export async function startConversationTurn(
   // message, so the answer the user reads belongs to a run that queued nothing
   // and called no tool. Its provenance therefore has to be carried across the
   // seam, or the one turn anybody opens the evidence panel on shows no trace of
-  // the agent whose work it is entirely built from. Read before the new run
-  // begins, so `getLatestRuntimeRun` is still the turn that did the delegating.
+  // the agent whose work it is entirely built from. The hidden worker turn is
+  // the durable authority; the live launch queue is a richer fallback for
+  // legacy hand-backs that predate the marker.
   const carriedDelegations = input.internalAgentContinuation
     ? await withDelegatedResearchSources(
-        externalAgentCallsForRun(
-          getLatestRuntimeRun(session.row.id)?.id,
-        ).map((call) => ({ ...call, carried: true })),
+        carriedExternalAgentsForContinuation({
+          continuationText: input.text,
+          messages: currentConversationMessages,
+          launchCalls: externalAgentCallsForRun(
+            getLatestRuntimeRun(session.row.id)?.id,
+          ),
+        }),
         {
           userId: input.conversation.user_id,
           messages: memory.recentMessages,
@@ -1618,6 +1672,9 @@ export async function startConversationTurn(
       system: runtimeSystem,
       messageId: hermesMessageId(input.clientMessageId),
       yoloMode: input.yoloMode === true,
+      // A delivery-channel turn has no card to answer a mid-turn question on;
+      // the runtime answers `clarify` itself rather than waiting on no one.
+      interactive: !context.deliveryChannel,
     });
   };
 

@@ -401,11 +401,18 @@ test("cost is summed only over models with a published rate", () => {
     metadata: { model: "cliproxy/claude-opus-5" },
     usage: { inputTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 2_000_000 },
   });
-  // Unpriced: a model nobody has entered a rate for.
+  // Priced: 500 input + 500 output tokens on Sol cost $0.012.
   addMessage(db, 1, {
     role: "assistant",
     at: "2026-06-01 11:00:00",
     metadata: { model: "gpt-5.6-sol" },
+    usage: { inputTokens: 500, outputTokens: 500, totalTokens: 1000 },
+  });
+  // Unpriced: a model nobody has entered a rate for.
+  addMessage(db, 1, {
+    role: "assistant",
+    at: "2026-06-01 11:30:00",
+    metadata: { model: "future-model" },
     usage: { inputTokens: 500, outputTokens: 500, totalTokens: 1000 },
   });
   // Unattributed: predates the model being recorded at all.
@@ -413,13 +420,41 @@ test("cost is summed only over models with a published rate", () => {
 
   const { cost } = readProfileStats(db, 1, { today: "2026-06-02" });
 
-  assert.equal(cost.totalUsd, 30);
-  assert.equal(cost.pricedReplies, 1);
+  assert.equal(cost.totalUsd, 30.012);
+  assert.equal(cost.pricedReplies, 2);
   assert.equal(cost.unpricedReplies, 1, "an unrated model is unpriced, not free");
   assert.equal(cost.unattributedReplies, 1);
   assert.deepEqual(
     cost.models.map((entry) => [entry.label, entry.costUsd]),
-    [["Claude Opus 5", 30], ["GPT-5.6 Sol", null]],
+    [["Claude Opus 5", 30], ["future-model", null], ["GPT-5.6 Sol", 0.012]],
+  );
+});
+
+test("the published GPT-5.6 family rates price every Breadboard tier", () => {
+  const db = createDatabase();
+  addConversation(db, 1);
+  for (const model of ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    addMessage(db, 1, {
+      role: "assistant",
+      at: "2026-06-01 10:00:00",
+      metadata: { model },
+      usage: { inputTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 2_000_000 },
+    });
+  }
+
+  const { cost } = readProfileStats(db, 1, { today: "2026-06-02" });
+
+  assert.equal(cost.pricedReplies, 4);
+  assert.equal(cost.unpricedReplies, 0);
+  assert.equal(cost.totalUsd, 63.4);
+  assert.deepEqual(
+    Object.fromEntries(cost.models.map((entry) => [entry.model, entry.costUsd])),
+    {
+      "gpt-5.6": 24,
+      "gpt-5.6-sol": 24,
+      "gpt-5.6-terra": 14,
+      "gpt-5.6-luna": 1.4,
+    },
   );
 });
 

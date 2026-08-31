@@ -1,12 +1,13 @@
 // Who does what, decided before anything starts.
 //
-// The five research agents are not interchangeable, which is why Max Research
+// The six research agents are not interchangeable, which is why Max Research
 // commissions all of them. Each reaches a different part of the record:
 //
 //   Deep Research  the indexed web, multi-round, and returns it cited
 //   Agent Reach    the open internet — threads, posts, videos, repositories
 //   Get Doc        the academic record, and saves the free full texts
 //   OpenScience    a full research loop in its own workspace, including code
+//   Praxist        a configured measurable R&D task, run across generations
 //   ARIS           methodology rather than retrieval: the local harness's own
 //                  research workflow, which shapes how the rest is planned and
 //                  reconciled
@@ -23,6 +24,7 @@ export type MaxResearchParticipant =
   | "agent_reach"
   | "get_doc"
   | "openscience"
+  | "praxist"
   | "aris";
 
 export interface ParticipantAssignment {
@@ -73,6 +75,7 @@ export const RETRIEVAL_PARTICIPANTS: readonly MaxResearchParticipant[] = [
   "agent_reach",
   "get_doc",
   "openscience",
+  "praxist",
 ];
 
 export interface MaxResearchPlan {
@@ -124,6 +127,8 @@ function guidanceFor(participant: MaxResearchParticipant): string {
       return "Prefer the paper that first established a finding over anything that cites it, and note where a widely repeated figure has no primary source behind it.";
     case "openscience":
       return "Where the question can be settled or narrowed by doing rather than reading — a calculation, a reproduction, a small experiment against real data — do that in your workspace and report what you actually observed, separately from what you read.";
+    case "praxist":
+      return "Run the operator-configured measurable Praxist task project. Report its accepted findings and experiment conditions as empirical evidence; do not imply that the project tested this question when its declared task does not bear on it.";
     case "aris":
       return "";
   }
@@ -139,15 +144,17 @@ function rationaleFor(participant: MaxResearchParticipant): string {
       return "The primary literature, with free full texts saved.";
     case "openscience":
       return "Settles by doing: code, data and experiments in its own workspace.";
+    case "praxist":
+      return "Runs the configured multi-agent, multi-generation R&D task and returns its accepted experimental findings.";
     case "aris":
       return "The local research harness's methodology, shaping the plan and the reconciliation.";
   }
 }
 
 /**
- * Divide one question among the five.
+ * Divide one question among the six.
  *
- * Every question gets all five. Availability is an execution outcome, not a
+ * Every question gets all six. Availability is an execution outcome, not a
  * planning filter: a missing service remains visible in the roster and in the
  * final coverage statement instead of making a partial run look complete.
  */
@@ -165,7 +172,7 @@ export function planMaxResearch(input: {
   const empirical = EMPIRICAL_SUBJECT.test(question);
   const discourse = DISCOURSE_SUBJECT.test(question);
 
-  // All five, every time. Choosing between them was the wrong instinct: this is
+  // All six, every time. Choosing between them was the wrong instinct: this is
   // the agent someone reaches for when they have decided the question is worth
   // an hour, and the only thing narrowing the roster buys is a slightly shorter
   // run in exchange for a hole in the answer nobody can see. The classifier was
@@ -188,6 +195,7 @@ export function planMaxResearch(input: {
     { participant: "get_doc", wave: 0, required: false },
     // Wave 1 works on what wave 0 found, so it waits.
     { participant: "openscience", wave: 1, required: false },
+    { participant: "praxist", wave: 1, required: false },
     { participant: "aris", wave: 1, required: false },
   ];
 

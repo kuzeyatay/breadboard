@@ -20,6 +20,7 @@ import { cosine, resolveProvider, type EmbeddingProvider } from "./embedding.ts"
 import type { RetrievalBackend } from "./backends/types.ts";
 import type {
   GBrainCitation,
+  GBrainEmbeddingResponse,
   GBrainGraphResponse,
   GBrainIndexPage,
   GBrainMode,
@@ -100,6 +101,23 @@ export class GBrainStore implements RetrievalBackend {
 
   get providerName(): string {
     return this.provider.name;
+  }
+
+  async embedTexts(texts: string[]): Promise<GBrainEmbeddingResponse> {
+    if (!this.embeddingsAvailable) throw new Error("embedding_unavailable");
+    const vectors: number[][] = [];
+    for (const text of texts) {
+      const vector = await this.provider.embed(text);
+      if (!vector || vector.length !== this.provider.dimension) {
+        throw new Error("embedding_unavailable");
+      }
+      vectors.push(vector);
+    }
+    return {
+      model: this.provider.name.replace(/^chatmock:/, ""),
+      dimension: this.provider.dimension,
+      vectors,
+    };
   }
 
   async init(): Promise<void> {

@@ -8,6 +8,7 @@ import {
   fallbackConversationTitle,
   generateConversationTitle,
   normalizeGeneratedConversationTitle,
+  shouldGenerateConversationTitleForTurn,
 } from '../src/lib/conversations/title-service.ts';
 
 test('title generation sends only the first prompt to a plain LLM', async () => {
@@ -73,6 +74,42 @@ test('a local title keeps chats named when the title model is unavailable', asyn
       fetcher: async () => new Response('unavailable', { status: 502 }),
     }),
     'Robotic Future World Economy',
+  );
+  assert.equal(
+    fallbackConversationTitle(
+      '/interactive-visualizer-in-chat of coulomb force and charge',
+    ),
+    'Coulomb Force Charge',
+  );
+});
+
+test('a later retry repairs New chat after the reserved first turn was interrupted', () => {
+  assert.equal(
+    shouldGenerateConversationTitleForTurn({
+      currentTitle: 'New chat',
+      userOrderIndex: 2,
+      reservationIsNew: true,
+      preDispatchReserved: false,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldGenerateConversationTitleForTurn({
+      currentTitle: 'Coulomb Force Explorer',
+      userOrderIndex: 2,
+      reservationIsNew: true,
+      preDispatchReserved: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldGenerateConversationTitleForTurn({
+      currentTitle: 'New chat',
+      userOrderIndex: 2,
+      reservationIsNew: false,
+      preDispatchReserved: false,
+    }),
+    false,
   );
 });
 

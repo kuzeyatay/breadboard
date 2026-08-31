@@ -8,6 +8,7 @@ import { ensureDocumentSkillSchema } from "./document-skills/schema.ts";
 import { ensureOrganizationSchema } from "./organizations/schema.ts";
 import { ensureArtifactSchema } from "./hermes/artifact-schema.ts";
 import { ensureGBrainSchema } from "./gbrain/schema.ts";
+import { ensureThoughtTopologySchema } from "./thought-topology/schema.ts";
 import { ensureMem0Schema } from "./mem0/schema.ts";
 import { ensureMemoryTreeSchema } from "./memory-tree/schema.ts";
 import { ensureUITarsSchema } from "./ui-tars/schema.ts";
@@ -17,6 +18,7 @@ import { ensureAgentSettingsSchema } from "./agent-settings/schema.ts";
 import { ensureNangoSchema } from "./nango/schema.ts";
 import { ensureScheduledChatSchema } from "./schedules/schema.ts";
 import { ensureWorkflowSchema } from "./workflows/schema.ts";
+import { ensureTeachSchema } from "./teach/schema.ts";
 import { ensureCalendarSchema } from "./calendar/schema.ts";
 import { ensureContactSchema } from "./contacts/schema.ts";
 import { ensurePlanSchema } from "./plan/schema.ts";
@@ -90,6 +92,8 @@ if (!globalWithDb.db) {
       fork_allowed INTEGER NOT NULL DEFAULT 0,
       repo_path   TEXT,
       graft_enabled INTEGER NOT NULL DEFAULT 1,
+      thought_topology_enabled INTEGER NOT NULL DEFAULT 1 CHECK (thought_topology_enabled IN (0, 1)),
+      thought_topology_revision INTEGER NOT NULL DEFAULT 0,
       created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -271,7 +275,9 @@ function migrateLegacyRuntimeSchema(database: Database.Database): void {
   const tableExists = (name: string) =>
     Boolean(
       database
-        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
         .get(name),
     );
   const quoteIdentifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
@@ -399,7 +405,11 @@ ensureColumn(
 ensureColumn("clusters", "organization_id", "organization_id INTEGER");
 // Per-garden standing instructions, appended to the system prompt of every turn
 // in this garden. See src/lib/hermes/garden-chat-adapter.ts.
-ensureColumn("clusters", "instructions", "instructions TEXT NOT NULL DEFAULT ''");
+ensureColumn(
+  "clusters",
+  "instructions",
+  "instructions TEXT NOT NULL DEFAULT ''",
+);
 // 'default' | 'garden_only'. Garden-only makes this garden's durable memories
 // invisible to chats elsewhere, and hides everything else from chats here — the
 // filter lives in retrieveDurableMemories (src/lib/conversations/memory.ts).
@@ -675,7 +685,11 @@ db.exec(`
     ON hermes_steer_requests(run_id, created_at);
 `);
 
-ensureColumn("hermes_runtime_sessions", "active_directory", "active_directory TEXT");
+ensureColumn(
+  "hermes_runtime_sessions",
+  "active_directory",
+  "active_directory TEXT",
+);
 ensureColumn(
   "hermes_runtime_sessions",
   "runtime_kind",
@@ -705,11 +719,7 @@ ensureColumn(
 // run whose owning process died stayed active forever and blocked its
 // conversation; see lib/hermes/run-liveness.ts.
 ensureColumn("hermes_runs", "heartbeat_at", "heartbeat_at TEXT");
-ensureColumn(
-  "hermes_steer_requests",
-  "result_run_id",
-  "result_run_id TEXT",
-);
+ensureColumn("hermes_steer_requests", "result_run_id", "result_run_id TEXT");
 ensureColumn(
   "hermes_steer_requests",
   "result_mode",
@@ -817,7 +827,11 @@ ensureColumn(
 // Additional per-message runtime metadata. These are nullable so historical
 // ChatMock-authored messages remain valid and readable.
 ensureColumn("chat_messages", "tool_calls", "tool_calls TEXT");
-ensureColumn("chat_messages", "permission_decisions", "permission_decisions TEXT");
+ensureColumn(
+  "chat_messages",
+  "permission_decisions",
+  "permission_decisions TEXT",
+);
 ensureColumn("chat_messages", "runtime_error", "runtime_error TEXT");
 ensureColumn("chat_messages", "runtime_status", "runtime_status TEXT");
 // Whether a garden/quartz message carried a typed proposal (JSON payload).
@@ -839,6 +853,10 @@ ensureArtifactSchema(db);
 // Additive GBrain source-mapping and sync/audit bookkeeping (derived retrieval
 // state only; canonical content stays in markdown). Safe to re-apply.
 ensureGBrainSchema(db);
+// Persistent derived-work bookkeeping. Existing pre-feature Gardens retain
+// their rollout state; every Garden inserted after this schema is installed is
+// enabled by default.
+ensureThoughtTopologySchema(db);
 
 // Additive UI-TARS runtime-agent tables (agents, runs, normalized events,
 // approvals, artifacts) + server-only provider-key storage. Safe to re-apply.
@@ -863,6 +881,12 @@ ensureSpotifySchema(db);
 ensureScheduledChatSchema(db);
 // Native workflows; after users so the owner foreign key resolves.
 ensureWorkflowSchema(db);
+
+// Workflows authored by demonstration. Applied straight after the workflow
+// tables because it adds columns to `workflows` itself: a demonstrated workflow
+// is a workflow row with a learned procedure on it, not a separate kind of
+// object living somewhere else.
+ensureTeachSchema(db);
 
 // Additive calendar tables (named calendars + their events). Times are stored
 // as timezone-free wall-clock stamps; see src/lib/calendar/wallclock.ts.

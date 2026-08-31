@@ -56,6 +56,8 @@ const RUN_ROUTES = {
   "meeting-notes": ["meeting-notes", "runs"],
   "deep-tutor": ["deep-tutor", "runs"],
   "career-ops": ["career-ops", "runs"],
+  openexecutive: ["openexecutive", "runs"],
+  praxist: ["praxist", "runs"],
   "open-gym": ["open-gym", "runs"],
   "trading-agent": ["tradingagents", "runs"],
   "vibe-trading": ["vibe-trading", "runs"],
@@ -96,6 +98,8 @@ const RUN_KIND_BY_AGENT_ID = {
   "meeting-notes": "meeting_notes",
   "deep-tutor": "deep_tutor",
   "career-ops": "career_ops",
+  openexecutive: "openexecutive",
+  praxist: "praxist",
   "open-gym": "open_gym",
   "trading-agent": "trading_agents",
   "vibe-trading": "vibe_trading",
@@ -1061,8 +1065,8 @@ const firstPartySkills = fs
   .map((entry) => entry.name)
   .sort();
 
-if (firstPartySkills.length !== 26) {
-  fail(`expected 26 first-party SKILL.md entries, found ${firstPartySkills.length}`);
+if (firstPartySkills.length !== 27) {
+  fail(`expected 27 first-party SKILL.md entries, found ${firstPartySkills.length}`);
 }
 
 const installedRegistryPath = path.join(repoRoot, ".agents", "skills", "registry.json");

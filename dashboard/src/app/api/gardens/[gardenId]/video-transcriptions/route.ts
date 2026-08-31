@@ -9,7 +9,8 @@ import { routeErrorResponse } from "@/lib/server-auth";
 export const dynamic = "force-dynamic";
 
 // POST /api/gardens/:gardenId/video-transcriptions
-// Accepts either multipart/form-data with a `video` file or JSON with a
+// Accepts either multipart/form-data with a `media` file (or legacy `video`)
+// or JSON with a
 // `youtubeUrl`. Returns 202 with the queued job; the transcription itself runs
 // asynchronously in the background job runner.
 export async function POST(

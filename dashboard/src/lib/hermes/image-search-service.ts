@@ -1,13 +1,15 @@
 import { runGoogleImageSearch } from "./image-search-runtime-v2.ts";
 import { ImageSearchServiceError } from "./image-search-errors.ts";
+import { readGoogleImageCredentials } from "./image-search-credentials.ts";
 
 export { ImageSearchServiceError } from "./image-search-errors.ts";
 
 // The `image_search` tool has two backends behind one contract. With Google
-// credentials configured, a disposable Runtime V2 worker runs the real
+// credentials saved in Profile, a disposable Runtime V2 worker runs the real
 // vendored mcp-google-images-search clone. The dashboard never owns that stdio
-// child and never receives either Google credential. Without credentials it
-// uses DuckDuckGo's process-free HTTP endpoint, so a fresh deployment still
+// child; it sends the credentials to the worker as a sealed, single-use Runtime
+// input that native Runtime deletes after the worker exits. Without credentials
+// it uses DuckDuckGo's process-free HTTP endpoint, so a fresh deployment still
 // shows images with zero setup.
 const KEYLESS_FETCH_TIMEOUT_MS = 15_000;
 const MAX_COUNT = 10;
@@ -48,13 +50,11 @@ export interface ImageSearchExecutionOptions {
 }
 
 /**
- * Google is used only when both credentials are present; otherwise the keyless
- * DuckDuckGo backend serves the same display contract with zero setup.
+ * Google is used only when this profile has both credentials; otherwise the
+ * keyless DuckDuckGo backend serves the same display contract with zero setup.
  */
-export function imageSearchMode(env: NodeJS.ProcessEnv = process.env): "google" | "keyless" {
-  return env.BREADBOARD_GOOGLE_IMAGES_CONFIGURED?.trim().toLowerCase() === "true"
-    ? "google"
-    : "keyless";
+export function imageSearchMode(configured: boolean): "google" | "keyless" {
+  return configured ? "google" : "keyless";
 }
 
 export interface CanonicalImageSearchRequest {
@@ -255,6 +255,12 @@ export async function searchImages(
   options: ImageSearchExecutionOptions = {},
 ): Promise<ImageSearchResult> {
   const args = normalizeArgs(input);
-  if (imageSearchMode() === "keyless") return searchImagesKeyless(args, options.signal);
-  return runGoogleImageSearch(args, options.scope, options.signal);
+  const credentials = options.scope
+    ? readGoogleImageCredentials(options.scope.userId)
+    : null;
+  const mode = imageSearchMode(credentials !== null);
+  if (mode === "keyless" || credentials === null) {
+    return searchImagesKeyless(args, options.signal);
+  }
+  return runGoogleImageSearch(args, options.scope, credentials, options.signal);
 }

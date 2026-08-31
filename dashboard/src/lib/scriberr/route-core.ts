@@ -9,7 +9,7 @@ import {
   sanitizeErrorForClient,
 } from "./errors.ts";
 import {
-  isSupportedVideoExtension,
+  isSupportedMediaExtension,
   sanitizeDisplayFilename,
   titleFromFilename,
 } from "./paths.ts";
@@ -165,13 +165,21 @@ export async function handleCreateVideoTranscription(
       }
 
       const form = await request.formData();
-      const file = form.get("video");
+      const media = form.get("media");
+      const legacyVideo = form.get("video");
+      if (media instanceof File && legacyVideo instanceof File) {
+        throw new VideoTranscriptionError("invalid_input", {
+          userMessage: "Attach one video or audio file, not both.",
+          httpStatus: 400,
+        });
+      }
+      const file = media instanceof File ? media : legacyVideo;
       const urlValue = form.get("youtubeUrl");
       retranscribe = form.get("retranscribe") === "true";
       if (typeof urlValue === "string" && urlValue.trim() && file instanceof File) {
         throw new VideoTranscriptionError("invalid_input", {
           userMessage:
-            "Provide either a video file or a YouTube URL, not both.",
+            "Provide either a video or audio file or a YouTube URL, not both.",
           httpStatus: 400,
         });
       }
@@ -181,7 +189,7 @@ export async function handleCreateVideoTranscription(
           inputKind = "youtube";
         } else {
           throw new VideoTranscriptionError("invalid_input", {
-            userMessage: "Attach a video file or enter a YouTube URL.",
+            userMessage: "Attach a video or audio file, or enter a YouTube URL.",
             httpStatus: 400,
           });
         }
@@ -190,7 +198,7 @@ export async function handleCreateVideoTranscription(
           throw new VideoTranscriptionError("media_too_large", { httpStatus: 413 });
         }
         const displayFilename = sanitizeDisplayFilename(file.name);
-        if (!isSupportedVideoExtension(displayFilename)) {
+        if (!isSupportedMediaExtension(displayFilename)) {
           throw new VideoTranscriptionError("media_unsupported", { httpStatus: 415 });
         }
         upload = { file, displayFilename };
@@ -200,15 +208,15 @@ export async function handleCreateVideoTranscription(
       const body = await readJsonBody(request);
       const url = body.youtubeUrl ?? body.url;
       retranscribe = body.retranscribe === true;
-      if (body.video !== undefined) {
+      if (body.video !== undefined || body.media !== undefined) {
         throw new VideoTranscriptionError("invalid_input", {
-          userMessage: "Video uploads must use multipart/form-data.",
+          userMessage: "Media uploads must use multipart/form-data.",
           httpStatus: 400,
         });
       }
       if (typeof url !== "string" || !url.trim()) {
         throw new VideoTranscriptionError("invalid_input", {
-          userMessage: "Attach a video file or enter a YouTube URL.",
+          userMessage: "Attach a video or audio file, or enter a YouTube URL.",
           httpStatus: 400,
         });
       }

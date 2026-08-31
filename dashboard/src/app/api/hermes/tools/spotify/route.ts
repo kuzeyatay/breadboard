@@ -17,11 +17,13 @@ import {
   requireEnabled,
 } from "@/lib/hermes/route-helpers.ts";
 import {
+  activateSpotifyPhonePlayback,
   createSpotifyPlaylist,
   recordSpotifyPlaybackIntent,
   searchSpotifyTracks,
   spotifyApiRequest,
   spotifyCurrentPlaybackState,
+  spotifyPhonePlaybackDevice,
   SPOTIFY_SKILL_SLUG,
 } from "@/lib/spotify/service.ts";
 import {
@@ -35,6 +37,162 @@ import {
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+const SPOTIFY_PHONE_CONTROL_ACTIONS = [
+  "pause",
+  "resume",
+  "next",
+  "previous",
+  "seek",
+  "shuffle",
+  "volume",
+  "repeat",
+] as const;
+
+type SpotifyPhoneControlAction =
+  (typeof SPOTIFY_PHONE_CONTROL_ACTIONS)[number];
+
+function phoneControlAction(value: unknown): SpotifyPhoneControlAction | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (
+    typeof value !== "string" ||
+    !SPOTIFY_PHONE_CONTROL_ACTIONS.includes(
+      value as SpotifyPhoneControlAction,
+    )
+  ) {
+    throw new ApiError(
+      400,
+      "spotify_control_invalid",
+      "That Spotify playback control is not supported.",
+    );
+  }
+  return value as SpotifyPhoneControlAction;
+}
+
+async function requireSpotifyPhone(userId: number) {
+  const device = await spotifyPhonePlaybackDevice(userId);
+  if (!device) {
+    throw new ApiError(
+      409,
+      "spotify_phone_unavailable",
+      "Spotify is not currently available on your phone. Open Spotify on the phone and try again.",
+    );
+  }
+  return device;
+}
+
+async function startPhonePlayback(input: {
+  userId: number;
+  uris: string[];
+}) {
+  const device = await spotifyPhonePlaybackDevice(input.userId);
+  if (!device) return null;
+  await spotifyApiRequest({
+    userId: input.userId,
+    method: "PUT",
+    endpoint: "/v1/me/player/play",
+    query: { device_id: device.id },
+    body: { uris: input.uris },
+  });
+  return device;
+}
+
+function numberInRange(input: {
+  value: unknown;
+  minimum: number;
+  maximum?: number;
+  code: string;
+  message: string;
+}): number {
+  const value = Number(input.value);
+  if (
+    !Number.isFinite(value) ||
+    value < input.minimum ||
+    (input.maximum !== undefined && value > input.maximum)
+  ) {
+    throw new ApiError(400, input.code, input.message);
+  }
+  return Math.round(value);
+}
+
+async function controlSpotifyPhone(input: {
+  userId: number;
+  action: SpotifyPhoneControlAction;
+  args: Record<string, unknown>;
+}) {
+  const availableDevice = await requireSpotifyPhone(input.userId);
+  const device = await activateSpotifyPhonePlayback({
+    userId: input.userId,
+    device: availableDevice,
+    play: input.action === "resume",
+  });
+  let method: "POST" | "PUT" = "PUT";
+  let endpoint = "";
+  const query: Record<string, string | number | boolean> = {
+    device_id: device.id,
+  };
+
+  if (input.action === "pause" || input.action === "resume") {
+    endpoint = input.action === "pause"
+      ? "/v1/me/player/pause"
+      : "/v1/me/player/play";
+  } else if (input.action === "next" || input.action === "previous") {
+    method = "POST";
+    endpoint = `/v1/me/player/${input.action}`;
+  } else if (input.action === "seek") {
+    endpoint = "/v1/me/player/seek";
+    query.position_ms = numberInRange({
+      value: input.args.positionMs,
+      minimum: 0,
+      code: "invalid_spotify_position",
+      message: "The playback position is invalid.",
+    });
+  } else if (input.action === "shuffle") {
+    if (typeof input.args.enabled !== "boolean") {
+      throw new ApiError(
+        400,
+        "invalid_spotify_shuffle",
+        "Shuffle must be turned on or off.",
+      );
+    }
+    endpoint = "/v1/me/player/shuffle";
+    query.state = input.args.enabled;
+  } else if (input.action === "volume") {
+    endpoint = "/v1/me/player/volume";
+    query.volume_percent = numberInRange({
+      value: input.args.volumePercent,
+      minimum: 0,
+      maximum: 100,
+      code: "invalid_spotify_volume",
+      message: "Spotify volume must be between 0 and 100.",
+    });
+  } else {
+    const state = typeof input.args.repeatState === "string"
+      ? input.args.repeatState
+      : "";
+    if (!new Set(["off", "track", "context"]).has(state)) {
+      throw new ApiError(
+        400,
+        "invalid_spotify_repeat",
+        "Spotify repeat must be off, track, or context.",
+      );
+    }
+    endpoint = "/v1/me/player/repeat";
+    query.state = state;
+  }
+
+  await spotifyApiRequest({
+    userId: input.userId,
+    method,
+    endpoint,
+    query,
+  });
+  return {
+    action: input.action,
+    status: "controlled",
+    device: { name: device.name, type: device.type },
+  };
+}
 
 async function startInlinePlaylistPlayback(input: {
   userId: number;
@@ -133,6 +291,29 @@ export async function POST(request: Request) {
       body.args && typeof body.args === "object" && !Array.isArray(body.args)
         ? (body.args as Record<string, unknown>)
         : {};
+    const controlAction = toolName === "spotify_play"
+      ? phoneControlAction(args.action)
+      : null;
+    if (controlAction) {
+      const data = await controlSpotifyPhone({
+        userId: session.user_id,
+        action: controlAction,
+        args,
+      });
+      recordAuditEvent({
+        eventType: "spotify.tool_completed",
+        runtimeSessionId: session.id,
+        userId: session.user_id,
+        gardenId: session.garden_id,
+        payload: {
+          runId: run.id,
+          tool: toolName,
+          action: controlAction,
+          deviceType: data.device.type,
+        },
+      });
+      return NextResponse.json({ ok: true, data });
+    }
     const query = typeof args.query === "string" ? args.query : "";
     const playlistQueries = toolName === "spotify_create_playlist"
       ? [
@@ -170,12 +351,6 @@ export async function POST(request: Request) {
             tracks,
           });
           const shouldPlay = args.play === true;
-          const playbackStarted = shouldPlay
-            ? await startInlinePlaylistPlayback({
-                userId: session.user_id!,
-                uris: tracks.map((track) => track.uri),
-              })
-            : false;
           const intent = shouldPlay
             ? recordSpotifyPlaybackIntent({
                 userId: session.user_id!,
@@ -183,6 +358,18 @@ export async function POST(request: Request) {
                 tracks,
               })
             : null;
+          const phone = shouldPlay
+            ? await startPhonePlayback({
+                userId: session.user_id!,
+                uris: tracks.map((track) => track.uri),
+              })
+            : null;
+          const playbackStarted = shouldPlay && !phone
+            ? await startInlinePlaylistPlayback({
+                userId: session.user_id!,
+                uris: tracks.map((track) => track.uri),
+              })
+            : Boolean(phone);
           return {
             playlist,
             ...(intent
@@ -192,23 +379,33 @@ export async function POST(request: Request) {
                   player: "inline",
                   status: playbackStarted ? "playing" : "ready",
                   playbackStarted,
+                  ...(phone
+                    ? { device: { name: phone.name, type: phone.type } }
+                    : {}),
                 }
               : { status: "created" }),
           };
         })()
       : toolName === "spotify_play"
-      ? (() => {
+      ? await (async () => {
           const intent = recordSpotifyPlaybackIntent({
             userId: session.user_id!,
             conversationId: session.conversation_id!,
             tracks,
           });
+          const phone = await startPhonePlayback({
+            userId: session.user_id!,
+            uris: intent.queueUris,
+          });
           return {
             selected: intent.track,
             queueLength: intent.queueUris.length,
             player: "inline",
-            status: "ready",
-            playbackStarted: false,
+            status: phone ? "playing" : "ready",
+            playbackStarted: Boolean(phone),
+            ...(phone
+              ? { device: { name: phone.name, type: phone.type } }
+              : {}),
           };
         })()
       : { tracks };

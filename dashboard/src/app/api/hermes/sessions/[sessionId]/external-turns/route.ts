@@ -63,6 +63,9 @@ function presentExternalMessage(
   return {
     ...presented,
     ...delegatedAgentPresentation(presented.content, externalAgent),
+    ...(presented.metadata.internalAgentContinuation === true
+      ? { internalAgentContinuation: true }
+      : {}),
     verification: presented.metadata.verification,
     ...(Number.isFinite(metadataDuration) && metadataDuration >= 0
       ? { responseDurationMs: metadataDuration }
@@ -150,6 +153,8 @@ export async function POST(
           ? undefined
           : requireString(body.branchGroupId, "branchGroupId", 128),
       attachments,
+      delegatedAgentRun: body.delegatedAgentRun === true,
+      internalAgentContinuation: body.delegatedAgentRun === true,
     });
     if (turn.userMessage.order_index === 0) {
       await generateAndApplyConversationTitle({

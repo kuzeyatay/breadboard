@@ -137,7 +137,7 @@ function componentBlock(host, componentName) {
   return host.slice(start, start + 1_200);
 }
 
-test("Terminal wires retry into all five external agent responses", () => {
+test("Terminal wires retry into every external agent response", () => {
   for (const componentName of [
     "InlineBrowserRun",
     "InlineAgentBrowserRun",

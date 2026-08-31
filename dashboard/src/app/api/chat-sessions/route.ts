@@ -12,6 +12,10 @@ import {
   type ChatMessageAttachment,
 } from "@/lib/chat-attachments";
 import {
+  normalizeChatTextSelectionReference,
+  type ChatTextSelectionReference,
+} from "@/lib/chat-text-selection";
+import {
   delegatedAgentPresentation,
   externalAgentMessageFields,
 } from "@/lib/conversations/external-agent-runs";
@@ -21,6 +25,10 @@ import {
   summarizeConversationMessages,
 } from "@/lib/conversations/store";
 import { isChatHighlight } from "@/lib/conversations/highlights";
+import {
+  normalizeGenerativeUiResources,
+  type GenerativeUiResource,
+} from "@/lib/generative-ui/contracts.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -44,9 +52,13 @@ type ChatMessage = {
   attachments?: ChatMessageAttachment[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
+  progressNotes?: string[];
   verification?: VerificationSummary;
+  uiResources?: GenerativeUiResource[];
   selectedText?: string;
   inlineSelection?: QuartzInlineSelectionReference;
+  /** Selected-text ("Ask in chat"/"Ask here") anchor for garden-chat turns. */
+  textSelection?: ChatTextSelectionReference;
 } & ReturnType<typeof externalAgentMessageFields>;
 
 interface ChatSessionRow {
@@ -205,6 +217,33 @@ function parseResponseDuration(value: string | null): number | undefined {
   }
 }
 
+function parseProgressNotes(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as { progressNotes?: unknown };
+    return Array.isArray(parsed?.progressNotes)
+      ? parsed.progressNotes
+          .filter(
+            (note): note is string =>
+              typeof note === "string" && Boolean(note.trim()),
+          )
+          .map((note) => note.trim())
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseGenerativeUiResources(value: string | null): GenerativeUiResource[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as { uiResources?: unknown };
+    return normalizeGenerativeUiResources(parsed?.uiResources);
+  } catch {
+    return [];
+  }
+}
+
 function parseInternalAgentContinuation(value: string | null): boolean {
   if (!value) return false;
   try {
@@ -221,6 +260,18 @@ function parseSelectedText(value: string | null): string | undefined {
     const parsed = JSON.parse(value) as { selectedText?: unknown };
     if (typeof parsed?.selectedText !== "string") return undefined;
     return parsed.selectedText.trim().slice(0, 4_000) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseTextSelection(
+  value: string | null,
+): ChatTextSelectionReference | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as { textSelection?: unknown };
+    return normalizeChatTextSelectionReference(parsed?.textSelection) ?? undefined;
   } catch {
     return undefined;
   }
@@ -417,12 +468,15 @@ function readSessions(
     const usage = parseTokenUsage(message.token_usage);
     const verification = parseVerification(message.tool_calls);
     const responseDurationMs = parseResponseDuration(message.tool_calls);
+    const progressNotes = parseProgressNotes(message.tool_calls);
+    const uiResources = parseGenerativeUiResources(message.tool_calls);
     const internalAgentContinuation =
       message.role === "user" &&
       parseInternalAgentContinuation(message.tool_calls);
     const selectedText =
       message.role === "user" ? parseSelectedText(message.tool_calls) : undefined;
     const inlineSelection = parseInlineSelection(message.tool_calls);
+    const textSelection = parseTextSelection(message.tool_calls);
     const externalAgent = parseExternalAgentFields(
       message.tool_calls,
       message.role,
@@ -437,10 +491,13 @@ function readSessions(
       ...(internalAgentContinuation ? { internalAgentContinuation: true } : {}),
       ...(selectedText ? { selectedText } : {}),
       ...(inlineSelection ? { inlineSelection } : {}),
+      ...(textSelection ? { textSelection } : {}),
       createdAt: message.created_at,
       sources: parseSources(message.sources),
       ...(usage ? { usage } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
+      ...(progressNotes.length ? { progressNotes } : {}),
+      ...(uiResources.length ? { uiResources } : {}),
       ...(verification ? { verification } : {}),
       ...attachmentFields,
     });

@@ -26,6 +26,7 @@ export type ManagedSetupServiceId =
   | "matraix"
   | "money-printer"
   | "openmontage"
+  | "openexecutive"
   | "openscience"
   | "openwork"
   | "resource2skill"

@@ -448,6 +448,83 @@ export function listRecentConversationMessages(
   return rows.reverse();
 }
 
+/**
+ * Append a completed assistant message without inventing a user turn.
+ *
+ * Proactive messages (for example a calendar reminder delivered to Telegram)
+ * are real things the assistant said, but they are not answers to a prompt.
+ * Persisting them as assistant-only rows keeps the Terminal transcript honest
+ * and, more importantly, puts the exact outbound text into the canonical
+ * runtime history when the user replies from the messaging app.
+ */
+export function appendConversationAssistantMessage(input: {
+  conversation: ConversationRow;
+  clientMessageId: string;
+  surface: HermesSurface;
+  content: string;
+  metadata?: Record<string, unknown>;
+}, database: Database.Database = db): ConversationMessageRow {
+  const clientMessageId = normalizeClientMessageId(input.clientMessageId);
+  const content = scrubbed(normalizeMessageContent(input.content));
+  const append = database.transaction(() => {
+    const existing = getMessageByClientRole(
+      input.conversation.id,
+      clientMessageId,
+      "assistant",
+      database,
+    );
+    if (existing) {
+      if (
+        existing.content !== content ||
+        existing.surface !== input.surface ||
+        existing.status !== "complete"
+      ) {
+        throw new ConversationStoreError(
+          409,
+          "client_message_id_conflict",
+          "That clientMessageId was already used for a different assistant message.",
+        );
+      }
+      return existing;
+    }
+
+    const current = getConversationById(input.conversation.id, database);
+    if (!current) {
+      throw new ConversationStoreError(
+        404,
+        "conversation_not_found",
+        "Conversation not found.",
+      );
+    }
+    const serializedMetadata = input.metadata && Object.keys(input.metadata).length > 0
+      ? JSON.stringify(input.metadata)
+      : null;
+    const result = database.prepare(`
+      INSERT INTO conversation_messages
+        (conversation_id, client_message_id, role, surface, content, status,
+         order_index, metadata)
+      VALUES (?, ?, 'assistant', ?, ?, 'complete', ?, ?)
+    `).run(
+      current.id,
+      clientMessageId,
+      input.surface,
+      content,
+      current.next_order_index,
+      serializedMetadata,
+    );
+    database.prepare(`
+      UPDATE conversations
+      SET next_order_index = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(current.next_order_index + 1, current.id);
+
+    const message = getConversationMessageById(Number(result.lastInsertRowid), database)!;
+    dualWriteAssistantMessage(current, message, database);
+    return message;
+  });
+  return append.immediate();
+}
+
 export interface ReservedConversationTurn {
   conversation: ConversationRow;
   userMessage: ConversationMessageRow;
@@ -517,7 +594,20 @@ export function reserveConversationTurn(input: {
   surface: HermesSurface;
   content: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Permit a nested turn while another assistant row is pending. This is only
+   * valid inside an owning transaction that makes the nested assistant
+   * terminal before commit; ordinary user turns must remain serialized.
+   */
+  allowActiveTurnWithinTransaction?: boolean;
 }, database: Database.Database = db): ReservedConversationTurn {
+  if (input.allowActiveTurnWithinTransaction && !database.inTransaction) {
+    throw new ConversationStoreError(
+      500,
+      "nested_turn_transaction_required",
+      "A nested conversation turn must be completed in an owning transaction.",
+    );
+  }
   const clientMessageId = normalizeClientMessageId(input.clientMessageId);
   const content = normalizeMessageContent(input.content);
   const reserve = database.transaction((): ReservedConversationTurn => {
@@ -557,7 +647,7 @@ export function reserveConversationTurn(input: {
       WHERE conversation_id = ? AND role = 'assistant' AND status = 'pending'
       LIMIT 1
     `).get(input.conversation.id) as { client_message_id: string } | undefined;
-    if (active) {
+    if (active && !input.allowActiveTurnWithinTransaction) {
       throw new ConversationStoreError(
         409,
         "conversation_turn_active",

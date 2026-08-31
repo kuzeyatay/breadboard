@@ -299,6 +299,15 @@ function optionalString(candidate) {
   );
 }
 
+function optionalLearnUserInstruction(candidate) {
+  return (
+    candidate === undefined ||
+    (typeof candidate === "string" &&
+      Boolean(candidate.trim()) &&
+      candidate.trim().length <= 4_000)
+  );
+}
+
 function nullableNonEmptyString(candidate) {
   return candidate === null || (typeof candidate === "string" && Boolean(candidate.trim()));
 }
@@ -348,7 +357,8 @@ export function validateRuntimeV2LearnRequest(value, authoritativeContentPath) {
           )) ||
         typeof value.sourceOnly !== "boolean" ||
         typeof value.includeSourceSnapshots !== "boolean" ||
-        typeof value.autoConfirmTopicMap !== "boolean"
+        typeof value.autoConfirmTopicMap !== "boolean" ||
+        !optionalLearnUserInstruction(value.userInstruction)
       ) {
         fail("The Learn planning request is invalid.");
       }
@@ -404,7 +414,8 @@ export function validateRuntimeV2LearnRequest(value, authoritativeContentPath) {
         !optionalStringArray(value.includedSourceIds) ||
         !optionalString(value.syllabusSourceId) ||
         typeof value.sourceOnly !== "boolean" ||
-        typeof value.includeSourceSnapshots !== "boolean"
+        typeof value.includeSourceSnapshots !== "boolean" ||
+        !optionalLearnUserInstruction(value.userInstruction)
       ) {
         fail("The Learn rebuild request is invalid.");
       }

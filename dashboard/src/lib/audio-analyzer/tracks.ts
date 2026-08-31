@@ -10,7 +10,11 @@
 // second question ("what happens at 2:10?") arrives with no attachment at all,
 // and without a lookback a song would be analyzable exactly once.
 
-import { formatAudioSize, audioFormatLabel } from "../audio-attachments.ts";
+import {
+  formatAudioSize,
+  audioFormatLabel,
+  type AudioAttachmentFormat,
+} from "../audio-attachments.ts";
 import type { ChatAttachment, ChatMessageAttachment } from "../chat-attachments.ts";
 import { findAudioBlob } from "../conversations/audio-blob-store.ts";
 import { messageAttachments } from "../conversations/uploads.ts";
@@ -25,6 +29,7 @@ export interface ResolvedTrack {
   blobId: string;
   /** Absolute path to the stored file, or null when it is no longer there. */
   path: string | null;
+  format: AudioAttachmentFormat;
   formatLabel: string;
   sizeBytes?: number;
   /** True when the track came from an earlier message rather than the newest one. */
@@ -66,6 +71,7 @@ function resolve(
     name: attachment.name,
     blobId: attachment.blobId,
     path: blob?.path ?? null,
+    format: attachment.format,
     formatLabel: audioFormatLabel(attachment.format),
     ...(attachment.sizeBytes ?? blob?.byteSize
       ? { sizeBytes: attachment.sizeBytes ?? blob?.byteSize }

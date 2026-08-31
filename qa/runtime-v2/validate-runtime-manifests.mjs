@@ -120,6 +120,7 @@ const TRUSTED_WORKER_ENVIRONMENT_SOURCES = new Set([
   "outer-opencode",
   "trading-agent",
   "outer-career-ops",
+  "outer-openexecutive",
   "system-location",
   "chatmock",
   "vimax",
@@ -128,6 +129,7 @@ const TRUSTED_WORKER_ENVIRONMENT_SOURCES = new Set([
   "outer-open-gym",
   "agent-reach-setup",
   "gbrain-sync",
+  "thought-topology",
   "outer-agent-reach",
   "agent-browser-profile",
   "agent-tars",
@@ -182,6 +184,7 @@ const WORKER_SERVICE_DEPENDENCY_CONDITIONS = new Set([
   "meeting-notes-engine-scriberr",
   "meeting-notes-engine-voicebox",
   "meeting-notes-needs-chatmock",
+  "max-research-openscience-enabled",
 ]);
 const RESOURCE_CLASSES = new Set([
   "core",
@@ -722,10 +725,17 @@ for (const [index, worker] of workers.entries()) {
       ) {
         fail(`${dependencyLabel}.condition is outside the Meeting Notes sealed request contract`);
       }
+      if (
+        dependency.condition === "max-research-openscience-enabled" &&
+        (worker.kind !== "outer-max-research-node" || !worker.jobTypes.includes("max-research-run"))
+      ) {
+        fail(`${dependencyLabel}.condition is outside the Max Research sealed request contract`);
+      }
       const requiredServiceForCondition = {
         "meeting-notes-engine-scriberr": "scriberr",
         "meeting-notes-engine-voicebox": "voicebox",
         "meeting-notes-needs-chatmock": "chatmock",
+        "max-research-openscience-enabled": "openscience",
       }[dependency.condition];
       if (requiredServiceForCondition && dependency.serviceId !== requiredServiceForCondition) {
         fail(`${dependencyLabel}.serviceId does not match its closed predicate`);
@@ -959,6 +969,7 @@ for (const entry of [
   "runtime-v2-opencode-worker.mjs",
   "runtime-v2-trading-agent-worker.mjs",
   "runtime-v2-career-ops-worker.mjs",
+  "runtime-v2-openexecutive-worker.mjs",
   "runtime-v2-chatmock-login-worker.mjs",
   "runtime-v2-chatmock-login-executor.mjs",
   "runtime-v2-vimax-worker.mjs",
@@ -971,6 +982,7 @@ for (const entry of [
   "runtime-v2-agent-reach-setup-executor.mjs",
   "runtime-v2-agent-reach-configure.py",
   "runtime-v2-gbrain-sync-worker.mjs",
+  "runtime-v2-thought-topology-worker.mjs",
   "runtime-v2-legal-worker.mjs",
   "runtime-v2-sf3d-worker.mjs",
   "sf3d-bridge.py",

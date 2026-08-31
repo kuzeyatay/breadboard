@@ -401,7 +401,7 @@ impl ServiceEngine {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => return Err(RuntimeServiceControlError::Unavailable),
             Err(TrySendError::Disconnected(_)) => {
-                return Err(RuntimeServiceControlError::Unavailable)
+                return Err(RuntimeServiceControlError::Unavailable);
             }
         }
         response
@@ -1092,6 +1092,9 @@ impl ServiceController {
             RuntimeScheduleRegistration::fixed("memory-autofetch", 20 * 60_000, 20 * 60_000),
             RuntimeScheduleRegistration::fixed("review-scheduler", 10_000, 30_000),
             RuntimeScheduleRegistration::fixed("caldav-sync", 20_000, 60_000),
+            // Once a minute: the reminders are "20 minutes before" and "now",
+            // and a coarser tick would make both land visibly late.
+            RuntimeScheduleRegistration::fixed("calendar-reminders", 15_000, 60_000),
             RuntimeScheduleRegistration::dynamic("skills-catalog-refresh"),
             RuntimeScheduleRegistration::dynamic("email-poll"),
             RuntimeScheduleRegistration::dynamic("ifixai-maintenance"),
@@ -2909,7 +2912,9 @@ impl ServiceController {
             };
         }
         match phase {
-            Some(RetainedServiceAuthorityPhase::Claimed) => match self.poll_process_event(&key)? {
+            Some(RetainedServiceAuthorityPhase::Claimed) => match self
+                .poll_process_event(&key, now_ms)?
+            {
                 Some(ProcessOwnerEvent::Lifecycle(_)) => {
                     let (_, root_pid) = self
                         .store
@@ -2963,7 +2968,7 @@ impl ServiceController {
                         }
                         RetainedServiceReadinessProgress::ProcessExited => {
                             if let Some(ProcessOwnerEvent::Terminal(terminal)) =
-                                self.poll_process_event(&key)?
+                                self.poll_process_event(&key, now_ms)?
                             {
                                 self.retain_terminal_and_finish(key, terminal, now_ms)?;
                             }
@@ -2985,7 +2990,7 @@ impl ServiceController {
                 }
             }
             Some(RetainedServiceAuthorityPhase::Resident) => {
-                if let Some(event) = self.poll_process_event(&key)? {
+                if let Some(event) = self.poll_process_event(&key, now_ms)? {
                     match event {
                         ProcessOwnerEvent::Terminal(terminal) => {
                             self.retain_terminal_and_finish(key, terminal, now_ms)?;
@@ -3002,7 +3007,7 @@ impl ServiceController {
             }
             Some(RetainedServiceAuthorityPhase::Stopping) => {
                 self.advance_stop(&key)?;
-                if let Some(event) = self.poll_process_event(&key)? {
+                if let Some(event) = self.poll_process_event(&key, now_ms)? {
                     match event {
                         ProcessOwnerEvent::Terminal(terminal) => {
                             self.retain_terminal_and_finish(key, terminal, now_ms)?;
@@ -3086,8 +3091,9 @@ impl ServiceController {
     }
 
     fn poll_process_event(
-        &self,
+        &mut self,
         key: &ServiceKey,
+        now_ms: u64,
     ) -> Result<Option<ProcessOwnerEvent>, ServiceEngineError> {
         match self
             .store
@@ -3097,8 +3103,46 @@ impl ServiceController {
             Err(DurableServiceStoreError::ProcessOwner(ProcessOwnerError::EventWaitTimeout)) => {
                 Ok(None)
             }
+            // The supervisor's event stream ended without a terminal record.
+            // Its Job Object dies with it, so this is one service's casualty,
+            // not evidence that the runtime lost track of live processes.
+            Err(DurableServiceStoreError::ProcessOwner(
+                ProcessOwnerError::MissingTerminalReceipt,
+            )) => {
+                self.finish_supervision_lost(key, now_ms)?;
+                Ok(None)
+            }
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Finalizes the generation whose supervisor was lost, leaving the rest of
+    /// the runtime running. The receipt is classified as a supervision failure,
+    /// so the service lands in `failed` with its bounded restart still owed and
+    /// recovers the way any crashed service does.
+    fn finish_supervision_lost(
+        &mut self,
+        key: &ServiceKey,
+        now_ms: u64,
+    ) -> Result<(), ServiceEngineError> {
+        match self
+            .store
+            .finish_retained_durable_service_supervision_lost(&key.0, key.1, now_ms)
+        {
+            Ok(_) => {}
+            // The supervisor process has not been reaped yet. The live owner is
+            // retained across this bounded check, so the next tick retries.
+            Err(DurableServiceStoreError::ProcessOwner(
+                ProcessOwnerError::SupervisorExitTimeout | ProcessOwnerError::EventWaitTimeout,
+            )) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        if self.registry.service(&key.0)?.startup_policy == ServiceStartupPolicy::OnDemand {
+            self.fail_pending_acquires_for_generation_unless_reacquiring(&key.0, key.1, now_ms);
+        }
+        let _reserved = self.try_retain_endpoint_reservation(&key.0)?;
+        self.clear_generation_tracking(key);
+        Ok(())
     }
 
     fn retain_terminal_and_finish(
@@ -3159,9 +3203,12 @@ impl ServiceController {
                 self.clear_generation_tracking(key);
                 Ok(())
             }
-            Err(DurableServiceStoreError::ProcessOwner(ProcessOwnerError::EventWaitTimeout)) => {
-                Ok(())
-            }
+            // Both are bounded checks that retain the live owner and its sole
+            // terminal receipt, so the next tick retries this finalization
+            // rather than taking the runtime down over a slow reap.
+            Err(DurableServiceStoreError::ProcessOwner(
+                ProcessOwnerError::EventWaitTimeout | ProcessOwnerError::SupervisorExitTimeout,
+            )) => Ok(()),
             Err(error) => Err(error.into()),
         }
     }
@@ -3899,12 +3946,12 @@ fn reconciliation_payload(
         RuntimeScheduleKind::Fixed => {
             return Err(ServiceEngineError::Invariant(
                 "fixed schedule requested reconciliation",
-            ))
+            ));
         }
         RuntimeScheduleKind::Service => {
             return Err(ServiceEngineError::Invariant(
                 "desired-state service requested worker reconciliation",
-            ))
+            ));
         }
     };
     Ok(JobSubmissionPayload {
@@ -3932,6 +3979,7 @@ fn occurrence_payload(
             | "memory-autofetch"
             | "review-scheduler"
             | "caldav-sync"
+            | "calendar-reminders"
             | "skills-catalog-refresh"
             | "email-poll"
             | "ifixai-maintenance" => {}

@@ -8,6 +8,10 @@ import {
   delegatedAgentPresentation,
   externalAgentMessageFields,
 } from "../conversations/external-agent-runs.ts";
+import {
+  carriedExternalAgentsForContinuation,
+  withCarriedExternalAgents,
+} from "../conversations/delegated-agent-provenance.ts";
 import { projectConversationBranchMessages } from "../conversations/branch-history.ts";
 import {
   presentMessageVersions,
@@ -31,6 +35,7 @@ import {
 } from "../hardware/artifact.ts";
 import { hardwareBlueprintRunCardState } from "../hardware/run-card-state.ts";
 import type { HardwareDesign } from "../hardware/types.ts";
+import { normalizeGenerativeUiResources } from "../generative-ui/contracts.ts";
 
 // Creating a brand-new conversation and dispatching its first turn are two
 // requests. The durable placeholder between them is stored as aborted so a
@@ -166,9 +171,10 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     ? memoryUpdatedClientMessageIdsForSession(runtime.id)
     : new Set<string>();
   let recoverableHardwareCards: Map<number, RecoverableHardwareCardSource> | null = null;
-  const messages = projectConversationBranchMessages(
+  const conversationMessages = projectConversationBranchMessages(
     listConversationMessages(conversation.id),
-  ).map((message) => {
+  );
+  const messages = conversationMessages.map((message, messageIndex) => {
     const presented = presentConversationMessage(message);
     // Metadata is the persistence envelope. Project the fields the client
     // actually consumes below, but do not also ship that envelope wholesale:
@@ -176,6 +182,12 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     const { metadata, ...presentedMessage } = presented;
     const calls = Array.isArray(metadata.toolCalls)
       ? metadata.toolCalls as Array<Record<string, unknown>>
+      : [];
+    const progressNotes = Array.isArray(metadata.progressNotes)
+      ? metadata.progressNotes.filter(
+          (note): note is string =>
+            typeof note === "string" && Boolean(note.trim()),
+        )
       : [];
     const responseStartedAt =
       typeof metadata.responseStartedAt === "string" &&
@@ -203,6 +215,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     const textSelection = normalizeChatTextSelectionReference(
       metadata.textSelection,
     );
+    const uiResources = normalizeGenerativeUiResources(metadata.uiResources);
     const normalizeModelChangeLabel = (value: unknown) =>
       typeof value === "string"
         ? value
@@ -242,6 +255,24 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
             ),
           )
         : null;
+    // Old synthesis turns may have finished after the in-memory launch queue
+    // was lost, leaving `verification.externalAgents` empty even though the
+    // durable hidden worker turn is intact. The preceding hand-back marker
+    // names that exact worker, so transcript restore can repair the evidence
+    // view without mutating history or guessing from adjacent user requests.
+    const previousMessage = conversationMessages[messageIndex - 1];
+    const carriedDelegations =
+      presented.role === "assistant" &&
+      previousMessage?.role === "user" &&
+      previousMessage.content.includes("<!-- agent-launch-result:")
+        ? carriedExternalAgentsForContinuation({
+            continuationText: previousMessage.content,
+            messages: conversationMessages,
+          })
+        : [];
+    const verification = contentVersions.derived
+      ? undefined
+      : withCarriedExternalAgents(metadata.verification, carriedDelegations);
     let externalAgent = externalAgentMessageFields(metadata);
     if (
       presented.role === "assistant" &&
@@ -273,6 +304,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(Array.isArray(metadata.attachments)
         ? { attachments: metadata.attachments }
         : {}),
+      ...(progressNotes.length ? { progressNotes } : {}),
       tools: calls.map((call, index) => ({
         toolCallId: String(call.toolCallId ?? `tool-${index}`),
         toolName: String(call.toolName ?? "tool"),
@@ -283,7 +315,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       // rewritten afterwards is a different set of sentences, and letting it
       // inherit "verified" would be a claim nobody checked — so a derived
       // version carries none, and switching back to the original restores it.
-      verification: contentVersions.derived ? undefined : metadata.verification,
+      verification,
       ...(contentVersions.versions.length > 1
         ? { contentVersions: presentMessageVersions(contentVersions) }
         : {}),
@@ -338,6 +370,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(modelChangeAfter ? { modelChangeAfter } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(responseStartedAt ? { responseStartedAt } : {}),
+      ...(uiResources.length ? { uiResources } : {}),
     };
   });
 

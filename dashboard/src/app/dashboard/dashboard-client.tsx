@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -59,6 +66,10 @@ import {
 } from "@/lib/garden-transfer/client";
 import { useToast, Toaster } from "@/app/components/toast";
 import {
+  requestChatNotificationOpen,
+  type ChatNotificationTarget,
+} from "@/lib/chat-notification-inbox";
+import {
   sumIngestTokenUsage,
   type IngestTokenUsage,
 } from "@/lib/ingest-token-usage";
@@ -92,6 +103,8 @@ interface Props {
   navbarShortcuts: NavbarShortcuts;
   /** A top-level terminal route, such as /hooks, can open its panel on arrival. */
   initialTerminalPanel?: TerminalPanel | null;
+  /** A notification deep-link can open one Terminal conversation on arrival. */
+  initialTerminalChatId?: string | null;
 }
 
 const ACCEPTED =
@@ -191,9 +204,20 @@ export default function DashboardClient({
   initialClusterFolders,
   navbarShortcuts,
   initialTerminalPanel = null,
+  initialTerminalChatId = null,
 }: Props) {
   const router = useRouter();
   const { toasts, addToast, dismissToast } = useToast();
+  // A Terminal notice opens its chat in the dock on this page; a Garden notice
+  // has no home here and navigates instead.
+  const openChatFromNotification = useCallback(
+    (target: ChatNotificationTarget) => {
+      if (target.surface !== "dashboard_terminal") return false;
+      requestChatNotificationOpen(target);
+      return true;
+    },
+    [],
+  );
   const [modalOpen, setModalOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -3788,12 +3812,17 @@ export default function DashboardClient({
         />
       )}
 
-      <Toaster toasts={toasts} onDismiss={dismissToast} />
+      <Toaster
+        toasts={toasts}
+        onDismiss={dismissToast}
+        onOpenChat={openChatFromNotification}
+      />
 
       <LazyDashboardAgentTerminal
         scope={clusterView === "public" ? "public" : "mine"}
         restoreOwnerKey={userEmail.trim().toLowerCase()}
         initialPanel={initialTerminalPanel}
+        initialChatId={initialTerminalChatId}
         backdropImage={bgImage}
       />
     </div>

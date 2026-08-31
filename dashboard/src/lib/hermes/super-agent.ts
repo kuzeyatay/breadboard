@@ -35,6 +35,10 @@ import {
   OPEN_GYM_COMMAND,
 } from "../open-gym/identity.ts";
 import {
+  GODS_EYE_AGENT_ID,
+  GODS_EYE_COMMAND,
+} from "../gods-eye/identity.ts";
+import {
   GOAL_MODE_CONNECTION,
   GOAL_MODE_SKILL,
 } from "../goal-mode.ts";
@@ -244,6 +248,23 @@ function openGymRoutingRule(): string {
   ].join("\n");
 }
 
+/**
+ * The live globe is a presentation capability, like openGym's animations:
+ * a framed real-time view the prose pipeline cannot produce. The rule keeps
+ * the delegation from being followed by a redundant synthesis turn — in Super
+ * Agent mode the framed view IS the answer.
+ */
+function godsEyeRoutingRule(): string {
+  return [
+    "## Live views of the world go to God's Eye",
+    `God's Eye (\`${GODS_EYE_COMMAND}\`) aims a photorealistic live globe — aircraft, ships, satellites, earthquakes, fires, public cameras — at a named place and frames that view in the chat. That frame is a concrete capability you do not have in your own prose response.`,
+    "",
+    `Whenever the user asks to see a place, watch live activity over it, or view somewhere in a sensor style (thermal, night vision), call \`agent_launch\` with agent id \`${GODS_EYE_AGENT_ID}\`. The framed view is the requested result: present it directly as the answer, and do not expect or create a second synthesis turn after it.`,
+    "",
+    "Questions about a place — routing, nearby recommendations, facts, history — stay with you and the map tools. God's Eye shows the live world; it does not explain it.",
+  ].join("\n");
+}
+
 /** Runtime agents that can reach the open web, in the order they are offered. */
 const RESEARCH_AGENT_IDS = [
   "deep-research",
@@ -366,8 +387,8 @@ function researchRoutingRule(inventory: SuperAgentInventory): string {
  *
  * *How many* comes second, because "more agents" reads as thoroughness and is
  * usually duplication. One at a time, reconsidering when the outcome returns as
- * an internal turn, which is also what the serial launch queue really does.
- * A second agent has to be doing a different job, not the same job again.
+ * an internal turn. Independent workers may be launched as one bounded batch;
+ * a second agent still has to do a different job, not the same job again.
  *
  * *What it costs the user* comes last: most of these read and report, a few send
  * mail, publish posts, or keep trading after the turn ends.
@@ -416,7 +437,7 @@ function runtimeAgentCatalogue(inventory: SuperAgentInventory): string {
   const ungrouped = launchable.filter((agent) => !runtimeAgentBrief(agent.id));
 
   return [
-    "## Runtime agents — start one with `agent_launch`",
+    "## Runtime agents — start workers with `agent_launch`",
     "Each of these is a private worker you can hand a job to with `agent_launch`. Three things follow from how delegation works, and all matter:",
     "- It has not run when the tool returns. It starts after your turn ends. Never write as though you have already seen its output, and never invent a result, file, artifact, or link.",
     "- The agent cannot see this conversation. The brief is everything it gets: subject, constraints, and what the finished thing should be, written for a stranger.",
@@ -426,7 +447,7 @@ function runtimeAgentCatalogue(inventory: SuperAgentInventory): string {
     "",
     "So name the reason before you launch anything: what does this agent reach that I cannot? The answers that count are concrete — it holds the user's real mailbox, the connected repository, a real browser, a workspace that outlives this turn, or it writes a kind of file this turn cannot produce. That the request is *about* an agent's topic is not one of them. If everything it would add is more words on a subject you already understand, launch nothing and answer.",
     "",
-    "Then decide how many. Prefer one: launch the agent that unblocks the most, and when its outcome comes back as an internal turn, decide again knowing what it found. Reach for a second only when the request splits into parts needing genuinely different reach — a repository change and a market read are two jobs, while two market agents on one question is one job done twice. Where several agents share a domain below, what separates them is the shape of the input they take and what they hand back, so read those entries against each other rather than stopping at the first that sounds close.",
+    "Then decide how many. Prefer one when the work is dependent. When the request splits into independent parts needing genuinely different reach, launch those workers in this same turn so they can run concurrently — up to four in one batch. A repository change and a market read are two jobs; two market agents repeating one question are one job done twice. Results return one at a time as internal turns: give a useful interim synthesis for each completed worker, say when other workers are still running, and produce the combined conclusion when the batch is complete. Where several agents share a domain below, read their distinctions rather than stopping at the first that sounds close.",
     "",
     "And weigh what starting one commits the user to. Most of these read something and report back. A few act outwardly — mail leaves, posts publish, a desk keeps trading after the turn is over — and those deserve a higher bar and a plain sentence about what you are setting in motion.",
     ...grouped,
@@ -553,6 +574,12 @@ export function renderSuperAgentDirective(
       inventory.runtimeAgents.some((agent) => agent.id === OPEN_GYM_AGENT_ID)
     ) {
       sections.push(openGymRoutingRule());
+    }
+
+    if (
+      inventory.runtimeAgents.some((agent) => agent.id === GODS_EYE_AGENT_ID)
+    ) {
+      sections.push(godsEyeRoutingRule());
     }
 
     if (

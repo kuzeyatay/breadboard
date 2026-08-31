@@ -1191,6 +1191,14 @@ test("1f. the confirmed Learning Unit Contract receipt is seeded intact", () => 
       sourceIds: [],
     }),
   );
+  const normalizationReceipt = {
+    kind: "learn_source_normalization_receipt",
+    expectedCombinedSourceSetHash: "c".repeat(64),
+  };
+  fs.writeFileSync(
+    path.join(breadboard, "source-normalization-receipt.json"),
+    `${JSON.stringify(normalizationReceipt)}\n`,
+  );
   fs.writeFileSync(
     path.join(breadboard, "learning-unit-contract.json"),
     `${JSON.stringify(contract, null, 2)}\n`,
@@ -1224,6 +1232,19 @@ test("1f. the confirmed Learning Unit Contract receipt is seeded intact", () => 
   assert.deepEqual(
     stagedContract.syllabusCoverageEvidenceRecovery,
     recoveryReceipt,
+  );
+  assert.deepEqual(
+    JSON.parse(
+      fs.readFileSync(
+        path.join(
+          ws.stagingGardenDir,
+          ".breadboard",
+          "source-normalization-receipt.json",
+        ),
+        "utf8",
+      ),
+    ),
+    normalizationReceipt,
   );
   assert.equal(
     fingerprintDurableGardenState(repo),

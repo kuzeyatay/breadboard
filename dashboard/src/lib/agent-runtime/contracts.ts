@@ -97,6 +97,12 @@ export interface StartRuntimeRunInput {
    * filesystem policy still run independently.
    */
   yoloMode?: boolean;
+  /**
+   * False when nobody can answer a mid-turn question (Telegram, WhatsApp,
+   * email and hook turns). The runtime then answers a `clarify` itself so the
+   * turn does not stall for the tool's own timeout.
+   */
+  interactive?: boolean;
 }
 
 export interface ResolveRuntimeApprovalInput {
@@ -106,6 +112,15 @@ export interface ResolveRuntimeApprovalInput {
   directory?: string;
   requestId: string;
   decision: "once" | "always" | "reject";
+}
+
+export interface ResolveRuntimeClarificationInput {
+  externalSessionId: string;
+  liveSessionId?: string;
+  workspaceKey: string;
+  directory?: string;
+  requestId: string;
+  answer: string;
 }
 
 export interface RuntimeSessionReference {
@@ -163,6 +178,10 @@ export interface AgentRuntime {
     input: RuntimeSessionReference & { enabled: boolean },
   ): Promise<void>;
   resolveApproval(input: ResolveRuntimeApprovalInput): Promise<void>;
+  /** Answer a mid-turn `clarify` question so the blocked turn continues. */
+  resolveClarification(
+    input: ResolveRuntimeClarificationInput,
+  ): Promise<void>;
   stopRun(input: RuntimeSessionReference): Promise<void>;
   disposeSession(input: RuntimeSessionReference): Promise<void>;
 

@@ -20,6 +20,58 @@ const { loadSpotifyAgentDefinition } = await import(
   "../src/lib/spotify-agent/agent.ts"
 );
 const { spotifyQueueStep } = await import("../src/lib/spotify/queue.ts");
+const { selectSpotifyPhoneDevice } = await import(
+  "../src/lib/spotify/devices.ts"
+);
+
+test("Spotify playback prefers an unrestricted phone over another active device", () => {
+  const phone = selectSpotifyPhoneDevice({
+    devices: [
+      {
+        id: "computer-device-001",
+        name: "Desk",
+        type: "Computer",
+        is_active: true,
+        is_restricted: false,
+      },
+      {
+        id: "old-phone-device-001",
+        name: "Old phone",
+        type: "Smartphone",
+        is_active: true,
+        is_restricted: true,
+      },
+      {
+        id: "phone-device-001",
+        name: "My phone",
+        type: "Smartphone",
+        is_active: false,
+        is_restricted: false,
+      },
+    ],
+  });
+  assert.deepEqual(phone, {
+    id: "phone-device-001",
+    name: "My phone",
+    type: "smartphone",
+    isActive: false,
+    isRestricted: false,
+  });
+  assert.equal(
+    selectSpotifyPhoneDevice({
+      devices: [
+        {
+          id: "speaker-device-001",
+          name: "Kitchen",
+          type: "Speaker",
+          is_active: true,
+          is_restricted: false,
+        },
+      ],
+    }),
+    null,
+  );
+});
 
 test("Spotify uses public-client PKCE with the registered loopback callback", () => {
   const spotify = findNangoIntegration("spotify");
@@ -112,6 +164,8 @@ test("Spotify intent reaches the live catalog without confusing search with play
   assert.match(agent.instructions, /spotify_create_playlist/);
   assert.match(agent.instructions, /Spotify's live catalog/);
   assert.match(agent.instructions, /call spotify_search before answering/);
+  assert.match(agent.instructions, /available Spotify phone/);
+  assert.match(agent.instructions, /For playback controls/);
   assert.doesNotMatch(agent.instructions, /open Spotify|remote MCP|Music Assistant|Sendspin/);
 });
 
@@ -278,11 +332,12 @@ test("Spotify skill selects native tools and has no MCP dependency", () => {
   assert.match(skill, /phrase the response freely/i);
   assert.match(skill, /Spotify's live catalog/);
   assert.match(skill, /call `spotify_search` before answering/);
+  assert.match(skill, /Controls target the user's available phone/);
   assert.doesNotMatch(skill, /say the track is ready/i);
-  assert.doesNotMatch(skill, /required `spotify` MCP|Playback uses Spotify Connect/);
+  assert.doesNotMatch(skill, /required `spotify` MCP/);
 });
 
-test("Spotify login lives in Connections and native tools power an inline player", () => {
+test("Spotify login lives in Connections and native tools power phone-first playback", () => {
   const connections = fs.readFileSync(
     new URL("../src/app/components/settings-connections.tsx", import.meta.url),
     "utf8",
@@ -358,11 +413,14 @@ test("Spotify login lives in Connections and native tools power an inline player
   assert.match(nativeToolRoute, /createSpotifyPlaylist/);
   assert.match(nativeToolRoute, /startInlinePlaylistPlayback/);
   assert.match(nativeToolRoute, /status: playbackStarted \? "playing" : "ready"/);
-  assert.match(nativeToolRoute, /playbackStarted: false/);
+  assert.match(nativeToolRoute, /startPhonePlayback/);
+  assert.match(nativeToolRoute, /controlSpotifyPhone/);
+  assert.match(nativeToolRoute, /activateSpotifyPhonePlayback/);
   assert.doesNotMatch(nativeToolRoute, /instruction:/);
   assert.match(nativeToolRoute, /recordSpotifyPlaybackIntent/);
   assert.match(nativeToolRoute, /toolName === "spotify_search" \? 5 : 10/);
   assert.match(spotifyService, /SPOTIFY_SEARCH_RESULT_LIMIT = 10/);
+  assert.match(spotifyService, /endpoint: "\/v1\/me\/player\/devices"/);
   assert.match(spotifyService, /endpoint: "\/v1\/me\/playlists"/);
   assert.match(spotifyService, /endpoint: `\/v1\/playlists\/\$\{id\}\/items`/);
   assert.match(
@@ -404,6 +462,8 @@ test("Spotify login lives in Connections and native tools power an inline player
   assert.match(player, /relativeLuminance/);
   assert.match(player, /--spotify-control-fg/);
   assert.match(playbackRoute, /spotifyCurrentPlaybackState/);
+  assert.match(playbackRoute, /spotifyPhonePlaybackDevice/);
+  assert.match(playbackRoute, /activateSpotifyPhonePlayback/);
   assert.match(playbackRoute, /playbackAfterChange/);
   assert.match(playbackRoute, /spotifyQueueStep/);
   assert.match(playbackRoute, /body: \{ uris: step\.playbackUris \}/);
@@ -432,6 +492,7 @@ test("Spotify login lives in Connections and native tools power an inline player
   assert.match(broker, /authenticationFailed \? 409 : forbidden \? 403 : 502/);
   assert.match(playbackRoute, /intent\?\.queueUris\.includes\(current\.track\.uri\)/);
   assert.match(player, /connection\?\.playback/);
+  assert.match(player, /phonePlaybackRef/);
   assert.match(player, /setManagedQueueLoaded\(true\)/);
   assert.match(player, /window\.setTimeout\(\(\) => void load\(\), POLL_INTERVAL_MS\)/);
   assert.doesNotMatch(player, /setInterval\(\(\) => void load\(\), POLL_INTERVAL_MS\)/);

@@ -22,6 +22,10 @@ import {
 } from "./composer-switches.ts";
 import type { HermesSurface } from "./config.ts";
 import type { RuntimeKind } from "../agent-runtime/contracts.ts";
+import {
+  normalizeGenerativeUiResources,
+  type GenerativeUiResource,
+} from "../generative-ui/contracts.ts";
 import type {
   CapabilityDecision,
   CapabilityMode,
@@ -778,11 +782,13 @@ export function presentRuntimeMessage(row: RuntimeMessageRow): {
     status: "completed" | "failed";
   }>;
   verification?: Record<string, unknown>;
+  uiResources?: GenerativeUiResource[];
   interrupted: boolean;
 } {
   let runtime: {
     calls?: Array<Record<string, unknown>>;
     verification?: Record<string, unknown>;
+    uiResources?: unknown;
   } = {};
   try {
     const parsed = row.tool_calls ? JSON.parse(row.tool_calls) : null;
@@ -809,6 +815,7 @@ export function presentRuntimeMessage(row: RuntimeMessageRow): {
   } catch {
     usage = undefined;
   }
+  const uiResources = normalizeGenerativeUiResources(runtime.uiResources);
   return {
     role: row.role,
     content: row.content,
@@ -821,6 +828,7 @@ export function presentRuntimeMessage(row: RuntimeMessageRow): {
       status: call.success === false ? "failed" : "completed",
     })),
     verification: runtime.verification,
+    ...(uiResources.length ? { uiResources } : {}),
     interrupted: row.runtime_status === "aborted",
   };
 }

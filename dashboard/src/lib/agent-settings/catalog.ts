@@ -15,6 +15,11 @@
 
 import { MONEY_PRINTER_VOICES } from "../money-printer/identity.ts";
 import { SOCIALS_MANAGER_PROVIDERS } from "../socials-manager/providers.ts";
+import {
+  OPENEXECUTIVE_AGENT_ID,
+  OPENEXECUTIVE_AGENT_NAME,
+  OPENEXECUTIVE_COMMAND,
+} from "../openexecutive/identity.ts";
 
 export interface SelectOption {
   value: string;
@@ -1110,6 +1115,52 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     ],
   },
   {
+    id: "classroom",
+    name: "Classroom",
+    command: "/agents:classroom",
+    summary: "Teaches a topic or your documents as an interactive classroom — slides, quizzes, simulations.",
+    appliesWhen:
+      "Applies to every lesson. What to teach always comes from the message and its attachments; these decide what the classroom is made of when the brief does not say.",
+    fields: [
+      {
+        key: "tts",
+        kind: "toggle",
+        label: "Narrate the slides",
+        help: "Record the teacher's lines with text-to-speech. Needs a TTS provider OpenMAIC can reach; without one the lesson plays silently.",
+        flag: "--tts",
+        default: false,
+      },
+      {
+        key: "images",
+        kind: "toggle",
+        label: "Illustrate the slides",
+        help: "Generate an image where the outline calls for one. Needs an image provider OpenMAIC can reach.",
+        flag: "--images",
+        default: false,
+      },
+      {
+        key: "webSearch",
+        kind: "toggle",
+        label: "Ground in a web search",
+        help: "Search the web before writing the outline, so a current topic is taught from current sources. Needs a search provider OpenMAIC can reach.",
+        flag: "--search",
+        default: false,
+      },
+      {
+        key: "agentMode",
+        kind: "select",
+        label: "Generation mode",
+        help: "How OpenMAIC writes the scenes. The pipeline is the app's default; agent mode hands each scene to its agent runtime, which is slower and more elaborate.",
+        flag: "--mode",
+        options: [
+          { value: "default", label: "Pipeline", help: "Outline first, then each scene in turn." },
+          { value: "generate", label: "Agent mode", help: "OpenMAIC's agent runtime writes the scenes." },
+        ],
+        default: "default",
+      },
+    ],
+  },
+  {
     id: "agent-reach",
     name: "Agent Reach",
     command: "/agents:agent-reach",
@@ -1144,6 +1195,35 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         min: 1,
         max: 60,
         default: 24,
+      },
+    ],
+  },
+  {
+    id: OPENEXECUTIVE_AGENT_ID,
+    name: OPENEXECUTIVE_AGENT_NAME,
+    command: OPENEXECUTIVE_COMMAND,
+    summary:
+      "A virtual executive team for strategy, finance, people, legal, operations, marketing, product, and board work.",
+    appliesWhen:
+      "Applies to every advisory run. Message flags --iterations N and --committee/--no-committee override these defaults.",
+    fields: [
+      {
+        key: "maxIterations",
+        kind: "number",
+        label: "Maximum routing rounds",
+        help: "Caps the Executive's specialist/tool loop before it returns the best partial answer.",
+        flag: "--iterations N",
+        min: 1,
+        max: 30,
+        default: 15,
+      },
+      {
+        key: "committeeReview",
+        kind: "toggle",
+        label: "Committee review",
+        help: "Adds three independent critiques and a final revision. It is slower and uses more model calls.",
+        flag: "--committee / --no-committee",
+        default: false,
       },
     ],
   },

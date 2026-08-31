@@ -124,9 +124,9 @@ const rowStart = (index) =>
 const TOTAL = rowStart(SIZES.length - 1) + SIZES[SIZES.length - 1];
 
 const ITEMS = [
-  { rowIndex: 0, label: "first question", role: "user" },
-  { rowIndex: 2, label: "second question", role: "user" },
-  { rowIndex: 4, label: "third question", role: "user" },
+  { rowIndex: 0, label: "first question" },
+  { rowIndex: 2, label: "second question" },
+  { rowIndex: 4, label: "third question" },
 ];
 
 const BRIDGE = {
@@ -395,8 +395,8 @@ test("late terminal layout corrections do not leave the first tick stuck", { ski
     root.render(
       React.createElement(R, {
         items: [
-          { rowIndex: 0, label: "first question", role: "user" },
-          { rowIndex: 1, label: "newest question", role: "user" },
+          { rowIndex: 0, label: "first question" },
+          { rowIndex: 1, label: "newest question" },
         ],
         scrollRef: { current: scroller },
         bridge: BRIDGE,
@@ -414,63 +414,6 @@ test("late terminal layout corrections do not leave the first tick stuck", { ski
     await new Promise((resolve) => dom.window.requestAnimationFrame(resolve));
   });
   assert.equal(litTick(), 1, "settled geometry moves the highlight to the newest turn");
-
-  await act(async () => { root.unmount(); });
-  scroller.remove();
-});
-
-test("an AI tick opens the complete response and submits its inline reply", { skip }, async () => {
-  const React = require("react");
-  const { act } = require("react");
-  const { createRoot } = require("react-dom/client");
-
-  const state = { scrollTop: 0 };
-  const scroller = makeScroller(state);
-  const answer = `${"full answer ".repeat(80)}final words`;
-  const replies = [];
-  const root = createRoot(document.getElementById("root"));
-
-  await act(async () => {
-    root.render(
-      React.createElement(R, {
-        items: [{ rowIndex: 1, label: answer, role: "assistant" }],
-        scrollRef: { current: scroller },
-        bridge: BRIDGE,
-        surface: "t",
-        conversationKey: "chat-42",
-        onReply: async (text, item) => {
-          replies.push({ text, item });
-        },
-      }),
-    );
-  });
-
-  await act(async () => {
-    document.querySelector('button[data-message-role="assistant"]').click();
-  });
-  const preview = document.querySelector('[data-chat-rail-preview-role="assistant"]');
-  assert.ok(preview, "the AI preview opens from its rail tick");
-  assert.match(preview.textContent, /final words/);
-  assert.doesNotMatch(preview.textContent, /final word…/);
-
-  const textarea = preview.querySelector("textarea");
-  const valueSetter = Object.getOwnPropertyDescriptor(
-    dom.window.HTMLTextAreaElement.prototype,
-    "value",
-  ).set;
-  await act(async () => {
-    valueSetter.call(textarea, "Please explain the last point");
-    textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  });
-  await act(async () => {
-    preview
-      .querySelector("form")
-      .dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
-  });
-
-  assert.equal(replies.length, 1);
-  assert.equal(replies[0].text, "Please explain the last point");
-  assert.equal(replies[0].item.rowIndex, 1);
 
   await act(async () => { root.unmount(); });
   scroller.remove();

@@ -332,12 +332,75 @@ export function ArtifactFileIcon({ kind }: { kind: ArtifactKind }) {
     );
   }
 
-  if (kind === "image" || kind === "diagram") {
+  if (kind === "image") {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <rect x="4" y="4" width="16" height="16" rx="2" />
         <circle cx="9" cy="9" r="1.5" />
         <path d="m6 17 4-4 3 3 2-2 3 3" />
+      </svg>
+    );
+  }
+
+  if (kind === "diagram") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="4" y="4" width="6.5" height="6.5" rx="1.5" />
+        <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5" />
+        <path d="M10.5 7.25H17v6.25M7.25 10.5V17h6.25" />
+      </svg>
+    );
+  }
+
+  if (kind === "code" || kind === "html") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="m8.5 8-4.5 4 4.5 4M15.5 8l4.5 4-4.5 4M13.5 5.5l-3 13" />
+      </svg>
+    );
+  }
+
+  if (kind === "audio") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4.5 10.5v3M8.25 7.5v9M12 4.5v15M15.75 7.5v9M19.5 10.5v3" />
+      </svg>
+    );
+  }
+
+  if (kind === "video") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="4" y="5.5" width="16" height="13" rx="2" />
+        <path d="m10.25 9.25 4.5 2.75-4.5 2.75Z" />
+      </svg>
+    );
+  }
+
+  if (kind === "presentation") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="4" y="4.5" width="16" height="11" rx="1.5" />
+        <path d="M7.5 12.25 10.5 9l2 2 3.75-3.25M12 15.5v2.25M8 21l4-3.25L16 21" />
+      </svg>
+    );
+  }
+
+  if (kind === "model") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 3 4.5 7.25v9.5L12 21l7.5-4.25v-9.5L12 3Z" />
+        <path d="M4.5 7.25 12 11.5l7.5-4.25M12 11.5V21" />
+      </svg>
+    );
+  }
+
+  if (kind === "gadget") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4 8h3M11 8h9M4 16h9M17 16h3" />
+        <circle cx="9" cy="8" r="2" />
+        <circle cx="15" cy="16" r="2" />
       </svg>
     );
   }

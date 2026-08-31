@@ -28,6 +28,7 @@ function request(overrides = {}) {
     baseUrl: "http://127.0.0.1:58072/v1",
     conversationContext: "",
     openscienceEnabled: false,
+    praxistTaskPath: null,
     ...overrides,
   };
 }
@@ -105,7 +106,7 @@ test("OpenScience admission is optional and sealed into the Max Research request
   const manager = source("../src/lib/max-research/runtime-run-manager.ts");
   assert.match(manager, /const openscienceEnabled = openscienceRuntimeAvailability\(\)\.available/);
   assert.match(manager, /if \(openscienceEnabled\) \{\s*\/\/ Prepare its private provider profile/);
-  assert.match(manager, /conversationContext: input\.conversationContext \?\? "",\s*openscienceEnabled/);
+  assert.match(manager, /conversationContext: input\.conversationContext \?\? "",\s*openscienceEnabled,\s*praxistTaskPath/);
 
   const manifest = source("../../desktop/runtime-v2/manifests/workers.json");
   assert.match(

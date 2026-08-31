@@ -350,16 +350,26 @@ function KnowledgeGraph({
           }`}
         >
           {resizeHandle}
-          <svg
-            className="h-4 w-4 text-gray-700"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={1.5}
-            aria-hidden="true"
+          {/* The icon is the rail's visible affordance, so it must open the map
+              itself; the resize divider is only an eight-pixel edge target. */}
+          <button
+            type="button"
+            onClick={map.toggle}
+            aria-label="Open learning map"
+            title="Open learning map"
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-transparent text-gray-700 transition-colors hover:border-gray-700 hover:bg-gray-900 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8faf9a]"
           >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 5.25h16.5M3.75 12h16.5M3.75 18.75h16.5M8.25 8.25 4.5 12l3.75 3.75" />
-          </svg>
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              aria-hidden="true"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 5.25h16.5M3.75 12h16.5M3.75 18.75h16.5M8.25 8.25 4.5 12l3.75 3.75" />
+            </svg>
+          </button>
         </aside>
       )}
     </>

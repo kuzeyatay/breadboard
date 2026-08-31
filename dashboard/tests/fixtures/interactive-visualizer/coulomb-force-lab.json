@@ -1,0 +1,180 @@
+{
+  "note": "Real package the model produced for /interactive-visualizer-in-chat of coulomb force and charge on 2026-08-30. The runtime worker browser-tested it as ready with a schemaVersion 2 manifest; the Next gate rejected it because validManifest only accepted schemaVersion 1.",
+  "plan": {
+    "schemaVersion": 1,
+    "title": "Coulomb Force Lab",
+    "objective": "Let learners manipulate two point charges and their separation to see how Coulomb's law sets force magnitude and whether the charges attract or repel.",
+    "audience": "Students learning introductory electrostatics.",
+    "mode": "2d",
+    "rationale": "A flat two-charge diagram makes sign, distance, equal-and-opposite force vectors, and the inverse-square relationship readable at once.",
+    "concepts": [
+      "Coulomb's law",
+      "Charge sign",
+      "Attraction and repulsion",
+      "Inverse-square distance dependence",
+      "Equal and opposite forces"
+    ],
+    "assumptions": [
+      "The charges behave as point charges in vacuum.",
+      "Only the electrostatic interaction between two charges is modeled.",
+      "Visual spacing is scaled so the charge symbols remain legible."
+    ],
+    "controls": [
+      {
+        "id": "q1",
+        "label": "Charge q1",
+        "type": "range",
+        "purpose": "Set the magnitude and sign of the first charge.",
+        "initialValue": 4,
+        "minimum": -10,
+        "maximum": 10,
+        "step": 1,
+        "unit": "µC"
+      },
+      {
+        "id": "q2",
+        "label": "Charge q2",
+        "type": "range",
+        "purpose": "Set the magnitude and sign of the second charge.",
+        "initialValue": -6,
+        "minimum": -10,
+        "maximum": 10,
+        "step": 1,
+        "unit": "µC"
+      },
+      {
+        "id": "distance",
+        "label": "Separation r",
+        "type": "range",
+        "purpose": "Set the center-to-center separation between the charges.",
+        "initialValue": 0.8,
+        "minimum": 0.2,
+        "maximum": 2,
+        "step": 0.05,
+        "unit": "m"
+      },
+      {
+        "id": "play-pause",
+        "label": "Play or pause",
+        "type": "toggle",
+        "purpose": "Animate markers along the force-vector directions.",
+        "initialValue": true
+      },
+      {
+        "id": "reset",
+        "label": "Reset",
+        "type": "button",
+        "purpose": "Restore the initial charges and separation."
+      }
+    ],
+    "outputs": [
+      {
+        "id": "force",
+        "label": "Force magnitude",
+        "unit": "N",
+        "purpose": "Show the force calculated from Coulomb's law."
+      },
+      {
+        "id": "interaction",
+        "label": "Interaction",
+        "purpose": "Identify attraction, repulsion, or zero force."
+      },
+      {
+        "id": "separation-output",
+        "label": "Separation",
+        "unit": "m",
+        "purpose": "Show the current distance between charge centers."
+      }
+    ],
+    "interactions": [
+      "Move either charge slider through negative, zero, and positive values.",
+      "Change separation with the range control or drag either charge symbol horizontally.",
+      "Use arrow keys while the canvas is focused to adjust separation.",
+      "Play or pause directional markers without changing the calculation.",
+      "Reset all values to the initial example."
+    ],
+    "animation": {
+      "enabled": true,
+      "canPause": true,
+      "canReset": true,
+      "canStep": false,
+      "speedControl": false
+    },
+    "dataRequirements": [
+      "Use Coulomb constant k = 8.9875517923 × 10^9 N·m²/C².",
+      "Convert microcoulombs to coulombs before calculating force."
+    ],
+    "assetRequirements": [],
+    "accessibilityRequirements": [
+      "Provide native labels and live numeric outputs for every range control.",
+      "Expose a dynamic text alternative for the canvas.",
+      "Support keyboard control of separation and visible focus indicators.",
+      "Start paused when reduced motion is requested.",
+      "Keep all controls and labels usable at 375 CSS pixels."
+    ],
+    "sourceReferences": []
+  },
+  "package": {
+    "schemaVersion": 2,
+    "manifest": {
+      "schemaVersion": 2,
+      "artifactType": "interactive-visualizer",
+      "title": "Coulomb Force Lab",
+      "description": "An interactive two-charge model showing Coulomb-force magnitude, attraction or repulsion, and inverse-square distance dependence.",
+      "accessibilityDescription": "A labelled two-dimensional diagram of two charges with equal and opposite force arrows. Sliders control each charge and their separation; the canvas also supports drag and keyboard distance adjustment. Live outputs report force, interaction type, and distance.",
+      "mode": "2d",
+      "entry": "index.html",
+      "runtime": {
+        "id": "breadboard-interactive-visualizer",
+        "version": "2.0.0"
+      }
+    },
+    "assumptions": [
+      "Charges are treated as point charges in vacuum.",
+      "Only the electrostatic interaction between the two displayed charges is included.",
+      "Diagram spacing is scaled for legibility; the numeric separation drives the calculation."
+    ],
+    "limitations": [
+      "The moving markers indicate force direction but do not integrate particle motion.",
+      "Medium, relativistic, and quantum effects are omitted.",
+      "Force-arrow length is compressed for readability; use the numeric output for magnitude."
+    ],
+    "sourceReferences": [],
+    "semanticTests": [
+      {
+        "name": "visual integrity",
+        "assertion": "At desktop and 375 CSS pixel widths, the interface has no horizontal overflow or clipped text; labels and controls do not overlap; token-derived foregrounds remain legible on host surfaces; both force arrows start at the exact named charge-edge anchors; and the separation line ticks share the exact charge-center x-coordinates."
+      },
+      {
+        "name": "Coulomb calculation",
+        "assertion": "The displayed magnitude equals 8.9875517923e9 × abs(q1 × q2) × 1e-12 / r² and updates after every slider, drag, keyboard, or reset action."
+      },
+      {
+        "name": "force direction",
+        "assertion": "Like nonzero signs point both force arrows away from the other charge, unlike signs point both arrows toward the other charge, and either zero charge removes both arrows and reports zero force."
+      },
+      {
+        "name": "equal and opposite vectors",
+        "assertion": "The two force arrows always use the same rendered length and opposite directions for every nonzero state."
+      },
+      {
+        "name": "interaction accessibility",
+        "assertion": "All three ranges have native labels and linked outputs, the canvas has a current descriptive aria-label and keyboard distance controls, and focus indicators remain visible."
+      },
+      {
+        "name": "animation controls",
+        "assertion": "The play-pause button exposes exactly one state icon at a time and synchronizes aria-label and aria-pressed; reset restores q1 = 4 µC, q2 = -6 µC, and r = 0.8 m."
+      },
+      {
+        "name": "motion and theme behavior",
+        "assertion": "Reduced-motion users start paused, animation work stops while the document is hidden, and a breadboard:themechange event rereads host tokens and repaints the canvas."
+      }
+    ],
+    "assets": [],
+    "files": {
+      "index.html": "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>Coulomb Force Lab</title>\n  <link rel=\"stylesheet\" href=\"styles.css\">\n</head>\n<body>\n  <main id=\"app\">\n    <header class=\"topbar\">\n      <h1>Coulomb force lab</h1>\n      <div class=\"playback\" aria-label=\"Animation controls\">\n        <button id=\"playPause\" class=\"icon-button\" type=\"button\" data-action=\"play-pause\" aria-label=\"Pause force-direction animation\" aria-pressed=\"true\">\n          <svg id=\"playIcon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" hidden><path fill=\"currentColor\" d=\"M8 5.5v13l10-6.5z\"></path></svg>\n          <svg id=\"pauseIcon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path fill=\"currentColor\" d=\"M7 5h4v14H7zm6 0h4v14h-4z\"></path></svg>\n        </button>\n        <button id=\"resetButton\" class=\"icon-button\" type=\"button\" data-action=\"reset\" aria-label=\"Reset charges and separation\">\n          <svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6.2 8.2A7 7 0 1 1 5 14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"></path><path d=\"M5 4v5h5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"></path></svg>\n        </button>\n      </div>\n    </header>\n\n    <canvas id=\"scene\" tabindex=\"0\" role=\"img\" aria-describedby=\"sceneHelp\">Interactive diagram of two electric charges and their force vectors.</canvas>\n    <p id=\"sceneHelp\" class=\"sr-only\">Drag either charge horizontally, or focus this diagram and use the arrow keys, to change separation. The sliders below provide the same controls.</p>\n\n    <section class=\"result-strip\" aria-label=\"Calculated result\" aria-live=\"polite\">\n      <div class=\"result-item\">\n        <span>Force magnitude</span>\n        <output id=\"forceOutput\">0.337 N</output>\n      </div>\n      <div class=\"result-item\">\n        <span>Interaction</span>\n        <output id=\"interactionOutput\">Attraction</output>\n      </div>\n      <div class=\"result-item\">\n        <span>Separation</span>\n        <output id=\"distanceOutput\">0.80 m</output>\n      </div>\n    </section>\n\n    <section class=\"controls\" aria-label=\"Charge and distance controls\">\n      <div class=\"control\">\n        <div class=\"control-row\">\n          <label for=\"q1\">Charge q₁</label>\n          <output id=\"q1Value\" for=\"q1\">+4 µC</output>\n        </div>\n        <input id=\"q1\" type=\"range\" min=\"-10\" max=\"10\" step=\"1\" value=\"4\" aria-describedby=\"q1Value\">\n        <div class=\"range-ends\" aria-hidden=\"true\"><span>−10</span><span>0</span><span>+10 µC</span></div>\n      </div>\n\n      <div class=\"control\">\n        <div class=\"control-row\">\n          <label for=\"q2\">Charge q₂</label>\n          <output id=\"q2Value\" for=\"q2\">−6 µC</output>\n        </div>\n        <input id=\"q2\" type=\"range\" min=\"-10\" max=\"10\" step=\"1\" value=\"-6\" aria-describedby=\"q2Value\">\n        <div class=\"range-ends\" aria-hidden=\"true\"><span>−10</span><span>0</span><span>+10 µC</span></div>\n      </div>\n\n      <div class=\"control\">\n        <div class=\"control-row\">\n          <label for=\"distance\">Separation r</label>\n          <output id=\"distanceValue\" for=\"distance\">0.80 m</output>\n        </div>\n        <input id=\"distance\" type=\"range\" min=\"0.2\" max=\"2\" step=\"0.05\" value=\"0.8\" aria-describedby=\"distanceValue\">\n        <div class=\"range-ends\" aria-hidden=\"true\"><span>0.20 m</span><span>1.10</span><span>2.00 m</span></div>\n      </div>\n    </section>\n\n    <div id=\"liveStatus\" class=\"sr-only\" role=\"status\" aria-live=\"polite\"></div>\n  </main>\n  <script src=\"main.js\"></script>\n</body>\n</html>\n",
+      "styles.css": "* {\n  box-sizing: border-box;\n}\n\nhtml,\nbody {\n  margin: 0;\n  min-width: 0;\n  background: var(--viz-bg);\n  color: var(--viz-text);\n  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;\n}\n\nbody {\n  min-height: 100vh;\n}\n\nbutton,\ninput {\n  font: inherit;\n}\n\n#app {\n  width: min(920px, 100%);\n  margin: 0 auto;\n  padding: 18px 22px 22px;\n  background: var(--viz-bg);\n  color: var(--viz-text);\n}\n\n.topbar {\n  min-height: 44px;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 16px;\n  margin-bottom: 12px;\n}\n\nh1 {\n  min-width: 0;\n  margin: 0;\n  color: var(--viz-text);\n  font-size: clamp(1.15rem, 2.4vw, 1.55rem);\n  font-weight: 680;\n  line-height: 1.2;\n  letter-spacing: -0.018em;\n}\n\n.playback {\n  display: flex;\n  flex: 0 0 auto;\n  gap: 8px;\n}\n\n.icon-button {\n  width: 38px;\n  height: 38px;\n  padding: 9px;\n  display: grid;\n  place-items: center;\n  border: 1px solid var(--viz-line);\n  border-radius: 50%;\n  background: var(--viz-control);\n  color: var(--viz-text);\n  cursor: pointer;\n}\n\n.icon-button:hover {\n  background: var(--viz-control-hover);\n}\n\n.icon-button:focus-visible,\n#scene:focus-visible,\ninput[type=\"range\"]:focus-visible {\n  outline: 2px solid var(--viz-accent);\n  outline-offset: 2px;\n}\n\n.icon-button svg {\n  width: 18px;\n  height: 18px;\n  display: block;\n  color: currentColor;\n}\n\n[hidden] {\n  display: none !important;\n}\n\n#scene {\n  display: block;\n  width: 100%;\n  height: clamp(360px, 53vw, 470px);\n  border: 1px solid var(--viz-line);\n  border-radius: 12px;\n  background: var(--viz-panel);\n  color: var(--viz-text);\n  cursor: grab;\n  touch-action: none;\n}\n\n#scene.dragging {\n  cursor: grabbing;\n}\n\n.result-strip {\n  min-height: 58px;\n  display: grid;\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n  border-bottom: 1px solid var(--viz-line);\n  background: var(--viz-bg);\n}\n\n.result-item {\n  min-width: 0;\n  padding: 10px 14px;\n  display: flex;\n  flex-direction: column;\n  justify-content: center;\n  gap: 3px;\n}\n\n.result-item + .result-item {\n  border-left: 1px solid var(--viz-line);\n}\n\n.result-item span {\n  color: var(--viz-muted);\n  font-size: 0.72rem;\n  line-height: 1.1;\n}\n\n.result-item output,\n.control output {\n  color: var(--viz-accent);\n  font-family: ui-monospace, SFMono-Regular, Consolas, \"Liberation Mono\", monospace;\n  font-variant-numeric: tabular-nums;\n}\n\n.result-item output {\n  overflow: hidden;\n  font-size: 0.94rem;\n  font-weight: 650;\n  line-height: 1.2;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.controls {\n  display: grid;\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n  gap: 24px;\n  padding-top: 18px;\n}\n\n.control {\n  min-width: 0;\n}\n\n.control-row {\n  display: flex;\n  align-items: baseline;\n  justify-content: space-between;\n  gap: 10px;\n  margin-bottom: 10px;\n}\n\n.control label {\n  color: var(--viz-text);\n  font-size: 0.84rem;\n  font-weight: 620;\n}\n\n.control output {\n  flex: 0 0 auto;\n  font-size: 0.79rem;\n}\n\ninput[type=\"range\"] {\n  width: 100%;\n  height: 20px;\n  margin: 0;\n  appearance: none;\n  -webkit-appearance: none;\n  background: transparent;\n  cursor: pointer;\n}\n\ninput[type=\"range\"]::-webkit-slider-runnable-track {\n  height: 4px;\n  border-radius: 2px;\n  background: var(--viz-line);\n}\n\ninput[type=\"range\"]::-webkit-slider-thumb {\n  width: 16px;\n  height: 16px;\n  margin-top: -6px;\n  appearance: none;\n  -webkit-appearance: none;\n  border: 2px solid var(--viz-panel);\n  border-radius: 50%;\n  background: var(--viz-accent);\n}\n\ninput[type=\"range\"]::-moz-range-track {\n  height: 4px;\n  border: 0;\n  border-radius: 2px;\n  background: var(--viz-line);\n}\n\ninput[type=\"range\"]::-moz-range-thumb {\n  width: 14px;\n  height: 14px;\n  border: 2px solid var(--viz-panel);\n  border-radius: 50%;\n  background: var(--viz-accent);\n}\n\n.range-ends {\n  display: flex;\n  justify-content: space-between;\n  gap: 8px;\n  margin-top: 2px;\n  color: var(--viz-muted);\n  font-family: ui-monospace, SFMono-Regular, Consolas, \"Liberation Mono\", monospace;\n  font-size: 0.64rem;\n  font-variant-numeric: tabular-nums;\n}\n\n.sr-only {\n  position: absolute;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  margin: -1px;\n  overflow: hidden;\n  clip: rect(0, 0, 0, 0);\n  white-space: nowrap;\n  border: 0;\n}\n\n@media (max-width: 620px) {\n  #app {\n    padding: 14px 14px 18px;\n  }\n\n  .topbar {\n    margin-bottom: 10px;\n  }\n\n  #scene {\n    height: 360px;\n  }\n\n  .result-item {\n    padding: 9px 7px;\n  }\n\n  .result-item span {\n    font-size: 0.65rem;\n  }\n\n  .result-item output {\n    font-size: 0.8rem;\n  }\n\n  .controls {\n    grid-template-columns: 1fr;\n    gap: 13px;\n    padding-top: 14px;\n  }\n\n  .control-row {\n    margin-bottom: 5px;\n  }\n}\n",
+      "main.js": "\"use strict\";\n\nconst COULOMB_CONSTANT = 8.9875517923e9;\nconst MIN_DISTANCE = 0.2;\nconst MAX_DISTANCE = 2;\nconst DISTANCE_STEP = 0.05;\nconst INITIAL_STATE = Object.freeze({ q1: 4, q2: -6, distance: 0.8 });\n\nconst app = document.getElementById(\"app\");\nconst canvas = document.getElementById(\"scene\");\nconst context = canvas.getContext(\"2d\");\nconst q1Input = document.getElementById(\"q1\");\nconst q2Input = document.getElementById(\"q2\");\nconst distanceInput = document.getElementById(\"distance\");\nconst q1Value = document.getElementById(\"q1Value\");\nconst q2Value = document.getElementById(\"q2Value\");\nconst distanceValue = document.getElementById(\"distanceValue\");\nconst forceOutput = document.getElementById(\"forceOutput\");\nconst interactionOutput = document.getElementById(\"interactionOutput\");\nconst distanceOutput = document.getElementById(\"distanceOutput\");\nconst playPause = document.getElementById(\"playPause\");\nconst playIcon = document.getElementById(\"playIcon\");\nconst pauseIcon = document.getElementById(\"pauseIcon\");\nconst resetButton = document.getElementById(\"resetButton\");\nconst liveStatus = document.getElementById(\"liveStatus\");\nconst reducedMotion = window.matchMedia(\"(prefers-reduced-motion: reduce)\");\n\nconst state = {\n  q1: INITIAL_STATE.q1,\n  q2: INITIAL_STATE.q2,\n  distance: INITIAL_STATE.distance,\n  running: !reducedMotion.matches,\n  phase: 0,\n  dragging: null,\n  pointerId: null\n};\n\nlet cssWidth = 0;\nlet cssHeight = 0;\nlet pixelRatio = 1;\nlet frameRequest = null;\nlet previousFrameTime = null;\nlet palette = {};\n\nfunction clamp(value, minimum, maximum) {\n  return Math.min(maximum, Math.max(minimum, value));\n}\n\nfunction readPalette() {\n  const styles = getComputedStyle(app);\n  palette = {\n    background: styles.getPropertyValue(\"--viz-bg\").trim(),\n    panel: styles.getPropertyValue(\"--viz-panel\").trim(),\n    control: styles.getPropertyValue(\"--viz-control\").trim(),\n    text: styles.getPropertyValue(\"--viz-text\").trim(),\n    muted: styles.getPropertyValue(\"--viz-muted\").trim(),\n    line: styles.getPropertyValue(\"--viz-line\").trim(),\n    accent: styles.getPropertyValue(\"--viz-accent\").trim(),\n    accentText: styles.getPropertyValue(\"--viz-accent-text\").trim()\n  };\n}\n\nfunction chargeText(value) {\n  if (value > 0) return `+${value} µC`;\n  if (value < 0) return `−${Math.abs(value)} µC`;\n  return \"0 µC\";\n}\n\nfunction forceMagnitude() {\n  const q1Coulombs = state.q1 * 1e-6;\n  const q2Coulombs = state.q2 * 1e-6;\n  return COULOMB_CONSTANT * Math.abs(q1Coulombs * q2Coulombs) / (state.distance * state.distance);\n}\n\nfunction forceText(force) {\n  if (force === 0) return \"0 N\";\n  if (force >= 10) return `${force.toFixed(1)} N`;\n  if (force >= 1) return `${force.toFixed(2)} N`;\n  if (force >= 0.1) return `${force.toFixed(3)} N`;\n  if (force >= 0.01) return `${force.toFixed(4)} N`;\n  return `${force.toFixed(5)} N`;\n}\n\nfunction interactionType() {\n  const product = state.q1 * state.q2;\n  if (product === 0) return \"No force\";\n  return product < 0 ? \"Attraction\" : \"Repulsion\";\n}\n\nfunction distanceText() {\n  return `${state.distance.toFixed(2)} m`;\n}\n\nfunction describeScene() {\n  const interaction = interactionType();\n  const force = forceText(forceMagnitude());\n  const direction = interaction === \"Attraction\"\n    ? \"The equal and opposite force arrows point toward the other charge.\"\n    : interaction === \"Repulsion\"\n      ? \"The equal and opposite force arrows point away from the other charge.\"\n      : \"No force arrows are shown because one charge is zero.\";\n  return `Charge one is ${chargeText(state.q1)}, charge two is ${chargeText(state.q2)}, and their separation is ${distanceText()}. The interaction is ${interaction.toLowerCase()} with force magnitude ${force}. ${direction}`;\n}\n\nfunction announce(prefix) {\n  liveStatus.textContent = `${prefix} ${describeScene()}`.trim();\n}\n\nfunction syncOutputs(shouldAnnounce, prefix) {\n  const force = forceMagnitude();\n  const interaction = interactionType();\n\n  q1Input.value = String(state.q1);\n  q2Input.value = String(state.q2);\n  distanceInput.value = String(state.distance);\n  q1Value.textContent = chargeText(state.q1);\n  q2Value.textContent = chargeText(state.q2);\n  distanceValue.textContent = distanceText();\n  forceOutput.textContent = forceText(force);\n  interactionOutput.textContent = interaction;\n  distanceOutput.textContent = distanceText();\n  canvas.setAttribute(\"aria-label\", describeScene());\n\n  if (shouldAnnounce) announce(prefix || \"Updated.\");\n  draw();\n}\n\nfunction updatePlaybackButton() {\n  playIcon.hidden = state.running;\n  pauseIcon.hidden = !state.running;\n  playPause.setAttribute(\"aria-pressed\", String(state.running));\n  playPause.setAttribute(\n    \"aria-label\",\n    state.running ? \"Pause force-direction animation\" : \"Play force-direction animation\"\n  );\n}\n\nfunction startAnimation() {\n  if (!state.running || document.hidden || frameRequest !== null) return;\n  previousFrameTime = null;\n  frameRequest = requestAnimationFrame(animate);\n}\n\nfunction stopAnimation() {\n  if (frameRequest !== null) cancelAnimationFrame(frameRequest);\n  frameRequest = null;\n  previousFrameTime = null;\n}\n\nfunction setRunning(running, shouldAnnounce) {\n  state.running = running;\n  updatePlaybackButton();\n  if (state.running) startAnimation();\n  else stopAnimation();\n  draw();\n  if (shouldAnnounce) liveStatus.textContent = running ? \"Force-direction animation playing.\" : \"Force-direction animation paused.\";\n}\n\nfunction animate(time) {\n  frameRequest = null;\n  if (!state.running || document.hidden) return;\n  if (previousFrameTime !== null) {\n    state.phase = (state.phase + (time - previousFrameTime) / 1500) % 1;\n  }\n  previousFrameTime = time;\n  draw();\n  frameRequest = requestAnimationFrame(animate);\n}\n\nfunction geometry() {\n  const radius = clamp(cssWidth * 0.038, 25, 32);\n  const sideRoom = radius + 28;\n  const maximumSeparation = Math.max(168, cssWidth - sideRoom * 2);\n  const minimumSeparation = Math.min(132, maximumSeparation - 34);\n  const fraction = (state.distance - MIN_DISTANCE) / (MAX_DISTANCE - MIN_DISTANCE);\n  const separation = minimumSeparation + fraction * (maximumSeparation - minimumSeparation);\n  const centerX = cssWidth / 2;\n  const centerY = Math.max(150, Math.min(cssHeight * 0.49, cssHeight - 130));\n\n  return {\n    radius,\n    minimumSeparation,\n    maximumSeparation,\n    separation,\n    centerX,\n    centerY,\n    charge1: { x: centerX - separation / 2, y: centerY },\n    charge2: { x: centerX + separation / 2, y: centerY },\n    bracketY: centerY + radius + 58\n  };\n}\n\nfunction drawArrow(startX, y, direction, length, label) {\n  const endX = startX + direction * length;\n  const headLength = 9;\n  const headWidth = 5.5;\n\n  context.save();\n  context.strokeStyle = palette.accent;\n  context.fillStyle = palette.accent;\n  context.lineWidth = 3;\n  context.lineCap = \"round\";\n  context.lineJoin = \"round\";\n\n  context.beginPath();\n  context.moveTo(startX, y);\n  context.lineTo(endX, y);\n  context.stroke();\n\n  context.beginPath();\n  context.moveTo(endX, y);\n  context.lineTo(endX - direction * headLength, y - headWidth);\n  context.lineTo(endX - direction * headLength, y + headWidth);\n  context.closePath();\n  context.fill();\n\n  const markerProgress = 0.18 + state.phase * 0.64;\n  const markerX = startX + direction * length * markerProgress;\n  context.beginPath();\n  context.arc(markerX, y, 4, 0, Math.PI * 2);\n  context.fillStyle = palette.panel;\n  context.fill();\n  context.lineWidth = 2;\n  context.strokeStyle = palette.accent;\n  context.stroke();\n\n  context.fillStyle = palette.accent;\n  context.font = \"650 12px ui-monospace, SFMono-Regular, Consolas, monospace\";\n  context.textAlign = \"center\";\n  context.textBaseline = \"bottom\";\n  context.fillText(label, startX + direction * length * 0.52, y - 9);\n  context.restore();\n}\n\nfunction drawCharge(charge, value, index, radius) {\n  const isPositive = value > 0;\n  const isNegative = value < 0;\n\n  context.save();\n  context.beginPath();\n  context.arc(charge.x, charge.y, radius, 0, Math.PI * 2);\n  context.fillStyle = isPositive ? palette.accent : isNegative ? palette.panel : palette.control;\n  context.fill();\n  context.lineWidth = isNegative ? 3 : 2;\n  context.strokeStyle = isPositive ? palette.accent : isNegative ? palette.accent : palette.line;\n  context.stroke();\n\n  context.fillStyle = isPositive ? palette.accentText : isNegative ? palette.accent : palette.muted;\n  context.font = `700 ${Math.round(radius * 0.92)}px ui-sans-serif, system-ui, sans-serif`;\n  context.textAlign = \"center\";\n  context.textBaseline = \"middle\";\n  context.fillText(isPositive ? \"+\" : isNegative ? \"−\" : \"0\", charge.x, charge.y - 1);\n\n  context.fillStyle = palette.text;\n  context.font = \"600 13px ui-monospace, SFMono-Regular, Consolas, monospace\";\n  context.textBaseline = \"top\";\n  context.fillText(`q${index === 1 ? \"₁\" : \"₂\"}  ${chargeText(value)}`, charge.x, charge.y + radius + 13);\n  context.restore();\n}\n\nfunction drawSeparationBracket(layout) {\n  const leftX = layout.charge1.x;\n  const rightX = layout.charge2.x;\n  const y = layout.bracketY;\n  const label = `r = ${distanceText()}`;\n\n  context.save();\n  context.strokeStyle = palette.line;\n  context.lineWidth = 1.5;\n  context.setLineDash([]);\n  context.beginPath();\n  context.moveTo(leftX, y - 7);\n  context.lineTo(leftX, y + 7);\n  context.moveTo(leftX, y);\n  context.lineTo(rightX, y);\n  context.moveTo(rightX, y - 7);\n  context.lineTo(rightX, y + 7);\n  context.stroke();\n\n  context.font = \"600 12px ui-monospace, SFMono-Regular, Consolas, monospace\";\n  const labelWidth = context.measureText(label).width + 16;\n  context.fillStyle = palette.panel;\n  context.fillRect(layout.centerX - labelWidth / 2, y - 10, labelWidth, 20);\n  context.fillStyle = palette.accent;\n  context.textAlign = \"center\";\n  context.textBaseline = \"middle\";\n  context.fillText(label, layout.centerX, y);\n  context.restore();\n}\n\nfunction drawForceVectors(layout, force) {\n  if (force === 0) {\n    context.save();\n    context.fillStyle = palette.muted;\n    context.font = \"600 13px ui-monospace, SFMono-Regular, Consolas, monospace\";\n    context.textAlign = \"center\";\n    context.textBaseline = \"bottom\";\n    context.fillText(\"F = 0\", layout.centerX, layout.centerY - layout.radius - 18);\n    context.restore();\n    return;\n  }\n\n  const attraction = state.q1 * state.q2 < 0;\n  const maximumForce = COULOMB_CONSTANT * (10e-6 * 10e-6) / (MIN_DISTANCE * MIN_DISTANCE);\n  const strength = Math.log1p(force) / Math.log1p(maximumForce);\n  const idealLength = 36 + 84 * strength;\n  let availableLength;\n\n  if (attraction) {\n    const innerGap = layout.separation - layout.radius * 2;\n    availableLength = Math.max(18, innerGap / 2 - 8);\n  } else {\n    const leftRoom = layout.charge1.x - layout.radius - 16;\n    const rightRoom = cssWidth - layout.charge2.x - layout.radius - 16;\n    availableLength = Math.max(16, Math.min(leftRoom, rightRoom));\n  }\n\n  const length = Math.min(idealLength, availableLength);\n  const direction1 = attraction ? 1 : -1;\n  const direction2 = attraction ? -1 : 1;\n  const start1 = layout.charge1.x + direction1 * layout.radius;\n  const start2 = layout.charge2.x + direction2 * layout.radius;\n\n  drawArrow(start1, layout.centerY, direction1, length, \"F₁\");\n  drawArrow(start2, layout.centerY, direction2, length, \"F₂\");\n}\n\nfunction draw() {\n  if (!cssWidth || !cssHeight || !palette.panel) return;\n\n  const layout = geometry();\n  const force = forceMagnitude();\n  context.clearRect(0, 0, cssWidth, cssHeight);\n  context.fillStyle = palette.panel;\n  context.fillRect(0, 0, cssWidth, cssHeight);\n\n  context.save();\n  context.fillStyle = palette.text;\n  context.font = `${cssWidth < 520 ? \"650 16px\" : \"650 18px\"} ui-monospace, SFMono-Regular, Consolas, monospace`;\n  context.textAlign = \"left\";\n  context.textBaseline = \"top\";\n  context.fillText(\"F = k |q₁q₂| / r²\", 20, 20);\n\n  context.fillStyle = palette.muted;\n  context.font = \"12px ui-monospace, SFMono-Regular, Consolas, monospace\";\n  context.fillText(\"k = 8.99 × 10⁹ N·m²/C²\", 20, 47);\n\n  if (cssWidth >= 610) {\n    context.textAlign = \"right\";\n    context.fillText(\"same sign repels · opposite signs attract\", cssWidth - 20, 24);\n  }\n  context.restore();\n\n  context.save();\n  context.strokeStyle = palette.line;\n  context.lineWidth = 1.5;\n  context.setLineDash([5, 7]);\n  context.beginPath();\n  context.moveTo(layout.charge1.x, layout.centerY);\n  context.lineTo(layout.charge2.x, layout.centerY);\n  context.stroke();\n  context.restore();\n\n  drawForceVectors(layout, force);\n  drawCharge(layout.charge1, state.q1, 1, layout.radius);\n  drawCharge(layout.charge2, state.q2, 2, layout.radius);\n  drawSeparationBracket(layout);\n\n  context.save();\n  context.fillStyle = palette.muted;\n  context.font = `${cssWidth < 520 ? \"11px\" : \"12px\"} ui-sans-serif, system-ui, sans-serif`;\n  context.textBaseline = \"alphabetic\";\n  context.textAlign = \"left\";\n  context.fillText(\"Drag a charge to change r\", 20, cssHeight - 18);\n  if (cssWidth >= 520) {\n    context.textAlign = \"right\";\n    context.fillText(\"Arrow length is compressed for readability\", cssWidth - 20, cssHeight - 18);\n  }\n  context.restore();\n}\n\nfunction resizeCanvas() {\n  const bounds = canvas.getBoundingClientRect();\n  if (bounds.width <= 0 || bounds.height <= 0) return;\n\n  cssWidth = bounds.width;\n  cssHeight = bounds.height;\n  pixelRatio = Math.min(window.devicePixelRatio || 1, 2);\n  canvas.width = Math.round(cssWidth * pixelRatio);\n  canvas.height = Math.round(cssHeight * pixelRatio);\n  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);\n  draw();\n}\n\nfunction pointFromEvent(event) {\n  const bounds = canvas.getBoundingClientRect();\n  return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };\n}\n\nfunction beginDrag(event) {\n  const point = pointFromEvent(event);\n  const layout = geometry();\n  const hitRadius = layout.radius + 14;\n  const distanceToCharge1 = Math.hypot(point.x - layout.charge1.x, point.y - layout.charge1.y);\n  const distanceToCharge2 = Math.hypot(point.x - layout.charge2.x, point.y - layout.charge2.y);\n\n  if (distanceToCharge1 > hitRadius && distanceToCharge2 > hitRadius) return;\n  state.dragging = distanceToCharge1 <= distanceToCharge2 ? 1 : 2;\n  state.pointerId = event.pointerId;\n  canvas.setPointerCapture(event.pointerId);\n  canvas.classList.add(\"dragging\");\n  event.preventDefault();\n}\n\nfunction dragCharge(event) {\n  if (state.dragging === null || event.pointerId !== state.pointerId) return;\n  const point = pointFromEvent(event);\n  const layout = geometry();\n  const proposedSeparation = state.dragging === 1\n    ? 2 * (layout.centerX - point.x)\n    : 2 * (point.x - layout.centerX);\n  const fraction = clamp(\n    (proposedSeparation - layout.minimumSeparation) / (layout.maximumSeparation - layout.minimumSeparation),\n    0,\n    1\n  );\n  const rawDistance = MIN_DISTANCE + fraction * (MAX_DISTANCE - MIN_DISTANCE);\n  state.distance = clamp(\n    Math.round(rawDistance / DISTANCE_STEP) * DISTANCE_STEP,\n    MIN_DISTANCE,\n    MAX_DISTANCE\n  );\n  syncOutputs(false);\n  event.preventDefault();\n}\n\nfunction endDrag(event) {\n  if (state.dragging === null || event.pointerId !== state.pointerId) return;\n  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);\n  state.dragging = null;\n  state.pointerId = null;\n  canvas.classList.remove(\"dragging\");\n  announce(\"Distance updated.\");\n}\n\nfunction adjustDistance(delta, prefix) {\n  state.distance = clamp(\n    Math.round((state.distance + delta) / DISTANCE_STEP) * DISTANCE_STEP,\n    MIN_DISTANCE,\n    MAX_DISTANCE\n  );\n  syncOutputs(true, prefix);\n}\n\nq1Input.addEventListener(\"input\", () => {\n  state.q1 = Number(q1Input.value);\n  syncOutputs(false);\n});\nq1Input.addEventListener(\"change\", () => announce(\"Charge one updated.\"));\n\nq2Input.addEventListener(\"input\", () => {\n  state.q2 = Number(q2Input.value);\n  syncOutputs(false);\n});\nq2Input.addEventListener(\"change\", () => announce(\"Charge two updated.\"));\n\ndistanceInput.addEventListener(\"input\", () => {\n  state.distance = Number(distanceInput.value);\n  syncOutputs(false);\n});\ndistanceInput.addEventListener(\"change\", () => announce(\"Distance updated.\"));\n\nplayPause.addEventListener(\"click\", () => setRunning(!state.running, true));\n\nresetButton.addEventListener(\"click\", () => {\n  state.q1 = INITIAL_STATE.q1;\n  state.q2 = INITIAL_STATE.q2;\n  state.distance = INITIAL_STATE.distance;\n  state.phase = 0;\n  syncOutputs(true, \"Reset.\");\n});\n\ncanvas.addEventListener(\"pointerdown\", beginDrag);\ncanvas.addEventListener(\"pointermove\", dragCharge);\ncanvas.addEventListener(\"pointerup\", endDrag);\ncanvas.addEventListener(\"pointercancel\", endDrag);\ncanvas.addEventListener(\"lostpointercapture\", () => {\n  state.dragging = null;\n  state.pointerId = null;\n  canvas.classList.remove(\"dragging\");\n});\n\ncanvas.addEventListener(\"keydown\", (event) => {\n  if (event.key === \"ArrowLeft\" || event.key === \"ArrowDown\") {\n    event.preventDefault();\n    adjustDistance(-DISTANCE_STEP, \"Distance decreased.\");\n  } else if (event.key === \"ArrowRight\" || event.key === \"ArrowUp\") {\n    event.preventDefault();\n    adjustDistance(DISTANCE_STEP, \"Distance increased.\");\n  } else if (event.key === \"Home\") {\n    event.preventDefault();\n    state.distance = MIN_DISTANCE;\n    syncOutputs(true, \"Minimum distance selected.\");\n  } else if (event.key === \"End\") {\n    event.preventDefault();\n    state.distance = MAX_DISTANCE;\n    syncOutputs(true, \"Maximum distance selected.\");\n  }\n});\n\ndocument.addEventListener(\"visibilitychange\", () => {\n  if (document.hidden) stopAnimation();\n  else startAnimation();\n});\n\nwindow.addEventListener(\"breadboard:themechange\", () => {\n  readPalette();\n  draw();\n});\n\nreducedMotion.addEventListener(\"change\", (event) => {\n  if (event.matches) setRunning(false, false);\n});\n\nconst resizeObserver = new ResizeObserver(resizeCanvas);\nresizeObserver.observe(canvas);\n\nreadPalette();\nupdatePlaybackButton();\nsyncOutputs(false);\nresizeCanvas();\nstartAnimation();\n"
+    }
+  }
+}

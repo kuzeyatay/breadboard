@@ -24,6 +24,8 @@ import * as runtime from
   "../src/lib/hermes/interactive-visualizer-runtime.ts";
 import * as validator from
   "../src/lib/hermes/interactive-visualizer-validator.ts";
+import { validateInteractiveVisualizerRuntimeResult } from
+  "../src/lib/hermes/interactive-visualizer-browser.ts";
 
 const dashboardRoot = path.resolve(import.meta.dirname, "..");
 
@@ -200,6 +202,92 @@ test("Next visualizer path has no process owner and the worker owns one attached
   assert.match(worker, /events\.complete\(launch\.resultRelativePath\)/);
   assert.match(worker, /cancellationAcknowledged/);
   assert.match(worker, /inputBlobs\.length !== 1/);
+  assert.match(client, /CustomInteractiveVisualizerManifest/);
+  assert.match(
+    client,
+    /value\.schemaVersion === 1 \|\| value\.schemaVersion === 2/,
+  );
+});
+
+function durableReadyResult(schemaVersion) {
+  const identity = {
+    jobId: "job_gate_shape",
+    attempt: 1,
+    workerInstanceId: "worker_gate_shape",
+  };
+  const digest = "a".repeat(64);
+  return {
+    job: { ...identity, lastWorkerSequence: 13 },
+    content: {
+      protocolVersion: 1,
+      identity,
+      completionSequence: 13,
+      result: {
+        status: "ready",
+        validation: {
+          valid: true,
+          checkedAt: "2026-08-30T10:36:00.000Z",
+          astNodeCount: 10,
+          sourceBytes: 100,
+          imports: [],
+          errors: [],
+          warnings: [],
+        },
+        manifest: {
+          schemaVersion,
+          artifactType: "interactive-visualizer",
+          title: "Coulomb Force Lab",
+          description: "Two charges and the force between them.",
+          accessibilityDescription: "Two labelled charges with force arrows.",
+          mode: "2d",
+          entry: "index.html",
+          runtime: { id: "breadboard-interactive-visualizer", version: "2.0.0" },
+        },
+        sourceHash: digest,
+        tests: {
+          passed: true,
+          checkedAt: "2026-08-30T10:36:20.000Z",
+          viewports: ["375x667 light", "1280x800 dark"],
+          checks: [{ name: "offline bundle", passed: true, detail: "ok" }],
+          screenshotCreated: true,
+        },
+        bundleHash: digest,
+        outputRelativePath:
+          `runtime/jobs/${identity.jobId}/attempts/1/${identity.workerInstanceId}/workspace/interactive-visualizer-output/bundle.html`,
+        customPackage: schemaVersion === 2,
+      },
+    },
+  };
+}
+
+test("the Next gate accepts the schema-2 manifest the worker writes and names any defect", () => {
+  // Regression: the worker browser-tested the Coulomb package as ready with a
+  // schemaVersion 2 manifest and the gate rejected it as an "invalid
+  // browser-test result" because it only knew schemaVersion 1.
+  for (const schemaVersion of [1, 2]) {
+    const { job, content } = durableReadyResult(schemaVersion);
+    const accepted = validateInteractiveVisualizerRuntimeResult(job, content);
+    assert.equal(accepted.status, "ready");
+    assert.equal(accepted.manifest.schemaVersion, schemaVersion);
+  }
+  const foreign = durableReadyResult(2);
+  foreign.content.result.manifest.schemaVersion = 3;
+  assert.throws(
+    () => validateInteractiveVisualizerRuntimeResult(foreign.job, foreign.content),
+    /invalid browser-test result: manifest is not a supported visualizer manifest \(schemaVersion 3\)/,
+  );
+  const contradictory = durableReadyResult(2);
+  contradictory.content.result.tests.passed = false;
+  assert.throws(
+    () => validateInteractiveVisualizerRuntimeResult(contradictory.job, contradictory.content),
+    /status ready disagrees with tests\.passed=false/,
+  );
+  const pathless = durableReadyResult(2);
+  pathless.content.result.outputRelativePath = null;
+  assert.throws(
+    () => validateInteractiveVisualizerRuntimeResult(pathless.job, pathless.content),
+    /ready result has no bundle path/,
+  );
 });
 
 test("historical parent PID reuse cannot admit an unrelated descendant", () => {

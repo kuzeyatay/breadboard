@@ -161,6 +161,47 @@ test("dashboard thinking metadata never exposes model reasoning text", () => {
   assert.doesNotMatch(activity, /visibleActivities/);
 });
 
+test("tool-boundary prose uses the answer body until the final answer replaces it", () => {
+  const serverDelta = eventStream.slice(
+    eventStream.indexOf('if (event.type === "assistant.delta")'),
+    eventStream.indexOf('} else if (event.type === "assistant.segment")'),
+  );
+  assert.match(serverDelta, /forwardEvent = false/);
+
+  const serverCompletion = eventStream.slice(
+    eventStream.indexOf('} else if (event.type === "assistant.completed")'),
+    eventStream.indexOf('} else if (event.type === "tool.started")'),
+  );
+  assert.match(serverCompletion, /forwardEvent = false/);
+  assert.match(eventStream, /const emitStableAnswer = \(\) =>/);
+  assert.match(eventStream, /replacementText: assistantText/);
+  assert.match(
+    eventStream,
+    /event\.payload\.status !== "idle" \|\| sawTurnOutput/,
+    "a replayed idle frame must not consume the stable answer emission",
+  );
+  assert.ok(
+    eventStream.indexOf("emitStableAnswer();", eventStream.indexOf("for await")) <
+      eventStream.indexOf("if (forwardEvent) emit(event);"),
+    "the stable answer must be emitted before the terminal status",
+  );
+
+  const clientSegment = agentSession.slice(
+    agentSession.indexOf('case "assistant.segment":'),
+    agentSession.indexOf('case "reasoning.status":'),
+  );
+  assert.match(clientSegment, /progressNotes/);
+  assert.doesNotMatch(clientSegment, /content: ""/);
+  assert.doesNotMatch(activity, /data-response-progress/);
+  assert.doesNotMatch(activity, /Assistant progress notes/);
+  assert.match(runtime, /assistantVisibleContent/);
+  assert.match(workspace, /assistantVisibleContent/);
+  assert.match(gardenAssistant, /assistantVisibleContent/);
+  assert.doesNotMatch(activity, /progressNotes.*reasoning|reasoning.*progressNotes/);
+  assert.match(eventStream, /progressNotes\.length \? \{ progressNotes \} : \{\}/);
+  assert.match(sessionPresentation, /metadata\.progressNotes/);
+});
+
 test("Quartz activity states use full sentences without status glyphs", () => {
   assert.match(quartzActivity, /function activityStatusSentence/);
   assert.match(quartzActivity, /Done thinking\./);

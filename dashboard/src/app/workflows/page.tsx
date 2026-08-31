@@ -14,5 +14,11 @@ export default async function WorkflowsPage({
   if (!session?.user) redirect("/auth/login?callbackUrl=%2Fworkflows");
   const params = await searchParams;
   const value = (key: string) => (typeof params[key] === "string" ? params[key] : null);
-  return <WorkflowsClient workflowId={value("workflow")} />;
+  return (
+    <WorkflowsClient
+      workflowId={value("workflow")}
+      teachOnOpen={value("teach") === "1"}
+      initialRunId={value("run")}
+    />
+  );
 }

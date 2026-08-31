@@ -2548,6 +2548,24 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
+def _pending_clarify_for_session(sid: str) -> dict | None:
+    """The ``clarify.request`` still blocking on ``sid``, if any.
+
+    Lets ``session.turn_result`` tell a reconnecting client that the turn is
+    waiting on a person rather than merely running, the same way it already
+    reports a pending approval. The payload is the one originally emitted,
+    ``request_id`` included, so the client can answer it.
+    """
+    with _prompt_lock:
+        for pending_rid, (pending_sid, _ev) in _pending.items():
+            if pending_sid != sid:
+                continue
+            entry = _pending_prompt_payloads.get(pending_rid)
+            if entry and entry[0] == "clarify.request":
+                return dict(entry[1])
+    return None
+
+
 def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
@@ -9786,6 +9804,16 @@ def _(rid, params: dict) -> dict:
             expected = str(params.get("expected_user_text") or "").strip()
             inflight_user = str(inflight.get("user") or "").strip()
             if not expected or not inflight_user or expected == inflight_user:
+                clarify = _pending_clarify_for_session(sid)
+                if clarify is not None:
+                    return _ok(
+                        rid,
+                        {
+                            "state": "waiting_for_clarification",
+                            "turn_id": turn_id,
+                            "clarify": clarify,
+                        },
+                    )
                 session_key = str(session.get("session_key") or "")
                 if session_key:
                     from tools.approval import get_pending_gateway_approval

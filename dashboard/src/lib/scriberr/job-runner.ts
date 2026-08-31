@@ -22,7 +22,11 @@ import {
   detectSuspiciouslyIncomplete,
   normalizeScriberrTranscript,
 } from "./transcript-normalizer.ts";
-import { removePathWithRetries, sweepStaleTempDirs } from "./paths.ts";
+import {
+  mediaKindForFilename,
+  removePathWithRetries,
+  sweepStaleTempDirs,
+} from "./paths.ts";
 import type { VideoTranscriptionConfig } from "./config.ts";
 import type {
   VideoTranscriptionJobStore,
@@ -39,6 +43,11 @@ import type {
 
 /** The subset of ScriberrClient the runner needs (injectable for tests). */
 export interface ScriberrOps {
+  uploadAudio(input: {
+    filePath: string;
+    filename: string;
+    title?: string | null;
+  }): Promise<ScriberrJobSnapshot>;
   uploadVideo(input: {
     filePath: string;
     filename: string;
@@ -84,6 +93,7 @@ export interface VideoTranscriptionRunnerDeps {
     metadata: Record<string, string | string[]>;
     youtubeVideoId?: string | null;
     mediaSha256?: string | null;
+    mediaKind: "audio" | "video";
     jobId: string;
     onProgress?: (step: string) => void;
   }): Promise<TranscriptIngestResult>;
@@ -559,8 +569,9 @@ export class VideoTranscriptionRunner {
 
   private async stageValidateUpload(jobId: string): Promise<void> {
     const job = this.requireJob(jobId);
+    const mediaKind = mediaKindForFilename(job.originalFilename ?? "");
     this.deps.store.transition(jobId, "validating", {
-      currentStage: "Validating video",
+      currentStage: `Validating ${mediaKind}`,
       progressPercent: 5,
     });
     if (!job.mediaTempPath || !fs.existsSync(job.mediaTempPath)) {
@@ -610,16 +621,22 @@ export class VideoTranscriptionRunner {
 
   private async stageUploadToScriberr(jobId: string): Promise<void> {
     const job = this.requireJob(jobId);
+    const mediaKind = mediaKindForFilename(job.originalFilename ?? "");
     this.deps.store.transition(jobId, "uploading", {
       currentStage: "Uploading to Scriberr",
       progressPercent: 12,
     });
     const client = this.deps.createScriberrClient();
-    const snapshot = await client.uploadVideo({
+    const upload = {
       filePath: job.mediaTempPath ?? "",
-      filename: job.originalFilename ?? "video.mp4",
+      filename:
+        job.originalFilename ?? (mediaKind === "audio" ? "audio.mp3" : "video.mp4"),
       title: job.sourceTitle,
-    });
+    };
+    const snapshot =
+      mediaKind === "audio"
+        ? await client.uploadAudio(upload)
+        : await client.uploadVideo(upload);
     this.deps.store.updateJob(jobId, { scriberrJobId: snapshot.id });
     this.checkCancelled(jobId);
   }
@@ -694,9 +711,15 @@ export class VideoTranscriptionRunner {
       throw new VideoTranscriptionError("transcript_unavailable");
     }
     const current = this.requireJob(jobId);
+    const mediaKind = mediaKindForFilename(current.originalFilename ?? "");
     const normalized = normalizeScriberrTranscript(payload.transcript, {
-      title: current.sourceTitle ?? "Video transcript",
-      sourceType: current.inputKind === "youtube" ? "youtube" : "video_upload",
+      title: current.sourceTitle ?? "Media transcript",
+      sourceType:
+        current.inputKind === "youtube"
+          ? "youtube"
+          : mediaKind === "audio"
+            ? "audio_upload"
+            : "video_upload",
       fallbackDurationSeconds: current.videoMetadata?.durationSeconds ?? null,
       transcriptionModel: this.deps.config.scriberrModel,
     });
@@ -745,8 +768,9 @@ export class VideoTranscriptionRunner {
           }
         : {
             kind: "upload",
-            originalFilename: job.originalFilename ?? "video",
+            originalFilename: job.originalFilename ?? "media",
             mediaSha256: job.mediaSha256,
+            mediaKind: mediaKindForFilename(job.originalFilename ?? ""),
           };
 
     const markdown = buildTranscriptMarkdown({
@@ -797,6 +821,10 @@ export class VideoTranscriptionRunner {
 
     let result: TranscriptIngestResult;
     try {
+      const mediaKind =
+        job.inputKind === "youtube"
+          ? "video"
+          : mediaKindForFilename(job.originalFilename ?? "");
       result = await this.deps.ingest({
         userId: job.userId,
         contentPath,
@@ -805,16 +833,17 @@ export class VideoTranscriptionRunner {
         sourceFileName:
           job.inputKind === "youtube"
             ? (job.canonicalUrl ?? "youtube-video")
-            : (job.originalFilename ?? "video"),
+            : (job.originalFilename ?? "media"),
         sourceLabel:
           job.inputKind === "youtube"
             ? (job.canonicalUrl ?? "YouTube video")
-            : `video upload: ${job.originalFilename ?? "video"}`,
+            : `${mediaKind} upload: ${job.originalFilename ?? "media"}`,
         markdownBody: markdown.body,
         plainText: markdown.plainText,
         metadata: markdown.metadata,
         youtubeVideoId: job.youtubeVideoId,
         mediaSha256: job.mediaSha256,
+        mediaKind,
         jobId,
         onProgress: (step: string) => {
           if (/Refreshing|Publishing/i.test(step)) {

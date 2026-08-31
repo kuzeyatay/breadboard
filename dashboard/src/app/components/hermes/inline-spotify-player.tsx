@@ -35,6 +35,11 @@ interface PlaybackResponse {
   status: "connected" | "needs_reauth" | "not_connected";
   intent: PlaybackIntent | null;
   playback: ManagedPlaybackState | null;
+  phone: {
+    name: string;
+    type: string;
+    isActive: boolean;
+  } | null;
   library: SpotifyLibraryState | null;
 }
 
@@ -376,6 +381,7 @@ export default function InlineSpotifyPlayer({
   const playerRef = useRef<SpotifyPlayer | null>(null);
   const deviceIdRef = useRef<string | null>(null);
   const managedEngineRef = useRef(false);
+  const phonePlaybackRef = useRef(false);
   const managedEngineViewIdRef = useRef<string | null>(null);
   const managedEngineStartRef = useRef<Promise<void> | null>(null);
   const managedEngineStartAbortRef = useRef<AbortController | null>(null);
@@ -632,6 +638,17 @@ export default function InlineSpotifyPlayer({
   useEffect(() => {
     if (!connection?.connected || !intentRevision || playerRef.current) return;
     let cancelled = false;
+    if (connection.phone) {
+      phonePlaybackRef.current = true;
+      managedEngineRef.current = true;
+      setManagedEngine(true);
+      setDeviceReady(true);
+      return () => {
+        cancelled = true;
+        phonePlaybackRef.current = false;
+        managedEngineRef.current = false;
+      };
+    }
     const activateManagedEngine = () => {
       if (cancelled) return;
       void startManagedEngine().catch((reason: unknown) => {
@@ -714,7 +731,12 @@ export default function InlineSpotifyPlayer({
       playerRef.current = null;
       deviceIdRef.current = null;
     };
-  }, [connection?.connected, intentRevision, startManagedEngine]);
+  }, [
+    connection?.connected,
+    connection?.phone,
+    intentRevision,
+    startManagedEngine,
+  ]);
 
   useEffect(() => {
     if (!sdkState || sdkState.paused) {
@@ -748,7 +770,11 @@ export default function InlineSpotifyPlayer({
     async (action: string, extra?: Record<string, unknown>) => {
       const requiresDevice = action !== "save" && action !== "unsave";
       let currentDeviceId = deviceIdRef.current;
-      if (requiresDevice && managedEngineRef.current) {
+      if (
+        requiresDevice &&
+        managedEngineRef.current &&
+        !phonePlaybackRef.current
+      ) {
         const engineResponse = await fetch(
           "/api/hermes/connections/spotify/engine",
           { cache: "no-store" },
@@ -763,7 +789,7 @@ export default function InlineSpotifyPlayer({
         }
       }
       const deviceId = currentDeviceId;
-      if (requiresDevice && !deviceId) {
+      if (requiresDevice && !deviceId && !phonePlaybackRef.current) {
         throw new Error("The browser player is still getting ready.");
       }
       const response = await fetch("/api/hermes/connections/spotify/playback", {

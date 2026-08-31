@@ -48,15 +48,26 @@ function metadataFor(
   outcome: ExternalAgentOutcome,
   branchGroupId?: string,
   attachments: readonly ChatMessageAttachment[] = [],
+  options: {
+    delegatedAgentRun?: boolean;
+    internalAgentContinuation?: boolean;
+  } = {},
 ): Record<string, unknown> {
   return {
     externalAgent: EXTERNAL_AGENT_MARKER,
     ...(run ? { externalAgentRun: run } : {}),
     externalAgentOutcome: outcome,
     ...(run && outcome === "running"
-      ? { externalAgentStartedAt: new Date().toISOString() }
+      ? {
+          externalAgentStartedAt: new Date().toISOString(),
+          externalAgentBaseDurationMs: 0,
+        }
       : {}),
     ...(branchGroupId ? { branchGroupId } : {}),
+    ...(options.delegatedAgentRun ? { delegatedAgentRun: true } : {}),
+    ...(options.internalAgentContinuation
+      ? { internalAgentContinuation: true }
+      : {}),
     ...(attachments.length
       ? {
           attachments,
@@ -85,6 +96,10 @@ export function recordExternalAgentTurn(input: {
   outcome?: ExternalAgentOutcome;
   branchGroupId?: string;
   attachments?: ChatMessageAttachment[];
+  /** Hidden worker owned by Super Agent rather than a visible user request. */
+  delegatedAgentRun?: boolean;
+  /** Hide the synthetic private user half while retaining it in model context. */
+  internalAgentContinuation?: boolean;
 }, database: Database.Database = db): ExternalAgentTurn {
   const outcome = input.outcome ?? (input.run ? "running" : "failed");
   const metadata = metadataFor(
@@ -92,48 +107,64 @@ export function recordExternalAgentTurn(input: {
     outcome,
     input.branchGroupId,
     input.attachments,
+    {
+      delegatedAgentRun: input.delegatedAgentRun,
+      internalAgentContinuation: input.internalAgentContinuation,
+    },
   );
-  const reserved = reserveConversationTurn({
-    conversation: input.conversation,
-    clientMessageId: input.clientMessageId,
-    surface: input.surface,
-    content: input.userContent,
-    metadata,
-  }, database);
-  const createdNewTurn = reserved.assistantMessage.status === "pending";
+  // A delegated worker is born while its parent Super Agent answer is still
+  // pending. Persist its adjacent hidden pair and close the assistant half in
+  // one transaction, so the parent remains the conversation's only observable
+  // active turn and a crash cannot strand a second pending answer.
+  const persist = database.transaction(() => {
+    const reserved = reserveConversationTurn({
+      conversation: input.conversation,
+      clientMessageId: input.clientMessageId,
+      surface: input.surface,
+      content: input.userContent,
+      metadata,
+      allowActiveTurnWithinTransaction: input.internalAgentContinuation === true,
+    }, database);
+    const createdNewTurn = reserved.assistantMessage.status === "pending";
 
-  const storedMetadata = presentConversationMessage(reserved.userMessage).metadata;
-  const storedRun = parseExternalAgentRun(storedMetadata.externalAgentRun);
-  if (
-    storedMetadata.externalAgent !== EXTERNAL_AGENT_MARKER ||
-    !sameRun(storedRun, input.run)
-  ) {
-    throw new ConversationStoreError(
-      409,
-      "client_message_id_conflict",
-      "That clientMessageId was already used for a different external agent turn.",
-    );
-  }
-
-  let assistantMessage = reserved.assistantMessage;
-  if (assistantMessage.status === "pending") {
-    if (outcome === "failed" || outcome === "aborted") {
-      assistantMessage = failAssistantMessage({
-        conversationId: input.conversation.id,
-        clientMessageId: input.clientMessageId,
-        status: outcome,
-        content: input.assistantContent ?? "",
-        metadata,
-      }, database);
-    } else {
-      assistantMessage = completeAssistantMessage({
-        conversationId: input.conversation.id,
-        clientMessageId: input.clientMessageId,
-        content: input.assistantContent ?? "",
-        metadata,
-      }, database);
+    const storedMetadata = presentConversationMessage(reserved.userMessage).metadata;
+    const storedRun = parseExternalAgentRun(storedMetadata.externalAgentRun);
+    if (
+      storedMetadata.externalAgent !== EXTERNAL_AGENT_MARKER ||
+      !sameRun(storedRun, input.run)
+    ) {
+      throw new ConversationStoreError(
+        409,
+        "client_message_id_conflict",
+        "That clientMessageId was already used for a different external agent turn.",
+      );
     }
-  }
+
+    let assistantMessage = reserved.assistantMessage;
+    if (assistantMessage.status === "pending") {
+      if (outcome === "failed" || outcome === "aborted") {
+        assistantMessage = failAssistantMessage({
+          conversationId: input.conversation.id,
+          clientMessageId: input.clientMessageId,
+          status: outcome,
+          content: input.assistantContent ?? "",
+          metadata,
+        }, database);
+      } else {
+        assistantMessage = completeAssistantMessage({
+          conversationId: input.conversation.id,
+          clientMessageId: input.clientMessageId,
+          content: input.assistantContent ?? "",
+          metadata,
+        }, database);
+      }
+    }
+    return {
+      turn: { userMessage: reserved.userMessage, assistantMessage },
+      createdNewTurn,
+    };
+  });
+  const persisted = persist.immediate();
 
   // The board learns about the run here rather than in each agent's own
   // launcher: every `/agents:*` kind goes through this function, so one hook
@@ -141,7 +172,7 @@ export function recordExternalAgentTurn(input: {
   //
   // Only on the real application database. A caller that injected its own
   // handle is a test, and its runs must not land on the developer's own board.
-  if (createdNewTurn && input.run && outcome === "running" && database === db) {
+  if (persisted.createdNewTurn && input.run && outcome === "running" && database === db) {
     trackAgentRunStarted({
       userId: input.conversation.user_id,
       kind: input.run.kind,
@@ -151,7 +182,7 @@ export function recordExternalAgentTurn(input: {
     });
   }
 
-  return { userMessage: reserved.userMessage, assistantMessage };
+  return persisted.turn;
 }
 
 /**
@@ -225,12 +256,21 @@ export function attachExternalAgentRun(input: {
     const externalAgentStartedAt =
       parseExternalAgentStartedAt(metadata.externalAgentStartedAt) ??
       new Date().toISOString();
+    const storedBaseDurationMs = Number(metadata.externalAgentBaseDurationMs);
+    const priorResponseDurationMs = Number(metadata.responseDurationMs);
+    const externalAgentBaseDurationMs =
+      Number.isFinite(storedBaseDurationMs) && storedBaseDurationMs >= 0
+        ? storedBaseDurationMs
+        : Number.isFinite(priorResponseDurationMs) && priorResponseDurationMs >= 0
+          ? priorResponseDurationMs
+          : 0;
     const mergedMetadata = {
       ...metadata,
       externalAgent: EXTERNAL_AGENT_MARKER,
       ...(input.run ? { externalAgentRun: input.run } : {}),
       externalAgentOutcome: outcome,
       externalAgentStartedAt,
+      externalAgentBaseDurationMs,
       delegatedAgentRun: true,
       ...(delegatedAgentPreamble ? { delegatedAgentPreamble } : {}),
       ...(outcome !== "running" && input.assistantContent !== undefined
@@ -452,8 +492,8 @@ export function finishExternalAgentTurn(input: {
         : Date.now();
     const responseDurationMs = externalAgentResponseDurationMs({
       baseDurationMs:
-        typeof metadata.responseDurationMs === "number"
-          ? metadata.responseDurationMs
+        Number.isFinite(Number(metadata.externalAgentBaseDurationMs))
+          ? Number(metadata.externalAgentBaseDurationMs)
           : Number(metadata.responseDurationMs),
       startedAt: parseExternalAgentStartedAt(metadata.externalAgentStartedAt),
       endedAtMs: completedAtMs,
@@ -519,6 +559,81 @@ export function finishExternalAgentTurn(input: {
     }
   }
   return finished;
+}
+
+/**
+ * Repair elapsed metadata for an already-terminal row from the runtime's own
+ * completion time. This never changes its outcome or content; it exists for
+ * legacy results that were first persisted when a closed chat was reopened.
+ */
+export function reconcileExternalAgentTerminalTiming(input: {
+  conversationId: number;
+  clientMessageId: string;
+  terminalAtMs: number;
+}, database: Database.Database = db): ConversationMessageRow | null {
+  if (!Number.isFinite(input.terminalAtMs) || input.terminalAtMs < 0) return null;
+  const row = database.prepare(`
+    SELECT * FROM conversation_messages
+    WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'
+    LIMIT 1
+  `).get(
+    input.conversationId,
+    input.clientMessageId.trim(),
+  ) as ConversationMessageRow | undefined;
+  if (!row) return null;
+
+  const metadata = presentConversationMessage(row).metadata;
+  const outcome = parseExternalAgentOutcome(metadata.externalAgentOutcome);
+  const startedAt = parseExternalAgentStartedAt(metadata.externalAgentStartedAt);
+  if (
+    metadata.externalAgent !== EXTERNAL_AGENT_MARKER ||
+    !outcome ||
+    outcome === "running" ||
+    !startedAt
+  ) {
+    return row;
+  }
+
+  const explicitBaseDurationMs = Number(metadata.externalAgentBaseDurationMs);
+  const responseStartedAtMs =
+    typeof metadata.responseStartedAt === "string"
+      ? Date.parse(metadata.responseStartedAt)
+      : Number.NaN;
+  const externalStartedAtMs = Date.parse(startedAt);
+  // Old delegated rows predate the explicit base field. Their parent response
+  // ran from responseStartedAt until the external worker was attached.
+  const baseDurationMs =
+    Number.isFinite(explicitBaseDurationMs) && explicitBaseDurationMs >= 0
+      ? explicitBaseDurationMs
+      : Number.isFinite(responseStartedAtMs)
+        ? Math.max(0, externalStartedAtMs - responseStartedAtMs)
+        : 0;
+  const responseDurationMs = externalAgentResponseDurationMs({
+    baseDurationMs,
+    startedAt,
+    endedAtMs: Math.trunc(input.terminalAtMs),
+  });
+  if (
+    responseDurationMs === undefined ||
+    Number(metadata.responseDurationMs) === responseDurationMs
+  ) {
+    return row;
+  }
+
+  database.prepare(`
+    UPDATE conversation_messages
+    SET metadata = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    JSON.stringify({ ...metadata, responseDurationMs }),
+    row.id,
+  );
+  database.prepare(`
+    UPDATE conversations SET updated_at = datetime('now') WHERE id = ?
+  `).run(input.conversationId);
+  const updated = getConversationMessageById(row.id, database)!;
+  syncExternalAgentResult(updated, database);
+  return updated;
 }
 
 /** Keep both legacy chat projections current even when no browser is watching. */

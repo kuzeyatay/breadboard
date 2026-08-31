@@ -233,6 +233,17 @@ function learnJobFenceFromSnapshot(snapshot: Record<string, unknown>): LearnJobF
   };
 }
 
+function snapshotHasLearnProjection(snapshot: Record<string, unknown>): boolean {
+  return (
+    snapshot.hasTextbook === true ||
+    (typeof snapshot.latestTextbookVersionId === "string" &&
+      Boolean(snapshot.latestTextbookVersionId.trim())) ||
+    (typeof snapshot.confirmedLearningMapId === "string" &&
+      Boolean(snapshot.confirmedLearningMapId.trim())) ||
+    isRecord(snapshot.proposedLearningMap)
+  );
+}
+
 function gardenRoot(contentPath: string, gardenId: string): string {
   const root = path.resolve(contentPath);
   const candidate = path.resolve(root, gardenId);
@@ -686,6 +697,27 @@ export async function mergeRuntimeV2LearnStatus(
     : null;
   if (correlatedLearnJob(receipt, boundLearnJob, binding)) return withRuntime;
   const snapshotFence = learnJobFenceFromSnapshot(snapshot);
+  if (terminal(runtimeJob)) {
+    // A later direct/durable Learn run supersedes an older terminal Runtime
+    // compatibility receipt. Without this fence, a cleared garden can keep
+    // showing the old Runtime job as "complete" and can also hide the new run.
+    if (
+      snapshotFence &&
+      Date.parse(snapshotFence.updatedAt) > runtimeJob.updatedAt
+    ) {
+      return withRuntime;
+    }
+    // A successful Learn operation always leaves a durable job/map/version.
+    // If Clear removed all of them, retain Runtime diagnostics but never
+    // resurrect its obsolete completion banner as the current Learn job.
+    if (
+      runtimeJob.state === "succeeded" &&
+      !snapshotFence &&
+      !snapshotHasLearnProjection(snapshot)
+    ) {
+      return withRuntime;
+    }
+  }
   return {
     ...withRuntime,
     job: compatibilityJob(receipt, runtimeJob, snapshotFence?.model ?? null),

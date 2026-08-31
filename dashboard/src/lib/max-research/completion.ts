@@ -1,11 +1,16 @@
 // The one model call Max Research makes itself.
 //
-// Everything else it does is commissioned: five agents each run their own
+// Everything else it does is commissioned: six agents each run their own
 // models, and this is only the reconciliation at the end. Kept in its own
 // module so the orchestrator can be tested without a completion, and so the
 // timeout is stated where a reader of the run manager will look for it.
 
 import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
+import { createLongHeaderTimeoutFetch } from "../chatmock-client.ts";
+import {
+  describeTransportFailure,
+  isTransportFailure,
+} from "../model-transport.ts";
 
 /**
  * Generous, because of what it is writing.
@@ -14,9 +19,17 @@ import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
  * and reconciles their disagreements. Timing that out at the usual thirty
  * seconds would throw away an hour of research at the last step.
  */
-const SYNTHESIS_TIMEOUT_MS = 10 * 60_000;
+// Max-effort reconciliations can legitimately take longer than ten minutes.
+// A live synthesis was aborted at that old deadline while ChatMock kept the
+// upstream generation alive; the retry then launched another copy beside it
+// and eventually lost the socket. Give the one real request the same order of
+// budget as a research participant instead of manufacturing a retry storm.
+const SYNTHESIS_TIMEOUT_MS = 30 * 60_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_CONTENT_BYTES = 512 * 1024;
+const synthesisFetch = createLongHeaderTimeoutFetch({
+  timeoutMs: SYNTHESIS_TIMEOUT_MS,
+});
 
 /**
  * Transient upstream failures, which are worth another try.
@@ -36,8 +49,11 @@ export async function completeText(input: {
   reasoningEffort: string;
   prompt: string;
   signal?: AbortSignal;
+  /** Deterministic test transport; production always uses the long-timeout client. */
+  fetchImpl?: typeof fetch;
 }): Promise<string> {
   let lastError: Error | null = null;
+  const endpoint = `${input.baseUrl.replace(/[/]$/, "")}/chat/completions`;
 
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
@@ -50,8 +66,12 @@ export async function completeText(input: {
       SYNTHESIS_TIMEOUT_MS,
     );
     try {
-      const response = await fetch(
-        `${input.baseUrl.replace(/[/]$/, "")}/chat/completions`,
+      // Max Research synthesis is a long ChatMock request, just like the
+      // council calls. Node's ordinary fetch transport can terminate while
+      // the model is still thinking, before our 30-minute AbortSignal fires.
+      // Keep both timeout layers aligned so the application owns the deadline.
+      const response = await (input.fetchImpl ?? synthesisFetch)(
+        endpoint,
         {
           method: "POST",
           headers: {
@@ -95,6 +115,25 @@ export async function completeText(input: {
         error instanceof Error ? error : new Error("The reconciliation failed.");
       if (input.signal?.aborted) throw failure;
       if (failure instanceof PermanentCompletionError) throw failure;
+      // A per-attempt deadline means the model was simply too slow for the
+      // entire reconciliation budget. Reissuing the same long generation
+      // immediately only leaves duplicate upstream work behind and makes the
+      // local gateway less likely to recover.
+      if (controller.signal.aborted) {
+        throw new PermanentCompletionError(
+          "The reconciliation exceeded its 30-minute deadline.",
+        );
+      }
+      if (attempt === ATTEMPTS && isTransportFailure(failure)) {
+        throw new PermanentCompletionError(
+          describeTransportFailure(failure, {
+            endpoint,
+            lead: "The reconciliation model could not finish",
+            recovery:
+              "The collected findings were kept so they can still be synthesized without repeating the research.",
+          }),
+        );
+      }
       if (attempt === ATTEMPTS) throw failure;
       lastError = failure;
     } finally {

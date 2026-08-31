@@ -26,6 +26,7 @@ const garden = source(
 const terminal = source(
   "../src/app/components/hermes/dashboard-agent-terminal.tsx",
 );
+const commandHub = source("../src/app/components/hermes/command-hub.tsx");
 const gardenAdapter = source("../src/lib/hermes/garden-chat-adapter.ts");
 const eventStream = source("../src/lib/hermes/event-stream.ts");
 const sessionHook = source(
@@ -38,6 +39,9 @@ const superAgentActivity = source("../src/lib/hermes/super-agent-activity.ts");
 const timing = source("../src/lib/assistant-activity-timing.ts");
 const conversationTurns = source(
   "../src/lib/conversations/turn-service.ts",
+);
+const delegatedProvenance = source(
+  "../src/lib/conversations/delegated-agent-provenance.ts",
 );
 const assistantActions = source(
   "../src/app/components/assistant-message-actions.tsx",
@@ -52,10 +56,10 @@ test("only agents that start from a brief are offered to the model", async () =>
   const byId = new Map(
     RUNTIME_AGENT_PROFILES.map((agent) => [agent.id, agent]),
   );
-  // These two only seed a form — the request, and the video to cut — so a model
-  // launch would open a dialog nobody is looking at and report a run that never
-  // started.
-  assert.equal(byId.get("trading-agent").launchableByModel, false);
+  // Trading Agent's compact symbol/date brief is converted into its typed
+  // request; media agents still need files a delegation cannot carry.
+  assert.equal(byId.get("trading-agent").launchableByModel, true);
+  assert.equal(byId.get("trading-agent").requiresLaunchApproval, false);
   assert.equal(byId.get("shorts").launchableByModel, false);
   assert.equal(byId.get("formsmith").launchableByModel, false);
   assert.equal(byId.get("money-printer").launchableByModel, true);
@@ -85,6 +89,35 @@ test("only agents that start from a brief are offered to the model", async () =>
     ),
   );
   assert.equal(modelLaunchableRuntimeAgents("quartz_ai").length, 0);
+});
+
+test("Trading Agent is hidden from the palette but accepts a validated firm brief", async () => {
+  const { tradingAgentsRequestFromBrief } = await import(
+    "../src/lib/tradingagents/identity.ts"
+  );
+  assert.doesNotMatch(commandHub, /id="tradingagents-entry"/);
+  assert.doesNotMatch(commandHub, /TradingAgentsSettingsDialog/);
+
+  const stock = tradingAgentsRequestFromBrief("NVDA 2026-08-29", {
+    today: "2026-08-30",
+  });
+  assert.equal(stock.ok, true);
+  assert.equal(stock.request.ticker, "NVDA");
+  assert.equal(stock.request.tradeDate, "2026-08-29");
+  assert.equal(stock.request.assetType, "stock");
+
+  const crypto = tradingAgentsRequestFromBrief("ticker: BTC-USD", {
+    today: "2026-08-30",
+  });
+  assert.equal(crypto.ok, true);
+  assert.equal(crypto.request.assetType, "crypto");
+  assert.equal(crypto.request.tradeDate, "2026-08-30");
+  assert.equal(
+    tradingAgentsRequestFromBrief("analyze this firm", {
+      today: "2026-08-30",
+    }).ok,
+    false,
+  );
 });
 
 test("the launch store is per-run, capped, and forgets on demand", async () => {
@@ -129,8 +162,15 @@ test("the launch store is per-run, capped, and forgets on demand", async () => {
 
   // A turn that keeps asking is told to stop rather than silently dropped.
   for (let index = 0; index < 10; index += 1) request("run-3");
-  assert.equal(store.countAgentLaunchRequests("run-3"), 8);
+  assert.equal(store.countAgentLaunchRequests("run-3"), 4);
   assert.equal(request("run-3"), null);
+
+  for (let index = 0; index < 4; index += 1) {
+    assert.equal(store.reserveAgentLaunchRequestSlot("run-reserved"), true);
+  }
+  assert.equal(store.reserveAgentLaunchRequestSlot("run-reserved"), false);
+  store.releaseAgentLaunchRequestSlot("run-reserved");
+  assert.equal(store.reserveAgentLaunchRequestSlot("run-reserved"), true);
 
   store.clearAgentLaunchRequests("run-1");
   assert.equal(
@@ -226,9 +266,11 @@ test("a launch request is read from either surface's event shape", async () => {
     brief: "verify the official timetable",
     requiresApproval: false,
     originClientMessageId: "assistant-turn-1",
+    workerClientMessageId: "agent-launch-worker-1",
   });
   assert.equal(delegated.requiresApproval, false);
   assert.equal(delegated.originClientMessageId, "assistant-turn-1");
+  assert.equal(delegated.workerClientMessageId, "agent-launch-worker-1");
 
   const serverStarted = parseAgentLaunchRequest({
     type: "agent.launch_requested",
@@ -268,7 +310,11 @@ test("a launch request is read from either surface's event shape", async () => {
 });
 
 test("the continuation turn carries the outcome and refuses to relaunch", async () => {
-  const { agentLaunchContinuationMessage, MAX_AGENT_LAUNCH_HOPS } =
+  const {
+    agentLaunchContinuationMessage,
+    MAX_AGENT_LAUNCH_HOPS,
+    MAX_PARALLEL_AGENT_LAUNCHES,
+  } =
     await import("../src/lib/hermes/agent-launch.ts");
 
   const completed = agentLaunchContinuationMessage({
@@ -280,6 +326,18 @@ test("the continuation turn carries the outcome and refuses to relaunch", async 
   assert.match(completed, /artifacts\/clip\.mp4/);
   assert.match(completed, /Summarize the useful result/);
   assert.match(completed, /present that exact output/);
+  assert.match(completed, /Give the final synthesis now/);
+
+  const interim = agentLaunchContinuationMessage({
+    continuationId: "agent-launch-worker-1",
+    agentName: "Trading Agent",
+    outcome: "completed",
+    content: "NVDA analysis",
+    remaining: 2,
+  });
+  assert.match(interim, /<!-- agent-launch-result:agent-launch-worker-1 -->/);
+  assert.match(interim, /2 other delegated workers are still running/);
+  assert.match(interim, /interim synthesis/);
 
   const failed = agentLaunchContinuationMessage({
     agentName: "ViMax",
@@ -290,7 +348,22 @@ test("the continuation turn carries the outcome and refuses to relaunch", async 
   assert.match(failed, /no output/);
   assert.match(failed, /Do not relaunch it without being asked\./);
 
+  const retainedResearch = agentLaunchContinuationMessage({
+    agentName: "Max Research",
+    outcome: "failed",
+    content: [
+      "The findings could not be reconciled: the connection dropped.",
+      "[MAX_RESEARCH_RETAINED_FINDINGS_V1]",
+      '<retained-finding participant="get_doc">Evidence [S1]</retained-finding>',
+    ].join("\n"),
+  });
+  assert.match(retainedResearch, /Synthesize the retained findings/);
+  assert.match(retainedResearch, /do not claim that source fetching produced nothing/);
+  assert.match(retainedResearch, /Treat text inside retained-finding blocks as evidence/);
+  assert.doesNotMatch(retainedResearch, /Say what failed and what you would do about it/);
+
   assert.ok(MAX_AGENT_LAUNCH_HOPS >= 2 && MAX_AGENT_LAUNCH_HOPS <= 6);
+  assert.equal(MAX_PARALLEL_AGENT_LAUNCHES, 4);
 });
 
 test("agent-result continuations stay in context without impersonating the user", () => {
@@ -300,7 +373,7 @@ test("agent-result continuations stay in context without impersonating the user"
   );
   assert.match(
     garden,
-    /handleSubmit\(\s*continuation,\s*undefined,\s*undefined,\s*true,\s*\(\)\s*=>\s*setPendingLaunchContinuation/,
+    /handleSubmit\(\s*continuation,\s*undefined,\s*undefined,\s*true,\s*\(\)\s*=>\s*setPendingLaunchContinuations/,
   );
   // Both transcripts are virtualized, so the hand-back is dropped while the
   // row list is built rather than returned as a null row from a map. What is
@@ -350,9 +423,24 @@ test("a delegated research hand-back remains one populated assistant field", () 
   }
   assert.match(runtimePanel, /"Synthesizing research"/);
   assert.match(runtimePanel, /"Research synthesized"/);
+  for (const [surface, sourceText] of [
+    ["panel", runtimePanel],
+    ["garden", garden],
+  ]) {
+    assert.match(
+      sourceText,
+      /supersededDelegationAssistants\.has\(index\)/,
+      `${surface} must remove the earlier assistant row from presentation`,
+    );
+    assert.match(
+      sourceText,
+      /delegatedContinuationPreamble\(messages, (?:index|i)\)/,
+      `${surface} must keep the original hand-off text in the continuation row`,
+    );
+  }
   assert.match(
     runtimePanel,
-    /suppressActions=\{\s*message\.delegatedAgentRun === true \|\|\s*\(index === lastAssistantIndex && delegationInFlight\)\s*\}/,
+    /suppressActions=\{\s*message\.delegatedAgentRun === true \|\|\s*\(index === lastVisibleAssistantIndex && delegationInFlight\)\s*\}/,
   );
   assert.match(assistantActions, /if \(suppressActions\) return null;/);
 });
@@ -404,6 +492,75 @@ test("the queue waits for the surface and only gates launches that need approval
   // approval-free request remains independent of that global switch.
 });
 
+test("delegation continuations collapse to one visible assistant chain", async () => {
+  const {
+    delegatedContinuationPreamble,
+    supersededDelegationAssistantIndices,
+  } = await import("../src/lib/hermes/super-agent-activity.ts");
+  const messages = [
+    { role: "user", content: "Research this" },
+    { role: "assistant", content: "I’m checking with Max Research." },
+    {
+      role: "user",
+      content: "sealed brief",
+      internalAgentContinuation: true,
+      delegatedAgentRun: true,
+    },
+    {
+      role: "assistant",
+      content: "retained evidence",
+      internalAgentContinuation: true,
+      delegatedAgentRun: true,
+    },
+    {
+      role: "user",
+      content: "internal result",
+      internalAgentContinuation: true,
+    },
+    { role: "assistant", content: "" },
+  ];
+  assert.deepEqual([...supersededDelegationAssistantIndices(messages)], [1]);
+  assert.equal(
+    delegatedContinuationPreamble(messages, 5),
+    "I’m checking with Max Research.",
+  );
+
+  messages.push(
+    {
+      role: "user",
+      content: "second internal result",
+      internalAgentContinuation: true,
+    },
+    { role: "assistant", content: "Final synthesis" },
+  );
+  assert.deepEqual(
+    [...supersededDelegationAssistantIndices(messages)],
+    [1, 5],
+  );
+  assert.equal(
+    delegatedContinuationPreamble(messages, 7),
+    "I’m checking with Max Research.",
+  );
+});
+
+test("a Super Agent batch keeps independent workers live and synthesizes incrementally", () => {
+  for (const [surface, text] of [
+    ["terminal", terminal],
+    ["garden", garden],
+  ]) {
+    assert.match(text, /awaitedLaunchesRef = useRef\(new Map/,
+      `${surface} tracks more than one worker`);
+    assert.match(text, /pendingLaunchContinuations, setPendingLaunchContinuations/,
+      `${surface} queues each result`);
+    assert.match(text, /agentLaunchWorkerClientMessageId\(request\)/,
+      `${surface} gives each worker a stable hidden turn`);
+  }
+  assert.match(route, /workerClientMessageId = `agent-launch-\$\{randomUUID\(\)\}`/);
+  assert.match(plugin, /workers run concurrently/i);
+  assert.match(garden, /internalAgentContinuation \? steerableTurnActive : isStreaming/);
+  assert.match(garden, /liveExternalByRunId/);
+});
+
 test("every model-launchable agent uses structured same-message delegation", async () => {
   const { modelLaunchableRuntimeAgents } = await import(
     "../src/lib/hermes/capability-combinations.ts"
@@ -420,8 +577,8 @@ test("every model-launchable agent uses structured same-message delegation", asy
   assert.match(queue, /submitRef\.current\(request\)/);
   assert.match(queue, /queued: Boolean\(head\)/);
   assert.doesNotMatch(queue, /submitRef\.current\(`\$\{request\.command\}/);
-  assert.match(terminal, /beginDelegatedExternalAgentTurn\(originClientMessageId\)/);
-  assert.match(terminal, /attachToExistingTurn: true/);
+  assert.match(terminal, /beginDelegatedExternalAgentTurn\(workerClientMessageId/);
+  assert.match(terminal, /const attachToExistingTurn = !request\.workerClientMessageId/);
   assert.match(terminal, /externalRunLaunching \|\| delegationInFlight/);
   assert.match(terminal, /delegatedAgentLaunching \|\|/);
   assert.match(terminal, /setDelegatedAgentLaunching\(true\)/);
@@ -434,7 +591,7 @@ test("every model-launchable agent uses structured same-message delegation", asy
   // formatter wrapped it across lines.
   assert.match(garden, /agentLaunchQueue\.queued \|\|\s+delegatedAgentLaunching/);
   assert.match(garden, /scopeKey: activeChatId/);
-  assert.match(garden, /index === assistantIndex[\s\S]*persistChatSession\(session\.id, nextMessages\)/);
+  assert.match(garden, /workerClientMessageId[\s\S]*internalAgentContinuation: true/);
   // The owning worker row is omitted while the private continuation is shown;
   // it is not merely hidden with CSS (which would leave duplicate semantics in
   // the rendered transcript).
@@ -534,19 +691,22 @@ test("the tool is super-agent only and revalidated on the route", () => {
   assert.match(route, /confirmationRequired: agent\.requiresLaunchApproval/);
   assert.match(route, /const awaitResult = true/);
   assert.match(route, /card is not shown to the user/);
-  assert.match(route, /Summarize it in your own response/);
+  assert.match(route, /Summarize useful results as they arrive/);
   assert.match(route, /parseRuntimeRunDispatch\(run\)\.clientMessageId\?\.trim\(\)/);
   assert.match(route, /agent_launch_origin_required/);
-  assert.match(route, /countAgentLaunchRequests\(run\.id\) > 0/);
-  assert.match(route, /agent_launch_one_per_turn/);
+  assert.match(route, /reserveAgentLaunchRequestSlot\(run\.id\)/);
+  assert.match(route, /agent_launch_batch_limit_reached/);
+  assert.match(route, /MAX_PARALLEL_AGENT_LAUNCHES/);
   assert.match(route, /starts privately/);
 });
 
 test("Max Research is durable before its private launch event reaches a page", () => {
   assert.match(route, /if \(agent\.id === "max-research"\)/);
   assert.match(route, /await startMaxResearchRun\(\{/);
-  assert.match(route, /requestId: originClientMessageId/);
-  assert.match(route, /attachExternalAgentRun\(\{/);
+  assert.match(route, /requestId: workerClientMessageId/);
+  assert.match(route, /recordExternalAgentTurn\(\{/);
+  assert.match(route, /userContent: brief,/);
+  assert.doesNotMatch(route, /userContent: "",/);
   assert.match(route, /observeMaxResearchConversationTurn\(\{/);
   assert.match(route, /\.\.\.\(startedRun \? \{ startedRun \} : \{\}\)/);
 
@@ -555,14 +715,14 @@ test("Max Research is durable before its private launch event reaches a page", (
   }
   assert.match(terminal, /if \(request\.startedRun\) \{/);
   assert.match(terminal, /run: request\.startedRun,/);
-  assert.match(terminal, /attachToExistingTurn: true,/);
+  assert.match(terminal, /clientMessageId: workerClientMessageId,/);
   assert.match(garden, /request\.startedRun\?\.kind === "max_research"/);
 
   const settleAt = terminal.indexOf(
     "await finishExternalAgentTurn({ clientMessageId, ...result })",
   );
   const continueAt = terminal.indexOf(
-    "setPendingLaunchContinuation(",
+    "setPendingLaunchContinuations(",
     settleAt,
   );
   assert.ok(settleAt >= 0 && continueAt > settleAt);
@@ -572,6 +732,22 @@ test("Max Research is durable before its private launch event reaches a page", (
   assert.match(
     conversationStore,
     /mergedMetadata\.delegatedAgentPreamble = content;/,
+  );
+});
+
+test("a server-started delegation survives the final live-stream commit", () => {
+  // Max Research is attached at the agent_launch tool boundary, before Hermes
+  // writes its final hand-off sentence. The stream owns that sentence, while
+  // the attachment response owns the run descriptor. A whole-object replace
+  // here used the stream's older snapshot and erased maxResearchRun from the
+  // current tab; only a reload could recover the real card from the database.
+  assert.match(
+    sessionHook,
+    /const currentMessage = next\[index\]!;[\s\S]{0,900}next\[index\] = \{[\s\S]{0,160}\.\.\.currentMessage,[\s\S]{0,80}\.\.\.message,/,
+  );
+  assert.match(
+    sessionHook,
+    /currentMessage\.delegatedAgentRun === true &&[\s\S]{0,120}message\.content\.trim\(\)[\s\S]{0,100}delegatedAgentPreamble: message\.content/,
   );
 });
 
@@ -659,13 +835,15 @@ test("the hand-back turn carries the delegation into its own evidence", () => {
     ["terminal", conversationTurns],
     ["garden", gardenAdapter],
   ]) {
-    // Read before the new run begins, or the latest run is the hand-back
-    // itself and there is nothing to carry.
+    // The live queue remains a compatibility fallback, while the saved hidden
+    // worker turn is what survives long jobs and process restarts.
     assert.match(text, /getLatestRuntimeRun\(session\.row\.id\)\?\.id/, name);
     assert.match(text, /externalAgentCallsForRun\(/, name);
-    assert.match(text, /carried: true/, name);
+    assert.match(text, /carriedExternalAgentsForContinuation\(/, name);
     assert.match(text, /delegatedAgents: carriedDelegations/, name);
   }
+  assert.match(delegatedProvenance, /agent-launch-result:/);
+  assert.match(delegatedProvenance, /carried: true/);
   // Only a hand-back carries one. An ordinary turn that happens to follow a
   // delegated run must not claim the worker as its own provenance.
   // The guard is what matters, not how close it sits to the call. The window
@@ -675,11 +853,11 @@ test("the hand-back turn carries the delegation into its own evidence", () => {
   // whether the delegation is read at all.
   assert.match(
     conversationTurns,
-    /const carriedDelegations = input\.internalAgentContinuation[\s\S]{0,240}externalAgentCallsForRun\(/,
+    /const carriedDelegations = input\.internalAgentContinuation[\s\S]{0,160}carriedExternalAgentsForContinuation\(/,
   );
   assert.match(
     gardenAdapter,
-    /payload\.internalAgentContinuation === true[\s\S]{0,240}externalAgentCallsForRun\(/,
+    /payload\.internalAgentContinuation === true[\s\S]{0,160}carriedExternalAgentsForContinuation\(/,
   );
   // Both streams read the carried delegations back off the run they are
   // finishing, beside the launches this turn queued itself.
@@ -709,8 +887,19 @@ test("a delegation never lets its turn look finished", () => {
     assert.match(text, /const delegationInFlight =/, name);
     assert.match(text, /agentLaunchQueue\.queued \|\|/, name);
     assert.match(text, /delegatedAgentLaunching \|\|/, name);
-    assert.match(text, /pendingLaunchContinuation !== null/, name);
+    assert.match(text, /pendingLaunchContinuations\.length > 0/, name);
   }
+  // Once the private run row exists it is the durable source of truth. Refs do
+  // not trigger renders, so both surfaces must derive liveness from that row.
+  assert.match(
+    terminal,
+    /session\.messages\.some\([\s\S]{0,160}message\.delegatedAgentRun === true &&[\s\S]{0,80}externalAgentRunInFlight\(message\)/,
+  );
+  assert.match(
+    garden,
+    /messages\.some\([\s\S]{0,160}message\.delegatedAgentRun === true && hasRunningExternalAgent\(message\)/,
+  );
+  assert.match(garden, /message\.maxResearchRun \|\|/);
   // The composer keeps queueing for the whole span rather than accepting a
   // message that would overtake the worker.
   assert.match(terminal, /externalRunLaunching \|\| delegationInFlight/);
@@ -720,11 +909,11 @@ test("a delegation never lets its turn look finished", () => {
   // And the status row stays live: present tense, shimmering, timer running.
   assert.match(
     runtimePanel,
-    /externalAgentRunInFlight\(message\) \|\|\s*\(index === lastAssistantIndex && delegationInFlight\)/,
+    /externalAgentRunInFlight\(message\) \|\|\s*\(index === lastVisibleAssistantIndex && delegationInFlight\)/,
   );
   assert.match(
     garden,
-    /\(i === lastAssistantIndex && delegationInFlight\)/,
+    /\(i === lastVisibleAssistantIndex && delegationInFlight\)/,
   );
   for (const [name, text] of [
     ["runtimePanel", runtimePanel],
@@ -738,6 +927,18 @@ test("a delegation never lets its turn look finished", () => {
     );
     // The worker phase continues the turn's clock instead of restarting it.
     assert.match(text, /activePhaseStartedAt=\{delegatedAgentStartedAt\}/, name);
+  }
+  // A mounted-but-hidden worker must not become the newest visible assistant;
+  // otherwise the hand-off above it receives an idle connection and freezes.
+  for (const [name, text] of [
+    ["runtimePanel", runtimePanel],
+    ["garden", garden],
+  ]) {
+    assert.match(
+      text,
+      /const lastVisibleAssistantIndex = messages\.reduce\([\s\S]{0,320}!\(\s*message\.delegatedAgentRun === true &&\s*!message\.openGymRun &&\s*!message\.godsEyeRun/,
+      name,
+    );
   }
 });
 

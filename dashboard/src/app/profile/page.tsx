@@ -10,6 +10,7 @@ import { readProfileStats } from "@/lib/profile/stats.ts";
 import { getContactStore } from "@/lib/contacts/instance.ts";
 import { getCalendarStore } from "@/lib/calendar/instance.ts";
 import { caldavVaultConfigured } from "@/lib/calendar/caldav-credentials.ts";
+import { googleImageGenerationCredentialsStatus } from "@/lib/hermes/google-image-generation-credentials.ts";
 import ProfileClient from "./profile-client";
 
 export const dynamic = "force-dynamic";
@@ -50,7 +51,7 @@ export default async function ProfilePage({
   const contacts = getContactStore();
   const calendars = getCalendarStore()
     .listCalendars(userId)
-    .filter((calendar) => calendar.caldavUrl);
+    .filter((calendar) => calendar.sourceUrl || calendar.caldavUrl);
   const requested = await searchParams;
   const rawTab = Array.isArray(requested.tab) ? requested.tab[0] : requested.tab;
   // `brain` remains a backwards-compatible deep link; the user-facing surface
@@ -76,6 +77,7 @@ export default async function ProfilePage({
       contactTotal={contacts.countContacts(userId)}
       syncedCalendars={calendars}
       calendarVaultConfigured={caldavVaultConfigured()}
+      googleImageGenerationStatus={googleImageGenerationCredentialsStatus(userId)}
       initialTab={initialTab}
       initialBrainScope={initialBrainScope}
     />

@@ -20,6 +20,7 @@ const COMMAND_TIMEOUT_MS = 60_000;
 const MODEL_TIMEOUT_MS = 120_000;
 const CLOSE_TIMEOUT_MS = 15_000;
 const SCREENSHOT_TIMEOUT_MS = 15_000;
+const AUTH_PROBE_TIMEOUT_MS = 15_000;
 const APPROVAL_POLL_MS = 200;
 const IDENTIFIER = /^[A-Za-z0-9_-]{1,128}$/u;
 const ACTION_ID = /^act_[0-9a-f]{32}$/u;
@@ -27,6 +28,15 @@ const SCREENSHOT_ID = /^[0-9]{1,6}$/u;
 const APPROVAL_MODES = new Set(["sensitive_actions", "every_action", "none"]);
 const ENGINES = new Set(["chrome", "lightpanda"]);
 const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted"]);
+const AUTH_PROBE_ACTIONS = new Set([
+  "open",
+  "click",
+  "dblclick",
+  "press",
+  "back",
+  "forward",
+  "reload",
+]);
 const SENSITIVE = /^(click|dblclick|type|fill|press|keyboard|select|check|uncheck|drag|hover|focus|eval|find|mouse|set|network|cookies|storage|tab|pushstate|close)\b/i;
 const ALLOWED_COMMANDS = new Set([
   "open",
@@ -113,6 +123,45 @@ const BREAD_ASSISTANT_IDENTITY = [
   "If asked who you are, identify yourself as Bread. If asked which model powers you, report the authoritative resolved model separately.",
 ].join(" ");
 
+// Read structure, never field values. The probe is injected as one argv value
+// into the already-fenced browser session, and returns only the page identity
+// needed to offer a user-controlled sign-in handoff.
+const AUTH_DETECTION_SCRIPT = `(() => {
+  const visible = (element) => {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
+  };
+  const inputs = [...document.querySelectorAll("input")].filter(visible);
+  const controls = [...document.querySelectorAll("button, input[type=submit], input[type=button], [role=button], a")].filter(visible);
+  const controlText = (element) => String(element.innerText || element.value || element.getAttribute("aria-label") || "").trim();
+  const password = inputs.some((input) => String(input.type).toLowerCase() === "password");
+  const identity = inputs.some((input) => {
+    const type = String(input.type).toLowerCase();
+    const autocomplete = String(input.autocomplete).toLowerCase();
+    const name = String(input.name || input.id || input.placeholder).toLowerCase();
+    return type === "email" || ["username", "email"].includes(autocomplete) || /(?:email|e-mail|username|user id)/i.test(name);
+  });
+  const authControl = controls.some((element) => /^(?:sign[ -]?in|log[ -]?in|continue|next|use .+ account|verify)(?:\\b|$)/i.test(controlText(element)));
+  const authPath = /(?:^|[\\/._?&=-])(?:login|log-in|signin|sign-in|authenticate|oauth|authorize|session)(?:$|[\\/._?&=-])/i.test(location.pathname + location.search);
+  const authForm = [...document.forms].filter(visible).some((form) => {
+    const formInputs = [...form.querySelectorAll("input")].filter(visible);
+    const hasIdentity = formInputs.some((input) => ["email", "text"].includes(String(input.type).toLowerCase()));
+    const hasPassword = formInputs.some((input) => String(input.type).toLowerCase() === "password");
+    const hasSubmit = [...form.querySelectorAll("button, input[type=submit]")].filter(visible).some((element) => /(?:sign[ -]?in|log[ -]?in|continue|next|verify)/i.test(controlText(element)));
+    return hasPassword || (hasIdentity && hasSubmit);
+  });
+  return JSON.stringify({
+    required: Boolean(password || authForm || (authPath && identity && authControl)),
+    // Query strings and fragments can contain OAuth state or one-time tokens;
+    // the handoff only needs the safe page path in the same persistent profile.
+    url: location.origin + location.pathname,
+    origin: location.origin,
+    title: document.title.slice(0, 200),
+  });
+})()`;
+
 const SYSTEM_PROMPT = `${BREAD_ASSISTANT_IDENTITY}\n\nYou control a web browser through the agent-browser CLI on Bread's behalf.
 
 RULES:
@@ -121,6 +170,7 @@ RULES:
 - Discover interactive elements with 'agent-browser snapshot -i' — it lists elements with @refs (e.g. @e3). Use those refs with click/type.
 - Common commands: open <url>, snapshot -i, snapshot, click @ref, type @ref <text>, press <key>, eval "<js>", back, screenshot.
 - Screenshots are captured automatically and shown to the user — do not embed image markdown.
+- Never enter, request, or infer a password, one-time code, passkey, or other sign-in secret. Breadboard pauses on sign-in pages so the user can authenticate in a separate browser window.
 - If a request is outside a browser's capabilities, say so honestly instead of pretending.
 - When the task is complete, reply with a short plain-text summary and DO NOT call the tool.`;
 
@@ -1034,6 +1084,65 @@ async function executeCommand(current, words) {
   );
 }
 
+/**
+ * agent-browser versions differ in whether `eval` prints a JSON value or a
+ * JSON-encoded string. Accept either bounded shape, and reject everything else
+ * so arbitrary page output can never become a durable auth event.
+ */
+export function parseRuntimeV2AgentBrowserAuthProbe(output) {
+  if (!boundedString(output, MAX_TOOL_RESULT_CHARS)) return null;
+  const candidates = [output.trim(), ...output.trim().split(/\r?\n/u).reverse()];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    let value;
+    try {
+      value = JSON.parse(candidate);
+      if (typeof value === "string") value = JSON.parse(value);
+    } catch {
+      continue;
+    }
+    if (
+      !isRecord(value) ||
+      value.required !== true ||
+      !validHttpUrl(value.url) ||
+      typeof value.origin !== "string" ||
+      !boundedString(value.origin, 2_048) ||
+      !boundedString(value.title, 512, { empty: true })
+    ) {
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = new URL(value.url);
+    } catch {
+      continue;
+    }
+    if (parsed.origin !== value.origin) continue;
+    return {
+      url: parsed.href,
+      origin: parsed.origin,
+      title: value.title.slice(0, 200),
+    };
+  }
+  return null;
+}
+
+async function detectSignInRequirement(current, action) {
+  if (!AUTH_PROBE_ACTIONS.has(String(action).toLowerCase())) return null;
+  const output = await runChild(
+    current,
+    [
+      current.request.agentBrowserEntry,
+      "--session",
+      current.identity.jobId,
+      "eval",
+      AUTH_DETECTION_SCRIPT,
+    ],
+    AUTH_PROBE_TIMEOUT_MS,
+  );
+  return parseRuntimeV2AgentBrowserAuthProbe(output);
+}
+
 async function requestApproval(current, info) {
   const actionId = `act_${randomBytes(16).toString("hex")}`;
   current.status = "awaiting_approval";
@@ -1266,6 +1375,16 @@ async function drive(current) {
         // run. The interval remains useful during long waits, but it is not a
         // correctness boundary for the user-visible screenshot timeline.
         await captureScreenshot(current);
+        const authRequired = await detectSignInRequirement(current, action);
+        if (authRequired) {
+          emit(current, "auth.required", authRequired);
+          return {
+            status: "failed",
+            payload: {
+              message: `Sign-in is required at ${authRequired.origin}. Use the sign-in card above the chat box, then retry this task.`,
+            },
+          };
+        }
         messages.push({ role: "tool", tool_call_id: callId, content: result });
       }
     }

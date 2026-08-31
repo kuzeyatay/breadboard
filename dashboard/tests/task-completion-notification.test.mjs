@@ -6,6 +6,7 @@ import {
   chatResponseNotification,
   notifyChatResponseFailed,
   notifyChatResponseReady,
+  CHAT_RESPONSE_SEEN_EVENT,
   notifyTaskCompleted,
   TASK_COMPLETION_NOTIFICATION_EVENT,
   taskCompletionLabel,
@@ -103,12 +104,19 @@ test("completion notification stays silent for the focused chat", () => {
   eventTarget.addEventListener(TASK_COMPLETION_NOTIFICATION_EVENT, () => {
     count += 1;
   });
+  // An answer that lands in the open chat is reported as seen instead, so the
+  // account-wide inbox can retire it before any window announces it.
+  const seenChatIds = [];
+  eventTarget.addEventListener(CHAT_RESPONSE_SEEN_EVENT, (event) => {
+    seenChatIds.push(event.detail.chatId);
+  });
   try {
     notifyTaskCompleted("visible task", {
       chatId: "chat-a",
       activeChatId: "chat-a",
     });
     assert.equal(count, 0);
+    assert.deepEqual(seenChatIds, []);
 
     notifyTaskCompleted("background task", {
       chatId: "chat-b",
@@ -140,6 +148,7 @@ test("completion notification stays silent for the focused chat", () => {
       activeChatId: "chat-a",
     });
     assert.equal(count, 3);
+    assert.deepEqual(seenChatIds, ["chat-a", "chat-a"]);
     notifyChatResponseFailed("background failure, window unfocused", {
       chatId: "chat-b",
       activeChatId: "chat-a",
@@ -160,6 +169,7 @@ test("completion notification stays silent for the focused chat", () => {
 
 test("chat completions and failures notify through persistent minimal notices", () => {
   const toast = source("../src/app/components/toast.tsx");
+  const notificationApi = source("../src/lib/chat-notifications/store.ts");
   const session = source("../src/app/components/hermes/use-agent-session.ts");
   const garden = source("../src/app/gardens/[clusterSlug]/workspace-client.tsx");
   const gardenSessions = source("../src/app/api/chat-sessions/route.ts");
@@ -182,7 +192,21 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(toast, /whitespace-pre-wrap break-words/);
   assert.match(toast, /Reply to this chat/);
   assert.match(toast, /onReplyToChat/);
-  assert.match(toast, />\s*Dismiss\s*</);
+  assert.match(toast, /aria-label="Dismiss message"/);
+  assert.match(toast, /<span aria-hidden>\u00d7<\/span>/);
+  assert.doesNotMatch(toast, />\s*Dismiss\s*</);
+  assert.match(toast, /grid-cols-\[minmax\(0,1fr\)_auto\] items-stretch/);
+  assert.match(toast, /min-h-16 self-stretch/);
+  assert.match(toast, /fetch\('\/api\/chat-notifications', \{\s*cache: 'no-store'/);
+  assert.match(toast, /method: 'POST'/);
+  assert.match(toast, /keepalive: true/);
+  // Dismissals live on the account, never in a browser's storage.
+  assert.doesNotMatch(toast, /localStorage/);
+  assert.match(toast, /window\.sessionStorage/);
+  assert.match(toast, /chatNotificationHref/);
+  assert.match(toast, /CHAT_NOTIFICATION_OPENED_EVENT/);
+  assert.match(toast, /CHAT_RESPONSE_SEEN_EVENT/);
+  assert.match(toast, /seenTargetsRef/);
   assert.doesNotMatch(toast, /line-clamp/);
   assert.doesNotMatch(toast, /setTimeout/);
   assert.doesNotMatch(toast, /<svg/);
@@ -194,16 +218,24 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(garden, /locallyAnnouncedChatResponses/);
   assert.match(garden, /notifyFinishedGardenChat\(chat\.id, chat\.title\)/);
   assert.match(garden, /latestAssistantResponse/);
-  assert.match(garden, /dismissChatToasts\(viewingChatId\)/);
-  assert.match(garden, /onOpenChat=\{openChatById\}/);
+  assert.match(garden, /dismissChatToasts\(target\)/);
+  assert.match(garden, /onOpenChat=\{openChatFromNotification\}/);
   assert.match(garden, /onReplyToChat=\{replyToChatFromNotification\}/);
   assert.match(garden, /pendingNotificationReplyRef/);
+  assert.match(garden, /takeChatNotificationReply\(window\.sessionStorage/);
   assert.match(
     garden,
     /notifyChatResponseReady\(displayText,\s*\{[\s\S]*?response: assistantMsg\.content/,
   );
   assert.match(gardenSessions, /readLatestAssistantVersions/);
   assert.match(gardenSessions, /latestAssistantVersion:/);
+
+  assert.match(notificationApi, /FROM conversation_messages m/);
+  assert.match(notificationApi, /c\.surface IN \('dashboard_terminal', 'garden_chat'\)/);
+  assert.match(notificationApi, /m\.role = 'assistant'/);
+  assert.match(notificationApi, /m\.status IN \('complete', 'failed'\)/);
+  assert.match(notificationApi, /id: `msg_\$\{row\.message_id\}`/);
+  assert.match(notificationApi, /response = row\.content\.trim\(\)/);
 
   assert.match(session, /monitorBackgroundChatResponse/);
   assert.match(session, /notifyChatResponseReady\((?:instruction|trimmed|input\.text)/);

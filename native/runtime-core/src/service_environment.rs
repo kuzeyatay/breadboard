@@ -113,8 +113,6 @@ const OPTIONAL_ELECTRON_GATED_PRODUCT_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_MEM0",
     "BREADBOARD_MEM0_EXTRACTION",
     "BREADBOARD_MEM0_LLM_MODEL",
-    "BREADBOARD_GOOGLE_IMAGES_API_KEY",
-    "BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID",
     "BREADBOARD_GRAFT_CLI",
     "BREADBOARD_GIT_BIN",
     "RUFLO_CLAUDE_MODEL",
@@ -1356,6 +1354,7 @@ pub struct TrustedWorkerEnvironmentSet {
     outer_opencode: TrustedWorkerEnvironment,
     trading_agent: TrustedWorkerEnvironment,
     outer_career_ops: TrustedWorkerEnvironment,
+    outer_openexecutive: TrustedWorkerEnvironment,
     system_location: TrustedWorkerEnvironment,
     chatmock: TrustedWorkerEnvironment,
     vimax: TrustedWorkerEnvironment,
@@ -1553,14 +1552,6 @@ impl TrustedWorkerEnvironmentSet {
             OsString::from("BREADBOARD_DATA_DIR"),
             paths.data_root().as_os_str().to_os_string(),
         ));
-        for name in [
-            "BREADBOARD_GOOGLE_IMAGES_API_KEY",
-            "BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID",
-        ] {
-            if let Some(value) = product_environment_value(os_environment, name) {
-                image_search_pairs.push((OsString::from(name), value.to_os_string()));
-            }
-        }
         let image_search_google = TrustedWorkerEnvironment {
             mode,
             source: TrustedWorkerEnvironmentSource::ImageSearchGoogle,
@@ -1950,6 +1941,34 @@ impl TrustedWorkerEnvironmentSet {
             source: TrustedWorkerEnvironmentSource::OuterCareerOps,
             pairs: outer_career_ops_pairs,
         };
+        let mut outer_openexecutive_pairs = tool_pairs.clone();
+        for (name, value) in [
+            ("BREADBOARD_DATA_DIR", paths.data_root().to_path_buf()),
+            ("BREADBOARD_REPO_ROOT", paths.app_root().to_path_buf()),
+            ("OPENEXECUTIVE_ROOT", paths.app_root().join("OpenExecutive")),
+        ] {
+            outer_openexecutive_pairs.push((OsString::from(name), value.into_os_string()));
+        }
+        outer_openexecutive_pairs
+            .push((OsString::from("CHATMOCK_API_KEY"), OsString::from("local")));
+        for name in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "NODE_EXTRA_CA_CERTS",
+        ] {
+            if let Some(value) = product_environment_value(os_environment, name) {
+                outer_openexecutive_pairs.push((OsString::from(name), value.to_os_string()));
+            }
+        }
+        let outer_openexecutive = TrustedWorkerEnvironment {
+            mode,
+            source: TrustedWorkerEnvironmentSource::OuterOpenExecutive,
+            pairs: outer_openexecutive_pairs,
+        };
         let mut chatmock_pairs = tool_pairs.clone();
         chatmock_pairs.push((
             OsString::from("CODEX_HOME"),
@@ -2199,7 +2218,13 @@ impl TrustedWorkerEnvironmentSet {
             source: TrustedWorkerEnvironmentSource::AgentReachSetup,
             pairs: agent_reach_setup_pairs,
         };
-        let gbrain_sync_names = ["GBRAIN_MODE", "GBRAIN_ADAPTER_URL", "GBRAIN_ADAPTER_SECRET"];
+        let gbrain_sync_names = [
+            "GBRAIN_MODE",
+            "GBRAIN_ADAPTER_URL",
+            "GBRAIN_ADAPTER_SECRET",
+            "OPENAI_BASE_URL",
+            "OPENAI_API_KEY",
+        ];
         let mut gbrain_sync_pairs = minimal.pairs.clone();
         gbrain_sync_pairs.extend(
             services
@@ -4082,6 +4107,7 @@ impl TrustedWorkerEnvironmentSet {
             outer_opencode,
             trading_agent,
             outer_career_ops,
+            outer_openexecutive,
             system_location,
             chatmock,
             vimax,
@@ -4166,6 +4192,9 @@ impl TrustedWorkerEnvironmentSet {
             TrustedWorkerEnvironmentSource::TradingAgent => self.trading_agent.mint_for_launch(),
             TrustedWorkerEnvironmentSource::OuterCareerOps => {
                 self.outer_career_ops.mint_for_launch()
+            }
+            TrustedWorkerEnvironmentSource::OuterOpenExecutive => {
+                self.outer_openexecutive.mint_for_launch()
             }
             TrustedWorkerEnvironmentSource::SystemLocation => {
                 self.system_location.mint_for_launch()
@@ -4300,6 +4329,7 @@ impl fmt::Debug for TrustedWorkerEnvironmentSet {
                     "outer-opencode",
                     "trading-agent",
                     "outer-career-ops",
+                    "outer-openexecutive",
                     "system-location",
                     "chatmock",
                     "vimax",
@@ -4869,8 +4899,6 @@ fn service_only_product_environment_name(name: &str) -> bool {
     matches!(
         name,
         "BREADBOARD_EMBEDDING_API_KEY"
-            | "BREADBOARD_GOOGLE_IMAGES_API_KEY"
-            | "BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID"
             | "BREADBOARD_VISUAL_BROWSER_PATH"
             | "BREADBOARD_SPOTIFY_BROWSER_PATH"
             | "AGENT_BROWSER_EXECUTABLE_PATH"
@@ -6627,7 +6655,6 @@ fn build_gateway_environment(
                     | "BREADBOARD_POSTIZ_COORDINATOR_SERVICE_TOKEN"
                     | "BREADBOARD_INBOX_ZERO_SERVICE_URL"
                     | "BREADBOARD_INBOX_ZERO_SERVICE_TOKEN"
-                    | "BREADBOARD_GOOGLE_IMAGES_CONFIGURED"
                     | "BREADBOARD_MEM0_LLM_MODEL"
                     | "SOCIALS_MANAGER_URL"
                     | "WARDROBE_ROOT"
@@ -6708,6 +6735,8 @@ fn build_gateway_environment(
                 "GBRAIN_ADAPTER_URL",
                 "GBRAIN_ADAPTER_SECRET",
                 "GBRAIN_QUERY_TIMEOUT_MS",
+                "OPENAI_BASE_URL",
+                "OPENAI_API_KEY",
                 "SOCIALS_MANAGER_MODE",
                 "VIDEO_TRANSCRIPTION_ENABLED",
                 "UI_TARS_MODE",
@@ -7000,6 +7029,9 @@ fn write_hermes_runtime_config(
             "tools:\n",
             "  tool_search:\n",
             "    enabled: on\n",
+            "tool_loop_guardrails:\n",
+            "  warnings_enabled: true\n",
+            "  hard_stop_enabled: true\n",
             "agent:\n",
             "  coding_context: off\n",
             "  image_input_mode: native\n"
@@ -7342,12 +7374,6 @@ fn build_dashboard_environment(
         control.token.as_str(),
     )?;
     builder.insert("BREADBOARD_RUNTIME_V2_ACTIVE", "true")?;
-    if product_environment_value(os_environment, "BREADBOARD_GOOGLE_IMAGES_API_KEY").is_some()
-        && product_environment_value(os_environment, "BREADBOARD_GOOGLE_IMAGES_SEARCH_ENGINE_ID")
-            .is_some()
-    {
-        builder.insert("BREADBOARD_GOOGLE_IMAGES_CONFIGURED", "true")?;
-    }
     builder.insert(
         "BREADBOARD_TELEGRAM_GATEWAY_URL",
         endpoints.base_url(TrustedServiceEnvironmentSource::TelegramGateway),
@@ -10004,6 +10030,9 @@ mod tests {
                 "tools:\n",
                 "  tool_search:\n",
                 "    enabled: on\n",
+                "tool_loop_guardrails:\n",
+                "  warnings_enabled: true\n",
+                "  hard_stop_enabled: true\n",
                 "agent:\n",
                 "  coding_context: off\n",
                 "  image_input_mode: native\n"
@@ -10205,6 +10234,40 @@ mod tests {
         assert_eq!(career["CHATMOCK_API_KEY"], "local");
         assert!(!career.contains_key("NEXTAUTH_SECRET"));
         assert!(!career.contains_key("BREADBOARD_SUPERVISOR_CONTROL_TOKEN"));
+    }
+
+    #[test]
+    fn openexecutive_worker_receives_managed_state_source_and_local_model_authority() {
+        let (_temporary, paths, config, os_environment) = fixture();
+        let services = TrustedServiceEnvironmentSet::load(
+            RuntimeMode::Packaged,
+            &paths,
+            &config,
+            &endpoints(),
+            control(),
+            &os_environment,
+        )
+        .unwrap();
+        let workers = TrustedWorkerEnvironmentSet::from_service_environments(
+            RuntimeMode::Packaged,
+            &services,
+            &paths,
+            &os_environment,
+        );
+        let executive = worker_values(
+            &workers.prepare_for_source(TrustedWorkerEnvironmentSource::OuterOpenExecutive),
+        );
+        assert_eq!(
+            executive["OPENEXECUTIVE_ROOT"],
+            paths.app_root().join("OpenExecutive").to_string_lossy()
+        );
+        assert_eq!(
+            executive["BREADBOARD_DATA_DIR"],
+            paths.data_root().to_string_lossy()
+        );
+        assert_eq!(executive["CHATMOCK_API_KEY"], "local");
+        assert!(!executive.contains_key("NEXTAUTH_SECRET"));
+        assert!(!executive.contains_key("BREADBOARD_SUPERVISOR_CONTROL_TOKEN"));
     }
 
     #[test]
@@ -10454,12 +10517,16 @@ mod tests {
                 "GBRAIN_ADAPTER_URL",
                 "GBRAIN_ADAPTER_SECRET",
                 "GBRAIN_QUERY_TIMEOUT_MS",
+                "OPENAI_BASE_URL",
+                "OPENAI_API_KEY",
             ],
         );
         assert_eq!(sync["GBRAIN_MODE"], "preferred");
         assert_eq!(sync["GBRAIN_ADAPTER_URL"], "http://127.0.0.1:7739");
         assert_eq!(sync["GBRAIN_ADAPTER_SECRET"], GBRAIN_ADAPTER_SECRET);
         assert_eq!(sync["GBRAIN_QUERY_TIMEOUT_MS"], "1500000");
+        assert_eq!(sync["OPENAI_BASE_URL"], "http://127.0.0.1:7737/v1");
+        assert_eq!(sync["OPENAI_API_KEY"], "local");
         assert!(!sync.contains_key("BREADBOARD_SUPERVISOR_CONTROL_TOKEN"));
     }
 

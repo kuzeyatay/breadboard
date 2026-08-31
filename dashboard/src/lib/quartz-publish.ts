@@ -60,6 +60,8 @@ interface QuartzPublishOptions {
   readonly requireSuccess?: boolean;
   /** Authenticated actor. Scope remains deliberately user-global. */
   readonly userId?: number;
+  /** Garden-scoped canonical mutation that invalidates derived topology. */
+  readonly gardenSlug?: string;
 }
 
 interface PendingPublication {
@@ -327,6 +329,12 @@ export async function publishQuartzAfterMutation(
   reason: string,
   options: QuartzPublishOptions = {},
 ): Promise<void> {
+  if (options.gardenSlug) {
+    const { invalidateThoughtTopologyAfterMutation } = await import(
+      "./thought-topology/state.ts"
+    );
+    await invalidateThoughtTopologyAfterMutation(options.gardenSlug, reason);
+  }
   if (!shouldAutoPublish()) return;
 
   const userId = sealedWorkerExecutor ? null : assertUserId(options.userId);

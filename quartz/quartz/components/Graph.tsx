@@ -6,6 +6,9 @@ import { i18n } from "../i18n"
 import { classNames } from "../util/lang"
 
 export interface D3Config {
+  mode: "links" | "auto" | "thought-topology"
+  preview?: boolean
+  topologyUrl?: string
   drag: boolean
   zoom: boolean
   depth: number
@@ -32,8 +35,20 @@ interface GraphOptions {
   showGlobalButton?: boolean
 }
 
+function topologyEndpoint(): string | undefined {
+  const dashboardBaseUrl = (
+    process.env.BREADBOARD_DASHBOARD_URL ??
+    process.env.DASHBOARD_URL ??
+    process.env.NEXT_PUBLIC_DASHBOARD_URL ??
+    ""
+  ).replace(/\/+$/, "")
+  return dashboardBaseUrl ? `${dashboardBaseUrl}/api/thought-topology` : undefined
+}
+
 const defaultOptions: GraphOptions = {
   localGraph: {
+    mode: "auto",
+    topologyUrl: topologyEndpoint(),
     drag: true,
     zoom: true,
     depth: -1,
@@ -51,6 +66,8 @@ const defaultOptions: GraphOptions = {
     enableRadial: false,
   },
   globalGraph: {
+    mode: "auto",
+    topologyUrl: topologyEndpoint(),
     drag: true,
     zoom: true,
     depth: -1,
@@ -68,6 +85,52 @@ const defaultOptions: GraphOptions = {
     enableRadial: false,
   },
 }
+
+// The quiet canvas heading only appears once the client script confirms the
+// Garden is in Thought Topology mode; the links-mode graph keeps its plain h3.
+const ThoughtTopologyHeading = () => (
+  <div class="thought-topology-heading" hidden>
+    <h3>Thought Topology</h3>
+    <p>How the ideas in this garden are organized and connected.</p>
+    <p class="thought-topology-analysis" hidden></p>
+  </div>
+)
+
+const ThoughtCallout = () => (
+  <div class="thought-callout" role="status" aria-live="polite" aria-hidden="true"></div>
+)
+
+const NodeSearch = ({ hidden }: { hidden?: boolean }) => (
+  <div class="global-graph-search" role="search" hidden={hidden}>
+    <button class="global-graph-search-button" type="button" aria-label="Search nodes">
+      <svg
+        version="1.1"
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden={true}
+      >
+        <path d="m21 21-4.34-4.34" />
+        <circle cx="11" cy="11" r="7" />
+      </svg>
+    </button>
+    <input
+      class="global-graph-search-input"
+      type="search"
+      placeholder="Search pages"
+      autoComplete="off"
+      spellcheck={false}
+    />
+    <button class="global-graph-search-clear" type="button" aria-label="Clear node search">
+      ×
+    </button>
+    <span class="global-graph-search-status" aria-live="polite"></span>
+  </div>
+)
 
 export default ((opts?: Partial<GraphOptions>) => {
   const Graph: QuartzComponent = ({ displayClass, cfg, fileData }: QuartzComponentProps) => {
@@ -93,10 +156,17 @@ export default ((opts?: Partial<GraphOptions>) => {
     const showGlobalButton = opts?.showGlobalButton ?? true
     const title = opts?.title ?? i18n(cfg.locale).components.graph.title
     return (
-      <div class={classNames(displayClass, "graph", isHomeVariant ? "home-knowledge-graph" : "")}>
+      <div
+        class={classNames(displayClass, "graph", isHomeVariant ? "home-knowledge-graph" : "")}
+        data-active-mode={localGraph.mode !== "links" ? "topology-pending" : undefined}
+      >
         <h3>{title}</h3>
-        <div class="graph-outer">
+        <div class="graph-outer" data-graph-surface={isHomeVariant ? "garden" : "note-local"}>
           <div class="graph-container" data-cfg={JSON.stringify(localGraph)}></div>
+          <div class="thought-topology-controls">
+            <ThoughtTopologyHeading />
+            <div class="thought-topology-status" role="status" aria-live="polite" hidden></div>
+          </div>
           {showGlobalButton && (
             <button class="global-graph-icon" aria-label="Expand Graph">
               <svg
@@ -125,38 +195,16 @@ export default ((opts?: Partial<GraphOptions>) => {
               </svg>
             </button>
           )}
+          {isHomeVariant && <ThoughtCallout />}
         </div>
         <div class="global-graph-outer">
           <div class="global-graph-container" data-cfg={JSON.stringify(globalGraph)}></div>
-          <div class="global-graph-search" role="search">
-            <button class="global-graph-search-button" type="button" aria-label="Search nodes">
-              <svg
-                version="1.1"
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden={true}
-              >
-                <path d="m21 21-4.34-4.34" />
-                <circle cx="11" cy="11" r="7" />
-              </svg>
-            </button>
-            <input
-              class="global-graph-search-input"
-              type="search"
-              placeholder="Search nodes..."
-              autoComplete="off"
-              spellcheck={false}
-            />
-            <button class="global-graph-search-clear" type="button" aria-label="Clear node search">
-              Clear
-            </button>
-            <span class="global-graph-search-status" aria-live="polite"></span>
+          <div class="thought-topology-controls">
+            <ThoughtTopologyHeading />
+            <NodeSearch />
+            <div class="thought-topology-status" role="status" aria-live="polite" hidden></div>
           </div>
+          {isHomeVariant && <ThoughtCallout />}
           <button class="global-graph-close" type="button" aria-label="Close Graph">
             <svg
               version="1.1"

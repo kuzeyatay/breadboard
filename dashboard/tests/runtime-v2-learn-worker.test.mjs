@@ -110,6 +110,34 @@ test("Runtime V2 Learn request and result preserve the legacy operation fence", 
     assert.equal(validateRuntimeV2LearnRequest(scoped, current.contentPath), scoped);
     assert.equal(scoped.userId, current.executionScope.userId);
     assert.equal(scoped.gardenId, current.executionScope.gardenId);
+    const guidedPlan = {
+      operation: "plan",
+      baseURL: "http://127.0.0.1:43120/v1",
+      model: "gpt-test",
+      includedSourceIds: ["source-1"],
+      syllabusSourceId: null,
+      sourceOnly: true,
+      includeSourceSnapshots: false,
+      autoConfirmTopicMap: false,
+      userInstruction: "Redo only topics after Maxwell's equations.",
+    };
+    assert.equal(
+      bindRuntimeV2LearnRequest(
+        guidedPlan,
+        current.executionScope,
+        current.contentPath,
+      ).userInstruction,
+      guidedPlan.userInstruction,
+    );
+    assert.throws(
+      () =>
+        bindRuntimeV2LearnRequest(
+          { ...guidedPlan, userInstruction: "x".repeat(4_001) },
+          current.executionScope,
+          current.contentPath,
+        ),
+      /planning request is invalid/u,
+    );
     for (const invalidGardenId of [
       "garden with space",
       "garden\nnewline",

@@ -101,14 +101,14 @@ export function selectLearnSources(
     ),
   );
   if (requestedIds.length === 0) {
-    throw new Error("Select at least one document for Learn.");
+    throw new Error("Select at least one source for Learn.");
   }
 
   const availableIds = new Set(sources.map((source) => source.slug));
   const missingIds = requestedIds.filter((sourceId) => !availableIds.has(sourceId));
   if (missingIds.length > 0) {
     throw new Error(
-      `The selected Learn document${missingIds.length === 1 ? " is" : "s are"} no longer available: ${missingIds.join(", ")}. Refresh the garden and choose the documents again.`,
+      `The selected Learn source${missingIds.length === 1 ? " is" : "s are"} no longer available: ${missingIds.join(", ")}. Refresh the garden and choose the sources again.`,
     );
   }
 

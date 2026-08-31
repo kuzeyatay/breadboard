@@ -381,6 +381,13 @@ test("PenEcho status is observational and Quartz cards heartbeat then release on
     "scripts",
     "penechoBoard.inline.ts",
   );
+  const boardBinding = source(
+    "penecho",
+    "src",
+    "client",
+    "app",
+    "breadboard-board.js",
+  );
 
   assert.doesNotMatch(service, /node:child_process|\bspawn\s*\(|\.kill\s*\(/);
   assert.match(service, /readSupervisedServiceSnapshot\("penecho"\)/);
@@ -394,4 +401,10 @@ test("PenEcho status is observational and Quartz cards heartbeat then release on
   assert.match(card, /method: "DELETE"[\s\S]*keepalive: true/);
   assert.match(card, /disposeActiveBoards\(\)[\s\S]*querySelectorAll/);
   assert.match(card, /document\.removeEventListener\("keydown", onKeyDown\)/);
+  assert.match(card, /event\.source !== frame\.contentWindow/);
+  assert.match(card, /data\?\.type !== FRAME_READY_MESSAGE/);
+  assert.match(
+    boardBinding,
+    /window\.parent\.postMessage\([\s\S]*BREADBOARD_BOARD_READY_MESSAGE/,
+  );
 });

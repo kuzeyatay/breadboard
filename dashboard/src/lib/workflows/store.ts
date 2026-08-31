@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 
 import db from "@/lib/db";
+import { removeDirectory, workflowDirectory } from "@/lib/teach/artifacts";
 import type { LocalWorkflowSummary } from "@/lib/workflows/types";
 
 export type WorkflowRow = {
@@ -16,7 +17,15 @@ export type WorkflowRow = {
   state: string;
   created_at: string;
   updated_at: string;
+  // Added when workflows became authorable by demonstration as well as on the
+  // canvas. Older rows predate the column and default to 'canvas'.
+  source?: string | null;
+  procedure?: string | null;
+  procedure_version?: number | null;
 };
+
+/** How a workflow was authored. The canvas and the teaching flow both end here. */
+export type WorkflowSource = "canvas" | "demonstration";
 
 export type WorkflowRecord = {
   id: string;
@@ -24,7 +33,24 @@ export type WorkflowRecord = {
   description: string;
   state: unknown;
   updatedAt: string;
+  source: WorkflowSource;
+  /** The learned procedure, for a workflow taught by demonstration. */
+  procedure: unknown;
+  procedureVersion: number;
 };
+
+function sourceOf(row: WorkflowRow): WorkflowSource {
+  return row.source === "demonstration" ? "demonstration" : "canvas";
+}
+
+function procedureOf(row: WorkflowRow): unknown {
+  if (!row.procedure) return null;
+  try {
+    return JSON.parse(row.procedure);
+  } catch {
+    return null;
+  }
+}
 
 const EMPTY_STATE = { blocks: {}, edges: [], loops: {}, parallels: {} };
 
@@ -43,7 +69,30 @@ function countBlocks(state: unknown): number {
 }
 
 /** The list shape the chat palette, super-agent inventory, and canvas home share. */
-export function summarize(row: WorkflowRow): LocalWorkflowSummary & { description: string } {
+export function summarize(
+  row: WorkflowRow,
+): LocalWorkflowSummary & { description: string; source: WorkflowSource; stepCount: number } {
+  const source = sourceOf(row);
+  const procedure = source === "demonstration"
+    ? (procedureOf(row) as {
+        steps?: unknown[];
+        inputs?: Array<{
+          name?: unknown;
+          label?: unknown;
+          type?: unknown;
+          required?: unknown;
+        }>;
+      } | null)
+    : null;
+  const inputs = Array.isArray(procedure?.inputs)
+    ? procedure.inputs.flatMap((input) => {
+        if (typeof input.name !== "string" || typeof input.label !== "string") return [];
+        const type = ["string", "number", "date", "file", "folder"].includes(String(input.type))
+          ? input.type as "string" | "number" | "date" | "file" | "folder"
+          : "string";
+        return [{ name: input.name, label: input.label, type, required: input.required === true }];
+      })
+    : [];
   return {
     id: row.id,
     name: row.name,
@@ -52,10 +101,17 @@ export function summarize(row: WorkflowRow): LocalWorkflowSummary & { descriptio
     updatedAt: row.updated_at,
     nodeCount: countBlocks(parseState(row.state)),
     description: row.description,
+    source,
+    // A demonstrated workflow has steps where a canvas workflow has blocks, and
+    // the list shows whichever one the workflow actually has.
+    stepCount: Array.isArray(procedure?.steps) ? procedure.steps.length : 0,
+    inputs,
   };
 }
 
-export function listWorkflows(userId: number): Array<LocalWorkflowSummary & { description: string }> {
+export function listWorkflows(
+  userId: number,
+): Array<LocalWorkflowSummary & { description: string; source: WorkflowSource; stepCount: number }> {
   const rows = db
     .prepare(`SELECT * FROM workflows WHERE user_id = ? ORDER BY updated_at DESC`)
     .all(userId) as WorkflowRow[];
@@ -73,6 +129,9 @@ export function getWorkflow(userId: number, id: string): WorkflowRecord | null {
     description: row.description,
     state: parseState(row.state),
     updatedAt: row.updated_at,
+    source: sourceOf(row),
+    procedure: procedureOf(row),
+    procedureVersion: row.procedure_version ?? 0,
   };
 }
 
@@ -87,6 +146,9 @@ export function getWorkflowById(id: string): (WorkflowRecord & { userId: number 
     description: row.description,
     state: parseState(row.state),
     updatedAt: row.updated_at,
+    source: sourceOf(row),
+    procedure: procedureOf(row),
+    procedureVersion: row.procedure_version ?? 0,
   };
 }
 
@@ -99,7 +161,16 @@ export function createWorkflow(userId: number, input: { name?: string; descripti
       `INSERT INTO workflows (id, user_id, name, description, state) VALUES (?, ?, ?, ?, ?)`,
     )
     .run(id, userId, name, description, JSON.stringify(EMPTY_STATE));
-  return { id, name, description, state: EMPTY_STATE, updatedAt: new Date().toISOString() };
+  return {
+    id,
+    name,
+    description,
+    state: EMPTY_STATE,
+    updatedAt: new Date().toISOString(),
+    source: "canvas",
+    procedure: null,
+    procedureVersion: 0,
+  };
 }
 
 export function updateWorkflow(
@@ -131,7 +202,17 @@ export function updateWorkflow(
 
 export function deleteWorkflow(userId: number, id: string): boolean {
   const result = db.prepare(`DELETE FROM workflows WHERE id = ? AND user_id = ?`).run(id, userId);
-  return result.changes > 0;
+  if (result.changes === 0) return false;
+  // A demonstrated workflow also owns a directory: its compiled representation
+  // and any run screenshots. Deleting the row and leaving those behind is how a
+  // "deleted" workflow keeps its screenshots on disk forever.
+  try {
+    removeDirectory(workflowDirectory(id));
+  } catch {
+    // No directory to remove. The row is gone either way, which is what the
+    // caller asked for.
+  }
+  return true;
 }
 
 export function recordRun(input: {

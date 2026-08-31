@@ -18,7 +18,7 @@ carries an audio attachment selects the first-party `audio-analysis` skill on it
 own, the same way an attached video selects Watch:
 
 ```
-turn-service.ts  premortem → visualizer → agent-loop → watch → image-to-3d → audio-analysis → messaging
+turn-service.ts  premortem → factcheck → patent disclosure → visualizer → agent-loop → watch → image-to-3d → Spotify → audio-analysis → diagram → GitHub Explorer → humanize → messaging → Goal
 ```
 
 The rule is Watch-shaped rather than Image-to-3D-shaped, because an attached

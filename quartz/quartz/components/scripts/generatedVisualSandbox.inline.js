@@ -295,7 +295,6 @@
     .gv-header { display:flex; min-width:0; min-height:48px; align-items:flex-start; justify-content:space-between; gap:18px; }
     .gv-heading { min-width:0; }
     .gv-header h1 { margin:0; font-size:clamp(1.55rem,4vw,2.15rem); font-weight:450; letter-spacing:-.035em; line-height:1.08; }
-    .gv-header p { max-width:68ch; margin:.55rem 0 0; color:var(--viz-muted); font-size:.92rem; line-height:1.5; }
     .gv-toolbar { display:flex; flex:none; gap:10px; }
     .gv-transport { display:grid; width:50px; height:50px; place-items:center; border:0; border-radius:999px; background:var(--viz-control); color:var(--viz-text); padding:0; transition:background .16s ease,transform .16s ease; }
     .gv-transport:hover { background:var(--viz-control-hover); }
@@ -353,9 +352,10 @@
     .gv-table { width:100%; border-collapse:collapse; }
     .gv-table th,.gv-table td { border-bottom:1px solid var(--viz-line); padding:8px 6px; text-align:left; }
     .gv-formula { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; overflow-wrap:anywhere; }
-    .gv-status { border-left:3px solid var(--viz-accent); padding-left:12px; }
-    .gv-status h3,.gv-status strong,.gv-status p { overflow-wrap:anywhere; }
-    .gv-status strong { display:block; font-size:18px; margin:3px 0; }
+    .gv-status { display:flex; align-items:baseline; justify-content:space-between; gap:16px; border-block:1px solid var(--viz-line); padding:12px 2px; }
+    .gv-status h3,.gv-status strong { margin:0; overflow-wrap:anywhere; }
+    .gv-status h3 { color:var(--viz-muted); font-size:.8rem; font-weight:600; }
+    .gv-status strong { font:500 .92rem ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; text-align:right; }
     .gv-sr { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
     button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid var(--viz-accent); outline-offset:3px; }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; } }
@@ -2422,7 +2422,7 @@
     const header = element("header", "gv-header")
     const heading = element("div", "gv-heading")
     heading.appendChild(element("h1", undefined, definition.title))
-    heading.appendChild(element("p", undefined, definition.description))
+    heading.appendChild(element("p", "gv-sr", definition.description))
     heading.appendChild(element("p", "gv-sr", definition.accessibilityDescription))
     const toolbar = element("div", "gv-toolbar")
     toolbar.setAttribute("role", "toolbar")
@@ -2457,6 +2457,8 @@
     const scenesHost = element("div", "gv-scenes")
     const valuesHost = element("div", "gv-values")
     const controlsHost = element("div", "gv-controls")
+    const supplementaryTextHost = element("div", "gv-sr")
+    supplementaryTextHost.setAttribute("aria-label", "Supplementary visualization explanation")
     const controlElements = new Map()
     let diagramLayoutFrame = 0
     const layoutRenderedDiagrams = () => {
@@ -2480,6 +2482,7 @@
     const draw = (focusSpatialSceneIndex) => {
       scenesHost.replaceChildren()
       valuesHost.replaceChildren()
+      supplementaryTextHost.replaceChildren()
       outputNodes.clear()
       definition.outputs.forEach((output) => {
         if (!output.expression || valueSceneOutputIds.has(output.id)) return
@@ -2497,6 +2500,7 @@
         card.appendChild(strong)
         valuesHost.appendChild(card)
       })
+      let statusRendered = false
       definition.scenes.forEach((scene, sceneIndex) => {
         if (scene.kind === "plot") scenesHost.appendChild(renderPlot(scene, state))
         else if (scene.kind === "diagram") scenesHost.appendChild(renderDiagram(scene, state))
@@ -2522,13 +2526,10 @@
           }
         } else if (scene.kind === "annotation" || scene.kind === "formula") {
           if (!scene.visibleWhen || evaluate(scene.visibleWhen, state) > 0) {
-            const host = element(
-              "section",
-              `gv-scene ${scene.kind === "formula" ? "gv-formula" : ""}`,
-            )
+            const host = element("section")
             host.appendChild(element("h3", undefined, scene.title))
             host.appendChild(element("p", undefined, scene.text))
-            scenesHost.appendChild(host)
+            supplementaryTextHost.appendChild(host)
           }
         } else if (scene.kind === "animated_marker") {
           const host = element("section", "gv-scene")
@@ -2556,13 +2557,21 @@
               : value > scene.threshold + epsilon
                 ? scene.aboveLabel
                 : scene.equalLabel
-          const host = element("section", "gv-scene gv-status")
-          host.setAttribute("role", "status")
-          host.setAttribute("aria-live", "polite")
-          host.appendChild(element("h3", undefined, scene.title))
-          host.appendChild(element("strong", undefined, label))
-          if (scene.description) host.appendChild(element("p", undefined, scene.description))
-          scenesHost.appendChild(host)
+          if (!statusRendered) {
+            statusRendered = true
+            const host = element("section", "gv-scene gv-status")
+            host.setAttribute("role", "status")
+            host.setAttribute("aria-live", "polite")
+            host.appendChild(element("h3", undefined, scene.title))
+            host.appendChild(element("strong", undefined, label))
+            scenesHost.appendChild(host)
+          } else {
+            const hidden = element("section")
+            hidden.appendChild(element("h3", undefined, scene.title))
+            hidden.appendChild(element("strong", undefined, label))
+            if (scene.description) hidden.appendChild(element("p", undefined, scene.description))
+            supplementaryTextHost.appendChild(hidden)
+          }
         }
       })
       layoutRenderedDiagrams()
@@ -2777,13 +2786,14 @@
     })
     syncProtocolControls()
 
-    // The immutable learner action must be available before the content it
-    // changes. Keep controls in authored contract order, then show compact
-    // derived values and observable scenes. Candidate source cannot override
-    // this trusted ordering or duplicate controls inside a scene.
-    app.appendChild(controlsHost)
-    app.appendChild(valuesHost)
+    // Match the in-chat visualizer: lead with the thing being explored, then a
+    // compact result strip and only the controls that materially change it.
+    // Candidate source cannot override this trusted ordering or duplicate
+    // controls inside a scene.
     app.appendChild(scenesHost)
+    app.appendChild(valuesHost)
+    app.appendChild(controlsHost)
+    app.appendChild(supplementaryTextHost)
 
     const updatePlayPauseButton = () => {
       if (!playPauseButton) return
@@ -2916,8 +2926,8 @@
               failures.push(`control.initial.missing: controlId=${String(control.id)}`)
               return
             }
-            const precedesScenes = !firstObservableScene || Boolean(
-              input.compareDocumentPosition(firstObservableScene) & Node.DOCUMENT_POSITION_FOLLOWING,
+            const followsScenes = !firstObservableScene || Boolean(
+              input.compareDocumentPosition(firstObservableScene) & Node.DOCUMENT_POSITION_PRECEDING,
             )
             const style = getComputedStyle(input)
             const box = input.getBoundingClientRect()
@@ -2927,28 +2937,15 @@
               Number(style.opacity || 1) > 0 &&
               box.width > 0 &&
               box.height > 0
-            const mobileInitialViewportVisible =
-              window.innerWidth > 640 ||
-              (box.left >= 0 &&
-                box.right <= window.innerWidth + 1 &&
-                box.top >= 0 &&
-                box.bottom <= window.innerHeight + 1)
-            input.dataset.controlPrecedesScenes = String(precedesScenes)
+            input.dataset.controlFollowsScenes = String(followsScenes)
             input.dataset.controlRendered = String(rendered)
-            input.dataset.controlMobileInitialViewportVisible = String(
-              mobileInitialViewportVisible,
-            )
-            if (!precedesScenes)
+            if (!followsScenes)
               failures.push(
-                `control.initial.order: controlId=${String(control.id)}; expected=before_first_observable_scene`,
+                `control.initial.order: controlId=${String(control.id)}; expected=after_first_observable_scene`,
               )
             if (!rendered)
               failures.push(
                 `control.initial.not_rendered: controlId=${String(control.id)}; ${boxSummary(box)}`,
-              )
-            if (!mobileInitialViewportVisible)
-              failures.push(
-                `control.initial.mobile_viewport_out_of_frame: controlId=${String(control.id)}; viewport=${String(window.innerWidth)}x${String(window.innerHeight)}; ${boxSummary(box)}`,
               )
           })
           const collectSpatialDiagnostics = (phase) =>

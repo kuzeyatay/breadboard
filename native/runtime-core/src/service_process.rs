@@ -253,6 +253,25 @@ impl LiveServiceProcess {
             .take()
             .expect("validated service exit receipt must be retained"))
     }
+
+    /// The supervision-lost mirror of [`Self::confirm_exit`]. It shares the
+    /// retained-receipt and scope-validation discipline; only the proof of zero
+    /// residency differs, and that difference lives entirely in
+    /// `RunningProcessOwner::confirm_supervision_lost`.
+    fn confirm_supervision_lost(&mut self) -> Result<ProcessTreeExit, ProcessOwnerError> {
+        if self.pending_exit.is_none() {
+            self.pending_exit = Some(self.owner.confirm_supervision_lost()?);
+        }
+        let tree_exit = self
+            .pending_exit
+            .as_ref()
+            .expect("confirmed service exit receipt must be retained");
+        self.validate_exit(tree_exit)?;
+        Ok(self
+            .pending_exit
+            .take()
+            .expect("validated service exit receipt must be retained"))
+    }
 }
 
 /// A StartTree-owned service whose supervisor was created.  The exact native
@@ -348,6 +367,25 @@ impl ClaimedServiceProcess {
             accepted_stop: None,
         })
     }
+
+    pub fn confirm_supervision_lost(
+        mut self,
+    ) -> Result<ServiceTreeExitAuthority, ServiceProcessTransitionError<Self>> {
+        let tree_exit = match self.live.confirm_supervision_lost() {
+            Ok(tree_exit) => tree_exit,
+            Err(error) => {
+                return Err(ServiceProcessTransitionError {
+                    authority: Box::new(self),
+                    error,
+                });
+            }
+        };
+        Ok(ServiceTreeExitAuthority {
+            start: self.live.start,
+            tree_exit,
+            accepted_stop: None,
+        })
+    }
 }
 
 /// Exact StartTree + accepted-started authority awaiting the durable
@@ -395,6 +433,26 @@ impl ServiceResidencyAuthority {
     ) -> Result<ServiceTreeExitAuthority, ServiceProcessTransitionError<Self>> {
         let mut authority = self;
         let tree_exit = match authority.process.live.confirm_exit(terminal) {
+            Ok(tree_exit) => tree_exit,
+            Err(error) => {
+                return Err(ServiceProcessTransitionError {
+                    authority: Box::new(authority),
+                    error,
+                });
+            }
+        };
+        Ok(ServiceTreeExitAuthority {
+            start: authority.process.live.start,
+            tree_exit,
+            accepted_stop: None,
+        })
+    }
+
+    pub fn confirm_supervision_lost(
+        self,
+    ) -> Result<ServiceTreeExitAuthority, ServiceProcessTransitionError<Self>> {
+        let mut authority = self;
+        let tree_exit = match authority.process.live.confirm_supervision_lost() {
             Ok(tree_exit) => tree_exit,
             Err(error) => {
                 return Err(ServiceProcessTransitionError {
@@ -490,7 +548,7 @@ impl StartingServiceProcess {
                     self,
                     ServiceReadinessPendingReason::SupervisorStateUnavailable,
                     deadline,
-                )
+                );
             }
             Ok(false) => {}
         }
@@ -514,14 +572,14 @@ impl StartingServiceProcess {
                     self,
                     ServiceReadinessPendingReason::ListenerNotOwned,
                     deadline,
-                )
+                );
             }
             Ok(LoopbackListenerOwnership::Absent) => {
                 return readiness_pending(
                     self,
                     ServiceReadinessPendingReason::ListenerAbsent,
                     deadline,
-                )
+                );
             }
             Ok(LoopbackListenerOwnership::Unavailable)
             | Err(ProcessOwnerError::EventWaitTimeout) => {
@@ -529,17 +587,17 @@ impl StartingServiceProcess {
                     self,
                     ServiceReadinessPendingReason::ListenerOwnershipUnavailable,
                     deadline,
-                )
+                );
             }
             Ok(LoopbackListenerOwnership::ProcessExited) => {
-                return ServiceReadinessProbeOutcome::ProcessExited(self)
+                return ServiceReadinessProbeOutcome::ProcessExited(self);
             }
             Err(_) => {
                 return readiness_pending(
                     self,
                     ServiceReadinessPendingReason::SupervisorStateUnavailable,
                     deadline,
-                )
+                );
             }
         };
 
@@ -570,21 +628,21 @@ impl StartingServiceProcess {
                     self,
                     ServiceReadinessPendingReason::ListenerOwnerChanged,
                     deadline,
-                )
+                );
             }
             Ok(LoopbackListenerOwnership::Unowned(_)) => {
                 return readiness_pending(
                     self,
                     ServiceReadinessPendingReason::ListenerNotOwned,
                     deadline,
-                )
+                );
             }
             Ok(LoopbackListenerOwnership::Absent) => {
                 return readiness_pending(
                     self,
                     ServiceReadinessPendingReason::ListenerAbsent,
                     deadline,
-                )
+                );
             }
             Ok(LoopbackListenerOwnership::Unavailable)
             | Err(ProcessOwnerError::EventWaitTimeout) => {
@@ -592,17 +650,17 @@ impl StartingServiceProcess {
                     self,
                     ServiceReadinessPendingReason::ListenerOwnershipUnavailable,
                     deadline,
-                )
+                );
             }
             Ok(LoopbackListenerOwnership::ProcessExited) => {
-                return ServiceReadinessProbeOutcome::ProcessExited(self)
+                return ServiceReadinessProbeOutcome::ProcessExited(self);
             }
             Err(_) => {
                 return readiness_pending(
                     self,
                     ServiceReadinessPendingReason::SupervisorStateUnavailable,
                     deadline,
-                )
+                );
             }
         }
         match self.live.owner.supervisor_has_exited() {
@@ -623,6 +681,25 @@ impl StartingServiceProcess {
         terminal: &ProcessOwnerTerminal,
     ) -> Result<ServiceTreeExitAuthority, ServiceProcessTransitionError<Self>> {
         let tree_exit = match self.live.confirm_exit(terminal) {
+            Ok(tree_exit) => tree_exit,
+            Err(error) => {
+                return Err(ServiceProcessTransitionError {
+                    authority: Box::new(self),
+                    error,
+                });
+            }
+        };
+        Ok(ServiceTreeExitAuthority {
+            start: self.live.start,
+            tree_exit,
+            accepted_stop: None,
+        })
+    }
+
+    pub fn confirm_supervision_lost(
+        mut self,
+    ) -> Result<ServiceTreeExitAuthority, ServiceProcessTransitionError<Self>> {
+        let tree_exit = match self.live.confirm_supervision_lost() {
             Ok(tree_exit) => tree_exit,
             Err(error) => {
                 return Err(ServiceProcessTransitionError {
@@ -754,6 +831,26 @@ impl ServiceReadyAuthority {
         })
     }
 
+    pub fn confirm_supervision_lost(
+        self,
+    ) -> Result<ServiceTreeExitAuthority, ServiceProcessTransitionError<Self>> {
+        let mut authority = self;
+        let tree_exit = match authority.process.live.confirm_supervision_lost() {
+            Ok(tree_exit) => tree_exit,
+            Err(error) => {
+                return Err(ServiceProcessTransitionError {
+                    authority: Box::new(authority),
+                    error,
+                });
+            }
+        };
+        Ok(ServiceTreeExitAuthority {
+            start: authority.process.live.start,
+            tree_exit,
+            accepted_stop: None,
+        })
+    }
+
     pub(crate) fn start_authority(&self) -> &DurableServiceStartAuthority {
         self.process.live.start.as_ref()
     }
@@ -808,6 +905,25 @@ impl ResidentServiceProcess {
         terminal: &ProcessOwnerTerminal,
     ) -> Result<ServiceTreeExitAuthority, ServiceProcessTransitionError<Self>> {
         let tree_exit = match self.live.confirm_exit(terminal) {
+            Ok(tree_exit) => tree_exit,
+            Err(error) => {
+                return Err(ServiceProcessTransitionError {
+                    authority: Box::new(self),
+                    error,
+                });
+            }
+        };
+        Ok(ServiceTreeExitAuthority {
+            start: self.live.start,
+            tree_exit,
+            accepted_stop: None,
+        })
+    }
+
+    pub fn confirm_supervision_lost(
+        mut self,
+    ) -> Result<ServiceTreeExitAuthority, ServiceProcessTransitionError<Self>> {
+        let tree_exit = match self.live.confirm_supervision_lost() {
             Ok(tree_exit) => tree_exit,
             Err(error) => {
                 return Err(ServiceProcessTransitionError {
@@ -980,6 +1096,30 @@ impl StoppingServiceProcess {
                 });
             }
         };
+        let accepted_stop = self.stop.cause();
+        Ok(ServiceTreeExitAuthority {
+            start: self.live.start,
+            tree_exit,
+            accepted_stop: Some(accepted_stop),
+        })
+    }
+
+    pub fn confirm_supervision_lost(
+        mut self,
+    ) -> Result<ServiceTreeExitAuthority, ServiceProcessTransitionError<Self>> {
+        let tree_exit = match self.live.confirm_supervision_lost() {
+            Ok(tree_exit) => tree_exit,
+            Err(error) => {
+                return Err(ServiceProcessTransitionError {
+                    authority: Box::new(self),
+                    error,
+                });
+            }
+        };
+        // The acknowledged StopTree is still the exact fence this generation
+        // was stopped under, even though the supervisor never reported the
+        // outcome; the receipt's `SupervisorFailure` classification is what
+        // keeps `service_exit_disposition` from reading it as a clean stop.
         let accepted_stop = self.stop.cause();
         Ok(ServiceTreeExitAuthority {
             start: self.live.start,
@@ -1251,9 +1391,7 @@ fn probe_loopback_http_readiness(
         .unwrap_or_default();
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\nAccept: text/plain, application/json\r\n{}\r\n",
-        readiness.path,
-        port,
-        authorization
+        readiness.path, port, authorization
     );
     write_http_request_until(&mut stream, request.as_bytes(), request_deadline)?;
 

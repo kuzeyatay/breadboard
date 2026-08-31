@@ -1,6 +1,7 @@
 """Breadboard terminal commands escalate a server 428 into Hermes approval."""
 
 import json
+from pathlib import Path
 
 import plugins.breadboard as breadboard
 import tools.approval as approval
@@ -432,6 +433,32 @@ def test_premortem_tool_is_registered_with_bounded_argv_and_callback_payload():
     }
 
 
+def test_patent_disclosure_guidance_is_registered_as_a_bounded_read_only_tool():
+    registered = {}
+
+    class _Context:
+        def register_tool(self, **kwargs):
+            registered[kwargs["name"]] = kwargs
+
+    breadboard.register(_Context())
+
+    tool = registered["patent_disclosure_guide"]
+    parameters = tool["schema"]["parameters"]
+    assert parameters["required"] == []
+    assert parameters["additionalProperties"] is False
+    assert parameters["properties"]["path"]["maxLength"] == 240
+    assert "read-only" in tool["schema"]["description"]
+    assert breadboard._request_payload(
+        route_kind="patent_disclosure",
+        tool_name="patent_disclosure_guide",
+        args={"path": "prompts/disclosure/intake.md"},
+        tool_call_id="call-patent-guide",
+    ) == {
+        "action": "patent_disclosure_guide",
+        "args": {"path": "prompts/disclosure/intake.md"},
+    }
+
+
 def test_watch_tool_is_registered_with_bounded_video_options():
     registered = {}
 
@@ -521,3 +548,60 @@ def test_manim_tool_is_registered_with_artifact_identity_and_render_timeout(monk
     assert _Connection.bodies == [
         {"action": "manim_create", "args": args, "toolCallId": "call-manim"}
     ]
+
+
+def test_spotify_play_exposes_phone_playback_controls():
+    registered = {}
+
+    class _Context:
+        def register_tool(self, **kwargs):
+            registered[kwargs["name"]] = kwargs
+
+    breadboard.register(_Context())
+
+    parameters = registered["spotify_play"]["schema"]["parameters"]
+    assert parameters["required"] == []
+    assert parameters["properties"]["action"]["enum"] == [
+        "pause",
+        "resume",
+        "next",
+        "previous",
+        "seek",
+        "shuffle",
+        "volume",
+        "repeat",
+    ]
+    assert parameters["properties"]["volumePercent"]["minimum"] == 0
+    assert parameters["properties"]["volumePercent"]["maximum"] == 100
+
+
+def test_product_search_is_registered_as_a_bounded_structured_tool():
+    registered = {}
+
+    class _Context:
+        def register_tool(self, **kwargs):
+            registered[kwargs["name"]] = kwargs
+
+    breadboard.register(_Context())
+
+    tool = registered["product_search"]
+    parameters = tool["schema"]["parameters"]
+    assert parameters["required"] == ["query"]
+    assert parameters["properties"]["query"]["maxLength"] == 300
+    assert parameters["properties"]["count"]["minimum"] == 1
+    assert parameters["properties"]["count"]["maximum"] == 10
+    assert "rendered by Breadboard automatically" in tool["schema"]["description"]
+    assert breadboard._request_payload(
+        route_kind="product_search",
+        tool_name="product_search",
+        args={"query": "quiet headphones", "count": 6},
+        tool_call_id="call-product",
+    ) == {
+        "tool": "product_search",
+        "args": {"query": "quiet headphones", "count": 6},
+    }
+
+
+def test_product_search_is_declared_in_the_plugin_manifest():
+    manifest = Path(breadboard.__file__).with_name("plugin.yaml").read_text(encoding="utf-8")
+    assert "  - product_search\n" in manifest.replace("\r\n", "\n")

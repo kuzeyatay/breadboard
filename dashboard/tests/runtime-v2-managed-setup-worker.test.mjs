@@ -86,6 +86,7 @@ test("the operation registry is closed and rejects extra request fields", () => 
     "legal",
     "matraix",
     "money-printer",
+    "openexecutive",
     "openmontage",
     "openscience",
     "openwork",

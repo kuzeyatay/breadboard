@@ -7,6 +7,9 @@ import { Executor } from "@/lib/sim/executor";
 import type { BlockLog, ExecutionResult } from "@/lib/sim/executor/types";
 import { Serializer } from "@/lib/sim/serializer";
 import type { BlockState } from "@/lib/sim/core/stores/workflows/workflow/types";
+import { parseWorkflowInputPrompt } from "@/lib/teach/prompt-inputs";
+import { startDemonstrationRun } from "@/lib/teach/replay";
+import type { DemonstratedProcedure } from "@/lib/teach/types";
 import { getWorkflowById, recordRun, summarize, type WorkflowRow } from "@/lib/workflows/store";
 import type { LocalWorkflowSummary, WorkflowRunResponse } from "@/lib/workflows/types";
 
@@ -92,6 +95,32 @@ function toRunLogs(logs: BlockLog[] | undefined) {
   }));
 }
 
+function demonstratedRunError(
+  summary: LocalWorkflowSummary,
+  triggerKind: TriggerKind,
+  input: unknown,
+  message: string,
+): WorkflowRunOutcome {
+  const runId = recordRun({
+    workflowId: summary.id,
+    status: "error",
+    triggerKind,
+    input,
+    error: message,
+  });
+  return {
+    workflow: summary,
+    executionId: runId,
+    status: "error",
+    assistantContent: `**${summary.name}** could not start.\n\n${message}`,
+    runId,
+    success: false,
+    output: null,
+    logs: [],
+    error: message,
+  };
+}
+
 /**
  * Serializes the stored editor state and executes it.
  *
@@ -121,7 +150,92 @@ export async function runWorkflowById(options: {
     state: JSON.stringify(record.state),
     created_at: "",
     updated_at: record.updatedAt,
+    source: record.source,
+    procedure: record.procedure === null ? null : JSON.stringify(record.procedure),
+    procedure_version: record.procedureVersion,
   } as WorkflowRow);
+
+  // A workflow taught by demonstration has no block graph to serialize. The
+  // chat instruction may fill only its declared inputs; replay still executes
+  // the compiled procedure and preserves every approval boundary.
+  if (record.source === "demonstration") {
+    const procedure = record.procedure as DemonstratedProcedure | null;
+    if (!procedure || !Array.isArray(procedure.inputs) || !Array.isArray(procedure.steps)) {
+      return demonstratedRunError(
+        summary,
+        options.triggerKind,
+        options.input,
+        "Its learned procedure is unavailable. Re-teach the workflow before running it.",
+      );
+    }
+
+    let inputs: Record<string, string> = {};
+    if (typeof options.input === "string") {
+      const parsed = parseWorkflowInputPrompt(procedure.inputs, options.input);
+      inputs = parsed.inputs;
+    } else if (options.input && typeof options.input === "object" && !Array.isArray(options.input)) {
+      const supplied = options.input as Record<string, unknown>;
+      inputs = Object.fromEntries(
+        procedure.inputs.flatMap((definition) => {
+          const value = supplied[definition.name];
+          return typeof value === "string" ? [[definition.name, value]] : [];
+        }),
+      );
+    }
+
+    const missing = procedure.inputs.filter(
+      (definition) => definition.required && !(inputs[definition.name] ?? "").trim(),
+    );
+    if (missing.length > 0) {
+      const labels = missing.map((definition) => definition.label);
+      const example = labels.length === 1
+        ? `Try “but change ${labels[0]} to …”.`
+        : `Include values for ${labels.join(", ")}.`;
+      return demonstratedRunError(
+        summary,
+        options.triggerKind,
+        options.input,
+        `This workflow needs ${labels.join(", ")}. ${example}`,
+      );
+    }
+
+    let runId: string;
+    try {
+      ({ runId } = startDemonstrationRun({
+        userId: record.userId,
+        workflowId: record.id,
+        inputs,
+      }));
+    } catch (cause) {
+      return demonstratedRunError(
+        summary,
+        options.triggerKind,
+        options.input,
+        cause instanceof Error ? cause.message : "The demonstrated workflow could not start.",
+      );
+    }
+
+    const suppliedLabels = procedure.inputs
+      .filter((definition) => Object.hasOwn(inputs, definition.name))
+      .map((definition) => definition.label);
+    const followUrl = `/workflows?workflow=${encodeURIComponent(record.id)}&run=${encodeURIComponent(runId)}`;
+    return {
+      workflow: summary,
+      executionId: runId,
+      status: "waiting",
+      assistantContent: [
+        `**${record.name}** started.`,
+        suppliedLabels.length > 0
+          ? `Applied the requested ${suppliedLabels.join(", ")} ${suppliedLabels.length === 1 ? "input" : "inputs"}.`
+          : "This workflow takes no inputs.",
+        `Breadboard is driving the desktop. [Follow, approve, or stop this run](${followUrl}).`,
+      ].join("\n\n"),
+      runId,
+      success: true,
+      output: { runId, suppliedInputs: suppliedLabels },
+      logs: [],
+    };
+  }
 
   const state = (record.state ?? {}) as EditorState;
   const blocks = state.blocks ?? {};

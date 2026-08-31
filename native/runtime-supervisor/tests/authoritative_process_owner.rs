@@ -41,6 +41,9 @@ const OUTER_GENERATION_SUCCESSOR_READY: &str = "BREADBOARD_OUTER_GENERATION_SUCC
 const GUARDED_HOT_SHUTDOWN_TEST_NAME: &str =
     "guarded_hot_dashboard_normal_stop_does_not_queue_terminal_behind_memory_telemetry";
 const GUARDED_HOT_SHUTDOWN_CHILD_ENV: &str = "BREADBOARD_GUARDED_HOT_SHUTDOWN_TEST_CHILD";
+const SUPERVISION_LOST_TEST_NAME: &str =
+    "a_lost_supervisor_still_proves_zero_residency_and_finalizes_one_service";
+const SUPERVISION_LOST_CHILD_ENV: &str = "BREADBOARD_SUPERVISION_LOST_TEST_CHILD";
 const TEST_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const TEST_PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_SUSPEND_RESUME_ACCESS: u32 = 0x0800;
@@ -1015,6 +1018,175 @@ fn run_guarded_hot_dashboard_normal_stop() {
         elapsed < Duration::from_secs(3),
         "guarded stop terminal remained backlogged for {elapsed:?}"
     );
+}
+
+#[test]
+fn a_lost_supervisor_still_proves_zero_residency_and_finalizes_one_service() {
+    if std::env::var_os(SUPERVISION_LOST_CHILD_ENV).is_some() {
+        run_supervision_lost_is_finalized_from_the_job_kill();
+        return;
+    }
+    let status =
+        Command::new(std::env::current_exe().expect("current integration-test executable"))
+            .arg("--exact")
+            .arg(SUPERVISION_LOST_TEST_NAME)
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(SUPERVISION_LOST_CHILD_ENV, "1")
+            .status()
+            .expect("spawn isolated supervision-loss integration test");
+    assert!(
+        status.success(),
+        "isolated supervision-loss integration test failed with {status}"
+    );
+}
+
+/// Kills a live supervisor outright, the way commit exhaustion does, and shows
+/// the two properties the containment path depends on: the target tree dies
+/// with the supervisor's Job Object handle, and the durable generation can be
+/// finalized from that kill alone. Before this path existed, the missing
+/// receipt propagated as a fatal engine error and the whole runtime exited 70.
+fn run_supervision_lost_is_finalized_from_the_job_kill() {
+    let directory = tempfile::tempdir().unwrap();
+    let app = directory.path().join("app");
+    let data = directory.path().join("data");
+    let runtime = directory.path().join("runtime");
+    let bin = runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&app).unwrap();
+    fs::create_dir_all(&data).unwrap();
+
+    let built_supervisor = env!("CARGO_BIN_EXE_runtime-supervisor");
+    fs::copy(built_supervisor, bin.join("runtime-supervisor.exe")).unwrap();
+    let system_root = PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"));
+    fs::copy(
+        system_root.join("System32/ping.exe"),
+        bin.join("guarded-target.exe"),
+    )
+    .unwrap();
+
+    let paths = RuntimePaths::new(&data, &app, &runtime).unwrap();
+    let generation_scope = paths.runtime_generation_scope();
+    let (generation_guard, _prior_generation_drained) =
+        RuntimeGenerationGuard::acquire(generation_scope, Duration::ZERO, TEST_PROCESS_TIMEOUT)
+            .unwrap();
+    let generation_membership = generation_guard.membership();
+    let store = open_authoritative_store(&paths);
+    let environment_fixture =
+        ServiceEnvironmentFixture::new_for_mode(directory.path(), &paths, RuntimeMode::Hot);
+    let registry = service_registry_with_profile(
+        "dashboard",
+        "bin/guarded-target.exe",
+        literal_service_arguments(&["-t", "127.0.0.1"]),
+        TrustedServiceEnvironmentSource::Dashboard,
+        RuntimeMode::Hot,
+        ServiceResourceLimits {
+            estimated_cold_start_commit_mb: 1,
+            soft_commit_limit_mb: 0,
+            hard_commit_limit_mb: 64,
+        },
+        1_000,
+    );
+    let start_claim = mint_eager_start_claim(&store, &registry, "dashboard");
+    let (service_port, environment) =
+        environment_fixture.mint_for_registry_in_mode(&registry, "dashboard", RuntimeMode::Hot);
+    let launch = registry
+        .prepare_service_launch(
+            &paths,
+            &RuntimeSchedulerAuthority::from_current_generation(&generation_membership),
+            "dashboard",
+            service_port,
+            environment,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .acknowledge_and_launch_durable_service_start(
+                start_claim,
+                103,
+                &generation_membership,
+                launch,
+            )
+            .unwrap(),
+        ServiceLaunchRetentionDisposition::Retained
+    );
+
+    loop {
+        match store
+            .read_retained_durable_service_launch_event("dashboard", 1, TEST_PROCESS_TIMEOUT)
+            .unwrap()
+        {
+            ProcessOwnerEvent::Lifecycle(event)
+                if event.get("type").and_then(|value| value.as_str()) == Some("started") =>
+            {
+                break;
+            }
+            ProcessOwnerEvent::Lifecycle(_) => {}
+            unexpected => panic!("unexpected dashboard startup event: {unexpected:?}"),
+        }
+    }
+
+    let (supervisor_pid, root_pid) = store
+        .retained_durable_service_launch_pids("dashboard", 1)
+        .unwrap();
+    let root_pid = root_pid.expect("an accepted started boundary carries a root process id");
+    assert_ne!(supervisor_pid, root_pid);
+    let supervisor = TrackedProcess::open(supervisor_pid);
+    let target = TrackedProcess::open(root_pid);
+    assert_eq!(target.has_exited(), Ok(false));
+
+    // Nothing cooperative: the supervisor is destroyed exactly as the OS
+    // destroys it when the machine runs out of commit.
+    assert_ne!(
+        unsafe { TerminateProcess(supervisor.handle, 1) },
+        0,
+        "terminating supervisor {supervisor_pid} failed with Windows error {}",
+        unsafe { GetLastError() }
+    );
+    assert!(
+        wait_for_processes_to_exit(&[&supervisor, &target], TEST_PROCESS_TIMEOUT),
+        "supervisor {supervisor_pid} died but its Job Object left target {root_pid} resident"
+    );
+
+    // The engine polls with a zero timeout, so reproduce that exactly: the
+    // stream is gone, and it reports the loss rather than an ordinary wait.
+    let deadline = Instant::now() + TEST_PROCESS_TIMEOUT;
+    loop {
+        match store.read_retained_durable_service_launch_event("dashboard", 1, Duration::ZERO) {
+            Ok(ProcessOwnerEvent::Lifecycle(_)) => {}
+            Ok(unexpected) => panic!("unexpected post-kill supervisor event: {unexpected:?}"),
+            Err(error) => {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("exited before a zero-resident receipt"),
+                    "unexpected post-kill event error: {error:?}"
+                );
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "supervisor event stream never ended after {supervisor_pid} was terminated"
+        );
+        thread::sleep(TEST_POLL_INTERVAL);
+    }
+
+    let snapshot = store
+        .finish_retained_durable_service_supervision_lost("dashboard", 1, 108)
+        .unwrap_or_else(|error| panic!("supervision-lost finalization failed: {error:?}"));
+    assert_eq!(snapshot.status.state, RuntimeServiceState::Failed);
+    assert_eq!(
+        snapshot.status.last_error.as_deref(),
+        Some("Service process tree supervision failed")
+    );
+
+    // The authority is spent: a second finalization can never fabricate a
+    // further exit for the same generation.
+    assert!(store
+        .finish_retained_durable_service_supervision_lost("dashboard", 1, 109)
+        .is_err());
 }
 
 #[test]

@@ -99,6 +99,11 @@ function assertRequest(value) {
   const optionalString = (candidate) =>
     candidate === undefined ||
     (typeof candidate === "string" && candidate.trim());
+  const optionalLearnUserInstruction = (candidate) =>
+    candidate === undefined ||
+    (typeof candidate === "string" &&
+      Boolean(candidate.trim()) &&
+      candidate.trim().length <= 4_000);
   const nullableNonEmptyString = (candidate) =>
     candidate === null || (typeof candidate === "string" && candidate.trim());
   switch (value.operation) {
@@ -112,7 +117,8 @@ function assertRequest(value) {
           )) ||
         typeof value.sourceOnly !== "boolean" ||
         typeof value.includeSourceSnapshots !== "boolean" ||
-        typeof value.autoConfirmTopicMap !== "boolean"
+        typeof value.autoConfirmTopicMap !== "boolean" ||
+        !optionalLearnUserInstruction(value.userInstruction)
       ) {
         throw new Error("The Learn planning request is invalid.");
       }
@@ -169,7 +175,8 @@ function assertRequest(value) {
         !optionalStringArray(value.includedSourceIds) ||
         !optionalString(value.syllabusSourceId) ||
         typeof value.sourceOnly !== "boolean" ||
-        typeof value.includeSourceSnapshots !== "boolean"
+        typeof value.includeSourceSnapshots !== "boolean" ||
+        !optionalLearnUserInstruction(value.userInstruction)
       ) {
         throw new Error("The Learn rebuild request is invalid.");
       }

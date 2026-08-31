@@ -57,6 +57,9 @@ const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   // as implementation would confine the skill to scoped implementation mode —
   // which is to say, make it unselectable on the turns it exists for.
   "audio-analysis",
+  // Like audio analysis, identification is provider-backed knowledge work,
+  // not repository implementation, and must remain selectable in normal chat.
+  "recognize-music",
   // A diagram is a rendered artifact, not repository code. Its guidance is full
   // of SVG and HTML because that is what a drawing is made of here, and the
   // classifier reads a manifest of markup as implementation work — which would

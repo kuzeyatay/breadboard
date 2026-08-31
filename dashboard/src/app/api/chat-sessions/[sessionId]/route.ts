@@ -12,6 +12,10 @@ import {
   type ChatMessageAttachment,
 } from "@/lib/chat-attachments";
 import {
+  normalizeChatTextSelectionReference,
+  type ChatTextSelectionReference,
+} from "@/lib/chat-text-selection";
+import {
   EXTERNAL_AGENT_RUN_FIELD_BY_KIND,
   EXTERNAL_AGENT_RUN_KINDS,
   parseExternalAgentActivity,
@@ -37,6 +41,10 @@ import {
 import { isChatHighlight } from "@/lib/conversations/highlights";
 import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel";
 import { listRuntimeSessionsForChatSession } from "@/lib/hermes/runtime-store";
+import {
+  normalizeGenerativeUiResources,
+  type GenerativeUiResource,
+} from "@/lib/generative-ui/contracts.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -60,9 +68,13 @@ interface ChatMessage {
   attachments?: ChatMessageAttachment[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
+  progressNotes?: string[];
   verification?: VerificationSummary;
+  uiResources?: GenerativeUiResource[];
   selectedText?: string;
   inlineSelection?: QuartzInlineSelectionReference;
+  /** Selected-text ("Ask in chat"/"Ask here") anchor for garden-chat turns. */
+  textSelection?: ChatTextSelectionReference;
   externalAgentRun?: ExternalAgentRun;
   externalAgentOutcome?: ExternalAgentOutcome;
   externalAgentStartedAt?: string;
@@ -108,6 +120,8 @@ function mergeRuntimeMetadata(
     metadata = {};
   }
   if (message.verification) metadata.verification = message.verification;
+  const uiResources = normalizeGenerativeUiResources(message.uiResources);
+  if (uiResources.length) metadata.uiResources = uiResources;
   if (message.attachmentNames?.length) {
     metadata.attachmentNames = message.attachmentNames;
   }
@@ -115,11 +129,15 @@ function mergeRuntimeMetadata(
   if (message.responseDurationMs !== undefined) {
     metadata.responseDurationMs = message.responseDurationMs;
   }
+  if (message.progressNotes?.length) {
+    metadata.progressNotes = message.progressNotes;
+  }
   if (message.internalAgentContinuation === true) {
     metadata.internalAgentContinuation = true;
   }
   if (message.selectedText) metadata.selectedText = message.selectedText;
   if (message.inlineSelection) metadata.inlineSelection = message.inlineSelection;
+  if (message.textSelection) metadata.textSelection = message.textSelection;
   if (message.externalAgentRun) {
     metadata.externalAgent = true;
     metadata.externalAgentRun = message.externalAgentRun;
@@ -277,6 +295,14 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
       role === "assistant" && Number.isFinite(rawDuration) && rawDuration >= 0
         ? Math.trunc(rawDuration)
         : undefined;
+    const progressNotes = role === "assistant" && Array.isArray(record.progressNotes)
+      ? record.progressNotes
+          .filter(
+            (note): note is string =>
+              typeof note === "string" && Boolean(note.trim()),
+          )
+          .map((note) => note.trim())
+      : [];
     const verification =
       role === "assistant" ? normalizeVerification(record.verification) : undefined;
     const externalAgent = normalizeExternalAgent(record, role);
@@ -294,6 +320,8 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
         ? record.selectedText.trim().slice(0, 4_000)
         : "";
     const inlineSelection = normalizeInlineSelection(record.inlineSelection);
+    const textSelection =
+      normalizeChatTextSelectionReference(record.textSelection) ?? undefined;
     const createdAt =
       typeof record.createdAt === "string" &&
       Number.isFinite(Date.parse(record.createdAt))
@@ -318,8 +346,10 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
       ...(attachments.length ? { attachments } : {}),
       ...(selectedText ? { selectedText } : {}),
       ...(inlineSelection ? { inlineSelection } : {}),
+      ...(textSelection ? { textSelection } : {}),
       ...(usage ? { usage } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
+      ...(progressNotes.length ? { progressNotes } : {}),
       ...(verification ? { verification } : {}),
       ...externalAgent,
     });

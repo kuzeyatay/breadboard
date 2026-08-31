@@ -9,6 +9,7 @@ import InteractionHydrationGate from "@/app/components/interaction-hydration-gat
 import NavigationProgress from "@/app/components/navigation-progress";
 import NavigationTrail from "@/app/components/navigation-trail";
 import RecallAutoStart from "@/app/components/recall-autostart";
+import "./app-theme-transition.css";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 

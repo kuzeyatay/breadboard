@@ -5,11 +5,13 @@
 export type HighlightColor = "yellow" | "green" | "blue" | "pink" | "purple"
 
 export const HIGHLIGHT_COLORS: { id: HighlightColor; label: string }[] = [
-  { id: "yellow", label: "Yellow" },
-  { id: "green", label: "Green" },
   { id: "blue", label: "Blue" },
+  { id: "green", label: "Green" },
   { id: "pink", label: "Pink" },
   { id: "purple", label: "Purple" },
+  // Yellow is reserved for Ask here, just as it is in Terminal. It remains in
+  // this shared list so persisted inline highlights still validate normally.
+  { id: "yellow", label: "Yellow" },
 ]
 
 export const DEFAULT_HIGHLIGHT_COLOR: HighlightColor = "yellow"

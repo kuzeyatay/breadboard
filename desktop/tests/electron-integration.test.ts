@@ -249,6 +249,7 @@ app.whenReady().then(async () => {
     assert.deepEqual(result.keys, [
       "allowThemeLocation",
       "awaitDashboardReady",
+      "closeTeachController",
       "continueToDashboard",
       "copyDiagnostics",
       "getStartupSound",
@@ -257,6 +258,7 @@ app.whenReady().then(async () => {
       "onStartupState",
       "openLogsFolder",
       "openMicrophoneSettings",
+      "openTeachController",
       "pickFolder",
       "quit",
       "retryService",

@@ -35,6 +35,12 @@ editor = replaceOnce(
   '<iframe src="" id="iframe1" sandbox="allow-same-origin" allow="" referrerpolicy="no-referrer">',
   "document iframe",
 );
+const logoPattern = /\n\s*<div class="logo">[\s\S]*?<\/div>\n/g;
+const logoBlocks = editor.match(logoPattern) || [];
+if (logoBlocks.length !== 2) {
+  throw new Error(`Vvvebjs editor layout changed: expected 2 sidebar logo blocks, found ${logoBlocks.length}.`);
+}
+editor = editor.replace(logoPattern, "\n");
 editor = editor.replace('\n\t\t<input name="file" type="file" class="form-control"/>', "");
 editor = editor
   .replace('  <script src="demo/landing/sections/sections.js"></script>\n', "")
@@ -88,6 +94,31 @@ if (imageInputStart < 0 || imageUploadStart < imageInputStart) {
 }
 inputs = `${inputs.slice(0, imageUploadStart)}\tinit: function(data) {\n\t\treturn this.render(\"imageinput\", data);\n\t},\n\n${inputs.slice(imageUploadStart)}`;
 await fs.writeFile(inputsPath, inputs, "utf8");
+
+// SVG graphics do not expose the HTML-only offsetWidth/offsetHeight fields.
+// Fall back to their rendered bounds so Vvveb's hover/selection outlines hug
+// SVG shapes instead of retaining a stale container-sized rectangle.
+const builderPath = path.join(outputRoot, "libs", "builder", "builder.js");
+let builder = (await fs.readFile(builderPath, "utf8")).replaceAll("\r\n", "\n");
+builder = replaceOnce(
+  builder,
+  "SelectBox.style.width = ((target.offsetWidth ?? target.clientWidth) + self.selectPadding * 2) + \"px\"; \t\t\t\n\t\t\t\t\t\t\tSelectBox.style.height = ((target.offsetHeight ?? target.clientHeight) + self.selectPadding * 2) + \"px\";",
+  "SelectBox.style.width = ((target.offsetWidth || target.clientWidth || target.getBoundingClientRect().width) + self.selectPadding * 2) + \"px\"; \t\t\t\n\t\t\t\t\t\t\tSelectBox.style.height = ((target.offsetHeight || target.clientHeight || target.getBoundingClientRect().height) + self.selectPadding * 2) + \"px\";",
+  "scroll selection SVG dimensions",
+);
+builder = replaceOnce(
+  builder,
+  "SelectBox.style.width = ((target.offsetWidth ?? target.clientWidth) + self.selectPadding * 2) + \"px\"; \t\t\t\n\t\t\tSelectBox.style.height = ((target.offsetHeight ?? target.clientHeight) + self.selectPadding * 2) + \"px\";",
+  "SelectBox.style.width = ((target.offsetWidth || target.clientWidth || target.getBoundingClientRect().width) + self.selectPadding * 2) + \"px\"; \t\t\t\n\t\t\tSelectBox.style.height = ((target.offsetHeight || target.clientHeight || target.getBoundingClientRect().height) + self.selectPadding * 2) + \"px\";",
+  "selected SVG dimensions",
+);
+builder = replaceOnce(
+  builder,
+  "\t\t\t\tlet height = target.offsetHeight;\n\t\t\t\tlet halfHeight = Math.max(height / 2, 5);\n\t\t\t\tlet width = target.offsetWidth;",
+  "\t\t\t\tlet bounds = target.getBoundingClientRect();\n\t\t\t\tlet height = target.offsetHeight || target.clientHeight || bounds.height;\n\t\t\t\tlet halfHeight = Math.max(height / 2, 5);\n\t\t\t\tlet width = target.offsetWidth || target.clientWidth || bounds.width;",
+  "highlighted SVG dimensions",
+);
+await fs.writeFile(builderPath, builder, "utf8");
 
 await fs.mkdir(path.join(outputRoot, "resources"), { recursive: true });
 await fs.copyFile(

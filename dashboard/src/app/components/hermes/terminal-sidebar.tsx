@@ -88,6 +88,8 @@ interface Props {
   /** Warm the transcript while a row shows intent, before it is opened. */
   onPrefetchChat?: (chat: TerminalSidebarChat) => void;
   onOpenChat: (chat: TerminalSidebarChat) => void;
+  /** The active ring is also the chat's Stop control when this is supplied. */
+  onStopChat?: (chat: TerminalSidebarChat) => void | Promise<void>;
   onRenameChat: (chat: TerminalSidebarChat, title: string) => void;
   onTogglePin: (chat: TerminalSidebarChat) => void;
   onDeleteChat: (chat: TerminalSidebarChat) => void;
@@ -408,6 +410,7 @@ function ChatRow({
   onOpenMenu,
   onCloseMenu,
   onOpen,
+  onStop,
   onRename,
   onRenamingChange,
   onTogglePin,
@@ -424,6 +427,7 @@ function ChatRow({
   onOpenMenu: () => void;
   onCloseMenu: () => void;
   onOpen: () => void;
+  onStop?: () => void | Promise<void>;
   onRename: (title: string) => void;
   /** Follows the rename input's mounted life, so the rail can freeze its
    * order while one is open — a row that moves under a focused input blurs
@@ -433,6 +437,7 @@ function ChatRow({
   onDelete: () => void;
 }) {
   const [renaming, setRenaming] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [draft, setDraft] = useState(chat.title);
   const [titleTransition, setTitleTransition] = useState<TitleTransition>({
     seenTitle: chat.title,
@@ -607,7 +612,22 @@ function ChatRow({
       {/* One spot for the whole life of a run: the spinner while it works, then
           the dot until someone reads what came back. */}
       {chat.active ? (
-        <ActiveChatIcon label={`${chat.title} is running`} className="mr-1 h-3.5 w-3.5" />
+        <span className="mr-1 inline-flex">
+          <ActiveChatIcon
+            label={`${chat.title} is running`}
+            className="h-3.5 w-3.5"
+            stopping={stopping}
+            onStop={
+              onStop
+                ? () => {
+                    if (stopping) return;
+                    setStopping(true);
+                    void Promise.resolve(onStop()).finally(() => setStopping(false));
+                  }
+                : undefined
+            }
+          />
+        </span>
       ) : chat.unread ? (
         <UnreadChatDot label={`${chat.title} finished — unread`} className="mr-2 h-2 w-2" />
       ) : null}
@@ -996,6 +1016,7 @@ export default function TerminalSidebar({
   onOpenSearch,
   onPrefetchChat,
   onOpenChat,
+  onStopChat,
   onRenameChat,
   onTogglePin,
   onDeleteChat,
@@ -1122,6 +1143,7 @@ export default function TerminalSidebar({
       onOpenMenu={() => setMenuChatId(chat.id)}
       onCloseMenu={() => setMenuChatId(null)}
       onOpen={() => onOpenChat(chat)}
+      onStop={onStopChat ? () => onStopChat(chat) : undefined}
       onRename={(title) => onRenameChat(chat, title)}
       onRenamingChange={handleRenamingChange}
       onTogglePin={() => onTogglePin(chat)}

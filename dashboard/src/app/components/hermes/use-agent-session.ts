@@ -83,7 +83,10 @@ import {
   withAgentStreamTimeout,
 } from "./agent-stream-watchdog";
 import { primeInlineArtifacts } from "./inline-artifact-cards";
-import { submitPermissionDecision } from "./permission-client";
+import {
+  submitClarificationAnswer,
+  submitPermissionDecision,
+} from "./permission-client";
 import {
   normalizeChatTextSelectionReference,
   type ChatTextSelectionReference,
@@ -100,6 +103,10 @@ import {
 } from "@/lib/hermes/super-agent-activity";
 import { scrubbed } from "@/lib/watermarks/scrub-text";
 import { formatAssistantModelChangeName } from "@/lib/ai-models";
+import {
+  normalizeGenerativeUiResources,
+  type GenerativeUiResource,
+} from "@/lib/generative-ui/contracts.ts";
 
 import { settleReplayedTurn } from "./replayed-turn.ts";
 import { undeliveredLaunchRequests } from "./undelivered-launches.ts";
@@ -187,6 +194,14 @@ export interface PermissionPrompt {
   };
 }
 
+/** A mid-turn question from the model (Hermes `clarify`); the turn is blocked on it. */
+export interface ClarificationPrompt {
+  requestId: string;
+  question: string;
+  /** Up to four pickable answers; empty for a free-text question. */
+  choices: string[];
+}
+
 export interface ActivityItem {
   id: string;
   kind: EvidenceKind | "reasoning" | "permission" | "answer" | "artifact";
@@ -217,6 +232,8 @@ export interface AgentMessage {
   responseStartedAt?: string;
   role: "user" | "assistant";
   content: string;
+  /** Assistant-authored pre-tool updates, kept separate from private reasoning. */
+  progressNotes?: string[];
   /** Presentation-only row derived from `modelChangeAfter`. */
   modelChange?: string;
   /** Persistent model boundaries rendered immediately after this answer. */
@@ -230,6 +247,8 @@ export interface AgentMessage {
   attachmentNames?: string[];
   attachments?: ChatMessageAttachment[];
   tools?: ToolActivity[];
+  /** Versioned, allow-listed native UI resources emitted by completed tools. */
+  uiResources?: GenerativeUiResource[];
   /**
    * A durable memory was written this turn (the `save_memory` tool completed).
    * Derived here so the response UI can show a "Memory updated" chip without
@@ -299,6 +318,8 @@ export interface AgentMessage {
    * found, the scripts it ran, the files it wrote, and its answer.
    */
   careerOpsRun?: { runId: string; task: string };
+  /** OpenExecutive's multi-specialist virtual executive advisory run. */
+  openExecutiveRun?: { runId: string; task: string };
   /** Persistent openGym coaching/program run with catalogue animations. */
   openGymRun?: { runId: string; task: string; quiet?: boolean };
   /**
@@ -393,6 +414,13 @@ export interface AgentMessage {
    * the plan and the build, then frames the finished presentation.
    */
   boltSlidesRun?: { runId: string; brief: string };
+  /** Present when this assistant turn is a Classroom lesson. */
+  classroomRun?: { runId: string; brief: string };
+  /**
+   * Present when this assistant turn is a God's Eye view. The card frames the
+   * cloned globe aimed at the resolved place; `quiet` keeps only the frame.
+   */
+  godsEyeRun?: { runId: string; task: string; quiet?: boolean };
   /**
    * Present when this assistant turn is an OpenMontage run. The card streams
    * the production and replays it from the workspace afterwards.
@@ -437,6 +465,7 @@ export interface AgentMessage {
    */
   openworkRun?: { runId: string; task: string };
   openscienceRun?: { runId: string; task: string };
+  praxistRun?: { runId: string; task: string };
   /**
    * Present when this assistant turn is an Inbox Zero run. The card streams the
    * answer and lists everything the run touched in the mailbox.
@@ -497,6 +526,8 @@ export interface ExternalAgentTurnInput {
   attachments?: ChatMessageAttachment[];
   /** Attach a delegated run to the existing assistant turn; create no user row. */
   attachToExistingTurn?: boolean;
+  /** Record a distinct hidden worker turn for a concurrent delegation batch. */
+  delegatedAgentRun?: boolean;
 }
 
 export interface ExternalAgentTurnResult {
@@ -713,6 +744,9 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
     .map((message) => {
       const usage = normalizeChatTokenUsage(message.usage);
       const normalized = { ...message };
+      const uiResources = normalizeGenerativeUiResources(message.uiResources);
+      if (uiResources.length) normalized.uiResources = uiResources;
+      else delete normalized.uiResources;
       const attachments = normalizeChatMessageAttachments(message.attachments);
       if (attachments.length) normalized.attachments = attachments;
       else delete normalized.attachments;
@@ -728,6 +762,16 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
       }
       if (usage) normalized.usage = usage;
       else delete normalized.usage;
+      if (Array.isArray(message.progressNotes)) {
+        const progressNotes = message.progressNotes.filter(
+          (note): note is string =>
+            typeof note === "string" && Boolean(note.trim()),
+        );
+        if (progressNotes.length) normalized.progressNotes = progressNotes;
+        else delete normalized.progressNotes;
+      } else {
+        delete normalized.progressNotes;
+      }
       if (Array.isArray(message.pendingPermissions)) {
         const pendingPermissions = message.pendingPermissions.filter(
           (item): item is Record<string, unknown> =>
@@ -1043,6 +1087,7 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["agentBrowserRun", "agent_browser"],
   ["agentReachRun", "agent_reach"],
   ["careerOpsRun", "career_ops"],
+  ["openExecutiveRun", "openexecutive"],
   ["openGymRun", "open_gym"],
   ["tradingAgentsRun", "trading_agents"],
   ["vibeTradingRun", "vibe_trading"],
@@ -1070,8 +1115,11 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["wardrobeRun", "wardrobe"],
   ["matraixRun", "matraix"],
   ["boltSlidesRun", "bolt_slides"],
+  ["classroomRun", "classroom"],
+  ["godsEyeRun", "gods_eye"],
   ["openworkRun", "openwork"],
   ["openscienceRun", "openscience"],
+  ["praxistRun", "praxist"],
   ["inboxZeroRun", "inbox_zero"],
   ["openCodeRun", "opencode"],
   ["codexRun", "codex"],
@@ -1228,6 +1276,8 @@ export interface UseAgentSessionResult {
   steerError: string | null;
   error: string | null;
   pendingPermission: PermissionPrompt | null;
+  /** Answer it with `respondToClarification`; a typed send does the same. */
+  pendingClarification: ClarificationPrompt | null;
   activeTools: ToolActivity[];
   activities: ActivityItem[];
   /**
@@ -1243,8 +1293,15 @@ export interface UseAgentSessionResult {
   ensureConversation: (clientMessageId?: string) => Promise<string>;
   /** Persist a model selected now as a boundary after the latest answer. */
   queueModelChange: (model: string) => Promise<void>;
-  /** Arm the next external-agent preview to reuse this assistant turn. */
-  beginDelegatedExternalAgentTurn: (clientMessageId: string) => void;
+  /**
+   * Arm the next external-agent preview for a model-selected worker. New batch
+   * workers get their own hidden turn; legacy launches may still attach to the
+   * assistant turn that requested them.
+   */
+  beginDelegatedExternalAgentTurn: (
+    clientMessageId: string,
+    options?: { attachToExistingTurn?: boolean },
+  ) => void;
   /** Cancel an armed delegation; true means no launcher ever previewed it. */
   cancelDelegatedExternalAgentTurn: (clientMessageId: string) => boolean;
   /** Returns the durable client id that the launcher must pass to its run API. */
@@ -1267,6 +1324,7 @@ export interface UseAgentSessionResult {
   respondToPermission: (
     decision: "once" | "always" | "reject",
   ) => Promise<void>;
+  respondToClarification: (answer: string) => Promise<void>;
   abort: () => Promise<void>;
   reset: () => void;
 }
@@ -1361,6 +1419,18 @@ export function useAgentSession(
   const loadingSessionRef = useRef(true);
   const [pendingPermission, setPendingPermission] =
     useState<PermissionPrompt | null>(null);
+  const [pendingClarification, setPendingClarificationState] =
+    useState<ClarificationPrompt | null>(null);
+  // `send` reads the pending question synchronously to route a typed reply
+  // as the answer, so the ref is written together with the state.
+  const pendingClarificationRef = useRef<ClarificationPrompt | null>(null);
+  const setPendingClarification = useCallback(
+    (next: ClarificationPrompt | null) => {
+      pendingClarificationRef.current = next;
+      setPendingClarificationState(next);
+    },
+    [],
+  );
   const [activeTools, setActiveTools] = useState<ToolActivity[]>([]);
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   // Runtime-agent launches a super-agent turn asked for. Kept as raw requests
@@ -1386,8 +1456,12 @@ export function useAgentSession(
     viewEpoch: number;
     promise: ReturnType<typeof ensureSession>;
   } | null>(null);
-  const pendingDelegatedExternalTurnRef = useRef<string | null>(null);
+  const pendingDelegatedExternalTurnRef = useRef<{
+    clientMessageId: string;
+    attachToExistingTurn: boolean;
+  } | null>(null);
   const delegatedExternalTurnIdsRef = useRef(new Set<string>());
+  const attachedDelegatedExternalTurnIdsRef = useRef(new Set<string>());
   const activeStreamRef = useRef<Promise<"completed" | "cancelled" | "failed"> | null>(null);
   const steeringRef = useRef(false);
   const stopRequestedRef = useRef(false);
@@ -2165,15 +2239,22 @@ export function useAgentSession(
               commit(assistant);
               break;
             case "assistant.segment": {
-              // Everything streamed since the last seal was narration written
-              // around tool calls, not the answer. Move it out of the bubble so
-              // an agentic turn ends with just its final message instead of
-              // every status note glued together.
-              const sealed = payload.streamed
-                ? assistant.content || String(payload.text ?? "")
-                : String(payload.text ?? "");
+              // The server forwards a segment only after a tool boundary has
+              // classified it as progress narration. Keep it permanently on
+              // the response, separate from both the answer and private model
+              // reasoning, so nothing the user saw is later erased.
+              const sealed = String(payload.text ?? "");
               if (sealed.trim()) {
                 narrationSegments.push(sealed);
+                const progressNotes = assistant.progressNotes ?? [];
+                assistant = {
+                  ...assistant,
+                  progressNotes:
+                    progressNotes.at(-1) === sealed
+                      ? progressNotes
+                      : [...progressNotes, sealed],
+                };
+                commit(assistant);
                 upsertActivity({
                   id: `narration-${narrationSegments.length}`,
                   kind: "answer",
@@ -2183,10 +2264,6 @@ export function useAgentSession(
                   startedAt: new Date().toISOString(),
                   completedAt: new Date().toISOString(),
                 });
-              }
-              if (payload.streamed && assistant.content) {
-                assistant = { ...assistant, content: "" };
-                commit(assistant);
               }
               break;
             }
@@ -2267,6 +2344,25 @@ export function useAgentSession(
               });
               if (payload.success && toolName === "save_memory") {
                 assistant = { ...assistant, memoryUpdated: true };
+              }
+              const completedUiResources = normalizeGenerativeUiResources(
+                payload.uiResources,
+              );
+              if (payload.success && completedUiResources.length) {
+                const merged = new Map(
+                  (assistant.uiResources ?? []).map((resource) => [
+                    resource.id,
+                    resource,
+                  ]),
+                );
+                for (const resource of completedUiResources) {
+                  merged.set(resource.id, resource);
+                }
+                assistant = {
+                  ...assistant,
+                  uiResources: [...merged.values()],
+                };
+                commit(assistant);
               }
               setActiveTools(Array.from(tools.values()));
               upsertActivity({
@@ -2357,6 +2453,51 @@ export function useAgentSession(
               if (!stopWasRequested()) {
                 transition("waiting_for_permission");
               }
+              break;
+            }
+            case "clarify.requested": {
+              const prompt: ClarificationPrompt = {
+                requestId: String(payload.requestId),
+                question: String(payload.question),
+                choices: Array.isArray(payload.choices)
+                  ? payload.choices.filter(
+                      (value): value is string => typeof value === "string",
+                    )
+                  : [],
+              };
+              setPendingClarification(prompt);
+              upsertActivity({
+                id: `clarify-${prompt.requestId}`,
+                kind: "permission",
+                label: "Waiting for your answer",
+                detail: prompt.question,
+                status: "permission_required",
+                startedAt: new Date().toISOString(),
+              });
+              if (!stopWasRequested()) {
+                transition("waiting_for_permission");
+              }
+              break;
+            }
+            case "clarify.expired": {
+              const requestId = String(payload.requestId);
+              if (pendingClarificationRef.current?.requestId === requestId) {
+                setPendingClarification(null);
+                if (!stopWasRequested()) transition("running");
+              }
+              setActivities((current) =>
+                current.map((item) =>
+                  item.id === `clarify-${requestId}` &&
+                  item.status === "permission_required"
+                    ? {
+                        ...item,
+                        status: "cancelled",
+                        detail: "No answer arrived in time; the agent continued on its own.",
+                        completedAt: new Date().toISOString(),
+                      }
+                    : item,
+                ),
+              );
               break;
             }
             case "session.status":
@@ -2568,7 +2709,28 @@ export function useAgentSession(
           const index = next.findIndex(
             (candidate) => candidate.id === assistant.id,
           );
-          if (index >= 0) next[index] = { ...message };
+          if (index >= 0) {
+            const currentMessage = next[index]!;
+            // A server-started delegation can enrich this row while Hermes is
+            // still streaming its final hand-off sentence. Replacing the row
+            // from the older stream-local snapshot drops maxResearchRun and
+            // delegatedAgentRun again, leaving the current tab with a blank
+            // completed "Thought" even though the run is safely attached in
+            // the database. Stream-owned fields win, but server-owned run
+            // metadata must survive every later delta and the final commit.
+            next[index] = {
+              ...currentMessage,
+              ...message,
+              // The durable finalize path promotes this same text to the
+              // delegated preamble. Mirror that promotion in the live view so
+              // the hidden worker card never makes the hand-off text vanish
+              // during the short attach/final-delta race.
+              ...(currentMessage.delegatedAgentRun === true &&
+              message.content.trim()
+                ? { delegatedAgentPreamble: message.content }
+                : {}),
+            };
+          }
           return next;
         });
       };
@@ -2930,21 +3092,35 @@ export function useAgentSession(
   );
 
   const beginDelegatedExternalAgentTurn = useCallback(
-    (clientMessageId: string) => {
-      const origin = clientMessageId.trim();
-      if (origin) pendingDelegatedExternalTurnRef.current = origin;
+    (
+      clientMessageId: string,
+      options: { attachToExistingTurn?: boolean } = {},
+    ) => {
+      const id = clientMessageId.trim();
+      if (id) {
+        pendingDelegatedExternalTurnRef.current = {
+          clientMessageId: id,
+          attachToExistingTurn: options.attachToExistingTurn === true,
+        };
+      }
     },
     [],
   );
 
   const cancelDelegatedExternalAgentTurn = useCallback(
     (clientMessageId: string) => {
-      if (pendingDelegatedExternalTurnRef.current === clientMessageId.trim()) {
+      if (
+        pendingDelegatedExternalTurnRef.current?.clientMessageId ===
+        clientMessageId.trim()
+      ) {
         pendingDelegatedExternalTurnRef.current = null;
         return true;
       }
       if (delegatedExternalTurnIdsRef.current.has(clientMessageId.trim())) {
         delegatedExternalTurnIdsRef.current.delete(clientMessageId.trim());
+        attachedDelegatedExternalTurnIdsRef.current.delete(
+          clientMessageId.trim(),
+        );
         return true;
       }
       return false;
@@ -2975,16 +3151,20 @@ export function useAgentSession(
         setActivities([]);
       }
       const createdAt = new Date().toISOString();
-      const delegatedOrigin = pendingDelegatedExternalTurnRef.current;
+      const delegatedRequest = pendingDelegatedExternalTurnRef.current;
       pendingDelegatedExternalTurnRef.current = null;
-      const clientMessageId = delegatedOrigin ?? input.clientMessageId;
-      const delegated = Boolean(delegatedOrigin);
+      const clientMessageId =
+        delegatedRequest?.clientMessageId ?? input.clientMessageId;
+      const delegated = Boolean(delegatedRequest);
       bindExternalAgentToCurrentConversation(clientMessageId);
       // User-started launches get a pending assistant row while their run API
       // starts. Delegations already have their owning assistant row, so they
       // leave it in place until the inline card or start failure is attached.
       if (delegated) {
         delegatedExternalTurnIdsRef.current.add(clientMessageId);
+        if (delegatedRequest?.attachToExistingTurn) {
+          attachedDelegatedExternalTurnIdsRef.current.add(clientMessageId);
+        }
       } else {
         externalThinkingTurnIdsRef.current.add(clientMessageId);
         setConnection("streaming");
@@ -3065,7 +3245,11 @@ export function useAgentSession(
       const showedThinking = externalThinkingTurnIdsRef.current.has(input.clientMessageId);
       const attachToExistingTurn =
         input.attachToExistingTurn === true ||
-        delegatedExternalTurnIdsRef.current.has(input.clientMessageId);
+        attachedDelegatedExternalTurnIdsRef.current.has(input.clientMessageId);
+      const delegatedAgentRun =
+        input.delegatedAgentRun === true ||
+        (delegatedExternalTurnIdsRef.current.has(input.clientMessageId) &&
+          !attachToExistingTurn);
       try {
         const targetSessionId =
           externalAgentConversationIdsRef.current.get(input.clientMessageId) ??
@@ -3082,6 +3266,7 @@ export function useAgentSession(
             body: JSON.stringify({
               ...input,
               attachToExistingTurn,
+              delegatedAgentRun,
               surface,
             }),
           },
@@ -3137,6 +3322,9 @@ export function useAgentSession(
         throw appendError;
       } finally {
         delegatedExternalTurnIdsRef.current.delete(input.clientMessageId);
+        attachedDelegatedExternalTurnIdsRef.current.delete(
+          input.clientMessageId,
+        );
         if (showedThinking) {
           externalThinkingTurnIdsRef.current.delete(input.clientMessageId);
           if (!isActiveAgentRunState(runStateRef.current)) {
@@ -3362,9 +3550,88 @@ export function useAgentSession(
     [surface, transition],
   );
 
+  const respondToClarification = useCallback(
+    async (answer: string) => {
+      const prompt = pendingClarificationRef.current;
+      const activeSessionId = sessionRef.current;
+      const trimmed = answer.trim();
+      if (!prompt || !activeSessionId || !trimmed) return;
+
+      // Cleared before the round trip so a double submit cannot answer twice;
+      // restored on failure so the card comes back with the question intact.
+      setPendingClarification(null);
+      transition("running");
+      const activeAssistant = [...messagesRef.current]
+        .reverse()
+        .find((message) => message.role === "assistant");
+      const assistantContentOffset = activeAssistant?.content.length ?? 0;
+      let result: Awaited<ReturnType<typeof submitClarificationAnswer>>;
+      try {
+        result = await submitClarificationAnswer(
+          prompt.requestId,
+          activeSessionId,
+          trimmed,
+          assistantContentOffset,
+        );
+      } catch (answerError) {
+        setPendingClarification(prompt);
+        transition("waiting_for_permission");
+        setError(
+          answerError instanceof Error
+            ? answerError.message
+            : "The answer could not be delivered.",
+        );
+        return;
+      }
+      setActivities((current) =>
+        current.map((item) =>
+          item.id === `clarify-${prompt.requestId}`
+            ? {
+                ...item,
+                status: "completed",
+                detail: trimmed,
+                completedAt: new Date().toISOString(),
+              }
+            : item,
+        ),
+      );
+      // The answer is part of the conversation: show it where the server
+      // persisted it, as a course correction on the response in progress.
+      const clientMessageId = `clarify:${prompt.requestId}`;
+      setMessages((current) => {
+        if (current.some((message) => message.clientMessageId === clientMessageId)) {
+          return current;
+        }
+        return [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            clientMessageId,
+            createdAt: new Date().toISOString(),
+            role: "user",
+            content: trimmed,
+            courseCorrection: true,
+            courseCorrectionTargetClientMessageId:
+              result.courseCorrectionTargetClientMessageId ??
+              activeAssistant?.clientMessageId,
+            courseCorrectionOffset:
+              result.courseCorrectionOffset ?? assistantContentOffset,
+          },
+        ];
+      });
+    },
+    [setPendingClarification, transition],
+  );
+
   const send = useCallback(
     async (text: string, options?: AgentSendOptions) => {
       const trimmed = text.trim();
+      // A reply typed while the model is waiting on its question is the
+      // answer, not a new turn; the composer routes it here on Enter.
+      if (trimmed && pendingClarificationRef.current) {
+        await respondToClarification(trimmed);
+        return;
+      }
       if (!trimmed || isActiveAgentRunState(runStateRef.current)) return;
       // A turn composed while the transcript is still arriving is a turn built
       // against the wrong history: on a cold mount there is no conversation yet,
@@ -4410,6 +4677,7 @@ export function useAgentSession(
       abortRef.current?.abort();
       transition("cancelled");
       setPendingPermission(null);
+      setPendingClarification(null);
       setActivities((current) =>
         current.map((item) =>
           item.status === "running" || item.status === "permission_required"
@@ -4472,6 +4740,7 @@ export function useAgentSession(
       return;
     }
     setPendingPermission(null);
+    setPendingClarification(null);
     setMessages((current) => {
       const next = [...current];
       for (let index = next.length - 1; index >= 0; index -= 1) {
@@ -4578,6 +4847,7 @@ export function useAgentSession(
     // A blank chat is fully loaded the moment it exists; nothing is in flight.
     markLoadingSession(false);
     setPendingPermission(null);
+    setPendingClarification(null);
     setActiveTools([]);
     setActivities([]);
     setRunToResume(null);
@@ -4765,6 +5035,7 @@ export function useAgentSession(
     steerError,
     error,
     pendingPermission,
+    pendingClarification,
     activeTools,
     activities,
     agentLaunchRequests,
@@ -4783,6 +5054,7 @@ export function useAgentSession(
     steer,
     deleteMessage,
     respondToPermission,
+    respondToClarification,
     abort,
     reset,
   };

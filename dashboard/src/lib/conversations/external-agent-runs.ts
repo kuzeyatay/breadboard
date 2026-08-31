@@ -2,7 +2,9 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "agent_tars",
   "agent_browser",
   "agent_reach",
+  "praxist",
   "career_ops",
+  "openexecutive",
   "open_gym",
   "trading_agents",
   "vibe_trading",
@@ -36,6 +38,8 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "wardrobe",
   "matraix",
   "bolt_slides",
+  "classroom",
+  "gods_eye",
 ] as const;
 
 export type ExternalAgentRunKind = (typeof EXTERNAL_AGENT_RUN_KINDS)[number];
@@ -46,7 +50,9 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   agent_tars: "Agent TARS",
   agent_browser: "Agent Browser",
   agent_reach: "Agent Reach",
+  praxist: "Praxist",
   career_ops: "Career Ops",
+  openexecutive: "OpenExecutive",
   open_gym: "openGym",
   trading_agents: "TradingAgents",
   vibe_trading: "Vibe Trading",
@@ -80,6 +86,8 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   wardrobe: "Wardrobe",
   matraix: "MatrAIx",
   bolt_slides: "Bolt Slides",
+  classroom: "Classroom",
+  gods_eye: "God's Eye",
 } as const satisfies Record<ExternalAgentRunKind, string>;
 
 export function externalAgentDisplayName(kind: ExternalAgentRunKind): string {
@@ -96,7 +104,9 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   agent_tars: "ui-tars",
   agent_browser: "agent-browser",
   agent_reach: "agent-reach",
+  praxist: "praxist",
   career_ops: "career-ops",
+  openexecutive: "openexecutive",
   open_gym: "open-gym",
   trading_agents: "tradingagents",
   vibe_trading: "vibe-trading",
@@ -130,6 +140,8 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   wardrobe: "wardrobe",
   matraix: "matraix",
   bolt_slides: "bolt-slides",
+  classroom: "classroom",
+  gods_eye: "gods-eye",
 } as const satisfies Record<ExternalAgentRunKind, string>;
 
 /**
@@ -349,7 +361,18 @@ export type ExternalAgentRun =
       task: string;
     }
   | {
+      kind: "praxist";
+      runId: string;
+      /** Absolute prepared task-project directory supplied by the operator. */
+      task: string;
+    }
+  | {
       kind: "career_ops";
+      runId: string;
+      task: string;
+    }
+  | {
+      kind: "openexecutive";
       runId: string;
       task: string;
     }
@@ -387,7 +410,7 @@ export type ExternalAgentRun =
   | {
       kind: "max_research";
       runId: string;
-      /** The one question the five participants were commissioned against. */
+      /** The one question the six participants were commissioned against. */
       query: string;
     }
   | {
@@ -552,6 +575,19 @@ export type ExternalAgentRun =
       brief: string;
     }
   | {
+      kind: "classroom";
+      runId: string;
+      /** The lesson brief, including any flags typed with it. */
+      brief: string;
+    }
+  | {
+      kind: "gods_eye";
+      runId: string;
+      task: string;
+      /** Super Agent chose the capability, so present the framed view without agent chrome. */
+      quiet?: boolean;
+    }
+  | {
       kind: "codex";
       runId: string;
       task: string;
@@ -615,10 +651,22 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     return { kind: "agent_reach", runId, task };
   }
 
+  if (candidate.kind === "praxist") {
+    const task = boundedString(candidate.task, MAX_TASK_LENGTH);
+    if (!task) return null;
+    return { kind: "praxist", runId, task };
+  }
+
   if (candidate.kind === "career_ops") {
     const task = boundedString(candidate.task, MAX_TASK_LENGTH);
     if (!task) return null;
     return { kind: "career_ops", runId, task };
+  }
+
+  if (candidate.kind === "openexecutive") {
+    const task = boundedString(candidate.task, MAX_TASK_LENGTH);
+    if (!task) return null;
+    return { kind: "openexecutive", runId, task };
   }
 
   if (candidate.kind === "open_gym") {
@@ -828,6 +876,23 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     return { kind: "bolt_slides", runId, brief };
   }
 
+  if (candidate.kind === "classroom") {
+    const brief = boundedString(candidate.brief, MAX_TASK_LENGTH);
+    if (!brief) return null;
+    return { kind: "classroom", runId, brief };
+  }
+
+  if (candidate.kind === "gods_eye") {
+    const task = boundedString(candidate.task, MAX_TASK_LENGTH);
+    if (!task) return null;
+    return {
+      kind: "gods_eye",
+      runId,
+      task,
+      ...(candidate.quiet === true ? { quiet: true } : {}),
+    };
+  }
+
   if (
     candidate.kind === "codex" ||
     candidate.kind === "opencode" ||
@@ -854,7 +919,9 @@ interface ExternalAgentRunFields {
   browserRun?: { runId: string } | null;
   agentBrowserRun?: { runId: string } | null;
   agentReachRun?: { runId: string } | null;
+  praxistRun?: { runId: string } | null;
   careerOpsRun?: { runId: string } | null;
+  openExecutiveRun?: { runId: string } | null;
   openGymRun?: { runId: string; quiet?: boolean } | null;
   tradingAgentsRun?: { runId: string } | null;
   vibeTradingRun?: { runId: string } | null;
@@ -885,6 +952,8 @@ interface ExternalAgentRunFields {
   wardrobeRun?: { runId: string } | null;
   matraixRun?: { runId: string } | null;
   boltSlidesRun?: { runId: string } | null;
+  classroomRun?: { runId: string } | null;
+  godsEyeRun?: { runId: string; quiet?: boolean } | null;
   openCodeRun?: { runId: string } | null;
   codexRun?: { runId: string } | null;
   rufloRun?: { runId: string } | null;
@@ -907,7 +976,9 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   agent_tars: "browserRun",
   agent_browser: "agentBrowserRun",
   agent_reach: "agentReachRun",
+  praxist: "praxistRun",
   career_ops: "careerOpsRun",
+  openexecutive: "openExecutiveRun",
   open_gym: "openGymRun",
   trading_agents: "tradingAgentsRun",
   vibe_trading: "vibeTradingRun",
@@ -941,6 +1012,8 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   wardrobe: "wardrobeRun",
   matraix: "matraixRun",
   bolt_slides: "boltSlidesRun",
+  classroom: "classroomRun",
+  gods_eye: "godsEyeRun",
 } as const satisfies Record<ExternalAgentRunKind, keyof ExternalAgentRunFields>;
 
 const EXTERNAL_AGENT_RUN_FIELDS = EXTERNAL_AGENT_RUN_KINDS.map(
@@ -1004,7 +1077,9 @@ export function externalAgentMessageFields(
   browserRun?: { agentId: string; runId: string; task: string };
   agentBrowserRun?: { agentId: string; runId: string; task: string };
   agentReachRun?: { runId: string; task: string };
+  praxistRun?: { runId: string; task: string };
   careerOpsRun?: { runId: string; task: string };
+  openExecutiveRun?: { runId: string; task: string };
   openGymRun?: { runId: string; task: string; quiet?: boolean };
   tradingAgentsRun?: { runId: string; task: string };
   vibeTradingRun?: { runId: string; task: string };
@@ -1035,6 +1110,8 @@ export function externalAgentMessageFields(
   wardrobeRun?: { runId: string; task: string };
   matraixRun?: { runId: string; brief: string };
   boltSlidesRun?: { runId: string; brief: string };
+  classroomRun?: { runId: string; brief: string };
+  godsEyeRun?: { runId: string; task: string; quiet?: boolean };
   openCodeRun?: {
     runId: string;
     task: string;
@@ -1125,9 +1202,21 @@ export function externalAgentMessageFields(
       ...outcomeField,
     };
   }
+  if (run.kind === "praxist") {
+    return {
+      praxistRun: { runId: run.runId, task: run.task },
+      ...outcomeField,
+    };
+  }
   if (run.kind === "career_ops") {
     return {
       careerOpsRun: { runId: run.runId, task: run.task },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "openexecutive") {
+    return {
+      openExecutiveRun: { runId: run.runId, task: run.task },
       ...outcomeField,
     };
   }
@@ -1323,6 +1412,22 @@ export function externalAgentMessageFields(
   if (run.kind === "bolt_slides") {
     return {
       boltSlidesRun: { runId: run.runId, brief: run.brief },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "classroom") {
+    return {
+      classroomRun: { runId: run.runId, brief: run.brief },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "gods_eye") {
+    return {
+      godsEyeRun: {
+        runId: run.runId,
+        task: run.task,
+        ...(run.quiet === true ? { quiet: true } : {}),
+      },
       ...outcomeField,
     };
   }

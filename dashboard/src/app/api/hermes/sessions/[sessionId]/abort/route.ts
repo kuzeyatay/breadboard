@@ -15,6 +15,8 @@ import {
   parseRuntimeRunDispatch,
 } from "@/lib/hermes/run-store.ts";
 import { failAssistantMessage } from "@/lib/conversations/store.ts";
+import { finishExternalAgentTurn } from "@/lib/conversations/external-agent-turns.ts";
+import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-agent-cancel.ts";
 import { stopRuntimeSessionWork } from "@/lib/hermes/session-cancel.ts";
 import { abortDirectProviderTurn } from "@/lib/conversations/direct-turn-service.ts";
 
@@ -33,6 +35,30 @@ export async function POST(
     const directTurn = session.row.conversation_id === null
       ? null
       : abortDirectProviderTurn(session.row.conversation_id);
+    const externalRuns = session.row.conversation_id === null
+      ? []
+      : await cancelRunningExternalAgentRuns(
+          userId,
+          session.row.conversation_id,
+        );
+    if (session.row.conversation_id !== null) {
+      for (const run of externalRuns) {
+        // The manager may already have retired a stale run, but the user has
+        // explicitly stopped waiting for it. Seal the durable owner either way
+        // so Recents cannot keep spinning on old `running` metadata.
+        try {
+          finishExternalAgentTurn({
+            conversationId: session.row.conversation_id,
+            clientMessageId: run.clientMessageId,
+            outcome: "aborted",
+            content: "Stopped by the user.",
+          });
+        } catch {
+          // A concurrent terminal event won the race; that terminal result is
+          // already more authoritative than this cancellation acknowledgement.
+        }
+      }
+    }
     if (directTurn && session.row.conversation_id !== null) {
       failAssistantMessage({
         conversationId: session.row.conversation_id,
@@ -52,16 +78,18 @@ export async function POST(
         alreadyFinished: false,
         runId: null,
         status: "cancelled",
+        externalRuns: externalRuns.length,
       });
     }
     const activeRun = getActiveRuntimeRun(session.row.id);
     if (!activeRun) {
       const latest = getLatestRuntimeRun(session.row.id);
       return NextResponse.json({
-        aborted: false,
-        alreadyFinished: true,
+        aborted: externalRuns.length > 0,
+        alreadyFinished: externalRuns.length === 0,
         runId: latest?.id ?? null,
-        status: latest?.status ?? "completed",
+        status: externalRuns.length > 0 ? "cancelled" : latest?.status ?? "completed",
+        externalRuns: externalRuns.length,
       });
     }
     requireEnabled();
@@ -112,6 +140,7 @@ export async function POST(
       alreadyFinished: false,
       runId: activeRun.id,
       status: "cancelled",
+      externalRuns: externalRuns.length,
     });
   } catch (error) {
     return apiErrorResponse(error);

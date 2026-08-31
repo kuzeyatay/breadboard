@@ -27,6 +27,14 @@ test('assistant model names use a readable label in the composer', () => {
   assert.equal(formatAssistantModelName('gpt-5.6-terra'), 'GPT-5.6 Terra');
   assert.equal(formatAssistantModelName('gpt-5.6-luna'), 'GPT-5.6 Luna');
   assert.equal(formatAssistantModelName('gpt-5.5'), 'GPT-5.5');
+  assert.equal(
+    formatAssistantModelName('cliproxy/gemini-3.7-flash-high'),
+    'Gemini 3.7 Flash High',
+  );
+  assert.equal(
+    formatAssistantModelName('openrouter/google/gemini-2.5-pro'),
+    'Gemini 2.5 Pro',
+  );
 });
 
 test('model labels drop the release-date stamp and spell versions with a dot', () => {

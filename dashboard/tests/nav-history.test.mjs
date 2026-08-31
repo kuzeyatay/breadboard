@@ -144,7 +144,7 @@ test("subscribers are notified so back targets refresh on navigation", () => {
 test("labels describe where the resolved target lands", () => {
   installWindow();
   assert.equal(backLabelFor("/dashboard", "Back"), "Back to dashboard");
-  assert.equal(backLabelFor("/gardens/plants", "Back"), "Back to garden chat");
+  assert.equal(backLabelFor("/gardens/plants", "Back"), "Back to workspace");
   assert.equal(backLabelFor("/garden/plants?note=roses", "Back"), "Back to garden");
   assert.equal(backLabelFor("/garden?view=public", "Back"), "Back to library");
   assert.equal(backLabelFor("/gardens/plants/pdf/paper", "Back"), "Back to PDF");
@@ -159,20 +159,26 @@ test("the Quartz garden routes its back control through the trail", () => {
   const layout = fs.readFileSync(new URL("../src/app/layout.tsx", import.meta.url), "utf8");
 
   assert.match(quartzPage, /<BackLink/);
+  assert.match(quartzPage, /'Back to workspace'/);
+  assert.doesNotMatch(quartzPage, /Back to garden chat/);
   assert.doesNotMatch(quartzPage, /href=\{cluster\.isOwner \? `\/gardens\//);
   assert.match(layout, /<NavigationTrail \/>/);
 });
 
-test("garden chat leaves to the dashboard rather than following the trail", () => {
+test("garden chat leaves to the dashboard with a single native navigation", () => {
   // Two surfaces that link to each other cannot both defer to the trail without
-  // becoming each other's back target, so garden chat is the fixed end.
+  // becoming each other's back target, so garden chat is the fixed end. This
+  // exit also bypasses a client transition: the workspace has enough live
+  // observers that waiting for its React tree to tear down made the first click
+  // intermittently appear to do nothing.
   const gardenChat = fs.readFileSync(
     new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
     "utf8",
   );
 
   assert.doesNotMatch(gardenChat, /BackLink/);
-  assert.match(gardenChat, /href="\/dashboard"[\s\S]{0,900}Back to dashboard/);
+  assert.match(gardenChat, /<a\s+href="\/dashboard"[\s\S]{0,900}Back to dashboard[\s\S]{0,50}<\/a>/);
+  assert.doesNotMatch(gardenChat, /<Link\s+href="\/dashboard"/);
 });
 
 test("the profile page leaves to the dashboard rather than following the trail", () => {
@@ -218,4 +224,27 @@ test("reloading the embedded garden does not stack a history entry", () => {
   assert.match(gardenClient, /frameWindow\.location\.replace\(url\)/);
   assert.match(spa, /function hardNavigate/);
   assert.doesNotMatch(spa, /\.catch\(\(\) => \{\s*window\.location\.assign/);
+});
+
+test("embedded gardens retry a temporary unpublished Quartz response", () => {
+  const gardenClient = fs.readFileSync(
+    new URL("../src/app/garden/[clusterSlug]/garden-client.tsx", import.meta.url),
+    "utf8",
+  );
+  const breadboardBridge = fs.readFileSync(
+    new URL("../../quartz/quartz/components/scripts/breadboardAI.inline.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(gardenClient, /quartzDocumentReadyRef/);
+  assert.match(gardenClient, /quartzLastMessageAtRef\.current = Date\.now\(\)/);
+  assert.match(gardenClient, /quartzRetryTimerRef\.current = window\.setTimeout/);
+  assert.match(gardenClient, /quartzDocumentReadyRef\.current \|\| iframe\.src !== loadedSource/);
+  assert.match(gardenClient, /quartzUrlWithRefresh\(clusterSlug/);
+  assert.match(gardenClient, /, 2_500\);/);
+  assert.match(breadboardBridge, /type: "second-brain:quartz-ready"/);
+  assert.match(
+    breadboardBridge,
+    /window\.addEventListener\("load", postReady, \{ once: true \}\)/,
+  );
 });

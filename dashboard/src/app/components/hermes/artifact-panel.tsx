@@ -456,6 +456,10 @@ export default function ArtifactPanel({
   // only ever remove what the user can currently see.
   const selectedArtifacts = filteredArtifacts.filter((artifact) => selectedIds.has(artifact.id));
 
+  const toggleOpenArtifact = useCallback((id: string) => {
+    setOpenId((current) => (current === id ? null : id));
+  }, []);
+
   const toggleChecked = useCallback((id: string) => {
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -758,9 +762,16 @@ export default function ArtifactPanel({
                   onClick={() => {
                     if (mode === "selecting") toggleChecked(artifact.id);
                     else if (mode === "highlighting") void paint(artifact);
-                    else setOpenId(artifact.id);
+                    else toggleOpenArtifact(artifact.id);
                   }}
-                  title={mode === "highlighting" ? `Highlight ${artifact.title}` : undefined}
+                  title={
+                    mode === "highlighting"
+                      ? `Highlight ${artifact.title}`
+                      : mode === "idle"
+                        ? `${openId === artifact.id ? "Close" : "Open"} ${artifact.title}`
+                        : undefined
+                  }
+                  aria-pressed={mode === "idle" ? openId === artifact.id : undefined}
                   className={openClasses}
                 >
                   {rowInner}

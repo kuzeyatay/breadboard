@@ -8,14 +8,20 @@ import WorkspaceClient from "./workspace-client";
 
 export default async function WorkspacePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ clusterSlug: string }>;
+  searchParams: Promise<{ chat?: string | string[] }>;
 }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/auth/login");
 
   const userId = Number((session.user as { id?: string }).id);
   const { clusterSlug } = await params;
+  const requested = await searchParams;
+  const initialChatId = Array.isArray(requested.chat)
+    ? requested.chat[0] ?? null
+    : requested.chat ?? null;
 
   // Try owner access first
   let cluster = await getCluster(userId, clusterSlug);
@@ -64,6 +70,7 @@ export default async function WorkspacePage({
         repo_connected: false,
         repo_name: null,
         graft_enabled: true,
+        thought_topology_enabled: Boolean(fullRow.thought_topology_enabled),
       };
     }
     isOwner = false;
@@ -73,6 +80,7 @@ export default async function WorkspacePage({
     <WorkspaceClient
       clusterSlug={clusterSlug}
       clusterName={cluster.name}
+      initialChatId={initialChatId}
       isOwner={isOwner}
       clusterVisibility={cluster.visibility}
       chatAccessible={cluster.chat_accessible}

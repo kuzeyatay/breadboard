@@ -9,6 +9,7 @@ import {
 import type { ChatTokenUsage } from "@/lib/chat-token-usage";
 import type {
   ActivityItem,
+  ClarificationPrompt,
   ConnectionState,
   PermissionPrompt,
 } from "./use-agent-session";
@@ -17,6 +18,9 @@ interface Props {
   activities: ActivityItem[];
   connection: ConnectionState;
   pendingPermission: PermissionPrompt | null;
+  /** A question the model is blocked on; answered by a choice or typed text. */
+  pendingClarification?: ClarificationPrompt | null;
+  onClarificationAnswer?: (answer: string) => void;
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   /** Durable beginning of the response this row belongs to. */
@@ -42,6 +46,8 @@ export default function ActivityPanel({
   activities,
   connection,
   pendingPermission,
+  pendingClarification = null,
+  onClarificationAnswer,
   usage,
   responseDurationMs,
   responseStartedAt,
@@ -101,7 +107,9 @@ export default function ActivityPanel({
     artifactState?.label ??
     (pendingPermission
       ? "Waiting for permission"
-      : liveActivity?.label ?? "Thinking");
+      : pendingClarification
+        ? "Waiting for your answer"
+        : liveActivity?.label ?? "Thinking");
   // Every turn opens with the same stable Thinking beat. Tool, orchestration,
   // answer-writing, and artifact labels can take over only after five seconds.
   // A settled default returns to Thinking so AssistantResponseMeta renders the
@@ -187,6 +195,84 @@ export default function ActivityPanel({
           </div>
         </div>
       ) : null}
+
+      {pendingClarification && onClarificationAnswer ? (
+        <ClarificationCard
+          key={pendingClarification.requestId}
+          prompt={pendingClarification}
+          onAnswer={onClarificationAnswer}
+        />
+      ) : null}
     </section>
+  );
+}
+
+/**
+ * The model's mid-turn question. Choices are one click; anything else is
+ * typed here or in the composer, which routes a send to the same answer while
+ * the question is open.
+ */
+function ClarificationCard({
+  prompt,
+  onAnswer,
+}: {
+  prompt: ClarificationPrompt;
+  onAnswer: (answer: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const trimmed = draft.trim();
+  const submitDraft = () => {
+    if (!trimmed) return;
+    onAnswer(trimmed);
+    setDraft("");
+  };
+  return (
+    <div className="neu-surface-subtle mt-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3.5">
+      <p className="text-sm font-medium text-[var(--ink-heading)]">
+        The agent has a question
+      </p>
+      <p className="mt-0.5 text-sm leading-6 text-[var(--ink)]">
+        {prompt.question}
+      </p>
+      {prompt.choices.length ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {prompt.choices.map((choice) => (
+            <button
+              key={choice}
+              type="button"
+              onClick={() => onAnswer(choice)}
+              className="neu-button rounded-full bg-[var(--paper-raised)] px-4 py-2 text-xs font-medium text-[var(--botanical)] transition hover:bg-[var(--paper-bg)]"
+            >
+              {choice}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <form
+        className="mt-3 flex items-center gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submitDraft();
+        }}
+      >
+        <input
+          type="text"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder={
+            prompt.choices.length ? "Or type a different answer" : "Type your answer"
+          }
+          aria-label="Answer the agent's question"
+          className="min-w-0 flex-1 rounded-full border border-[var(--line)] bg-[var(--paper-raised)] px-3.5 py-2 text-xs text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--botanical)]"
+        />
+        <button
+          type="submit"
+          disabled={!trimmed}
+          className="neu-button-accent rounded-full bg-[var(--botanical)] px-4 py-2 text-xs font-medium text-white transition hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Answer
+        </button>
+      </form>
+    </div>
   );
 }

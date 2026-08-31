@@ -14,6 +14,7 @@
 //   * An artifact is attached by id, and the id is resolved against the caller's
 //     own conversation before a path is produced.
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 
 import {
@@ -21,6 +22,15 @@ import {
   getArtifactById,
   type ArtifactRow,
 } from "./artifact-store.ts";
+import {
+  appendConversationAssistantMessage,
+  completeAssistantMessage,
+  createConversation,
+  getConversationById,
+  reserveConversationTurn,
+  type ConversationRow,
+} from "../conversations/store.ts";
+import db from "../db.ts";
 import {
   explainSelfTargetFailure,
   resolveTelegramSelfTarget,
@@ -74,6 +84,8 @@ export interface SendOwnerMessageResult {
   channel: MessagingChannel;
   /** Where it went, in human terms. The raw chat id is never returned. */
   destination: string;
+  /** The fresh Terminal chat that owns replies to this outbound message. */
+  continuationConversationId: string;
   characters: number;
   attachment: { filename: string; byteSize: number; rendered: boolean } | null;
   sentAt: string;
@@ -81,6 +93,13 @@ export interface SendOwnerMessageResult {
 
 interface RateWindow {
   hits: number[];
+}
+
+export type OwnerMessageKind = "assistant" | "reminder" | "review";
+
+interface DeliveredOwnerTarget {
+  destination: string;
+  target: SelfTarget;
 }
 
 const globals = globalThis as typeof globalThis & {
@@ -306,6 +325,274 @@ export async function previewOwnerMessage(input: {
   }
 }
 
+type ResolvedAttachment = ReturnType<typeof resolveAttachment>;
+
+function outboundConversationTitle(
+  channel: MessagingChannel,
+  label: string,
+  text: string,
+): string {
+  const app = channel === "whatsapp" ? "WhatsApp" : "Telegram";
+  const contact = label.trim().slice(0, 60) || app;
+  const summary = text.replace(/\s+/g, " ").trim().slice(0, 60);
+  return `${app} · ${contact}${summary ? `: ${summary}` : ""}`.slice(0, 120);
+}
+
+function externalMessageMetadata(input: {
+  channel: MessagingChannel;
+  kind: OwnerMessageKind;
+  direction: "outbound" | "inbound";
+  originConversationId?: number | null;
+}): Record<string, unknown> {
+  return {
+    externalMessaging: true,
+    externalMessagingChannel: input.channel,
+    externalMessagingDirection: input.direction,
+    externalMessagingKind: input.kind,
+    ...(Number.isSafeInteger(input.originConversationId) && input.originConversationId! > 0
+      ? { originConversationId: input.originConversationId }
+      : {}),
+  };
+}
+
+/**
+ * Persist an already-delivered phone message as a fresh Terminal conversation
+ * and make that conversation the continuation for the external chat.
+ *
+ * The transport send happens first. Once it succeeds, this transaction creates
+ * the transcript and changes the chat binding together, so the next inbound
+ * message can never see a binding whose reminder row is missing.
+ */
+export async function recordDeliveredOwnerMessage(input: {
+  channel: MessagingChannel;
+  userId: number;
+  target: Pick<SelfTarget, "chatId" | "label">;
+  text: string;
+  kind?: OwnerMessageKind;
+  originConversationId?: number | null;
+}): Promise<ConversationRow> {
+  const channel = normalizeChannel(input.channel);
+  const text = requireText(input.text, channel);
+  const kind = input.kind ?? "assistant";
+  const clientMessageId = `external-outbound-${channel}-${crypto.randomUUID()}`;
+  const metadata = externalMessageMetadata({
+    channel,
+    kind,
+    direction: "outbound",
+    originConversationId: input.originConversationId,
+  });
+
+  if (channel === "whatsapp") {
+    const { getWhatsAppStore } = await import("../whatsapp/instance.ts");
+    const store = getWhatsAppStore();
+    const persist = db.transaction(() => {
+      const existing = store.getChat(input.target.chatId);
+      if (existing && existing.user_id !== input.userId) {
+        throw new MessagingServiceError(
+          "messaging_target_owner_mismatch",
+          "The WhatsApp chat belongs to a different Breadboard account.",
+        );
+      }
+      if (!existing) {
+        store.upsertChat({
+          chatId: input.target.chatId,
+          userId: input.userId,
+          contactLabel: input.target.label,
+          contactNumber: normalizeWhatsAppIdentifier(input.target.chatId),
+          isGroup: false,
+        });
+      }
+      const conversation = createConversation({
+        userId: input.userId,
+        title: outboundConversationTitle(channel, input.target.label, text),
+        surface: "dashboard_terminal",
+        scopeKind: "global",
+      }, db);
+      appendConversationAssistantMessage({
+        conversation,
+        clientMessageId,
+        surface: "dashboard_terminal",
+        content: text,
+        metadata,
+      }, db);
+      store.bindConversation(input.target.chatId, conversation.id);
+      return getConversationById(conversation.id, db)!;
+    });
+    return persist.immediate();
+  }
+
+  const { getTelegramStore } = await import("../telegram/instance.ts");
+  const store = getTelegramStore();
+  const persist = db.transaction(() => {
+    const existing = store.getChat(input.target.chatId);
+    if (existing && existing.user_id !== input.userId) {
+      throw new MessagingServiceError(
+        "messaging_target_owner_mismatch",
+        "The Telegram chat belongs to a different Breadboard account.",
+      );
+    }
+    if (!existing) {
+      store.upsertChat({
+        chatId: input.target.chatId,
+        userId: input.userId,
+        contactLabel: input.target.label,
+        contactHandle: input.target.chatId,
+        isGroup: false,
+      });
+    }
+    const conversation = createConversation({
+      userId: input.userId,
+      title: outboundConversationTitle(channel, input.target.label, text),
+      surface: "dashboard_terminal",
+      scopeKind: "global",
+    }, db);
+    appendConversationAssistantMessage({
+      conversation,
+      clientMessageId,
+      surface: "dashboard_terminal",
+      content: text,
+      metadata,
+    }, db);
+    store.bindConversation(input.target.chatId, conversation.id);
+    return getConversationById(conversation.id, db)!;
+  });
+  return persist.immediate();
+}
+
+/**
+ * Persist a provider-handled exchange (currently a study-review answer) in the
+ * Terminal conversation opened by its proactive message. Ordinary Telegram and
+ * WhatsApp replies already go through `startConversationTurn`; this covers the
+ * one path that intentionally intercepts a reply before the agent runtime.
+ */
+export async function recordDeliveredOwnerExchange(input: {
+  channel: MessagingChannel;
+  userId: number;
+  chatId: string;
+  userText: string;
+  assistantText: string;
+  clientMessageId: string;
+  kind?: OwnerMessageKind;
+}): Promise<ConversationRow | null> {
+  const channel = normalizeChannel(input.channel);
+  const kind = input.kind ?? "review";
+  const store = channel === "whatsapp"
+    ? (await import("../whatsapp/instance.ts")).getWhatsAppStore()
+    : (await import("../telegram/instance.ts")).getTelegramStore();
+  const chat = store.getChat(input.chatId);
+  if (!chat || chat.user_id !== input.userId || chat.conversation_id === null) return null;
+  const conversation = getConversationById(chat.conversation_id, db);
+  if (
+    !conversation ||
+    conversation.user_id !== input.userId ||
+    conversation.surface !== "dashboard_terminal"
+  ) {
+    return null;
+  }
+
+  const metadata = externalMessageMetadata({
+    channel,
+    kind,
+    direction: "inbound",
+  });
+  const persist = db.transaction(() => {
+    reserveConversationTurn({
+      conversation,
+      clientMessageId: input.clientMessageId,
+      surface: "dashboard_terminal",
+      content: input.userText,
+      metadata,
+    }, db);
+    completeAssistantMessage({
+      conversationId: conversation.id,
+      clientMessageId: input.clientMessageId,
+      content: input.assistantText,
+      metadata,
+    }, db);
+    store.bindConversation(input.chatId, conversation.id);
+    return getConversationById(conversation.id, db)!;
+  });
+  return persist.immediate();
+}
+
+/** Deliver to the owner's WhatsApp self-chat. */
+async function deliverWhatsApp(
+  userId: number,
+  text: string,
+  attachment: ResolvedAttachment | null,
+): Promise<DeliveredOwnerTarget> {
+  const target = await whatsAppTarget();
+  const {
+    runtimeGatewayStatus,
+    sendRuntimeWhatsAppMedia,
+    sendRuntimeWhatsAppMessage,
+  } = await import("../runtime-v2/gateway-control.ts");
+  const status = await runtimeGatewayStatus<{ state: string }>("whatsapp", userId);
+  if (status?.state !== "connected") {
+    throw new MessagingServiceError(
+      "messaging_channel_offline",
+      "WhatsApp is linked but not connected right now. Open Settings → Messaging → WhatsApp and press Connect.",
+    );
+  }
+  try {
+    if (attachment) {
+      await sendRuntimeWhatsAppMedia(userId, target.chatId, {
+        filePath: attachment.file.absolutePath,
+        fileName: attachment.file.filename,
+        caption: text,
+      });
+    } else {
+      await sendRuntimeWhatsAppMessage(userId, target.chatId, text);
+    }
+  } catch (cause) {
+    throw new MessagingServiceError(
+      "messaging_send_failed",
+      cause instanceof Error ? cause.message : "WhatsApp refused the message.",
+    );
+  }
+  return {
+    destination: `your own WhatsApp chat (${target.label})`,
+    target,
+  };
+}
+
+/** Deliver to the owner's private Telegram chat. */
+async function deliverTelegram(
+  text: string,
+  attachment: ResolvedAttachment | null,
+): Promise<DeliveredOwnerTarget> {
+  const { target, token } = await telegramTarget();
+  const { sendDocument, sendMessage } = await import("../telegram/client.ts");
+  try {
+    if (attachment) {
+      await sendDocument(
+        token,
+        target.chatId,
+        {
+          bytes: fs.readFileSync(attachment.file.absolutePath),
+          filename: attachment.file.filename,
+          mimeType: attachment.file.mimeType,
+        },
+        // Telegram caps a caption at 1,024 characters. Anything longer is
+        // sent as its own message first so nothing is quietly lost.
+        text.length <= 1_024 ? text : undefined,
+      );
+      if (text.length > 1_024) await sendMessage(token, target.chatId, text);
+    } else {
+      await sendMessage(token, target.chatId, text);
+    }
+  } catch (cause) {
+    throw new MessagingServiceError(
+      "messaging_send_failed",
+      cause instanceof Error ? cause.message : "Telegram refused the message.",
+    );
+  }
+  return {
+    destination: `your Telegram chat with ${target.label}`,
+    target,
+  };
+}
+
 export async function sendOwnerMessage(
   input: SendOwnerMessageInput,
 ): Promise<SendOwnerMessageResult> {
@@ -321,71 +608,23 @@ export async function sendOwnerMessage(
 
   claimRateSlot(input.userId, channel);
 
-  let destination: string;
-  if (channel === "whatsapp") {
-    const target = await whatsAppTarget();
-    const {
-      runtimeGatewayStatus,
-      sendRuntimeWhatsAppMedia,
-      sendRuntimeWhatsAppMessage,
-    } = await import("../runtime-v2/gateway-control.ts");
-    const status = await runtimeGatewayStatus<{ state: string }>("whatsapp", input.userId);
-    if (status?.state !== "connected") {
-      throw new MessagingServiceError(
-        "messaging_channel_offline",
-        "WhatsApp is linked but not connected right now. Open Settings → Messaging → WhatsApp and press Connect.",
-      );
-    }
-    try {
-      if (attachment) {
-        await sendRuntimeWhatsAppMedia(input.userId, target.chatId, {
-          filePath: attachment.file.absolutePath,
-          fileName: attachment.file.filename,
-          caption: text,
-        });
-      } else {
-        await sendRuntimeWhatsAppMessage(input.userId, target.chatId, text);
-      }
-    } catch (cause) {
-      throw new MessagingServiceError(
-        "messaging_send_failed",
-        cause instanceof Error ? cause.message : "WhatsApp refused the message.",
-      );
-    }
-    destination = `your own WhatsApp chat (${target.label})`;
-  } else {
-    const { target, token } = await telegramTarget();
-    const { sendDocument, sendMessage } = await import("../telegram/client.ts");
-    try {
-      if (attachment) {
-        await sendDocument(
-          token,
-          target.chatId,
-          {
-            bytes: fs.readFileSync(attachment.file.absolutePath),
-            filename: attachment.file.filename,
-            mimeType: attachment.file.mimeType,
-          },
-          // Telegram caps a caption at 1,024 characters. Anything longer is
-          // sent as its own message first so nothing is quietly lost.
-          text.length <= 1_024 ? text : undefined,
-        );
-        if (text.length > 1_024) await sendMessage(token, target.chatId, text);
-      } else {
-        await sendMessage(token, target.chatId, text);
-      }
-    } catch (cause) {
-      throw new MessagingServiceError(
-        "messaging_send_failed",
-        cause instanceof Error ? cause.message : "Telegram refused the message.",
-      );
-    }
-    destination = `your Telegram chat with ${target.label}`;
-  }
+  const delivery =
+    channel === "whatsapp"
+      ? await deliverWhatsApp(input.userId, text, attachment)
+      : await deliverTelegram(text, attachment);
+  const continuation = await recordDeliveredOwnerMessage({
+    channel,
+    userId: input.userId,
+    target: delivery.target,
+    text,
+    kind: "assistant",
+    originConversationId: input.conversationId,
+  });
 
   return {
     channel,
-    destination,
+    destination: delivery.destination,
+    continuationConversationId: continuation.public_id,
     characters: text.length,
     attachment: attachment
       ? {
@@ -395,6 +634,40 @@ export async function sendOwnerMessage(
         }
       : null,
     sentAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Send plain text to the owner's own thread on Breadboard's initiative — a
+ * calendar reminder, not something a model asked for.
+ *
+ * Same destination rule as `sendOwnerMessage`, same refusals, no attachment.
+ * It deliberately takes no rate slot: the per-minute cap exists to stop a
+ * model looping on the tool, and the callers here are background ticks that
+ * batch everything they owe into one message per channel per pass.
+ */
+export async function sendOwnerText(input: {
+  channel: MessagingChannel;
+  userId: number;
+  text: string;
+  kind?: OwnerMessageKind;
+}): Promise<{ destination: string; continuationConversationId: string }> {
+  const channel = normalizeChannel(input.channel);
+  const text = requireText(input.text, channel);
+  const delivery =
+    channel === "whatsapp"
+      ? await deliverWhatsApp(input.userId, text, null)
+      : await deliverTelegram(text, null);
+  const continuation = await recordDeliveredOwnerMessage({
+    channel,
+    userId: input.userId,
+    target: delivery.target,
+    text,
+    kind: input.kind ?? "assistant",
+  });
+  return {
+    destination: delivery.destination,
+    continuationConversationId: continuation.public_id,
   };
 }
 
@@ -418,6 +691,8 @@ export function statusForMessagingError(code: string): number {
       return 429;
     case "messaging_channel_offline":
       return 503;
+    case "messaging_target_owner_mismatch":
+      return 403;
     case "messaging_send_failed":
       return 502;
     default:

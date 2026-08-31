@@ -98,6 +98,11 @@ interface ToolOwner {
 const TOOL_OWNERS: Record<string, ToolOwner> = {
   watch_run: { kind: "skill", id: "watch", label: "Watch" },
   factcheck_run: { kind: "skill", id: "bullshit-detector", label: "Fact check" },
+  patent_disclosure_guide: {
+    kind: "skill",
+    id: "patent-disclosure-skill",
+    label: "Patent disclosure",
+  },
   premortem_run: { kind: "skill", id: "premortem", label: "Premortem" },
   omh_run: { kind: "skill", id: "oh-my-hermes", label: "Oh My Hermes" },
   messaging_send: {
@@ -109,6 +114,11 @@ const TOOL_OWNERS: Record<string, ToolOwner> = {
   image_to_3d: { kind: "skill", id: "image-to-3d", label: "Image to 3D" },
   audio_analyze: { kind: "skill", id: "audio-analysis", label: "Audio analysis" },
   audio_compare: { kind: "skill", id: "audio-analysis", label: "Audio analysis" },
+  music_recognize: {
+    kind: "skill",
+    id: "recognize-music",
+    label: "Recognize music",
+  },
   agent_loop_run: {
     kind: "skill",
     id: "agent-loop-engineering",
@@ -194,6 +204,8 @@ export function capabilityForTool(toolName: string): ToolOwner | null {
 export const AUTOMATIC_SELECTION_REASONS: Record<string, string> = {
   watch: "The message carried a video.",
   "bullshit-detector": "The message asked for a claim to be checked.",
+  "patent-disclosure-skill":
+    "The message asked for patent drafting, analysis, or response work.",
   premortem: "The message asked for a plan to be pressure-tested.",
   "interactive-visualizer":
     "The request asked for something to be shown rather than described.",

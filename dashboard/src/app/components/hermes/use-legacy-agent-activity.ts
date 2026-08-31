@@ -8,10 +8,14 @@ import {
 } from "@/lib/hermes/evidence";
 import type {
   ActivityItem,
+  ClarificationPrompt,
   ConnectionState,
   PermissionPrompt,
 } from "./use-agent-session";
-import { submitPermissionDecision } from "./permission-client";
+import {
+  submitClarificationAnswer,
+  submitPermissionDecision,
+} from "./permission-client";
 
 type LegacyRuntimeEvent = Record<string, unknown> & { type?: string };
 
@@ -20,6 +24,8 @@ export function useLegacyAgentActivity() {
   const [connection, setConnection] = useState<ConnectionState>("idle");
   const [pendingPermission, setPendingPermission] =
     useState<PermissionPrompt | null>(null);
+  const [pendingClarification, setPendingClarification] =
+    useState<ClarificationPrompt | null>(null);
   const runtimeSessionId = useRef<number | null>(null);
   const runtimeRunId = useRef<string | null>(null);
   const requestController = useRef<AbortController | null>(null);
@@ -31,6 +37,7 @@ export function useLegacyAgentActivity() {
     runtimeSessionId.current = null;
     runtimeRunId.current = null;
     setPendingPermission(null);
+    setPendingClarification(null);
     setConnection("connecting");
     setActivities([
       {
@@ -133,6 +140,59 @@ export function useLegacyAgentActivity() {
           ? current.map((candidate) => (candidate.id === id ? item : candidate))
           : [...current, item];
       });
+      return;
+    }
+    if (event.type === "clarify") {
+      const requestId =
+        typeof event.requestId === "string" ? event.requestId : "";
+      const question =
+        typeof event.question === "string" ? event.question.trim() : "";
+      if (!requestId || !question) return;
+      const prompt: ClarificationPrompt = {
+        requestId,
+        question,
+        choices: Array.isArray(event.choices)
+          ? event.choices.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [],
+      };
+      setPendingClarification(prompt);
+      setConnection("waiting");
+      setActivities((current) => [
+        ...current,
+        {
+          id: `clarify-${requestId}`,
+          kind: "permission",
+          label: "Waiting for your answer",
+          detail: question,
+          status: "permission_required",
+          startedAt: new Date().toISOString(),
+        },
+      ]);
+      return;
+    }
+    if (event.type === "clarify_expired") {
+      const requestId =
+        typeof event.requestId === "string" ? event.requestId : "";
+      if (!requestId) return;
+      setPendingClarification((current) =>
+        current?.requestId === requestId ? null : current,
+      );
+      setConnection("streaming");
+      setActivities((current) =>
+        current.map((item) =>
+          item.id === `clarify-${requestId}` &&
+          item.status === "permission_required"
+            ? {
+                ...item,
+                status: "cancelled",
+                detail: "No answer arrived in time; the agent continued on its own.",
+                completedAt: new Date().toISOString(),
+              }
+            : item,
+        ),
+      );
       return;
     }
     if (event.type === "permission") {
@@ -324,6 +384,44 @@ export function useLegacyAgentActivity() {
     [pendingPermission],
   );
 
+  const respondToClarification = useCallback(
+    async (answer: string) => {
+      const prompt = pendingClarification;
+      const sessionId = runtimeSessionId.current;
+      const trimmed = answer.trim();
+      if (!prompt || !sessionId || !trimmed) return;
+      setPendingClarification(null);
+      setConnection("streaming");
+      try {
+        await submitClarificationAnswer(prompt.requestId, sessionId, trimmed);
+      } catch {
+        setPendingClarification(prompt);
+        setConnection("waiting");
+        setActivities((current) =>
+          current.map((item) =>
+            item.id === `clarify-${prompt.requestId}`
+              ? { ...item, detail: "The answer could not be delivered." }
+              : item,
+          ),
+        );
+        return;
+      }
+      setActivities((current) =>
+        current.map((item) =>
+          item.id === `clarify-${prompt.requestId}`
+            ? {
+                ...item,
+                status: "completed",
+                detail: trimmed,
+                completedAt: new Date().toISOString(),
+              }
+            : item,
+        ),
+      );
+    },
+    [pendingClarification],
+  );
+
   useEffect(() => {
     if (!yoloMode || !pendingPermission) return;
     const timer = window.setTimeout(() => {
@@ -336,11 +434,13 @@ export function useLegacyAgentActivity() {
     activities,
     connection,
     pendingPermission,
+    pendingClarification,
     start,
     handleEvent,
     finish,
     abort,
     steer,
     respondToPermission,
+    respondToClarification,
   };
 }

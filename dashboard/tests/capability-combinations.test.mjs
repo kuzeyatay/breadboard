@@ -36,12 +36,14 @@ const RUN_ROUTES = {
   openplanter: ["openplanter", "runs"],
   openwork: ["openwork", "runs"],
   openscience: ["openscience", "runs"],
+  praxist: ["praxist", "runs"],
   "inbox-zero": ["inbox-zero", "runs"],
   "agent-reach": ["agent-reach", "runs"],
   "get-doc": ["get-doc", "runs"],
   "meeting-notes": ["meeting-notes", "runs"],
   "deep-tutor": ["deep-tutor", "runs"],
   "career-ops": ["career-ops", "runs"],
+  openexecutive: ["openexecutive", "runs"],
   "open-gym": ["open-gym", "runs"],
   "trading-agent": ["tradingagents", "runs"],
   "vibe-trading": ["vibe-trading", "runs"],
@@ -54,6 +56,8 @@ const RUN_ROUTES = {
   resource2skill: ["resource2skill", "runs"],
   matraix: ["matraix", "runs"],
   "bolt-slides": ["bolt-slides", "runs"],
+  classroom: ["classroom", "runs"],
+  "gods-eye": ["gods-eye", "runs"],
   openmontage: ["openmontage", "runs"],
   vimax: ["vimax", "runs"],
   "vox-director": ["vox-director", "runs"],
@@ -166,7 +170,7 @@ test("acceptsAttachments matches which run routes actually take files", () => {
   // launch it with nothing but a sentence.
   assert.deepEqual(
     attachmentRuntimeAgents().map((agent) => agent.id),
-    ["codex", "opencode", "ruflo", "meeting-notes", "video-use", "legal", "wardrobe"],
+    ["codex", "opencode", "ruflo", "meeting-notes", "video-use", "legal", "wardrobe", "classroom"],
   );
 });
 
@@ -260,7 +264,7 @@ test("attachments are allowed only for the agents whose route forwards them", ()
     assert.match(conflict.message, /Remove the 2 attached files/);
     assert.match(
       conflict.message,
-      /Codex, OpenCode, Ruflo, Meeting Notes, Video Use, Legal Agent, and Wardrobe/,
+      /Codex, OpenCode, Ruflo, Meeting Notes, Video Use, Legal Agent, Wardrobe, and Classroom/,
     );
   }
 });

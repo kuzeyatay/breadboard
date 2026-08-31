@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { loadTeachAvailability, type TeachAvailabilityView } from "@/app/workflows/teach/teach-client";
 import type { LocalWorkflowSummary } from "@/lib/workflows/types";
 import { isSameTabNavigationClick, rememberWorkflowReturnPath } from "@/lib/workflows/navigation";
 
 // Native replacement for the n8n-backed template/local-automation browser.
 // Lists the user's own workflows from the native engine (/api/workflows/local)
-// and lets a chat surface run one, or open it on the canvas. The public
+// and lets a chat surface stage one, or open it on the canvas. The public
 // n8n community template library is gone with n8n itself.
 
 type LocalWorkflowListItem = {
@@ -14,6 +15,10 @@ type LocalWorkflowListItem = {
   name: string;
   description?: string | null;
   blockCount?: number;
+  nodeCount?: number;
+  stepCount?: number;
+  source?: "canvas" | "demonstration";
+  inputs?: LocalWorkflowSummary["inputs"];
   updatedAt: string | null;
 };
 
@@ -47,6 +52,15 @@ function PlusIcon() {
   );
 }
 
+function TeachIcon() {
+  return (
+    <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v9m0 0a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
+      <path strokeLinecap="round" d="M5 8a7 7 0 0 1 14 0" />
+    </svg>
+  );
+}
+
 function SettingsIcon() {
   return (
     <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
@@ -58,9 +72,7 @@ function SettingsIcon() {
 
 /**
  * Adapts the native list item into the shared `LocalWorkflowSummary` shape
- * `onRunWorkflow` callers expect (use-workflow-automation.ts and its garden
- * counterpart, which this panel does not own and must keep working
- * unchanged). The cast through `unknown` is deliberate: it decouples this
+ * `onRunWorkflow` callers expect. The cast through `unknown` is deliberate: it decouples this
  * file from that type's exact field set — which the engine owns and may
  * still be settling — while keeping the fields those callers actually read
  * (`id`, `name`) always populated.
@@ -72,8 +84,11 @@ function toLocalWorkflowSummary(item: LocalWorkflowListItem): LocalWorkflowSumma
     description: item.description ?? undefined,
     active: true,
     updatedAt: item.updatedAt,
-    nodeCount: item.blockCount ?? 0,
-    blockCount: item.blockCount ?? 0,
+    nodeCount: item.nodeCount ?? item.blockCount ?? 0,
+    blockCount: item.blockCount ?? item.nodeCount ?? 0,
+    source: item.source ?? "canvas",
+    stepCount: item.stepCount ?? 0,
+    inputs: item.inputs ?? [],
   } as unknown as LocalWorkflowSummary;
 }
 
@@ -84,6 +99,7 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [creating, setCreating] = useState(false);
+  const [teachAvailability, setTeachAvailability] = useState<TeachAvailabilityView | null>(null);
   const debouncedQuery = useRef("");
 
   useEffect(() => {
@@ -117,6 +133,17 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
       if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
   }, [reload]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadTeachAvailability(controller.signal)
+      .then(setTeachAvailability)
+      .catch(() => {
+        // Starting the flow reports the authoritative platform error. A failed
+        // availability preflight must not hide teaching forever.
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -155,6 +182,12 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
     }
   }
 
+  function teachWorkflow() {
+    rememberWorkflowReturnPath();
+    window.location.href = "/workflows?teach=1";
+    onNavigate?.();
+  }
+
   return (
     <div className="space-y-4 p-2">
       <div className="neu-surface-subtle rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
@@ -165,17 +198,32 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
               <h3 className="font-semibold text-[var(--ink-heading)]">Workflow automations</h3>
             </div>
             <p className="mt-1.5 text-xs leading-5 text-[var(--ink-muted)]">
-              Build an automation on Breadboard&apos;s canvas, then run it from this chat or open it to keep editing.
+              Build on the canvas or record yourself doing the task once. Then run it here with new details.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={createWorkflow}
-            disabled={creating}
-            className="neu-button-accent inline-flex shrink-0 items-center gap-1.5 justify-center rounded-xl border px-4 py-2.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <PlusIcon /> New workflow
-          </button>
+          <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              onClick={teachWorkflow}
+              disabled={teachAvailability !== null && !teachAvailability.available}
+              title={
+                teachAvailability && !teachAvailability.available
+                  ? teachAvailability.reason
+                  : "Record a task while explaining which details should change"
+              }
+              className="neu-button inline-flex items-center justify-center gap-1.5 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <TeachIcon /> Teach workflow
+            </button>
+            <button
+              type="button"
+              onClick={createWorkflow}
+              disabled={creating}
+              className="neu-button-accent inline-flex items-center justify-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <PlusIcon /> New workflow
+            </button>
+          </div>
         </div>
       </div>
 
@@ -222,11 +270,18 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium text-[var(--ink-heading)] group-hover:text-[var(--botanical)]">{workflow.name}</span>
-                  <span className="mt-0.5 block text-[10px] text-[var(--ink-muted)]">
-                    {typeof workflow.blockCount === "number" ? `${workflow.blockCount} blocks` : "Ready to run"}
-                  </span>
+                  {workflow.source === "demonstration" ? (
+                    <span className="mt-0.5 block text-[10px] text-[var(--ink-muted)]">
+                      Taught · {workflow.stepCount ?? 0} steps
+                      {workflow.inputs?.length ? ` · ${workflow.inputs.length} inputs` : ""}
+                    </span>
+                  ) : typeof (workflow.blockCount ?? workflow.nodeCount) === "number" ? (
+                    <span className="mt-0.5 block text-[10px] text-[var(--ink-muted)]">
+                      {workflow.blockCount ?? workflow.nodeCount} blocks
+                    </span>
+                  ) : null}
                 </span>
-                <span className="shrink-0 text-[11px] font-medium text-[var(--botanical)]">Run in chat</span>
+                <span className="shrink-0 text-[11px] font-medium text-[var(--botanical)]">Add to chat</span>
               </button>
               <a
                 href={`/workflows?workflow=${encodeURIComponent(workflow.id)}`}
@@ -245,7 +300,7 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
       {!loading && !error && !visibleItems.length ? (
         <div className="neu-inset rounded-2xl border border-[var(--line)] px-4 py-8 text-center">
           <p className="text-sm font-medium text-[var(--ink-heading)]">{items.length ? "No matching workflows" : "No workflows yet"}</p>
-          <p className="mt-1 text-xs text-[var(--ink-muted)]">Create one to start building an automation on the canvas.</p>
+          <p className="mt-1 text-xs text-[var(--ink-muted)]">Build one on the canvas or teach Breadboard by recording the task.</p>
         </div>
       ) : null}
     </div>

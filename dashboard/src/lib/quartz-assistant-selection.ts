@@ -21,6 +21,12 @@ export interface QuartzInlineAnswerUpdate {
   responseDurationMs?: number;
 }
 
+export interface QuartzInlineAnswerStopRequest {
+  requestId: string;
+  highlightId: string;
+  pageSlug?: string;
+}
+
 const OPAQUE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_SELECTION_CHARS = 4_000;
 const MAX_CONTEXT_CHARS = 4_000;
@@ -72,6 +78,26 @@ export function quartzAssistantSelectionRequest(
   const record = value as Record<string, unknown>;
   if (record.type !== "second-brain:assistant-ask-here") return null;
   return normalizeQuartzAssistantSelection(record);
+}
+
+/** Validate the Stop control sent by an embedded inline-answer popover. */
+export function quartzInlineAnswerStopRequest(
+  value: unknown,
+): QuartzInlineAnswerStopRequest | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "second-brain:assistant-inline-stop") return null;
+  const requestId =
+    typeof record.requestId === "string" ? record.requestId.trim() : "";
+  const highlightId =
+    typeof record.highlightId === "string" ? record.highlightId.trim() : "";
+  const pageSlug = boundedText(record.pageSlug, 400)?.trim();
+  if (!OPAQUE_ID.test(requestId) || !OPAQUE_ID.test(highlightId)) return null;
+  return {
+    requestId,
+    highlightId,
+    ...(pageSlug ? { pageSlug } : {}),
+  };
 }
 
 /**

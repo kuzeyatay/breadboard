@@ -22,6 +22,11 @@ import { BROKERED_TOOLS } from "../src/lib/hermes/capability-broker.ts";
 import { listFirstPartySkills } from "../src/lib/hermes/skills.ts";
 import { CalendarStore } from "../src/lib/calendar/store.ts";
 import {
+  createCalendarEvent,
+  deleteCalendarEvent,
+  updateCalendarEvent,
+} from "../src/lib/calendar/agent-actions.ts";
+import {
   agenda,
   describeRecurrence,
   getEvent,
@@ -51,39 +56,42 @@ test("both families expose exactly the intended tools", () => {
   ]);
   assert.deepEqual([...CALENDAR_TOOLS].sort(), [
     "calendar_agenda",
+    "calendar_create_event",
+    "calendar_delete_event",
     "calendar_get_event",
     "calendar_list_calendars",
     "calendar_search_events",
+    "calendar_update_event",
   ]);
 });
 
-test("nothing here can write: the query layer exports no mutation at all", () => {
-  const forbidden = ["create", "update", "delete", "add", "move", "set", "control", "import"];
-  for (const tool of ALL_TOOLS) {
-    for (const bad of forbidden) {
-      assert.ok(!tool.includes(bad), `${tool} must not expose a ${bad} operation`);
-    }
-  }
-  // The route is the only thing that decides which store methods are reachable,
-  // so it is what has to be free of the write methods rather than the names.
+test("calendar event writes are explicit while calendar/account administration stays sealed", () => {
   const route = fs.readFileSync(
     path.join(repoRoot, "dashboard", "src", "app", "api", "hermes", "tools", "calendar", "route.ts"),
     "utf8",
   );
-  for (const method of [
-    "createEvent",
-    "updateEvent",
-    "deleteEvent",
-    "updateEventScoped",
-    "deleteEventScoped",
+  for (const action of [
+    "createCalendarEvent",
+    "updateCalendarEvent",
+    "deleteCalendarEvent",
+  ]) {
+    assert.ok(route.includes(action), `the calendar tool route must reach ${action}`);
+  }
+  for (const forbidden of [
     "createCalendar",
     "updateCalendar",
     "deleteCalendar",
     "ingestEvents",
     "setAttendeeStatus",
   ]) {
-    assert.ok(!route.includes(method), `the calendar tool route must not reach ${method}`);
+    assert.doesNotMatch(
+      route,
+      new RegExp(`\\.${forbidden}\\s*\\(`),
+      `the calendar tool route must not reach ${forbidden}`,
+    );
   }
+  assert.match(route, /session\.user_id/);
+  assert.doesNotMatch(route, /args\.userId|args\["userId"\]/);
 });
 
 test("Quartz AI never receives them; the authenticated surfaces do", () => {
@@ -169,12 +177,14 @@ test("both skills resolve ready on the authenticated surfaces, and not on Quartz
   }
 });
 
-test("the calendar skill states the boundary it cannot cross", () => {
+test("the calendar skill turns reminder requests into persisted events", () => {
   const manifest = fs.readFileSync(
     path.join(repoRoot, "hermes-skills", "prebuilt", "calendar", "SKILL.md"),
     "utf8",
   );
-  assert.match(manifest, /read your calendar but not write to it|can read the calendar, not change it/i);
+  assert.match(manifest, /remind me[\s\S]+calendar_create_event|calendar_create_event[\s\S]+real event/i);
+  assert.match(manifest, /Only claim a change[\s\S]+write tool succeeds/i);
+  assert.doesNotMatch(manifest, /can read the calendar, not change it|all of them reads/i);
   assert.match(manifest, /allTime/);
 });
 
@@ -228,6 +238,106 @@ function seeded() {
   });
   return { store, personal };
 }
+
+test("a no-time reminder becomes a real all-day calendar event", () => {
+  const store = createStore();
+  const result = createCalendarEvent(store, 1, {
+    title: "Submit the form",
+    startsAt: "2026-08-06",
+  });
+
+  assert.equal(result.created, true);
+  assert.equal(result.calendar.name, "Personal", "an omitted calendar uses the default writable one");
+  assert.equal(result.event.allDay, true);
+  assert.equal(result.event.startsAt, "2026-08-06T00:00");
+  assert.equal(result.event.endsAt, "2026-08-06T23:59");
+  assert.deepEqual(
+    agenda(store, 1, { from: "2026-08-06", days: 1 }, REFERENCE).occurrences.map(
+      (entry) => entry.title,
+    ),
+    ["Submit the form"],
+    "the reminder is persisted in the same store the calendar view reads",
+  );
+});
+
+test("timed creates get a default duration and a move preserves it", () => {
+  const store = createStore();
+  const created = createCalendarEvent(store, 1, {
+    title: "Call the dentist",
+    startsAt: "2026-08-06T09:00",
+  }).event;
+  assert.equal(created.endsAt, "2026-08-06T09:30");
+
+  const moved = updateCalendarEvent(store, 1, {
+    eventId: created.id,
+    startsAt: "2026-08-06T14:00",
+  }).event;
+  assert.equal(moved.startsAt, "2026-08-06T14:00");
+  assert.equal(moved.endsAt, "2026-08-06T14:30");
+});
+
+test("Hermes can remove events but cannot cross users or write subscriptions", () => {
+  const store = createStore();
+  const created = createCalendarEvent(store, 1, {
+    title: "Temporary hold",
+    startsAt: "2026-08-06T09:00",
+  }).event;
+
+  assert.throws(
+    () => updateCalendarEvent(store, 2, { eventId: created.id, title: "Stolen" }),
+    /does not exist/,
+  );
+  assert.equal(deleteCalendarEvent(store, 1, { eventId: created.id }).deleted, true);
+  assert.throws(() => store.getEvent(1, created.id), /does not exist/);
+
+  const subscribed = store.createCalendar(1, {
+    name: "University timetable",
+    sourceUrl: "https://example.edu/schedule.ics",
+    readOnly: true,
+  });
+  assert.throws(
+    () =>
+      createCalendarEvent(store, 1, {
+        calendarId: subscribed.id,
+        title: "Cannot write here",
+        startsAt: "2026-08-07",
+      }),
+    /subscribed and cannot be edited/,
+  );
+  assert.throws(
+    () =>
+      store.createEvent(1, {
+        calendarId: subscribed.id,
+        title: "Core store protection",
+        startsAt: "2026-08-07T09:00",
+        endsAt: "2026-08-07T09:30",
+      }),
+    /subscribed and cannot be edited/,
+    "the shared store enforces the same boundary for every caller",
+  );
+});
+
+test("one-occurrence changes require an explicit recurrence id", () => {
+  const store = createStore();
+  const recurring = createCalendarEvent(store, 1, {
+    title: "Weekly review",
+    startsAt: "2026-08-06T09:00",
+    recurrence: { frequency: "weekly" },
+  }).event;
+
+  assert.throws(
+    () => updateCalendarEvent(store, 1, { eventId: recurring.id, scope: "instance", title: "Moved" }),
+    /recurrenceId is required/,
+  );
+  const changed = updateCalendarEvent(store, 1, {
+    eventId: recurring.id,
+    scope: "instance",
+    recurrenceId: "2026-08-13T09:00",
+    title: "Special review",
+  }).event;
+  assert.equal(changed.title, "Special review");
+  assert.equal(changed.recurrenceId, "2026-08-13T09:00");
+});
 
 test("a window with no dates means today, for the number of days asked", () => {
   const range = resolveRange({}, REFERENCE);

@@ -20,11 +20,14 @@ import {
 
 export interface RunningExternalAgentRun {
   messageId: number;
+  clientMessageId: string;
   kind: ExternalAgentRunKind;
   runId: string;
 }
 
 export interface ExternalAgentCancelResult {
+  messageId: number;
+  clientMessageId: string;
   kind: ExternalAgentRunKind;
   runId: string;
   /** False when the run had already finished, or its manager no longer holds it. */
@@ -47,8 +50,12 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../agent-browser/run-manager.ts")).abortRun(userId, runId),
   agent_reach: async (userId, runId) =>
     (await import("../agent-reach/run-manager.ts")).abortRun(userId, runId),
+  praxist: async (userId, runId) =>
+    (await import("../praxist/run-manager.ts")).abortRun(userId, runId),
   career_ops: async (userId, runId) =>
     (await import("../career-ops/run-manager.ts")).abortRun(userId, runId),
+  openexecutive: async (userId, runId) =>
+    (await import("../openexecutive/run-manager.ts")).abortRun(userId, runId),
   open_gym: async (userId, runId) =>
     (await import("../open-gym/run-manager.ts")).abortRun(userId, runId),
   trading_agents: async (userId, runId) =>
@@ -116,6 +123,10 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../matraix/runtime-run-manager.ts")).abortRun(userId, runId),
   bolt_slides: async (userId, runId) =>
     (await import("../bolt-slides/runtime-run-manager.ts")).abortRun(userId, runId),
+  classroom: async (userId, runId) =>
+    (await import("../classroom/run-manager.ts")).abortRun(userId, runId),
+  gods_eye: async (userId, runId) =>
+    (await import("../gods-eye/run-manager.ts")).abortRun(userId, runId),
 } as const satisfies Record<
   ExternalAgentRunKind,
   (userId: number, runId: string) => Promise<unknown>
@@ -135,7 +146,7 @@ export function listRunningExternalAgentRuns(
 ): RunningExternalAgentRun[] {
   const rows = database
     .prepare(
-      `SELECT id, metadata FROM conversation_messages
+      `SELECT id, client_message_id, metadata FROM conversation_messages
        WHERE conversation_id = ?
          AND role = 'assistant'
          AND metadata IS NOT NULL
@@ -143,7 +154,11 @@ export function listRunningExternalAgentRuns(
          AND json_extract(metadata, '$.externalAgentOutcome') = 'running'
        ORDER BY order_index ASC`,
     )
-    .all(conversationId) as Array<{ id: number; metadata: string }>;
+    .all(conversationId) as Array<{
+      id: number;
+      client_message_id: string;
+      metadata: string;
+    }>;
 
   const seen = new Set<string>();
   const running: RunningExternalAgentRun[] = [];
@@ -161,7 +176,12 @@ export function listRunningExternalAgentRuns(
     const key = `${run.kind}:${run.runId}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    running.push({ messageId: row.id, kind: run.kind, runId: run.runId });
+    running.push({
+      messageId: row.id,
+      clientMessageId: row.client_message_id,
+      kind: run.kind,
+      runId: run.runId,
+    });
   }
   return running;
 }
@@ -196,6 +216,8 @@ export async function cancelRunningExternalAgentRuns(
   const running = listRunningExternalAgentRuns(conversationId, database);
   return Promise.all(
     running.map(async (run) => ({
+      messageId: run.messageId,
+      clientMessageId: run.clientMessageId,
       kind: run.kind,
       runId: run.runId,
       stopped: await cancelExternalAgentRun(userId, run.kind, run.runId),

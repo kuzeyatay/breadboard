@@ -92,6 +92,26 @@ export type ConversationTitleFetcher = (
 ) => Promise<Response>;
 
 /**
+ * A first turn can be reserved before the runtime stream opens. If that
+ * handoff is interrupted, its retry occupies a later transcript slot even
+ * though the conversation is still visibly unnamed. Let the next newly
+ * reserved turn repair the placeholder instead of requiring index zero
+ * forever.
+ */
+export function shouldGenerateConversationTitleForTurn(input: {
+  currentTitle: string;
+  userOrderIndex: number;
+  reservationIsNew: boolean;
+  preDispatchReserved: boolean;
+}): boolean {
+  if (!input.reservationIsNew && !input.preDispatchReserved) return false;
+  return (
+    input.userOrderIndex === 0 ||
+    input.currentTitle.trim().toLocaleLowerCase() === "new chat"
+  );
+}
+
+/**
  * Turn an LLM's short answer into the exact sidebar contract. The model is
  * asked for 3-4 words; that range is enforced here so a chat can never acquire
  * a sentence-sized title because a provider ignored the instruction.

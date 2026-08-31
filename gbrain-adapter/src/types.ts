@@ -133,3 +133,9 @@ export interface GBrainHealth {
   dataDir: string;
   version: string;
 }
+
+export interface GBrainEmbeddingResponse {
+  model: string;
+  dimension: number;
+  vectors: number[][];
+}

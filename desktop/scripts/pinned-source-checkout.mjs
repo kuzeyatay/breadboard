@@ -22,11 +22,16 @@ function runGit(sourceRoot, args) {
 
 /**
  * Prove that a local source closure is the exact reviewed Git commit and has
- * no staged, modified, deleted, or untracked inputs. The top-level check is
- * deliberate: without it, `git -C` can silently walk into Breadboard's parent
- * checkout when a nested repository is missing.
+ * no unreviewed inputs. Independent checkouts must be clean at the pinned
+ * commit. Explicitly allowed vendored snapshots instead carry a tracked commit
+ * receipt and must byte-match the outer checkout's index.
  */
-export function assertPinnedCleanCheckout({ label, sourceRoot, expectedCommit }) {
+export function assertPinnedCleanCheckout({
+  label,
+  sourceRoot,
+  expectedCommit,
+  allowVendoredSnapshot = false,
+}) {
   if (!FULL_COMMIT_PATTERN.test(expectedCommit)) {
     throw new Error(`${label} source commit is not a full lowercase Git object ID.`);
   }
@@ -36,7 +41,57 @@ export function assertPinnedCleanCheckout({ label, sourceRoot, expectedCommit })
 
   const topLevel = runGit(sourceRoot, ["rev-parse", "--show-toplevel"]);
   const reportedRoot = topLevel.status === 0 ? topLevel.stdout.trim() : "";
-  if (!reportedRoot || canonicalPath(reportedRoot) !== canonicalPath(sourceRoot)) {
+  const independentCheckout =
+    reportedRoot && canonicalPath(reportedRoot) === canonicalPath(sourceRoot);
+  if (!independentCheckout && allowVendoredSnapshot && reportedRoot) {
+    const relativeSource = path.relative(reportedRoot, sourceRoot);
+    if (
+      !relativeSource ||
+      relativeSource.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativeSource)
+    ) {
+      throw new Error(`${label} vendored source is outside its Git checkout.`);
+    }
+
+    const receiptPath = path.join(sourceRoot, SOURCE_COMMIT_RECEIPT_NAME);
+    const receipt = fs.existsSync(receiptPath)
+      ? fs.readFileSync(receiptPath, "utf8").trim()
+      : "";
+    if (receipt !== expectedCommit) {
+      throw new Error(
+        `${label} vendored source receipt must be ${expectedCommit}; ` +
+          `found ${receipt || "missing"}.`,
+      );
+    }
+
+    const trackedReceipt = runGit(sourceRoot, [
+      "ls-files",
+      "--error-unmatch",
+      "--",
+      SOURCE_COMMIT_RECEIPT_NAME,
+    ]);
+    const untracked = runGit(sourceRoot, [
+      "ls-files",
+      "--others",
+      "--exclude-standard",
+      "-z",
+      "--",
+      ".",
+    ]);
+    const modified = runGit(sourceRoot, ["diff", "--quiet", "--", "."]);
+    if (
+      trackedReceipt.status !== 0 ||
+      untracked.status !== 0 ||
+      untracked.stdout.length > 0 ||
+      modified.status !== 0
+    ) {
+      throw new Error(
+        `${label} vendored source must be tracked and match the outer Git index.`,
+      );
+    }
+    return expectedCommit;
+  }
+  if (!independentCheckout) {
     throw new Error(`${label} source must be an independent Git checkout: ${sourceRoot}`);
   }
 

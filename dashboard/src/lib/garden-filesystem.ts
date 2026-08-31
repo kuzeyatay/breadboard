@@ -171,6 +171,7 @@ export async function createGardenFolder(input: {
     `create folder ${input.clusterSlug}/${folder}`,
     {
       userId: input.userId,
+      gardenSlug: input.clusterSlug,
     },
   );
   return { folder };
@@ -238,7 +239,7 @@ export async function moveGardenDocument(input: {
   }
   await publishQuartzAfterMutation(
     `move document ${input.clusterSlug}/${moved.slug} -> ${moved.folder || "root"}`,
-    { userId: input.userId },
+    { userId: input.userId, gardenSlug: input.clusterSlug },
   );
   return moved;
 }
@@ -317,7 +318,7 @@ export async function renameGardenFolder(input: {
   }
   await publishQuartzAfterMutation(
     `rename folder ${input.clusterSlug}/${renamed.folder} -> ${renamed.newFolder}`,
-    { userId: input.userId },
+    { userId: input.userId, gardenSlug: input.clusterSlug },
   );
   return renamed;
 }
@@ -372,6 +373,7 @@ export async function deleteGardenFolder(input: {
     `delete folder ${input.clusterSlug}/${deleted.folder}`,
     {
       userId: input.userId,
+      gardenSlug: input.clusterSlug,
     },
   );
   return deleted;

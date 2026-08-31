@@ -6,6 +6,7 @@ export type LearnDestructiveAction = "full_rebuild" | "clear";
 
 interface LearnConfirmationDialogProps {
   action: LearnDestructiveAction;
+  request?: string;
   onCancel: () => void;
   onConfirm: () => void;
 }
@@ -40,6 +41,7 @@ const CONTENT = {
 
 export default function LearnConfirmationDialog({
   action,
+  request,
   onCancel,
   onConfirm,
 }: LearnConfirmationDialogProps) {
@@ -100,7 +102,7 @@ export default function LearnConfirmationDialog({
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="learn-confirmation-title"
-        aria-describedby={`learn-confirmation-description${content.guidance ? " learn-confirmation-guidance" : ""}`}
+        aria-describedby={`learn-confirmation-description${request ? " learn-confirmation-request" : ""}${content.guidance ? " learn-confirmation-guidance" : ""}`}
         className="bb-modal-panel neu-dialog w-full max-w-md overflow-hidden rounded-2xl border bg-[var(--paper-raised)] text-[var(--ink)]"
       >
         <div className="p-6 pb-5">
@@ -136,6 +138,18 @@ export default function LearnConfirmationDialog({
               </p>
             </div>
           </div>
+
+          {request ? (
+            <div
+              id="learn-confirmation-request"
+              className="neu-inset mt-5 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm leading-5 text-[var(--ink-muted)]"
+            >
+              <p className="font-semibold text-[var(--ink-heading)]">
+                Learn request
+              </p>
+              <p className="mt-1 whitespace-pre-wrap">{request}</p>
+            </div>
+          ) : null}
 
           {content.guidance && (
             <div

@@ -141,14 +141,39 @@ test("a person with several addresses shows the count, and the primary one", () 
 
 // -------------------------------------------------------------- calendar sync
 
-test("with nothing connected the panel offers the form and no status", () => {
+test("with nothing connected the panel offers calendar links and CalDAV", () => {
   const html = renderToStaticMarkup(
     React.createElement(CalendarSyncPanel, { initial: [], vaultConfigured: true }),
   );
 
-  assert.match(html, /No calendar syncs yet/);
-  assert.match(html, /Find calendars/);
-  assert.doesNotMatch(html, /Two-way/);
+  assert.match(html, /Add from a link/);
+  assert.match(html, /TimeEdit/);
+  assert.match(html, /Add calendar/);
+  assert.match(html, /Continue/);
+  assert.doesNotMatch(html, /Changes travel in both directions/);
+});
+
+test("a TimeEdit-style subscription is shown as a refreshable read-only calendar", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CalendarSyncPanel, {
+      initial: [
+        calendar({
+          name: "TU/e timetable",
+          sourceUrl: "https://cloud.timeedit.net/nl_tue/web/stud01/schedule.ics",
+          readOnly: true,
+          caldavUrl: null,
+          caldavUsername: null,
+          lastSyncedAt: nowStamp(),
+        }),
+      ],
+      vaultConfigured: true,
+    }),
+  );
+
+  assert.match(html, /TU\/e timetable/);
+  assert.match(html, /cloud\.timeedit\.net/);
+  assert.match(html, /View only/);
+  assert.match(html, /Update now/);
 });
 
 test("a healthy calendar reads as two-way and dates its last exchange", () => {
@@ -159,7 +184,7 @@ test("a healthy calendar reads as two-way and dates its last exchange", () => {
     }),
   );
 
-  assert.match(html, /Two-way/);
+  assert.match(html, /Connected/);
   assert.match(html, /just now|[0-9]+m ago/);
   assert.match(html, /cloud\.example\.com/);
   assert.doesNotMatch(html, /Needs attention/);
@@ -187,7 +212,9 @@ test("without a vault key the panel explains before a password is typed", () => 
     React.createElement(CalendarSyncPanel, { initial: [], vaultConfigured: false }),
   );
 
-  assert.match(html, /NEXTAUTH_SECRET/);
-  assert.match(html, /nowhere safe to keep the password/);
+  assert.match(html, /Calendar accounts cannot be connected right now/);
+  assert.doesNotMatch(html, /NEXTAUTH_SECRET|BREADBOARD_CALENDAR_VAULT_KEY/);
+  assert.match(html, /still add a calendar from a link above/);
+  assert.match(html, /Add calendar/);
   assert.match(html, /disabled=""/, "connecting is refused, not merely discouraged");
 });

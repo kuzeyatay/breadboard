@@ -79,6 +79,11 @@ interface Invite {
   used_at: string | null;
 }
 
+interface GoogleImageGenerationStatus {
+  available: boolean;
+  configured: boolean;
+}
+
 const numbers = new Intl.NumberFormat("en-US");
 
 function formatCount(value: number): string {
@@ -913,7 +918,7 @@ function LocationPanel() {
   return (
     <Card
       title="Location"
-      hint="Let answers account for where this device is when place genuinely matters."
+      hint="Let answers account for where this device is when place genuinely matters. It refreshes automatically while enabled."
     >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div
@@ -1395,6 +1400,166 @@ function IdentityPanel({
         </div>
         {error && <p className="text-xs text-red-400">{error}</p>}
         {!error && confirmed && !dirty && <p className="text-xs text-gray-500">Saved.</p>}
+      </form>
+    </Card>
+  );
+}
+
+function GoogleImageGenerationPanel({ initial }: { initial: GoogleImageGenerationStatus }) {
+  const [status, setStatus] = useState(initial);
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    setConfirmed(false);
+    try {
+      const response = await fetch("/api/profile/google-images", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        status?: GoogleImageGenerationStatus;
+        error?: string;
+      };
+      if (!response.ok || !data.status) {
+        throw new Error(data.error || "Could not save the Google image-generation API key");
+      }
+      setStatus(data.status);
+      setApiKey("");
+      setConfirmed(true);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not save the Google image-generation API key",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    setError(null);
+    setConfirmed(false);
+    try {
+      const response = await fetch("/api/profile/google-images", { method: "DELETE" });
+      const data = (await response.json().catch(() => ({}))) as {
+        status?: GoogleImageGenerationStatus;
+        error?: string;
+      };
+      if (!response.ok || !data.status) {
+        throw new Error(data.error || "Could not remove the Google image-generation API key");
+      }
+      setStatus(data.status);
+      setApiKey("");
+      setConfirmed(true);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not remove the Google image-generation API key",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const readyToSave = status.available && Boolean(apiKey.trim());
+
+  return (
+    <Card
+      title="Google Image Generation"
+      hint="Use Google Gemini to generate an image when ChatGPT image generation is unavailable."
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (readyToSave && !busy) void save();
+        }}
+      >
+        <div className="flex items-center justify-between gap-3 text-xs">
+          <span className="text-gray-500">
+            {status.configured
+              ? "Google image generation is configured for your account."
+              : status.available
+                ? "No Google Gemini API key is saved."
+                : "Credential storage is unavailable until NEXTAUTH_SECRET is configured."}
+          </span>
+          <span
+            className={`shrink-0 rounded-full border px-2 py-0.5 ${
+              status.configured
+                ? "border-emerald-800/70 bg-emerald-950/40 text-emerald-300"
+                : "border-gray-800 text-gray-600"
+            }`}
+          >
+            {status.configured ? "Connected" : "Not connected"}
+          </span>
+        </div>
+
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-gray-500">Gemini API key</span>
+          <input
+            type="password"
+            value={apiKey}
+            maxLength={512}
+            autoComplete="off"
+            placeholder={status.configured ? "Paste a key to replace the saved one" : "AIza…"}
+            onChange={(event) => {
+              setApiKey(event.target.value);
+              setConfirmed(false);
+            }}
+            className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
+          />
+        </label>
+
+        <p className="text-xs leading-relaxed text-gray-600">
+          Create or copy an API key in{" "}
+          <a
+            href="https://aistudio.google.com/app/apikey"
+            target="_blank"
+            rel="noreferrer"
+            className="text-gray-400 underline decoration-gray-700 underline-offset-2 hover:text-white"
+          >
+            Google AI Studio
+          </a>
+          . The key is encrypted at rest and is never shown again after saving. It is used only
+          server-side when ChatGPT image generation fails.
+        </p>
+
+        <div className="flex items-center justify-end gap-2">
+          {status.configured ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void remove()}
+              className="neu-button rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-500 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Remove
+            </button>
+          ) : null}
+          <button
+            type="submit"
+            disabled={!readyToSave || busy}
+            className="neu-button rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy ? "Saving…" : status.configured ? "Replace credentials" : "Save credentials"}
+          </button>
+        </div>
+        {error && <p className="text-xs text-red-400">{error}</p>}
+        {!error && confirmed && (
+          <p className="text-xs text-gray-500">
+            {status.configured
+              ? "Google image-generation API key saved."
+              : "Stored API key removed."}
+          </p>
+        )}
       </form>
     </Card>
   );
@@ -2065,6 +2230,7 @@ export default function ProfileClient({
   contactTotal,
   syncedCalendars,
   calendarVaultConfigured,
+  googleImageGenerationStatus,
   initialTab,
   initialBrainScope,
 }: {
@@ -2075,6 +2241,7 @@ export default function ProfileClient({
   contactTotal: number;
   syncedCalendars: CalendarCollection[];
   calendarVaultConfigured: boolean;
+  googleImageGenerationStatus: GoogleImageGenerationStatus;
   initialTab: "profile" | "knowledge";
   initialBrainScope: string;
 }) {
@@ -2391,6 +2558,10 @@ export default function ProfileClient({
 
           <Packed>
             <BrowserProfilePanel initial={browserProfile} />
+          </Packed>
+
+          <Packed>
+            <GoogleImageGenerationPanel initial={googleImageGenerationStatus} />
           </Packed>
 
           <Packed>

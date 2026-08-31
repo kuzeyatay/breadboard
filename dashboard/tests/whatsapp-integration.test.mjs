@@ -91,6 +91,20 @@ test("a WhatsApp message goes through the same authenticated turn pipeline as th
   );
 });
 
+test("an inbound message wakes the on-demand runtime, and a failed turn strands no empty chat", () => {
+  // The gateway process holds no supervisor control, so the on-demand Hermes
+  // service must be woken (via the dashboard) before the turn — and before any
+  // conversation exists, so a runtime that cannot come back fails cleanly.
+  assert.match(inbound, /wakeAgentRuntime\("whatsapp-inbound"\)/);
+  assert.ok(
+    inbound.indexOf("wakeAgentRuntime(") < inbound.indexOf("createConversation("),
+    "the runtime must be woken before a conversation is created",
+  );
+  // If the turn still dies before persisting anything, the fresh conversation
+  // is removed rather than left as an empty chat in Recents.
+  assert.match(inbound, /deleteConversation\(createdConversation\)/);
+});
+
 test("a WhatsApp turn runs on the owner's selected model, not the hardcoded default", () => {
   // There is no model picker in WhatsApp, so the saved Intelligence preference
   // is the selection. Omitting it silently routes to DEFAULT_MODEL, which is a

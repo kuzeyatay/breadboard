@@ -4822,6 +4822,7 @@ export async function writeDocumentKnowledge({
       onProgress?.("Publishing to your garden…");
       await publishQuartzAfterMutation(`ingest knowledge into ${clusterSlug}`, {
         userId: publicationUserId,
+        gardenSlug: clusterSlug,
       });
     }
     return saved;

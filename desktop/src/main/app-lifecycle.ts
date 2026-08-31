@@ -5,6 +5,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  powerSaveBlocker,
   shell,
 } from "electron";
 import * as fs from "node:fs";
@@ -86,6 +87,7 @@ import {
   classifyRuntimeStartup,
   runtimeStartupFailureReason,
 } from "./runtime-startup-state";
+import { inhibitSystemSleepUntilQuit } from "./sleep-inhibitor";
 
 export interface StartupFailure {
   serviceId: string;
@@ -244,6 +246,10 @@ export class AppLifecycle {
     });
 
     await app.whenReady();
+
+    inhibitSystemSleepUntilQuit(powerSaveBlocker, (listener) => {
+      app.once("will-quit", listener);
+    });
 
     this.paths = resolvePaths({
       isPackaged: app.isPackaged,
@@ -843,6 +849,21 @@ export class AppLifecycle {
     );
     // Asked by two renderers that never meet: the startup screen, which plays
     // the chime, and the Profile page, which is where it is switched off.
+    // The floating recording controller for a teaching session. The shell opens
+    // it on a Breadboard route of its own; the session id is validated here
+    // because it becomes part of a URL, and a renderer is not trusted to have
+    // kept it to the shape the route expects.
+    ipcMain.handle(IPC_CHANNELS.openTeachController, (_event, sessionId: unknown) => {
+      if (typeof sessionId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) return false;
+      const dashboardUrl = this.runtimeDashboardUrl;
+      if (!dashboardUrl) return false;
+      const target = new URL("/workflows/teach-controller", dashboardUrl);
+      target.searchParams.set("session", sessionId);
+      return this.windows.openTeachControllerWindow(target.toString()) !== null;
+    });
+    ipcMain.handle(IPC_CHANNELS.closeTeachController, () =>
+      this.windows.closeTeachControllerWindow(),
+    );
     ipcMain.handle(IPC_CHANNELS.getStartupSound, () =>
       readStartupSoundEnabled(this.paths.configDir),
     );

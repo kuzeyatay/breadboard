@@ -126,6 +126,13 @@ writeFileSync(
     "tools:",
     "  tool_search:",
     "    enabled: on",
+    // Hermes warns after a few identical failing tool calls but keeps going.
+    // With delegation on, a child looping on one failing tool would burn its
+    // whole iteration budget; the hard stop ends that turn with a message
+    // instead (5 identical failures, or 8 failures of one tool in a turn).
+    "tool_loop_guardrails:",
+    "  warnings_enabled: true",
+    "  hard_stop_enabled: true",
     "agent:",
     "  coding_context: off",
     // An attached image must reach the model as pixels. Hermes' "auto" image
@@ -140,8 +147,21 @@ writeFileSync(
   ].join("\n"),
   { encoding: "utf8" },
 );
+// `delegate_task` children may be hired as agency specialists: the orchestrator
+// prefixes a goal with `[persona: <slug>]` and Hermes's agency_personas loader
+// resolves the slug from this catalog (the same directory the dashboard reads).
+// Without it the tag is stripped and the child runs as a generic worker.
+const agencyAgentsPath = [
+  process.env.AGENCY_AGENTS_PATH?.trim(),
+  path.join(repoRoot, "agency-agents"),
+]
+  .filter(Boolean)
+  .map((candidate) => path.resolve(candidate))
+  .find((candidate) => existsSync(path.join(candidate, "divisions.json")));
+
 const env = {
   ...process.env,
+  ...(agencyAgentsPath ? { AGENCY_AGENTS_PATH: agencyAgentsPath } : {}),
   PYTHONUNBUFFERED: "1",
   PYTHONDONTWRITEBYTECODE: "1",
   HERMES_HOME: hermesHome,

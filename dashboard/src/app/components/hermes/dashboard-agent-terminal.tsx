@@ -65,6 +65,9 @@ import TerminalSidebar, {
   type TerminalSidebarChat,
 } from "./terminal-sidebar";
 import SidePanelDock from "./side-panel-dock";
+import ProductDetailsPanel, {
+  type ProductPanelSelection,
+} from "./product-details-panel";
 import { useRailResize } from "./use-rail-resize";
 import ChatSearchDialog from "./chat-search-dialog";
 import UploadsPanel from "./uploads-panel";
@@ -72,6 +75,7 @@ import TerminalScheduledPanel from "./terminal-scheduled-panel";
 import HooksPanel from "./hooks-panel";
 import ProcessesPanel from "./processes-panel";
 import {
+  externalAgentRunInFlight,
   useAgentSession,
   type AgentMessage,
   type ExternalAgentTurnResult,
@@ -81,6 +85,11 @@ import { useWorkflowAutomation } from "./use-workflow-automation";
 import { useAssistantModels } from "../use-assistant-models";
 import { useLiquidGlassBar } from "./use-liquid-glass-bar";
 import { useTerminalHeaderClickGuard } from "../terminal-header-click-guard";
+import {
+  productForAction,
+  safeProductUrl,
+  type GenerativeUiAction,
+} from "@/lib/generative-ui/contracts.ts";
 import {
   TERMINAL_ATTACHMENT_ACCEPT,
   chatMessageAttachments,
@@ -107,6 +116,12 @@ import {
   taskFromCareerOpsCommand,
 } from "@/lib/career-ops/identity.ts";
 import {
+  OPENEXECUTIVE_AGENT_ID,
+  OPENEXECUTIVE_AGENT_NAME,
+  openExecutiveUserMessage,
+  taskFromOpenExecutiveCommand,
+} from "@/lib/openexecutive/identity.ts";
+import {
   OPEN_GYM_AGENT_ID,
   openGymUserMessage,
   taskFromOpenGymCommand,
@@ -116,6 +131,7 @@ import {
   TRADINGAGENTS_AGENT_ID,
   TRADINGAGENTS_AGENT_NAME,
   parseTradingAgentsCommand,
+  tradingAgentsRequestFromBrief,
   tradingAgentsRunLabel,
   tradingAgentsUserMessage,
   type TradingAgentsRequest,
@@ -240,6 +256,15 @@ import {
   taskFromBoltSlidesCommand,
 } from "@/lib/bolt-slides/identity.ts";
 import {
+  classroomUserMessage,
+  taskFromClassroomCommand,
+} from "@/lib/classroom/identity.ts";
+import {
+  GODS_EYE_AGENT_ID,
+  godsEyeUserMessage,
+  taskFromGodsEyeCommand,
+} from "@/lib/gods-eye/identity.ts";
+import {
   briefFromOpenMontageCommand,
   openMontageUserMessage,
 } from "@/lib/openmontage/identity.ts";
@@ -251,6 +276,11 @@ import {
   openscienceUserMessage,
   taskFromOpenscienceCommand,
 } from "@/lib/openscience/identity.ts";
+import {
+  parsePraxistTaskPath,
+  praxistUserMessage,
+  taskFromPraxistCommand,
+} from "@/lib/praxist/identity.ts";
 import { maxResearchInvocation } from "@/lib/max-research/identity.ts";
 import { launchMaxResearchTurn } from "./launch-max-research";
 import {
@@ -272,11 +302,18 @@ import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts"
 import {
   MAX_AGENT_LAUNCH_HOPS,
   agentLaunchContinuationMessage,
+  agentLaunchWorkerClientMessageId,
   useAgentLaunchQueue,
   type AgentLaunchRequestPayload,
 } from "./use-agent-launch-queue";
 import AgentLaunchPrompt from "./agent-launch-prompt";
 import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
+import {
+  CHAT_NOTIFICATION_OPEN_REQUEST_EVENT,
+  setActiveChatNotificationTarget,
+  takeChatNotificationReply,
+  type ChatNotificationTarget,
+} from "@/lib/chat-notification-inbox";
 
 type TerminalScope = "mine" | "public";
 
@@ -291,6 +328,8 @@ interface Props {
    * page paints behind it instead of inventing its own backdrop.
    */
   backdropImage?: string | null;
+  /** A notification deep-link can request one durable Terminal conversation. */
+  initialChatId?: string | null;
 }
 
 interface RuntimeHistorySession {
@@ -397,13 +436,13 @@ const HEALTH_FAILURE_THRESHOLD = 3;
 // animated. Dragging it never is — an edge with a transition on it trails the
 // pointer instead of sitting under it.
 //
-// The curves are the ones the header items already boot in and out on, so the
-// dock and the things printed into it move on one vocabulary: out fast and
-// settling, back in gathering speed.
+// Opening has room to establish the large surface. Closing answers immediately
+// and settles instead of gathering speed, which made the panel appear stuck
+// for a beat and then race through its final frames.
 const DOCK_OPEN_MS = 420;
-const DOCK_CLOSE_MS = 320;
+const DOCK_CLOSE_MS = 240;
 const DOCK_OPEN_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
-const DOCK_CLOSE_EASING = "cubic-bezier(0.55, 0, 0.68, 0.4)";
+const DOCK_CLOSE_EASING = "var(--neu-easing)";
 
 // The navbar scrolls away with the page, so its viewport-relative bottom turns
 // negative once the page is scrolled down. Left unclamped that inflates the
@@ -558,6 +597,7 @@ export default function DashboardAgentTerminal({
   restoreOwnerKey,
   initialPanel = null,
   backdropImage = null,
+  initialChatId = null,
 }: Props) {
   const [health, setHealth] = useState<HealthState>({
     status: "checking",
@@ -642,6 +682,7 @@ export default function DashboardAgentTerminal({
       <RuntimeTerminal
         scope={scope}
         restoreOwnerKey={restoreOwnerKey}
+        initialChatId={initialChatId}
         initialPanel={initialPanel}
         backdropImage={backdropImage}
         runtimeUnavailable={health.status === "unavailable"}
@@ -662,6 +703,7 @@ export default function DashboardAgentTerminal({
       <RuntimeTerminal
         scope={scope}
         restoreOwnerKey={restoreOwnerKey}
+        initialChatId={initialChatId}
         initialPanel={initialPanel}
         backdropImage={backdropImage}
         runtimeUnavailable={health.status === "unavailable"}
@@ -675,6 +717,7 @@ export default function DashboardAgentTerminal({
       <RuntimeTerminal
         scope={scope}
         restoreOwnerKey={restoreOwnerKey}
+        initialChatId={initialChatId}
         initialPanel={initialPanel}
         backdropImage={backdropImage}
         runtimeUnavailable
@@ -702,6 +745,7 @@ function RuntimeTerminal({
   restoreOwnerKey,
   initialPanel = null,
   backdropImage = null,
+  initialChatId = null,
   runtimeUnavailable = false,
   onRefreshRuntime,
   onConversationEngaged,
@@ -720,6 +764,7 @@ function RuntimeTerminal({
   const activeChatRestoreStartedRef = useRef(false);
   const activeChatPersistenceReadyRef = useRef(false);
   const activeChatSnapshotRef = useRef<ActiveTerminalChatSnapshot | null>(null);
+  const openedNotificationChatRef = useRef<string | null>(null);
   const [height, setHeight] = useState(COLLAPSED_HEIGHT);
 
   useEffect(() => {
@@ -816,6 +861,55 @@ function RuntimeTerminal({
   const [sidePanel, setSidePanel] = useState<TerminalPanel | null>(
     initialPanel,
   );
+  const [productPanel, setProductPanel] = useState<ProductPanelSelection | null>(
+    null,
+  );
+  const handleGenerativeUiAction = useCallback(
+    (action: GenerativeUiAction) => {
+      const product = productForAction(action);
+      if (!product) return;
+
+      if (action.type === "product.find-similar") {
+        setInput(`Find products similar to ${product.title} from ${product.merchant}.`);
+        setProductPanel(null);
+        window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+        return;
+      }
+      if (action.type === "product.visit") {
+        const url = safeProductUrl(product.url);
+        if (!url) return;
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.click();
+        return;
+      }
+
+      setSidePanel(null);
+      setProductPanel((current) => {
+        if (action.type === "product.open-details") {
+          return {
+            resource: action.resource,
+            productId: action.productId,
+            compareProductIds: [],
+          };
+        }
+        const prior = current?.resource.id === action.resource.id
+          ? current.compareProductIds
+          : [];
+        const compareProductIds = prior.includes(action.productId)
+          ? prior.filter((id) => id !== action.productId)
+          : [...prior, action.productId].slice(-4);
+        return {
+          resource: action.resource,
+          productId: action.productId,
+          compareProductIds,
+        };
+      });
+    },
+    [composerTextareaRef],
+  );
   // The lane an opened artifact fills, beside the transcript and inside the
   // dock. Held in state rather than a ref so the viewers below re-render once
   // it exists and can portal into it.
@@ -853,6 +947,10 @@ function RuntimeTerminal({
     name: string;
   } | null>(null);
   const [careerOpsAgent, setCareerOpsAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [openExecutiveAgent, setOpenExecutiveAgent] = useState<{
     id: string;
     name: string;
   } | null>(null);
@@ -896,6 +994,7 @@ function RuntimeTerminal({
     useState(false);
   const [launchingDeepTutorRun, setLaunchingDeepTutorRun] = useState(false);
   const [launchingCareerOpsRun, setLaunchingCareerOpsRun] = useState(false);
+  const [launchingOpenExecutiveRun, setLaunchingOpenExecutiveRun] = useState(false);
   const [launchingOpenGymRun, setLaunchingOpenGymRun] = useState(false);
   const [launchingTradingAgentsRun, setLaunchingTradingAgentsRun] =
     useState(false);
@@ -923,9 +1022,12 @@ function RuntimeTerminal({
     useState(false);
   const [launchingMatraixRun, setLaunchingMatraixRun] = useState(false);
   const [launchingBoltSlidesRun, setLaunchingBoltSlidesRun] = useState(false);
+  const [launchingClassroomRun, setLaunchingClassroomRun] = useState(false);
+  const [launchingGodsEyeRun, setLaunchingGodsEyeRun] = useState(false);
   const [launchingOpenMontageRun, setLaunchingOpenMontageRun] = useState(false);
   const [launchingOpenworkRun, setLaunchingOpenworkRun] = useState(false);
   const [launchingOpenscienceRun, setLaunchingOpenscienceRun] = useState(false);
+  const [launchingPraxistRun, setLaunchingPraxistRun] = useState(false);
   const [launchingMaxResearchRun, setLaunchingMaxResearchRun] = useState(false);
   const [launchingInboxZeroRun, setLaunchingInboxZeroRun] = useState(false);
   // Covers the hand-off before an individual launcher raises its own flag
@@ -941,9 +1043,12 @@ function RuntimeTerminal({
   const resource2SkillDispatchingRef = useRef(false);
   const matraixDispatchingRef = useRef(false);
   const boltSlidesDispatchingRef = useRef(false);
+  const classroomDispatchingRef = useRef(false);
+  const godsEyeDispatchingRef = useRef(false);
   const openMontageDispatchingRef = useRef(false);
   const openworkDispatchingRef = useRef(false);
   const openscienceDispatchingRef = useRef(false);
+  const praxistDispatchingRef = useRef(false);
   const maxResearchDispatchingRef = useRef(false);
   const inboxZeroDispatchingRef = useRef(false);
   const vimaxDispatchingRef = useRef(false);
@@ -1008,14 +1113,14 @@ function RuntimeTerminal({
       setHeaderMounted(true);
     } else if (headerMountedRef.current) {
       setHeaderClosing(true);
-      // The last header item starts concealing at 380ms and the animation runs
-      // 320ms; unmount only after both have finished.
+      // The controls conceal without an exit stagger and finish just before
+      // the dock settles, so no hidden header work trails the close.
       headerCloseTimer.current = window.setTimeout(() => {
         headerMountedRef.current = false;
         setHeaderMounted(false);
         setHeaderClosing(false);
         headerCloseTimer.current = null;
-      }, 760);
+      }, DOCK_CLOSE_MS);
     }
   }, [isOpen]);
 
@@ -1094,6 +1199,44 @@ function RuntimeTerminal({
       );
     }
   }, [openTerminalSession, restoreOwnerKey]);
+
+  useEffect(() => {
+    const requested = initialChatId?.trim() ?? "";
+    if (
+      !requested.startsWith("conv_") ||
+      openedNotificationChatRef.current === requested
+    ) {
+      return;
+    }
+    openedNotificationChatRef.current = requested;
+    setHeight(openHeight(preferredOpenHeightRef.current));
+    openHistorySession(requested);
+    // The deep link changes only when a notification chooses another chat.
+    // Depending on this component-local function would reopen on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialChatId]);
+
+  // A notice on this page asks for its chat without a navigation. The opener
+  // is read through a ref so the listener is registered once and still calls
+  // the current render's functions.
+  const openNotificationChatRef = useRef<(chatId: string) => void>(() => undefined);
+  openNotificationChatRef.current = (chatId: string) => {
+    openedNotificationChatRef.current = chatId;
+    setHeight(openHeight(preferredOpenHeightRef.current));
+    openHistorySession(chatId);
+  };
+  useEffect(() => {
+    const listener = (raw: Event) => {
+      const target = (raw as CustomEvent<ChatNotificationTarget>).detail;
+      if (target?.surface !== "dashboard_terminal") return;
+      const chatId = target.chatId?.trim() ?? "";
+      if (!chatId.startsWith("conv_")) return;
+      openNotificationChatRef.current(chatId);
+    };
+    window.addEventListener(CHAT_NOTIFICATION_OPEN_REQUEST_EVENT, listener);
+    return () =>
+      window.removeEventListener(CHAT_NOTIFICATION_OPEN_REQUEST_EVENT, listener);
+  }, []);
 
   useEffect(() => {
     // The hook begins in a loading state. Waiting for it prevents the initial
@@ -1241,6 +1384,7 @@ function RuntimeTerminal({
     launchingGetDocRun ||
     launchingMeetingNotesRun ||
     launchingCareerOpsRun ||
+    launchingOpenExecutiveRun ||
     launchingOpenGymRun ||
     launchingTradingAgentsRun ||
     launchingVibeTradingRun ||
@@ -1261,9 +1405,12 @@ function RuntimeTerminal({
     launchingResource2SkillRun ||
     launchingMatraixRun ||
     launchingBoltSlidesRun ||
+    launchingClassroomRun ||
+    launchingGodsEyeRun ||
     launchingOpenMontageRun ||
     launchingOpenworkRun ||
     launchingOpenscienceRun ||
+    launchingPraxistRun ||
     launchingMaxResearchRun ||
     launchingInboxZeroRun ||
     deepResearch.launching ||
@@ -1271,14 +1418,41 @@ function RuntimeTerminal({
     openCode.launching ||
     ruflo.launching;
   const currentChatActive =
-    busy || externalRunLaunching || chatSessionIsActive(null, session.messages);
+    Boolean(session.activeRunId) ||
+    busy ||
+    externalRunLaunching ||
+    chatSessionIsActive(null, session.messages);
   const newChatPageSelected =
     session.sessionId === null &&
     session.messages.length === 0 &&
     !currentChatActive;
   const blankSavedChatSelected =
-    !temporaryChat && newChatPageSelected;
+    !temporaryChat &&
+    session.sessionId === null &&
+    session.messages.length === 0 &&
+    !currentChatActive;
   const isPublic = scope === "public";
+  const sendNotificationReply = session.send;
+
+  useEffect(() => {
+    if (
+      currentChatActive ||
+      session.loadingSession ||
+      !session.sessionId
+    ) {
+      return;
+    }
+    const reply = takeChatNotificationReply(window.sessionStorage, {
+      surface: "dashboard_terminal",
+      chatId: session.sessionId,
+    });
+    if (reply) void sendNotificationReply(reply);
+  }, [
+    currentChatActive,
+    sendNotificationReply,
+    session.loadingSession,
+    session.sessionId,
+  ]);
 
   useLayoutEffect(() => {
     if (!currentChatActive) setActiveAnswerIntelligence(null);
@@ -1528,6 +1702,15 @@ function RuntimeTerminal({
   // that lands in the open chat while the terminal is collapsed is as unseen as
   // one that lands in a chat the user walked away from.
   const viewingChatId = bodyMounted ? session.sessionId : null;
+
+  useEffect(() => {
+    setActiveChatNotificationTarget(
+      viewingChatId
+        ? { surface: "dashboard_terminal", chatId: viewingChatId }
+        : null,
+    );
+    return () => setActiveChatNotificationTarget(null);
+  }, [viewingChatId]);
 
   useEffect(() => {
     setUnreadChats(readUnreadChats(window.localStorage));
@@ -2130,6 +2313,105 @@ function RuntimeTerminal({
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
+
+  /** Select the cloned executive-team runtime and surface setup status early. */
+  const selectOpenExecutive = useCallback(async () => {
+    setAttachmentStatus("");
+    try {
+      const response = await fetch("/api/openexecutive/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.cloned !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "OpenExecutive is unavailable.",
+        );
+      }
+      const selected = {
+        id: OPENEXECUTIVE_AGENT_ID,
+        name: OPENEXECUTIVE_AGENT_NAME,
+      };
+      setBrowserAgent(null);
+      setAgentBrowserAgent(null);
+      setOpenPlanterAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setStockAnalystAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setFormsmithAgent(null);
+      clearDeepResearch();
+      clearCodex();
+      clearOpenCode();
+      clearRuflo();
+      setOpenExecutiveAgent(selected);
+      if (data.available !== true && typeof data.reason === "string") {
+        setAttachmentStatus(data.reason);
+      }
+      return selected;
+    } catch (cause) {
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "OpenExecutive is unavailable.",
+      );
+      return null;
+    }
+  }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
+
+  // Older selectors already exclude one another; this folds OpenExecutive into
+  // that contract without changing each established selector independently.
+  useEffect(() => {
+    if (!openExecutiveAgent) return;
+    if (
+      browserAgent ||
+      agentBrowserAgent ||
+      openPlanterAgent ||
+      agentReachAgent ||
+      getDocAgent ||
+      meetingNotesAgent ||
+      deepTutorAgent ||
+      careerOpsAgent ||
+      tradingAgentsAgent ||
+      vibeTradingAgent ||
+      stockAnalystAgent ||
+      deerFlowAgent ||
+      shortsAgent ||
+      formsmithAgent ||
+      deepResearch.agent ||
+      codex.agent ||
+      openCode.agent ||
+      ruflo.agent
+    ) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setOpenExecutiveAgent(null);
+    }
+  }, [
+    agentBrowserAgent,
+    agentReachAgent,
+    browserAgent,
+    careerOpsAgent,
+    codex.agent,
+    deepResearch.agent,
+    deepTutorAgent,
+    deerFlowAgent,
+    formsmithAgent,
+    getDocAgent,
+    meetingNotesAgent,
+    openCode.agent,
+    openExecutiveAgent,
+    openPlanterAgent,
+    ruflo.agent,
+    shortsAgent,
+    stockAnalystAgent,
+    tradingAgentsAgent,
+    vibeTradingAgent,
+  ]);
 
   /**
    * Selecting checks the clone and its environment, because this agent cannot
@@ -3089,6 +3371,91 @@ function RuntimeTerminal({
     [careerOpsAgent, launchingCareerOpsRun, model, reasoningEffort, session],
   );
 
+  const launchOpenExecutiveRun = useCallback(
+    async (task: string, agentOverride?: { id: string; name: string }) => {
+      const selectedAgent = agentOverride ?? openExecutiveAgent;
+      if (!selectedAgent || launchingOpenExecutiveRun) return;
+      setLaunchingOpenExecutiveRun(true);
+      let clientMessageId = crypto.randomUUID();
+      const userContent = openExecutiveUserMessage(task);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
+      let runStarted = false;
+      try {
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/openexecutive/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            task,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(
+            typeof data?.message === "string"
+              ? data.message
+              : typeof data?.error === "string"
+                ? data.error
+                : "The OpenExecutive run could not start.",
+          );
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          run: {
+            kind: "openexecutive",
+            runId: String(data.run.runId),
+            task: typeof data.task === "string" ? data.task : task,
+          },
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "OpenExecutive started, but its chat turn could not be saved.",
+          );
+          return;
+        }
+        const assistantContent = `The OpenExecutive task could not start: ${
+          cause instanceof Error ? cause.message : "unknown error"
+        }`;
+        try {
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+          });
+        } catch (persistenceError) {
+          setAttachmentStatus(
+            persistenceError instanceof Error
+              ? persistenceError.message
+              : "The OpenExecutive turn could not be saved.",
+          );
+        }
+      } finally {
+        setLaunchingOpenExecutiveRun(false);
+      }
+    },
+    [
+      launchingOpenExecutiveRun,
+      model,
+      openExecutiveAgent,
+      reasoningEffort,
+      session,
+    ],
+  );
+
   const launchVibeTradingRun = useCallback(
     async (task: string, agentOverride?: { id: string; name: string }) => {
       const selectedAgent = agentOverride ?? vibeTradingAgent;
@@ -3983,6 +4350,97 @@ function RuntimeTerminal({
   );
 
   /**
+   * God's Eye is command-carried too: the sentence is the tasking. A quiet
+   * launch (a Super Agent delegation) keeps the run's card chrome hidden and
+   * lets the framed globe stand as the answer.
+   */
+  const launchGodsEyeRun = useCallback(
+    async (
+      task: string,
+      options: { branchGroupId?: string; userContent?: string; quiet?: boolean } = {},
+    ) => {
+      if (godsEyeDispatchingRef.current) return;
+      godsEyeDispatchingRef.current = true;
+      setLaunchingGodsEyeRun(true);
+      const normalizedTask = task.trim();
+      const requestedClientMessageId = crypto.randomUUID();
+      let clientMessageId = requestedClientMessageId;
+      const userContent =
+        options.userContent?.trim() || godsEyeUserMessage(normalizedTask);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+        branchGroupId: options.branchGroupId,
+      });
+      const attachToExistingTurn = clientMessageId !== requestedClientMessageId;
+      let runStarted = false;
+      try {
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/gods-eye/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            task: normalizedTask,
+            model,
+            conversationPublicId,
+            clientMessageId,
+            attachToExistingTurn,
+            branchGroupId: options.branchGroupId,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(typeof data?.error === "string" ? data.error : "The God's Eye run could not start.");
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          run: {
+            kind: "gods_eye",
+            runId: String(data.run.runId),
+            task: normalizedTask,
+            ...(options.quiet === true ? { quiet: true } : {}),
+          },
+          branchGroupId: options.branchGroupId,
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(cause instanceof Error ? cause.message : "God's Eye started, but its chat turn could not be saved.");
+          return;
+        }
+        const assistantContent = `God's Eye could not start: ${cause instanceof Error ? cause.message : "unknown error"}`;
+        try {
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+            branchGroupId: options.branchGroupId,
+          });
+        } catch (persistenceError) {
+          setAttachmentStatus(persistenceError instanceof Error ? persistenceError.message : "The God's Eye turn could not be saved.");
+        }
+      } finally {
+        godsEyeDispatchingRef.current = false;
+        setLaunchingGodsEyeRun(false);
+      }
+    },
+    [model, session],
+  );
+
+  const routeGodsEyeCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      const task = taskFromGodsEyeCommand(text);
+      if (task === null) return false;
+      setAttachmentStatus("");
+      if (task && !godsEyeDispatchingRef.current) void launchGodsEyeRun(task, options);
+      return true;
+    },
+    [launchGodsEyeRun],
+  );
+
+  /**
    * Parametric CAD needs no agent selection either: the command carries the
    * whole brief. The conversation must exist first so the built design can be
    * stored as an artifact that belongs to this chat.
@@ -4455,6 +4913,117 @@ function RuntimeTerminal({
   );
 
   /**
+   * Classroom carries the lesson in the command — what to teach, and any flags
+   * typed with it — and the attachments are its material: documents and images
+   * travel with the request and are recorded on the user's turn. The turn is
+   * recorded as soon as the run starts; generating a classroom takes minutes,
+   * and the person will not be watching all of it.
+   */
+  const launchClassroomRun = useCallback(
+    async (
+      brief: string,
+      attachments: readonly ChatAttachment[] = [],
+      options: { branchGroupId?: string } = {},
+    ) => {
+      if (classroomDispatchingRef.current) return;
+      classroomDispatchingRef.current = true;
+      setLaunchingClassroomRun(true);
+      let clientMessageId = crypto.randomUUID();
+      const userContent = classroomUserMessage(brief);
+      const turnAttachments = chatMessageAttachments(attachments);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+        attachments: turnAttachments,
+        branchGroupId: options.branchGroupId,
+      });
+      let runStarted = false;
+      try {
+        // The finished lesson is filed as an artifact of this chat, so the
+        // conversation is materialized before the run starts.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/classroom/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            brief,
+            model,
+            attachments,
+            conversationPublicId,
+            clientMessageId,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(
+            typeof data?.message === "string"
+              ? data.message
+              : typeof data?.error === "string"
+                ? data.error
+                : "The classroom could not be started.",
+          );
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          attachments: turnAttachments,
+          run: { kind: "classroom", runId: String(data.run.runId), brief },
+          branchGroupId: options.branchGroupId,
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "The classroom started, but its chat turn could not be saved.",
+          );
+          return;
+        }
+        const assistantContent =
+          "The classroom could not be started: " +
+          (cause instanceof Error ? cause.message : "unknown error");
+        try {
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+            branchGroupId: options.branchGroupId,
+          });
+        } catch (persistenceError) {
+          setAttachmentStatus(
+            persistenceError instanceof Error
+              ? persistenceError.message
+              : "The Classroom turn could not be saved.",
+          );
+        }
+      } finally {
+        classroomDispatchingRef.current = false;
+        setLaunchingClassroomRun(false);
+      }
+    },
+    [model, session],
+  );
+
+  const routeClassroomCommand = useCallback(
+    (
+      text: string,
+      attachments: readonly ChatAttachment[] = [],
+      options: { branchGroupId?: string } = {},
+    ): boolean => {
+      const brief = taskFromClassroomCommand(text);
+      if (brief === null) return false;
+      setAttachmentStatus("");
+      if (brief && !classroomDispatchingRef.current) {
+        void launchClassroomRun(brief, attachments, options);
+      }
+      return true;
+    },
+    [launchClassroomRun],
+  );
+
+  /**
    * OpenMontage carries its whole production brief in the command. A production
    * is the longest run in the palette — it plans, generates, edits and renders —
    * so the turn is recorded as soon as the run starts and the card reports the
@@ -4726,6 +5295,71 @@ function RuntimeTerminal({
     [model, reasoningEffort, session],
   );
 
+  const launchPraxistRun = useCallback(
+    async (task: string, options: { branchGroupId?: string } = {}) => {
+      if (praxistDispatchingRef.current) return;
+      const taskPath = parsePraxistTaskPath(task);
+      praxistDispatchingRef.current = true;
+      setLaunchingPraxistRun(true);
+      let clientMessageId = crypto.randomUUID();
+      const userContent = praxistUserMessage(taskPath);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+        branchGroupId: options.branchGroupId,
+      });
+      let runStarted = false;
+      try {
+        await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/praxist/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ task: taskPath, model }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(
+            typeof data?.error === "string" ? data.error : "The Praxist run could not start.",
+          );
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          run: { kind: "praxist", runId: String(data.run.runId), task: taskPath },
+          branchGroupId: options.branchGroupId,
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(cause instanceof Error
+            ? cause.message
+            : "The Praxist run started, but its chat turn could not be saved.");
+          return;
+        }
+        const assistantContent = `The Praxist run could not start: ${
+          cause instanceof Error ? cause.message : "unknown error"
+        }`;
+        try {
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+            branchGroupId: options.branchGroupId,
+          });
+        } catch (persistenceError) {
+          setAttachmentStatus(persistenceError instanceof Error
+            ? persistenceError.message
+            : "The Praxist turn could not be saved.");
+        }
+      } finally {
+        praxistDispatchingRef.current = false;
+        setLaunchingPraxistRun(false);
+      }
+    },
+    [model, session],
+  );
+
   /**
    * Max Research carries its whole question in the message and then runs for
    * tens of minutes. The turn is therefore recorded the moment the run starts
@@ -4762,7 +5396,7 @@ function RuntimeTerminal({
   /**
    * Both ways in, and the plain-language one is honoured here rather than being
    * left to Super Agent. A person who typed "max research" is asking to watch
-   * five agents work, not to be told afterwards that something happened.
+   * six agents work, not to be told afterwards that something happened.
    */
   const routeMaxResearchCommand = useCallback(
     (text: string, options: { branchGroupId?: string } = {}): boolean => {
@@ -4795,6 +5429,17 @@ function RuntimeTerminal({
       return true;
     },
     [launchOpenscienceRun],
+  );
+
+  const routePraxistCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      const task = taskFromPraxistCommand(text);
+      if (task === null) return false;
+      setAttachmentStatus("");
+      if (task && !praxistDispatchingRef.current) void launchPraxistRun(task, options);
+      return true;
+    },
+    [launchPraxistRun],
   );
 
   /**
@@ -5506,6 +6151,7 @@ function RuntimeTerminal({
     (meetingNotesAgent && "meeting-notes") ||
     (deepTutorAgent && "deep-tutor") ||
     (careerOpsAgent && "career-ops") ||
+    (openExecutiveAgent && "openexecutive") ||
     (tradingAgentsAgent && "trading-agent") ||
     (vibeTradingAgent && "vibe-trading") ||
     (stockAnalystAgent && "stock-analyst") ||
@@ -5516,22 +6162,22 @@ function RuntimeTerminal({
     (browserAgent && "agent-tars") ||
     null;
 
-  // A runtime agent a super-agent turn asked for, and the follow-up turn its
-  // result comes back on. See use-agent-launch-queue: the launch is an ordinary
-  // submit, so all that is tracked here is which run belongs to the chain.
-  const awaitedLaunchRef = useRef<{
+  // Runtime agents a Super Agent turn asked for. Each worker owns a distinct
+  // hidden transcript turn, so several may run at once and report back in the
+  // order they finish.
+  interface AwaitedLaunch {
     agentName: string;
-    /** Turns already in the transcript when the launch was submitted. */
-    knownMessageIds: Set<string>;
-    /** Existing assistant turn used by an approval-free delegation. */
-    clientMessageId: string | null;
-  } | null>(null);
+    requestId: string;
+    clientMessageId: string;
+  }
+  const awaitedLaunchesRef = useRef(new Map<string, AwaitedLaunch>());
   const launchHopsRef = useRef(0);
+  const launchRoundOriginsRef = useRef(new Set<string>());
   const continuedDelegatedTurnsRef = useRef(new Set<string>());
   const settlingExternalTurnsRef = useRef(new Set<string>());
-  const [pendingLaunchContinuation, setPendingLaunchContinuation] = useState<
-    string | null
-  >(null);
+  const [pendingLaunchContinuations, setPendingLaunchContinuations] = useState<
+    string[]
+  >([]);
 
   const submit = useCallback(
     async (textOverride?: string) => {
@@ -5545,7 +6191,8 @@ function RuntimeTerminal({
       // running.
       if (textOverride === undefined) {
         launchHopsRef.current = 0;
-        awaitedLaunchRef.current = null;
+        launchRoundOriginsRef.current.clear();
+        awaitedLaunchesRef.current.clear();
       }
       // Refuse an impossible combination before anything is dispatched. The
       // branches below are a priority cascade, so without this a second runtime
@@ -5710,6 +6357,20 @@ function RuntimeTerminal({
         })();
         return;
       }
+      const openExecutiveTask = taskFromOpenExecutiveCommand(text);
+      if (openExecutiveTask !== null) {
+        if (launchingOpenExecutiveRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected =
+            openExecutiveAgent ?? (await selectOpenExecutive());
+          if (selected && openExecutiveTask) {
+            await launchOpenExecutiveRun(openExecutiveTask, selected);
+          }
+        })();
+        return;
+      }
       const vibeTradingTask = taskFromVibeTradingCommand(text);
       if (vibeTradingTask !== null) {
         if (launchingVibeTradingRun) return;
@@ -5830,9 +6491,19 @@ function RuntimeTerminal({
         routeWardrobeCommand(text, pendingAttachments);
         return;
       }
+      // Classroom likewise: the attachments are its material — the documents
+      // and images the lesson is written from — so they go with the launch.
+      if (taskFromClassroomCommand(text) !== null) {
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        routeClassroomCommand(text, pendingAttachments);
+        return;
+      }
       if (
         routeSocialsManagerCommand(text) ||
         routeOpenGymCommand(text) ||
+        routeGodsEyeCommand(text) ||
         routeHardwareBlueprintCommand(text) ||
         routeParametricCadCommand(text) ||
         routeHyperframesCommand(text) ||
@@ -5842,6 +6513,7 @@ function RuntimeTerminal({
         routeOpenMontageCommand(text) ||
         routeOpenworkCommand(text) ||
         routeOpenscienceCommand(text) ||
+        routePraxistCommand(text) ||
         routeMaxResearchCommand(text) ||
         routeInboxZeroCommand(text) ||
         routeVimaxCommand(text) ||
@@ -5959,6 +6631,13 @@ function RuntimeTerminal({
         setInput("");
         setAttachmentStatus("");
         void launchCareerOpsRun(text);
+        return;
+      }
+      if (openExecutiveAgent) {
+        if (!text || launchingOpenExecutiveRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchOpenExecutiveRun(text);
         return;
       }
       if (vibeTradingAgent) {
@@ -6097,6 +6776,7 @@ function RuntimeTerminal({
       tradingAgentsAgent,
       selectTradingAgents,
       careerOpsAgent,
+      openExecutiveAgent,
       vibeTradingAgent,
       selectVibeTrading,
       launchVibeTradingRun,
@@ -6115,6 +6795,7 @@ function RuntimeTerminal({
       launchGetDocRun,
       launchMeetingNotesRun,
       launchCareerOpsRun,
+      launchOpenExecutiveRun,
       launchCodexRun,
       launchOpenCodeRun,
       launchRufloRun,
@@ -6128,6 +6809,7 @@ function RuntimeTerminal({
       selectDeepTutor,
       launchDeepTutorRun,
       launchingCareerOpsRun,
+      launchingOpenExecutiveRun,
       launchBrowserRun,
       selectBrowserAgent,
       selectAgentBrowser,
@@ -6136,6 +6818,7 @@ function RuntimeTerminal({
       selectGetDoc,
       selectMeetingNotes,
       selectCareerOps,
+      selectOpenExecutive,
       selectShorts,
       shortsAgent,
       selectFormsmith,
@@ -6151,15 +6834,18 @@ function RuntimeTerminal({
       routeMaxResearchCommand,
       routeSocialsManagerCommand,
       routeOpenGymCommand,
+      routeGodsEyeCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
       routeMatraixCommand,
       routeBoltSlidesCommand,
+      routeClassroomCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
+      routePraxistCommand,
       routeInboxZeroCommand,
       routeVimaxCommand,
     routeVoxDirectorCommand,
@@ -6191,6 +6877,7 @@ function RuntimeTerminal({
       meetingNotes: meetingNotesAgent,
       deepTutor: deepTutorAgent,
       careerOps: careerOpsAgent,
+      openExecutive: openExecutiveAgent,
       tradingAgents: tradingAgentsAgent,
       vibeTrading: vibeTradingAgent,
       stockAnalyst: stockAnalystAgent,
@@ -6215,6 +6902,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(snapshot.meetingNotes);
     setDeepTutorAgent(snapshot.deepTutor);
     setCareerOpsAgent(snapshot.careerOps);
+    setOpenExecutiveAgent(snapshot.openExecutive);
     setTradingAgentsAgent(snapshot.tradingAgents);
     setVibeTradingAgent(snapshot.vibeTrading);
     setStockAnalystAgent(snapshot.stockAnalyst);
@@ -6232,16 +6920,18 @@ function RuntimeTerminal({
 
   /**
    * Start a model-selected runtime agent without replaying its slash command as
-   * a user message. The session remaps the launcher's next preview onto the
-   * assistant turn that called `agent_launch`, so every existing launcher and
-   * run API keeps its normal persistence and terminal behavior.
+   * a visible user message. The session gives the launcher's next preview a
+   * distinct hidden worker turn, so existing launchers keep their normal run
+   * APIs while several delegated runs can remain active together.
    */
   async function launchDelegatedAgent(
     request: AgentLaunchRequestPayload,
   ): Promise<void> {
     const composerSelection = readComposerAgentSelection();
+    const workerClientMessageId = agentLaunchWorkerClientMessageId(request);
     const originClientMessageId = request.originClientMessageId?.trim();
     if (!originClientMessageId) {
+      awaitedLaunchesRef.current.delete(workerClientMessageId);
       setAttachmentStatus(
         `${request.agentName} could not start because the originating assistant message is missing.`,
       );
@@ -6254,11 +6944,13 @@ function RuntimeTerminal({
           message.clientMessageId === originClientMessageId,
       )
     ) {
+      awaitedLaunchesRef.current.delete(workerClientMessageId);
       setAttachmentStatus(
         `${request.agentName} was not started because its originating chat is no longer open.`,
       );
       return;
     }
+    const attachToExistingTurn = !request.workerClientMessageId;
     if (request.startedRun) {
       // Max Research was started and attached at the server-side tool boundary.
       // This is only the observer hand-off; starting again would create a
@@ -6266,10 +6958,11 @@ function RuntimeTerminal({
       setDelegatedAgentLaunching(true);
       try {
         await session.appendExternalAgentTurn({
-          clientMessageId: originClientMessageId,
-          userContent: "",
+          clientMessageId: workerClientMessageId,
+          userContent: request.brief,
           run: request.startedRun,
-          attachToExistingTurn: true,
+          attachToExistingTurn,
+          delegatedAgentRun: !attachToExistingTurn,
         });
       } catch (error) {
         setAttachmentStatus(
@@ -6282,7 +6975,9 @@ function RuntimeTerminal({
       }
       return;
     }
-    session.beginDelegatedExternalAgentTurn(originClientMessageId);
+    session.beginDelegatedExternalAgentTurn(workerClientMessageId, {
+      attachToExistingTurn,
+    });
     setDelegatedAgentLaunching(true);
     try {
       switch (request.agentId) {
@@ -6358,9 +7053,37 @@ function RuntimeTerminal({
           if (selected) await launchCareerOpsRun(request.brief, selected);
           return;
         }
+        case "openexecutive": {
+          const selected =
+            openExecutiveAgent ?? (await selectOpenExecutive());
+          if (selected) {
+            await launchOpenExecutiveRun(request.brief, selected);
+          }
+          return;
+        }
         case "open-gym":
           await launchOpenGymRun(request.brief, { quiet: true });
           return;
+        case "trading-agent": {
+          const parsed = tradingAgentsRequestFromBrief(request.brief);
+          if (!parsed.ok) {
+            setAttachmentStatus(parsed.error);
+            session.cancelDelegatedExternalAgentTurn(workerClientMessageId);
+            await session.appendExternalAgentTurn({
+              clientMessageId: workerClientMessageId,
+              userContent: request.brief,
+              assistantContent: parsed.error,
+              outcome: "failed",
+              attachToExistingTurn,
+              delegatedAgentRun: !attachToExistingTurn,
+            });
+            return;
+          }
+          const selected =
+            tradingAgentsAgent ?? (await selectTradingAgents());
+          if (selected) await launchTradingAgentsRun(parsed.request);
+          return;
+        }
         case "vibe-trading": {
           const selected = vibeTradingAgent ?? (await selectVibeTrading());
           if (selected) await launchVibeTradingRun(request.brief, selected);
@@ -6397,6 +7120,12 @@ function RuntimeTerminal({
         case "bolt-slides":
           await launchBoltSlidesRun(request.brief);
           return;
+        case "classroom":
+          await launchClassroomRun(request.brief);
+          return;
+        case "gods-eye":
+          await launchGodsEyeRun(request.brief, { quiet: true });
+          return;
         case "openmontage":
           await launchOpenMontageRun(request.brief);
           return;
@@ -6405,6 +7134,9 @@ function RuntimeTerminal({
           break;
         case "openscience":
           await launchOpenscienceRun(request.brief);
+          return;
+        case "praxist":
+          await launchPraxistRun(request.brief);
           return;
         case "inbox-zero":
           await launchInboxZeroRun(request.brief);
@@ -6426,16 +7158,17 @@ function RuntimeTerminal({
     } finally {
       restoreComposerAgentSelection(composerSelection);
       const neverReachedLauncher = session.cancelDelegatedExternalAgentTurn(
-        originClientMessageId,
+        workerClientMessageId,
       );
       if (neverReachedLauncher) {
         try {
           await session.appendExternalAgentTurn({
-            clientMessageId: originClientMessageId,
-            userContent: "",
+            clientMessageId: workerClientMessageId,
+            userContent: request.brief,
             assistantContent: `${request.agentName} could not start.`,
             outcome: "failed",
-            attachToExistingTurn: true,
+            attachToExistingTurn,
+            delegatedAgentRun: !attachToExistingTurn,
           });
         } catch {
           setAttachmentStatus(`${request.agentName} could not start.`);
@@ -6461,25 +7194,33 @@ function RuntimeTerminal({
       // it like a private worker would create a second Super Agent "Thinking"
       // turn as soon as it completes, replacing that answer with redundant
       // prose synthesis.
-      if (request.agentId === OPEN_GYM_AGENT_ID) {
-        awaitedLaunchRef.current = null;
+      if (
+        request.agentId === OPEN_GYM_AGENT_ID ||
+        request.agentId === GODS_EYE_AGENT_ID
+      ) {
+        awaitedLaunchesRef.current.delete(
+          agentLaunchWorkerClientMessageId(request),
+        );
         return;
       }
-      launchHopsRef.current += 1;
-      awaitedLaunchRef.current = request.awaitResult
-        ? {
-            agentName: request.agentName,
-            knownMessageIds: new Set(
-              session.messages.flatMap((message) =>
-                message.clientMessageId ? [message.clientMessageId] : [],
-              ),
-            ),
-            clientMessageId: request.originClientMessageId ?? null,
-          }
-        : null;
+      const origin = request.originClientMessageId ?? request.requestId;
+      if (!launchRoundOriginsRef.current.has(origin)) {
+        launchRoundOriginsRef.current.add(origin);
+        launchHopsRef.current += 1;
+      }
+      if (request.awaitResult) {
+        const clientMessageId = agentLaunchWorkerClientMessageId(request);
+        awaitedLaunchesRef.current.set(clientMessageId, {
+          agentName: request.agentName,
+          requestId: request.requestId,
+          clientMessageId,
+        });
+      }
     },
-    onDismissed: () => {
-      awaitedLaunchRef.current = null;
+    onDismissed: (request) => {
+      awaitedLaunchesRef.current.delete(
+        agentLaunchWorkerClientMessageId(request),
+      );
     },
   });
   // A delegated worker has no visible card and no chat connection of its own,
@@ -6493,76 +7234,110 @@ function RuntimeTerminal({
   const delegationInFlight =
     agentLaunchQueue.queued ||
     delegatedAgentLaunching ||
-    pendingLaunchContinuation !== null;
+    session.messages.some(
+      (message) =>
+        message.delegatedAgentRun === true &&
+        externalAgentRunInFlight(message),
+    ) ||
+    awaitedLaunchesRef.current.size > 0 ||
+    pendingLaunchContinuations.length > 0;
   const agentLaunchScopeRef = useRef(session.sessionId ?? null);
   useEffect(() => {
     const scope = session.sessionId ?? null;
     if (agentLaunchScopeRef.current === scope) return;
     agentLaunchScopeRef.current = scope;
-    awaitedLaunchRef.current = null;
+    awaitedLaunchesRef.current.clear();
+    launchRoundOriginsRef.current.clear();
     continuedDelegatedTurnsRef.current.clear();
-    setPendingLaunchContinuation(null);
+    setPendingLaunchContinuations([]);
   }, [session.sessionId]);
 
-  // A refresh reconstructs the private worker from durable metadata, but the
-  // in-memory `awaitedLaunchRef` that owned its hand-back is gone. Re-arm a live
-  // worker, or resume a terminal result that has not yet produced its hidden
-  // continuation. Any later transcript row proves that continuation was
-  // already consumed (or the user moved on), so it is never replayed.
+  // A refresh reconstructs every private worker from durable metadata, but the
+  // in-memory map that owns their hand-backs is gone. Re-arm live workers and
+  // enqueue terminal results that do not yet have a marked continuation.
   useLayoutEffect(() => {
-    if (session.loadingSession || pendingLaunchContinuation) {
-      return;
+    if (session.loadingSession) return;
+    const continuedKeys = new Set<string>();
+    for (const message of session.messages) {
+      if (message.role !== "user" || !message.internalAgentContinuation) {
+        continue;
+      }
+      for (const match of message.content.matchAll(
+        /<!-- agent-launch-result:([^>]+) -->/g,
+      )) {
+        if (match[1]) continuedKeys.add(match[1]);
+      }
     }
-    for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+
+    const terminalResults: Array<{
+      continuationKey: string;
+      agentName: string;
+      outcome: "completed" | "failed";
+      content: string;
+    }> = [];
+    let runningWorkers = 0;
+    for (let index = 0; index < session.messages.length; index += 1) {
       const message = session.messages[index];
       if (message?.role !== "assistant" || message.delegatedAgentRun !== true) {
         continue;
       }
-      if (session.messages[index + 1]) return;
       const continuationKey =
         message.clientMessageId ?? message.id ?? `delegated-${index}`;
-      // The quiet openGym result is the terminal presentation. A refresh must
-      // not reconstruct the private-worker hand-back it does not participate in.
       if (message.openGymRun) {
         continuedDelegatedTurnsRef.current.add(continuationKey);
-        awaitedLaunchRef.current = null;
-        return;
+        awaitedLaunchesRef.current.delete(continuationKey);
+        continue;
       }
-      if (continuedDelegatedTurnsRef.current.has(continuationKey)) return;
       const agentName = message.externalAgentName ?? "The delegated agent";
       if (message.externalAgentOutcome === "aborted") {
         continuedDelegatedTurnsRef.current.add(continuationKey);
-        if (
-          awaitedLaunchRef.current?.clientMessageId === message.clientMessageId
-        ) {
-          awaitedLaunchRef.current = null;
-        }
-        return;
+        awaitedLaunchesRef.current.delete(continuationKey);
+        continue;
       }
       if ((message.externalAgentOutcome ?? "running") === "running") {
-        if (awaitedLaunchRef.current) return;
-        if (!message.clientMessageId) return;
-        awaitedLaunchRef.current = {
-          agentName,
-          knownMessageIds: new Set(),
-          clientMessageId: message.clientMessageId,
-        };
-        return;
+        runningWorkers += 1;
+        if (message.clientMessageId) {
+          awaitedLaunchesRef.current.set(message.clientMessageId, {
+            agentName,
+            requestId: continuationKey,
+            clientMessageId: message.clientMessageId,
+          });
+        }
+        continue;
       }
-      const awaited = awaitedLaunchRef.current;
-      awaitedLaunchRef.current = null;
+      awaitedLaunchesRef.current.delete(continuationKey);
+      if (
+        continuedKeys.has(continuationKey) ||
+        continuedDelegatedTurnsRef.current.has(continuationKey)
+      ) {
+        continuedDelegatedTurnsRef.current.add(continuationKey);
+        continue;
+      }
       continuedDelegatedTurnsRef.current.add(continuationKey);
-      launchHopsRef.current = Math.max(1, launchHopsRef.current);
-      setPendingLaunchContinuation(
-        agentLaunchContinuationMessage({
-          agentName: awaited?.agentName ?? agentName,
-          outcome: message.externalAgentOutcome ?? "failed",
-          content: externalAgentCardContent(message),
-        }),
-      );
-      return;
+      terminalResults.push({
+        continuationKey,
+        agentName,
+        outcome:
+          message.externalAgentOutcome === "completed" ? "completed" : "failed",
+        content: externalAgentCardContent(message),
+      });
     }
-  }, [pendingLaunchContinuation, session.loadingSession, session.messages]);
+    if (terminalResults.length === 0) return;
+    launchHopsRef.current = Math.max(1, launchHopsRef.current);
+    const continuations = terminalResults.map((result, index) =>
+      agentLaunchContinuationMessage({
+        continuationId: result.continuationKey,
+        agentName: result.agentName,
+        outcome: result.outcome,
+        content: result.content,
+        remaining: runningWorkers + terminalResults.length - index - 1,
+      }),
+    );
+    setPendingLaunchContinuations((current) => [
+      ...current,
+      ...continuations,
+    ]);
+  }, [session.loadingSession, session.messages]);
   // The stream hands launch requests to the session hook, which does not launch
   // anything itself; this is where they meet the surface that can.
   const handleAgentLaunchEvent = agentLaunchQueue.handleEvent;
@@ -6587,6 +7362,7 @@ function RuntimeTerminal({
   // The result of a finished run, handed back as a new turn once the surface is
   // idle — a submit made while the run's turn is still settling is dropped.
   const sendAgentContinuation = session.send;
+  const pendingLaunchContinuation = pendingLaunchContinuations[0] ?? null;
   useEffect(() => {
     if (!pendingLaunchContinuation || !launchReady) return;
     const continuation = pendingLaunchContinuation;
@@ -6600,8 +7376,10 @@ function RuntimeTerminal({
         // continuation rows; clearing before this callback stranded the exact
         // "I've handed it off" response shown in the bug report.
         onTurnStarted: () =>
-          setPendingLaunchContinuation((current) =>
-            current === continuation ? null : current,
+          setPendingLaunchContinuations((current) =>
+            current[0] === continuation
+              ? current.slice(1)
+              : current.filter((item) => item !== continuation),
           ),
       });
     }, 0);
@@ -6653,15 +7431,18 @@ function RuntimeTerminal({
       if (
         routeSocialsManagerCommand(trimmed) ||
         routeOpenGymCommand(trimmed) ||
+        routeGodsEyeCommand(trimmed) ||
         routeHardwareBlueprintCommand(trimmed) ||
         routeParametricCadCommand(trimmed) ||
         routeHyperframesCommand(trimmed) ||
         routeResource2SkillCommand(trimmed) ||
         routeMatraixCommand(trimmed) ||
         routeBoltSlidesCommand(trimmed) ||
+        routeClassroomCommand(trimmed) ||
         routeOpenMontageCommand(trimmed) ||
         routeOpenworkCommand(trimmed) ||
         routeOpenscienceCommand(trimmed) ||
+        routePraxistCommand(trimmed) ||
         routeInboxZeroCommand(trimmed) ||
         routeVimaxCommand(trimmed) ||
       routeVoxDirectorCommand(trimmed) ||
@@ -6685,15 +7466,18 @@ function RuntimeTerminal({
       routeDeepResearchCommand,
       routeSocialsManagerCommand,
       routeOpenGymCommand,
+      routeGodsEyeCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
       routeMatraixCommand,
       routeBoltSlidesCommand,
+      routeClassroomCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
+      routePraxistCommand,
       routeInboxZeroCommand,
       routeVimaxCommand,
     routeVoxDirectorCommand,
@@ -6736,36 +7520,22 @@ function RuntimeTerminal({
         );
         if (presentationOwned) {
           continuedDelegatedTurnsRef.current.add(clientMessageId);
-          if (awaitedLaunchRef.current?.clientMessageId === clientMessageId) {
-            awaitedLaunchRef.current = null;
-          }
-          setPendingLaunchContinuation(null);
+          awaitedLaunchesRef.current.delete(clientMessageId);
           return;
         }
         if (result.outcome === "aborted") {
           continuedDelegatedTurnsRef.current.add(clientMessageId);
-          if (
-            awaitedLaunchRef.current?.clientMessageId === clientMessageId
-          ) {
-            awaitedLaunchRef.current = null;
-          }
-          setPendingLaunchContinuation(null);
-          launchHopsRef.current = 0;
+          awaitedLaunchesRef.current.delete(clientMessageId);
           return;
         }
         // If the assistant started this run and asked to hear how it went, hand
         // the outcome back as a new turn. The turn is identified by not having
         // existed when the launch was submitted, so a run the user started
         // themselves never joins the chain.
-        const awaited = awaitedLaunchRef.current;
-        if (
-          !awaited ||
-          (awaited.clientMessageId
-            ? awaited.clientMessageId !== clientMessageId
-            : awaited.knownMessageIds.has(clientMessageId))
-        )
-          return;
-        awaitedLaunchRef.current = null;
+        const awaited = awaitedLaunchesRef.current.get(clientMessageId);
+        if (!awaited) return;
+        awaitedLaunchesRef.current.delete(clientMessageId);
+        if (continuedDelegatedTurnsRef.current.has(clientMessageId)) return;
         continuedDelegatedTurnsRef.current.add(clientMessageId);
         if (launchHopsRef.current >= MAX_AGENT_LAUNCH_HOPS) {
           setAttachmentStatus(
@@ -6773,13 +7543,16 @@ function RuntimeTerminal({
           );
           return;
         }
-        setPendingLaunchContinuation(
+        setPendingLaunchContinuations((current) => [
+          ...current,
           agentLaunchContinuationMessage({
+            continuationId: clientMessageId,
             agentName: awaited.agentName,
             outcome: result.outcome,
             content: result.content,
+            remaining: awaitedLaunchesRef.current.size,
           }),
-        );
+        ]);
       })();
     },
     [finishExternalAgentTurn, session.messages],
@@ -6789,10 +7562,10 @@ function RuntimeTerminal({
     (externalClientMessageIds: string[]) => {
       for (const clientMessageId of externalClientMessageIds) {
         continuedDelegatedTurnsRef.current.add(clientMessageId);
+        awaitedLaunchesRef.current.delete(clientMessageId);
       }
-      awaitedLaunchRef.current = null;
-      setPendingLaunchContinuation(null);
-      launchHopsRef.current = 0;
+      setPendingLaunchContinuations([]);
+      if (awaitedLaunchesRef.current.size === 0) launchHopsRef.current = 0;
     },
     [],
   );
@@ -6803,15 +7576,18 @@ function RuntimeTerminal({
       if (
         routeSocialsManagerCommand(text, { branchGroupId }) ||
         routeOpenGymCommand(text, { branchGroupId }) ||
+        routeGodsEyeCommand(text, { branchGroupId }) ||
         routeHardwareBlueprintCommand(text, { branchGroupId }) ||
         routeParametricCadCommand(text, { branchGroupId }) ||
         routeHyperframesCommand(text, { branchGroupId }) ||
         routeResource2SkillCommand(text, { branchGroupId }) ||
         routeMatraixCommand(text, { branchGroupId }) ||
         routeBoltSlidesCommand(text, { branchGroupId }) ||
+        routeClassroomCommand(text, [], { branchGroupId }) ||
         routeOpenMontageCommand(text, { branchGroupId }) ||
         routeOpenworkCommand(text, { branchGroupId }) ||
         routeOpenscienceCommand(text, { branchGroupId }) ||
+        routePraxistCommand(text, { branchGroupId }) ||
         routeInboxZeroCommand(text, { branchGroupId }) ||
         routeVimaxCommand(text, { branchGroupId }) ||
         routeVoxDirectorCommand(text, { branchGroupId }) ||
@@ -6840,15 +7616,18 @@ function RuntimeTerminal({
       routeDeepResearchCommand,
       routeSocialsManagerCommand,
       routeOpenGymCommand,
+      routeGodsEyeCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
       routeMatraixCommand,
       routeBoltSlidesCommand,
+      routeClassroomCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
+      routePraxistCommand,
       routeInboxZeroCommand,
       routeVimaxCommand,
     routeVoxDirectorCommand,
@@ -6924,6 +7703,7 @@ function RuntimeTerminal({
         if (
           routeSocialsManagerCommand(previousUser.content, { branchGroupId }) ||
           routeOpenGymCommand(previousUser.content, { branchGroupId }) ||
+          routeGodsEyeCommand(previousUser.content, { branchGroupId }) ||
           routeHardwareBlueprintCommand(previousUser.content, {
             branchGroupId,
           }) ||
@@ -6932,9 +7712,11 @@ function RuntimeTerminal({
           routeResource2SkillCommand(previousUser.content, { branchGroupId }) ||
           routeMatraixCommand(previousUser.content, { branchGroupId }) ||
         routeBoltSlidesCommand(previousUser.content, { branchGroupId }) ||
+          routeClassroomCommand(previousUser.content, [], { branchGroupId }) ||
           routeOpenMontageCommand(previousUser.content, { branchGroupId }) ||
           routeOpenworkCommand(previousUser.content, { branchGroupId }) ||
           routeOpenscienceCommand(previousUser.content, { branchGroupId }) ||
+          routePraxistCommand(previousUser.content, { branchGroupId }) ||
           routeInboxZeroCommand(previousUser.content, { branchGroupId }) ||
           routeVimaxCommand(previousUser.content, { branchGroupId }) ||
           routeVoxDirectorCommand(previousUser.content, { branchGroupId }) ||
@@ -6982,15 +7764,18 @@ function RuntimeTerminal({
       routeMaxResearchCommand,
       routeSocialsManagerCommand,
       routeOpenGymCommand,
+      routeGodsEyeCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
       routeMatraixCommand,
       routeBoltSlidesCommand,
+      routeClassroomCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
+      routePraxistCommand,
       routeInboxZeroCommand,
       routeVimaxCommand,
     routeVoxDirectorCommand,
@@ -7015,6 +7800,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setOpenExecutiveAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -7040,6 +7826,7 @@ function RuntimeTerminal({
   }
 
   function openHistorySession(sessionId: string) {
+    setProductPanel(null);
     clearCodex();
     clearOpenCode();
     clearRuflo();
@@ -7051,6 +7838,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setOpenExecutiveAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -7260,6 +8048,7 @@ function RuntimeTerminal({
   const unreadSuffix = unreadCount > 0 ? ` — ${unreadLabel}` : "";
 
   function togglePanel(panel: TerminalPanel) {
+    setProductPanel(null);
     setSidePanel((current) => (current === panel ? null : panel));
   }
 
@@ -7393,10 +8182,9 @@ function RuntimeTerminal({
   // and that wait is the lag between the click and the dock answering it.
   function prewarmOpen() {
     if (isOpen || glide || prefersReducedMotion()) return;
-    const box = Math.max(
-      openHeight(preferredOpenHeightRef.current),
-      MIN_HEIGHT,
-    );
+    // Clicking the collapsed bar is an explicit request for the full terminal,
+    // not for the last height left behind by a drag.
+    const box = Math.max(openHeight(null), MIN_HEIGHT);
     prewarmRef.current = true;
     setGlide("opening");
     setGlideBox(box);
@@ -7442,9 +8230,10 @@ function RuntimeTerminal({
       // this brings back, so the two movements arrive together.
       window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
     }
-    const target = open
-      ? openHeight(preferredOpenHeightRef.current)
-      : COLLAPSED_HEIGHT;
+    // Header clicks and keyboard activation always open the dock fully. The
+    // remembered drag height is still useful for renderer/session restores,
+    // but must not turn a deliberate open into a partial-height terminal.
+    const target = open ? openHeight(null) : COLLAPSED_HEIGHT;
     setHeight(target);
     if (reduced) {
       cancelGlide();
@@ -7558,6 +8347,41 @@ function RuntimeTerminal({
       // cancelled pointer, or a drag that ended within the click threshold.
       // Nothing of it was ever visible, so putting it back is invisible too.
       cancelGlide();
+    }
+  }
+
+  async function stopHistorySession(item: TerminalSidebarChat) {
+    if (!item.active || item.pending) return;
+    setHistoryError(null);
+    try {
+      const response = await fetch(
+        `/api/hermes/sessions/${encodeURIComponent(item.id)}/abort`,
+        { method: "POST" },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof body.error === "string"
+            ? body.error
+            : "This chat could not be stopped.",
+        );
+      }
+      setHistory((current) =>
+        current.map((entry) =>
+          entry.id === item.id ? { ...entry, active: false } : entry,
+        ),
+      );
+      invalidateHermesSessionSummaries("dashboard_terminal");
+      if (session.sessionId === item.id) {
+        // The rail can stop a run after its browser stream disconnected. Reopen
+        // from the now-terminal durable row so the transcript and composer do
+        // not retain that disconnected local state.
+        await session.openSession(item.id);
+      }
+    } catch (cause) {
+      setHistoryError(
+        cause instanceof Error ? cause.message : "This chat could not be stopped.",
+      );
     }
   }
 
@@ -7705,7 +8529,7 @@ function RuntimeTerminal({
             {/* No rail toggle here: the rail is opened and closed by its own
                 edge, the divider between it and the transcript. */}
             <div
-              style={{ animationDelay: "40ms" }}
+              style={{ animationDelay: headerClosing ? "0ms" : "40ms" }}
               className={`${headerItemAnim} flex min-w-0 items-center gap-2`}
             >
               {/* One dot, one job: Terminal connectivity. Optional knowledge
@@ -7839,6 +8663,7 @@ function RuntimeTerminal({
                 }
                 openHistorySession(chat.id);
               }}
+              onStopChat={stopHistorySession}
               onRenameChat={(chat, title) =>
                 void patchHistorySession(
                   chat,
@@ -7963,6 +8788,7 @@ function RuntimeTerminal({
                 messages={session.messages}
                 connection={session.connection}
                 runState={session.runState}
+                persistedRunActive={Boolean(session.activeRunId)}
                 externalRunLaunching={externalRunLaunching || delegationInFlight}
                 delegationInFlight={delegationInFlight}
                 temporaryChat={temporaryChat}
@@ -7973,9 +8799,11 @@ function RuntimeTerminal({
                     : session.error
                 }
                 pendingPermission={session.pendingPermission}
+                pendingClarification={session.pendingClarification}
                 activities={session.activities}
                 input={input}
                 onInputChange={setInput}
+                onGenerativeUiAction={handleGenerativeUiAction}
                 composerTextareaRef={composerTextareaRef}
                 onSubmit={submit}
                 beforeComposer={
@@ -8001,6 +8829,9 @@ function RuntimeTerminal({
                 onStopRequested={handleStopRequested}
                 onPermissionDecision={(decision) =>
                   void session.respondToPermission(decision)
+                }
+                onClarificationAnswer={(answer) =>
+                  void session.respondToClarification(answer)
                 }
                 onRetryMessage={retryMessage}
                 onExternalAgentTerminal={handleExternalAgentTerminal}
@@ -8064,9 +8895,12 @@ function RuntimeTerminal({
                 onSelectResource2Skill={() => {}}
                 onSelectMatraix={() => {}}
                 onSelectBoltSlides={() => {}}
+                onSelectClassroom={() => {}}
+                onSelectGodsEye={() => {}}
                 onSelectOpenMontage={() => {}}
                 onSelectOpenwork={() => {}}
                 onSelectOpenscience={() => {}}
+                onSelectPraxist={() => {}}
                 onSelectMaxResearch={() => {}}
                 onSelectInboxZero={() => {}}
                 onSelectVimax={() => {}}
@@ -8119,6 +8953,12 @@ function RuntimeTerminal({
                 }}
                 careerOpsAgent={careerOpsAgent}
                 onSelectCareerOps={() => void selectCareerOps()}
+                openExecutiveAgent={openExecutiveAgent}
+                onSelectOpenExecutive={() => void selectOpenExecutive()}
+                onClearOpenExecutive={() => {
+                  setOpenExecutiveAgent(null);
+                  setAttachmentStatus("");
+                }}
                 onSelectOpenGym={() => {}}
                 onClearCareerOps={() => {
                   setCareerOpsAgent(null);
@@ -8217,7 +9057,19 @@ function RuntimeTerminal({
                 }
               />
             </div>
-            {sidePanel ? (
+            {productPanel ? (
+              <SidePanelDock
+                label="Product details"
+                defaultWidth={520}
+                storageKey="breadboard:terminal:panel-width"
+              >
+                <ProductDetailsPanel
+                  selection={productPanel}
+                  onClose={() => setProductPanel(null)}
+                  onAction={handleGenerativeUiAction}
+                />
+              </SidePanelDock>
+            ) : sidePanel ? (
               <SidePanelDock
                 label={
                   sidePanel === "artifacts"

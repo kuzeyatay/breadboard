@@ -1,0 +1,11 @@
+{
+  "documents": [
+    { "id": "gauss-law", "folderId": "laws", "primaryConcepts": ["electric-flux", "gauss-law"], "supportingConcepts": ["divergence"], "lexicalText": "gauss law electric flux closed surface divergence", "embedding": [1, 0, 0] },
+    { "id": "divergence-theorem", "folderId": "math", "primaryConcepts": ["divergence", "electric-flux"], "supportingConcepts": ["volume-integral"], "lexicalText": "divergence theorem flux closed surface volume integral", "embedding": [0.995, 0.02, 0] },
+    { "id": "ampere-maxwell", "folderId": "laws", "primaryConcepts": ["ampere-maxwell-law", "displacement-current"], "supportingConcepts": ["magnetic-circulation"], "lexicalText": "ampere maxwell law circulation displacement current", "embedding": [0, 1, 0] },
+    { "id": "displacement-current", "folderId": "mechanisms", "primaryConcepts": ["displacement-current", "ampere-maxwell-law"], "supportingConcepts": ["changing-electric-flux"], "lexicalText": "displacement current changing electric flux maxwell correction", "embedding": [0.01, 0.995, 0] },
+    { "id": "electric-potential", "folderId": "fields", "primaryConcepts": ["electric-potential", "electric-field"], "supportingConcepts": ["potential-gradient"], "lexicalText": "electric potential scalar potential gradient voltage", "embedding": [0, 0, 1] },
+    { "id": "electric-field", "folderId": "fields", "primaryConcepts": ["electric-field", "electric-potential"], "supportingConcepts": ["potential-gradient"], "lexicalText": "electric field negative gradient electric potential force", "embedding": [0, 0.01, 0.995] },
+    { "id": "magnetic-materials", "folderId": "materials", "primaryConcepts": ["magnetization"], "supportingConcepts": ["magnetic-field"], "lexicalText": "magnetic field material equation magnetization susceptibility", "embedding": [0.35, 0.3, 0.2] }
+  ]
+}

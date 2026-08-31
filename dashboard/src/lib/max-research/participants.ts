@@ -1,6 +1,6 @@
-// One surface over five agents that were never built to be interchangeable.
+// One surface over six agents that were never built to be interchangeable.
 //
-// Four of them own a run: they take a task, return a run id, emit events, and
+// Five of them own a run: they take a task, return a run id, emit events, and
 // eventually settle. Their signatures already agree closely enough that a thin
 // adapter is honest rather than a pretence — `startRun`, `getEventsSince`,
 // `isTerminal`, `abortRun`, in that shape, in every one of them.
@@ -8,11 +8,11 @@
 // ARIS is the exception and stays one. It is not a runtime that fetches
 // anything; it is the cloned harness's own research methodology, which shapes
 // how the question is approached and how the results are reconciled. Modelling
-// it as a fifth fetcher would mean inventing a run for it and reporting an
+// it as a sixth fetcher would mean inventing a run for it and reporting an
 // empty result as a failure, so it resolves immediately with guidance instead.
 //
 // Nothing here reaches a service at module load: every runtime is imported at
-// call time, so a question that engages three participants pays for three.
+// call time, so an unavailable participant does not load a runtime it cannot use.
 
 import { DEFAULT_RESULT_LIMIT } from "../get-doc/identity.ts";
 import type { MaxResearchParticipant } from "./plan.ts";
@@ -48,6 +48,8 @@ export interface ParticipantContext {
   reasoningEffort: string;
   baseUrl: string;
   conversationContext?: string;
+  /** Sealed by the Max Research facade; never inferred inside the worker. */
+  praxistTaskPath?: string;
   /** Aborts every participant when the orchestrating run is stopped. */
   signal?: AbortSignal;
 }
@@ -74,7 +76,7 @@ export interface ParticipantBrief {
 
 export interface ParticipantRuntime {
   /** Whether this participant can run at all right now, and why not. */
-  available(): Promise<{ available: boolean; reason?: string }>;
+  available(context?: ParticipantContext): Promise<{ available: boolean; reason?: string }>;
   /** Run it to completion. Never throws: a failure is a returned result. */
   run(
     brief: ParticipantBrief,
@@ -105,7 +107,7 @@ function failed(
 }
 
 /**
- * Drive one of the four run-owning agents to completion.
+ * Drive one of the five run-owning agents to completion.
  *
  * Polling rather than subscribing, because that is the interface all four
  * actually expose: an event log and a terminal predicate. The interval is
@@ -252,7 +254,7 @@ function withRealFindings(result: ParticipantResult): ParticipantResult {
  * The runtimes, resolved lazily.
  *
  * Exported as a factory rather than a constant so a test can substitute one
- * without a service, and so importing the plan never drags five runtimes and
+ * without a service, and so importing the plan never drags six runtimes and
  * their databases in behind it.
  */
 export function participantRuntime(
@@ -271,9 +273,75 @@ export function participantRuntime(
       return getDocRuntime();
     case "openscience":
       return openscienceRuntime();
+    case "praxist":
+      return praxistRuntime();
     case "aris":
       return arisRuntime();
   }
+}
+
+function praxistRuntime(): ParticipantRuntime {
+  return {
+    async available(context) {
+      try {
+        const runtime = await import("../praxist/runtime.ts");
+        const readiness = runtime.runtimeReadiness();
+        if (!readiness.available) {
+          return { available: false, reason: readiness.reason ?? "Praxist is unavailable." };
+        }
+        if (!context?.praxistTaskPath) {
+          return {
+            available: false,
+            reason: "Set PRAXIST_MAX_RESEARCH_TASK_PATH to an existing Praxist task project before including it in Max Research.",
+          };
+        }
+        return { available: true };
+      } catch (error) {
+        return {
+          available: false,
+          reason: error instanceof Error ? error.message : "Praxist is unavailable.",
+        };
+      }
+    },
+    async run(_brief, context) {
+      const taskPath = context.praxistTaskPath;
+      if (!taskPath) {
+        return unavailable(
+          "praxist",
+          "PRAXIST_MAX_RESEARCH_TASK_PATH does not name a valid Praxist task project.",
+        );
+      }
+      const manager = await import("../praxist/run-manager.ts");
+      return driveRun({
+        participant: "praxist",
+        start: () => manager.startRun({
+          userId: context.userId,
+          taskPath,
+          model: context.model,
+          baseUrl: context.baseUrl,
+        }),
+        isTerminal: (runId) => manager.isTerminal(context.userId, runId),
+        abort: async (runId) => { await manager.abortRun(context.userId, runId); },
+        collect: async (runId) => {
+          const events = await manager.getEventsSince(context.userId, runId, 0);
+          const status = terminalStatusFromEvents(events);
+          const output = summarizeEvents(events);
+          const artifacts = collectArtifacts(events);
+          return {
+            participant: "praxist",
+            status,
+            output: status === "completed" ? output : "",
+            runId,
+            ...(artifacts?.length ? { artifacts } : {}),
+            ...(status === "completed"
+              ? {}
+              : { reason: output || "The run ended without accepted findings." }),
+          };
+        },
+        ...(context.signal ? { signal: context.signal } : {}),
+      });
+    },
+  };
 }
 
 /* ------------------------------------------------------------------ */
