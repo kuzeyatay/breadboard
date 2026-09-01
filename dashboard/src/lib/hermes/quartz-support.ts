@@ -12,6 +12,7 @@ import { organizationIdsForUser } from "../organizations/store.ts";
 import { readThoughtTopology } from "../thought-topology/storage.ts";
 import type { ThoughtTopology } from "../thought-topology/types.ts";
 import { ApiError } from "./route-core.ts";
+import { resolveQuartzBaseUrl } from "../quartz-url.ts";
 import {
   queryThoughtTopologyGraph,
   type HermesTopologyGraphEdge,
@@ -30,6 +31,9 @@ function allowedOrigins(): string[] {
     .map((value) => value.trim())
     .filter(Boolean);
   const defaults = [
+    // Runtime-resolved first: on the desktop, Quartz lives on a per-launch
+    // port that a build-time NEXT_PUBLIC_QUARTZ_URL cannot know.
+    resolveQuartzBaseUrl(),
     process.env.NEXT_PUBLIC_QUARTZ_URL,
     "http://localhost:8081",
     "http://127.0.0.1:8081",

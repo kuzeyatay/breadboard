@@ -12,6 +12,10 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ChatAttachment } from "../chat-attachments.ts";
 import { scanClusterKnowledge, type KnowledgeNode } from "../knowledge.ts";
+import {
+  gardenMediaKind,
+  gardenTranscriptName,
+} from "../garden-media-kind.ts";
 import { documentSkillContext, ensureDocumentSkill, gardenDocumentText, shouldDistill } from "./service.ts";
 import type { DocumentSkillProgress, DocumentSkillRecord } from "./types.ts";
 
@@ -75,6 +79,7 @@ export async function prepareDocumentContext(
   const records: DocumentSkillRecord[] = [];
   const warnings: string[] = [];
   const inlineAttachments: ChatAttachment[] = [];
+  const selectedAudioTitles: string[] = [];
   const runtimeScope = {
     userId: input.userId,
     gardenId: input.garden?.clusterSlug ?? null,
@@ -127,6 +132,21 @@ export async function prepareDocumentContext(
       input.garden.selectedDocumentSlugs,
     );
     for (const node of documents) {
+      const mediaKind = gardenMediaKind(node);
+      // A selected recording is already represented by its transcript Markdown.
+      // Do not run that transcript through audio analysis or book-to-skill: hand
+      // the exact Markdown to the model as ordinary supplied text. A selected
+      // video takes the separate Watch path and must not be distilled either.
+      if (mediaKind === "audio") {
+        inlineAttachments.push({
+          type: "text",
+          name: gardenTranscriptName(node),
+          text: node.content,
+        });
+        selectedAudioTitles.push(node.title || node.slug);
+        continue;
+      }
+      if (mediaKind === "video") continue;
       const body = node.content ?? "";
       if (!shouldDistill(body)) continue;
       try {
@@ -169,7 +189,16 @@ export async function prepareDocumentContext(
   }
 
   return {
-    context: documentSkillContext(records),
+    context: [
+      documentSkillContext(records),
+      selectedAudioTitles.length
+        ? [
+            "[Selected audio recording transcript Markdown]",
+            `The user selected ${selectedAudioTitles.length === 1 ? "this recording" : "these recordings"}: ${selectedAudioTitles.join(", ")}.`,
+            "Their verbatim transcript Markdown is attached to this turn. Read that Markdown directly as the supplied source; do not invoke audio analysis and do not ask for the audio file.",
+          ].join("\n")
+        : "",
+    ].filter(Boolean).join("\n\n"),
     inlineAttachments,
     records,
     warnings: [...new Set(warnings)],

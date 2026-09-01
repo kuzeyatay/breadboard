@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import GardenAssistantSwitch from '@/app/components/hermes/garden-assistant-switch';
-import { QUARTZ_BASE_URL, quartzUrl, quartzUrlWithAppTheme } from '@/lib/quartz-url';
+import { quartzUrlFromBase, quartzUrlWithAppTheme } from '@/lib/quartz-url';
 import { exportFolderPdf, type FolderPdfExportMessage } from '@/lib/folder-pdf-export-client';
 import {
   quartzAssistantSelectionRequest,
@@ -16,6 +16,12 @@ import { useQuartzViewLease } from '../use-quartz-view-lease';
 interface Props {
   clusterSlug: string;
   clusterName: string;
+  /**
+   * Server-resolved Quartz base URL. The client bundle only knows the
+   * build-time NEXT_PUBLIC_QUARTZ_URL, which is not the port Runtime V2 gave
+   * Quartz on this launch, so the Server Component must pass the live value.
+   */
+  quartzBaseUrl: string;
   note?: string;
   initialChatOpen?: boolean;
   trackPublicView?: boolean;
@@ -110,8 +116,8 @@ function isMarkdownDocumentSlug(slug: string, clusterSlug: string): boolean {
   );
 }
 
-function quartzUrlWithRefresh(...segments: string[]): string {
-  const url = new URL(quartzUrlWithAppTheme(quartzUrl(...segments)));
+function quartzUrlWithRefresh(baseUrl: string, ...segments: string[]): string {
+  const url = new URL(quartzUrlWithAppTheme(quartzUrlFromBase(baseUrl, ...segments)));
   url.searchParams.set('refresh', Date.now().toString());
   return url.toString();
 }
@@ -137,6 +143,7 @@ function replaceQuartzLocation(iframe: HTMLIFrameElement | null, url: string): v
 export default function GardenClient({
   clusterSlug,
   clusterName,
+  quartzBaseUrl,
   note,
   initialChatOpen = false,
   trackPublicView = false,
@@ -157,11 +164,11 @@ export default function GardenClient({
   const activeMarkdownSlug = activeMarkdown?.slug;
   const quartzOrigin = useMemo(() => {
     try {
-      return new URL(QUARTZ_BASE_URL).origin;
+      return new URL(quartzBaseUrl).origin;
     } catch {
       return '';
     }
-  }, []);
+  }, [quartzBaseUrl]);
 
   function postInlineAnswer(update: QuartzInlineAnswerUpdate) {
     iframeRef.current?.contentWindow?.postMessage(
@@ -299,7 +306,7 @@ export default function GardenClient({
         const folderCluster = (typeof data.cluster === 'string' && data.cluster) || clusterSlug;
         const reloadGarden = () => {
           window.setTimeout(() => {
-            replaceQuartzLocation(iframeRef.current, quartzUrlWithRefresh(folderCluster));
+            replaceQuartzLocation(iframeRef.current, quartzUrlWithRefresh(quartzBaseUrl, folderCluster));
           }, 700);
         };
 
@@ -652,7 +659,7 @@ export default function GardenClient({
             });
             if (ok) {
               window.setTimeout(() => {
-                replaceQuartzLocation(iframeRef.current, quartzUrlWithRefresh(effectiveCluster));
+                replaceQuartzLocation(iframeRef.current, quartzUrlWithRefresh(quartzBaseUrl, effectiveCluster));
               }, 700);
             }
           })
@@ -675,7 +682,7 @@ export default function GardenClient({
         quartzRetryTimerRef.current = null;
       }
     };
-  }, [clusterSlug, quartzOrigin]);
+  }, [clusterSlug, quartzOrigin, quartzBaseUrl]);
 
   function handleQuartzLoad() {
     setMarkdownEditorOpen(false);
@@ -699,8 +706,8 @@ export default function GardenClient({
       replaceQuartzLocation(
         iframe,
         note
-          ? quartzUrlWithRefresh(clusterSlug, ...note.split('/').filter(Boolean))
-          : quartzUrlWithRefresh(clusterSlug),
+          ? quartzUrlWithRefresh(quartzBaseUrl, clusterSlug, ...note.split('/').filter(Boolean))
+          : quartzUrlWithRefresh(quartzBaseUrl, clusterSlug),
       );
     }, 2_500);
   }
@@ -801,8 +808,8 @@ export default function GardenClient({
         src={
           quartzLease.ready
             ? note
-              ? quartzUrlWithAppTheme(quartzUrl(clusterSlug, ...note.split('/').filter(Boolean)))
-              : quartzUrlWithAppTheme(quartzUrl(clusterSlug))
+              ? quartzUrlWithAppTheme(quartzUrlFromBase(quartzBaseUrl, clusterSlug, ...note.split('/').filter(Boolean)))
+              : quartzUrlWithAppTheme(quartzUrlFromBase(quartzBaseUrl, clusterSlug))
             : undefined
         }
         className="h-full min-w-0 flex-1 border-0 bg-gray-950"

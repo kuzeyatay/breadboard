@@ -12,11 +12,14 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type CSSProperties,
   type DragEvent,
+  type ReactNode,
 } from "react";
 import Link from "next/link";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import OverflowMarquee from "@/app/components/overflow-marquee";
+import styles from "./garden-video-import.module.css";
 import {
   ACCEPTED_AUDIO_EXTENSIONS,
   ACCEPTED_VIDEO_EXTENSIONS,
@@ -67,6 +70,7 @@ export interface GardenMediaSource {
   sourceMedia: string;
   href: string;
   wordCount: number;
+  flagColor?: string;
 }
 
 export interface GardenVideoImportProps {
@@ -76,9 +80,15 @@ export interface GardenVideoImportProps {
   expanded: boolean;
   mediaSources: GardenMediaSource[];
   deletingSourceSlug?: string | null;
+  selectedSourceSlugs?: string[];
+  flagColors?: readonly string[];
+  openFlagPaletteSlug?: string | null;
+  savingFlagSlug?: string | null;
   onClose: () => void;
   onExpand: () => void;
   onDeleteSource?: (sourceSlug: string) => void;
+  onColorButtonClick?: (sourceSlug: string) => void;
+  onFlagSource?: (sourceSlug: string, flagColor: string) => void;
   onSourceCreated?: (info: {
     jobId: string;
     sourceTitle: string;
@@ -138,6 +148,300 @@ function PlayIcon({ playing = false }: { playing?: boolean }) {
   );
 }
 
+function VideoPanelIcon() {
+  return (
+    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+      <rect x="3.75" y="6.25" width="11.5" height="11.5" rx="2" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="m15.25 10 4.25-2v8l-4.25-2" />
+    </svg>
+  );
+}
+
+function VolumeIcon({ muted }: { muted: boolean }) {
+  return (
+    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11 5.75 7.5 9H4.75v6H7.5L11 18.25z" />
+      {muted ? (
+        <path strokeLinecap="round" d="m15.5 9.5 4 5m0-5-4 5" />
+      ) : (
+        <path strokeLinecap="round" d="M15.25 9a4.25 4.25 0 0 1 0 6M17.75 6.75a7.4 7.4 0 0 1 0 10.5" />
+      )}
+    </svg>
+  );
+}
+
+interface SourceColorSelectProps {
+  source: GardenMediaSource;
+  selected: boolean;
+  saving: boolean;
+  paletteOpen: boolean;
+  flagColors: readonly string[];
+  onColorButtonClick: () => void;
+  onFlagSource: (flagColor: string) => void;
+}
+
+function SourceColorSelect({
+  source,
+  selected,
+  saving,
+  paletteOpen,
+  flagColors,
+  onColorButtonClick,
+  onFlagSource,
+}: SourceColorSelectProps) {
+  return (
+    <div className="relative mt-0.5 shrink-0">
+      <button
+        type="button"
+        onClick={onColorButtonClick}
+        disabled={saving}
+        className={`flex h-5 w-5 items-center justify-center rounded border bg-gray-950 transition-[border-color,box-shadow,transform,opacity] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:border-gray-500 active:scale-[0.96] ${
+          selected
+            ? "border-[var(--botanical)] ring-2 ring-[var(--botanical)]/70 ring-offset-1 ring-offset-[var(--paper-surface)]"
+            : "border-gray-700"
+        } ${saving ? "cursor-wait opacity-50" : "cursor-pointer"}`}
+        title={`${source.flagColor ? `Highlighted ${source.flagColor}. ` : ""}${
+          selected
+            ? "Selected for chat; click twice to remove."
+            : "Click twice to select for chat."
+        } Click once to choose a highlight color.`}
+        aria-label={
+          selected
+            ? "Recording highlight; selected for chat"
+            : "Recording highlight; click twice to select for chat"
+        }
+        aria-pressed={selected}
+        aria-expanded={paletteOpen}
+      >
+        <span
+          className="h-3 w-3 rounded-sm border border-gray-800"
+          style={{ backgroundColor: source.flagColor || "transparent" }}
+        />
+      </button>
+
+      {paletteOpen ? (
+        <div className="absolute left-0 top-6 z-20 w-32 rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl">
+          <div className="grid grid-cols-5 gap-1.5">
+            {flagColors.map((color) => (
+              <button
+                key={color}
+                type="button"
+                onClick={() => onFlagSource(color)}
+                className={`h-4 w-4 rounded border transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:scale-110 active:scale-[0.96] ${
+                  source.flagColor === color ? "border-white" : "border-gray-800"
+                }`}
+                style={{ backgroundColor: color }}
+                aria-label={`Highlight recording ${color}`}
+                title={color}
+              />
+            ))}
+          </div>
+          {source.flagColor ? (
+            <button
+              type="button"
+              onClick={() => onFlagSource("")}
+              className="mt-2 w-full rounded border border-gray-800 px-2 py-1 text-[10px] text-gray-500 transition-[border-color,color,transform] duration-150 hover:border-gray-700 hover:text-white active:scale-[0.97]"
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatPlaybackTime(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "0:00";
+  const totalSeconds = Math.floor(value);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}:${seconds.toString().padStart(2, "0")}`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+}
+
+interface AudioSourceRowProps {
+  source: GardenMediaSource;
+  src: string;
+  active: boolean;
+  selected: boolean;
+  selectionControl: ReactNode;
+  isOwner: boolean;
+  deleting: boolean;
+  onActivate: () => void;
+  onDeleteSource?: (sourceSlug: string) => void;
+}
+
+function AudioSourceRow({
+  source,
+  src,
+  active,
+  selected,
+  selectionControl,
+  isOwner,
+  deleting,
+  onActivate,
+  onDeleteSource,
+}: AudioSourceRowProps) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [muted, setMuted] = useState(false);
+  const filename = mediaSourceFilename(source);
+  const description = mediaSourceDescription(source);
+  const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+
+  useEffect(() => {
+    if (!active) audioRef.current?.pause();
+  }, [active]);
+
+  const togglePlayback = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      onActivate();
+      void audio.play().catch(() => setIsPlaying(false));
+    } else {
+      audio.pause();
+    }
+  };
+
+  const updateDuration = () => {
+    const nextDuration = audioRef.current?.duration ?? 0;
+    setDuration(Number.isFinite(nextDuration) ? nextDuration : 0);
+  };
+
+  const seek = (event: ChangeEvent<HTMLInputElement>) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const nextTime = Number(event.target.value);
+    audio.currentTime = nextTime;
+    setCurrentTime(nextTime);
+  };
+
+  const toggleMuted = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.muted = !audio.muted;
+    setMuted(audio.muted);
+  };
+
+  return (
+    <li
+      className={`border-b border-gray-800/50 last:border-b-0 ${
+        selected
+          ? "border-l-2 border-l-[var(--botanical)] bg-[color-mix(in_srgb,var(--botanical)_8%,transparent)]"
+          : ""
+      }`}
+    >
+      <div className="group flex items-start gap-2.5 px-3 py-2">
+        {selectionControl}
+        <button
+          type="button"
+          onClick={togglePlayback}
+          className={`neu-button-icon mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-[border-color,background-color,color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.96] ${
+            active
+              ? "border-[var(--botanical)] bg-[color-mix(in_srgb,var(--botanical)_10%,var(--paper-raised))] text-[var(--botanical)]"
+              : "border-gray-700 text-[var(--botanical)] hover:border-[var(--botanical)]"
+          }`}
+          aria-label={isPlaying ? `Pause ${filename}` : `Play ${filename}`}
+          aria-pressed={isPlaying}
+          title={isPlaying ? "Pause audio" : "Play audio"}
+        >
+          <PlayIcon playing={isPlaying} />
+        </button>
+
+        <div className="min-w-0 flex-1">
+          <Link
+            href={source.href}
+            className="block text-xs font-medium text-gray-300 transition-colors hover:text-white"
+            title="Open transcript Markdown"
+          >
+            <OverflowMarquee>{filename}</OverflowMarquee>
+          </Link>
+          {description ? (
+            <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-gray-500" title={description}>
+              {description}
+            </p>
+          ) : null}
+          <p className="mt-0.5 text-[10px] text-gray-600">
+            Audio transcript · {source.wordCount}w
+          </p>
+        </div>
+
+        {isOwner && onDeleteSource ? (
+          <button
+            type="button"
+            onClick={() => onDeleteSource(source.slug)}
+            disabled={deleting}
+            className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-700 opacity-60 transition-colors hover:bg-red-950/40 hover:text-red-300 hover:opacity-100 disabled:cursor-wait disabled:opacity-60"
+            aria-label={`Delete ${filename}`}
+            title="Delete media transcript and source"
+          >
+            {deleting ? (
+              <Spinner className="h-3.5 w-3.5" />
+            ) : (
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.35 9m-4.78 0L9.26 9m9.97-3.21c.35.05.7.1 1.05.16m-1.05-.16L18.16 19.67a2.25 2.25 0 0 1-2.24 2.08H8.08a2.25 2.25 0 0 1-2.24-2.08L4.77 5.79m14.46 0a48.1 48.1 0 0 0-3.48-.4m-10.98.4c.35-.06.7-.11 1.05-.16m0 0a48.1 48.1 0 0 1 3.48-.4m6.45.16V4.48c0-1.18-.91-2.16-2.09-2.2a52.1 52.1 0 0 0-3.32 0c-1.18.04-2.09 1.02-2.09 2.2v.75m7.5.16a48.7 48.7 0 0 0-7.5-.16" />
+              </svg>
+            )}
+          </button>
+        ) : null}
+      </div>
+
+      <audio
+        ref={audioRef}
+        preload="metadata"
+        src={src}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onEnded={() => setIsPlaying(false)}
+        onLoadedMetadata={updateDuration}
+        onDurationChange={updateDuration}
+        onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime ?? 0)}
+      >
+        Your browser cannot play this audio file.
+      </audio>
+
+      {active ? (
+        <div className={`px-3 pb-3 ${selectionControl ? "pl-[5.75rem]" : "pl-[3.875rem]"}`}>
+          <div className={`${styles.transport} flex items-center gap-2 rounded-lg border border-[var(--line)] px-2 py-1.5`}>
+            <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--ink-muted)]">
+              {formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}
+            </span>
+            <div className={`${styles.scrubberWrap} min-w-0 flex-1`}>
+              <input
+                type="range"
+                min={0}
+                max={duration || 0}
+                step={0.1}
+                value={Math.min(currentTime, duration || 0)}
+                onChange={seek}
+                disabled={duration <= 0}
+                className={styles.scrubber}
+                style={{ "--bb-media-progress": `${progress}%` } as CSSProperties}
+                aria-label={`Seek ${filename}`}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={toggleMuted}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-[background-color,color,transform] duration-150 hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] active:scale-[0.96]"
+              aria-label={muted ? `Unmute ${filename}` : `Mute ${filename}`}
+              title={muted ? "Unmute" : "Mute"}
+            >
+              <VolumeIcon muted={muted} />
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
 export default function GardenVideoImport({
   clusterSlug,
   isOwner,
@@ -145,9 +449,15 @@ export default function GardenVideoImport({
   expanded,
   mediaSources,
   deletingSourceSlug = null,
+  selectedSourceSlugs = [],
+  flagColors = [],
+  openFlagPaletteSlug = null,
+  savingFlagSlug = null,
   onClose,
   onExpand,
   onDeleteSource,
+  onColorButtonClick,
+  onFlagSource,
   onSourceCreated,
 }: GardenVideoImportProps) {
   const [jobs, setJobs] = useState<PublicVideoTranscriptionJob[]>([]);
@@ -890,19 +1200,56 @@ export default function GardenVideoImport({
                     ? source.originalFilename
                     : "";
                 const canPlay = Boolean(localPlaybackUrl || externalPlaybackUrl);
+                const selectedForChat = selectedSourceSlugs.includes(source.slug);
+                const selectionControl =
+                  onColorButtonClick && onFlagSource ? (
+                    <SourceColorSelect
+                      source={source}
+                      selected={selectedForChat}
+                      saving={savingFlagSlug === source.slug}
+                      paletteOpen={openFlagPaletteSlug === source.slug}
+                      flagColors={flagColors}
+                      onColorButtonClick={() => onColorButtonClick(source.slug)}
+                      onFlagSource={(flagColor) => onFlagSource(source.slug, flagColor)}
+                    />
+                  ) : null;
+                if (kind === "audio" && localPlaybackUrl) {
+                  return (
+                    <AudioSourceRow
+                      key={source.slug}
+                      source={source}
+                      src={localPlaybackUrl}
+                      active={playing}
+                      selected={selectedForChat}
+                      selectionControl={selectionControl}
+                      isOwner={isOwner}
+                      deleting={deletingSourceSlug === source.slug}
+                      onActivate={() => setPlayingSourceSlug(source.slug)}
+                      onDeleteSource={onDeleteSource}
+                    />
+                  );
+                }
                 return (
-                  <li key={source.slug} className="border-b border-gray-800/50 last:border-b-0">
+                  <li
+                    key={source.slug}
+                    className={`border-b border-gray-800/50 last:border-b-0 ${
+                      selectedForChat
+                        ? "border-l-2 border-l-[var(--botanical)] bg-[color-mix(in_srgb,var(--botanical)_8%,transparent)]"
+                        : ""
+                    }`}
+                  >
                     <div className="group flex items-start gap-2.5 px-3 py-2">
+                      {selectionControl}
                       {externalPlaybackUrl ? (
                         <a
                           href={externalPlaybackUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-700 text-[var(--botanical)] transition-colors hover:border-[var(--botanical)] hover:bg-[color-mix(in_srgb,var(--botanical)_10%,transparent)]"
-                          aria-label={`Play ${filename}`}
-                          title="Play on YouTube"
+                          className="neu-button-icon mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-700 text-[var(--botanical)] transition-[border-color,background-color,color,transform] duration-150 hover:border-[var(--botanical)] active:scale-[0.96]"
+                          aria-label={`Open ${filename} on YouTube`}
+                          title="Open on YouTube"
                         >
-                          <PlayIcon />
+                          <VideoPanelIcon />
                         </a>
                       ) : (
                         <button
@@ -913,12 +1260,16 @@ export default function GardenVideoImport({
                             )
                           }
                           disabled={!canPlay}
-                          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-700 text-[var(--botanical)] transition-colors hover:border-[var(--botanical)] hover:bg-[color-mix(in_srgb,var(--botanical)_10%,transparent)] disabled:cursor-not-allowed disabled:text-gray-700 disabled:hover:border-gray-700 disabled:hover:bg-transparent"
-                          aria-label={`${playing ? "Hide player for" : "Play"} ${filename}`}
+                          className={`neu-button-icon mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-[border-color,background-color,color,transform] duration-150 active:scale-[0.96] disabled:cursor-not-allowed disabled:text-gray-700 disabled:active:scale-100 ${
+                            playing
+                              ? "border-[var(--botanical)] bg-[color-mix(in_srgb,var(--botanical)_10%,var(--paper-raised))] text-[var(--botanical)]"
+                              : "border-gray-700 text-[var(--botanical)] hover:border-[var(--botanical)]"
+                          }`}
+                          aria-label={`${playing ? "Close player for" : "Open player for"} ${filename}`}
                           aria-expanded={playing}
-                          title={canPlay ? (playing ? "Hide player" : `Play ${kind}`) : "Original media is unavailable"}
+                          title={canPlay ? (playing ? "Close video player" : "Open video player") : "Original media is unavailable"}
                         >
-                          <PlayIcon playing={playing} />
+                          <VideoPanelIcon />
                         </button>
                       )}
 
@@ -962,15 +1313,9 @@ export default function GardenVideoImport({
 
                     {playing && localPlaybackUrl ? (
                       <div className="px-3 pb-3 pl-[3.875rem]">
-                        {kind === "audio" ? (
-                          <audio key={localPlaybackUrl} className="h-9 w-full" controls autoPlay preload="metadata" src={localPlaybackUrl}>
-                            Your browser cannot play this audio file.
-                          </audio>
-                        ) : (
-                          <video key={localPlaybackUrl} className="max-h-48 w-full rounded-md bg-black" controls autoPlay preload="metadata" src={localPlaybackUrl}>
-                            Your browser cannot play this video file.
-                          </video>
-                        )}
+                        <video key={localPlaybackUrl} className="max-h-48 w-full rounded-md bg-black" controls autoPlay preload="metadata" src={localPlaybackUrl}>
+                          Your browser cannot play this video file.
+                        </video>
                       </div>
                     ) : null}
                   </li>

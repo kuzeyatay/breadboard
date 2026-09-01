@@ -7,6 +7,7 @@ import NewNoteButton from '@/app/components/new-note-button';
 import MarkdownToPdfButton from '@/app/components/markdown-to-pdf-button';
 import FastReadButton from '@/app/components/fastread-button';
 import NavbarFlowerWind from '@/app/components/navbar-flower-wind';
+import { resolveQuartzBaseUrl } from '@/lib/quartz-url';
 import { getNavbarShortcuts } from '@/lib/profile/navbar-shortcuts-store.ts';
 import GardenClient from './garden-client';
 
@@ -53,6 +54,7 @@ export default async function GardenPage({
       <GardenClient
         clusterSlug={clusterSlug}
         clusterName={cluster.name}
+        quartzBaseUrl={resolveQuartzBaseUrl()}
         note={note}
         initialChatOpen={chat === '1'}
         trackPublicView={!cluster.isOwner && cluster.visibility === 'public'}

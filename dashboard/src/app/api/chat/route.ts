@@ -22,6 +22,7 @@ import {
 import { modelAttachmentPromptText } from '@/lib/model-attachments';
 import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
+import { gardenMediaKind } from '@/lib/garden-media-kind.ts';
 import { retrieveGraphRag } from '@/lib/semantic-retrieval';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { withCouncil } from '@/lib/council';
@@ -376,6 +377,9 @@ export async function POST(request: Request) {
     const selectedSourceNodes = knowledge.nodes.filter((node) =>
       selectedSourceSlugs.includes(node.slug),
     );
+    const selectedAudioSources = selectedSourceNodes.filter(
+      (node) => gardenMediaKind(node) === 'audio',
+    );
     const selectedDocumentNodes = knowledge.nodes.filter((node) =>
       selectedFocusSlugs.has(node.slug),
     );
@@ -419,6 +423,14 @@ export async function POST(request: Request) {
             .map((node) => `- ${node.title} (${node.slug})`)
             .join('\n')}\nThe user selected these documents in the UI, so treat them as the material they have provided. Do not ask the user to send or upload material when selected documents are present. If the user asks you to transform, explain, reconstruct, summarize, study, or write from "the material", "the PDFs", "the selected documents", or similar wording, do the task immediately using these selected documents and their connected topic notes as the primary context unless the user explicitly asks to broaden the scope.`
         : '';
+    const selectedAudioMarkdownContext = selectedAudioSources.length > 0
+      ? `\n\n[Selected audio recording transcript Markdown]\nThe selected audio is already transcribed. Read its Markdown directly; do not invoke waveform/audio analysis and do not ask for the audio file.\n\n${truncate(
+          selectedAudioSources
+            .map((node) => `# ${node.title || node.slug}\n\n${node.content}`)
+            .join('\n\n---\n\n'),
+          200_000,
+        )}`
+      : '';
 
     const activeMarkdownPromptContext = activeMarkdownContext
       ? `\n\nThe user currently has this specific page open in Quartz. When the user says "this page", "this markdown", "the current file", "what I have open", or asks anything that could refer to the visible page, treat this as the primary context before broader garden context. Do not ask the user to paste the page when this context is present. The surrounding application can edit the open markdown file; do not claim you lack filesystem or Quartz vault write access. If an edit request reaches you as normal chat, provide the intended edit or explain what you would change rather than saying it is impossible.\n\n# ${activeMarkdownContext.title || activeMarkdownContext.slug}\nSlug: ${activeMarkdownContext.slug}\n\n${truncate(activeMarkdownContext.content, 16000)}`
@@ -446,7 +458,7 @@ export async function POST(request: Request) {
       'use $...$ for inline math (e.g. $|\\Psi|^2$, $e^{i(kx-\\omega t)}$, $E = mc^2$) ' +
       'and $$...$$ on its own line for display/block equations. ' +
       'Never write math in plain text with ^ or bracket notation - always use proper LaTeX.\n\n' +
-      `${graphContext}${selectedDocumentContext}${activeMarkdownPromptContext}${highlightedTextPromptContext}\n\nGraphRAG-lite retrieved evidence (BM25, aliases, optional embeddings, and bounded one-hop relationships):\n\n${notesContext}`;
+      `${graphContext}${selectedDocumentContext}${selectedAudioMarkdownContext}${activeMarkdownPromptContext}${highlightedTextPromptContext}\n\nGraphRAG-lite retrieved evidence (BM25, aliases, optional embeddings, and bounded one-hop relationships):\n\n${notesContext}`;
 
     // A mental-health turn is answered as a CBT copilot on every surface, and
     // this legacy garden route is one of them.

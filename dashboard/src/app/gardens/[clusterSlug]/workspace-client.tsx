@@ -6097,12 +6097,16 @@ export default function WorkspaceClient({
       selecting = !prev.includes(slug);
       return selecting ? [...prev, slug] : prev.filter((item) => item !== slug);
     });
-    // Selecting a document is the moment the user decides to ask about it, so
-    // the distillation starts here rather than inside the first turn — where it
-    // would block the answer for minutes with nothing on screen but "Thinking".
-    // The turn builds it too if this has not finished; the second caller joins
-    // the same build.
-    if (selecting) void distillGardenDocument(slug);
+    const selectedDocument = documents.find((document) => document.slug === slug);
+    const selectedKind = selectedDocument
+      ? learnSourceKind(selectedDocument)
+      : null;
+    // Recordings have their own selection contracts: video selects Watch on the
+    // next turn, while audio is supplied as transcript Markdown. Only ordinary
+    // documents should start the book-to-skill distillation here.
+    if (selecting && selectedKind !== "audio" && selectedKind !== "video") {
+      void distillGardenDocument(slug);
+    }
   }
 
   async function distillGardenDocument(slug: string) {
@@ -12947,6 +12951,7 @@ export default function WorkspaceClient({
     sourceMedia: doc.sourceMedia,
     href: gardenDocumentHref(clusterSlug, doc),
     wordCount: doc.wordCount,
+    flagColor: doc.flagColor,
   }));
   const sourceDocSearchTerms = normalizedSearchText(sourceDocSearch)
     .trim()
@@ -15846,8 +15851,19 @@ export default function WorkspaceClient({
           expanded={mediaExpanded}
           mediaSources={gardenMediaSources}
           deletingSourceSlug={deletingDocumentSlug}
+          selectedSourceSlugs={selectedDocumentSlugs}
+          flagColors={FLAG_COLORS}
+          openFlagPaletteSlug={openFlagPaletteSlug}
+          savingFlagSlug={savingFlagSlug}
           onClose={() => setMediaDialogOpen(false)}
           onExpand={() => setMediaExpanded(true)}
+          onColorButtonClick={(sourceSlug) =>
+            handleDocumentColorButtonClick(sourceSlug, true)
+          }
+          onFlagSource={(sourceSlug, flagColor) => {
+            setOpenFlagPaletteSlug(null);
+            void handleDocumentFlag(sourceSlug, flagColor);
+          }}
           onDeleteSource={(sourceSlug) => {
             const source = mediaSourceDocuments.find(
               (document) => document.slug === sourceSlug,
