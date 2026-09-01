@@ -141,6 +141,7 @@ function notificationDatabase() {
     CREATE TABLE conversation_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       conversation_id INTEGER NOT NULL,
+      client_message_id TEXT,
       role TEXT NOT NULL,
       content TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL,
@@ -155,7 +156,8 @@ function notificationDatabase() {
       (10, 'conv_terminal', 1, 'Terminal chat', 'dashboard_terminal', NULL, NULL),
       (11, 'conv_garden', 1, 'Garden chat', 'garden_chat', 5, 42),
       (12, 'conv_temporary', 1, 'Off the record', 'dashboard_terminal', NULL, NULL),
-      (13, 'conv_other_user', 2, 'Someone else', 'dashboard_terminal', NULL, NULL);
+      (13, 'conv_other_user', 2, 'Someone else', 'dashboard_terminal', NULL, NULL),
+      (14, 'conv_telegram', 1, 'Renamed Telegram chat', 'dashboard_terminal', NULL, NULL);
     UPDATE conversations SET temporary = 1 WHERE id = 12;
   `);
   ensureChatNotificationSchema(db);
@@ -169,13 +171,21 @@ function addAnswer(
   updatedAt,
   status = "complete",
   metadata = null,
+  clientMessageId = null,
 ) {
   return Number(
     db.prepare(`
       INSERT INTO conversation_messages
-        (conversation_id, role, content, status, updated_at, metadata)
-      VALUES (?, 'assistant', ?, ?, ?, ?)
-    `).run(conversationId, content, status, updatedAt, metadata).lastInsertRowid,
+        (conversation_id, client_message_id, role, content, status, updated_at, metadata)
+      VALUES (?, ?, 'assistant', ?, ?, ?, ?)
+    `).run(
+      conversationId,
+      clientMessageId,
+      content,
+      status,
+      updatedAt,
+      metadata,
+    ).lastInsertRowid,
   );
 }
 
@@ -203,6 +213,51 @@ test("the first read draws a line under existing history", () => {
   assert.deepEqual(
     listPendingChatNotifications(db, 2).map((record) => record.id),
     [`msg_${first}`],
+  );
+});
+
+test("Telegram replies never become Breadboard notifications", () => {
+  const db = notificationDatabase();
+  const oldTelegram = addAnswer(
+    db,
+    14,
+    "An old Telegram reply",
+    "2026-08-30 08:00:00",
+    "complete",
+    null,
+    "telegram-chat-1:1",
+  );
+
+  assert.deepEqual(listPendingChatNotifications(db, 1), []);
+  assert.deepEqual(ensureChatNotificationBaseline(db, 1), {
+    updated_at: "",
+    message_id: 0,
+  });
+
+  const terminal = addAnswer(
+    db,
+    10,
+    "A Breadboard reply",
+    "2026-08-30 08:05:00",
+  );
+  const freshTelegram = addAnswer(
+    db,
+    14,
+    "A new Telegram reply",
+    "2026-08-30 08:06:00",
+    "complete",
+    null,
+    "telegram-chat-1:2",
+  );
+
+  assert.deepEqual(
+    listPendingChatNotifications(db, 1).map((record) => record.id),
+    [`msg_${terminal}`],
+  );
+  assert.equal(dismissChatNotifications(db, 1, [oldTelegram, freshTelegram]), 0);
+  assert.match(
+    source("../src/lib/telegram/inbound.ts"),
+    /const clientMessageId = `telegram-\$\{/,
   );
 });
 

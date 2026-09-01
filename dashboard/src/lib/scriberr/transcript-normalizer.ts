@@ -1,7 +1,8 @@
 // Deterministic transcript normalization. No LLM is ever involved: this module
 // turns Scriberr's structured transcript into the internal normalized model,
 // preserving every segment's complete text, Unicode intact, in chronological
-// order — and fails loudly when there is no transcript text at all.
+// order. A completed, explicitly empty, positive-duration result is represented
+// as no speech so a valid silent/inaudible upload is not discarded.
 
 import { VideoTranscriptionError } from "./errors.ts";
 import type {
@@ -9,6 +10,9 @@ import type {
   NormalizedTranscriptSegment,
   ScriberrTranscript,
 } from "./types.ts";
+
+export const NO_SPEECH_TRANSCRIPT_TEXT =
+  "[No speech was detected in this recording.]";
 
 function normalizeLineEndings(value: string): string {
   return value.replace(/\r\n?/g, "\n");
@@ -73,21 +77,39 @@ export function normalizeScriberrTranscript(
     });
   });
 
+  let noSpeechDetected = false;
+
   // Fall back to Scriberr's plain text only when no usable segments exist.
   if (working.length === 0) {
     const plain = cleanSegmentText(transcript.text ?? "");
-    if (!plain) {
+    if (plain) {
+      working.push({
+        startSeconds: 0,
+        endSeconds: fallbackDurationSeconds ?? 0,
+        speaker: null,
+        text: plain,
+        order: 0,
+      });
+    } else if (
+      transcript.text === "" &&
+      rawSegments.length === 0 &&
+      fallbackDurationSeconds !== null &&
+      Number.isFinite(fallbackDurationSeconds) &&
+      fallbackDurationSeconds > 0
+    ) {
+      noSpeechDetected = true;
+      working.push({
+        startSeconds: 0,
+        endSeconds: fallbackDurationSeconds,
+        speaker: null,
+        text: NO_SPEECH_TRANSCRIPT_TEXT,
+        order: 0,
+      });
+    } else {
       throw new VideoTranscriptionError("transcript_malformed", {
         detail: "transcript contained no text",
       });
     }
-    working.push({
-      startSeconds: 0,
-      endSeconds: fallbackDurationSeconds ?? 0,
-      speaker: null,
-      text: plain,
-      order: 0,
-    });
   }
 
   // Stable chronological sort (original order breaks ties).
@@ -141,6 +163,7 @@ export function normalizeScriberrTranscript(
     durationSeconds,
     sourceType,
     segments,
+    noSpeechDetected,
     speakers,
     transcriptionModel: transcriptionModel ?? transcript.modelUsed,
   };

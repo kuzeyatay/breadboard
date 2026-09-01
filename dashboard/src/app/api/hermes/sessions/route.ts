@@ -21,6 +21,7 @@ import { presentHermesSessionSummary } from "@/lib/hermes/session-presentation.t
 import { parseChatAttachments } from "@/lib/chat-attachments-request.ts";
 import { chatMessageAttachments } from "@/lib/chat-attachments.ts";
 import { normalizeChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
+import { scheduledChatReceiptForUser } from "@/lib/schedules/receipt-server.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,7 @@ function parseSurface(value: unknown): HermesSurface {
 function parseInitialTurn(
   value: unknown,
   context: {
+    userId: number;
     surface: HermesSurface;
     activeGardenSlug: string | null;
     activePageSlug: string | null;
@@ -63,6 +65,10 @@ function parseInitialTurn(
     Number.isFinite(Date.parse(turn.responseStartedAt))
       ? turn.responseStartedAt
       : undefined;
+  const scheduledChatReceipt = scheduledChatReceiptForUser(
+    context.userId,
+    turn.scheduleReceiptId,
+  );
   const preDispatchRecovery = {
     // Agent mode is the only first-turn path that can be resumed without a
     // browser-owned provider response body. Keep the mode with the durable
@@ -99,6 +105,7 @@ function parseInitialTurn(
       ...(turn.internalAgentContinuation === true
         ? { internalAgentContinuation: true }
         : {}),
+      ...(scheduledChatReceipt ? { scheduledChatReceipt } : {}),
       preDispatchRecovery,
     },
   };
@@ -145,6 +152,7 @@ export async function POST(request: Request) {
       ? body.pageSlug.slice(0, 500)
       : null;
     const initialTurn = parseInitialTurn(body.initialTurn, {
+      userId,
       surface,
       activeGardenSlug: garden?.slug ?? null,
       activePageSlug: pageSlug,

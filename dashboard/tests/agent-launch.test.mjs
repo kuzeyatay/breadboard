@@ -341,11 +341,15 @@ test("the continuation turn carries the outcome and refuses to relaunch", async 
 
   const failed = agentLaunchContinuationMessage({
     agentName: "ViMax",
+    reason: "ViMax can create the requested video artifact.",
     outcome: "failed",
-    content: "",
+    content: "Error: EISDIR: illegal operation on a directory, lstat 'C:'",
   });
   assert.match(failed, /did not finish/);
-  assert.match(failed, /no output/);
+  assert.match(failed, /ViMax was selected for this task because ViMax can create/);
+  assert.match(failed, /someone who may not know what agents, runtimes, launchers/);
+  assert.match(failed, /Do not repeat a stack trace, raw path, runtime version/);
+  assert.match(failed, /ordinary language what prevented it/);
   assert.match(failed, /Do not relaunch it without being asked\./);
 
   const retainedResearch = agentLaunchContinuationMessage({
@@ -395,16 +399,17 @@ test("agent-result continuations stay in context without impersonating the user"
 });
 
 test("a delegated research hand-back remains one populated assistant field", () => {
-  // The owning row folds into the continuation so there is never a duplicate
-  // assistant field. The continuation carries the old preamble until its first
-  // synthesized text arrives, so the single field never goes blank either.
+  // Ordinary delegated owners fold into the continuation so there is never a
+  // duplicate assistant field. Self-presenting OpenGym and God's Eye rows keep
+  // their interactive frame. The continuation carries the old preamble until
+  // its first synthesized text arrives, so the single field never goes blank.
   for (const [surface, sourceText, messageName] of [
     ["panel", runtimePanel, "message"],
     ["garden", garden, "msg"],
   ]) {
     assert.match(
       sourceText,
-      /storedMessage\.delegatedAgentRun === true &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+      /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.openGymRun &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
       `${surface} must fold the delegated owner into its continuation`,
     );
     assert.match(
@@ -438,9 +443,11 @@ test("a delegated research hand-back remains one populated assistant field", () 
       `${surface} must keep the original hand-off text in the continuation row`,
     );
   }
+  // Delegation still suppresses the actions; the expression may carry further
+  // surface-specific clauses (assistant-message editing) after these two.
   assert.match(
     runtimePanel,
-    /suppressActions=\{\s*message\.delegatedAgentRun === true \|\|\s*\(index === lastVisibleAssistantIndex && delegationInFlight\)\s*\}/,
+    /suppressActions=\{\s*message\.delegatedAgentRun === true \|\|\s*\(index === lastVisibleAssistantIndex && delegationInFlight\)/,
   );
   assert.match(assistantActions, /if \(suppressActions\) return null;/);
 });
@@ -592,16 +599,17 @@ test("every model-launchable agent uses structured same-message delegation", asy
   assert.match(garden, /agentLaunchQueue\.queued \|\|\s+delegatedAgentLaunching/);
   assert.match(garden, /scopeKey: activeChatId/);
   assert.match(garden, /workerClientMessageId[\s\S]*internalAgentContinuation: true/);
-  // The owning worker row is omitted while the private continuation is shown;
-  // it is not merely hidden with CSS (which would leave duplicate semantics in
-  // the rendered transcript).
+  // An ordinary owning worker row is omitted while the private continuation is
+  // shown; self-presenting OpenGym and God's Eye frames remain in the transcript.
+  // The ordinary row is not merely hidden with CSS, which would leave duplicate
+  // semantics in the rendered transcript.
   assert.match(
     runtimePanel,
-    /storedMessage\.delegatedAgentRun === true &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.openGymRun &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
   );
   assert.match(
     garden,
-    /storedMessage\.delegatedAgentRun === true &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.openGymRun &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
   );
   assert.match(terminal, /continuedDelegatedTurnsRef/);
   assert.match(garden, /continuedDelegatedRunsRef/);
@@ -698,6 +706,36 @@ test("the tool is super-agent only and revalidated on the route", () => {
   assert.match(route, /agent_launch_batch_limit_reached/);
   assert.match(route, /MAX_PARALLEL_AGENT_LAUNCHES/);
   assert.match(route, /starts privately/);
+});
+
+test("a launch states its case and never doubles a job", () => {
+  // The directive's launch test — name what the agent reaches that this turn
+  // cannot — is enforced at the boundary rather than left as prose, so a
+  // topic-match launch cannot slip through looking considered.
+  assert.match(route, /agent_launch_reason_required/);
+  assert.match(route, /If you cannot name one, do not launch/);
+  // And the reason precedes the queue: a refused call must cost nothing.
+  assert.ok(
+    route.indexOf("agent_launch_reason_required") <
+      route.indexOf("reserveAgentLaunchRequestSlot(run.id)"),
+  );
+  // The literal same job twice — one agent, one brief — is a retry loop or a
+  // thoroughness reflex, never a considered batch. Different briefs to the
+  // same agent stay allowed.
+  assert.match(route, /agent_launch_duplicate_job/);
+  assert.match(route, /queued\.agentId === agent\.id/);
+  // The schema is what the model actually sees, so the requirement and the
+  // decision test both have to live there, not only on the route.
+  assert.match(plugin, /\["agent", "brief", "reason"\]/);
+  assert.match(plugin, /the agent's topic is not a reason/i);
+  // Recovery from a wrong id offers names beside ids, so the retry is a
+  // choice rather than another guess.
+  assert.match(route, /\$\{candidate\.id\} \(\$\{candidate\.name\}\)/);
+  // The directive tells the model where the reason goes and that the tool
+  // will hold it to that, so schema, route, and prompt state one rule.
+  const superAgent = source("../src/lib/hermes/super-agent.ts");
+  assert.match(superAgent, /Write that one line into the launch's `reason` argument/);
+  assert.match(superAgent, /`agent_launch` refuses a call without one/);
 });
 
 test("Max Research is durable before its private launch event reaches a page", () => {
@@ -952,16 +990,20 @@ test("the visible answer reports the whole delegated operation's duration", () =
     /export function delegatedTurnCarriedDurationMs/,
   );
   assert.match(superAgentActivity, /export function delegatedTurnTotalUsage/);
-  // Only ever from the delegating turn, never from an ordinary preceding one.
-  assert.match(superAgentActivity, /owner\?\.delegatedAgentRun !== true/);
-  assert.match(superAgentActivity, /owner\?\.delegatedAgentRun === true/);
+  // The chain ends at the person's real message and must contain a delegated
+  // worker, so unrelated earlier answers can never leak into this total.
+  assert.match(superAgentActivity, /containsDelegatedWorker/);
+  assert.match(
+    superAgentActivity,
+    /message\.role === "user"[\s\S]{0,100}message\.internalAgentContinuation === true[\s\S]{0,40}break/,
+  );
   for (const [name, text] of [
     ["runtimePanel", runtimePanel],
     ["garden", garden],
   ]) {
     assert.match(
       text,
-      /delegatedTurnCarriedDurationMs\(continuationOwner\)/,
+      /delegatedTurnCarriedDurationMs\(messages, (?:index|i)\)/,
       name,
     );
     assert.match(text, /carriedDurationMs=\{carriedDurationMs\}/, name);

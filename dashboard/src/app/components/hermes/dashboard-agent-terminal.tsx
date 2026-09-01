@@ -27,6 +27,7 @@ import ChatGreetingEmptyState from "./chat-greeting-empty-state";
 import { useChatGreeting } from "./use-chat-greeting";
 import { ArtifactDockHostProvider } from "./artifact-dock-host";
 import ArtifactPanel, { ARTIFACT_AI_EDIT_EVENT } from "./artifact-panel";
+import { artifactUrl } from "./artifact-viewer";
 import {
   artifactAiEditMatchesScope,
   consumeArtifactAiEdit,
@@ -75,8 +76,13 @@ import TerminalScheduledPanel from "./terminal-scheduled-panel";
 import {
   formatRelativeRunTime,
   notifySchedulesChanged,
+  OPEN_SCHEDULES_PANEL_EVENT,
 } from "./schedule-client";
 import { parseExplicitScheduleRequest } from "@/lib/schedules/natural-language.ts";
+import {
+  normalizeScheduledChatReceipt,
+  type ScheduledChatJob,
+} from "@/lib/schedules/types.ts";
 import HooksPanel from "./hooks-panel";
 import ProcessesPanel from "./processes-panel";
 import {
@@ -103,6 +109,7 @@ import {
   reusableChatAttachments,
   type ChatAttachment,
 } from "@/lib/chat-attachments";
+import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { distillAttachments } from "@/lib/document-skills/client";
 import {
   agentBrowserStartFailure,
@@ -347,6 +354,37 @@ interface RuntimeHistorySession {
   highlight: string | null;
   /** Opened by the scheduler; while active it lives in the Scheduled section. */
   scheduled: boolean;
+  /** Opened unattended by a hook. */
+  hooked: boolean;
+}
+
+/**
+ * Field-wise equality for a polled history list. A refresh that changes
+ * nothing keeps the array's identity, which keeps the memoized rail rows —
+ * and everything else derived from `history` — off the render path.
+ */
+function sameHistoryList(
+  a: readonly RuntimeHistorySession[],
+  b: readonly RuntimeHistorySession[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    const x = a[index];
+    const y = b[index];
+    if (
+      x.id !== y.id ||
+      x.title !== y.title ||
+      x.updatedAt !== y.updatedAt ||
+      x.active !== y.active ||
+      x.pinned !== y.pinned ||
+      x.highlight !== y.highlight ||
+      x.scheduled !== y.scheduled ||
+      x.hooked !== y.hooked
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 const HEIGHT_KEY = "breadboard:knowledge-terminal-height";
@@ -864,6 +902,17 @@ function RuntimeTerminal({
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [extractingAttachments, setExtractingAttachments] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState("");
+  const [attachingArtifactIds, setAttachingArtifactIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const attachedArtifactIds = useMemo(
+    () => new Set(
+      chatAttachments.flatMap((attachment) =>
+        attachment.sourceArtifactId ? [attachment.sourceArtifactId] : [],
+      ),
+    ),
+    [chatAttachments],
+  );
   // One panel at a time opens beside the transcript: the artifact archive,
   // uploads, scheduling, or route-owned automations. All live in the left rail.
   const [sidePanel, setSidePanel] = useState<TerminalPanel | null>(
@@ -872,6 +921,16 @@ function RuntimeTerminal({
   const [productPanel, setProductPanel] = useState<ProductPanelSelection | null>(
     null,
   );
+  useEffect(() => {
+    const openScheduled = () => {
+      setProductPanel(null);
+      setSidePanel("scheduled");
+    };
+    window.addEventListener(OPEN_SCHEDULES_PANEL_EVENT, openScheduled);
+    return () => {
+      window.removeEventListener(OPEN_SCHEDULES_PANEL_EVENT, openScheduled);
+    };
+  }, []);
   const handleGenerativeUiAction = useCallback(
     (action: GenerativeUiAction) => {
       const product = productForAction(action);
@@ -1656,31 +1715,37 @@ function RuntimeTerminal({
           setHistoryError((current) =>
             current === HISTORY_REFRESH_FAILED ? null : current,
           );
-          setHistory(
-            sessions
-              .filter(
-                (item): item is HermesSessionSnapshot & { id: string } =>
-                  typeof item.id === "string" && item.id.startsWith("conv_"),
-              )
-              .map((item) => {
-                return {
-                  id: item.id,
-                  title:
-                    typeof item.title === "string" ? item.title : "New chat",
-                  updatedAt:
-                    typeof item.updatedAt === "string" ? item.updatedAt : "",
-                  active:
-                    Boolean(item.activeRun) ||
-                    item.externalAgentActive === true,
-                  pinned: item.pinned === true,
-                  scheduled:
-                    typeof item.scheduledChatJobId === "number" &&
-                    item.scheduledChatJobId > 0,
-                  // The server already rejected anything outside the palette.
-                  highlight:
-                    typeof item.highlight === "string" ? item.highlight : null,
-                };
-              }),
+          const next = sessions
+            .filter(
+              (item): item is HermesSessionSnapshot & { id: string } =>
+                typeof item.id === "string" && item.id.startsWith("conv_"),
+            )
+            .map((item) => {
+              return {
+                id: item.id,
+                title:
+                  typeof item.title === "string" ? item.title : "New chat",
+                updatedAt:
+                  typeof item.updatedAt === "string" ? item.updatedAt : "",
+                active:
+                  Boolean(item.activeRun) ||
+                  item.externalAgentActive === true,
+                pinned: item.pinned === true,
+                scheduled:
+                  typeof item.scheduledChatJobId === "number" &&
+                  item.scheduledChatJobId > 0,
+                hooked:
+                  typeof item.hookId === "string" &&
+                  item.hookId.trim().length > 0,
+                // The server already rejected anything outside the palette.
+                highlight:
+                  typeof item.highlight === "string" ? item.highlight : null,
+              };
+            });
+          // Most polls confirm what the rail already shows. Keeping the old
+          // array then lets React skip the re-render entirely.
+          setHistory((current) =>
+            sameHistoryList(current, next) ? current : next,
           );
         })
         .catch(() => {
@@ -1732,16 +1797,19 @@ function RuntimeTerminal({
   // network request for every streamed token or external-agent terminal event.
   useEffect(() => {
     if (!session.sessionId) return;
-    setHistory((current) =>
-      current.map((item) =>
-        item.id === session.sessionId
-          ? {
-              ...item,
-              active: currentChatActive,
-            }
-          : item,
-      ),
-    );
+    // This runs on every streamed token (the session.messages dependency), so
+    // it must return the same array — same row objects included — whenever
+    // the flag already matches; a fresh list here re-rendered the whole rail
+    // once per token for the length of a response.
+    setHistory((current) => {
+      const index = current.findIndex((item) => item.id === session.sessionId);
+      if (index === -1 || current[index].active === currentChatActive) {
+        return current;
+      }
+      const next = current.slice();
+      next[index] = { ...next[index], active: currentChatActive };
+      return next;
+    });
   }, [currentChatActive, session.messages, session.sessionId]);
 
   // A chat counts as read only while the dock is actually showing it. An answer
@@ -6213,6 +6281,7 @@ function RuntimeTerminal({
   // order they finish.
   interface AwaitedLaunch {
     agentName: string;
+    reason: string;
     requestId: string;
     clientMessageId: string;
   }
@@ -6240,8 +6309,8 @@ function RuntimeTerminal({
         launchRoundOriginsRef.current.clear();
         awaitedLaunchesRef.current.clear();
       }
-      // Plain-language time instructions are scheduler commands, not prompts
-      // for the model to discuss. Keep this conservative and attachment-free:
+      // Plain-language time instructions create the schedule before their
+      // confirmation turn is persisted. Keep this conservative and attachment-free:
       // the parser only returns explicit recurring language or a relative delay
       // paired with an action ("start this task in an hour and a half").
       const schedule = textOverride === undefined && chatAttachments.length === 0
@@ -6250,6 +6319,7 @@ function RuntimeTerminal({
       if (schedule) {
         setInput("");
         setAttachmentStatus("");
+        let scheduleCreated = false;
         try {
           const response = await fetch("/api/schedules", {
             method: "POST",
@@ -6267,21 +6337,33 @@ function RuntimeTerminal({
           });
           const payload = (await response.json().catch(() => ({}))) as {
             error?: string;
+            schedule?: ScheduledChatJob;
           };
           if (!response.ok) {
             throw new Error(payload.error ?? "This task could not be scheduled.");
           }
+          scheduleCreated = true;
+          const receipt = normalizeScheduledChatReceipt(payload.schedule);
+          if (!receipt) {
+            throw new Error("The schedule was created without a valid receipt.");
+          }
           notifySchedulesChanged();
-          setSidePanel("scheduled");
           setAttachmentStatus(
             schedule.runAt
               ? `Scheduled ${formatRelativeRunTime(schedule.runAt)}.`
               : "Scheduled.",
           );
+          await session.send(text, {
+            model,
+            reasoningEffort,
+            scheduledChatReceipt: receipt,
+          });
         } catch (cause) {
-          setInput(text);
+          if (!scheduleCreated) setInput(text);
           setAttachmentStatus(
-            cause instanceof Error
+            scheduleCreated
+              ? "Scheduled, but the confirmation could not be added to this chat."
+              : cause instanceof Error
               ? cause.message
               : "This task could not be scheduled.",
           );
@@ -7066,6 +7148,7 @@ function RuntimeTerminal({
           run: request.startedRun,
           attachToExistingTurn,
           delegatedAgentRun: !attachToExistingTurn,
+          delegatedAgentReason: request.reason,
         });
       } catch (error) {
         setAttachmentStatus(
@@ -7080,6 +7163,7 @@ function RuntimeTerminal({
     }
     session.beginDelegatedExternalAgentTurn(workerClientMessageId, {
       attachToExistingTurn,
+      reason: request.reason,
     });
     setDelegatedAgentLaunching(true);
     try {
@@ -7179,6 +7263,7 @@ function RuntimeTerminal({
               outcome: "failed",
               attachToExistingTurn,
               delegatedAgentRun: !attachToExistingTurn,
+              delegatedAgentReason: request.reason,
             });
             return;
           }
@@ -7272,6 +7357,7 @@ function RuntimeTerminal({
             outcome: "failed",
             attachToExistingTurn,
             delegatedAgentRun: !attachToExistingTurn,
+            delegatedAgentReason: request.reason,
           });
         } catch {
           setAttachmentStatus(`${request.agentName} could not start.`);
@@ -7315,6 +7401,7 @@ function RuntimeTerminal({
         const clientMessageId = agentLaunchWorkerClientMessageId(request);
         awaitedLaunchesRef.current.set(clientMessageId, {
           agentName: request.agentName,
+          reason: request.reason,
           requestId: request.requestId,
           clientMessageId,
         });
@@ -7375,6 +7462,7 @@ function RuntimeTerminal({
     const terminalResults: Array<{
       continuationKey: string;
       agentName: string;
+      reason?: string;
       outcome: "completed" | "failed";
       content: string;
     }> = [];
@@ -7402,6 +7490,7 @@ function RuntimeTerminal({
         if (message.clientMessageId) {
           awaitedLaunchesRef.current.set(message.clientMessageId, {
             agentName,
+            reason: message.delegatedAgentReason ?? "",
             requestId: continuationKey,
             clientMessageId: message.clientMessageId,
           });
@@ -7420,6 +7509,7 @@ function RuntimeTerminal({
       terminalResults.push({
         continuationKey,
         agentName,
+        reason: message.delegatedAgentReason,
         outcome:
           message.externalAgentOutcome === "completed" ? "completed" : "failed",
         content: externalAgentCardContent(message),
@@ -7431,6 +7521,7 @@ function RuntimeTerminal({
       agentLaunchContinuationMessage({
         continuationId: result.continuationKey,
         agentName: result.agentName,
+        reason: result.reason,
         outcome: result.outcome,
         content: result.content,
         remaining: runningWorkers + terminalResults.length - index - 1,
@@ -7651,6 +7742,7 @@ function RuntimeTerminal({
           agentLaunchContinuationMessage({
             continuationId: clientMessageId,
             agentName: awaited.agentName,
+            reason: awaited.reason,
             outcome: result.outcome,
             content: result.content,
             remaining: awaitedLaunchesRef.current.size,
@@ -7773,6 +7865,64 @@ function RuntimeTerminal({
       setExtractingAttachments(false);
     }
   }, []);
+
+  const toggleArtifactAttachment = useCallback(async (
+    artifact: PresentedArtifact,
+  ) => {
+    if (attachedArtifactIds.has(artifact.id)) {
+      setChatAttachments((current) =>
+        current.filter((attachment) => attachment.sourceArtifactId !== artifact.id),
+      );
+      return;
+    }
+    if (!artifact.downloadAvailable || attachingArtifactIds.size > 0) return;
+
+    setAttachingArtifactIds(new Set([artifact.id]));
+    setExtractingAttachments(true);
+    setAttachmentStatus(`Attaching ${artifact.title}…`);
+    try {
+      const response = await fetch(artifactUrl(artifact, "download"));
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: unknown };
+        throw new Error(
+          typeof payload.error === "string" ? payload.error : "Could not download the artifact.",
+        );
+      }
+      const blob = await response.blob();
+      const file = new File([blob], artifact.filename, {
+        type: artifact.mimeType || blob.type,
+        lastModified: Date.now(),
+      });
+      const result = await extractChatAttachments([file], {
+        allowVideo: true,
+        onStatus: setAttachmentStatus,
+      });
+      const scoped = result.attachments.map((attachment) => ({
+        ...attachment,
+        sourceArtifactId: artifact.id,
+      }));
+      if (scoped.length > 0) {
+        setChatAttachments((current) => [
+          ...current.filter((attachment) => attachment.sourceArtifactId !== artifact.id),
+          ...scoped,
+        ]);
+      }
+      setAttachmentStatus([...result.errors, ...result.warnings].join(" · "));
+      const distillErrors = await distillAttachments(scoped, {
+        onStatus: setAttachmentStatus,
+      });
+      if (distillErrors.length > 0) {
+        setAttachmentStatus(distillErrors.join(" · "));
+      }
+    } catch (cause) {
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : `Could not attach ${artifact.title}.`,
+      );
+    } finally {
+      setAttachingArtifactIds(new Set());
+      setExtractingAttachments(false);
+    }
+  }, [attachedArtifactIds, attachingArtifactIds]);
 
   const handleAttachmentInput = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -8097,17 +8247,25 @@ function RuntimeTerminal({
     }
   }
 
-  // The rail only receives summary rows; transcripts load for the selected chat.
-  const sidebarChats: TerminalSidebarChat[] = history.map((item) => ({
-    id: item.id,
-    title: item.title,
-    updatedAt: item.updatedAt,
-    active: item.active,
-    pinned: item.pinned,
-    scheduled: item.scheduled,
-    highlight: item.highlight,
-    unread: unreadChats.has(item.id),
-  }));
+  // The rail only receives summary rows; transcripts load for the selected
+  // chat. Memoized so a keystroke in the composer — which re-renders this
+  // whole component — hands the rail the same row objects it saw last time
+  // and its memoized rows can all bail.
+  const sidebarChats: TerminalSidebarChat[] = useMemo(
+    () =>
+      history.map((item) => ({
+        id: item.id,
+        title: item.title,
+        updatedAt: item.updatedAt,
+        active: item.active,
+        pinned: item.pinned,
+        scheduled: item.scheduled,
+        hooked: item.hooked,
+        highlight: item.highlight,
+        unread: unreadChats.has(item.id),
+      })),
+    [history, unreadChats],
+  );
   // A blank conversation has no durable id until its first turn is sent. Put
   // its row in Recents from the first typed character, so the rail responds to
   // the draft immediately instead of waiting for session creation and a
@@ -8123,21 +8281,25 @@ function RuntimeTerminal({
         ? session.sessionId
         : null
     : null;
-  const railChats: TerminalSidebarChat[] = pendingChatId !== null
-    ? [
-        {
-          id: pendingChatId,
-          title: "New chat",
-          updatedAt: "",
-          active: false,
-          pinned: false,
-          pending: true,
-          highlight: null,
-          unread: false,
-        },
-        ...sidebarChats,
-      ]
-    : sidebarChats;
+  const railChats: TerminalSidebarChat[] = useMemo(
+    () =>
+      pendingChatId !== null
+        ? [
+            {
+              id: pendingChatId,
+              title: "New chat",
+              updatedAt: "",
+              active: false,
+              pinned: false,
+              pending: true,
+              highlight: null,
+              unread: false,
+            },
+            ...sidebarChats,
+          ]
+        : sidebarChats,
+    [pendingChatId, sidebarChats],
+  );
   // The rollup the dock bar carries. A chat still running is not counted: the
   // dot says something is waiting to be read, not that something is happening.
   const unreadCount = sidebarChats.filter(
@@ -8932,6 +9094,7 @@ function RuntimeTerminal({
                 steerableRun={Boolean(session.activeRunId) && !runtimeUnavailable}
                 onSendQueued={sendQueued}
                 onEditMessage={editMessage}
+                onEditAssistantMessage={session.editAssistantMessage}
                 onDeleteMessage={session.deleteMessage}
                 onSelectBranch={selectBranch}
                 disabled={runtimeUnavailable}
@@ -9197,6 +9360,9 @@ function RuntimeTerminal({
                     sourceSurface="dashboard_terminal"
                     creationConversationId={session.sessionId}
                     ensureCreationConversation={session.ensureConversation}
+                    attachedArtifactIds={attachedArtifactIds}
+                    attachingArtifactIds={attachingArtifactIds}
+                    onToggleArtifactAttachment={toggleArtifactAttachment}
                   />
                 ) : sidePanel === "uploads" ? (
                   <UploadsPanel

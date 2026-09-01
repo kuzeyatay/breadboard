@@ -822,15 +822,14 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       PORT: String(config.ports.dashboard),
       HOSTNAME: "127.0.0.1",
       // --- Data + content locations (single source of truth: path-resolver) ---
-      // An empty override in dev preserves the dashboard's historical
-      // `<repo>/dashboard/db` layout. A configured BREADBOARD_DATA_DIR opts the
-      // dashboard into the packaged `<data>/database` layout, so pointing it at
-      // `<repo>/dashboard` would silently create `<repo>/dashboard/database`.
-      // Explicitly clear it to prevent an inherited shell value doing the same.
-      BREADBOARD_DATA_DIR:
-        paths.mode === "packaged" || paths.qaMode ? paths.dataRoot : "",
+      // Development and packaged builds share one Electron profile. This is
+      // the account boundary: databases, attachments, artifacts, and other
+      // durable dashboard data must not fork merely because program code came
+      // from the checkout instead of the installed bundle.
+      BREADBOARD_DATA_DIR: paths.dataRoot,
       // A dev standalone server changes cwd to its traced build directory.
-      // Keep its mutable data in the same dashboard/db location as hot reload.
+      // Keep the checkout dashboard root explicit for development source/runtime
+      // discovery; BREADBOARD_DATA_DIR above remains the mutable-data authority.
       BREADBOARD_DEVELOPMENT_DASHBOARD_DIR:
         paths.mode === "dev" ? path.join(paths.appRoot, "dashboard") : "",
       BREADBOARD_LEARN_WORKER_DASHBOARD_ROOT:

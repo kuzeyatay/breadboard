@@ -314,10 +314,10 @@ test("a non-interactive turn cannot project Terminal execution authority", () =>
   assert.equal(prepared.grant.allowedTools.terminal_execute_command, false);
 });
 
-test("a conversational turn projects onto the knowledge decision", () => {
+test("a conversational turn keeps its knowledge mode while retaining the permission-gated Terminal", () => {
   const prepared = prepare("What is amplitude modulation?");
   assert.equal(prepared.decision.mode, "knowledge");
-  assert.ok(!prepared.decision.allowedTools.includes("terminal_execute_command"));
+  assert.ok(prepared.decision.allowedTools.includes("terminal_execute_command"));
   assert.ok(prepared.decision.allowedTools.includes("artifact_create"));
   assert.ok(!prepared.decision.allowedTools.includes("bash"));
 });

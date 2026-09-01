@@ -2,6 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import AdmZip from "adm-zip";
 import type { ArtifactKind, ArtifactRendererId } from "./artifact-types.ts";
+import { AUDIO_ATTACHMENT_FORMATS } from "../audio-attachments.ts";
+import { VIDEO_ATTACHMENT_FORMATS } from "../video-attachments.ts";
+import {
+  MODEL_ATTACHMENT_FORMATS,
+  isModelAttachmentFormat,
+} from "../model-attachments.ts";
+import { inspectModelUpload } from "../conversations/model-inspect.ts";
 
 export const MAX_IMPORTED_ARTIFACT_BYTES = 128 * 1024 * 1024;
 /**
@@ -55,7 +62,7 @@ function profile(
   return { rendererId, mimeType, extension, previewAvailable };
 }
 
-function validateSvg(filePath: string): void {
+function validateSvg(filePath: string): boolean {
   const content = fs.readFileSync(filePath, "utf8");
   if (!/<svg(?:\s|>)/i.test(content)) {
     throw new ArtifactImportError("artifact_import_signature", "The file is not a valid SVG document.");
@@ -65,11 +72,9 @@ function validateSvg(filePath: string): void {
     /\son[a-z]+\s*=/i.test(content) ||
     /\b(?:href|src)\s*=\s*["']\s*(?:https?:|file:|javascript:)/i.test(content)
   ) {
-    throw new ArtifactImportError(
-      "artifact_import_unsafe_svg",
-      "SVG artifacts cannot contain scripts, embedded documents, event handlers, or external resources.",
-    );
+    return false;
   }
+  return true;
 }
 
 function validateOfficeArchive(filePath: string, expectedEntry: string): void {
@@ -83,6 +88,22 @@ function validateOfficeArchive(filePath: string, expectedEntry: string): void {
     throw new ArtifactImportError(
       "artifact_import_signature",
       `The Office package is missing ${expectedEntry}.`,
+    );
+  }
+}
+
+function validateZipArchive(filePath: string, expectedEntry?: string): void {
+  let archive: AdmZip;
+  try {
+    archive = new AdmZip(filePath);
+    archive.getEntries();
+  } catch {
+    throw new ArtifactImportError("artifact_import_signature", "The file is not a valid ZIP archive.");
+  }
+  if (expectedEntry && !archive.getEntry(expectedEntry)) {
+    throw new ArtifactImportError(
+      "artifact_import_signature",
+      `The archive is missing ${expectedEntry}.`,
     );
   }
 }
@@ -119,6 +140,15 @@ function mediaProfile(
   const renderer = kind === "audio" ? "audio-file" : "video-file";
   if (
     kind === "audio" &&
+    extension === ".aac" &&
+    header[0] === 0xff &&
+    (header[1] & 0xf6) === 0xf0
+  ) {
+    return profile(renderer, AUDIO_ATTACHMENT_FORMATS.aac.mimeType, ".aac");
+  }
+  if (
+    kind === "audio" &&
+    extension === ".mp3" &&
     (ascii(header, 0, 3) === "ID3" ||
       (header[0] === 0xff && (header[1] & 0xe0) === 0xe0))
   ) {
@@ -127,21 +157,55 @@ function mediaProfile(
   if (kind === "audio" && ascii(header, 0, 4) === "RIFF" && ascii(header, 8, 4) === "WAVE") {
     return profile(renderer, "audio/wav", ".wav");
   }
+  if (kind === "audio" && ascii(header, 0, 4) === "fLaC") {
+    return profile(renderer, AUDIO_ATTACHMENT_FORMATS.flac.mimeType, ".flac");
+  }
   if (ascii(header, 0, 4) === "OggS") {
-    return profile(renderer, kind === "audio" ? "audio/ogg" : "video/ogg", extension === ".oga" ? ".oga" : ".ogg");
+    if (kind === "audio" && (extension === ".ogg" || extension === ".oga")) {
+      return profile(renderer, AUDIO_ATTACHMENT_FORMATS[extension.slice(1) as "ogg" | "oga"].mimeType, extension);
+    }
+    return kind === "video" && extension === ".webm"
+      ? null
+      : profile(renderer, kind === "audio" ? "audio/ogg" : "video/ogg", extension);
   }
   if (
     kind === "video" &&
     startsWith(header, [0x1a, 0x45, 0xdf, 0xa3])
   ) {
-    return profile(renderer, "video/webm", ".webm");
+    if (extension !== ".webm" && extension !== ".mkv") return null;
+    const format = extension.slice(1) as "webm" | "mkv";
+    return profile(renderer, VIDEO_ATTACHMENT_FORMATS[format].mimeType, extension);
   }
   if (ascii(header, 4, 4) === "ftyp") {
+    if (kind === "audio") {
+      if (![".m4a", ".mp4a"].includes(extension)) return null;
+      const format = extension.slice(1) as "m4a" | "mp4a";
+      return profile(renderer, AUDIO_ATTACHMENT_FORMATS[format].mimeType, extension);
+    }
+    if (![".mp4", ".mov", ".m4v"].includes(extension)) return null;
+    const format = extension.slice(1) as "mp4" | "mov" | "m4v";
     return profile(
       renderer,
-      kind === "audio" ? "audio/mp4" : "video/mp4",
-      kind === "audio" ? (extension === ".m4a" ? ".m4a" : ".mp4") : ".mp4",
+      VIDEO_ATTACHMENT_FORMATS[format].mimeType,
+      extension,
     );
+  }
+  if (kind === "video" && ascii(header, 0, 4) === "RIFF" && ascii(header, 8, 4) === "AVI ") {
+    return profile(renderer, VIDEO_ATTACHMENT_FORMATS.avi.mimeType, ".avi", false);
+  }
+  if (
+    kind === "video" &&
+    (startsWith(header, [0x00, 0x00, 0x01, 0xba]) || startsWith(header, [0x00, 0x00, 0x01, 0xb3])) &&
+    (extension === ".mpg" || extension === ".mpeg")
+  ) {
+    return profile(renderer, VIDEO_ATTACHMENT_FORMATS[extension.slice(1) as "mpg" | "mpeg"].mimeType, extension, false);
+  }
+  if (
+    kind === "video" &&
+    extension === ".wmv" &&
+    startsWith(header, [0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c])
+  ) {
+    return profile(renderer, VIDEO_ATTACHMENT_FORMATS.wmv.mimeType, ".wmv", false);
   }
   return null;
 }
@@ -187,6 +251,27 @@ export function inspectArtifactImport(
       "The file is not a PDF document.",
     );
   }
+  if (kind === "text" && extension === ".txt") {
+    if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
+      throw new ArtifactImportError("artifact_import_too_large", "Text imports cannot exceed 16 MiB.");
+    }
+    validateText(filePath);
+    return profile("text-file", "text/plain; charset=utf-8", ".txt");
+  }
+  if (kind === "markdown" && (extension === ".md" || extension === ".markdown")) {
+    if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
+      throw new ArtifactImportError("artifact_import_too_large", "Markdown imports cannot exceed 16 MiB.");
+    }
+    validateText(filePath);
+    return profile("markdown-file", "text/markdown; charset=utf-8", extension);
+  }
+  if (kind === "html" && (extension === ".html" || extension === ".htm")) {
+    if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
+      throw new ArtifactImportError("artifact_import_too_large", "HTML imports cannot exceed 16 MiB.");
+    }
+    validateText(filePath);
+    return profile("html-file", "text/html; charset=utf-8", extension);
+  }
   if (kind === "image") {
     const detected = imageProfile(header, extension);
     if (detected) return detected;
@@ -195,8 +280,7 @@ export function inspectArtifactImport(
     const detected = imageProfile(header, extension);
     if (detected) return { ...detected, rendererId: "diagram-file" };
     if (extension === ".svg") {
-      validateSvg(filePath);
-      return profile("diagram-file", "image/svg+xml", ".svg");
+      return profile("diagram-file", "image/svg+xml", ".svg", validateSvg(filePath));
     }
   }
   if (kind === "audio" || kind === "video") {
@@ -215,6 +299,10 @@ export function inspectArtifactImport(
       false,
     );
   }
+  if (kind === "document" && extension === ".odt") {
+    validateZipArchive(filePath, "content.xml");
+    return profile("document-file", "application/vnd.oasis.opendocument.text", ".odt", false);
+  }
   if (kind === "presentation" && extension === ".pptx") {
     if (stat.size > MAX_OFFICE_ARTIFACT_BYTES) {
       throw new ArtifactImportError("artifact_import_too_large", "Presentation imports cannot exceed 32 MiB.");
@@ -226,6 +314,10 @@ export function inspectArtifactImport(
       ".pptx",
       false,
     );
+  }
+  if (kind === "presentation" && extension === ".odp") {
+    validateZipArchive(filePath, "content.xml");
+    return profile("presentation-file", "application/vnd.oasis.opendocument.presentation", ".odp", false);
   }
   if (kind === "spreadsheet") {
     if (extension === ".xlsx") {
@@ -240,14 +332,18 @@ export function inspectArtifactImport(
         false,
       );
     }
+    if (extension === ".ods") {
+      validateZipArchive(filePath, "content.xml");
+      return profile("spreadsheet-file", "application/vnd.oasis.opendocument.spreadsheet", ".ods", false);
+    }
     if (extension === ".csv" || extension === ".tsv") {
       if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
         throw new ArtifactImportError("artifact_import_too_large", "Delimited spreadsheet imports cannot exceed 16 MiB.");
       }
-      const content = validateText(filePath);
-      if (!/[,;\t]/.test(content)) {
-        throw new ArtifactImportError("artifact_import_signature", "The spreadsheet contains no delimited rows.");
-      }
+      // A one-column CSV/TSV is still a valid delimited table, even though it
+      // contains no delimiter character. Text validation is the reliable
+      // boundary here; the spreadsheet editor decides how many columns exist.
+      validateText(filePath);
       return profile(
         "spreadsheet-file",
         extension === ".tsv" ? "text/tab-separated-values; charset=utf-8" : "text/csv; charset=utf-8",
@@ -281,19 +377,21 @@ export function inspectArtifactImport(
     return profile("code", "text/plain; charset=utf-8", safeExtension);
   }
   if (kind === "model") {
-    // GLB is the self-contained binary glTF container ShapeR emits. Requiring
-    // both its fixed header and version 2 prevents an arbitrary binary renamed
-    // to .glb from becoming an authenticated browser preview.
-    const version = header.length >= 8 ? header.readUInt32LE(4) : 0;
-    const declaredLength = header.length >= 12 ? header.readUInt32LE(8) : 0;
-    if (
-      extension === ".glb" &&
-      ascii(header, 0, 4) === "glTF" &&
-      version === 2 &&
-      declaredLength === stat.size
-    ) {
-      return profile("model-file", "model/gltf-binary", ".glb");
+    const format = extension.slice(1);
+    if (!isModelAttachmentFormat(format)) {
+      throw new ArtifactImportError("artifact_import_signature", "That 3D model format is not supported.");
     }
+    try {
+      inspectModelUpload(fs.readFileSync(filePath), format);
+    } catch {
+      throw new ArtifactImportError("artifact_import_signature", "The file does not match its 3D model format.");
+    }
+    const descriptor = MODEL_ATTACHMENT_FORMATS[format];
+    return profile("model-file", descriptor.mimeType, extension, format === "glb");
+  }
+  if (kind === "unknown" && extension === ".zip") {
+    validateZipArchive(filePath);
+    return profile("archive-file", "application/zip", ".zip", false);
   }
 
   throw new ArtifactImportError(

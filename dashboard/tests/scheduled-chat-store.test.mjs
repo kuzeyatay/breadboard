@@ -94,6 +94,27 @@ test("a schedule keeps the intelligence selected when it was created", () => {
   );
 });
 
+test("a messaging reminder keeps its direct delivery contract", () => {
+  const store = createStore();
+  const row = store.create(1, {
+    ...terminalJob,
+    prompt: "drink water",
+    deliveryChannel: "telegram",
+    deliveryMode: "reminder",
+  });
+  assert.equal(row.delivery_channel, "telegram");
+  assert.equal(row.delivery_mode, "reminder");
+
+  const edited = store.update(1, row.id, { prompt: "stretch" });
+  assert.equal(edited.prompt, "stretch");
+  assert.equal(edited.delivery_channel, "telegram");
+  assert.equal(edited.delivery_mode, "reminder");
+  assert.throws(
+    () => store.create(1, { ...terminalJob, deliveryChannel: "telegram" }),
+    ScheduleError,
+  );
+});
+
 test("a garden schedule keeps its garden and a terminal schedule cannot have one", () => {
   const store = createStore();
   const garden = store.create(1, { ...terminalJob, surface: "garden_chat", gardenSlug: "physics" });

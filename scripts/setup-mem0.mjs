@@ -21,7 +21,10 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { assertPinnedCleanCheckout } from "../desktop/scripts/pinned-source-checkout.mjs";
+import {
+  assertPinnedCleanCheckout,
+  pinnedSourceTree,
+} from "../desktop/scripts/pinned-source-checkout.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageDir = path.join(repoRoot, "mem0", "mem0-ts");
@@ -89,13 +92,10 @@ function assertPinnedSource() {
     label: "mem0",
     sourceRoot: path.join(repoRoot, "mem0"),
     expectedCommit: PINNED_MEM0_BUILD.sourceCommit,
+    allowVendoredSnapshot: true,
   });
-  const tree = spawnSync(
-    "git",
-    ["-C", path.join(repoRoot, "mem0"), "rev-parse", "HEAD:mem0-ts"],
-    { encoding: "utf8", shell: false, windowsHide: true },
-  );
-  if (tree.status !== 0 || tree.stdout.trim() !== PINNED_MEM0_BUILD.sourceTree) {
+  const tree = pinnedSourceTree(path.join(repoRoot, "mem0"), "mem0-ts");
+  if (tree !== PINNED_MEM0_BUILD.sourceTree) {
     throw new Error("The reviewed mem0-ts Git tree is unavailable.");
   }
   for (const [relativePath, expected] of Object.entries(PINNED_MEM0_BUILD.files)) {

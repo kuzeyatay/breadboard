@@ -62,6 +62,7 @@ import {
   evidenceCalibrationSection,
   suppliedEvidenceText,
 } from "../hermes/evidence-calibration.ts";
+import { answerDepthSection } from "../hermes/answer-depth.ts";
 import {
   completeAssistantMessage,
   failAssistantMessage,
@@ -69,9 +70,15 @@ import {
   reserveConversationTurn,
   retryAssistantMessage,
   isPreDispatchReservedAssistant,
+  conversationIsTemporary,
   ConversationStoreError,
   type ConversationRow,
 } from "./store.ts";
+import {
+  composeExplicitCrossConversationContext,
+  retrieveExplicitCrossConversationContext,
+} from "./memory.ts";
+import { parseChatReferenceCommand } from "./chat-reference.ts";
 import {
   generateAndApplyConversationTitle,
   shouldGenerateConversationTitleForTurn,
@@ -79,6 +86,15 @@ import {
 import { scheduleMemoryProfileSynthesisForConversation } from "./memory-profile.ts";
 import type { CurrentLocationSnapshot } from "../current-location.ts";
 import { renderCurrentLocationContext } from "../hermes/current-location-context.ts";
+import { fetchWeatherForecast } from "../weather/forecast.ts";
+import {
+  parseWeatherChatIntent,
+  weatherResultsMessage,
+} from "../weather/chat-intent.ts";
+import {
+  scheduledChatConfirmationText,
+  type ScheduledChatReceipt,
+} from "../schedules/types.ts";
 
 export const DIRECT_BACKEND = "direct-provider";
 
@@ -127,6 +143,8 @@ export interface StartDirectTurnInput {
   branchGroupId?: string;
   /** Internal result hand-back from a delegated agent, not a person's message. */
   internalAgentContinuation?: boolean;
+  /** Schedule the app already created for this user-authored turn. */
+  scheduledChatReceipt?: ScheduledChatReceipt;
   /** Client-observed beginning of the response, persisted for restored clocks. */
   responseStartedAt?: string;
   /**
@@ -146,6 +164,29 @@ type DirectStreamEvent =
   | { type: "usage"; usage: ChatTokenUsage }
   | { type: "error"; message: string };
 
+function completedDirectResponse(message: string): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ type: "delta", text: message })}\n\n`,
+          ),
+        );
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    }),
+    {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+      },
+    },
+  );
+}
+
 /**
  * The system prompt for a runtime-less turn.
  *
@@ -160,6 +201,7 @@ function directSystemPrompt(
   currentLocationContext = "",
   userText = "",
   suppliedEvidence = "",
+  referencedChatContext = "",
 ): string {
   return [
     responseStylePrompt(),
@@ -172,15 +214,19 @@ function directSystemPrompt(
     // model to say an unverifiable criterion is unverified rather than to
     // browse for it.
     evidenceCalibrationSection({ userText, suppliedEvidence }) ?? "",
+    // A general question thins out here most of all, because with no tools the
+    // model's own knowledge is the only place the details can come from.
+    answerDepthSection({ userText }) ?? "",
     [
       "# direct_provider_turn",
       "Agent mode is switched off for this message, so you are answering as the model alone.",
       "You have no tools in this turn: no filesystem, terminal, web, Garden, artifact, memory, connection, skill, or subagent access, and nothing you say can start one.",
       "Answer from this conversation and your own knowledge. If the request genuinely needs an action rather than an answer, say plainly that it needs Agent mode switched back on, and give whatever part of the answer you can without it.",
-      "A message beginning with a `/token` is a skill, connection, prompt, or agent the user picked from the palette. Nothing resolved it for this turn, so read it as the name of what they wanted, say it needs Agent mode on, and answer the rest of the message normally.",
+      "A message beginning with a `/token` is a skill, connection, prompt, or agent the user picked from the palette. Except for a server-resolved `/reference:*` context selector, nothing resolved it for this turn, so read it as the name of what they wanted, say it needs Agent mode on, and answer the rest of the message normally.",
       "Never claim to have read, written, run, saved, sent, or remembered anything.",
     ].join("\n"),
     currentLocationContext,
+    referencedChatContext,
     // This stays last even with Concise on. Brevity may remove irrelevant
     // detail, never the explanation that makes the remaining answer usable.
     readerComprehensionPrompt(),
@@ -308,6 +354,40 @@ export async function startDirectProviderTurn(
       "This conversation is bound to a different assistant surface.",
     );
   }
+  const referenceCommand = parseChatReferenceCommand(input.text);
+  if (referenceCommand.keys.length > 1) {
+    throw new ApiError(
+      400,
+      "multiple_chat_references",
+      "Attach one referenced chat per message.",
+    );
+  }
+  const explicitChatReference = referenceCommand.keys.length === 1
+    ? retrieveExplicitCrossConversationContext({
+        userId: input.conversation.user_id,
+        currentConversationId: input.conversation.id,
+        query: input.text,
+      })
+    : null;
+  if (referenceCommand.keys.length === 1 && conversationIsTemporary(input.conversation)) {
+    throw new ApiError(
+      409,
+      "temporary_chat_reference_unavailable",
+      "A temporary chat cannot read another chat. Start or open a saved chat to use Reference.",
+    );
+  }
+  if (referenceCommand.keys.length === 1 && !explicitChatReference) {
+    throw new ApiError(
+      404,
+      "chat_reference_not_found",
+      "That referenced chat could not be found. Choose it again from the Reference tab.",
+    );
+  }
+  const requestText = referenceCommand.userText || (
+    referenceCommand.keys.length === 1
+      ? "Summarize the referenced chat."
+      : input.text
+  );
   // A live agent run owns the assistant slot and its own event stream. Sending a
   // provider turn into the same conversation would interleave two answers.
   const runtimeSession = getRuntimeSessionByConversation(input.conversation.id);
@@ -338,6 +418,12 @@ export async function startDirectProviderTurn(
         ...(input.internalAgentContinuation
           ? { internalAgentContinuation: true }
           : {}),
+        ...(input.scheduledChatReceipt
+          ? { scheduledChatReceipt: input.scheduledChatReceipt }
+          : {}),
+        ...(explicitChatReference
+          ? { referencedConversationId: explicitChatReference.publicId }
+          : {}),
       },
     });
   } catch (error) {
@@ -357,7 +443,7 @@ export async function startDirectProviderTurn(
     const { baseURL } = resolveChatmockBaseUrl(input.request);
     const titledConversation = await generateAndApplyConversationTitle({
       conversation: reservation.conversation,
-      firstPrompt: input.text,
+      firstPrompt: requestText,
       model: input.model,
       baseUrl: baseURL,
     });
@@ -398,8 +484,67 @@ export async function startDirectProviderTurn(
           ? { responseStartedAt: input.responseStartedAt }
           : {}),
         ...(input.branchGroupId ? { branchGroupId: input.branchGroupId } : {}),
+        ...(input.scheduledChatReceipt
+          ? { scheduledChatReceipt: input.scheduledChatReceipt }
+          : {}),
+        ...(explicitChatReference
+          ? { referencedConversationId: explicitChatReference.publicId }
+          : {}),
       },
     );
+  }
+
+  // Scheduling is a Breadboard action that has already succeeded by the time
+  // this turn arrives. Even with Agent mode off, acknowledge that app-owned
+  // action directly instead of asking a tool-less provider to perform it.
+  if (input.scheduledChatReceipt) {
+    const message = scheduledChatConfirmationText(input.scheduledChatReceipt);
+    completeAssistantMessage({
+      conversationId: input.conversation.id,
+      clientMessageId: input.clientMessageId,
+      content: message,
+      metadata: {
+        backend: DIRECT_BACKEND,
+        scheduledChatReceipt: input.scheduledChatReceipt,
+        responseDurationMs: 0,
+      },
+    });
+    return completedDirectResponse(message);
+  }
+
+  const weatherIntent =
+    !input.internalAgentContinuation &&
+    !explicitChatReference &&
+    attachments.length === 0
+      ? parseWeatherChatIntent(requestText)
+      : null;
+  if (weatherIntent) {
+    try {
+      const forecast = await fetchWeatherForecast(weatherIntent);
+      const message = weatherResultsMessage(forecast.display);
+      completeAssistantMessage({
+        conversationId: input.conversation.id,
+        clientMessageId: input.clientMessageId,
+        content: message,
+        metadata: {
+          backend: DIRECT_BACKEND,
+          responseDurationMs: 0,
+          weatherForecast: {
+            source: forecast.source,
+            location: forecast.display.location,
+            dates: forecast.display.days.map((day) => day.date),
+          },
+        },
+      });
+      scheduleMemoryProfileSynthesisForConversation({
+        conversationId: input.conversation.id,
+        outcome: "completed",
+      });
+      return completedDirectResponse(message);
+    } catch {
+      // Direct mode still has its ordinary provider fallback when the forecast
+      // endpoint cannot satisfy the request.
+    }
   }
 
   const model = selectedModel(input.model);
@@ -476,19 +621,22 @@ export async function startDirectProviderTurn(
         input.internalAgentContinuation
           ? ""
           : renderCurrentLocationContext({
-              request: input.text,
+              request: requestText,
               priorRequests: recentUserRequests(
                 input.conversation,
                 input.clientMessageId,
               ),
               location: input.currentLocation,
             }),
-        input.text,
+        requestText,
         suppliedEvidenceText(attachments),
+        explicitChatReference
+          ? composeExplicitCrossConversationContext(explicitChatReference)
+          : "",
       ),
       input: [
         ...historyInput(input.conversation, input.clientMessageId),
-        currentUserInput(input.text, attachments),
+        currentUserInput(requestText, attachments),
       ],
       stream: true,
       store: false,

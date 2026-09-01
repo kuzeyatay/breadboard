@@ -91,12 +91,22 @@ test("following back to an unvisited fallback drops the page being left", () => 
   assert.equal(resolveBackHref("/dashboard", "/dashboard"), "/dashboard");
 });
 
-test("the back control unwinds the trail when it is followed", () => {
+test("the back control unwinds the trail without changing before navigation", () => {
   const backLink = fs.readFileSync(
     new URL("../src/app/components/back-link.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(backLink, /onClick=\{\(\) => consumeBackTo\(href\)\}/);
+  assert.match(backLink, /href=\{renderedHref\}/);
+  assert.match(backLink, /onNavigate=\{\(\) => \{/);
+  assert.match(
+    backLink,
+    /setPendingBack\(\{ pathname, href: renderedHref \}\);[\s\S]*consumeBackTo\(renderedHref\)/,
+  );
+  assert.match(
+    backLink,
+    /pendingBack\?\.pathname === pathname \? pendingBack\.href : href/,
+  );
+  assert.doesNotMatch(backLink, /onClick=.*consumeBackTo/);
 });
 
 test("a deep link with no trail falls back to the fixed parent", () => {

@@ -798,15 +798,18 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         _schema(
             "artifact_import",
             (
-                "Import a file that already exists in this conversation's "
-                "workspace (for example one a terminal command or a skill "
-                "generated) as a persistent Breadboard artifact, so it appears "
-                "in the artifact panel and can be opened, downloaded and "
-                "referenced later. `path` is relative to the workspace. Use "
-                "artifact_create for content you are writing yourself."
+                "Save an original file as a persistent Breadboard artifact. For "
+                "a file attached to the current user message, pass its exact "
+                "attachmentName (or 1-based attachmentIndex); path, kind, title "
+                "and filename are inferred and the original bytes are preserved. "
+                "For a generated workspace file, pass path, kind and title. This "
+                "supports every chat upload format. Use artifact_create for new "
+                "text content you are writing yourself."
             ),
             {
                 "path": _STRING,
+                "attachmentName": _STRING,
+                "attachmentIndex": {"type": "integer", "minimum": 1, "maximum": 10},
                 "title": _STRING,
                 "kind": {
                     "type": "string",
@@ -825,6 +828,7 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                         "diagram",
                         "data",
                         "unknown",
+                        "model",
                     ],
                 },
                 "filename": _STRING,
@@ -832,7 +836,7 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 "sourceSkill": _STRING,
                 "provenance": {"type": "object"},
             },
-            ["path", "title", "kind"],
+            [],
         ),
     ),
     (
@@ -2160,10 +2164,17 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 },
                 "reason": {
                     "type": "string",
+                    "minLength": 1,
                     "maxLength": 240,
                     "description": (
-                        "One line on why this agent is the right one. It is shown "
-                        "on the confirmation only when that agent requires one."
+                        "One line naming the concrete capability this agent "
+                        "reaches that this turn does not — the mailbox, the "
+                        "repository, a real browser, a workspace that outlives "
+                        "the turn, a file kind you cannot produce. That the "
+                        "request is about the agent's topic is not a reason; "
+                        "if no such capability exists, do not launch — answer "
+                        "yourself. The user reads this line on the launch "
+                        "confirmation and in the answer's evidence."
                     ),
                 },
                 "await_result": {
@@ -2177,7 +2188,7 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                     ),
                 },
             },
-            ["agent", "brief"],
+            ["agent", "brief", "reason"],
         ),
     ),
     (
@@ -2476,6 +2487,8 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             (
                 "Search current public product pages plus price-specific "
                 "discovery results and return sourced, structured products "
+                "with direct merchant purchase links for the user's "
+                "Breadboard-resolved shopping market "
                 "for Breadboard's native carousel. Call "
                 "this whenever the user is discovering, comparing, choosing, "
                 "shopping for, or finding alternatives to products, including "
@@ -2503,14 +2516,54 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 "country": {
                     "type": "string",
                     "pattern": "^[a-zA-Z]{2}-[a-zA-Z]{2}$",
-                    "description": "Optional search locale such as us-en or nl-nl.",
+                    "description": (
+                        "Optional fallback search market such as us-en or nl-nl. "
+                        "Breadboard securely overrides it when the user enabled "
+                        "current location for this shopping turn."
+                    ),
+                },
+            },
+            ["query"],
+        ),
+    ),
+    (
+        "chat_search",
+        "/api/hermes/tools/chat-search",
+        "chat_search",
+        _schema(
+            "chat_search",
+            (
+                "Search the signed-in user's past Breadboard chats by title, "
+                "remembered phrase, or topic description. Call this whenever "
+                "the user asks to find, locate, identify, or reopen a previous "
+                "chat or conversation. The search is automatically restricted "
+                "to the current surface and, in Garden Chat, the current "
+                "Garden. Non-empty uiResources are rendered by Breadboard as "
+                "a compact navigation widget; do not copy their JSON or "
+                "rebuild the matches as Markdown links."
+            ),
+            {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "description": (
+                        "The distinguishing topic or phrase to find, without "
+                        "the surrounding 'find my chat' wording."
+                    ),
+                },
+                "count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8,
+                    "description": "Maximum matches to show; defaults to 5.",
                 },
             },
             ["query"],
         ),
     ),
     # World monitor — the /worldmonitor console, asked questions instead of
-    # read off a screen. All four are reads over public news feeds and open
+    # read off a screen. All five are reads over public news feeds and open
     # observational archives; there is no user state here to change. Feeds are
     # cached for ten minutes, so several calls in one turn cost one fetch.
     (
@@ -2661,9 +2714,44 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             },
         ),
     ),
+    (
+        "weather_forecast",
+        "/api/hermes/tools/worldmonitor",
+        "worldmonitor",
+        _schema(
+            "weather_forecast",
+            "Get current conditions or a dated forecast for any named city, "
+            "region, or place. Use this for ordinary weather questions instead "
+            "of worldmonitor_climate, which only covers strategic monitor hubs. "
+            "Pass every day the user asks for so the result can render one "
+            "stacked weather card per date.",
+            {
+                "location": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 160,
+                    "description": "The user-named city, region, or place, e.g. 'Eindhoven'.",
+                },
+                "dates": {
+                    "type": "array",
+                    "maxItems": 10,
+                    "uniqueItems": True,
+                    "items": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    },
+                    "description": (
+                        "Requested local calendar dates as YYYY-MM-DD, in order. "
+                        "Omit only when no day was named or implied and current weather is wanted."
+                    ),
+                },
+            },
+            ["location"],
+        ),
+    ),
     # Spotify — Breadboard owns OAuth, resolves real catalog entries, and sends
-    # playback or control requests to the user's available phone. The inline
-    # player remains the fallback when a phone is not available.
+    # playback or control requests to the user's available phone. Phone-targeted
+    # playback never falls back to a Breadboard audio device.
     (
         "spotify_search",
         "/api/hermes/tools/spotify",
@@ -2693,8 +2781,8 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             "Start requested music on the user's available Spotify phone, or "
             "control playback there. For new music provide query. For a "
             "control provide action and its documented companion argument, "
-            "if any. If new music returns status=ready, it was prepared only "
-            "in Breadboard's inline fallback; status=playing means it started.",
+            "if any. New music succeeds only after Spotify confirms playback "
+            "started on the phone; it never falls back to Breadboard audio.",
             {
                 "query": {
                     "type": "string",
@@ -2747,7 +2835,8 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             "spotify_create_playlist",
             "Create a private Spotify playlist from real catalog searches, add "
             "the resolved tracks, and optionally start that same ordered queue "
-            "on the user's phone, with Breadboard's inline player as fallback. "
+            "on the user's phone. Requested playback never falls back to "
+            "Breadboard audio when the phone is unavailable. "
             "Use one call for the whole request.",
             {
                 "name": {
@@ -3996,6 +4085,7 @@ def _request_payload(
         "research",
         "image_search",
         "product_search",
+        "chat_search",
     }:
         return {"tool": tool_name, "args": args}
     if route_kind == "recall":

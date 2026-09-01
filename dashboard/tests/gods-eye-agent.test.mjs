@@ -35,6 +35,10 @@ import {
   godsEyeSummary,
   parseViewAnswer,
 } from "../src/lib/gods-eye/run-manager.ts";
+import {
+  resolveGodsEyeRoot,
+  viteEntry,
+} from "../src/lib/gods-eye/runtime.ts";
 import { serviceEnvironment } from "../src/lib/gods-eye/service.ts";
 import {
   EXTERNAL_AGENT_RUN_FIELD_BY_KIND,
@@ -152,7 +156,7 @@ test("the open path carries only validated view parameters", () => {
 test("a summary carries its view invisibly and parses back losslessly", () => {
   const summary = godsEyeSummary({ view: VIEW, summary: "Watching approach traffic." });
   assert.match(summary, /On station over Istanbul/);
-  assert.match(summary, /\[Open the live view\]\(\/api\/gods-eye\/open\?/);
+  assert.doesNotMatch(summary, /Open the live view|\/api\/gods-eye\/open\?/);
   const parsed = parseGodsEyeResult(summary);
   assert.ok(parsed.view);
   assert.equal(parsed.view.lat, VIEW.lat);
@@ -164,6 +168,19 @@ test("a summary carries its view invisibly and parses back losslessly", () => {
   const reparsed = parseGodsEyeResult(bare);
   assert.ok(reparsed.view);
   assert.doesNotMatch(reparsed.content, /GODS_EYE_VIEW/);
+
+  const legacyLink = attachGodsEyeView(
+    "The aircraft layer is live.\n\n[Open the live aircraft view](http://127.0.0.1:49781/api/gods-eye/open?lat=52.2\\&lon=5.3\\&alt=220000)",
+    VIEW,
+  ).replace("<!--GODS_EYE_VIEW:", "<!--\nGODS_EYE_VIEW:");
+  const legacyParsed = parseGodsEyeResult(legacyLink);
+  assert.equal(legacyParsed.content, "The aircraft layer is live.");
+  assert.ok(legacyParsed.view);
+});
+
+test("the shared Markdown renderer strips God's Eye control metadata", () => {
+  const markdown = source("src/app/components/chat-markdown.tsx");
+  assert.match(markdown, /parseGodsEyeResult\(content\)\.content/);
 });
 
 test("the model's answer is accepted fenced, bare, or wrapped in prose — and refused when unusable", () => {
@@ -232,6 +249,29 @@ test("the globe is available without Google and only injects an optional key", (
   assert.equal(enhanced.GOOGLE_MAPS_API_KEY, "optional-key");
 });
 
+test(
+  "Windows child-process paths use normal absolute spelling",
+  { skip: process.platform !== "win32" || !cloneAvailable },
+  () => {
+    const verbatimRoot = `\\\\?\\${cloneRoot}`;
+    const env = {
+      BREADBOARD_QA_MODE: "1",
+      GODS_EYE_ROOT: verbatimRoot,
+    };
+    const root = resolveGodsEyeRoot(env);
+    const entry = viteEntry(env);
+    assert.equal(root, fs.realpathSync.native(cloneRoot));
+    assert.equal(
+      entry,
+      fs.realpathSync.native(
+        path.join(cloneRoot, "node_modules", "vite", "bin", "vite.js"),
+      ),
+    );
+    assert.doesNotMatch(root, /^\\\\\?\\/);
+    assert.doesNotMatch(entry, /^\\\\\?\\/);
+  },
+);
+
 test("every event the run manager emits is a name the card subscribes to", () => {
   const manager = source("src/lib/gods-eye/run-manager.ts");
   const card = source("src/app/components/hermes/inline-gods-eye-run.tsx");
@@ -255,6 +295,11 @@ test("a delegated God's Eye stays visible as a quiet frame on both surfaces", ()
       contents,
       /delegatedAgentRun[\s\S]{0,120}!(message|msg)\.godsEyeRun/,
       `${name} hides a delegated God's Eye turn instead of showing its frame`,
+    );
+    assert.match(
+      contents,
+      /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.openGymRun &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+      `${name} drops the God's Eye row when the synthesis turn arrives`,
     );
   }
   const activity = source("src/lib/hermes/super-agent-activity.ts");

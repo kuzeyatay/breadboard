@@ -9,7 +9,7 @@
 // as a toolbar instead of a list. The Recents header follows the same rule: its
 // own menu — pick several chats, or clear the section — appears only on hover.
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ActiveChatIcon, ChatHistoryLoading, UnreadChatDot } from "./history-client";
 import { ArtifactArchiveIcon } from "./artifact-panel";
 import RailDivider from "./rail-divider";
@@ -54,6 +54,8 @@ export interface TerminalSidebarChat {
   pinned: boolean;
   /** A scheduler-opened chat stays in Scheduled only while its turn is active. */
   scheduled?: boolean;
+  /** Opened unattended by a hook. */
+  hooked?: boolean;
   /**
    * A blank chat with a composer draft that is not in the history feed yet.
    * It belongs in the rail immediately, but cannot be renamed, pinned, or
@@ -405,7 +407,90 @@ function SectionHeader({
   );
 }
 
-function ChatRow({
+/**
+ * A stable identity for a handler whose body reads fresh props and state.
+ * The rows are memoized on callback identity, so a handler minted anew each
+ * render would put every row back on the render path every time the rail's
+ * owner breathes (a composer keystroke, a poll, a streamed token). The ref
+ * is rewritten after each render, so a gesture always runs the latest
+ * closure — never a stale one.
+ */
+function useEvent<Args extends unknown[], Result>(
+  handler: (...args: Args) => Result,
+): (...args: Args) => Result {
+  const ref = useRef(handler);
+  useEffect(() => {
+    ref.current = handler;
+  });
+  return useCallback((...args: Args) => ref.current(...args), []);
+}
+
+interface ChatRowProps {
+  chat: TerminalSidebarChat;
+  selected: boolean;
+  menuOpen: boolean;
+  /** While Recents is being worked over, the row picks instead of opening. */
+  mode?: RailMode;
+  checked?: boolean;
+  onPick?: (chat: TerminalSidebarChat) => void;
+  onPrefetch?: (chat: TerminalSidebarChat) => void;
+  onOpenMenu: (chat: TerminalSidebarChat) => void;
+  onCloseMenu: () => void;
+  onOpen: (chat: TerminalSidebarChat) => void;
+  onStop?: (chat: TerminalSidebarChat) => void | Promise<void>;
+  onRename: (chat: TerminalSidebarChat, title: string) => void;
+  /** Follows the rename input's mounted life, so the rail can freeze its
+   * order while one is open — a row that moves under a focused input blurs
+   * it, and blur commits whatever was typed so far. */
+  onRenamingChange: (chatId: string, renaming: boolean) => void;
+  onTogglePin: (chat: TerminalSidebarChat) => void;
+  onDelete: (chat: TerminalSidebarChat) => void;
+}
+
+/**
+ * Rows compare their chat by field, not by reference: the rail's list is
+ * rebuilt by a poll every few seconds and by every optimistic mutation, and
+ * fresh-but-identical row objects were putting all N rows through a render
+ * for every one of those — the lag felt when typing near or acting on the
+ * rail. The callbacks are identity-compared, which is why the rail hands
+ * every row the same stable functions for its whole life.
+ */
+function chatRowPropsEqual(prev: ChatRowProps, next: ChatRowProps): boolean {
+  return (
+    sameSidebarChat(prev.chat, next.chat) &&
+    prev.selected === next.selected &&
+    prev.menuOpen === next.menuOpen &&
+    prev.mode === next.mode &&
+    prev.checked === next.checked &&
+    prev.onPick === next.onPick &&
+    prev.onPrefetch === next.onPrefetch &&
+    prev.onOpenMenu === next.onOpenMenu &&
+    prev.onCloseMenu === next.onCloseMenu &&
+    prev.onOpen === next.onOpen &&
+    prev.onStop === next.onStop &&
+    prev.onRename === next.onRename &&
+    prev.onRenamingChange === next.onRenamingChange &&
+    prev.onTogglePin === next.onTogglePin &&
+    prev.onDelete === next.onDelete
+  );
+}
+
+function sameSidebarChat(a: TerminalSidebarChat, b: TerminalSidebarChat): boolean {
+  return (
+    a.id === b.id &&
+    a.title === b.title &&
+    a.updatedAt === b.updatedAt &&
+    a.active === b.active &&
+    a.pinned === b.pinned &&
+    a.scheduled === b.scheduled &&
+    a.hooked === b.hooked &&
+    a.pending === b.pending &&
+    a.highlight === b.highlight &&
+    a.unread === b.unread
+  );
+}
+
+const ChatRow = memo(function ChatRow({
   chat,
   selected,
   menuOpen,
@@ -421,27 +506,7 @@ function ChatRow({
   onRenamingChange,
   onTogglePin,
   onDelete,
-}: {
-  chat: TerminalSidebarChat;
-  selected: boolean;
-  menuOpen: boolean;
-  /** While Recents is being worked over, the row picks instead of opening. */
-  mode?: RailMode;
-  checked?: boolean;
-  onPick?: () => void;
-  onPrefetch?: () => void;
-  onOpenMenu: () => void;
-  onCloseMenu: () => void;
-  onOpen: () => void;
-  onStop?: () => void | Promise<void>;
-  onRename: (title: string) => void;
-  /** Follows the rename input's mounted life, so the rail can freeze its
-   * order while one is open — a row that moves under a focused input blurs
-   * it, and blur commits whatever was typed so far. */
-  onRenamingChange: (chatId: string, renaming: boolean) => void;
-  onTogglePin: () => void;
-  onDelete: () => void;
-}) {
+}: ChatRowProps) {
   const [renaming, setRenaming] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [draft, setDraft] = useState(chat.title);
@@ -479,7 +544,7 @@ function ChatRow({
 
   function showIntent() {
     marquee.start();
-    if (mode === "idle" && !chat.pending) onPrefetch?.();
+    if (mode === "idle" && !chat.pending) onPrefetch?.(chat);
   }
 
   // Reported through an effect rather than the handlers so every way out of
@@ -494,7 +559,7 @@ function ChatRow({
   function commitRename() {
     const title = draft.trim();
     setRenaming(false);
-    if (title && title !== chat.title) onRename(title);
+    if (title && title !== chat.title) onRename(chat, title);
     else setDraft(chat.title);
   }
 
@@ -557,20 +622,20 @@ function ChatRow({
         <input
           type="checkbox"
           checked={checked}
-          onChange={() => onPick?.()}
+          onChange={() => onPick?.(chat)}
           aria-label={`Select ${chat.title}`}
           className="ml-2.5 h-3.5 w-3.5 shrink-0 accent-[var(--botanical)]"
         />
       ) : null}
       <button
         type="button"
-        onClick={mode === "idle" ? onOpen : () => onPick?.()}
+        onClick={mode === "idle" ? () => onOpen(chat) : () => onPick?.(chat)}
         onMouseEnter={showIntent}
         onMouseLeave={marquee.stop}
         onFocus={showIntent}
         onBlur={marquee.stop}
         onPointerDown={() => {
-          if (mode === "idle" && !chat.pending) onPrefetch?.();
+          if (mode === "idle" && !chat.pending) onPrefetch?.(chat);
         }}
         title={
           mode === "highlighting"
@@ -615,10 +680,21 @@ function ChatRow({
           </span>
         </span>
       </button>
-      {/* One spot for the whole life of a run: the spinner while it works, then
-          the dot until someone reads what came back. */}
+      {/* One spot for the whole life of a run: the automation marker and
+          spinner while it works, then the dot until someone reads what came
+          back. */}
       {chat.active ? (
-        <span className="mr-1 inline-flex">
+        <span className="mr-1 inline-flex items-center gap-1">
+          {chat.scheduled || chat.hooked ? (
+            <span
+              role="img"
+              aria-label={chat.hooked ? "Started by a hook" : "Started by a scheduled task"}
+              title={chat.hooked ? "Started by a hook" : "Started by a scheduled task"}
+              className="inline-flex shrink-0 text-[var(--ink-muted)]"
+            >
+              <ScheduledIcon className="h-3.5 w-3.5" />
+            </span>
+          ) : null}
           <ActiveChatIcon
             label={`${chat.title} is running`}
             className="h-3.5 w-3.5"
@@ -628,7 +704,7 @@ function ChatRow({
                 ? () => {
                     if (stopping) return;
                     setStopping(true);
-                    void Promise.resolve(onStop()).finally(() => setStopping(false));
+                    void Promise.resolve(onStop(chat)).finally(() => setStopping(false));
                   }
                 : undefined
             }
@@ -649,7 +725,7 @@ function ChatRow({
         >
           <button
             type="button"
-            onClick={onTogglePin}
+            onClick={() => onTogglePin(chat)}
             title={chat.pinned ? "Unpin chat" : "Pin chat"}
             aria-label={chat.pinned ? `Unpin ${chat.title}` : `Pin ${chat.title}`}
             className={`rounded-md p-1 transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] ${
@@ -673,7 +749,7 @@ function ChatRow({
                   menuPositionFor(rect, { width: window.innerWidth, height: window.innerHeight }),
                 );
               }
-              onOpenMenu();
+              onOpenMenu(chat);
             }}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
@@ -698,17 +774,17 @@ function ChatRow({
           }}
           onTogglePin={() => {
             onCloseMenu();
-            onTogglePin();
+            onTogglePin(chat);
           }}
           onDelete={() => {
             onCloseMenu();
-            onDelete();
+            onDelete(chat);
           }}
         />
       ) : null}
     </li>
   );
-}
+}, chatRowPropsEqual);
 
 interface MenuPosition {
   top: number;
@@ -1144,6 +1220,28 @@ export default function TerminalSidebar({
   const paint = (chat: TerminalSidebarChat) =>
     onHighlightChat(chat, chat.highlight === pen ? null : pen);
 
+  // Every row gets these same functions for its whole life. Identity is the
+  // contract: ChatRow bails out of rendering on it, and the hosts pass inline
+  // handlers whose identity changes on their every render, so the wrap here
+  // is what keeps N rows off the render path when one thing changes.
+  const pickChat = useEvent((chat: TerminalSidebarChat) => {
+    if (mode === "selecting") toggleChecked(chat.id);
+    else paint(chat);
+  });
+  const prefetchChat = useEvent((chat: TerminalSidebarChat) => onPrefetchChat?.(chat));
+  const openChat = useEvent((chat: TerminalSidebarChat) => onOpenChat(chat));
+  const stopChat = useEvent((chat: TerminalSidebarChat) => onStopChat?.(chat));
+  const renameChat = useEvent((chat: TerminalSidebarChat, title: string) =>
+    onRenameChat(chat, title),
+  );
+  const togglePinned = useEvent((chat: TerminalSidebarChat) => onTogglePin(chat));
+  const deleteChat = useEvent((chat: TerminalSidebarChat) => onDeleteChat(chat));
+  const openMenu = useCallback(
+    (chat: TerminalSidebarChat) => setMenuChatId(chat.id),
+    [],
+  );
+  const closeMenu = useCallback(() => setMenuChatId(null), []);
+
   // Collapsed the actions stack as a centered column of icons; open they are a
   // list of rows.
   const navClassName = collapsed
@@ -1158,16 +1256,16 @@ export default function TerminalSidebar({
       menuOpen={menuChatId === chat.id}
       mode={workable && !chat.pending ? mode : "idle"}
       checked={selectedIds.has(chat.id)}
-      onPick={() => (mode === "selecting" ? toggleChecked(chat.id) : paint(chat))}
-      onPrefetch={() => onPrefetchChat?.(chat)}
-      onOpenMenu={() => setMenuChatId(chat.id)}
-      onCloseMenu={() => setMenuChatId(null)}
-      onOpen={() => onOpenChat(chat)}
-      onStop={onStopChat ? () => onStopChat(chat) : undefined}
-      onRename={(title) => onRenameChat(chat, title)}
+      onPick={pickChat}
+      onPrefetch={prefetchChat}
+      onOpenMenu={openMenu}
+      onCloseMenu={closeMenu}
+      onOpen={openChat}
+      onStop={onStopChat ? stopChat : undefined}
+      onRename={renameChat}
       onRenamingChange={handleRenamingChange}
-      onTogglePin={() => onTogglePin(chat)}
-      onDelete={() => onDeleteChat(chat)}
+      onTogglePin={togglePinned}
+      onDelete={deleteChat}
     />
   );
 

@@ -26,6 +26,7 @@ import {
   resolveConversationRuntime,
 } from "../hermes/session-service.ts";
 import type { ScheduledChatJobRow } from "./store.ts";
+import { scheduledReminderText } from "./types.ts";
 
 export interface ScheduledChatRunResult {
   status: "ok" | "failed";
@@ -68,6 +69,23 @@ export async function runScheduledChatJob(
   });
 
   try {
+    if (job.delivery_channel && job.delivery_mode === "reminder") {
+      const { sendOwnerText } = await import("../hermes/messaging-service.ts");
+      const delivered = await sendOwnerText({
+        channel: job.delivery_channel,
+        userId: job.user_id,
+        text: scheduledReminderText(job.prompt),
+        kind: "reminder",
+      });
+      conversationId = delivered.continuationConversationId;
+      trackScheduledChatFinished({
+        userId: job.user_id,
+        runId,
+        outcome: "completed",
+      });
+      return { status: "ok", conversationId };
+    }
+
     // Fail before creating anything when the runtime is off, so a stopped
     // runtime leaves a recorded failure instead of an empty chat.
     requireEnabled();

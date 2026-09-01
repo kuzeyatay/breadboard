@@ -33,6 +33,7 @@ import {
   MIGRATION_VERSION,
 } from "./migration";
 import { preflightQaDashboardDevelopment } from "./provisioning";
+import { prepareDevelopmentCliproxyRuntime } from "./cliproxy";
 import {
   WindowManager,
   defaultPreloadPath,
@@ -128,6 +129,17 @@ export interface UnhandledRejectionActions {
  * service-level validation (or confused with a failed data-preparation step).
  */
 export const RUNTIME_ROOT_RETRY_ID = "desktop-runtime";
+
+/**
+ * Closing the desktop window must return control to its launcher promptly.
+ * Runtime V2 has its own longer internal drain ceiling, but Electron cannot
+ * wait for that entire ceiling after its last visible window has disappeared.
+ */
+export const DESKTOP_RUNTIME_EXIT_TIMEOUTS = Object.freeze({
+  controlRequestTimeoutMs: 2_000,
+  gracefulShutdownTimeoutMs: 5_000,
+  forcedShutdownTimeoutMs: 3_000,
+});
 
 /**
  * Install the fatal unhandled-rejection path through injectable actions so the
@@ -363,7 +375,16 @@ export class AppLifecycle {
       // is written down. A reconnect scene that never lifts is unexplainable
       // without this.
       log: (line) => supervisorLog.write(line),
-      onMainWindowCloseRequested: () => this.computerUseIndicator?.stop(),
+      onMainWindowCloseRequested: () => {
+        this.computerUseIndicator?.stop();
+        // Popup/controller windows must not turn closing Breadboard's main
+        // window into a hidden background session. Defer until the native
+        // close event has unwound; window-all-closed may request the same quit
+        // first, and `quitting` makes the two paths idempotent.
+        setImmediate(() => {
+          if (!this.quitting) app.quit();
+        });
+      },
     });
 
     this.computerUseIndicator = new ComputerUseIndicator({
@@ -439,8 +460,7 @@ export class AppLifecycle {
         dataRoot: this.paths.dataRoot,
         configRoot: this.paths.configDir,
       },
-      gracefulShutdownTimeoutMs: 60_000,
-      forcedShutdownTimeoutMs: 10_000,
+      ...DESKTOP_RUNTIME_EXIT_TIMEOUTS,
       onLog: (source, line) =>
         supervisorLog.write(`[runtime:${source}] ${line}`),
       onUnexpectedExit: (exit) => this.handleUnexpectedRuntimeExit(exit),
@@ -448,7 +468,6 @@ export class AppLifecycle {
   }
 
   private async prepareDataLayer(): Promise<void> {
-    if (this.paths.mode === "dev" && !this.paths.qaMode) return;
     preflightQaDashboardDevelopment(this.paths);
 
     // QA data is always fresh/disposable. Never detect or copy a developer
@@ -505,6 +524,23 @@ export class AppLifecycle {
       }
       persistent.migrationVersion = MIGRATION_VERSION;
       savePersistentConfig(this.paths.configDir, persistent);
+    }
+
+    // Runtime V2's hot/lean CLIProxyAPI launch profile uses a data-root
+    // executable. Restore the first-run preparation that the cutover omitted;
+    // subscriptions remain optional, so an offline download never blocks the
+    // rest of Breadboard from starting.
+    if (persistent.cliproxyMode !== "disabled") {
+      try {
+        await prepareDevelopmentCliproxyRuntime(this.paths, (message) =>
+          this.logs.forService("desktop").write(`[desktop] ${message}`),
+        );
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logs
+          .forService("desktop")
+          .write(`[desktop] CLIProxyAPI preparation failed: ${reason}`);
+      }
     }
   }
 

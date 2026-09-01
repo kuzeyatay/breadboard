@@ -26,7 +26,7 @@ function formatPayloadForChat(payload: unknown): string {
   }
   const truncated = json.length > MAX_PAYLOAD_CHARS;
   const body = truncated ? `${json.slice(0, MAX_PAYLOAD_CHARS)}\n… (truncated)` : json;
-  return `\n\nWebhook event payload:\n\`\`\`json\n${body}\n\`\`\``;
+  return `\n\nHook event payload:\n\`\`\`json\n${body}\n\`\`\``;
 }
 
 function hookConversationTitle(hook: HookRow): string {
@@ -69,6 +69,7 @@ async function dispatchChatHook(hook: HookRow, payload: unknown): Promise<void> 
     surface,
     scopeKind: garden ? "garden" : "global",
     defaultGardenId: garden?.clusterId ?? null,
+    hookId: hook.id,
   });
 
   const runtime = await resolveConversationRuntime({

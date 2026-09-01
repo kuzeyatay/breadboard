@@ -60,6 +60,7 @@ test("every agent's run descriptor round-trips into a transcript field", () => {
       delegatedAgentRun: true,
       externalAgentResult: "The specialist result.",
       delegatedAgentPreamble: "I’m handing this to the specialist.",
+      delegatedAgentReason: "The specialist can reach the required live service.",
     });
     const field = EXTERNAL_AGENT_RUN_FIELD_BY_KIND[kind];
     assert.ok(fields[field], `${kind} did not land on ${field}`);
@@ -67,6 +68,10 @@ test("every agent's run descriptor round-trips into a transcript field", () => {
     assert.equal(fields.externalAgentOutcome, "completed");
     assert.equal(fields.delegatedAgentRun, true);
     assert.equal(fields.externalAgentResult, "The specialist result.");
+    assert.equal(
+      fields.delegatedAgentReason,
+      "The specialist can reach the required live service.",
+    );
     assert.ok(fields.externalAgentName);
     assert.equal(
       fields.delegatedAgentPreamble,
@@ -178,6 +183,8 @@ test("the Garden save path covers every kind by construction, not by a list", ()
   // impossible; a hand-written field list here is the bug this replaced.
   assert.match(route, /EXTERNAL_AGENT_RUN_KINDS\.map/);
   assert.match(route, /EXTERNAL_AGENT_RUN_FIELD_BY_KIND\[kind\]/);
+  assert.match(route, /metadata\.delegatedAgentReason/);
+  assert.match(route, /delegatedAgentReason: record\.delegatedAgentReason/);
   for (const field of Object.values(EXTERNAL_AGENT_RUN_FIELD_BY_KIND)) {
     assert.doesNotMatch(
       route,

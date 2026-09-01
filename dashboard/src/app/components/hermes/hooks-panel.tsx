@@ -1,15 +1,15 @@
 "use client";
 
-// Hooks: real inbound webhooks. An external event either runs a native
-// workflow or starts a programmatic chat turn — see src/lib/hooks/{schema,
-// store,dispatch}.ts and the receive route at
+// Hooks: inbound webhooks plus Breadboard-owned lifecycle triggers. An event
+// either runs a native workflow or starts a programmatic chat turn — see
+// src/lib/hooks/{schema,store,dispatch}.ts and the receive route at
 // app/api/webhooks/trigger/[path]/route.ts. Data loading follows
 // processes-panel.tsx's idiom (snapshot state + a guarded load()).
 //
 // The provider field map below is intentionally hand-written and small — sim
 // vendors ~70 providers behind a subBlocks UI-definition machinery; Breadboard
-// ships 7 and each one's setup asks for exactly one or two secrets, so a
-// declarative array is simpler than porting that machinery.
+// ships a deliberately small set, so a declarative array is simpler than
+// porting that machinery.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -34,7 +34,7 @@ interface PresentedHook {
   createdAt: string;
   lastFiredAt: string | null;
   fireCount: number;
-  url: string;
+  url: string | null;
 }
 
 interface WorkflowOption {
@@ -55,6 +55,7 @@ interface ProviderDef {
   label: string;
   fields: ProviderField[];
   instructions: string[];
+  internal?: boolean;
 }
 
 function randomToken(): string {
@@ -62,6 +63,17 @@ function randomToken(): string {
 }
 
 const PROVIDERS: ProviderDef[] = [
+  {
+    id: "chat_completed",
+    label: "Chat completed",
+    fields: [],
+    internal: true,
+    instructions: [
+      "Runs only after an assistant answer is saved successfully.",
+      "Failed, cancelled, temporary, and hook-created chats are ignored.",
+      "A Garden hook reacts to chats in that Garden; a dashboard hook reacts everywhere.",
+    ],
+  },
   {
     id: "generic",
     label: "Generic",
@@ -143,7 +155,10 @@ const PROVIDERS: ProviderDef[] = [
 ];
 
 function providerDef(id: string): ProviderDef {
-  return PROVIDERS.find((p) => p.id === id) ?? PROVIDERS[0];
+  return (
+    PROVIDERS.find((candidate) => candidate.id === id) ??
+    PROVIDERS.find((candidate) => candidate.id === "generic")!
+  );
 }
 
 function formatRelative(iso: string | null): string {
@@ -237,22 +252,20 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
     setWorkflowId("");
     setFieldValues({ token: randomToken() });
 
-    if (mode === "workflow" || true) {
-      // Fetched eagerly (not only when workflow mode is picked) so switching
-      // the radio button never shows a loading flash.
-      setWorkflowsLoading(true);
-      fetch("/api/workflows/local", { cache: "no-store" })
-        .then((response) => (response.ok ? response.json() : { workflows: [] }))
-        .then((payload: { workflows?: Array<{ id: string; name: string }> }) => {
-          setWorkflows(
-            Array.isArray(payload.workflows)
-              ? payload.workflows.map((w) => ({ id: w.id, name: w.name }))
-              : [],
-          );
-        })
-        .catch(() => setWorkflows([]))
-        .finally(() => setWorkflowsLoading(false));
-    }
+    // Fetched eagerly (not only when workflow mode is picked) so switching
+    // the segmented control never shows a loading flash.
+    setWorkflowsLoading(true);
+    fetch("/api/workflows/local", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : { workflows: [] }))
+      .then((payload: { workflows?: Array<{ id: string; name: string }> }) => {
+        setWorkflows(
+          Array.isArray(payload.workflows)
+            ? payload.workflows.map((w) => ({ id: w.id, name: w.name }))
+            : [],
+        );
+      })
+      .catch(() => setWorkflows([]))
+      .finally(() => setWorkflowsLoading(false));
   }
 
   function selectProvider(nextProvider: string) {
@@ -278,6 +291,13 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
     }
     if (mode === "workflow" && !workflowId) {
       setFormError("Pick a workflow to run.");
+      return;
+    }
+    const missingProviderField = activeDef.fields.find(
+      (field) => !field.optional && !(fieldValues[field.key] ?? "").trim(),
+    );
+    if (missingProviderField) {
+      setFormError(`${missingProviderField.label} is required.`);
       return;
     }
 
@@ -364,7 +384,7 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
             <button
               type="button"
               onClick={openCreateForm}
-              className="neu-button-primary shrink-0 rounded-xl px-3 py-1.5 text-xs font-semibold"
+              className="neu-button-accent inline-flex shrink-0 items-center justify-center rounded-xl border px-3 py-1.5 text-xs font-semibold"
             >
               + New hook
             </button>
@@ -374,9 +394,9 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {error ? (
-          <div className="mb-3 rounded-xl border border-[color-mix(in_srgb,var(--danger)_28%,var(--line))] bg-[var(--paper-raised)] p-3">
+          <div role="alert" className="mb-3 rounded-xl border border-[color-mix(in_srgb,var(--danger)_28%,var(--line))] bg-[var(--paper-raised)] p-3">
             <p className="text-xs text-[var(--danger)]">{error}</p>
-            <button type="button" onClick={() => void load(true)} className="mt-2 text-xs font-medium text-[var(--botanical)]">
+            <button type="button" onClick={() => void load(true)} className="neu-button mt-2 rounded-lg border px-3 py-1.5 text-xs font-medium text-[var(--botanical)]">
               Try again
             </button>
           </div>
@@ -388,26 +408,32 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
               <div>
                 <h3 className="text-base font-semibold text-[var(--ink-heading)]">Hook created</h3>
                 <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                  {providerDef(justCreated.provider).label} sends events to this URL.
+                  {providerDef(justCreated.provider).internal
+                    ? "Breadboard will run this hook after a chat completes successfully."
+                    : `${providerDef(justCreated.provider).label} sends events to this URL.`}
                 </p>
-                <div className="neu-control mt-3 flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2">
-                  <code className="min-w-0 flex-1 truncate text-xs">{justCreated.url}</code>
-                  <CopyUrlButton url={justCreated.url} />
-                </div>
+                {justCreated.url ? (
+                  <div className="neu-control mt-3 flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2">
+                    <code className="min-w-0 flex-1 truncate text-xs">{justCreated.url}</code>
+                    <CopyUrlButton url={justCreated.url} />
+                  </div>
+                ) : null}
                 <p className="mt-3 text-xs font-medium text-[var(--ink-heading)]">Setup</p>
                 <ol className="mt-1 list-decimal space-y-1 pl-4 text-xs text-[var(--ink-muted)]">
                   {providerDef(justCreated.provider).instructions.map((step) => (
                     <li key={step}>{step}</li>
                   ))}
                 </ol>
-                <p className="mt-3 text-[11px] text-[var(--ink-muted)]">
-                  External providers must be able to reach this computer over the internet to deliver
-                  events here.
-                </p>
+                {!providerDef(justCreated.provider).internal ? (
+                  <p className="mt-3 text-[11px] text-[var(--ink-muted)]">
+                    External providers must be able to reach this computer over the internet to deliver
+                    events here.
+                  </p>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => setCreating(false)}
-                  className="neu-button mt-4 rounded-xl px-4 py-2 text-sm font-medium"
+                  className="neu-button-accent mt-4 inline-flex items-center justify-center rounded-xl border px-4 py-2 text-sm font-medium"
                 >
                   Done
                 </button>
@@ -427,7 +453,7 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                 </label>
 
                 <label className="mt-3 block text-xs font-medium">
-                  Provider
+                  Trigger
                   <select
                     value={provider}
                     onChange={(event) => selectProvider(event.target.value)}
@@ -458,15 +484,19 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
 
                 <div className="mt-4 border-t border-[var(--line)] pt-3">
                   <p className="text-xs font-medium">When this hook fires</p>
-                  <div className="mt-2 flex gap-1.5">
+                  <div
+                    className="neu-segmented mt-2 grid grid-cols-2 rounded-xl p-1"
+                    role="group"
+                    aria-label="Hook action"
+                  >
                     <button
                       type="button"
                       aria-pressed={mode === "chat"}
                       onClick={() => setMode("chat")}
-                      className={`rounded-full border px-3 py-1 text-xs transition ${
+                      className={`rounded-lg px-3 py-2 text-xs transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.97] motion-reduce:transform-none ${
                         mode === "chat"
-                          ? "border-[var(--botanical)] bg-[var(--botanical)] font-medium text-white"
-                          : "border-[var(--line)] text-[var(--ink-muted)] hover:text-[var(--ink)]"
+                          ? "neu-selected bg-[var(--paper-raised)] font-medium text-[var(--botanical)]"
+                          : "text-[var(--ink-muted)]"
                       }`}
                     >
                       Start a chat
@@ -475,10 +505,10 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                       type="button"
                       aria-pressed={mode === "workflow"}
                       onClick={() => setMode("workflow")}
-                      className={`rounded-full border px-3 py-1 text-xs transition ${
+                      className={`rounded-lg px-3 py-2 text-xs transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.97] motion-reduce:transform-none ${
                         mode === "workflow"
-                          ? "border-[var(--botanical)] bg-[var(--botanical)] font-medium text-white"
-                          : "border-[var(--line)] text-[var(--ink-muted)] hover:text-[var(--ink)]"
+                          ? "neu-selected bg-[var(--paper-raised)] font-medium text-[var(--botanical)]"
+                          : "text-[var(--ink-muted)]"
                       }`}
                     >
                       Run a workflow
@@ -525,21 +555,21 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                   )}
                 </div>
 
-                {formError ? <p className="mt-3 text-xs text-[var(--danger)]">{formError}</p> : null}
+                {formError ? <p role="alert" className="mt-3 text-xs text-[var(--danger)]">{formError}</p> : null}
 
                 <div className="mt-4 flex gap-2">
                   <button
                     type="button"
                     onClick={() => void submitCreate()}
                     disabled={saving}
-                    className="neu-button-primary rounded-xl px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                    className="neu-button-accent inline-flex min-w-28 items-center justify-center rounded-xl border px-4 py-2 text-sm font-semibold disabled:cursor-wait disabled:opacity-50"
                   >
                     {saving ? "Creating…" : "Create hook"}
                   </button>
                   <button
                     type="button"
                     onClick={() => setCreating(false)}
-                    className="neu-button rounded-xl px-4 py-2 text-sm font-medium"
+                    className="neu-button inline-flex min-w-24 items-center justify-center rounded-xl border px-4 py-2 text-sm font-medium"
                   >
                     Cancel
                   </button>
@@ -562,7 +592,7 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
             <button
               type="button"
               onClick={openCreateForm}
-              className="neu-button-primary mt-5 rounded-xl px-4 py-2 text-sm font-semibold"
+              className="neu-button-accent mt-5 inline-flex items-center justify-center rounded-xl border px-4 py-2 text-sm font-semibold"
             >
               + New hook
             </button>
@@ -587,26 +617,32 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                         </span>
                       ) : null}
                     </div>
-                    <div className="neu-control mt-2 flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-1">
-                      <code className="min-w-0 flex-1 truncate text-[11px]">{hook.url}</code>
-                      <CopyUrlButton url={hook.url} />
-                    </div>
+                    {hook.url ? (
+                      <div className="neu-control mt-2 flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-1">
+                        <code className="min-w-0 flex-1 truncate text-[11px]">{hook.url}</code>
+                        <CopyUrlButton url={hook.url} />
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                        Runs automatically after a successful chat.
+                      </p>
+                    )}
                     <p className="mt-2 text-[10px] text-[var(--ink-muted)]">
                       Last fired {formatRelative(hook.lastFiredAt)} · {hook.fireCount} total
                     </p>
                   </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1">
+                  <div className="flex shrink-0 flex-col items-stretch gap-1.5">
                     <button
                       type="button"
                       onClick={() => void toggleEnabled(hook)}
-                      className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)]"
+                      className="neu-button rounded-lg border px-2 py-1 text-xs font-medium text-[var(--botanical)]"
                     >
                       {hook.enabled ? "Disable" : "Enable"}
                     </button>
                     <button
                       type="button"
                       onClick={() => void removeHook(hook)}
-                      className="rounded-lg px-2 py-1 text-xs text-[var(--danger)]"
+                      className="neu-button rounded-lg border px-2 py-1 text-xs font-medium text-[var(--danger)]"
                     >
                       Delete
                     </button>
@@ -622,7 +658,7 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
             type="button"
             onClick={() => void load(true)}
             disabled={refreshing}
-            className="neu-button mt-3 w-full rounded-lg px-3 py-1.5 text-xs text-[var(--ink-muted)] disabled:opacity-50"
+            className="neu-button mt-3 w-full rounded-lg border px-3 py-1.5 text-xs text-[var(--ink-muted)] disabled:opacity-50"
           >
             {refreshing ? "Refreshing…" : "Refresh"}
           </button>

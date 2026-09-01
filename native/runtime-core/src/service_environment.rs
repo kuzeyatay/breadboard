@@ -1,4 +1,6 @@
-use crate::paths::{PathError, RuntimePaths, TrustedDirectoryPin};
+use crate::paths::{
+    child_argv_path_presentation, PathError, RuntimePaths, TrustedDirectoryPin,
+};
 use breadboard_runtime_protocol::{
     RuntimeMode, ServiceLaunchProfile, TrustedServiceEnvironmentSource,
     TrustedWorkerEnvironmentSource, MAX_CONTROL_TOKEN_BYTES, MIN_CONTROL_TOKEN_BYTES,
@@ -1632,6 +1634,13 @@ impl TrustedWorkerEnvironmentSet {
             "SCRIBERR_BASE_URL",
             "SCRIBERR_USERNAME",
             "SCRIBERR_PASSWORD",
+            "SCRIBERR_REQUEST_TIMEOUT_MS",
+            "SCRIBERR_TRANSCRIPTION_TIMEOUT_MS",
+            "SCRIBERR_POLL_INTERVAL_MS",
+            "SCRIBERR_MODEL_FAMILY",
+            "SCRIBERR_MODEL",
+            "SCRIBERR_LANGUAGE",
+            "SCRIBERR_DIARIZATION",
             "CHATMOCK_BASE_URL",
             "CHATMOCK_MODEL",
             "BREADBOARD_DASHBOARD_URL",
@@ -1680,8 +1689,13 @@ impl TrustedWorkerEnvironmentSet {
             "YTDLP_DOWNLOAD_TIMEOUT_MS",
             "VIDEO_TRANSCRIPTION_MAX_QUEUED_PER_GARDEN",
         ] {
-            if let Some(value) = product_environment_value(os_environment, name) {
+            let already_projected = scriberr_garden_pairs
+                .iter()
+                .any(|(existing, _)| existing.eq_ignore_ascii_case(OsStr::new(name)));
+            if !already_projected {
+                if let Some(value) = product_environment_value(os_environment, name) {
                 scriberr_garden_pairs.push((OsString::from(name), value.to_os_string()));
+                }
             }
         }
         if !services.managed_scriberr {
@@ -4844,16 +4858,27 @@ fn build_common_environment(
     let runtime_node = paths.runtime_root().join("runtimes").join("node");
     let runtime_bun = paths.runtime_root().join("runtimes").join("bun");
     let runtime_python = paths.runtime_root().join("runtimes").join("python");
+    // Managed Scriberr lazily prepares WhisperX on first transcription. That
+    // upstream bootstrap invokes `git` by name, so the service's otherwise
+    // closed PATH must include only the trusted Git installation directory.
+    // Other services keep the smaller common tool surface.
+    let git_binary = git_binary_path(mode, paths, os_environment);
+    let git_directory = git_binary.parent();
+    let mut closed_path = vec![
+        runtime_bin.as_path(),
+        runtime_node.as_path(),
+        runtime_bun.as_path(),
+        runtime_python.as_path(),
+    ];
+    if profile == TrustedServiceEnvironmentProfile::Scriberr {
+        if let Some(directory) = git_directory {
+            closed_path.push(directory);
+        }
+    }
+    closed_path.extend([system32.as_path(), system_root.as_path()]);
     builder.insert(
         "PATH",
-        join_closed_windows_path(&[
-            runtime_bin.as_path(),
-            runtime_node.as_path(),
-            runtime_bun.as_path(),
-            runtime_python.as_path(),
-            system32.as_path(),
-            &system_root,
-        ])?,
+        join_closed_windows_path(&closed_path)?,
     )?;
     builder.insert("ComSpec", system32.join("cmd.exe").into_os_string())?;
     builder.insert("PATHEXT", ".COM;.EXE;.BAT;.CMD")?;
@@ -6061,7 +6086,15 @@ fn build_scriberr_environment(
         paths,
         os_environment,
     )?;
-    let data = paths.data_root().join("runtime").join("scriberr");
+    // Scriberr's SQLite driver and Python tooling cannot open Windows verbatim
+    // (\\?\) paths. Keep Runtime's canonical roots for containment, but present
+    // the already-trusted child operands in the normal absolute spelling.
+    let data = child_argv_path_presentation(
+        &paths.data_root().join("runtime").join("scriberr"),
+    )?;
+    let runtime_bin = child_argv_path_presentation(
+        &paths.runtime_root().join("bin"),
+    )?;
     builder.insert("HOST", "127.0.0.1")?;
     builder.insert(
         "PORT",
@@ -6071,6 +6104,12 @@ fn build_scriberr_environment(
     )?;
     builder.insert("APP_ENV", "production")?;
     builder.insert("SCRIBERR_LAZY_MODEL_INIT", "true")?;
+    // WhisperX writes detected-language transcripts to stdout. On Windows the
+    // inherited console encoding can be cp1252, which makes otherwise valid
+    // Unicode speech crash the transcription process while it is only logging.
+    builder.insert("PYTHONUTF8", "1")?;
+    builder.insert("PYTHONIOENCODING", "utf-8")?;
+    builder.insert("PYTHONUNBUFFERED", "1")?;
     builder.insert("SECURE_COOKIES", "false")?;
     builder.insert(
         "ALLOWED_ORIGINS",
@@ -6088,27 +6127,15 @@ fn build_scriberr_environment(
     }
     builder.insert(
         "FFMPEG_PATH",
-        paths
-            .runtime_root()
-            .join("bin")
-            .join("ffmpeg.exe")
-            .into_os_string(),
+        runtime_bin.join("ffmpeg.exe").into_os_string(),
     )?;
     builder.insert(
         "FFPROBE_PATH",
-        paths
-            .runtime_root()
-            .join("bin")
-            .join("ffprobe.exe")
-            .into_os_string(),
+        runtime_bin.join("ffprobe.exe").into_os_string(),
     )?;
     builder.insert(
         "YTDLP_PATH",
-        paths
-            .runtime_root()
-            .join("bin")
-            .join("yt-dlp.exe")
-            .into_os_string(),
+        runtime_bin.join("yt-dlp.exe").into_os_string(),
     )?;
     Ok(builder.finish())
 }
@@ -7038,9 +7065,10 @@ fn write_hermes_runtime_config(
         ),
         model, chatmock
     );
-    let relative = match mode {
-        RuntimeMode::Lean | RuntimeMode::Hot => ".runtime/hermes/config.yaml",
-        RuntimeMode::Packaged => "runtime/hermes/config.yaml",
+    let relative = if mode == RuntimeMode::Packaged || paths.has_distinct_data_root() {
+        "runtime/hermes/config.yaml"
+    } else {
+        ".runtime/hermes/config.yaml"
     };
     drop(paths.atomic_replace_data_file(
         relative,
@@ -7985,9 +8013,10 @@ fn codex_home(mode: RuntimeMode, paths: &RuntimePaths) -> PathBuf {
 }
 
 fn hermes_home(mode: RuntimeMode, paths: &RuntimePaths) -> PathBuf {
-    match mode {
-        RuntimeMode::Lean | RuntimeMode::Hot => paths.data_root().join(".runtime").join("hermes"),
-        RuntimeMode::Packaged => paths.data_root().join("runtime").join("hermes"),
+    if mode == RuntimeMode::Packaged || paths.has_distinct_data_root() {
+        paths.data_root().join("runtime").join("hermes")
+    } else {
+        paths.data_root().join(".runtime").join("hermes")
     }
 }
 
@@ -8121,7 +8150,7 @@ mod tests {
             [
                 7737, 7741, 7738, 7739, 7740, 7742, 7743, 7744, 7745, 7746, 7747, 7748, 7749, 7750,
                 7751, 7752, 7753, 7754, 7755, 7756, 7757, 7758, 7759, 7760, 7761, 7762, 7763, 7764,
-                7765, 7766, 7767, 7768,
+                7765, 7766, 7767, 7768, 7769,
             ],
             [7770, 7771, 7772, 7773, 7774],
         )
@@ -8461,27 +8490,27 @@ mod tests {
         assert!(ServiceEndpointMap::new(
             [
                 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25, 26, 27, 28, 29, 30, 31, 32
+                24, 25, 26, 27, 28, 29, 30, 31, 32, 33
             ],
-            [33, 34, 35, 36, 37],
+            [34, 35, 36, 37, 38],
         )
         .is_err());
         for duplicate_index in 1..TrustedServiceEnvironmentSource::COUNT {
             let mut ports = [
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25, 26, 27, 28, 29, 30, 31, 32,
+                24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
             ];
             ports[duplicate_index] = ports[duplicate_index - 1];
-            assert!(ServiceEndpointMap::new(ports, [33, 34, 35, 36, 37]).is_err());
+            assert!(ServiceEndpointMap::new(ports, [34, 35, 36, 37, 38]).is_err());
         }
         let allocations = ServiceEndpointMap::new(
             [
                 41_001, 41_002, 41_003, 41_004, 41_005, 41_006, 41_007, 41_008, 41_009, 41_010,
                 41_011, 41_012, 41_013, 41_014, 41_015, 41_016, 41_017, 41_018, 41_019, 41_020,
                 41_021, 41_022, 41_023, 41_024, 41_025, 41_026, 41_027, 41_028, 41_029, 41_030,
-                41_031, 41_032,
+                41_031, 41_032, 41_033,
             ],
-            [41_033, 41_034, 41_035, 41_036, 41_037],
+            [41_034, 41_035, 41_036, 41_037, 41_038],
         )
         .unwrap();
         let observed =
@@ -8492,20 +8521,20 @@ mod tests {
                 41_001, 41_002, 41_003, 41_004, 41_005, 41_006, 41_007, 41_008, 41_009, 41_010,
                 41_011, 41_012, 41_013, 41_014, 41_015, 41_016, 41_017, 41_018, 41_019, 41_020,
                 41_021, 41_022, 41_023, 41_024, 41_025, 41_026, 41_027, 41_028, 41_029, 41_030,
-                41_031, 41_032,
+                41_031, 41_032, 41_033,
             ]
         );
         assert_eq!(
             ServiceAuxiliaryEndpoint::ALL
                 .map(|endpoint| allocations.auxiliary_port_for(endpoint).get()),
-            [41_033, 41_034, 41_035, 41_036, 41_037],
+            [41_034, 41_035, 41_036, 41_037, 41_038],
         );
         assert!(ServiceEndpointMap::new(
             [
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25, 26, 27, 28, 29, 30, 31, 32
+                24, 25, 26, 27, 28, 29, 30, 31, 32, 33
             ],
-            [32, 34, 35, 36, 37],
+            [33, 35, 36, 37, 38],
         )
         .is_err());
         assert_eq!(
@@ -9143,7 +9172,10 @@ mod tests {
         .unwrap();
         let os_environment = TrustedOsEnvironment::from_captured_values(
             OsString::from(r"C:\Windows"),
-            vec![("USERPROFILE", OsString::from(r"C:\Users\Breadboard"))],
+            vec![
+                ("USERPROFILE", OsString::from(r"C:\Users\Breadboard")),
+                ("PROGRAMFILES", OsString::from(r"C:\Program Files")),
+            ],
             vec![
                 (
                     "SCRIBERR_API_TOKEN",
@@ -9167,6 +9199,49 @@ mod tests {
             &os_environment,
         )
         .unwrap();
+        let scriberr_service = services
+            .prepare_for_launch_profile(
+                "scriberr",
+                &launch_profile(
+                    RuntimeMode::Packaged,
+                    TrustedServiceEnvironmentSource::Scriberr,
+                ),
+            )
+            .unwrap();
+        let scriberr_service = values(&scriberr_service);
+        let scriberr_path = scriberr_service["PATH"].replace('/', "\\");
+        assert!(scriberr_path
+            .split(';')
+            .any(|entry| entry.eq_ignore_ascii_case(r"C:\Program Files\Git\cmd")));
+        let presented_data = child_argv_path_presentation(
+            &paths.data_root().join("runtime").join("scriberr"),
+        )
+        .unwrap();
+        assert_eq!(
+            scriberr_service["DATABASE_PATH"],
+            presented_data.join("scriberr.db").to_string_lossy()
+        );
+        assert_eq!(
+            scriberr_service["WHISPERX_ENV"],
+            presented_data.join("models").to_string_lossy()
+        );
+        assert_eq!(scriberr_service["PYTHONUTF8"], "1");
+        assert_eq!(scriberr_service["PYTHONIOENCODING"], "utf-8");
+        assert_eq!(scriberr_service["PYTHONUNBUFFERED"], "1");
+        #[cfg(windows)]
+        for name in [
+            "DATABASE_PATH",
+            "JWT_SECRET_FILE",
+            "UPLOAD_DIR",
+            "TRANSCRIPTS_DIR",
+            "TEMP_DIR",
+            "WHISPERX_ENV",
+            "FFMPEG_PATH",
+            "FFPROBE_PATH",
+            "YTDLP_PATH",
+        ] {
+            assert!(!scriberr_service[name].starts_with(r"\\?\"));
+        }
         let workers = TrustedWorkerEnvironmentSet::from_service_environments(
             RuntimeMode::Packaged,
             &services,
@@ -9996,7 +10071,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let expected_home = paths.data_root().join(".runtime").join("hermes");
+        let expected_home = paths.data_root().join("runtime").join("hermes");
         assert_eq!(hermes["HERMES_HOME"], expected_home.to_string_lossy());
         let yaml = fs::read_to_string(expected_home.join("config.yaml")).unwrap();
         assert_eq!(

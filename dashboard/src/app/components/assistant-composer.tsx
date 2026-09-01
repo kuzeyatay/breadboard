@@ -2001,6 +2001,7 @@ export default function AssistantComposer({
               if (nextOpen) setShowSlashCommands(false);
             }}
             onSelect={insertCommand}
+            onSelectReference={(token) => insertCommandToken(`/${token}`)}
             onRunWorkflow={onRunWorkflow ? (workflow) => {
               const prompt = workflowComposerPrompt(workflow);
               setPendingWorkflow(workflow);

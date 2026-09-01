@@ -38,6 +38,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertPinnedCleanCheckout,
+  pinnedSourceTree,
   writeSourceCommitReceipt,
 } from "./pinned-source-checkout.mjs";
 import { assertStandaloneDashboardRuntimeDependencies } from "./dashboard-build-cache.mjs";
@@ -1658,16 +1659,13 @@ log("staging finite-worker production dependency closures");
       label: "Mem0",
       sourceRoot: mem0Checkout,
       expectedCommit: PINNED_PACKAGED_SERVICE_COMMITS.mem0,
+      allowVendoredSnapshot: true,
     });
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
-  const sourceTree = spawnSync("git", ["-C", mem0Checkout, "rev-parse", "HEAD:mem0-ts"], {
-    encoding: "utf8",
-    shell: false,
-    windowsHide: true,
-  });
-  if (sourceTree.status !== 0 || sourceTree.stdout.trim() !== PINNED_MEM0_RUNTIME.source.tree) {
+  const sourceTree = pinnedSourceTree(mem0Checkout, "mem0-ts");
+  if (sourceTree !== PINNED_MEM0_RUNTIME.source.tree) {
     fail("Mem0's reviewed source tree is unavailable.");
   }
   if (process.version !== `v${PINNED_MEM0_RUNTIME.build.nodeVersion}`) {

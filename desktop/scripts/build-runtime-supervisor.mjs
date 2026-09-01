@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { copyFileWithLockRetry } from "./copy-file-with-retry.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(desktopRoot, "..");
@@ -54,6 +55,12 @@ for (const artifact of artifacts) {
   if (!fs.existsSync(artifact.built)) {
     throw new Error(`Cargo produced no ${artifact.label} at ${artifact.built}`);
   }
-  fs.copyFileSync(artifact.built, artifact.staged);
+  await copyFileWithLockRetry(artifact.built, artifact.staged, {
+    onRetry: () => {
+      console.warn(
+        `[native-runtime] waiting for a previous Breadboard process to release ${artifact.staged}`,
+      );
+    },
+  });
   console.log(`[native-runtime] staged ${artifact.label}: ${artifact.staged}`);
 }

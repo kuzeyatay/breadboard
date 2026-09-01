@@ -1,0 +1,7 @@
+# torch==2.6.0 and torchvision==0.21.0 are installed first by the setup script.
+huggingface-hub==0.36.2
+open-clip-torch==2.32.0
+pillow==12.3.0
+safetensors==0.8.0
+tqdm==4.70.0
+transformers==4.57.6

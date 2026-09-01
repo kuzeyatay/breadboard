@@ -10,6 +10,7 @@ import {
   parseCurrentLocationPayload,
   renderCurrentLocationContext,
   requestUsesCurrentLocation,
+  requestUsesShoppingLocation,
 } from "../src/lib/hermes/current-location-context.ts";
 
 const NOW = Date.parse("2026-08-11T12:00:00.000Z");
@@ -66,18 +67,40 @@ test("English requests use current location only for local decisions", () => {
     "Recommend a good restaurant",
     "Find a coffee shop within walking distance",
     "How long is the commute from here?",
+    "Is there a Bluetooth trackpad I can buy?",
+    "Recommend a laptop for video editing",
   ]) {
     assert.equal(requestUsesCurrentLocation(request), true, request);
   }
 
   for (const request of [
-    "Recommend a laptop for video editing",
     "Explain how museum curation works",
     "Summarize this document",
     "What else?",
   ]) {
     assert.equal(requestUsesCurrentLocation(request), false, request);
   }
+});
+
+test("shopping requests use current location as a country-level market", () => {
+  for (const request of [
+    "Is there a Bluetooth trackpad I can buy?",
+    "Recommend a laptop for video editing",
+    "Welke draadloze muis kan ik kopen?",
+  ]) {
+    assert.equal(requestUsesShoppingLocation(request), true, request);
+  }
+  assert.equal(requestUsesShoppingLocation("Explain how a trackpad works"), false);
+  assert.equal(
+    requestUsesShoppingLocation("What else?", ["Recommend a laptop"]),
+    true,
+  );
+  assert.equal(
+    requestUsesShoppingLocation(
+      "Recommend a laptop without using my location",
+    ),
+    false,
+  );
 });
 
 test("Turkish requests and bounded local follow-ups use current location", () => {
@@ -146,7 +169,7 @@ test("the rendered hint is ephemeral, coarse, and limited to relevant fresh turn
 
   assert.equal(
     renderCurrentLocationContext({
-      request: "Recommend a laptop for video editing",
+      request: "Explain how video codecs work",
       location: location(),
       now: NOW,
     }),

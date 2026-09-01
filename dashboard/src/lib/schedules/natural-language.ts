@@ -79,22 +79,7 @@ function numberFromToken(value: string): number {
   return NUMBER_WORDS[value.toLowerCase()] ?? Number(value);
 }
 
-/** Read "in an hour and a half", "after 1.5 hours", and "in 90 minutes". */
-function readRelativeDelay(text: string): RelativeDelay | null {
-  const halfHour = /\b(?:in|after)\s+half\s+(?:an?\s+)?hour\b/i.exec(text);
-  if (halfHour) {
-    return { matched: halfHour[0], milliseconds: 30 * 60_000 };
-  }
-
-  const pattern = new RegExp(
-    String.raw`\b(?:in|after)\s+(${NUMBER_TOKEN})\s*(hours?|hrs?|minutes?|mins?)` +
-      String.raw`(\s*(?:and\s+)?(?:an?\s+)?half)?` +
-      String.raw`(?:\s*(?:and\s+)?(${NUMBER_TOKEN})\s*(minutes?|mins?))?\b`,
-    "i",
-  );
-  const match = pattern.exec(text);
-  if (!match) return null;
-
+function relativeDelayFromMatch(match: RegExpExecArray): RelativeDelay | null {
   const amount = numberFromToken(match[1]);
   if (!Number.isFinite(amount) || amount <= 0) return null;
   const primaryIsHours = /^h/i.test(match[2]);
@@ -108,6 +93,35 @@ function readRelativeDelay(text: string): RelativeDelay | null {
     // request never fires earlier than the person asked.
     milliseconds: Math.ceil(minutes) * 60_000,
   };
+}
+
+/** Read "in 90 minutes", "after an hour", and "5 minutes later". */
+function readRelativeDelay(text: string): RelativeDelay | null {
+  const halfHour = /\b(?:in|after)\s+half\s+(?:an?\s+)?hour\b/i.exec(text);
+  if (halfHour) {
+    return { matched: halfHour[0], milliseconds: 30 * 60_000 };
+  }
+
+  const pattern = new RegExp(
+    String.raw`\b(?:in|after)\s+(${NUMBER_TOKEN})\s*(hours?|hrs?|minutes?|mins?)` +
+      String.raw`(\s*(?:and\s+)?(?:an?\s+)?half)?` +
+      String.raw`(?:\s*(?:and\s+)?(${NUMBER_TOKEN})\s*(minutes?|mins?))?\b`,
+    "i",
+  );
+  const match = pattern.exec(text);
+  if (match) return relativeDelayFromMatch(match);
+
+  // People often put the delay after the action in messaging apps:
+  // "remind me to drink water 5 minutes later". Treat that wording exactly
+  // like "in 5 minutes" so it reaches the deterministic scheduler path.
+  const laterPattern = new RegExp(
+    String.raw`\b(${NUMBER_TOKEN})\s*(hours?|hrs?|minutes?|mins?)` +
+      String.raw`(\s*(?:and\s+)?(?:an?\s+)?half)?` +
+      String.raw`(?:\s*(?:and\s+)?(${NUMBER_TOKEN})\s*(minutes?|mins?))?\s+later\b`,
+    "i",
+  );
+  const laterMatch = laterPattern.exec(text);
+  return laterMatch ? relativeDelayFromMatch(laterMatch) : null;
 }
 
 function cronForOneShot(runAt: Date): string {

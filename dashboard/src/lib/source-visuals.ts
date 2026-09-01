@@ -1195,6 +1195,51 @@ export function sourceVisualCachedPageImageUrls(
   });
 }
 
+/**
+ * Prove that every supplied page snapshot has a successful detection receipt
+ * for its current bytes. Empty detection arrays are valid evidence; a missing,
+ * malformed, or stale receipt is not. This closes the gap where one scanned
+ * page (or one productive source) could mask an unscanned sibling page.
+ */
+export function sourceVisualScanCoverageProblems(input: {
+  contentPath: string;
+  gardenSlug: string;
+  sourceId: string;
+  pageImageUrls: readonly string[];
+}): string[] {
+  const sourceCache = loadSourceVisualScanCache(input.contentPath, input.gardenSlug)
+    .sources[input.sourceId] ?? {};
+  const problems: string[] = [];
+  for (const pageUrl of [...new Set(input.pageImageUrls.filter(isFullPageSnapshotUrl))]) {
+    const pageNumber = pageNumberFromAssetUrl(pageUrl) ?? 0;
+    const label = `source "${input.sourceId}" page ${pageNumber || pageUrl}`;
+    const diskPath = assetDiskPath(input.contentPath, input.gardenSlug, pageUrl);
+    if (!diskPath || !fs.existsSync(diskPath)) {
+      problems.push(`${label} has no current page snapshot`);
+      continue;
+    }
+    const entry = sourceCache[pageUrl];
+    if (!entry) {
+      problems.push(`${label} has no current visual-scan receipt`);
+      continue;
+    }
+    let fingerprint = "";
+    try {
+      fingerprint = sha256(fs.readFileSync(diskPath));
+      validateDetectionRecords(entry.detections);
+    } catch (error) {
+      problems.push(
+        `${label} has a malformed visual-scan receipt (${error instanceof Error ? error.message : String(error)})`,
+      );
+      continue;
+    }
+    if (entry.fingerprint !== fingerprint) {
+      problems.push(`${label} has a stale visual-scan receipt for different snapshot bytes`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
 type SourceFormulaReviewAction = "approve" | "replace" | "reject";
 type SourceFormulaTopologyAssessment = "same_slot" | "topology_change";
 
@@ -12992,6 +13037,8 @@ export async function extractSourceVisuals(
     );
     if (
       !force &&
+      Boolean(cachedBeforePageRead) &&
+      cachedBeforePageRead?.fingerprint === fingerprint &&
       existingOnPage.length > 0 &&
       !needsEquationTextUpgrade &&
       !needsRecoveryRehydration &&

@@ -103,7 +103,7 @@ export default function AssistantResponseMeta({
         ).toLowerCase()} tokens`
       : active
         ? "↓ counting tokens..."
-        : "↓ tokens unavailable"
+        : null
     : null;
   const usageBreakdown = usage && !sessionSnapshot && !noTokenReport
     ? [
@@ -133,7 +133,7 @@ export default function AssistantResponseMeta({
 
   return (
     <section
-      aria-label={`${agentName} ${displayLabel.toLowerCase()}${showTokenUsage ? " and token usage" : ""}`}
+      aria-label={`${agentName} ${displayLabel.toLowerCase()}${tokenLabel ? " and token usage" : ""}`}
       className="my-1 text-[var(--ink)]"
       data-response-state={failed ? "failed" : active ? "active" : "complete"}
     >

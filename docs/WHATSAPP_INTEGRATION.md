@@ -50,6 +50,10 @@ durable transcript  ──→ Terminal Recents (desktop app)
 `/help` and `/new` work from WhatsApp. `/new` forces a fresh chat instead of
 continuing the current one.
 
+Ordinary inbound messages run as **Super Agent** turns by default. WhatsApp has
+no composer mode switch, so Breadboard gives the turn its full inventory-aware
+router explicitly; `/new` and review answers do not start an agent turn.
+
 ## Modes
 
 | Mode | How it works | Notes |

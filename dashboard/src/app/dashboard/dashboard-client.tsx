@@ -1177,6 +1177,33 @@ export default function DashboardClient({
         </span>
         <span className="text-[11px] text-gray-600">{count}</span>
         {folder && (
+          <Link
+            data-card-action="true"
+            href={`/garden?view=private&cluster=${encodeURIComponent(folder)}`}
+            prefetch={false}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            className="ml-auto rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-pink-300"
+            aria-label={`Open cluster ${folderLabel(folder)} in Quartz`}
+            title="Open this cluster in Quartz"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.5}
+            >
+              <circle cx="12" cy="12" r="1.7" />
+              <circle cx="12" cy="6.5" r="3" />
+              <circle cx="17.2" cy="10.3" r="3" />
+              <circle cx="15.2" cy="16.3" r="3" />
+              <circle cx="8.8" cy="16.3" r="3" />
+              <circle cx="6.8" cy="10.3" r="3" />
+            </svg>
+          </Link>
+        )}
+        {folder && (
           <span
             data-card-action="true"
             role="button"
@@ -1192,7 +1219,7 @@ export default function DashboardClient({
                 openModal(folder);
               }
             }}
-            className="ml-auto rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-emerald-300"
+            className="rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-emerald-300"
             aria-label={`New garden inside ${folderLabel(folder)}`}
             title="New garden in this cluster"
           >

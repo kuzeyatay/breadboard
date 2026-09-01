@@ -251,6 +251,9 @@ export function buildTranscriptMarkdown({
     metadata.duration_seconds = String(Math.round(durationSeconds));
   }
   metadata.diarization = transcript.speakers.length > 0 ? "true" : "false";
+  if (transcript.noSpeechDetected) {
+    metadata.transcript_status = "no_speech_detected";
+  }
 
   if (source.kind === "youtube") {
     metadata.original_url = yamlSafe(source.originalUrl);

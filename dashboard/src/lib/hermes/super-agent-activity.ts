@@ -137,6 +137,10 @@ function visibleAssistantCandidate(
  * visible answer. Each continuation therefore supersedes the prior visible
  * assistant in the same uninterrupted chain; a real user message starts a new
  * chain and prevents unrelated answers from being folded together.
+ *
+ * A self-presenting worker is the exception. Its animation or globe is an
+ * irreplaceable part of the answer, not an interim sentence synthesis can carry
+ * forward. Keep that row beside the hand-back instead of dropping the widget.
  */
 export function supersededDelegationAssistantIndices(
   messages: readonly DelegationPresentationMessage[],
@@ -155,7 +159,10 @@ export function supersededDelegationAssistantIndices(
       messages[index - 1]?.internalAgentContinuation === true &&
       visibleAssistantIndex >= 0
     ) {
-      superseded.add(visibleAssistantIndex);
+      const visibleAssistant = messages[visibleAssistantIndex]!;
+      if (!selfPresentingDelegation(visibleAssistant)) {
+        superseded.add(visibleAssistantIndex);
+      }
     }
     visibleAssistantIndex = index;
   }
@@ -198,26 +205,58 @@ function delegationLabel(prefix: string, agentName: string): string {
   return `${prefix} ${agentLabel(agentName)}`;
 }
 
+interface DelegatedContinuationPhaseMessage extends DelegationPresentationMessage {
+  responseDurationMs?: number;
+  usage?: ChatTokenUsage;
+}
+
 /**
- * The time a hand-back row inherits from the turn it is speaking for.
+ * Every completed assistant phase hidden behind one continuation answer.
  *
- * A delegation ends with two turns and one visible row: the turn that delegated
- * is hidden, its text is carried into the hand-back, and the hand-back reports
- * the result. Its own duration is therefore only the synthesis — fifteen
- * seconds at the end of an operation that had been running for minutes, which
- * read as a wrong number rather than a partial one.
- *
- * The delegating turn's stored duration already folds in its worker phase (see
- * externalAgentResponseDurationMs), so it is the whole of what came before and
- * the two halves add up to the operation the person actually waited through.
+ * The Super Agent's orchestration response and the worker response are separate
+ * durable turns. Looking only at the immediately preceding worker loses the
+ * orchestration time (30 seconds in the common God's Eye path). Walk back to the
+ * person's actual message so the visible hand-back can report the full wait.
  */
+function delegatedContinuationPriorPhases(
+  messages: readonly DelegatedContinuationPhaseMessage[],
+  assistantIndex: number,
+): DelegatedContinuationPhaseMessage[] {
+  if (
+    messages[assistantIndex]?.role !== "assistant" ||
+    messages[assistantIndex - 1]?.role !== "user" ||
+    messages[assistantIndex - 1]?.internalAgentContinuation !== true
+  ) {
+    return [];
+  }
+
+  const phases: DelegatedContinuationPhaseMessage[] = [];
+  let containsDelegatedWorker = false;
+  for (let index = assistantIndex - 2; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role === "user") {
+      if (message.internalAgentContinuation === true) continue;
+      break;
+    }
+    phases.push(message);
+    if (message.delegatedAgentRun === true) containsDelegatedWorker = true;
+  }
+  return containsDelegatedWorker ? phases.reverse() : [];
+}
+
+/** The elapsed time a hand-back inherits from all of its earlier phases. */
 export function delegatedTurnCarriedDurationMs(
-  owner: { delegatedAgentRun?: boolean; responseDurationMs?: number } | undefined,
+  messages: readonly DelegatedContinuationPhaseMessage[],
+  assistantIndex: number,
 ): number | undefined {
-  if (owner?.delegatedAgentRun !== true) return undefined;
-  const duration = owner.responseDurationMs;
-  return typeof duration === "number" && Number.isFinite(duration)
-    ? Math.max(0, duration)
+  const durations = delegatedContinuationPriorPhases(messages, assistantIndex)
+    .map((phase) => phase.responseDurationMs)
+    .filter(
+      (duration): duration is number =>
+        typeof duration === "number" && Number.isFinite(duration),
+    );
+  return durations.length > 0
+    ? durations.reduce((total, duration) => total + Math.max(0, duration), 0)
     : undefined;
 }
 
@@ -235,29 +274,31 @@ export function delegatedTurnCarriedDurationMs(
  * summing them would invent a number that was never measured.
  */
 export function delegatedTurnTotalUsage(
-  owner:
-    | { delegatedAgentRun?: boolean; usage?: ChatTokenUsage }
-    | undefined,
+  messages: readonly DelegatedContinuationPhaseMessage[],
+  assistantIndex: number,
   continuation: ChatTokenUsage | undefined,
 ): ChatTokenUsage | undefined {
-  const ownerUsage =
-    owner?.delegatedAgentRun === true ? owner.usage : undefined;
-  if (!ownerUsage) return continuation;
+  const priorUsages = delegatedContinuationPriorPhases(messages, assistantIndex)
+    .map((phase) => phase.usage)
+    .filter((usage): usage is ChatTokenUsage => Boolean(usage));
+  if (priorUsages.length === 0) return continuation;
+  const usages = continuation ? [...priorUsages, continuation] : priorUsages;
+  const latestUsage = continuation ?? priorUsages.at(-1);
   const apiCalls =
-    ownerUsage.apiCalls !== undefined || continuation?.apiCalls !== undefined
-      ? (ownerUsage.apiCalls ?? 0) + (continuation?.apiCalls ?? 0)
+    usages.some((usage) => usage.apiCalls !== undefined)
+      ? usages.reduce((total, usage) => total + (usage.apiCalls ?? 0), 0)
       : undefined;
   return {
     // sumChatTokenUsage drops a legacy cumulative session snapshot rather than
     // double-counting rows it already covers; that rule holds here too.
-    ...sumChatTokenUsage([ownerUsage, continuation]),
-    ...(continuation?.scope ? { scope: continuation.scope } : {}),
+    ...sumChatTokenUsage(usages),
+    ...(latestUsage?.scope ? { scope: latestUsage.scope } : {}),
     ...(apiCalls !== undefined ? { apiCalls } : {}),
-    ...(continuation?.contextUsedTokens !== undefined
-      ? { contextUsedTokens: continuation.contextUsedTokens }
+    ...(latestUsage?.contextUsedTokens !== undefined
+      ? { contextUsedTokens: latestUsage.contextUsedTokens }
       : {}),
-    ...(continuation?.contextLimitTokens !== undefined
-      ? { contextLimitTokens: continuation.contextLimitTokens }
+    ...(latestUsage?.contextLimitTokens !== undefined
+      ? { contextLimitTokens: latestUsage.contextLimitTokens }
       : {}),
     // The row's own duration stays its own: the delegation's share of the clock
     // is carried separately, and adding it twice would double the total.
@@ -280,6 +321,7 @@ interface DelegatedWorkerMessage {
   externalAgentOutcome?: string;
   externalAgentName?: string;
   externalAgentResult?: string;
+  delegatedAgentReason?: string;
 }
 
 /**
@@ -358,6 +400,26 @@ export function delegatedAgentOutcomeLabelForMessage(
 /** What the runtime recorded when a worker was stopped by a person, not by a failure. */
 export const DELEGATED_WORKER_STOPPED_BY_USER = "Stopped by the user.";
 
+function readableDelegatedFailure(value: string | undefined): string | undefined {
+  const firstLine = value
+    ?.split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.slice(0, 240);
+  if (!firstLine) return undefined;
+  // Worker output is diagnostic data, not UI copy. Keep a useful sentence such
+  // as "Deep Research is not configured", but never flash implementation
+  // debris while the Super Agent prepares the proper hand-back.
+  if (
+    /(?:node:internal|\\\\\?\\|[A-Za-z]:[\\/]|\b(?:EISDIR|ENOENT|EINVAL|EPERM|errno|syscall|lstat|argv)\b|^\s*at\s+\S)/i.test(
+      firstLine,
+    )
+  ) {
+    return undefined;
+  }
+  return firstLine.replace(/^(?:error|failure)\s*:\s*/i, "").trim() || undefined;
+}
+
 /**
  * A sentence for the row when the delegation ended without a hand-back.
  *
@@ -383,11 +445,20 @@ export function delegatedWorkersOutcomeNote(
       ? `You stopped ${subject} before it returned anything, so there is nothing to synthesize. Retry to run it again.`
       : `${subject} was stopped before it returned anything, so there is nothing to synthesize. Retry to run it again.`;
   }
+  const selectionReasons = [
+    ...new Set(
+      ended
+        .map((worker) => worker.delegatedAgentReason?.trim().replace(/\s+/g, " "))
+        .filter((reason): reason is string => Boolean(reason)),
+    ),
+  ];
   const reasons = ended
-    .map((worker) => worker.externalAgentResult?.trim())
+    .map((worker) => readableDelegatedFailure(worker.externalAgentResult))
     .filter((reason): reason is string => Boolean(reason))
-    .map((reason) => reason.split("\n")[0]!.slice(0, 240));
+  const selection = selectionReasons.length
+    ? `Why ${subject} was selected: ${selectionReasons.join(" ")} `
+    : "";
   return reasons.length
-    ? `${subject} failed: ${reasons.join(" ")}`
-    : `${subject} failed before it returned anything.`;
+    ? `${selection}${subject} could not complete its part: ${reasons.join(" ")} No result was returned; the main assistant will explain the next step.`
+    : `${selection}${subject} could not complete its part because a supporting service did not start. No result was returned; the main assistant will explain the next step.`;
 }

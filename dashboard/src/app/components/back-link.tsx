@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useState, useSyncExternalStore } from 'react';
 import { backLabelFor, consumeBackTo, resolveBackHref, subscribeToTrail } from '@/lib/nav-history';
 
 interface Props {
@@ -44,12 +44,26 @@ export default function BackLink({
   const getServerSnapshot = useCallback(() => fallbackHref, [fallbackHref]);
 
   const href = useSyncExternalStore(subscribeToTrail, getSnapshot, getServerSnapshot);
-  const label = href === fallbackHref ? fallbackLabel : backLabelFor(href, fallbackLabel);
+  const [pendingBack, setPendingBack] = useState<{
+    pathname: string;
+    href: string;
+  } | null>(null);
+  const renderedHref = pendingBack?.pathname === pathname ? pendingBack.href : href;
+  const label =
+    renderedHref === fallbackHref
+      ? fallbackLabel
+      : backLabelFor(renderedHref, fallbackLabel);
 
   return (
     <Link
-      href={href}
-      onClick={() => consumeBackTo(href)}
+      href={renderedHref}
+      onNavigate={() => {
+        // Consuming the trail synchronously exposes the destination's own back
+        // target. Keep rendering the link that was followed until usePathname
+        // confirms that this page has actually been left.
+        setPendingBack({ pathname, href: renderedHref });
+        consumeBackTo(renderedHref);
+      }}
       className={className ?? DEFAULT_CLASS}
     >
       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>

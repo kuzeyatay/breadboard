@@ -49,6 +49,7 @@ import {
   type CapabilitySurface,
 } from "@/lib/hermes/capability-combinations.ts";
 import {
+  listAgentLaunchRequestsAfter,
   recordAgentLaunchRequest,
   releaseAgentLaunchRequestSlot,
   reserveAgentLaunchRequestSlot,
@@ -145,7 +146,7 @@ export async function POST(request: Request) {
           404,
           "agent_launch_unknown_agent",
           `There is no runtime agent with the id "${agentId}". Use one of the ids listed in your context: ${launchable
-            .map((candidate) => candidate.id)
+            .map((candidate) => `${candidate.id} (${candidate.name})`)
             .join(", ")}.`,
         );
       }
@@ -169,6 +170,19 @@ export async function POST(request: Request) {
         `A brief is required: it is the whole instruction ${agent.name} receives, and it cannot see this conversation.`,
       );
     }
+    // The reason is the decision, not paperwork. The directive's launch test —
+    // name what this agent reaches that the turn cannot — went unenforced, so a
+    // launch made on topic match alone looked exactly like a considered one.
+    // Requiring the line at the boundary makes the model state its case before
+    // the user is asked to wait, and the confirmation chip and evidence ledger
+    // show that case verbatim.
+    if (!reason) {
+      throw new ApiError(
+        400,
+        "agent_launch_reason_required",
+        `A reason is required: one line naming what ${agent.name} reaches that this turn does not — a mailbox, a repository, a browser, a persistent workspace, a file kind. If you cannot name one, do not launch; answer the request yourself.`,
+      );
+    }
     // A slash-prefixed brief is a capability expression, not a self-contained
     // instruction for an isolated specialist. Reject it at the tool boundary
     // even though the structured client path no longer replays the command.
@@ -178,6 +192,27 @@ export async function POST(request: Request) {
     });
     if (conflict) {
       throw new ApiError(400, conflict.code, conflict.message);
+    }
+    // A second worker has to be a different job. The narrow case caught here is
+    // the literal same job twice — one agent, one brief — which is what a retry
+    // loop or a thoroughness reflex produces, never a considered batch. Two
+    // different briefs to the same agent stay allowed: they can be genuinely
+    // independent parts.
+    const normalizedBrief = brief.replace(/\s+/g, " ").toLowerCase();
+    const duplicate = listAgentLaunchRequestsAfter({
+      runId: run.id,
+      afterId: 0,
+    }).some(
+      (queued) =>
+        queued.agentId === agent.id &&
+        queued.brief.replace(/\s+/g, " ").toLowerCase() === normalizedBrief,
+    );
+    if (duplicate) {
+      throw new ApiError(
+        409,
+        "agent_launch_duplicate_job",
+        `${agent.name} is already queued with this exact brief. One worker owns one job — wait for its result instead of doubling it, and launch a second worker only for a genuinely different part of the work.`,
+      );
     }
 
     const originClientMessageId =
@@ -248,6 +283,7 @@ export async function POST(request: Request) {
           run: startedRun,
           delegatedAgentRun: true,
           internalAgentContinuation: true,
+          delegatedAgentReason: reason,
         });
         observeMaxResearchConversationTurn({
           userId: session.user_id,

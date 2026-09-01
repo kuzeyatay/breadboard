@@ -49,7 +49,6 @@ const MONTH_TIMED_LIMIT = 2;
  */
 export interface DueTaskChip {
   id: number;
-  ref: string;
   title: string;
   /** The owning project's colour, so a chip matches its board. */
   color: string;
@@ -116,7 +115,7 @@ function DueChip({
     <button
       type="button"
       onClick={() => onSelect?.(task.id)}
-      title={`${task.ref} · ${task.title}${task.done ? " · done" : " · due"}`}
+      title={`${task.title}${task.done ? " · done" : " · due"}`}
       className="pointer-events-auto flex items-center gap-1 truncate rounded-sm px-1 py-0.5 text-left text-[11px] leading-4 text-gray-300 hover:bg-gray-800/60"
       style={{
         borderLeft: `2px solid ${task.color}`,
@@ -124,12 +123,11 @@ function DueChip({
       }}
     >
       <span
-        className="shrink-0 text-[10px] tabular-nums"
-        style={{ color: task.urgent && !task.done ? "var(--danger)" : "var(--ink-muted)" }}
+        className={`truncate ${task.done ? "line-through" : ""}`}
+        style={{ color: task.urgent && !task.done ? "var(--danger)" : undefined }}
       >
-        {task.ref}
+        {task.title}
       </span>
-      <span className={`truncate ${task.done ? "line-through" : ""}`}>{task.title}</span>
     </button>
   );
 }
@@ -792,16 +790,13 @@ function AgendaView(props: ViewProps) {
                     <span className="w-24 shrink-0 text-xs text-gray-500">
                       {task.done ? "Done" : "Due"}
                     </span>
-                    <span className="min-w-0 flex-1">
                       <span
-                        className={`block truncate text-sm text-white ${
+                        className={`min-w-0 flex-1 truncate text-sm text-white ${
                           task.done ? "line-through" : ""
                         }`}
                       >
                         {task.title}
                       </span>
-                      <span className="block truncate text-xs text-gray-500">{task.ref}</span>
-                    </span>
                   </button>
                 </li>
               ))}

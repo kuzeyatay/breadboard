@@ -228,6 +228,34 @@ test("client maps yt-dlp failures to youtube_download_failed without leaking det
   );
 });
 
+test("startTranscription forwards the bounded WhisperX batch size", async () => {
+  const calls = [];
+  const client = new ScriberrClient({
+    baseUrl: "http://scriberr.local",
+    apiToken: "k",
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), body: JSON.parse(init.body) });
+      return jsonResponse({ id: "j1", status: "pending" });
+    },
+  });
+
+  await client.startTranscription("j1", {
+    modelFamily: "whisper",
+    model: "small.en",
+    batchSize: 4,
+    language: "en",
+  });
+
+  assert.equal(calls[0].url, "http://scriberr.local/api/v1/transcription/j1/start");
+  assert.deepEqual(calls[0].body, {
+    model_family: "whisper",
+    model: "small.en",
+    batch_size: 4,
+    diarize: false,
+    language: "en",
+  });
+});
+
 test("killJob tolerates 'not running' and missing jobs", async () => {
   for (const status of [200, 400, 404]) {
     const client = new ScriberrClient({

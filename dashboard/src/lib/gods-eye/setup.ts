@@ -8,7 +8,10 @@
 
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimePortableRealpath,
+} from "../external-runtime-filesystem.ts";
 import { googleMapsKeyStatus } from "./credentials.ts";
 import { godsEyeAvailability, resolveGodsEyeRoot } from "./runtime.ts";
 import { currentService } from "./service.ts";
@@ -42,7 +45,15 @@ function progress(): GodsEyeSetupProgress {
 /** npm's JavaScript entry next to the Node binary this process runs on. */
 export function npmEntry(execPath: string = process.execPath): string | null {
   const entry = path.join(path.dirname(execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  return externalRuntimePathExists(entry) ? entry : null;
+  if (!externalRuntimePathExists(entry)) return null;
+  try {
+    // The packaged runtime uses a trusted Windows verbatim path. Node accepts
+    // that spelling for its executable, but not for the JavaScript entry in
+    // argv[1], so hand the child the normal absolute spelling after checking it.
+    return externalRuntimePortableRealpath(entry);
+  } catch {
+    return null;
+  }
 }
 
 export function setupStatus() {

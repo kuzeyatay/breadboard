@@ -14,6 +14,12 @@ const MEDIA_EXTENSIONS = new Set([
   ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg",
 ]);
 const MAX_TEXT_BYTES = 4096;
+const DEVELOPMENT_SCRIBERR_SETTING_NAMES = new Set([
+  "SCRIBERR_MODEL_FAMILY",
+  "SCRIBERR_MODEL",
+  "SCRIBERR_LANGUAGE",
+  "SCRIBERR_DIARIZATION",
+]);
 
 function fail(message) {
   throw new Error(message);
@@ -33,9 +39,59 @@ function boundedText(value, maximumBytes = MAX_TEXT_BYTES) {
     Buffer.byteLength(value, "utf8") <= maximumBytes && !/\p{Cc}/u.test(value);
 }
 
+function unquoteLocalSetting(value) {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) return trimmed.slice(1, -1);
+  return trimmed;
+}
+
+/**
+ * Runtime's sealed worker environment is authoritative. In repository-backed
+ * development, however, dashboard settings resolved from `.env.local` are not
+ * necessarily present in the Runtime host's OS environment. Project only the
+ * non-secret Scriberr inference settings from that attested local file, and
+ * never override a value supplied by Runtime.
+ */
+export function projectDevelopmentScriberrSettings(repositoryRoot, env = process.env) {
+  const settingsPath = path.join(repositoryRoot, "dashboard", ".env.local");
+  if (!fs.existsSync(settingsPath)) return [];
+  const metadata = fs.lstatSync(settingsPath);
+  if (
+    !metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 64 * 1024 ||
+    !samePath(fs.realpathSync.native(settingsPath), settingsPath)
+  ) fail("The development Scriberr settings file is unavailable or indirect.");
+  const projected = [];
+  for (const rawLine of fs.readFileSync(settingsPath, "utf8").split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const separator = line.indexOf("=");
+    if (separator <= 0) continue;
+    const name = line.slice(0, separator).trim();
+    if (!DEVELOPMENT_SCRIBERR_SETTING_NAMES.has(name)) continue;
+    if (boundedText(env[name], 128)) continue;
+    const value = unquoteLocalSetting(line.slice(separator + 1));
+    if (!boundedText(value, 128)) fail(`Invalid development ${name} setting.`);
+    env[name] = value;
+    projected.push(name);
+  }
+  return projected;
+}
+
 function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
+  const normalize = (value) => {
+    let resolved = path.resolve(value);
+    if (process.platform === "win32") {
+      if (resolved.startsWith("\\\\?\\UNC\\")) resolved = `\\\\${resolved.slice(8)}`;
+      else if (resolved.startsWith("\\\\?\\")) resolved = resolved.slice(4);
+    }
+    return resolved;
+  };
+  const a = normalize(left);
+  const b = normalize(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
@@ -49,11 +105,12 @@ function directDirectory(value, label) {
   if (!boundedText(value) || !path.isAbsolute(value)) fail(`${label} is not configured.`);
   const resolved = path.resolve(value);
   const metadata = fs.lstatSync(resolved);
+  const canonical = fs.realpathSync.native(resolved);
   if (!metadata.isDirectory() || metadata.isSymbolicLink() ||
-      !samePath(fs.realpathSync.native(resolved), resolved)) {
+      !samePath(canonical, resolved)) {
     fail(`${label} is unavailable or indirect.`);
   }
-  return resolved;
+  return canonical;
 }
 
 function ensureDirectContainedDirectory(root, target, label) {
@@ -110,8 +167,11 @@ export function expectedScriberrGardenInputCount(request) {
 }
 
 function sourceLayout(launch) {
-  const dataRoot = directDirectory(process.env.BREADBOARD_DATA_DIR, "Runtime data root");
-  if (!samePath(dataRoot, launch.dataRoot)) fail("Scriberr received a mismatched Runtime data root.");
+  // The finite worker core derives this root from the identity-bound launch
+  // directory. In development the dashboard deliberately clears
+  // BREADBOARD_DATA_DIR to preserve the historical repository layout, so the
+  // environment is neither necessary nor authoritative here.
+  const dataRoot = directDirectory(launch.dataRoot, "Runtime data root");
   const sourceRoot = directDirectory(
     process.env.BREADBOARD_SCRIBERR_SOURCE_ROOT,
     "Staged Scriberr source root",
@@ -120,6 +180,16 @@ function sourceLayout(launch) {
     process.env.BREADBOARD_REPO_ROOT,
     "Staged Breadboard repository root",
   );
+  const developmentSourceRoot = path.join(repositoryRoot, "dashboard", "src");
+  if (samePath(sourceRoot, developmentSourceRoot)) {
+    projectDevelopmentScriberrSettings(repositoryRoot);
+  }
+  const quartzSourceRoot = samePath(sourceRoot, developmentSourceRoot)
+    ? directDirectory(
+        path.join(repositoryRoot, "quartz"),
+        "Staged Quartz source root",
+      )
+    : repositoryRoot;
   for (const relative of [
     "lib/scriberr/job-runner.ts",
     "lib/scriberr/job-store.ts",
@@ -154,15 +224,47 @@ function sourceLayout(launch) {
   const mediaRoot = path.join(dataRoot, "runtime-v2", "services", "scriberr-garden", "media");
   ensureDirectContainedDirectory(dataRoot, path.dirname(mediaRoot), "Scriberr Garden state root");
   ensureDirectContainedDirectory(dataRoot, mediaRoot, "Scriberr media root");
+  // The sealed worker intentionally does not inherit the caller's TEMP/TMP.
+  // Without a worker-owned replacement, Node falls back to the system temp
+  // directory on Windows, where the durable knowledge transaction cannot
+  // create its rollback journal. Keep every temporary write inside the
+  // identity-bound attempt workspace instead.
+  const finiteMutation = ["transcribe", "retry", "recover"].includes(
+    launch.request.operation,
+  );
+  const chatmockBaseUrl = process.env.CHATMOCK_BASE_URL;
+  if (finiteMutation && !boundedText(chatmockBaseUrl, 2048)) {
+    fail("The trusted ChatMock endpoint is unavailable for Scriberr ingestion.");
+  }
+  if (boundedText(chatmockBaseUrl, 2048)) {
+    // Transcript ingestion uses the OpenAI SDK, while the sealed Scriberr
+    // profile exposes only the trusted ChatMock names. Project that endpoint
+    // into the SDK contract here and never inherit a host credential.
+    process.env.OPENAI_BASE_URL = chatmockBaseUrl;
+    process.env.OPENAI_API_KEY = "local";
+  }
+  const scratchOwner = finiteMutation
+    ? directDirectory(launch.workspacePath, "Scriberr worker workspace")
+    : path.join(dataRoot, "runtime-v2", "services", "scriberr-garden");
+  const scratchRoot = ensureDirectContainedDirectory(
+    scratchOwner,
+    path.join(scratchOwner, "tmp"),
+    "Scriberr worker scratch root",
+  );
+  process.env.TEMP = scratchRoot;
+  process.env.TMP = scratchRoot;
+  process.env.TMPDIR = scratchRoot;
   process.env.QUARTZ_CONTENT_PATH = contentPath;
   process.env.VIDEO_TRANSCRIPTION_TEMP_DIR = mediaRoot;
   return {
     dataRoot,
     sourceRoot,
     repositoryRoot,
+    quartzSourceRoot,
     databaseModulePath,
     contentPath,
     mediaRoot,
+    scratchRoot,
   };
 }
 
@@ -291,7 +393,7 @@ async function executeTranscription(layout, launch, signal, io, inputPath) {
         identity: launch.identity,
         dataRoot: launch.dataRoot,
         contentPath: layout.contentPath,
-        sourceRoot: layout.repositoryRoot,
+        sourceRoot: layout.quartzSourceRoot,
         workspacePath: launch.workspacePath,
         signal,
       }),

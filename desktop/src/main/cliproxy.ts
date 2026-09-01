@@ -82,6 +82,110 @@ export function isCliproxyInstalled(home: string): boolean {
   }
 }
 
+const MAX_LEGACY_AUTH_FILE_BYTES = 4 * 1024 * 1024;
+
+function directRegularFile(filePath: string, maximumBytes = Number.MAX_SAFE_INTEGER): boolean {
+  try {
+    const metadata = fs.lstatSync(filePath);
+    return (
+      metadata.isFile() &&
+      !metadata.isSymbolicLink() &&
+      metadata.size > 0 &&
+      metadata.size <= maximumBytes
+    );
+  } catch {
+    return false;
+  }
+}
+
+function copyDirectFileIfAbsent(
+  source: string,
+  destination: string,
+  maximumBytes = Number.MAX_SAFE_INTEGER,
+): boolean {
+  if (!directRegularFile(source, maximumBytes) || fs.existsSync(destination)) return false;
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  try {
+    fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+}
+
+/**
+ * Runtime V2 owns one subscription home below its mutable data root in every
+ * mode. Before the cutover, development used `~/.breadboard/cliproxy`; migrate
+ * its executable and OAuth files by copy so an existing Gemini/Kimi/Grok login
+ * remains usable. Runtime's newly derived API and management keys deliberately
+ * stay authoritative and are never copied from the legacy directory.
+ */
+export function migrateLegacyCliproxyState(
+  legacyHome: string,
+  runtimeHome: string,
+): { binaryCopied: boolean; authFilesCopied: number } {
+  const legacy = path.resolve(legacyHome);
+  const runtime = path.resolve(runtimeHome);
+  if (legacy === runtime) return { binaryCopied: false, authFilesCopied: 0 };
+
+  const binaryName = process.platform === "win32" ? "cli-proxy-api.exe" : "cli-proxy-api";
+  const binaryCopied = copyDirectFileIfAbsent(
+    path.join(legacy, "bin", binaryName),
+    path.join(runtime, "bin", binaryName),
+  );
+
+  const sourceAuth = path.join(legacy, "auth");
+  const destinationAuth = path.join(runtime, "auth");
+  let authFilesCopied = 0;
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(sourceAuth, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.isSymbolicLink()) continue;
+    if (
+      copyDirectFileIfAbsent(
+        path.join(sourceAuth, entry.name),
+        path.join(destinationAuth, entry.name),
+        MAX_LEGACY_AUTH_FILE_BYTES,
+      )
+    ) {
+      authFilesCopied += 1;
+    }
+  }
+  return { binaryCopied, authFilesCopied };
+}
+
+/**
+ * Prepare the data-root executable required by Runtime V2's hot/lean launch
+ * profile. Packaged mode uses the reviewed binary bundled under runtime-root;
+ * QA remains isolated and never imports a developer's real subscription state.
+ */
+export async function prepareDevelopmentCliproxyRuntime(
+  paths: ResolvedPaths,
+  log: (message: string) => void,
+  options: {
+    legacyHome?: string;
+    provision?: typeof provisionCliproxyBinary;
+  } = {},
+): Promise<void> {
+  if (paths.mode !== "dev" || paths.qaMode) return;
+
+  const runtimeHome = path.join(paths.dataRoot, "cliproxy");
+  const legacyHome = options.legacyHome ?? path.join(os.homedir(), ".breadboard", "cliproxy");
+  const migrated = migrateLegacyCliproxyState(legacyHome, runtimeHome);
+  if (migrated.binaryCopied || migrated.authFilesCopied > 0) {
+    log(
+      `migrated the legacy CLIProxyAPI runtime (${migrated.binaryCopied ? "binary and " : ""}` +
+        `${migrated.authFilesCopied} account file${migrated.authFilesCopied === 1 ? "" : "s"})`,
+    );
+  }
+  await (options.provision ?? provisionCliproxyBinary)(runtimeHome, log);
+}
+
 /**
  * Loopback shared secrets, read from disk or minted on first use.
  *

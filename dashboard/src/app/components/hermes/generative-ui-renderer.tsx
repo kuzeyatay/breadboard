@@ -1,6 +1,8 @@
 "use client";
 
 import ProductCarousel from "./product-carousel";
+import GardenNavigator from "./garden-navigator";
+import ChatSearchResults from "./chat-search-results";
 import {
   type GenerativeUiAction,
   type GenerativeUiResource,
@@ -35,6 +37,10 @@ export default function GenerativeUiRenderer({
             }
           />
         );
+      case "garden-navigator":
+        return <GardenNavigator key={resource.id} resource={resource} />;
+      case "chat-search-results":
+        return <ChatSearchResults key={resource.id} resource={resource} />;
     }
   });
 }

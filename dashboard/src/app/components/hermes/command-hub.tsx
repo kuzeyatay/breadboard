@@ -83,6 +83,7 @@ import {
 } from "@/lib/spotify-agent/identity.ts";
 import SkillsCatalogPanel from "./skills-catalog-panel";
 import WorkflowTemplatesPanel from "./workflow-templates-panel";
+import ReferenceChatsPanel from "./reference-chats-panel";
 import FavoriteBox, {
   DEFAULT_CAPABILITY_HIGHLIGHT_COLOR,
   capabilityHighlightStyle,
@@ -167,7 +168,7 @@ const MIGRATION_KEY = "breadboard:prompt-library:server-migrated:v1";
 
 // App connections moved to Settings → Connections: signing an account in is
 // setup, done once, not something you pick mid-request.
-type PaletteTab = "skill" | "workflow" | "agent" | "prompt";
+type PaletteTab = "skill" | "workflow" | "agent" | "prompt" | "reference";
 type DetailView =
   | "new-prompt"
   | "manage-prompts"
@@ -235,6 +236,8 @@ interface Props {
   onSelect: (item: CommandHubItem) => void;
   /** Stages one of the user's saved automations in the chat composer. */
   onRunWorkflow?: (workflow: LocalWorkflowSummary) => void;
+  /** Inserts a server-resolvable /reference:* context selector. */
+  onSelectReference?: (token: string) => void;
   /** Opens Settings → MCP for server setup and management. */
   onOpenMcpSettings?: () => void;
   /**
@@ -473,6 +476,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onOpenChange,
       onSelect,
       onRunWorkflow,
+      onSelectReference,
       onOpenMcpSettings,
       onSelectBrowserAgent,
       onSelectAgentBrowser,
@@ -1240,6 +1244,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         detail ||
         tab === "skill" ||
         tab === "workflow" ||
+        tab === "reference" ||
         (tab === "agent" && !agentDirectoryOpen)
       ) {
         return false;
@@ -1392,6 +1397,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       { id: "workflow", label: "Workflows" },
       { id: "agent", label: "Agents" },
       { id: "prompt", label: "Prompts" },
+      { id: "reference", label: "Reference" },
     ];
 
     async function loadAgencyAgents(force = false) {
@@ -1585,6 +1591,15 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                     } : undefined}
                     onNavigate={() => onOpenChange(false)}
                     disabled={disabled}
+                  />
+                ) : tab === "reference" && !detail ? (
+                  <ReferenceChatsPanel
+                    sessionId={sessionId}
+                    surface={surface}
+                    onSelect={(token) => {
+                      onSelectReference?.(token);
+                      onOpenChange(false);
+                    }}
                   />
                 ) : loading ? <LoadingRows /> : error ? (
                   <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center"><p className="text-sm text-[var(--ink)]">{error}</p><button type="button" onClick={() => void loadPalette()} className="mt-3 rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white">Try again</button></div>
@@ -3096,7 +3111,11 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                 ) : (
                   <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center">
                     <span className="text-[var(--botanical)]">
-                      {tab === "workflow" ? <span aria-hidden>↝</span> : <CapabilityIcon kind={tab} />}
+                      {tab === "workflow"
+                        ? <span aria-hidden>↝</span>
+                        : tab === "reference"
+                          ? <CapabilityIcon kind="mcp" />
+                          : <CapabilityIcon kind={tab} />}
                     </span>
                     <p className="mt-3 text-sm font-medium text-[var(--ink-heading)]">
                       {query

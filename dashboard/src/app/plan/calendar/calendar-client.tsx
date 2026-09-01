@@ -69,6 +69,8 @@ interface Props {
   onSelectTask?: (taskId: number) => void;
   /** Announces the visible window so the page can load that range's due work. */
   onRangeChange?: (from: string, to: string) => void;
+  /** Keeps Plan's board and calendar focused on the same date. */
+  onAnchorChange?: (anchor: string) => void;
 }
 
 function CalendarIcon({ className }: { className?: string }) {
@@ -102,6 +104,7 @@ export default function CalendarClient({
   dueTasks,
   onSelectTask,
   onRangeChange,
+  onAnchorChange,
 }: Props) {
   const [calendars, setCalendars] = useState<CalendarCollection[]>(initialCalendars);
   const [view, setView] = useState<CalendarView>(initialView);
@@ -148,10 +151,11 @@ export default function CalendarClient({
 
   useEffect(() => {
     const url = new URL(window.location.href);
-    url.searchParams.set("view", view);
+    url.searchParams.set("calendarView", view);
     url.searchParams.set("date", anchor);
     window.history.replaceState(null, "", url);
-  }, [view, anchor]);
+    onAnchorChange?.(anchor);
+  }, [view, anchor, onAnchorChange]);
 
   // Paging to another month has to reload the due work as well as the events,
   // and the range only exists here, so the page above is told about it rather

@@ -7,6 +7,7 @@ import {
   parseExplicitLearnPlanSelection,
   parseLearnUserInstruction,
   readLearnRouteJsonObject,
+  requireExpectedLearnModel,
 } from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 import { selectedModelForUser } from "@/lib/selected-model";
@@ -33,7 +34,14 @@ export async function POST(
       parseExplicitLearnPlanSelection(body);
     const userInstruction = parseLearnUserInstruction(body);
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const model = selectedModelForUser(userId);
+    const selectedModel = selectedModelForUser(userId);
+    // Planning normally follows the live user preference. Automated callers
+    // may additionally provide the same preference as an optimistic token so
+    // a last-second picker change fails closed instead of silently dispatching
+    // a different model.
+    const model = Object.prototype.hasOwnProperty.call(body, "expectedModel")
+      ? requireExpectedLearnModel(body, selectedModel)
+      : selectedModel;
     const execution = await executeLearnOperationForRoute({
       operation: "plan",
       gardenId: cluster.slug,

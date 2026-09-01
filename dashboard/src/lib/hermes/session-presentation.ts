@@ -39,6 +39,7 @@ import {
   generativeUiResourcesFromVerification,
   normalizeGenerativeUiResources,
 } from "../generative-ui/contracts.ts";
+import { normalizeScheduledChatReceipt } from "../schedules/types.ts";
 
 // Creating a brand-new conversation and dispatching its first turn are two
 // requests. The durable placeholder between them is stored as aborted so a
@@ -237,6 +238,9 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     const textSelection = normalizeChatTextSelectionReference(
       metadata.textSelection,
     );
+    const scheduledChatReceipt = normalizeScheduledChatReceipt(
+      metadata.scheduledChatReceipt,
+    );
     const persistedUiResources = normalizeGenerativeUiResources(metadata.uiResources);
     const uiResources = persistedUiResources.length > 0
       ? persistedUiResources
@@ -379,6 +383,9 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
         ? { branchGroupId: metadata.branchGroupId }
         : {}),
       ...(textSelection ? { textSelection } : {}),
+      ...(presented.role === "assistant" && scheduledChatReceipt
+        ? { scheduledChatReceipt }
+        : {}),
       ...(metadata.courseCorrection === true
         ? { courseCorrection: true }
         : {}),

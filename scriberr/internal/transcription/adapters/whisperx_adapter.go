@@ -444,7 +444,17 @@ func (w *WhisperXAdapter) Transcribe(ctx context.Context, input interfaces.Audio
 		logger.Debug("Updated LD_LIBRARY_PATH for WhisperX", "path", newPath)
 	}
 
-	cmd.Env = append(env, "PYTHONUNBUFFERED=1")
+	// WhisperX prints recognized text while it runs. On Windows, Python may
+	// otherwise inherit a legacy console code page (for example cp1252), which
+	// makes an otherwise valid transcript crash when it contains characters
+	// outside that code page. Keep the child stream deterministic and UTF-8 even
+	// though stdout/stderr are redirected to a file below.
+	cmd.Env = append(
+		env,
+		"PYTHONUNBUFFERED=1",
+		"PYTHONUTF8=1",
+		"PYTHONIOENCODING=utf-8",
+	)
 
 	// Setup log file
 	logFile, err := os.OpenFile(filepath.Join(procCtx.OutputDirectory, "transcription.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)

@@ -212,8 +212,14 @@ test("both chat surfaces persist the quiet Super Agent openGym presentation", ()
     card.indexOf("if (quiet)") < card.indexOf('className="bb-agent-run-card'),
     "Super Agent's direct answer must render before the explicit-agent run card",
   );
-  assert.match(terminalPanel, /message\.delegatedAgentRun && !message\.openGymRun/);
-  assert.match(garden, /msg\.delegatedAgentRun && !msg\.openGymRun/);
+  assert.match(
+    terminalPanel,
+    /message\.delegatedAgentRun === true &&[\s\S]{0,80}!message\.openGymRun/,
+  );
+  assert.match(
+    garden,
+    /msg\.delegatedAgentRun &&[\s\S]{0,80}!msg\.openGymRun/,
+  );
   assert.match(
     terminalPanel,
     /message\.openGymRun[\s\S]{0,300}persistedContent=\{externalAgentCardContent\(message\)\}/,
@@ -240,15 +246,15 @@ test("the direct openGym answer does not spawn a second Super Agent thinking tur
   for (const body of [terminal, garden]) {
     assert.match(
       body,
-      /request\.agentId === OPEN_GYM_AGENT_ID[\s\S]{0,160}awaitedLaunchRef\.current = null/,
+      /request\.agentId === OPEN_GYM_AGENT_ID[\s\S]{0,260}awaitedLaunchesRef\.current\.delete/,
     );
     assert.match(
       body,
-      /if \(message\.openGymRun\)[\s\S]{0,180}awaitedLaunchRef\.current = null/,
+      /if \(message\.openGymRun\)[\s\S]{0,180}awaitedLaunchesRef\.current\.delete/,
     );
     assert.match(
       body,
-      /openGymRun[\s\S]{0,260}setPendingLaunchContinuation\(null\)/,
+      /openGymRun[\s\S]{0,260}(?:continue|return);/,
     );
   }
   assert.match(
@@ -257,7 +263,7 @@ test("the direct openGym answer does not spawn a second Super Agent thinking tur
   );
   assert.match(
     garden,
-    /msg\.delegatedAgentPreamble && !msg\.openGymRun/,
+    /msg\.delegatedAgentPreamble &&[\s\S]{0,80}!msg\.openGymRun/,
   );
 });
 

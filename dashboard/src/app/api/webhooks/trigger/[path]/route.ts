@@ -13,7 +13,12 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import db from "@/lib/db.ts";
-import { getHookById, recordDelivery, recordHookFire } from "@/lib/hooks/store.ts";
+import {
+  CHAT_COMPLETED_PROVIDER,
+  getHookById,
+  recordDelivery,
+  recordHookFire,
+} from "@/lib/hooks/store.ts";
 import { dispatchHook } from "@/lib/hooks/dispatch.ts";
 import { getProviderHandler } from "@/lib/sim/triggers/providers/registry";
 import { parseHookBody } from "@/lib/sim/triggers/providers/body";
@@ -40,7 +45,11 @@ function headersToRecord(request: NextRequest): Record<string, string> {
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ path: string }> }) {
   const { path } = await params;
   const hook = getHookById(path, db);
-  if (!hook || hook.enabled !== 1) {
+  if (
+    !hook ||
+    hook.enabled !== 1 ||
+    hook.provider === CHAT_COMPLETED_PROVIDER
+  ) {
     return new NextResponse("Not Found", { status: 404 });
   }
   return NextResponse.json({ ok: true });
@@ -51,7 +60,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const requestId = crypto.randomUUID();
 
   const hook = getHookById(path, db);
-  if (!hook || hook.enabled !== 1) {
+  if (
+    !hook ||
+    hook.enabled !== 1 ||
+    hook.provider === CHAT_COMPLETED_PROVIDER
+  ) {
     return new NextResponse("Not Found", { status: 404 });
   }
 

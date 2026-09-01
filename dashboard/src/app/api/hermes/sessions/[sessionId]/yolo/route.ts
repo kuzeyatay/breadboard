@@ -13,7 +13,9 @@ import { requireUserId } from "@/lib/server-auth";
 export const dynamic = "force-dynamic";
 
 // Keep Hermes's live, session-scoped bypass aligned with the browser switch.
-// Capability policy and filesystem authorization remain separate gates.
+// Identity, ownership and surface isolation remain hard boundaries. Per-turn
+// capability classification is only planning: valid actions reach their native
+// permission flow, which this bypass answers automatically while YOLO is on.
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ sessionId: string }> },

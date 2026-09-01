@@ -6,8 +6,8 @@ import * as path from "node:path";
  *
  * Two modes:
  *  - dev:      running from the repository checkout (`electron . --breadboard-dev`
- *              or app.isPackaged === false). Services run from the repo the way
- *              the existing dev scripts do.
+ *              or app.isPackaged === false). Services run from the repo while
+ *              durable user data stays in the same profile as the packaged app.
  *  - packaged: running from an installed build. Immutable program files live
  *              under `process.resourcesPath`; every mutable byte lives under
  *              the OS user-data directory.
@@ -85,11 +85,14 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
   if (mode === "dev") {
     const repoRoot = repoRootFromModuleDir(input.moduleDir);
     assertDir(repoRoot, "repository root");
-    const dataRoot = qaMode ? userDataRoot : repoRoot;
+    // Hot/lean development and the packaged app are two program builds of the
+    // same local product, not two accounts. Keep one durable profile so a
+    // person sees the same gardens, conversations, memories, and artifacts in
+    // either build. QA still gets an isolated Electron userData directory from
+    // its launcher, so using userDataRoot here preserves test isolation.
+    const dataRoot = userDataRoot;
     const runtimeRoot = path.join(repoRoot, "desktop", "build-resources");
-    const quartzWorkspace = qaMode
-      ? path.join(dataRoot, "quartz")
-      : path.join(repoRoot, "quartz");
+    const quartzWorkspace = path.join(dataRoot, "quartz");
     return {
       mode,
       qaMode,
@@ -97,44 +100,20 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
       runtimeRoot,
       resourcesRoot: repoRoot,
       dataRoot,
-      databaseDir: qaMode
-        ? path.join(dataRoot, "database")
-        : path.join(repoRoot, "dashboard", "db"),
+      databaseDir: path.join(dataRoot, "database"),
       quartzWorkspace,
       quartzContent: path.join(quartzWorkspace, "content"),
-      hermesWorkspaceRoot: qaMode
-        ? path.join(dataRoot, "runtime", "hermes-workspaces")
-        : path.join(repoRoot, ".runtime", "hermes-workspaces"),
-      hermesHome: qaMode
-        ? path.join(dataRoot, "runtime", "hermes")
-        : path.join(repoRoot, ".runtime", "hermes"),
-      codexHome: qaMode
-        ? path.join(dataRoot, "runtime", "codex")
-        : path.join(repoRoot, ".runtime", "codex-desktop"),
-      skillsQuarantine: qaMode
-        ? path.join(dataRoot, "skills", "quarantine")
-        : path.join(repoRoot, ".agents", "skills-quarantine"),
-      skillsApproved: qaMode
-        ? path.join(dataRoot, "skills", "approved")
-        : path.join(repoRoot, ".agents", "skills"),
-      skillsConditional: qaMode
-        ? path.join(dataRoot, "skills", "conditional")
-        : path.join(repoRoot, ".agents", "skills-conditional"),
-      logsDir: qaMode
-        ? path.join(dataRoot, "logs")
-        : path.join(repoRoot, ".runtime", "desktop-logs"),
-      runtimeDir: qaMode
-        ? path.join(dataRoot, "runtime")
-        : path.join(repoRoot, ".runtime", "desktop"),
-      configDir: qaMode
-        ? path.join(dataRoot, "config")
-        : path.join(repoRoot, ".runtime", "desktop-config"),
-      backupsDir: qaMode
-        ? path.join(dataRoot, "backups")
-        : path.join(repoRoot, ".runtime", "desktop-backups"),
-      tempDir: qaMode
-        ? path.join(dataRoot, "temp")
-        : path.join(repoRoot, ".runtime", "desktop-temp"),
+      hermesWorkspaceRoot: path.join(dataRoot, "runtime", "hermes-workspaces"),
+      hermesHome: path.join(dataRoot, "runtime", "hermes"),
+      codexHome: path.join(dataRoot, "runtime", "codex"),
+      skillsQuarantine: path.join(dataRoot, "skills", "quarantine"),
+      skillsApproved: path.join(dataRoot, "skills", "approved"),
+      skillsConditional: path.join(dataRoot, "skills", "conditional"),
+      logsDir: path.join(dataRoot, "logs"),
+      runtimeDir: path.join(dataRoot, "runtime"),
+      configDir: path.join(dataRoot, "config"),
+      backupsDir: path.join(dataRoot, "backups"),
+      tempDir: path.join(dataRoot, "temp"),
       // Hot development must execute the real source tree so Turbopack sees
       // physical dependencies beneath its narrow project root and HMR observes
       // edits. QA still isolates every mutable Breadboard store in dataRoot;

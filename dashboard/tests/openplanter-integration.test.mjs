@@ -70,6 +70,6 @@ test("normal Hermes chats keep thinking metadata and response action buttons", (
   assert.match(panel, /AssistantMessageActions/);
   assert.match(activity, /AssistantResponseMeta/);
   assert.match(responseMeta, /label = "Thinking"/);
-  assert.match(responseMeta, /tokens unavailable/);
+  assert.doesNotMatch(responseMeta, /tokens unavailable/);
   assert.match(activity, /Permission required/);
 });

@@ -42,6 +42,16 @@ import {
   normalizeProductAttachment,
   type ProductSearchItem,
 } from './generative-ui/contracts.ts';
+import {
+  isStoredFileAttachmentFormat,
+  isStoredFileBlobId,
+  MAX_STORED_FILE_ATTACHMENT_BYTES,
+  STORED_FILE_ATTACHMENT_ACCEPT,
+  STORED_FILE_FILENAME_HEADER,
+  storedFileAttachmentFormat,
+  storedFileIsText,
+  type StoredFileAttachmentFormat,
+} from './stored-file-attachments.ts';
 
 /**
  * Audio is in the common list rather than the Terminal's, unlike video: nothing
@@ -49,7 +59,7 @@ import {
  * file server-side, so a track can be dropped into any chat that has one.
  */
 export const CHAT_ATTACHMENT_ACCEPT =
-  `.pdf,.jpg,.jpeg,.png,.webp,.txt,.md,.csv,.json,.docx,.pptx,.xlsx,.odt,.ods,.odp,.zip,${MODEL_ATTACHMENT_ACCEPT},${AUDIO_ATTACHMENT_ACCEPT}`;
+  `.jpg,.jpeg,.png,.webp,.gif,${STORED_FILE_ATTACHMENT_ACCEPT},${DOCUMENT_ATTACHMENT_ACCEPT},${MODEL_ATTACHMENT_ACCEPT},${AUDIO_ATTACHMENT_ACCEPT}`;
 
 /**
  * The Terminal accepts one thing the other chats do not: a video. Reading one
@@ -59,8 +69,21 @@ export const CHAT_ATTACHMENT_ACCEPT =
 export const TERMINAL_ATTACHMENT_ACCEPT =
   `${CHAT_ATTACHMENT_ACCEPT},${VIDEO_ATTACHMENT_ACCEPT}`;
 
-export type ChatAttachment =
-  | { type: 'text'; text: string; name: string; sizeBytes?: number }
+interface ChatAttachmentScope {
+  /** The artifact row that placed this file in the current composer, if any. */
+  sourceArtifactId?: string;
+}
+
+export type ChatAttachment = ChatAttachmentScope & (
+  | {
+      type: 'text';
+      text: string;
+      name: string;
+      sizeBytes?: number;
+      /** Pointer to the exact uploaded bytes, retained outside transcript metadata. */
+      blobId?: string;
+      format?: StoredFileAttachmentFormat;
+    }
   | { type: 'image'; dataUrl: string; name: string; sizeBytes?: number }
   | { type: 'product'; name: string; product: ProductSearchItem }
   | {
@@ -131,14 +154,15 @@ export type ChatAttachment =
       summary?: DocumentAttachmentSummary;
       /** Figures lifted out of the file, by sidecar name, in document order. */
       figures?: string[];
-    };
+    }
+);
 
 /**
  * The safe, serializable attachment shape retained with a chat message.
- * Extracted text is deliberately not copied into transcript metadata; the
- * filename is enough for non-image files, while images keep their data URL so
- * pasted screenshots remain viewable after the composer is cleared or the
- * conversation is reopened.
+ * Extracted text is deliberately not copied into transcript metadata. Ordinary
+ * files keep a blob pointer to their exact bytes, while images keep their data
+ * URL so pasted screenshots remain viewable after the composer is cleared or
+ * the conversation is reopened.
  *
  * A 3D model and a video each keep a blob id rather than their bytes: both are
  * far too large to live in message metadata, so the file itself is stored and
@@ -155,7 +179,13 @@ export type ChatAttachment =
  * Uploads list can report it for files whose contents were never retained.
  */
 export type ChatMessageAttachment =
-  | { type: 'file'; name: string; sizeBytes?: number }
+  | {
+      type: 'file';
+      name: string;
+      sizeBytes?: number;
+      blobId?: string;
+      format?: StoredFileAttachmentFormat;
+    }
   | { type: 'image'; dataUrl: string; name: string; sizeBytes?: number }
   | { type: 'product'; name: string; product: ProductSearchItem }
   | {
@@ -197,8 +227,8 @@ export type ChatMessageAttachment =
  *
  * Every stored document does. A PDF gets the same reader the garden opens a
  * source PDF in; everything else gets that reader's shape around the structural
- * reading, because a .docx has no pages to render outside Word. Nothing else
- * opens anywhere: a plain text file's contents were never kept, only its name.
+ * reading, because a .docx has no pages to render outside Word. Ordinary source
+ * files are retained too, but currently open through Uploads or an artifact.
  *
  * The name travels in the query string because the blob store never kept one —
  * on disk the file is its id and its format and nothing else — and the page
@@ -404,6 +434,19 @@ export function chatMessageAttachments(
         },
       ];
     }
+    if (
+      attachment.type === 'text' &&
+      isStoredFileBlobId(attachment.blobId) &&
+      isStoredFileAttachmentFormat(attachment.format)
+    ) {
+      return [{
+        type: 'file' as const,
+        name,
+        blobId: attachment.blobId,
+        format: attachment.format,
+        ...size,
+      }];
+    }
     return [{ type: 'file' as const, name, ...size }];
   });
 }
@@ -426,11 +469,9 @@ function safeFigureNames(value: unknown): string[] {
 /**
  * Rebuilds attachments that can safely be reused for a regenerated turn.
  *
- * A plain text file still cannot be: its contents were never kept, only its
- * name. Everything whose bytes are stored can be — images by their data URL,
- * models and videos by their blob, and now documents by theirs. That last one
- * is why a retried turn used to run against nothing: the agent was handed a
- * list of filenames and no documents, and answered anyway.
+ * Stored plain files can now be reused too. Their transcript entry carries a
+ * pointer rather than duplicating their text; the server rehydrates it just as
+ * it does for a stored document.
  *
  * A reused document comes back with an empty `text`, because the transcript
  * never held it. The server fills it in from the stored file — see
@@ -496,6 +537,20 @@ export function reusableChatAttachments(
           text: '',
         },
       ];
+    }
+    if (
+      attachment.type === 'file' &&
+      isStoredFileBlobId(attachment.blobId) &&
+      isStoredFileAttachmentFormat(attachment.format)
+    ) {
+      return [{
+        type: 'text' as const,
+        name: attachment.name,
+        blobId: attachment.blobId,
+        format: attachment.format,
+        ...(attachment.sizeBytes === undefined ? {} : { sizeBytes: attachment.sizeBytes }),
+        text: '',
+      }];
     }
     return [];
   });
@@ -591,7 +646,13 @@ export function normalizeChatMessageAttachments(
         },
       ];
     }
-    if (record.type === 'file') return [{ type: 'file' as const, name, ...size }];
+    if (record.type === 'file') {
+      const stored =
+        isStoredFileBlobId(record.blobId) && isStoredFileAttachmentFormat(record.format)
+          ? { blobId: record.blobId, format: record.format }
+          : {};
+      return [{ type: 'file' as const, name, ...stored, ...size }];
+    }
     return [];
   });
 }
@@ -657,28 +718,6 @@ export function imageFilesFromClipboard(clipboardData: ClipboardFileData): File[
   return files.map(normalizeClipboardImageName);
 }
 
-const CLIENT_TEXT_EXTENSIONS = new Set([
-  'txt',
-  'md',
-  'csv',
-  'json',
-  'xml',
-  'html',
-  'js',
-  'ts',
-  'py',
-  'java',
-  'c',
-  'cpp',
-  'css',
-  'yaml',
-  'yml',
-  'toml',
-  'ini',
-  'sql',
-  'sh',
-]);
-
 type ExtractionResponse = {
   error?: unknown;
   warning?: unknown;
@@ -699,6 +738,14 @@ type ModelUploadResponse = {
 
 type VideoUploadResponse = {
   error?: unknown;
+  blobId?: unknown;
+  format?: unknown;
+  sizeBytes?: unknown;
+};
+
+type StoredFileUploadResponse = {
+  error?: unknown;
+  message?: unknown;
   blobId?: unknown;
   format?: unknown;
   sizeBytes?: unknown;
@@ -751,6 +798,50 @@ async function readFileBytes(file: File): Promise<Blob> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Keep an ordinary source/archive file before its readable text is extracted. */
+export async function attachStoredFile(
+  file: File,
+  format: StoredFileAttachmentFormat,
+): Promise<Extract<ChatAttachment, { type: 'text' }>> {
+  if (file.size > MAX_STORED_FILE_ATTACHMENT_BYTES) {
+    throw new Error('Files must be under 128 MiB');
+  }
+  const response = await fetch('/api/chat-attachments/files', {
+    method: 'POST',
+    headers: {
+      [STORED_FILE_FILENAME_HEADER]: encodeURIComponent(file.name),
+      'Content-Type': 'application/octet-stream',
+    },
+    body: file,
+    duplex: 'half',
+  } as RequestInit & { duplex: 'half' });
+  const data = (await response.json().catch(() => ({}))) as StoredFileUploadResponse;
+  if (!response.ok || data.error) {
+    throw new Error(
+      typeof data.message === 'string'
+        ? data.message
+        : typeof data.error === 'string'
+          ? data.error
+          : 'The file could not be stored',
+    );
+  }
+  if (
+    !isStoredFileBlobId(data.blobId) ||
+    !isStoredFileAttachmentFormat(data.format) ||
+    data.format !== format
+  ) {
+    throw new Error('The file could not be stored');
+  }
+  return {
+    type: 'text',
+    name: file.name,
+    blobId: data.blobId,
+    format: data.format,
+    sizeBytes: typeof data.sizeBytes === 'number' ? data.sizeBytes : file.size,
+    text: '',
+  };
 }
 
 /**
@@ -825,10 +916,13 @@ export async function attachModelFile(
  * transcribing them with a vision model. Reimplementing that would be a
  * downgrade.
  */
-async function extractDocumentText(file: File): Promise<{ text: string; warning: string }> {
+async function extractDocumentText(
+  file: File,
+  isHandwriting = false,
+): Promise<{ text: string; warning: string }> {
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('isHandwriting', 'false');
+  formData.append('isHandwriting', String(isHandwriting));
   const response = await fetch('/api/extract-text', { method: 'POST', body: formData });
   const data = (await response.json().catch(() => ({}))) as ExtractionResponse;
   if (!response.ok || data.error) {
@@ -1026,6 +1120,8 @@ export async function extractChatAttachments(
     allowVideo?: boolean;
     /** Progress for the one attachment kind whose upload can take minutes. */
     onStatus?: (message: string) => void;
+    /** Garden Chat can opt scanned images/documents into handwriting OCR. */
+    isHandwriting?: (file: File) => boolean;
   } = {},
 ): Promise<{
   attachments: ChatAttachment[];
@@ -1037,7 +1133,6 @@ export async function extractChatAttachments(
   const warnings: string[] = [];
 
   for (const file of files) {
-    const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
     try {
       // A mesh is checked and stored whole; there is no text in it to extract.
       const modelFormat = modelAttachmentFormat(file.name);
@@ -1087,7 +1182,7 @@ export async function extractChatAttachments(
         // A PDF is stored here but read by the extraction route, which handles
         // scans a structural reader cannot.
         if (stored.type === 'document' && !stored.text) {
-          const extracted = await extractDocumentText(file);
+          const extracted = await extractDocumentText(file, options.isHandwriting?.(file) ?? false);
           if (extracted.warning) warnings.push(`${file.name}: ${extracted.warning}`);
           stored.text = extracted.text;
         }
@@ -1101,19 +1196,36 @@ export async function extractChatAttachments(
         continue;
       }
 
-      if (CLIENT_TEXT_EXTENSIONS.has(extension)) {
-        attachments.push({
-          type: 'text',
-          text: await file.text(),
-          name: file.name,
-          sizeBytes: file.size,
-        });
+      const storedFileFormat = storedFileAttachmentFormat(file.name);
+      if (storedFileFormat) {
+        const stored = await attachStoredFile(file, storedFileFormat);
+        if (storedFileIsText(storedFileFormat)) {
+          stored.text = await file.text();
+          attachments.push(stored);
+          continue;
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('isHandwriting', String(options.isHandwriting?.(file) ?? false));
+        const response = await fetch('/api/extract-text', { method: 'POST', body: formData });
+        const data = (await response.json().catch(() => ({}))) as ExtractionResponse;
+        const responseError = typeof data.error === 'string' ? data.error : 'Extraction failed';
+        if (!response.ok || data.error) throw new Error(responseError);
+        if (typeof data.warning === 'string' && data.warning.trim()) {
+          warnings.push(`${file.name}: ${data.warning.trim()}`);
+        }
+        if (typeof data.text !== 'string') {
+          throw new Error('The archive did not contain readable content');
+        }
+        stored.text = data.text;
+        attachments.push(stored);
         continue;
       }
 
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('isHandwriting', 'false');
+      formData.append('isHandwriting', String(options.isHandwriting?.(file) ?? false));
       const response = await fetch('/api/extract-text', { method: 'POST', body: formData });
       const data = (await response.json().catch(() => ({}))) as ExtractionResponse;
       const responseError = typeof data.error === 'string' ? data.error : 'Extraction failed';

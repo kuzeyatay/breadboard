@@ -37,6 +37,8 @@ export interface TranscriptIngestInput {
   mediaKind: "audio" | "video";
   youtubeVideoId?: string | null;
   mediaSha256?: string | null;
+  /** Retained upload to copy into the Garden before the temp file is removed. */
+  mediaFilePath?: string | null;
   jobId: string;
   onProgress?: (step: string) => void;
 }
@@ -142,6 +144,10 @@ export async function ingestTranscriptSource(
     pages,
     extraction,
     sourceMetadata: input.metadata,
+    sourceMedia:
+      input.mediaFilePath && input.mediaSha256
+        ? { filePath: input.mediaFilePath, sha256: input.mediaSha256 }
+        : undefined,
     publicationUserId: input.userId,
     onProgress: input.onProgress,
   });

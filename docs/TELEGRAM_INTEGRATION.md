@@ -47,6 +47,11 @@ durable transcript  ──→ Terminal Recents (desktop app)
 instead of continuing the current one. Commands sent in a group arrive as
 `/help@yourbot`; the suffix is stripped.
 
+Ordinary inbound messages run as **Super Agent** turns by default. Telegram has
+no composer mode switch, so Breadboard gives the turn its full inventory-aware
+router explicitly; `/new`, review answers, and directly recognized reminders do
+not start an agent turn.
+
 ## Who can talk to it
 
 A bot's `@name` is public — anyone who learns it can message it — so **an empty

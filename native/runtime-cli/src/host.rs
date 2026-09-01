@@ -228,7 +228,10 @@ impl RuntimeEngine for AuthoritativeRuntimeEngine {
             dashboard_control,
             Arc::clone(shutdown),
         )
-        .map_err(|_| HostError::Engine("service engine preparation failed"))?;
+        .map_err(|error| {
+            eprintln!("breadboard-runtime: service engine preparation detail: {error}");
+            HostError::Engine("service engine preparation failed")
+        })?;
         Ok(Box::new(engine))
     }
 }

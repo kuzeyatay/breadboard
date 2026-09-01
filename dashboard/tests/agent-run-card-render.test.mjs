@@ -105,7 +105,7 @@ test("a duration-only usage record reports the time without inventing a token co
     },
   });
   assert.match(markup, /9s/);
-  assert.match(markup, /tokens unavailable/);
+  assert.doesNotMatch(markup, /tokens unavailable/);
   assert.doesNotMatch(markup, /0 tokens/);
 });
 

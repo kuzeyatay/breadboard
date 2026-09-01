@@ -6,6 +6,10 @@ import { authOptions } from "@/lib/auth-options";
 import { getCalendarStore } from "@/lib/calendar/instance.ts";
 import { isCalendarView, type CalendarView } from "@/lib/calendar/layout.ts";
 import { parseDate, todayDate } from "@/lib/calendar/wallclock.ts";
+import {
+  isPlanBoardScope,
+  type PlanBoardScope,
+} from "@/lib/plan/board-scope.ts";
 import { getPlanStore } from "@/lib/plan/instance.ts";
 import { isPlanView, type PlanView } from "@/lib/plan/view.ts";
 import PlanClient from "./plan-client";
@@ -22,7 +26,7 @@ export const metadata: Metadata = {
  * than the dashboard's — the same arrangement the calendar had before it moved
  * in here as a view.
  *
- * Which view, which project and which week are read from the query string (the
+ * Which view, project, date and board scope are read from the query string (the
  * client keeps them there with replaceState) so a reload or a bookmark comes
  * back to the same place.
  */
@@ -56,6 +60,10 @@ export default async function PlanPage({
 
   const rawView = first("view");
   const view: PlanView = isPlanView(rawView) ? rawView : "board";
+  const rawBoardScope = first("boardScope");
+  const boardScope: PlanBoardScope = isPlanBoardScope(rawBoardScope)
+    ? rawBoardScope
+    : "all";
   const rawCalendarView = first("calendarView");
   const calendarView: CalendarView = isCalendarView(rawCalendarView)
     ? rawCalendarView
@@ -70,6 +78,7 @@ export default async function PlanPage({
       initialBoard={board}
       initialLabels={labels}
       initialView={view}
+      initialBoardScope={boardScope}
       initialCalendars={calendars}
       initialCalendarView={calendarView}
       initialToday={today}

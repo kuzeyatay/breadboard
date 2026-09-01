@@ -5,6 +5,7 @@ import {
   releaseSupervisorLease,
   type SupervisorLease,
 } from "@/lib/supervisor-control";
+import { ensureQuartzPublicationForView } from "@/lib/quartz-publish";
 
 export const QUARTZ_VIEW_HEARTBEAT_MS = 20_000;
 export const QUARTZ_VIEW_HOLD_TTL_MS = 70_000;
@@ -128,6 +129,10 @@ export async function renewQuartzViewLease(
         error.status = 429;
         throw error;
       }
+      // Publish before starting the read-only server. On Windows this also
+      // avoids making the initial public-tree promotion contend with an open
+      // directory handle held by the static service.
+      await ensureQuartzPublicationForView(userId);
       const lease = await acquireQuartzLease();
       hold = {
         userId,

@@ -15,11 +15,12 @@ const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), "bb-repo-"));
 fs.mkdirSync(path.join(fakeRepo, "desktop", "dist", "main"), { recursive: true });
 const moduleDir = path.join(fakeRepo, "desktop", "dist", "main");
 
-test("dev mode resolves everything inside the repository", () => {
+test("dev mode uses repository programs and the durable desktop profile", () => {
+  const userData = path.join(os.tmpdir(), "bb-userdata");
   const paths = resolvePaths({
     isPackaged: false,
     forceDev: false,
-    userDataDir: path.join(os.tmpdir(), "bb-userdata"),
+    userDataDir: userData,
     electronResourcesPath: undefined,
     moduleDir,
   });
@@ -27,11 +28,15 @@ test("dev mode resolves everything inside the repository", () => {
   assert.equal(paths.qaMode, false);
   assert.equal(paths.appRoot, fakeRepo);
   assert.equal(paths.runtimeRoot, path.join(fakeRepo, "desktop", "build-resources"));
-  assert.equal(paths.databaseDir, path.join(fakeRepo, "dashboard", "db"));
-  assert.equal(paths.quartzContent, path.join(fakeRepo, "quartz", "content"));
+  assert.equal(paths.databaseDir, path.join(userData, "Data", "database"));
+  assert.equal(paths.quartzContent, path.join(userData, "Data", "quartz", "content"));
   assert.equal(paths.dashboardServerDir, path.join(fakeRepo, "dashboard"));
-  assert.equal(paths.codexHome, path.join(fakeRepo, ".runtime", "codex-desktop"));
+  assert.equal(paths.codexHome, path.join(userData, "Data", "runtime", "codex"));
   assert.equal(paths.runtimesDir, "");
+  for (const dir of mutableDirectories(paths)) {
+    assert.ok(isInside(userData, dir), `${dir} must stay inside userData`);
+    assert.ok(!isInside(fakeRepo, dir), `${dir} must not mutate the checkout`);
+  }
 });
 
 test("QA dev mode uses repo programs and isolates every mutable path", () => {
@@ -94,14 +99,16 @@ test("packaged mode separates resources from user data", () => {
 });
 
 test("forceDev overrides isPackaged", () => {
+  const userData = path.join(os.tmpdir(), "bb-userdata");
   const paths = resolvePaths({
     isPackaged: true,
     forceDev: true,
-    userDataDir: path.join(os.tmpdir(), "bb-userdata"),
+    userDataDir: userData,
     electronResourcesPath: path.join(os.tmpdir(), "bb-resources"),
     moduleDir,
   });
   assert.equal(paths.mode, "dev");
+  assert.equal(paths.databaseDir, path.join(userData, "Data", "database"));
 });
 
 test("ensureMutableDirectories creates the full mutable tree", () => {

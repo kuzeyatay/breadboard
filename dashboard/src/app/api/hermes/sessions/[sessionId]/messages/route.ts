@@ -25,6 +25,7 @@ import { normalizeChatTextSelectionReference } from "@/lib/chat-text-selection.t
 import { parseCurrentLocationPayload } from "@/lib/hermes/current-location-context.ts";
 import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
 import { startSessionEventPump } from "@/lib/hermes/event-stream.ts";
+import { scheduledChatReceiptForUser } from "@/lib/schedules/receipt-server.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -108,6 +109,10 @@ export async function POST(
       branchHistory,
       branchContextId: stringValue(body.branchContextId)?.slice(0, 128),
       internalAgentContinuation: body.internalAgentContinuation === true,
+      scheduledChatReceipt: scheduledChatReceiptForUser(
+        userId,
+        body.scheduleReceiptId,
+      ),
       responseStartedAt:
         typeof body.responseStartedAt === "string" &&
         Number.isFinite(Date.parse(body.responseStartedAt))

@@ -130,15 +130,30 @@ test("Artifacts has one shared search field across Terminal and Garden", () => {
   assert.equal(filterArtifactsForSearch([image, report], "").length, 2);
 });
 
-test("the archive hides artifacts until generation finishes", () => {
+test("the archive hides generating and failed artifacts", () => {
   const panel = source("../src/app/components/hermes/artifact-panel.tsx");
   const ready = { id: "ready", status: "ready" };
   const generating = { id: "generating", status: "generating" };
   const failed = { id: "failed", status: "failed" };
 
-  assert.deepEqual(filterArtifactsForArchive([ready, generating, failed]), [ready, failed]);
+  assert.deepEqual(filterArtifactsForArchive([ready, generating, failed]), [ready]);
   assert.match(panel, /filterArtifactsForArchive\(artifacts\)/);
   assert.doesNotMatch(panel, />\s*Generating\s*</);
+  assert.doesNotMatch(panel, />\s*Failed\s*</);
+});
+
+test("Terminal artifacts can be scoped into the composer with a rectangular checkbox", () => {
+  const panel = source("../src/app/components/hermes/artifact-panel.tsx");
+  const terminal = source("../src/app/components/hermes/dashboard-agent-terminal.tsx");
+
+  assert.match(panel, /role="checkbox"/);
+  assert.match(panel, /aria-checked=\{attached\}/);
+  assert.match(panel, /h-\[18px\] w-7/);
+  assert.match(panel, /Attach to this chat/);
+  assert.match(terminal, /fetch\(artifactUrl\(artifact, "download"\)\)/);
+  assert.match(terminal, /sourceArtifactId: artifact\.id/);
+  assert.match(terminal, /attachedArtifactIds=\{attachedArtifactIds\}/);
+  assert.match(terminal, /onToggleArtifactAttachment=\{toggleArtifactAttachment\}/);
 });
 
 test("the archive carries one menu instead of a control on every row", () => {

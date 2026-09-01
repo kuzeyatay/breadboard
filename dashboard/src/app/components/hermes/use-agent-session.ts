@@ -110,6 +110,10 @@ import {
   normalizeGenerativeUiResources,
   type GenerativeUiResource,
 } from "@/lib/generative-ui/contracts.ts";
+import {
+  normalizeScheduledChatReceipt,
+  type ScheduledChatReceipt,
+} from "@/lib/schedules/types.ts";
 
 import { settleReplayedTurn } from "./replayed-turn.ts";
 import { undeliveredLaunchRequests } from "./undelivered-launches.ts";
@@ -258,6 +262,8 @@ export interface AgentMessage {
    * ever inspecting raw tool names in the assistant response area.
    */
   memoryUpdated?: boolean;
+  /** Durable receipt for a schedule created by this user turn. */
+  scheduledChatReceipt?: ScheduledChatReceipt;
   proposal?: unknown;
   /**
    * Present on a restored assistant turn that paused before dispatch for a
@@ -271,15 +277,14 @@ export interface AgentMessage {
   verification?: VerificationSummary;
   /**
    * Stored content versions of this answer, present only once it has more than
-   * one — today that means it was rewritten by the local humanizer. The
-   * original is always version 0 and is always still selectable.
+   * one. The original is always version 0 and is always still selectable.
    */
   contentVersions?: {
     total: number;
     activeIndex: number;
     /** True when the version on screen is not the text the model produced. */
     derived: boolean;
-    origins: Array<"original" | "humanizer">;
+    origins: Array<"original" | "humanizer" | "manual">;
     review?: HumanizerScoreSummary;
   };
   /** Result of the standing local rewrite, including candidates kept original. */
@@ -522,6 +527,8 @@ export interface AgentMessage {
   /** Worker output returned to the Super Agent without replacing its message. */
   externalAgentResult?: string;
   externalAgentName?: string;
+  /** Why the Super Agent selected this worker, used in plain-language failures. */
+  delegatedAgentReason?: string;
   /** What an external agent did, restored with the finished turn. */
   externalAgentActivity?: ExternalAgentActivityEntry[];
   /** Snapshots bracketing a coding run, so its edits stay undoable. */
@@ -545,6 +552,8 @@ export interface ExternalAgentTurnInput {
   attachToExistingTurn?: boolean;
   /** Record a distinct hidden worker turn for a concurrent delegation batch. */
   delegatedAgentRun?: boolean;
+  /** Why the Super Agent selected this worker. */
+  delegatedAgentReason?: string;
 }
 
 export interface ExternalAgentTurnResult {
@@ -600,6 +609,8 @@ export interface AgentSendOptions {
   branchGroupId?: string;
   /** Selected assistant text this question quotes or answers in place. */
   textSelection?: ChatTextSelectionReference;
+  /** Schedule created before dispatch; appended to the assistant response. */
+  scheduledChatReceipt?: ScheduledChatReceipt;
   /** The server has durably stored this user turn, even if its answer is pending. */
   onTurnPersisted?: (sessionId: string) => void;
   /**
@@ -847,6 +858,14 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
       );
       if (textSelection) normalized.textSelection = textSelection;
       else delete normalized.textSelection;
+      const scheduledChatReceipt = normalizeScheduledChatReceipt(
+        message.scheduledChatReceipt,
+      );
+      if (message.role === "assistant" && scheduledChatReceipt) {
+        normalized.scheduledChatReceipt = scheduledChatReceipt;
+      } else {
+        delete normalized.scheduledChatReceipt;
+      }
       if (message.courseCorrection !== true) {
         delete normalized.courseCorrection;
       }
@@ -891,7 +910,9 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
           derived: versions.derived === true,
           origins: Array.isArray(versions.origins)
             ? versions.origins.map((origin) =>
-                origin === "humanizer" ? "humanizer" : "original",
+                origin === "humanizer" || origin === "manual"
+                  ? origin
+                  : "original",
               )
             : [],
           ...(normalizeHumanizerScore(versions.review)
@@ -1344,7 +1365,7 @@ export interface UseAgentSessionResult {
    */
   beginDelegatedExternalAgentTurn: (
     clientMessageId: string,
-    options?: { attachToExistingTurn?: boolean },
+    options?: { attachToExistingTurn?: boolean; reason?: string },
   ) => void;
   /** Cancel an armed delegation; true means no launcher ever previewed it. */
   cancelDelegatedExternalAgentTurn: (clientMessageId: string) => boolean;
@@ -1364,6 +1385,11 @@ export interface UseAgentSessionResult {
   deleteMessage: (
     message: AgentMessage,
     messageIndex: number,
+  ) => Promise<boolean>;
+  /** Save a human edit as a reversible version of one assistant response. */
+  editAssistantMessage: (
+    message: AgentMessage,
+    content: string,
   ) => Promise<boolean>;
   respondToPermission: (
     decision: "once" | "always" | "reject",
@@ -1389,6 +1415,7 @@ async function ensureSession(
     branchGroupId?: string;
     textSelection?: ChatTextSelectionReference;
     internalAgentContinuation?: boolean;
+    scheduleReceiptId?: number;
     agentMode: boolean;
     model?: string;
     reasoningEffort?: AssistantReasoningEffort;
@@ -1510,9 +1537,11 @@ export function useAgentSession(
   const pendingDelegatedExternalTurnRef = useRef<{
     clientMessageId: string;
     attachToExistingTurn: boolean;
+    reason?: string;
   } | null>(null);
   const delegatedExternalTurnIdsRef = useRef(new Set<string>());
   const attachedDelegatedExternalTurnIdsRef = useRef(new Set<string>());
+  const delegatedExternalTurnReasonsRef = useRef(new Map<string, string>());
   const activeStreamRef = useRef<Promise<"completed" | "cancelled" | "failed"> | null>(null);
   const steeringRef = useRef(false);
   const stopRequestedRef = useRef(false);
@@ -1745,6 +1774,8 @@ export function useAgentSession(
                   textSelection: user.textSelection,
                   internalAgentContinuation:
                     user.internalAgentContinuation === true,
+                  scheduleReceiptId:
+                    initial.assistant.scheduledChatReceipt?.id,
                   superAgent: recovery.superAgent,
                   adhdMode: recovery.adhdMode,
                   personalize: recovery.personalize,
@@ -2442,12 +2473,27 @@ export function useAgentSession(
                 typeof payload.replacementText === "string"
                   ? payload.replacementText
                   : undefined;
-              if (usage || replacementText !== undefined) {
+              const completedUiResources = normalizeGenerativeUiResources(
+                payload.uiResources,
+              );
+              if (usage || replacementText !== undefined || completedUiResources.length) {
+                const mergedUiResources = new Map(
+                  (assistant.uiResources ?? []).map((resource) => [
+                    resource.id,
+                    resource,
+                  ]),
+                );
+                for (const resource of completedUiResources) {
+                  mergedUiResources.set(resource.id, resource);
+                }
                 assistant = {
                   ...assistant,
                   ...(usage ? { usage } : {}),
                   ...(replacementText !== undefined
                     ? { content: replacementText }
+                    : {}),
+                  ...(completedUiResources.length
+                    ? { uiResources: [...mergedUiResources.values()] }
                     : {}),
                 };
                 commit(assistant);
@@ -3241,13 +3287,15 @@ export function useAgentSession(
   const beginDelegatedExternalAgentTurn = useCallback(
     (
       clientMessageId: string,
-      options: { attachToExistingTurn?: boolean } = {},
+      options: { attachToExistingTurn?: boolean; reason?: string } = {},
     ) => {
       const id = clientMessageId.trim();
       if (id) {
+        const reason = options.reason?.trim().replace(/\s+/g, " ").slice(0, 240);
         pendingDelegatedExternalTurnRef.current = {
           clientMessageId: id,
           attachToExistingTurn: options.attachToExistingTurn === true,
+          ...(reason ? { reason } : {}),
         };
       }
     },
@@ -3261,6 +3309,7 @@ export function useAgentSession(
         clientMessageId.trim()
       ) {
         pendingDelegatedExternalTurnRef.current = null;
+        delegatedExternalTurnReasonsRef.current.delete(clientMessageId.trim());
         return true;
       }
       if (delegatedExternalTurnIdsRef.current.has(clientMessageId.trim())) {
@@ -3268,6 +3317,7 @@ export function useAgentSession(
         attachedDelegatedExternalTurnIdsRef.current.delete(
           clientMessageId.trim(),
         );
+        delegatedExternalTurnReasonsRef.current.delete(clientMessageId.trim());
         return true;
       }
       return false;
@@ -3309,6 +3359,12 @@ export function useAgentSession(
       // leave it in place until the inline card or start failure is attached.
       if (delegated) {
         delegatedExternalTurnIdsRef.current.add(clientMessageId);
+        if (delegatedRequest?.reason) {
+          delegatedExternalTurnReasonsRef.current.set(
+            clientMessageId,
+            delegatedRequest.reason,
+          );
+        }
         if (delegatedRequest?.attachToExistingTurn) {
           attachedDelegatedExternalTurnIdsRef.current.add(clientMessageId);
         }
@@ -3397,6 +3453,11 @@ export function useAgentSession(
         input.delegatedAgentRun === true ||
         (delegatedExternalTurnIdsRef.current.has(input.clientMessageId) &&
           !attachToExistingTurn);
+      const delegatedAgentReason =
+        input.delegatedAgentReason?.trim().replace(/\s+/g, " ").slice(0, 240) ||
+        (delegatedAgentRun || attachToExistingTurn
+          ? delegatedExternalTurnReasonsRef.current.get(input.clientMessageId)
+          : undefined);
       try {
         const targetSessionId =
           externalAgentConversationIdsRef.current.get(input.clientMessageId) ??
@@ -3414,6 +3475,7 @@ export function useAgentSession(
               ...input,
               attachToExistingTurn,
               delegatedAgentRun,
+              ...(delegatedAgentReason ? { delegatedAgentReason } : {}),
               surface,
             }),
           },
@@ -3438,6 +3500,7 @@ export function useAgentSession(
         if (surface !== "quartz_ai") {
           notifyHermesSessionsChanged(surface);
         }
+        delegatedExternalTurnReasonsRef.current.delete(input.clientMessageId);
         // The durable write above always targets the launch conversation. Only
         // mirror it into React state when that conversation is still visible;
         // otherwise the newly selected transcript must remain untouched.
@@ -3568,6 +3631,8 @@ export function useAgentSession(
             branchGroupId: input.options?.branchGroupId,
             internalAgentContinuation:
               input.options?.internalAgentContinuation === true,
+            scheduleReceiptId:
+              input.options?.scheduledChatReceipt?.id,
             retry: input.retry,
             adhdMode: isDirectModeEnabled(),
             personalize: isPersonalizeEnabled(),
@@ -3905,6 +3970,9 @@ export function useAgentSession(
         ...(options?.textSelection
           ? { textSelection: options.textSelection }
           : {}),
+        ...(options?.scheduledChatReceipt
+          ? { scheduledChatReceipt: options.scheduledChatReceipt }
+          : {}),
       };
       assistant.clientMessageId = userMessage.id;
       const baseline = [...transcript, userMessage, assistant];
@@ -3972,6 +4040,7 @@ export function useAgentSession(
               textSelection: options?.textSelection,
               internalAgentContinuation:
                 options?.internalAgentContinuation === true,
+              scheduleReceiptId: options?.scheduledChatReceipt?.id,
               agentMode: isAgentModeEnabled(),
               model: options?.model,
               reasoningEffort: options?.reasoningEffort,
@@ -4099,6 +4168,7 @@ export function useAgentSession(
               continuation: options?.continuation,
               internalAgentContinuation:
                 options?.internalAgentContinuation === true,
+              scheduleReceiptId: options?.scheduledChatReceipt?.id,
               attachments: options?.attachments,
               confirmedPermissionIds: options?.confirmedPermissionIds,
               retry: Boolean(resumedBlockedTurn) || ensured.initialTurnReserved,
@@ -4974,6 +5044,77 @@ export function useAgentSession(
     [surface],
   );
 
+  /**
+   * Save an inline response edit without pretending the model originally said
+   * it. The server stores a new content version and re-seeds the runtime; the
+   * original remains reachable through the response version arrows.
+   */
+  const editAssistantMessage = useCallback(
+    async (message: AgentMessage, content: string): Promise<boolean> => {
+      const target = message.clientMessageId?.trim();
+      const activeSessionId = sessionRef.current;
+      const edited = content.trim();
+      if (!target || !activeSessionId || !edited) return false;
+
+      setError(null);
+      try {
+        const response = await fetch(
+          `/api/hermes/sessions/${encodeURIComponent(activeSessionId)}/messages/${encodeURIComponent(target)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              content: edited,
+              expectedContent: message.content,
+            }),
+          },
+        );
+        const body = (await response.json().catch(() => null)) as
+          | {
+              content?: string;
+              versions?: AgentMessage["contentVersions"];
+              runtimeReset?: boolean;
+              error?: string;
+            }
+          | null;
+        if (!response.ok || typeof body?.content !== "string" || !body.versions) {
+          setError(body?.error || "This response could not be saved.");
+          return false;
+        }
+
+        const updated = messagesRef.current.map((candidate) => {
+          if (
+            candidate.role !== "assistant" ||
+            candidate.clientMessageId !== target
+          ) {
+            return candidate;
+          }
+          const next: AgentMessage = {
+            ...candidate,
+            content: body.content!,
+            contentVersions: body.versions,
+          };
+          // Verification and humanizer review describe an earlier wording.
+          delete next.verification;
+          delete next.humanizerReview;
+          return next;
+        });
+        messagesRef.current = updated;
+        setMessages(updated);
+        // If runtime recreation failed after the durable edit, the next send
+        // carries this authoritative history and recreates it before dispatch.
+        pendingHistoryOverrideRef.current =
+          body.runtimeReset === false ? updated : null;
+        if (surface !== "quartz_ai") notifyHermesSessionsChanged(surface);
+        return true;
+      } catch {
+        setError("This response could not be saved.");
+        return false;
+      }
+    },
+    [surface],
+  );
+
   const reset = useCallback(() => {
     const previousSessionId = sessionRef.current;
     viewEpochRef.current += 1;
@@ -5207,6 +5348,7 @@ export function useAgentSession(
     send,
     steer,
     deleteMessage,
+    editAssistantMessage,
     respondToPermission,
     respondToClarification,
     abort,

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -65,15 +67,22 @@ async function loadQuartzCompatibilityModule() {
       {
         name: "runtime-v2-quartz-cutover-stub",
         setup(build) {
+          build.onResolve({ filter: /^server-only$/ }, () => ({
+            path: "server-only",
+            namespace: "quartz-cutover-stub",
+          }));
           build.onResolve({ filter: /supervisor-control\.ts$/ }, () => ({
             path: "supervisor-control",
             namespace: "quartz-cutover-stub",
           }));
           build.onLoad(
             { filter: /.*/, namespace: "quartz-cutover-stub" },
-            () => ({
-              loader: "js",
-              contents: `
+            (args) =>
+              args.path === "server-only"
+                ? { loader: "js", contents: "" }
+                : ({
+                    loader: "js",
+                    contents: `
                 const state = () => globalThis[${JSON.stringify(stateKey)}];
                 export async function submitRuntimeJob(authority, submission) {
                   state().submissions.push({
@@ -82,8 +91,11 @@ async function loadQuartzCompatibilityModule() {
                   });
                   return structuredClone(state().job);
                 }
-                export async function inspectRuntimeJob() {
-                  throw new Error("terminal fixture must not poll");
+                export async function inspectRuntimeJob(authority, jobId) {
+                  if (!state().inspectJob) {
+                    throw new Error("terminal fixture must not poll");
+                  }
+                  return structuredClone(await state().inspectJob(authority, jobId));
                 }
                 export async function readRuntimeJobOutput(authority, jobId, outputKind) {
                   state().outputs.push({
@@ -94,7 +106,7 @@ async function loadQuartzCompatibilityModule() {
                   return { content: structuredClone(state().result) };
                 }
               `,
-            }),
+                  }),
           );
         },
       },
@@ -111,6 +123,7 @@ function freshState(job = jobSnapshot()) {
     job,
     submissions: [],
     outputs: [],
+    inspectJob: null,
     result: {
       protocolVersion: 1,
       identity: {
@@ -204,5 +217,97 @@ test("Runtime failure is returned without a direct Quartz fallback", async () =>
   } finally {
     if (previousAutoPublish === undefined) delete process.env.QUARTZ_AUTO_PUBLISH;
     else process.env.QUARTZ_AUTO_PUBLISH = previousAutoPublish;
+  }
+});
+
+test("a Runtime V2 hot dashboard publishes a missing public tree on first view", async () => {
+  const previous = {
+    autoPublish: process.env.QUARTZ_AUTO_PUBLISH,
+    nodeEnv: process.env.NODE_ENV,
+    controlUrl: process.env.BREADBOARD_SUPERVISOR_CONTROL_URL,
+    controlToken: process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN,
+    contentPath: process.env.QUARTZ_CONTENT_PATH,
+  };
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-quartz-view-readiness-"),
+  );
+  const contentPath = path.join(temporaryRoot, "quartz", "content");
+  fs.mkdirSync(contentPath, { recursive: true });
+  delete process.env.QUARTZ_AUTO_PUBLISH;
+  process.env.NODE_ENV = "development";
+  process.env.BREADBOARD_SUPERVISOR_CONTROL_URL = "http://127.0.0.1:7711";
+  process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN = "t".repeat(32);
+  process.env.QUARTZ_CONTENT_PATH = contentPath;
+  try {
+    const state = freshState();
+    await Promise.all([
+      quartz.ensureQuartzPublicationForView(91),
+      quartz.ensureQuartzPublicationForView(91),
+    ]);
+    assert.equal(state.submissions.length, 1);
+    assert.deepEqual(state.submissions[0].submission.requestPayload.reasons, [
+      "prepare Quartz for the first garden view",
+    ]);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    for (const [name, value] of [
+      ["QUARTZ_AUTO_PUBLISH", previous.autoPublish],
+      ["NODE_ENV", previous.nodeEnv],
+      ["BREADBOARD_SUPERVISOR_CONTROL_URL", previous.controlUrl],
+      ["BREADBOARD_SUPERVISOR_CONTROL_TOKEN", previous.controlToken],
+      ["QUARTZ_CONTENT_PATH", previous.contentPath],
+    ]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("an in-flight Quartz publication satisfies a cold view without a duplicate build", async () => {
+  const previous = {
+    autoPublish: process.env.QUARTZ_AUTO_PUBLISH,
+    contentPath: process.env.QUARTZ_CONTENT_PATH,
+  };
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-quartz-view-in-flight-"),
+  );
+  const contentPath = path.join(temporaryRoot, "quartz", "content");
+  const publicIndex = path.join(temporaryRoot, "quartz", "public", "index.html");
+  fs.mkdirSync(contentPath, { recursive: true });
+  process.env.QUARTZ_AUTO_PUBLISH = "1";
+  process.env.QUARTZ_CONTENT_PATH = contentPath;
+
+  let finishPublication;
+  const publicationGate = new Promise((resolve) => {
+    finishPublication = resolve;
+  });
+
+  try {
+    const state = freshState(jobSnapshot("running"));
+    state.inspectJob = async () => {
+      await publicationGate;
+      fs.mkdirSync(path.dirname(publicIndex), { recursive: true });
+      fs.writeFileSync(publicIndex, "published", "utf8");
+      return jobSnapshot("succeeded");
+    };
+
+    const mutation = quartz.publishQuartzAfterMutation(
+      "refresh private garden index",
+      { userId: 91, requireSuccess: true },
+    );
+    const view = quartz.ensureQuartzPublicationForView(91);
+    finishPublication();
+    await Promise.all([mutation, view]);
+
+    assert.equal(state.submissions.length, 1);
+    assert.deepEqual(state.submissions[0].submission.requestPayload.reasons, [
+      "refresh private garden index",
+    ]);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    if (previous.autoPublish === undefined) delete process.env.QUARTZ_AUTO_PUBLISH;
+    else process.env.QUARTZ_AUTO_PUBLISH = previous.autoPublish;
+    if (previous.contentPath === undefined) delete process.env.QUARTZ_CONTENT_PATH;
+    else process.env.QUARTZ_CONTENT_PATH = previous.contentPath;
   }
 });

@@ -13,16 +13,17 @@ import {
 import { collectUploads } from '../src/lib/conversations/uploads.ts';
 import { parseChatAttachments } from '../src/lib/chat-attachments-request.ts';
 
-test('message attachments retain safe image data while text files retain only their name', () => {
+test('message attachments retain safe image data and stored source-file pointers', () => {
   const dataUrl = 'data:image/png;base64,aGVsbG8=';
+  const blobId = `fil_${'a'.repeat(32)}`;
   assert.deepEqual(
     chatMessageAttachments([
       { type: 'image', name: 'pasted-screenshot-1.png', dataUrl },
-      { type: 'text', name: 'notes.md', text: 'private extracted text' },
+      { type: 'text', name: 'notes.md', text: 'private extracted text', blobId, format: 'md' },
     ]),
     [
       { type: 'image', name: 'pasted-screenshot-1.png', dataUrl },
-      { type: 'file', name: 'notes.md' },
+      { type: 'file', name: 'notes.md', blobId, format: 'md' },
     ],
   );
   assert.deepEqual(
@@ -34,14 +35,35 @@ test('message attachments retain safe image data while text files retain only th
   );
 });
 
-test('regeneration reuses stored images without restoring non-image file contents', () => {
+test('regeneration reuses stored images and source-file pointers', () => {
   const dataUrl = 'data:image/png;base64,aGVsbG8=';
+  const blobId = `fil_${'b'.repeat(32)}`;
   assert.deepEqual(
     reusableChatAttachments([
       { type: 'image', name: 'pasted-screenshot-1.png', dataUrl },
-      { type: 'file', name: 'notes.md' },
+      { type: 'file', name: 'notes.md', blobId, format: 'md' },
     ]),
-    [{ type: 'image', name: 'pasted-screenshot-1.png', dataUrl }],
+    [
+      { type: 'image', name: 'pasted-screenshot-1.png', dataUrl },
+      { type: 'text', name: 'notes.md', text: '', blobId, format: 'md' },
+    ],
+  );
+  assert.deepEqual(
+    parseChatAttachments([{ type: 'text', name: 'notes.md', text: '', blobId, format: 'md' }]),
+    [{ type: 'text', name: 'notes.md', text: '', blobId, format: 'md' }],
+  );
+});
+
+test('composer-only artifact scope is not persisted in transcript metadata', () => {
+  const dataUrl = 'data:image/png;base64,aGVsbG8=';
+  assert.deepEqual(
+    chatMessageAttachments([{
+      type: 'image',
+      name: 'scoped-artifact.png',
+      dataUrl,
+      sourceArtifactId: 'artifact-private-composer-state',
+    }]),
+    [{ type: 'image', name: 'scoped-artifact.png', dataUrl }],
   );
 });
 
@@ -91,13 +113,31 @@ test('selected products persist as reusable, prompt-safe chat attachments', () =
 
 test('plain-text documents are attached without a server extraction round trip', async () => {
   const file = new File(['Breadboard notes'], 'notes.md', { type: 'text/markdown' });
-  const result = await extractChatAttachments([file]);
+  const blobId = `fil_${'c'.repeat(32)}`;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.equal(url, '/api/chat-attachments/files');
+    return Response.json({ blobId, format: 'md', sizeBytes: file.size });
+  };
+  let result;
+  try {
+    result = await extractChatAttachments([file]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 
   // The picked file's size is recorded so the Uploads list can report it for a
   // document whose contents are never retained.
   assert.deepEqual(result, {
     attachments: [
-      { type: 'text', text: 'Breadboard notes', name: 'notes.md', sizeBytes: 16 },
+      {
+        type: 'text',
+        text: 'Breadboard notes',
+        name: 'notes.md',
+        blobId,
+        format: 'md',
+        sizeBytes: 16,
+      },
     ],
     errors: [],
     warnings: [],

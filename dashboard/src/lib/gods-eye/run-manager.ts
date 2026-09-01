@@ -98,7 +98,7 @@ Answer with ONE JSON object and nothing else:
 - altM: camera altitude in meters. 400–2000 sees a few blocks, 2000–15000 a city, 50000–400000 a region, 1000000+ a continent. Watching air or sea traffic needs at least a regional altitude.
 - pitchDeg: -90 is straight down; -30 to -45 is a natural oblique look.
 - style: flir for thermal or heat, nvg for night vision, crt for retro, noir, snow, anime when asked; otherwise normal.
-- summary: one or two present-tense sentences on what this view shows and which live layers (aircraft, vessels, satellites, quakes, fires, cameras) are worth watching there. No markdown headings.`;
+- summary: one or two present-tense sentences on what this view shows and which live layers (aircraft, vessels, satellites, quakes, fires, cameras) are worth watching there. Do not include links or Markdown.`;
 
 /** The model's answer, holding a view and a sentence about it. */
 export function parseViewAnswer(
@@ -127,12 +127,10 @@ export function parseViewAnswer(
 
 /** The markdown a finished run leaves in the chat, view attached invisibly. */
 export function godsEyeSummary(input: { view: GodsEyeView; summary: string }): string {
-  const lines = [
+  return attachGodsEyeView(
     `**On station over ${input.view.label}.** ${input.summary}`,
-    "",
-    `[Open the live view](${godsEyeOpenPath(input.view)})`,
-  ];
-  return attachGodsEyeView(lines.join("\n"), input.view);
+    input.view,
+  );
 }
 
 async function resolveView(

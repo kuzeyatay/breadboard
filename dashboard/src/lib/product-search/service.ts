@@ -54,6 +54,8 @@ export interface SearchCandidate {
   imageUrl?: string;
   /** Price quoted by the product-specific discovery result for this exact URL. */
   priceHint?: ProductPrice;
+  /** Discovery explicitly tied this direct product page to the requested market. */
+  marketEvidence?: boolean;
 }
 
 interface JsonRecord {
@@ -109,6 +111,115 @@ function normalizeInput(input: ProductSearchInput): NormalizedProductSearchInput
   return { query, count, country };
 }
 
+function marketCountryCode(locale: string): string {
+  return locale.split("-")[0]?.toUpperCase() ?? "US";
+}
+
+function marketCountryName(locale: string): string {
+  const countryCode = marketCountryCode(locale);
+  try {
+    return new Intl.DisplayNames(["en"], { type: "region" }).of(countryCode) ?? countryCode;
+  } catch {
+    return countryCode;
+  }
+}
+
+function marketAliases(locale: string): string[] {
+  const countryCode = marketCountryCode(locale);
+  const localized = ({
+    BE: ["Belgium", "Belgie", "Belgique"],
+    DE: ["Germany", "Deutschland"],
+    ES: ["Spain", "Espana"],
+    FR: ["France"],
+    GB: ["United Kingdom", "UK", "Britain"],
+    NL: ["Netherlands", "Nederland"],
+    TR: ["Turkey", "Turkiye"],
+    US: ["United States", "USA", "US"],
+  } as Readonly<Record<string, string[]>>)[countryCode] ?? [];
+  return [...new Set([marketCountryName(locale), countryCode, ...localized])];
+}
+
+function marketSearchSuffix(locale: string): string {
+  const countryCode = marketCountryCode(locale);
+  const localized = ({
+    DE: "Deutschland kaufen Preis auf Lager",
+    ES: "Espana comprar precio disponible",
+    FR: "France acheter prix en stock",
+    NL: "Nederland kopen prijs op voorraad",
+    TR: "Turkiye satin al fiyat stokta",
+  } as Readonly<Record<string, string>>)[countryCode];
+  const words = localized ?? `${marketCountryName(locale)} buy price in stock`;
+  const country = marketCountryCode(locale).toLowerCase();
+  const domain = country === "us" ? "" : country === "gb" ? "uk" : country;
+  return domain ? `${words} site:.${domain}` : words;
+}
+
+/**
+ * Direct merchant detail pages only. Search/category/editorial URLs can quote a
+ * price but are not safe Visit destinations for a product card.
+ */
+export function isBuyableProductUrl(value: unknown): boolean {
+  const safe = safeProductUrl(value);
+  if (!safe) return false;
+  const url = new URL(safe);
+  const path = decodeURIComponent(url.pathname);
+  if (
+    /\/(?:search|s|browse|b|category|categories|collections?|catalog|shop-all)(?:\/|$)/i.test(path) ||
+    /[?&](?:q|query|search|keyword)=/i.test(`${url.search}`) ||
+    /\/(?:open-product|redirect|out|go|click|affiliate|track)(?:\.php)?(?:\/|$)/i.test(path)
+  ) {
+    return false;
+  }
+  return (
+    /\/(?:dp|gp\/product)\/[A-Z0-9]{8,}(?:[/?]|$)/i.test(path) ||
+    /\/(?:products?|product-detail|p|items?|itm|ip|listing)\/[^/?#]{2,}/i.test(path) ||
+    /\/site\/[^/]+\/\d+\.p(?:[/?]|$)/i.test(path) ||
+    /\/shop\/buy-[^/?#]+/i.test(path) ||
+    /-[pi]\d+(?:\.html)?(?:[/?]|$)/i.test(path)
+  );
+}
+
+function isIntermediaryProductUrl(value: string): boolean {
+  try {
+    return /\/(?:open-product|redirect|out|go|click|affiliate|track)(?:\.php)?(?:\/|$)/i.test(
+      new URL(value).pathname,
+    );
+  } catch {
+    return true;
+  }
+}
+
+function urlMatchesMarket(rawUrl: string, locale: string): boolean {
+  const url = new URL(rawUrl);
+  const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  const country = marketCountryCode(locale).toLowerCase();
+  const labels = host.split(".");
+  if (labels.at(-1) === country) return true;
+  if (
+    country === "us" &&
+    /^(?:amazon|walmart|target|bestbuy|newegg)\.com$/.test(host)
+  ) {
+    return true;
+  }
+  if (
+    /(?:^|[/?&=_-])(nl|netherlands|nederland)(?:$|[/?&=_-])/i.test(
+      `${url.pathname}${url.search}`,
+    ) &&
+    country === "nl"
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function textMatchesMarket(value: string, locale: string): boolean {
+  const folded = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  return marketAliases(locale).some((alias) => {
+    const candidate = alias.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+    return new RegExp(`\\b${candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(folded);
+  });
+}
+
 function combinedSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
   const timeout = AbortSignal.timeout(timeoutMs);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -145,7 +256,7 @@ async function discoverCandidates(
   input: NormalizedProductSearchInput,
   signal?: AbortSignal,
 ): Promise<SearchCandidate[]> {
-  const discoveryQuery = `${input.query} product price buy shop`;
+  const discoveryQuery = `${input.query} product ${marketSearchSuffix(input.country)}`;
   const [token, pricedCandidates] = await Promise.all([
     duckDuckGoToken(discoveryQuery, signal),
     discoverPricedCandidates(input, signal).catch(() => []),
@@ -176,7 +287,7 @@ async function discoverCandidates(
     if (!candidate) return [];
     const pageUrl = safeProductUrl(candidate.url);
     const title = stringValue(candidate.title, 300);
-    if (!pageUrl || !title) return [];
+    if (!pageUrl || !title || !isMerchantProductCandidate({ title, pageUrl })) return [];
     const imageUrl = safeProductUrl(candidate.image);
     return [{ title, pageUrl, ...(imageUrl ? { imageUrl } : {}) }];
   });
@@ -189,6 +300,9 @@ async function discoverCandidates(
           ...candidate,
           imageUrl: candidate.imageUrl ?? current.imageUrl,
           priceHint: current.priceHint ?? candidate.priceHint,
+          ...(current.marketEvidence || candidate.marketEvidence
+            ? { marketEvidence: true }
+            : {}),
         }
       : candidate);
   }
@@ -234,7 +348,12 @@ export function pricedCandidatesFromSearchHtml(
     const end = links[index + 1]?.index ?? Math.min(html.length, start + 4_000);
     const resultText = decodedSearchText(html.slice(start, end));
     const priceHint = productPriceFromText(`${title} ${resultText}`, country);
-    return priceHint ? [{ title, pageUrl, priceHint }] : [];
+    const marketEvidence = pageUrl
+      ? urlMatchesMarket(pageUrl, country) || textMatchesMarket(resultText, country)
+      : false;
+    return priceHint && isMerchantProductCandidate({ title, pageUrl })
+      ? [{ title, pageUrl, priceHint, ...(marketEvidence ? { marketEvidence: true } : {}) }]
+      : [];
   });
 }
 
@@ -247,7 +366,7 @@ async function discoverPricedCandidates(
   input: NormalizedProductSearchInput,
   signal?: AbortSignal,
 ): Promise<SearchCandidate[]> {
-  const query = `${input.query} price buy`;
+  const query = `${input.query} ${marketSearchSuffix(input.country)}`;
   const response = await fetch(
     `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&kl=${encodeURIComponent(input.country)}`,
     {
@@ -530,6 +649,140 @@ function availabilityLabel(value: unknown): string {
   return tail.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim();
 }
 
+function unavailableOffer(value: unknown): boolean {
+  return /\b(out of stock|sold out|discontinued|pre ?order|pre ?sale|back ?order)\b/i.test(
+    availabilityLabel(value),
+  );
+}
+
+function regionStrings(value: unknown, depth = 0): string[] {
+  if (depth > 5 || value === null || value === undefined) return [];
+  if (typeof value === "string") return [stringValue(value, 200)];
+  if (Array.isArray(value)) return value.flatMap((entry) => regionStrings(entry, depth + 1));
+  const candidate = record(value);
+  if (!candidate) return [];
+  return [
+    ...regionStrings(candidate.addressCountry, depth + 1),
+    ...regionStrings(candidate.countryCode, depth + 1),
+    ...regionStrings(candidate.name, depth + 1),
+    ...regionStrings(candidate.address, depth + 1),
+    ...regionStrings(candidate.shippingDestination, depth + 1),
+  ];
+}
+
+const EUROPEAN_MARKETS = new Set([
+  "AT", "BE", "BG", "HR", "CY", "CZ", "DE", "DK", "EE", "ES", "FI",
+  "FR", "GR", "HU", "IE", "IS", "IT", "LI", "LT", "LU", "LV", "MT",
+  "NL", "NO", "PL", "PT", "RO", "SE", "SI", "SK", "CH", "GB",
+]);
+
+function regionMatchesCountry(value: string, countryCode: string): boolean {
+  const folded = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  const aliases = marketAliases(`${countryCode.toLowerCase()}-en`);
+  if (aliases.some((alias) => new RegExp(
+    `\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+    "i",
+  ).test(folded))) {
+    return true;
+  }
+  return EUROPEAN_MARKETS.has(countryCode) && /\b(?:EU|Europe|European Union)\b/i.test(folded);
+}
+
+function declaredOfferRegions(offer: JsonRecord): string[] {
+  return [
+    ...regionStrings(offer.eligibleRegion),
+    ...regionStrings(offer.areaServed),
+    ...regionStrings(offer.shippingDestination),
+    ...regionStrings(offer.shippingDetails),
+  ].filter(Boolean);
+}
+
+/** Reject explicit merchant evidence that the item is unavailable or out of market. */
+export function structuredProductAvailableInCountry(
+  value: unknown,
+  rawCountryCode: string,
+): boolean {
+  const product = record(value);
+  if (!product) return false;
+  const offer = firstOffer(product);
+  if (!offer) return true;
+  if (unavailableOffer(offer.availability)) return false;
+  const declaredRegions = declaredOfferRegions(offer);
+  if (declaredRegions.length === 0) return true;
+  const countryCode = rawCountryCode.trim().toUpperCase();
+  return declaredRegions.some((region) => regionMatchesCountry(region, countryCode));
+}
+
+function structuredProductHasMarketEvidence(
+  product: JsonRecord,
+  countryCode: string,
+): boolean {
+  const offer = firstOffer(product);
+  if (!offer) return false;
+  const declaredRegions = declaredOfferRegions(offer);
+  return declaredRegions.length > 0 &&
+    declaredRegions.some((region) => regionMatchesCountry(region, countryCode));
+}
+
+function productAvailabilityFromHtml(html: string): string {
+  return productMetaContent(html, new Set([
+    "product:availability",
+    "og:availability",
+    "availability",
+  ]));
+}
+
+function htmlDeclaresPurchasableProduct(html: string): boolean {
+  const productType = productMetaContent(html, new Set(["og:type"]));
+  const hasProductMetadata = /^product$/i.test(productType) ||
+    /itemtype\s*=\s*["'][^"']*schema\.org\/Product/i.test(html) ||
+    /property\s*=\s*["']product:price:amount["']/i.test(html) ||
+    /name\s*=\s*["']product["'][^>]*value\s*=\s*["'][^"']{2,}/i.test(html);
+  const hasPurchaseAction = /\b(add to (?:cart|basket)|buy now|in winkelwagen|bestellen|direct bestellen|voeg toe|afrekenen|kopen)\b/i.test(
+    decodedSearchText(html),
+  );
+  return hasProductMetadata && hasPurchaseAction;
+}
+
+function resolvedDirectProductUrl(
+  product: JsonRecord,
+  finalUrl: string,
+  allowFinalOfferEvidence: boolean,
+): string {
+  const final = new URL(finalUrl);
+  const offer = firstOffer(product);
+  for (const raw of [product.url, offer?.url, product["@id"], finalUrl]) {
+    const text = stringValue(raw, 2_000);
+    if (!text) continue;
+    let resolved = "";
+    try {
+      resolved = safeProductUrl(new URL(text, final).toString());
+    } catch {
+      continue;
+    }
+    if (!resolved || isIntermediaryProductUrl(resolved)) continue;
+    const hostname = new URL(resolved).hostname;
+    if (hostname !== final.hostname) continue;
+    if (isBuyableProductUrl(resolved)) return resolved;
+    if (
+      raw !== finalUrl &&
+      offer &&
+      productPrice(product)
+    ) {
+      return resolved;
+    }
+    if (
+      raw === finalUrl &&
+      allowFinalOfferEvidence &&
+      offer &&
+      productPrice(product)
+    ) {
+      return resolved;
+    }
+  }
+  return "";
+}
+
 function productAttributes(product: JsonRecord): ProductAttribute[] | undefined {
   const properties = Array.isArray(product.additionalProperty)
     ? product.additionalProperty
@@ -573,20 +826,13 @@ function isMerchantProductCandidate(candidate: SearchCandidate): boolean {
 async function inspectCandidate(
   candidate: SearchCandidate,
   accessedAt: string,
+  country: string,
   signal?: AbortSignal,
 ): Promise<Array<{ product: ProductSearchItem; source: ProductSearchSource }>> {
   if (!isMerchantProductCandidate(candidate)) return [];
   const page = await fetchPublicProductPage(candidate.pageUrl, signal);
   const finalUrl = safeProductUrl(page.finalUrl);
   if (!finalUrl) return [];
-  const sourceId = `source:${shortHash(finalUrl)}`;
-  const source: ProductSearchSource = {
-    id: sourceId,
-    title: candidate.title,
-    url: finalUrl,
-    site: new URL(finalUrl).hostname.replace(/^www\./i, ""),
-    accessedAt,
-  };
   let imageUrl = safeProductUrl(candidate.imageUrl);
   if (imageUrl) {
     try {
@@ -596,8 +842,23 @@ async function inspectCandidate(
     }
   }
   const pagePrice = productPriceFromHtml(page.html) ?? candidate.priceHint;
+  const pageAvailability = productAvailabilityFromHtml(page.html);
   const structuredProducts = jsonLdProductsFromHtml(page.html);
-  if (structuredProducts.length === 0 && pagePrice) {
+  if (
+    structuredProducts.length === 0 &&
+    pagePrice &&
+    (isBuyableProductUrl(finalUrl) || htmlDeclaresPurchasableProduct(page.html)) &&
+    urlMatchesMarket(finalUrl, country) &&
+    !unavailableOffer(pageAvailability)
+  ) {
+    const sourceId = `source:${shortHash(finalUrl)}`;
+    const source: ProductSearchSource = {
+      id: sourceId,
+      title: candidate.title,
+      url: finalUrl,
+      site: new URL(finalUrl).hostname.replace(/^www\./i, ""),
+      accessedAt,
+    };
     return [{
       source,
       product: {
@@ -607,13 +868,43 @@ async function inspectCandidate(
         url: finalUrl,
         ...(imageUrl ? { imageUrl } : {}),
         price: pagePrice,
+        ...(pageAvailability
+          ? { availability: availabilityLabel(pageAvailability) }
+          : {}),
         sourceIds: [sourceId],
       },
     }];
   }
   return structuredProducts.flatMap((structured, index) => {
     const title = stringValue(structured.name, 300);
-    if (!title) return [];
+    const productUrl = resolvedDirectProductUrl(
+      structured,
+      finalUrl,
+      structuredProducts.length === 1,
+    );
+    const countryCode = marketCountryCode(country);
+    if (
+      !title ||
+      !productUrl ||
+      !structuredProductAvailableInCountry(
+        structured,
+        countryCode,
+      ) ||
+      !(
+        urlMatchesMarket(productUrl, country) ||
+        structuredProductHasMarketEvidence(structured, countryCode)
+      )
+    ) {
+      return [];
+    }
+    const sourceId = `source:${shortHash(productUrl)}`;
+    const source: ProductSearchSource = {
+      id: sourceId,
+      title,
+      url: productUrl,
+      site: new URL(productUrl).hostname.replace(/^www\./i, ""),
+      accessedAt,
+    };
     const aggregate = record(structured.aggregateRating);
     const rating = Number(aggregate?.ratingValue);
     const reviewCount = Number(aggregate?.reviewCount ?? aggregate?.ratingCount);
@@ -623,10 +914,10 @@ async function inspectCandidate(
     const availability = availabilityLabel(offer?.availability);
     const attributes = productAttributes(structured);
     const product: ProductSearchItem = {
-      id: `product:${shortHash(`${finalUrl}:${stringValue(structured.sku ?? structured.mpn) || index}`)}`,
+      id: `product:${shortHash(`${productUrl}:${stringValue(structured.sku ?? structured.mpn) || index}`)}`,
       title,
-      merchant: productMerchant(structured, finalUrl),
-      url: finalUrl,
+      merchant: productMerchant(structured, productUrl),
+      url: productUrl,
       ...(imageUrl ? { imageUrl } : {}),
       ...(description ? { description } : {}),
       ...(price ? { price } : {}),
@@ -649,9 +940,17 @@ async function inspectCandidate(
 async function projectDiscoveredCandidate(
   candidate: SearchCandidate,
   accessedAt: string,
+  country: string,
 ): Promise<Array<{ product: ProductSearchItem; source: ProductSearchSource }>> {
   const pageUrl = safeProductUrl(candidate.pageUrl);
-  if (!pageUrl || !isMerchantProductCandidate(candidate)) return [];
+  if (
+    !pageUrl ||
+    !candidate.priceHint ||
+    !isMerchantProductCandidate(candidate) ||
+    !(candidate.marketEvidence || urlMatchesMarket(pageUrl, country))
+  ) {
+    return [];
+  }
   const parsedPage = new URL(pageUrl);
   await assertPublicHost(parsedPage.hostname);
   let imageUrl = safeProductUrl(candidate.imageUrl);
@@ -678,7 +977,7 @@ async function projectDiscoveredCandidate(
       merchant: site,
       url: pageUrl,
       ...(imageUrl ? { imageUrl } : {}),
-      ...(candidate.priceHint ? { price: candidate.priceHint } : {}),
+      price: candidate.priceHint,
       sourceIds: [sourceId],
     },
   }];
@@ -702,7 +1001,12 @@ export async function searchProducts(
   const accessedAt = new Date().toISOString();
   const inspected = await Promise.all(candidates.map(async (candidate) => {
     try {
-      const structured = await inspectCandidate(candidate, accessedAt, options.signal);
+      const structured = await inspectCandidate(
+        candidate,
+        accessedAt,
+        input.country,
+        options.signal,
+      );
       if (structured.length) return structured;
     } catch {
       if (options.signal?.aborted) {
@@ -712,7 +1016,7 @@ export async function searchProducts(
       // below retains only provider-supplied facts after the same network
       // boundary checks; it never manufactures the richer fields.
     }
-    return projectDiscoveredCandidate(candidate, accessedAt).catch(() => []);
+    return projectDiscoveredCandidate(candidate, accessedAt, input.country).catch(() => []);
   }));
   const pairs = inspected.flat().filter(({ product }) => Boolean(product.price));
   const products = [...new Map(pairs.map(({ product }) => [product.id, product])).values()]
@@ -729,7 +1033,7 @@ export async function searchProducts(
       productsReturned: 0,
       sources: [],
       uiResources: [],
-      summary: "No public product results with a sourced price were found.",
+      summary: `No in-stock direct product pages with a sourced price were found for ${marketCountryName(input.country)}.`,
     };
   }
   const resource = normalizeGenerativeUiResource({
@@ -742,7 +1046,7 @@ export async function searchProducts(
     actions: [...PRODUCT_RESOURCE_ACTIONS],
     data: { query: input.query, products, sources },
   });
-  if (!resource) {
+  if (!resource || resource.kind !== PRODUCT_SEARCH_RESOURCE_KIND) {
     throw new ProductSearchError(
       "product_search_projection_failed",
       "The sourced product results could not be projected safely.",

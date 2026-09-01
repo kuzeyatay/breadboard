@@ -33,6 +33,7 @@ const induction = await import("../src/lib/teach/induction.ts");
 const artifacts = await import("../src/lib/teach/artifacts.ts");
 const backends = await import("../src/lib/teach/backends.ts");
 const windowsCapture = await import("../src/lib/teach/windows-capture.ts");
+const windowsHelper = await import("../src/lib/teach/windows-helper.ts");
 const model = await import("../src/lib/teach/model.ts");
 const promptInputs = await import("../src/lib/teach/prompt-inputs.ts");
 
@@ -1087,6 +1088,19 @@ test("Windows extended paths are converted only at the legacy helper boundary", 
   assert.equal(
     windowsCapture.pathForLegacyWindowsHelper("C:\\Breadboard\\recording"),
     "C:\\Breadboard\\recording",
+  );
+
+  assert.equal(
+    windowsHelper.pathForLegacyWindowsCompiler("\\\\?\\C:\\Breadboard\\helper.exe"),
+    "C:\\Breadboard\\helper.exe",
+  );
+  assert.equal(
+    windowsHelper.pathForLegacyWindowsCompiler("\\\\?\\UNC\\server\\share\\helper.exe"),
+    "\\\\server\\share\\helper.exe",
+  );
+  assert.equal(
+    windowsHelper.pathForLegacyWindowsCompiler("C:\\Breadboard\\helper.exe"),
+    "C:\\Breadboard\\helper.exe",
   );
 });
 

@@ -7,6 +7,11 @@ import {
   formatRelativeRunTime,
   schedulableSurface,
 } from "../src/app/components/hermes/schedule-client.ts";
+import {
+  normalizeScheduledChatReceipt,
+  scheduledChatConfirmationText,
+  scheduledReminderText,
+} from "../src/lib/schedules/types.ts";
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
@@ -23,6 +28,9 @@ const eventStream = source("../src/lib/hermes/event-stream.ts");
 const terminal = source("../src/app/components/hermes/dashboard-agent-terminal.tsx");
 const sidebar = source("../src/app/components/hermes/terminal-sidebar.tsx");
 const conversationStore = source("../src/lib/conversations/store.ts");
+const receiptCard = source("../src/app/components/hermes/scheduled-chat-receipt-card.tsx");
+const sessionPresentation = source("../src/lib/hermes/session-presentation.ts");
+const turnService = source("../src/lib/conversations/turn-service.ts");
 
 test("the Prompts palette no longer schedules anything", () => {
   // Scheduling is a place of its own; the palette only produces text.
@@ -60,12 +68,36 @@ test("the Scheduled panel composes with the same capability palette the chat has
   assert.match(runner, /model: job\.model,[\s\S]{0,80}reasoningEffort: job\.reasoning_effort/);
 });
 
-test("plain-language delayed tasks enter Scheduled instead of sending immediately", () => {
+test("plain-language delayed tasks create a schedule before their confirmation turn", () => {
   assert.match(terminal, /parseExplicitScheduleRequest\(text\)/);
   assert.match(terminal, /oneShot: schedule\.oneShot,[\s\S]{0,80}runAt: schedule\.runAt/);
-  assert.match(terminal, /notifySchedulesChanged\(\);[\s\S]{0,80}setSidePanel\("scheduled"\)/);
+  assert.match(terminal, /notifySchedulesChanged\(\);[\s\S]{0,300}scheduledChatReceipt: receipt/);
   assert.match(scheduledPanel, /oneShot: !advancedOpen && parsed\.oneShot/);
   assert.match(scheduledPanel, /runAt: !advancedOpen \? parsed\.runAt : null/);
+});
+
+test("the first confirmation ends with a durable schedule receipt", () => {
+  assert.match(turnService, /scheduledChatConfirmationText\(input\.scheduledChatReceipt\)/);
+  assert.match(turnService, /metadata: \{ scheduledChatReceipt: input\.scheduledChatReceipt \}/);
+  assert.match(sessionPresentation, /presented\.role === "assistant" && scheduledChatReceipt/);
+  assert.match(receiptCard, /data-testid="scheduled-chat-receipt"/);
+  assert.match(receiptCard, /requestOpenSchedulesPanel/);
+  assert.match(receiptCard, />\s*Open\s*<\/button>/);
+  assert.match(terminal, /const openScheduled[\s\S]{0,180}setSidePanel\("scheduled"\)[\s\S]{0,180}OPEN_SCHEDULES_PANEL_EVENT/);
+});
+
+test("schedule receipts reject malformed metadata and produce a concise confirmation", () => {
+  const receipt = normalizeScheduledChatReceipt({
+    id: 7,
+    title: "Upload Electromagnetics Downloads",
+    cronDescription: "Once",
+    oneShot: true,
+    nextRunAt: "2026-09-01T08:30:00.000Z",
+  });
+  assert.ok(receipt);
+  assert.match(scheduledChatConfirmationText(receipt), /^Scheduled “Upload Electromagnetics Downloads” for /);
+  assert.equal(normalizeScheduledChatReceipt({ id: -1 }), null);
+  assert.equal(scheduledReminderText("drink water"), "Reminder: Drink water.");
 });
 
 test("a running scheduled chat has one loader, then becomes an unread Recent", () => {
@@ -156,6 +188,15 @@ test("a scheduled run goes through the same authenticated turn pipeline as a per
   // An unattended run must never sit waiting on a permission prompt.
   assert.match(runner, /"blocked" in result/);
   assert.match(runner, /waitForSessionEventPump\(runtime\)/);
+});
+
+test("a messaging reminder is delivered directly without depending on an agent turn", () => {
+  assert.match(runner, /job\.delivery_channel && job\.delivery_mode === "reminder"/);
+  assert.match(runner, /sendOwnerText\(\{[\s\S]{0,180}kind: "reminder"/);
+  assert.ok(
+    runner.indexOf("job.delivery_channel") < runner.indexOf("requireEnabled()"),
+    "direct reminders must still fire while the agent runtime is stopped",
+  );
 });
 
 test("the pump can run without a browser attached, and the SSE route still uses it", () => {

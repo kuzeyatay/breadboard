@@ -39,6 +39,7 @@ import type {
   ProfileCost,
   ProfileLatency,
   ProfileMemory,
+  ProfilePhrases,
   ProfileReliability,
   ProfileStats,
 } from "@/lib/profile/stats.ts";
@@ -1991,6 +1992,43 @@ function MemoryPanel({ memory }: { memory: ProfileMemory }) {
   );
 }
 
+// ------------------------------------------------------------------ phrases
+
+function PhrasePanel({ phrases }: { phrases: ProfilePhrases }) {
+  const max = phrases.items.reduce((best, entry) => Math.max(best, entry.count), 0);
+  const promptLabel = `${formatCount(phrases.analyzedPrompts)} prompt${phrases.analyzedPrompts === 1 ? "" : "s"}`;
+
+  return (
+    <Card
+      title="Most used phrases"
+      hint={
+        phrases.analyzedPrompts === 0
+          ? "No prompts to read yet."
+          : phrases.items.length === 0
+            ? `Across ${promptLabel}. A phrase appears after you use it in at least two prompts.`
+            : `Repeated two- and three-word phrases across ${phrases.truncated ? `your most recent ${promptLabel}` : promptLabel}.`
+      }
+    >
+      {phrases.items.length === 0 ? (
+        <p className="text-xs text-gray-600">
+          Your recurring language will show up here as you keep writing.
+        </p>
+      ) : (
+        <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+          {phrases.items.map((entry) => (
+            <Bar
+              key={entry.phrase}
+              label={entry.phrase}
+              value={`${formatCount(entry.count)} prompt${entry.count === 1 ? "" : "s"}`}
+              share={max === 0 ? 0 : entry.count / max}
+            />
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // -------------------------------------------------------------- audit feed
 
 const AUDIT_LABELS: Record<AuditEntry["kind"], string> = {
@@ -2298,6 +2336,10 @@ export default function ProfileClient({
               </>
             )}
           </Card>
+        </div>
+
+        <div className="mt-4">
+          <PhrasePanel phrases={stats.phrases} />
         </div>
 
         {/* ------------------------------------------------ output and cost */}

@@ -27,6 +27,8 @@ import {
   listDocumentFigures,
   readDocumentFigure,
 } from "./conversations/document-blob-store.ts";
+import { findStoredFileBlob } from "./conversations/stored-file-blob-store.ts";
+import { storedFileIsText } from "./stored-file-attachments.ts";
 import { documentContextText, readDocument } from "./document-structure/index.ts";
 
 export interface ResolvedDocument {
@@ -181,9 +183,29 @@ export function resolveDocumentAttachments(
   attachments: readonly ChatAttachment[],
 ): ChatAttachment[] {
   return attachments.map((attachment) => {
-    if (attachment.type !== "document" || attachment.text?.trim()) return attachment;
-    const resolved = resolveDocumentAttachment(userId, attachment);
-    return resolved ? { ...attachment, text: resolved.text } : attachment;
+    if (attachment.type === "document" && !attachment.text?.trim()) {
+      const resolved = resolveDocumentAttachment(userId, attachment);
+      return resolved ? { ...attachment, text: resolved.text } : attachment;
+    }
+    if (
+      attachment.type === "text" &&
+      !attachment.text &&
+      attachment.blobId &&
+      attachment.format &&
+      storedFileIsText(attachment.format)
+    ) {
+      const stored = findStoredFileBlob({ userId, blobId: attachment.blobId });
+      if (stored?.format === attachment.format) {
+        try {
+          return { ...attachment, text: fs.readFileSync(stored.path, "utf8") };
+        } catch {
+          // Keep the pointer even if this read fails. The artifact importer can
+          // still return an ownership-scoped not-found error instead of losing
+          // which upload the turn referred to.
+        }
+      }
+    }
+    return attachment;
   });
 }
 

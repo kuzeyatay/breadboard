@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import {
   generativeUiResourcesFromToolOutput,
   generativeUiResourcesFromVerification,
+  gardenNavigationResourceFromSources,
   normalizeGenerativeUiResource,
   normalizeGenerativeUiResources,
   productForAction,
@@ -15,10 +16,12 @@ import { backfillGenerativeUiResources } from "../src/lib/generative-ui/backfill
 import { serializeConversationExport } from "../src/lib/conversations/export.ts";
 import { cloneMessages } from "../src/app/components/hermes/conversation-branches.ts";
 import {
+  isBuyableProductUrl,
   jsonLdProductsFromHtml,
   pricedCandidatesFromSearchHtml,
   productPriceFromHtml,
   productPriceFromText,
+  structuredProductAvailableInCountry,
 } from "../src/lib/product-search/service.ts";
 import { composeHermesSystemPrompt } from "../src/lib/hermes/system-prompts.ts";
 
@@ -58,6 +61,28 @@ const productResource = {
   },
 };
 
+const gardenResource = {
+  schemaVersion: 1,
+  kind: "garden-search",
+  renderer: "garden-navigator",
+  id: "garden-search:test",
+  title: "Found in your Gardens",
+  createdAt: "2026-08-31T10:00:00.000Z",
+  actions: ["open-garden", "open-page"],
+  data: {
+    query: "where are my notes about spiking neural networks?",
+    gardens: [{
+      slug: "neuromorphic-computing",
+      name: "Neuromorphic Computing",
+      results: [{
+        pageSlug: "spiking-neural-networks",
+        title: "Spiking neural networks",
+        heading: "Event-driven computation",
+      }],
+    }],
+  },
+};
+
 test("normalizes the versioned product-search resource and action allowlist", () => {
   const normalized = normalizeGenerativeUiResource({
     ...productResource,
@@ -90,6 +115,69 @@ test("only product_search can project a product resource from tool output", () =
   assert.equal(generativeUiResourcesFromToolOutput("web_search", output).length, 0);
   assert.equal(generativeUiResourcesFromToolOutput("product_search", output).length, 1);
   assert.equal(generativeUiResourcesFromToolOutput("product_search", "not json").length, 0);
+});
+
+test("normalizes Garden navigation resources and keeps them scoped to garden_search", () => {
+  const normalized = normalizeGenerativeUiResource({
+    ...gardenResource,
+    actions: ["open-page", "run-script", "open-garden"],
+    href: "javascript:alert(document.cookie)",
+  });
+  assert.ok(normalized);
+  assert.equal(normalized.kind, "garden-search");
+  assert.deepEqual(normalized.actions, ["open-garden", "open-page"]);
+  assert.equal("href" in normalized, false);
+
+  const output = JSON.stringify({ uiResources: [gardenResource, productResource] });
+  assert.deepEqual(
+    generativeUiResourcesFromToolOutput("garden_search", output).map((item) => item.kind),
+    ["garden-search"],
+  );
+  assert.equal(generativeUiResourcesFromToolOutput("web_search", output).length, 0);
+  assert.equal(
+    normalizeGenerativeUiResource({
+      ...gardenResource,
+      data: {
+        ...gardenResource.data,
+        gardens: [{ ...gardenResource.data.gardens[0], slug: "../../admin" }],
+      },
+    }),
+    null,
+  );
+});
+
+test("groups retrieved pages into one navigation destination per Garden", () => {
+  const resource = gardenNavigationResourceFromSources({
+    id: "garden-search:grouped",
+    query: "find my learning notes",
+    createdAt: "2026-08-31T10:00:00.000Z",
+    sources: [
+      {
+        gardenName: "Physics",
+        gardenSlug: "physics",
+        pageSlug: "waves",
+        title: "Waves",
+      },
+      {
+        gardenName: "Physics",
+        gardenSlug: "physics",
+        pageSlug: "fields",
+        title: "Fields",
+      },
+      {
+        gardenName: "Mathematics",
+        gardenSlug: "mathematics",
+        pageSlug: "fourier-series",
+        title: "Fourier series",
+      },
+    ],
+  });
+  assert.ok(resource);
+  assert.equal(resource.data.gardens.length, 2);
+  assert.deepEqual(
+    resource.data.gardens.map((garden) => [garden.slug, garden.results.length]),
+    [["physics", 2], ["mathematics", 1]],
+  );
 });
 
 test("recovers and promotes a historical live product result exactly once", () => {
@@ -270,15 +358,85 @@ test("resolves prices from product-specific search snippets", () => {
   assert.deepEqual(
     pricedCandidatesFromSearchHtml(`
       <div class="result">
-        <a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fshop.example%2Ftrackpad" class="result__a">T1 Plus Trackpad</a>
+        <a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fshop.example%2Fproducts%2Ftrackpad" class="result__a">T1 Plus Trackpad</a>
         <a class="result__snippet">Buy direct for $49.99 with free shipping.</a>
       </div>
     `),
     [{
       title: "T1 Plus Trackpad",
-      pageUrl: "https://shop.example/trackpad",
+      pageUrl: "https://shop.example/products/trackpad",
       priceHint: { amount: "49.99", currency: "USD", display: "$49.99" },
     }],
+  );
+});
+
+test("accepts only direct merchant product-detail destinations", () => {
+  for (const url of [
+    "https://www.amazon.nl/dp/B0C1234567",
+    "https://www.bol.com/nl/nl/p/acme-trackpad/9300000123456/",
+    "https://protoarc.com/products/t1-plus-wireless-trackpad",
+    "https://www.ebay.nl/itm/123456789012",
+  ]) {
+    assert.equal(isBuyableProductUrl(url), true, url);
+  }
+  for (const url of [
+    "https://www.amazon.nl/s?k=trackpad",
+    "https://www.ebay.nl/b/Trackpads/1234/bn_700000",
+    "https://example.com/reviews/best-trackpads",
+    "https://shop.example/collections/trackpads",
+    "https://allesrefurbished.nl/open-product.php?id=3248605",
+    "https://shop.example/",
+  ]) {
+    assert.equal(isBuyableProductUrl(url), false, url);
+  }
+});
+
+test("localized discovery retains market evidence only on direct merchant results", () => {
+  assert.deepEqual(
+    pricedCandidatesFromSearchHtml(`
+      <div class="result">
+        <a class="result__a" href="https://shop.example.nl/products/trackpad">Trackpad</a>
+        <span>€49,99 — op voorraad in Nederland</span>
+      </div>
+      <div class="result">
+        <a class="result__a" href="https://shop.example.nl/search?q=trackpad">Search</a>
+        <span>€39,99</span>
+      </div>
+    `, "nl-nl"),
+    [{
+      title: "Trackpad",
+      pageUrl: "https://shop.example.nl/products/trackpad",
+      priceHint: { amount: "49.99", currency: "EUR", display: "€49.99" },
+      marketEvidence: true,
+    }],
+  );
+});
+
+test("honours merchant stock and shipping-region evidence", () => {
+  const product = {
+    "@type": "Product",
+    name: "Local Trackpad",
+    offers: {
+      "@type": "Offer",
+      price: "59.99",
+      priceCurrency: "EUR",
+      availability: "https://schema.org/InStock",
+      shippingDetails: {
+        shippingDestination: { addressCountry: "NL" },
+      },
+    },
+  };
+  assert.equal(structuredProductAvailableInCountry(product, "NL"), true);
+  assert.equal(structuredProductAvailableInCountry(product, "US"), false);
+  assert.equal(
+    structuredProductAvailableInCountry({
+      ...product,
+      offers: {
+        ...product.offers,
+        availability: "https://schema.org/OutOfStock",
+      },
+    }, "NL"),
+    false,
   );
 });
 
@@ -329,7 +487,9 @@ test("the renderer registry and surface wiring stay Breadboard-owned", () => {
   assert.match(details, /comparisonRows\(compared\)/);
   assert.doesNotMatch(details, />Sources</);
   assert.doesNotMatch(details, /Price on site|Price unavailable/);
-  assert.match(productSearch, /`\$\{input\.query\} price buy`/);
+  assert.match(productSearch, /marketSearchSuffix\(input\.country\)/);
+  assert.match(productSearch, /isBuyableProductUrl/);
+  assert.match(productSearch, /structuredProductAvailableInCountry/);
   assert.match(productSearch, /filter\(\(\{ product \}\) => Boolean\(product\.price\)\)/);
   assert.match(runtimePanel, /message\.uiResources\?\.length/);
   for (const surface of [terminal, garden]) {

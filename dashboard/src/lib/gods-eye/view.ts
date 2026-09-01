@@ -118,6 +118,8 @@ export function godsEyeOpenPath(view: GodsEyeView): string {
 const MARKER = "GODS_EYE_VIEW:";
 const COMMENT_MARKER = new RegExp(`<!--\\s*${MARKER}\\s*([\\s\\S]*?)\\s*-->`, "g");
 const BARE_MARKER = new RegExp(`^[\\t ]*${MARKER}([^\\r\\n]*)$`, "gm");
+const GODS_EYE_OPEN_LINK =
+  /^[\t ]*\[Open the live(?: aircraft)? view\]\([^\r\n)]*\/api\/gods-eye\/open\?[^\r\n)]*\)[\t ]*$/gim;
 
 /** Carry the view with the saved summary, invisibly to Markdown. */
 export function attachGodsEyeView(content: string, view: GodsEyeView): string {
@@ -135,6 +137,7 @@ export function parseGodsEyeResult(content: string): {
   view: GodsEyeView | null;
 } {
   let view: GodsEyeView | null = null;
+  let hasPrivateMarker = false;
   const collect = (payload: string) => {
     const raw = payload.trim();
     const candidates = [raw];
@@ -157,14 +160,21 @@ export function parseGodsEyeResult(content: string): {
     }
   };
   let clean = content.replace(COMMENT_MARKER, (_marker, payload: string) => {
+    hasPrivateMarker = true;
     collect(payload);
     return "";
   });
   // A model handoff may discard the HTML comment delimiters while preserving
   // the private marker line. Do not let that legacy form become visible prose.
   clean = clean.replace(BARE_MARKER, (_marker, payload: string) => {
+    hasPrivateMarker = true;
     collect(payload);
     return "";
   });
+  // Older saved results included a second way to open the same view. The
+  // embedded viewport is now the only interaction, so hide that legacy link
+  // whenever this is recognisably a God's Eye result. This also covers links
+  // rewritten to an absolute localhost URL by an earlier handoff.
+  if (hasPrivateMarker) clean = clean.replace(GODS_EYE_OPEN_LINK, "");
   return { content: clean.trim(), view };
 }

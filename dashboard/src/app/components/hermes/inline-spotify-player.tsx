@@ -43,13 +43,6 @@ interface PlaybackResponse {
   library: SpotifyLibraryState | null;
 }
 
-interface PlaybackEngineResponse {
-  ready: boolean;
-  deviceId: string | null;
-  status: "ready" | "starting" | "unavailable";
-  error: string | null;
-}
-
 interface ManagedPlaybackState {
   track: SpotifyTrack;
   isPlaying: boolean;
@@ -70,68 +63,8 @@ interface SpotifyLibraryState {
   saved: boolean;
 }
 
-interface SdkImage {
-  url: string;
-}
-
-interface SdkTrack {
-  id: string;
-  uri: string;
-  name: string;
-  artists: Array<{ name: string }>;
-  album: { name: string; images: SdkImage[] };
-}
-
-interface SdkState {
-  duration: number;
-  paused: boolean;
-  position: number;
-  shuffle: boolean;
-  track_window: { current_track: SdkTrack };
-}
-
-interface SpotifyPlayer {
-  addListener(event: "ready", callback: (value: { device_id: string }) => void): boolean;
-  addListener(event: "not_ready", callback: () => void): boolean;
-  addListener(event: "player_state_changed", callback: (state: SdkState | null) => void): boolean;
-  addListener(
-    event:
-      | "initialization_error"
-      | "authentication_error"
-      | "account_error"
-      | "playback_error",
-    callback: (value: { message: string }) => void,
-  ): boolean;
-  connect(): Promise<boolean>;
-  disconnect(): void;
-  activateElement(): Promise<void>;
-  togglePlay(): Promise<void>;
-  previousTrack(): Promise<void>;
-  nextTrack(): Promise<void>;
-  seek(positionMs: number): Promise<void>;
-}
-
-interface SpotifySdk {
-  Player: new (options: {
-    name: string;
-    getOAuthToken: (callback: (token: string) => void) => void;
-    volume: number;
-  }) => SpotifyPlayer;
-}
-
-declare global {
-  interface Window {
-    Spotify?: SpotifySdk;
-    onSpotifyWebPlaybackSDKReady?: () => void;
-  }
-}
-
 const POLL_INTERVAL_MS = 1_800;
 const MAX_INTENT_POLLS = 6;
-const ENGINE_POLL_INTERVAL_MS = 800;
-const MAX_ENGINE_POLLS = 25;
-const ENGINE_VIEW_HEARTBEAT_MS = 20_000;
-let sdkPromise: Promise<SpotifySdk> | null = null;
 
 interface RgbColor {
   red: number;
@@ -302,29 +235,6 @@ function paletteFromCover(url: string): Promise<PlayerPalette> {
   });
 }
 
-function loadSpotifySdk(): Promise<SpotifySdk> {
-  if (window.Spotify) return Promise.resolve(window.Spotify);
-  if (sdkPromise) return sdkPromise;
-  sdkPromise = new Promise<SpotifySdk>((resolve, reject) => {
-    const priorCallback = window.onSpotifyWebPlaybackSDKReady;
-    window.onSpotifyWebPlaybackSDKReady = () => {
-      priorCallback?.();
-      if (window.Spotify) resolve(window.Spotify);
-      else reject(new Error("Spotify's browser player did not initialize."));
-    };
-    const existing = document.querySelector<HTMLScriptElement>(
-      'script[src="https://sdk.scdn.co/spotify-player.js"]',
-    );
-    if (existing) return;
-    const script = document.createElement("script");
-    script.src = "https://sdk.scdn.co/spotify-player.js";
-    script.async = true;
-    script.onerror = () => reject(new Error("Spotify's browser player could not load."));
-    document.body.appendChild(script);
-  });
-  return sdkPromise;
-}
-
 function belongsToRequest(intent: PlaybackIntent | null, requestedAt?: string): boolean {
   if (!intent || !requestedAt) return Boolean(intent);
   const intentTime = Date.parse(intent.requestedAt);
@@ -349,7 +259,7 @@ function responseMessage(payload: unknown, fallback: string): string {
 function SpotifyPlayerLoading() {
   return (
     <section
-      aria-label="Loading Spotify player"
+      aria-label="Loading Spotify phone remote"
       aria-busy="true"
       className="mb-4 flex min-h-[178px] w-full items-center justify-center rounded-[20px] border shadow-[0_16px_40px_rgba(20,20,20,0.10)]"
       style={{
@@ -363,7 +273,7 @@ function SpotifyPlayerLoading() {
         className="grid size-10 animate-pulse place-items-center rounded-full"
         style={{ backgroundColor: DEFAULT_PLAYER_PALETTE.buttonBackground }}
       >
-        <span className="sr-only">Loading music player</span>
+        <span className="sr-only">Loading Spotify phone remote</span>
       </div>
     </section>
   );
@@ -378,17 +288,8 @@ export default function InlineSpotifyPlayer({
   requestedAt?: string;
   turnPending?: boolean;
 }) {
-  const playerRef = useRef<SpotifyPlayer | null>(null);
-  const deviceIdRef = useRef<string | null>(null);
-  const managedEngineRef = useRef(false);
-  const phonePlaybackRef = useRef(false);
-  const managedEngineViewIdRef = useRef<string | null>(null);
-  const managedEngineStartRef = useRef<Promise<void> | null>(null);
-  const managedEngineStartAbortRef = useRef<AbortController | null>(null);
   const playingRevisionRef = useRef<string | null>(null);
   const [connection, setConnection] = useState<PlaybackResponse | null>(null);
-  const [sdkState, setSdkState] = useState<SdkState | null>(null);
-  const [managedEngine, setManagedEngine] = useState(false);
   const [managedPlaying, setManagedPlaying] = useState(false);
   const [managedShuffle, setManagedShuffle] = useState(false);
   const [managedQueueLoaded, setManagedQueueLoaded] = useState(false);
@@ -407,179 +308,8 @@ export default function InlineSpotifyPlayer({
     : null;
   const intentRevision = intent?.revision;
 
-  const managedEngineViewId = useCallback(() => {
-    if (!managedEngineViewIdRef.current) {
-      managedEngineViewIdRef.current = crypto.randomUUID();
-    }
-    return managedEngineViewIdRef.current;
-  }, []);
-
-  const startManagedEngine = useCallback((): Promise<void> => {
-    if (managedEngineStartRef.current) return managedEngineStartRef.current;
-    const controller = new AbortController();
-    managedEngineStartAbortRef.current = controller;
-    const operation = (async () => {
-      managedEngineRef.current = true;
-      setManagedEngine(true);
-      setDeviceReady(false);
-      setError(null);
-
-      const initialResponse = await fetch(
-        "/api/hermes/connections/spotify/engine",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ viewId: managedEngineViewId() }),
-          cache: "no-store",
-          signal: controller.signal,
-        },
-      );
-      const initial = (await initialResponse.json()) as PlaybackEngineResponse & {
-        error?: string | null;
-      };
-      if (!initialResponse.ok) {
-        throw new Error(
-          responseMessage(initial, "Breadboard could not start Spotify playback."),
-        );
-      }
-      if (initial.ready && initial.deviceId) {
-        deviceIdRef.current = initial.deviceId;
-        setDeviceReady(true);
-        return;
-      }
-      if (initial.status === "unavailable") {
-        throw new Error(
-          initial.error || "Breadboard could not start Spotify playback.",
-        );
-      }
-
-      for (let attempt = 0; attempt < MAX_ENGINE_POLLS; attempt += 1) {
-        const response = await fetch(
-          "/api/hermes/connections/spotify/engine",
-          { cache: "no-store", signal: controller.signal },
-        );
-        const payload = (await response.json()) as PlaybackEngineResponse & {
-          error?: string | null;
-        };
-        if (!response.ok) {
-          throw new Error(
-            responseMessage(
-              payload,
-              "Breadboard could not start Spotify playback.",
-            ),
-          );
-        }
-        if (payload.ready && payload.deviceId) {
-          deviceIdRef.current = payload.deviceId;
-          setDeviceReady(true);
-          return;
-        }
-        if (payload.status === "unavailable") {
-          throw new Error(
-            payload.error || "Breadboard could not start Spotify playback.",
-          );
-        }
-        await new Promise<void>((resolve, reject) => {
-          const timer = window.setTimeout(() => {
-            controller.signal.removeEventListener("abort", onAbort);
-            resolve();
-          }, ENGINE_POLL_INTERVAL_MS);
-          const onAbort = () => {
-            window.clearTimeout(timer);
-            reject(new DOMException("Spotify player start cancelled", "AbortError"));
-          };
-          controller.signal.addEventListener("abort", onAbort, { once: true });
-        });
-      }
-      throw new Error(
-        "Breadboard's protected-audio player did not become ready.",
-      );
-    })();
-    managedEngineStartRef.current = operation;
-    void operation
-      .finally(() => {
-        if (managedEngineStartRef.current === operation) {
-          managedEngineStartRef.current = null;
-        }
-        if (managedEngineStartAbortRef.current === controller) {
-          managedEngineStartAbortRef.current = null;
-        }
-      })
-      .catch(() => undefined);
-    return operation;
-  }, [managedEngineViewId]);
-
-  useEffect(() => {
-    return () => {
-      managedEngineStartAbortRef.current?.abort();
-      const viewId = managedEngineViewIdRef.current;
-      if (!viewId) return;
-      void fetch("/api/hermes/connections/spotify/engine", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ viewId }),
-        cache: "no-store",
-        keepalive: true,
-      }).catch(() => undefined);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!managedEngine || !deviceReady) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const renew = async () => {
-      try {
-        const response = await fetch(
-          "/api/hermes/connections/spotify/engine",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ viewId: managedEngineViewId() }),
-            cache: "no-store",
-          },
-        );
-        const payload = (await response.json()) as PlaybackEngineResponse &
-          Record<string, unknown>;
-        if (!cancelled && !response.ok) {
-          setError(
-            responseMessage(
-              payload,
-              "Breadboard could not keep Spotify playback ready.",
-            ),
-          );
-        } else if (!cancelled && payload.ready && payload.deviceId) {
-          deviceIdRef.current = payload.deviceId;
-        } else if (!cancelled && payload.status === "unavailable") {
-          setError(
-            payload.error || "Breadboard could not keep Spotify playback ready.",
-          );
-        }
-      } catch {
-        // The bounded server hold remains valid until a later heartbeat or
-        // expiry; a transient dashboard recycle must not duplicate the browser.
-      } finally {
-        if (!cancelled) {
-          timer = window.setTimeout(
-            () => void renew(),
-            ENGINE_VIEW_HEARTBEAT_MS,
-          );
-        }
-      }
-    };
-    timer = window.setTimeout(
-      () => void renew(),
-      ENGINE_VIEW_HEARTBEAT_MS,
-    );
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [deviceReady, managedEngine, managedEngineViewId]);
-
   useEffect(() => {
     playingRevisionRef.current = null;
-    setSdkState(null);
     setManagedPlaying(false);
     setManagedQueueLoaded(false);
     setManagedTrack(null);
@@ -636,122 +366,17 @@ export default function InlineSpotifyPlayer({
   }, [conversationPublicId, requestedAt, turnPending]);
 
   useEffect(() => {
-    if (!connection?.connected || !intentRevision || playerRef.current) return;
-    let cancelled = false;
-    if (connection.phone) {
-      phonePlaybackRef.current = true;
-      managedEngineRef.current = true;
-      setManagedEngine(true);
-      setDeviceReady(true);
-      return () => {
-        cancelled = true;
-        phonePlaybackRef.current = false;
-        managedEngineRef.current = false;
-      };
-    }
-    const activateManagedEngine = () => {
-      if (cancelled) return;
-      void startManagedEngine().catch((reason: unknown) => {
-        if (!cancelled) {
-          setError(
-            reason instanceof Error
-              ? reason.message
-              : "Breadboard could not start Spotify playback.",
-          );
-        }
-      });
-    };
-    // Electron does not ship the protected-media module Spotify's Web Playback
-    // SDK needs. Keep the UI here, but let a headless installed browser own the
-    // Spotify Connect device and audio stream.
-    if (/\bElectron\//i.test(navigator.userAgent)) {
-      activateManagedEngine();
-      return () => {
-        cancelled = true;
-      };
-    }
-    void loadSpotifySdk()
-      .then((Spotify) => {
-        if (cancelled) return;
-        const player = new Spotify.Player({
-          name: "Breadboard",
-          volume: 0.7,
-          getOAuthToken: (callback) => {
-            void fetch("/api/hermes/connections/spotify/token", {
-              cache: "no-store",
-            })
-              .then(async (response) => {
-                const payload = (await response.json()) as Record<string, unknown>;
-                if (!response.ok || typeof payload.accessToken !== "string") {
-                  throw new Error(responseMessage(payload, "Spotify sign-in expired."));
-                }
-                callback(payload.accessToken);
-              })
-              .catch((reason: unknown) => {
-                setError(
-                  reason instanceof Error ? reason.message : "Spotify sign-in expired.",
-                );
-              });
-          },
-        });
-        player.addListener("ready", ({ device_id }) => {
-          deviceIdRef.current = device_id;
-          setDeviceReady(true);
-        });
-        player.addListener("not_ready", () => {
-          deviceIdRef.current = null;
-          setDeviceReady(false);
-        });
-        player.addListener("player_state_changed", (state) => {
-          setSdkState(state);
-          if (state) setDisplayPosition(state.position);
-        });
-        const showSdkError = ({ message }: { message: string }) => setError(message);
-        player.addListener("initialization_error", () => {
-          player.disconnect();
-          playerRef.current = null;
-          deviceIdRef.current = null;
-          setDeviceReady(false);
-          activateManagedEngine();
-        });
-        player.addListener("authentication_error", showSdkError);
-        player.addListener("account_error", () =>
-          setError("Spotify browser playback requires a Premium account."),
-        );
-        player.addListener("playback_error", showSdkError);
-        playerRef.current = player;
-        void player.connect().then((connected) => {
-          if (!connected) activateManagedEngine();
-        });
-      })
-      .catch(() => activateManagedEngine());
-    return () => {
-      cancelled = true;
-      playerRef.current?.disconnect();
-      playerRef.current = null;
-      deviceIdRef.current = null;
-    };
-  }, [
-    connection?.connected,
-    connection?.phone,
-    intentRevision,
-    startManagedEngine,
-  ]);
-
-  useEffect(() => {
-    if (!sdkState || sdkState.paused) {
-      if (sdkState) setDisplayPosition(sdkState.position);
+    if (!connection?.connected || !intentRevision) return;
+    if (!connection.phone) {
+      setDeviceReady(false);
+      setError(
+        "Spotify is not currently available on your phone. Open Spotify on the phone and try again.",
+      );
       return;
     }
-    setDisplayPosition(sdkState.position);
-    const startedAt = Date.now();
-    const timer = window.setInterval(() => {
-      setDisplayPosition(
-        Math.min(sdkState.duration, sdkState.position + Date.now() - startedAt),
-      );
-    }, 500);
-    return () => window.clearInterval(timer);
-  }, [sdkState]);
+    setDeviceReady(true);
+    setError(null);
+  }, [connection?.connected, connection?.phone, intentRevision]);
 
   useEffect(() => {
     if (!managedPlaying) return;
@@ -768,37 +393,12 @@ export default function InlineSpotifyPlayer({
 
   const postAction = useCallback(
     async (action: string, extra?: Record<string, unknown>) => {
-      const requiresDevice = action !== "save" && action !== "unsave";
-      let currentDeviceId = deviceIdRef.current;
-      if (
-        requiresDevice &&
-        managedEngineRef.current &&
-        !phonePlaybackRef.current
-      ) {
-        const engineResponse = await fetch(
-          "/api/hermes/connections/spotify/engine",
-          { cache: "no-store" },
-        );
-        const engine = (await engineResponse.json()) as PlaybackEngineResponse;
-        if (engineResponse.ok && engine.ready && engine.deviceId) {
-          currentDeviceId = engine.deviceId;
-          deviceIdRef.current = engine.deviceId;
-        } else {
-          await startManagedEngine();
-          currentDeviceId = deviceIdRef.current;
-        }
-      }
-      const deviceId = currentDeviceId;
-      if (requiresDevice && !deviceId && !phonePlaybackRef.current) {
-        throw new Error("The browser player is still getting ready.");
-      }
       const response = await fetch("/api/hermes/connections/spotify/playback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conversation: conversationPublicId,
           action,
-          ...(deviceId ? { deviceId } : {}),
           ...extra,
         }),
       });
@@ -807,7 +407,7 @@ export default function InlineSpotifyPlayer({
       if (!response.ok) throw new Error(responseMessage(payload, "Spotify could not play that."));
       return payload;
     },
-    [conversationPublicId, startManagedEngine],
+    [conversationPublicId],
   );
 
   const runControl = useCallback(async (control: () => Promise<void>) => {
@@ -833,7 +433,6 @@ export default function InlineSpotifyPlayer({
   useEffect(() => {
     const playback = connection?.playback;
     if (
-      !managedEngine ||
       !intentRevision ||
       !playback ||
       !intent?.queueUris.includes(playback.track.uri)
@@ -848,62 +447,32 @@ export default function InlineSpotifyPlayer({
     connection?.playback,
     intent?.queueUris,
     intentRevision,
-    managedEngine,
   ]);
 
   const togglePlayback = () =>
     void runControl(async () => {
-      if (managedEngineRef.current) {
-        if (managedPlaying && playingRevisionRef.current === intentRevision) {
-          await postAction("pause");
-          setManagedPlaying(false);
-          return;
-        }
-        if (playingRevisionRef.current === intentRevision) {
-          await postAction("resume");
-          setManagedPlaying(true);
-          return;
-        }
-        await postAction("play");
-        playingRevisionRef.current = intentRevision ?? null;
-        setManagedQueueLoaded(true);
-        setManagedTrack(intent?.track ?? null);
-        setDisplayPosition(0);
+      if (managedPlaying && playingRevisionRef.current === intentRevision) {
+        await postAction("pause");
+        setManagedPlaying(false);
+        return;
+      }
+      if (playingRevisionRef.current === intentRevision) {
+        await postAction("resume");
         setManagedPlaying(true);
         return;
       }
-      const player = playerRef.current;
-      if (!player) throw new Error("The browser player is still getting ready.");
-      await player.activateElement();
-      if (sdkState && playingRevisionRef.current === intentRevision) {
-        await player.togglePlay();
-        return;
-      }
-      try {
-        await postAction("play");
-      } catch {
-        // The Web API can briefly lag behind the SDK's ready event while the
-        // new browser device propagates through Spotify Connect.
-        await new Promise((resolve) => window.setTimeout(resolve, 350));
-        await postAction("play");
-      }
+      await postAction("play");
       playingRevisionRef.current = intentRevision ?? null;
+      setManagedQueueLoaded(true);
+      setManagedTrack(intent?.track ?? null);
+      setDisplayPosition(0);
+      setManagedPlaying(true);
     });
 
-  const visibleTrack = useMemo<SpotifyTrack | null>(() => {
-    if (managedEngine && managedTrack) return managedTrack;
-    const current = sdkState?.track_window.current_track;
-    if (!current) return intent?.track ?? null;
-    return {
-      id: current.id,
-      uri: current.uri,
-      name: current.name,
-      artist: current.artists.map((artist) => artist.name).join(", "),
-      album: current.album.name,
-      imageUrl: current.album.images[0]?.url ?? null,
-      durationMs: sdkState.duration,
-    };
-  }, [intent?.track, managedEngine, managedTrack, sdkState]);
+  const visibleTrack = useMemo<SpotifyTrack | null>(
+    () => managedTrack ?? intent?.track ?? null,
+    [intent?.track, managedTrack],
+  );
 
   useEffect(() => {
     const library = connection?.library;
@@ -942,10 +511,8 @@ export default function InlineSpotifyPlayer({
     };
   }, [visibleTrack?.imageUrl]);
 
-  const duration = sdkState?.duration ?? visibleTrack?.durationMs ?? 0;
-  const isPlaying = managedEngine
-    ? managedPlaying
-    : Boolean(sdkState && !sdkState.paused);
+  const duration = visibleTrack?.durationMs ?? 0;
+  const isPlaying = managedPlaying;
   const connectionRequired = connection !== null && !connection.connected;
   const paletteReady = Boolean(
     visibleTrack && paletteSource === (visibleTrack.imageUrl ?? null),
@@ -961,7 +528,7 @@ export default function InlineSpotifyPlayer({
 
   return (
     <section
-      aria-label="Spotify inline player"
+      aria-label="Spotify phone remote"
       className="relative isolate mb-4 w-full overflow-hidden rounded-[20px] border shadow-[0_16px_40px_rgba(20,20,20,0.18)]"
       style={
         {
@@ -1051,12 +618,8 @@ export default function InlineSpotifyPlayer({
                 onPointerUp={(event) => {
                   const value = Number((event.currentTarget as HTMLInputElement).value);
                   void runControl(async () => {
-                    if (managedEngine) {
-                      const result = await postAction("seek", { positionMs: value });
-                      applyManagedPlayback(result.playback);
-                    } else if (playerRef.current) {
-                      await playerRef.current.seek(value);
-                    }
+                    const result = await postAction("seek", { positionMs: value });
+                    applyManagedPlayback(result.playback);
                   });
                 }}
               />
@@ -1073,14 +636,14 @@ export default function InlineSpotifyPlayer({
         }}
       >
         <PlayerButton
-          label={(managedEngine ? managedShuffle : sdkState?.shuffle) ? "Disable shuffle" : "Enable shuffle"}
+          label={managedShuffle ? "Disable shuffle" : "Enable shuffle"}
           disabled={!deviceReady || busy || !intent}
-          active={managedEngine ? managedShuffle : Boolean(sdkState?.shuffle)}
+          active={managedShuffle}
           onClick={() =>
             void runControl(async () => {
-              const enabled = managedEngine ? !managedShuffle : !sdkState?.shuffle;
+              const enabled = !managedShuffle;
               await postAction("shuffle", { enabled });
-              if (managedEngine) setManagedShuffle(enabled);
+              setManagedShuffle(enabled);
             })
           }
         >
@@ -1091,7 +654,7 @@ export default function InlineSpotifyPlayer({
           disabled={
             !deviceReady ||
             busy ||
-            (!sdkState && (!managedEngine || !managedQueueLoaded))
+            !managedQueueLoaded
           }
           onClick={() =>
             void runControl(async () => {
@@ -1099,10 +662,8 @@ export default function InlineSpotifyPlayer({
               const result = await postAction("previous", {
                 currentTrackId: visibleTrack.id,
               });
-              if (managedEngine) {
-                playingRevisionRef.current = intentRevision ?? null;
-                applyManagedPlayback(result.playback);
-              }
+              playingRevisionRef.current = intentRevision ?? null;
+              applyManagedPlayback(result.playback);
               setSaved(result.library?.saved ?? false);
             })
           }
@@ -1128,7 +689,7 @@ export default function InlineSpotifyPlayer({
           disabled={
             !deviceReady ||
             busy ||
-            (!sdkState && (!managedEngine || !managedQueueLoaded))
+            !managedQueueLoaded
           }
           onClick={() =>
             void runControl(async () => {
@@ -1136,10 +697,8 @@ export default function InlineSpotifyPlayer({
               const result = await postAction("next", {
                 currentTrackId: visibleTrack.id,
               });
-              if (managedEngine) {
-                playingRevisionRef.current = intentRevision ?? null;
-                applyManagedPlayback(result.playback);
-              }
+              playingRevisionRef.current = intentRevision ?? null;
+              applyManagedPlayback(result.playback);
               setSaved(result.library?.saved ?? false);
             })
           }

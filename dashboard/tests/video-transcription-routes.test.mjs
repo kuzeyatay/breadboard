@@ -197,6 +197,32 @@ test("MP3 audio uploads are accepted and queued for transcription", async () => 
   deps.cleanup();
 });
 
+test("forced upload retranscription creates a distinct job with the new sealed input", async () => {
+  const deps = makeDeps();
+  const first = await handleCreateVideoTranscription(
+    deps,
+    "physics",
+    uploadRequest({ media: audioFile("Recorded Lecture.mp3") }),
+  );
+  const firstStart = deps.started;
+  const forced = await handleCreateVideoTranscription(
+    deps,
+    "physics",
+    uploadRequest({
+      media: audioFile("Recorded Lecture.mp3"),
+      retranscribe: "true",
+    }),
+  );
+
+  assert.equal(first.status, 202);
+  assert.equal(forced.status, 202);
+  assert.notEqual(forced.body.job.id, first.body.job.id);
+  assert.notEqual(deps.started.upload.uploadId, firstStart.upload.uploadId);
+  assert.equal(deps.started.jobId, forced.body.job.id);
+  assert.equal(deps.started.upload.sizeBytes, 1024);
+  deps.cleanup();
+});
+
 test("submitting both inputs is rejected", async () => {
   const deps = makeDeps();
   const result = await handleCreateVideoTranscription(

@@ -7,9 +7,9 @@
 // question at different resolutions: the board is what there is to do, the
 // calendar is when it has to happen. A card with a due date appears in both.
 //
-// State a reader would expect to survive a reload — which view, which project,
-// which week — is mirrored into the query string with replaceState rather than
-// the router, so switching views never pushes onto the back stack.
+// State a reader would expect to survive a reload — which view, project, date
+// and board scope — is mirrored into the query string with replaceState rather
+// than the router, so switching views never pushes onto the back stack.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -17,9 +17,16 @@ import CalendarClient from "./calendar/calendar-client";
 import type { DueTaskChip } from "./calendar/calendar-views";
 import PlanBoard from "./plan-board";
 import PlanTaskPanel from "./plan-task-panel";
+import { formatLongDate, monthName } from "@/lib/calendar/format.ts";
 import type { CalendarView } from "@/lib/calendar/layout.ts";
 import type { CalendarCollection } from "@/lib/calendar/types.ts";
 import { todayDate } from "@/lib/calendar/wallclock.ts";
+import {
+  PLAN_BOARD_SCOPES,
+  shiftBoardScopeAnchor,
+  taskMatchesBoardScope,
+  type PlanBoardScope,
+} from "@/lib/plan/board-scope.ts";
 import type { PlanView } from "@/lib/plan/view.ts";
 import type {
   PlanBoard as PlanBoardData,
@@ -35,6 +42,7 @@ interface Props {
   initialBoard: PlanBoardData | null;
   initialLabels: PlanLabel[];
   initialView: PlanView;
+  initialBoardScope: PlanBoardScope;
   initialCalendars: CalendarCollection[];
   initialCalendarView: CalendarView;
   initialToday: string;
@@ -93,6 +101,7 @@ export default function PlanClient({
   initialBoard,
   initialLabels,
   initialView,
+  initialBoardScope,
   initialCalendars,
   initialCalendarView,
   initialToday,
@@ -104,6 +113,8 @@ export default function PlanClient({
   // server-rendered list is the list for as long as the tab is open.
   const labels = initialLabels;
   const [view, setView] = useState<PlanView>(initialView);
+  const [boardScope, setBoardScope] = useState<PlanBoardScope>(initialBoardScope);
+  const [anchor, setAnchor] = useState(initialAnchor);
   const [today, setToday] = useState(initialToday);
 
   const [detail, setDetail] = useState<TaskDetail | null>(null);
@@ -126,12 +137,39 @@ export default function PlanClient({
     [projects],
   );
 
+  const scopedBoard = useMemo<PlanBoardData | null>(() => {
+    if (!board || boardScope === "all") return board;
+    return {
+      ...board,
+      columns: board.columns.map((column) => ({
+        ...column,
+        tasks: column.tasks.filter((task) =>
+          taskMatchesBoardScope(task.dueDate, boardScope, anchor),
+        ),
+      })),
+    };
+  }, [anchor, board, boardScope]);
+
+  const visibleTaskCount = useMemo(
+    () => scopedBoard?.columns.reduce((sum, column) => sum + column.tasks.length, 0) ?? 0,
+    [scopedBoard],
+  );
+
+  const totalTaskCount = useMemo(
+    () => board?.columns.reduce((sum, column) => sum + column.tasks.length, 0) ?? 0,
+    [board],
+  );
+
   useEffect(() => {
     const url = new URL(window.location.href);
     url.searchParams.set("view", view);
     if (activeProjectId) url.searchParams.set("project", String(activeProjectId));
+    if (view === "board") {
+      url.searchParams.set("boardScope", boardScope);
+      url.searchParams.set("date", anchor);
+    }
     window.history.replaceState(null, "", url);
-  }, [view, activeProjectId]);
+  }, [view, activeProjectId, boardScope, anchor]);
 
   // A tab left open past midnight must not keep calling yesterday "today".
   useEffect(() => {
@@ -192,7 +230,6 @@ export default function PlanClient({
       if (!task.dueDate) continue;
       const chip: DueTaskChip = {
         id: task.id,
-        ref: task.ref,
         title: task.title,
         color: projectColors.get(task.projectId) ?? "#4f6f68",
         done: task.completedAt !== null,
@@ -518,17 +555,38 @@ export default function PlanClient({
         <div className="flex min-w-0 flex-1 flex-col">
           {view === "board" ? (
             board ? (
-              <PlanBoard
-                board={board}
-                today={today}
-                busyTaskIds={busyTaskIds}
-                selectedTaskId={detail?.task.id ?? null}
-                onMoveTask={(taskId, columnId, position) =>
-                  void moveTask(taskId, columnId, position)
-                }
-                onOpenTask={(taskId) => void openTask(taskId)}
-                onCreateTask={(columnId, title) => void createTask(columnId, title)}
-              />
+              <>
+                <BoardScopeToolbar
+                  scope={boardScope}
+                  anchor={anchor}
+                  today={today}
+                  visibleTaskCount={visibleTaskCount}
+                  totalTaskCount={totalTaskCount}
+                  onScopeChange={setBoardScope}
+                  onAnchorChange={setAnchor}
+                />
+                <PlanBoard
+                  board={scopedBoard ?? board}
+                  today={today}
+                  busyTaskIds={busyTaskIds}
+                  selectedTaskId={detail?.task.id ?? null}
+                  onMoveTask={(taskId, columnId, position) =>
+                    void moveTask(
+                      taskId,
+                      columnId,
+                      boardPositionForScopedDrop(
+                        board,
+                        scopedBoard ?? board,
+                        taskId,
+                        columnId,
+                        position,
+                      ),
+                    )
+                  }
+                  onOpenTask={(taskId) => void openTask(taskId)}
+                  onCreateTask={(columnId, title) => void createTask(columnId, title)}
+                />
+              </>
             ) : (
               <div className="flex flex-1 items-center justify-center text-sm text-gray-500">
                 Add a project to start a board.
@@ -540,10 +598,11 @@ export default function PlanClient({
               initialCalendars={initialCalendars}
               initialToday={initialToday}
               initialView={initialCalendarView}
-              initialAnchor={initialAnchor}
+              initialAnchor={anchor}
               dueTasks={dueByDate}
               onSelectTask={openTaskFromCalendar}
               onRangeChange={onCalendarRange}
+              onAnchorChange={setAnchor}
             />
           )}
         </div>
@@ -569,6 +628,134 @@ export default function PlanClient({
       </div>
     </main>
   );
+}
+
+const BOARD_SCOPE_LABELS: Record<PlanBoardScope, string> = {
+  all: "All",
+  day: "Daily",
+  month: "Monthly",
+  year: "Yearly",
+};
+
+function boardScopeTitle(scope: PlanBoardScope, anchor: string): string {
+  if (scope === "day") return formatLongDate(anchor);
+  if (scope === "month") return `${monthName(anchor)} ${anchor.slice(0, 4)}`;
+  if (scope === "year") return anchor.slice(0, 4);
+  return "All tasks";
+}
+
+function BoardScopeToolbar({
+  scope,
+  anchor,
+  today,
+  visibleTaskCount,
+  totalTaskCount,
+  onScopeChange,
+  onAnchorChange,
+}: {
+  scope: PlanBoardScope;
+  anchor: string;
+  today: string;
+  visibleTaskCount: number;
+  totalTaskCount: number;
+  onScopeChange: (scope: PlanBoardScope) => void;
+  onAnchorChange: (anchor: string) => void;
+}) {
+  const scoped = scope !== "all";
+
+  return (
+    <div className="bb-neu-toolbar flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2.5">
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onAnchorChange(today)}
+          disabled={!scoped}
+          className="neu-button rounded-lg border px-3 py-1.5 text-xs text-gray-400 disabled:opacity-40"
+        >
+          Today
+        </button>
+        <button
+          type="button"
+          onClick={() => onAnchorChange(shiftBoardScopeAnchor(scope, anchor, -1))}
+          disabled={!scoped}
+          className="neu-button-icon rounded-lg border px-2 py-1.5 text-xs text-gray-400 disabled:opacity-40"
+          aria-label={`Previous ${scope}`}
+        >
+          ‹
+        </button>
+        <button
+          type="button"
+          onClick={() => onAnchorChange(shiftBoardScopeAnchor(scope, anchor, 1))}
+          disabled={!scoped}
+          className="neu-button-icon rounded-lg border px-2 py-1.5 text-xs text-gray-400 disabled:opacity-40"
+          aria-label={`Next ${scope}`}
+        >
+          ›
+        </button>
+      </div>
+
+      <div className="min-w-0">
+        <h2 className="truncate text-sm font-medium text-white">
+          {boardScopeTitle(scope, anchor)}
+        </h2>
+        <p className="text-[10px] text-gray-500" title="Cards without a due date stay visible">
+          {visibleTaskCount === totalTaskCount
+            ? `${totalTaskCount} cards`
+            : `${visibleTaskCount} of ${totalTaskCount} cards`}
+          {scoped ? " · undated cards included" : ""}
+        </p>
+      </div>
+
+      <div className="neu-segmented ml-auto flex items-center gap-0.5 rounded-lg border">
+        {PLAN_BOARD_SCOPES.map((option) => (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={scope === option}
+            onClick={() => onScopeChange(option)}
+            className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
+              scope === option ? "text-white" : "text-gray-500 hover:text-white"
+            }`}
+          >
+            {BOARD_SCOPE_LABELS[option]}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Translate a drop slot in the filtered board back into the full column. */
+function boardPositionForScopedDrop(
+  fullBoard: PlanBoardData,
+  scopedBoard: PlanBoardData,
+  taskId: number,
+  columnId: number,
+  scopedPosition: number,
+): number {
+  const fullColumn = fullBoard.columns.find((column) => column.id === columnId);
+  const scopedColumn = scopedBoard.columns.find((column) => column.id === columnId);
+  if (!fullColumn || !scopedColumn) return scopedPosition;
+
+  const fullSiblings = fullColumn.tasks.filter((task) => task.id !== taskId);
+  const visibleSiblings = scopedColumn.tasks.filter((task) => task.id !== taskId);
+  const movingVisibleIndex = scopedColumn.tasks.findIndex((task) => task.id === taskId);
+  const normalizedPosition =
+    movingVisibleIndex >= 0 && scopedPosition > movingVisibleIndex
+      ? scopedPosition - 1
+      : scopedPosition;
+  const slot = Math.min(Math.max(0, normalizedPosition), visibleSiblings.length);
+
+  const before = visibleSiblings[slot];
+  if (before) {
+    const index = fullSiblings.findIndex((task) => task.id === before.id);
+    return index < 0 ? fullSiblings.length : index;
+  }
+
+  const after = visibleSiblings.at(-1);
+  if (!after) return fullSiblings.length;
+  const index = fullSiblings.findIndex((task) => task.id === after.id);
+  return index < 0 ? fullSiblings.length : index + 1;
 }
 
 /**

@@ -17,6 +17,7 @@ import { ensureCadSchema } from "./cad/schema.ts";
 import { ensureAgentSettingsSchema } from "./agent-settings/schema.ts";
 import { ensureNangoSchema } from "./nango/schema.ts";
 import { ensureScheduledChatSchema } from "./schedules/schema.ts";
+import { ensureHooksSchema } from "./hooks/schema.ts";
 import { ensureWorkflowSchema } from "./workflows/schema.ts";
 import { ensureTeachSchema } from "./teach/schema.ts";
 import { ensureCalendarSchema } from "./calendar/schema.ts";
@@ -879,6 +880,10 @@ ensureSpotifySchema(db);
 // Additive cron-scheduled chat jobs; the schema lives with its store in
 // src/lib/schedules/ and is safe to re-apply.
 ensureScheduledChatSchema(db);
+// Inbound provider hooks and internal chat-completion hooks. This was
+// previously defined but never bootstrapped, so /api/hooks failed with
+// "no such table: hooks" on a fresh or existing installation.
+ensureHooksSchema(db);
 // Native workflows; after users so the owner foreign key resolves.
 ensureWorkflowSchema(db);
 

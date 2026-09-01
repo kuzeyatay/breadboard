@@ -12,17 +12,28 @@
 
 import { wakeAgentRuntime } from "../agent-runtime/wake.ts";
 import {
+  completeAssistantMessage,
   createConversation,
   deleteConversation,
   getConversationById,
   listConversationMessages,
   presentConversationMessage,
+  reserveConversationTurn,
   type ConversationRow,
 } from "../conversations/store.ts";
+import { fallbackConversationTitle } from "../conversations/title-service.ts";
 import { startConversationTurn } from "../conversations/turn-service.ts";
 import { startSessionEventPump } from "../hermes/event-stream.ts";
 import { requireEnabled } from "../hermes/route-core.ts";
+import { getHermesUserSettings } from "../hermes/runtime-store.ts";
 import { resolveConversationRuntime } from "../hermes/session-service.ts";
+import { getScheduledChatJobStore } from "../schedules/instance.ts";
+import { parseExplicitScheduleRequest } from "../schedules/natural-language.ts";
+import { presentScheduledChatJob } from "../schedules/store.ts";
+import {
+  scheduledChatConfirmationText,
+  scheduledChatReceiptFromJob,
+} from "../schedules/types.ts";
 import { telegramTimings } from "./config.ts";
 import {
   contactHandle,
@@ -120,19 +131,27 @@ export async function routeTelegramMessage(
   });
 
   const forceNew = command === "/new";
+  // A reminder is infrastructure work, not an agent research task. Intercept
+  // it before Hermes so the gateway never burns a turn searching for a
+  // scheduler tool, and so the eventual notification can be delivered even if
+  // the agent runtime is stopped at that moment.
+  const scheduledReminder = !forceNew && /\bremind(?:er)?\b/i.test(text)
+    ? parseExplicitScheduleRequest(text, now)
+    : null;
   let createdConversation: ConversationRow | null = null;
+  let createdScheduleId: number | null = null;
 
   try {
     // Fail before creating anything when the runtime is off, so a stopped runtime
     // answers Telegram with a reason instead of leaving an empty chat behind.
-    requireEnabled();
+    if (!scheduledReminder) requireEnabled();
 
     // Hermes is an on-demand service: after a few quiet minutes the supervisor
     // stops it, and only a lease can start it again — which this gateway
     // process cannot take itself. Wake it (via the dashboard) before anything
     // is created, so the turn below finds a live runtime. `/new` skips the
     // wait: it only names a fresh chat, no turn runs.
-    if (!forceNew) await wakeAgentRuntime("telegram-inbound");
+    if (!forceNew && !scheduledReminder) await wakeAgentRuntime("telegram-inbound");
 
     const existing =
       !forceNew && chat.conversation_id !== null
@@ -145,12 +164,16 @@ export async function routeTelegramMessage(
       conversationIsWarm(chat.last_message_at, now)
         ? existing
         : null;
+    const initialSummary = forceNew ? null : fallbackConversationTitle(text);
 
     const conversation =
       warm ??
       createConversation({
         userId: settings.ownerUserId,
-        title: conversationTitleFor(label, forceNew ? "" : text),
+        title:
+          initialSummary
+            ? `Telegram:${initialSummary}`.slice(0, 120)
+            : conversationTitleFor(label, forceNew ? "" : text),
         surface: "dashboard_terminal",
         scopeKind: "global",
       });
@@ -166,6 +189,50 @@ export async function routeTelegramMessage(
       };
     }
 
+    const clientMessageId = `telegram-${message.messageId || `${message.chatId}-${Date.now()}`}`;
+    if (scheduledReminder) {
+      const preference = getHermesUserSettings(settings.ownerUserId);
+      const scheduleRow = getScheduledChatJobStore().create(
+        settings.ownerUserId,
+        {
+          title: scheduledReminder.title,
+          prompt: scheduledReminder.prompt,
+          cron: scheduledReminder.cron,
+          surface: "dashboard_terminal",
+          model: preference.defaultModel,
+          reasoningEffort: preference.reasoningEffort,
+          deliveryChannel: "telegram",
+          deliveryMode: "reminder",
+          oneShot: scheduledReminder.oneShot,
+          runAt: scheduledReminder.runAt,
+        },
+        now,
+      );
+      createdScheduleId = scheduleRow.id;
+      const receipt = scheduledChatReceiptFromJob(
+        presentScheduledChatJob(scheduleRow, now),
+      );
+      const reply = scheduledChatConfirmationText(receipt);
+      reserveConversationTurn({
+        conversation,
+        clientMessageId,
+        surface: "dashboard_terminal",
+        content: text,
+        metadata: { scheduledChatReceipt: receipt },
+      });
+      completeAssistantMessage({
+        conversationId: conversation.id,
+        clientMessageId,
+        content: reply,
+        metadata: { scheduledChatReceipt: receipt },
+      });
+      return {
+        status: "replied",
+        reply,
+        conversationId: conversation.public_id,
+      };
+    }
+
     // Mirror the browser's ordering: attach the pump that persists the assistant
     // turn before the prompt is dispatched, so no early output can be missed.
     const runtime = await resolveConversationRuntime({
@@ -176,13 +243,15 @@ export async function routeTelegramMessage(
     });
     startSessionEventPump(runtime);
 
-    const clientMessageId = `telegram-${message.messageId || `${message.chatId}-${Date.now()}`}`;
     const result = await startConversationTurn({
       conversation,
       clientMessageId,
       text,
       surface: "dashboard_terminal",
       surfaceContext: { deliveryChannel: "telegram" },
+      // Messaging has no composer switch, so every inbound phone turn uses
+      // Breadboard's full inventory-aware router by default.
+      superAgent: true,
     });
 
     if (!result.accepted) {
@@ -237,6 +306,14 @@ export async function routeTelegramMessage(
         "That turn did not finish. Open the chat in Breadboard to see what happened.",
     };
   } catch (cause) {
+    if (createdScheduleId !== null) {
+      try {
+        getScheduledChatJobStore().delete(settings.ownerUserId, createdScheduleId);
+      } catch {
+        // If the transcript write failed, keeping the direct reminder would be
+        // surprising because the sender receives the failure below.
+      }
+    }
     // A turn that failed before producing anything must not strand an empty
     // chat in Recents; the failure still reaches the sender as the reply below.
     // The dangling chat binding is fine — the next message finds no

@@ -49,6 +49,7 @@ const ALL_TOOLS = [...WORLDMONITOR_TOOLS, ...CALENDAR_TOOLS];
 
 test("both families expose exactly the intended tools", () => {
   assert.deepEqual([...WORLDMONITOR_TOOLS].sort(), [
+    "weather_forecast",
     "worldmonitor_catalog",
     "worldmonitor_climate",
     "worldmonitor_search",

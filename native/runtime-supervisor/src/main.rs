@@ -1131,7 +1131,13 @@ const SPOTIFY_PLAYBACK_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_SPOTIFY_DASHBOARD_ORIGIN",
     "BREADBOARD_SPOTIFY_BROWSER_PATH",
 ];
-const CLIPROXY_ENVIRONMENT_NAMES: &[&str] = &["WRITABLE_PATH", "CLIPROXY_API_KEY"];
+const CLIPROXY_ENVIRONMENT_NAMES: &[&str] = &[
+    "WRITABLE_PATH",
+    "CLIPROXY_HOME",
+    "CLIPROXY_PORT",
+    "CLIPROXY_API_KEY",
+    "CLIPROXY_MANAGEMENT_KEY",
+];
 const QUARTZ_ENVIRONMENT_NAMES: &[&str] =
     &["BREADBOARD_DASHBOARD_URL", "BREADBOARD_QUARTZ_PUBLIC_ROOT"];
 const UI_TARS_ENVIRONMENT_NAMES: &[&str] = &[
@@ -1184,6 +1190,9 @@ const SCRIBERR_ENVIRONMENT_NAMES: &[&str] = &[
     "PORT",
     "APP_ENV",
     "SCRIBERR_LAZY_MODEL_INIT",
+    "PYTHONUTF8",
+    "PYTHONIOENCODING",
+    "PYTHONUNBUFFERED",
     "SECURE_COOKIES",
     "ALLOWED_ORIGINS",
     "DATABASE_PATH",
@@ -6932,6 +6941,60 @@ mod tests {
         assert!(
             rejected.is_empty(),
             "runtime-core dashboard environment names are outside the supervisor profile: {rejected:?}"
+        );
+    }
+
+    #[test]
+    fn cliproxy_builder_literal_names_stay_within_the_supervisor_profile() {
+        let service_environment_source =
+            include_str!("../../runtime-core/src/service_environment.rs");
+        let cliproxy_builder = service_environment_source
+            .split_once("fn build_cliproxy_environment(")
+            .expect("runtime-core cliproxy environment builder must exist")
+            .1
+            .split_once("fn build_quartz_environment(")
+            .expect("runtime-core cliproxy environment builder boundary must exist")
+            .0;
+        let mut cursor = cliproxy_builder;
+        let mut literal_names = Vec::new();
+        while let Some(offset) = cursor.find("builder.insert") {
+            cursor = &cursor[offset + "builder.insert".len()..];
+            let arguments = cursor.trim_start();
+            let Some(arguments) = arguments.strip_prefix('(') else {
+                continue;
+            };
+            let arguments = arguments.trim_start();
+            let Some(literal) = arguments.strip_prefix('"') else {
+                continue;
+            };
+            let end = literal
+                .find('"')
+                .expect("literal CLIProxy environment name must terminate");
+            literal_names.push(&literal[..end]);
+        }
+
+        assert_eq!(
+            literal_names,
+            [
+                "WRITABLE_PATH",
+                "CLIPROXY_HOME",
+                "CLIPROXY_PORT",
+                "CLIPROXY_API_KEY",
+                "CLIPROXY_MANAGEMENT_KEY",
+            ]
+        );
+        let rejected = literal_names
+            .iter()
+            .copied()
+            .filter(|name| {
+                EnvironmentProfile::Cliproxy
+                    .canonical_environment_name(name)
+                    .is_none()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rejected.is_empty(),
+            "runtime-core CLIProxy environment names are outside the supervisor profile: {rejected:?}"
         );
     }
 

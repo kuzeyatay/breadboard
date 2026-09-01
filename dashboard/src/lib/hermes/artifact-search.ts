@@ -1,10 +1,12 @@
 import type { PresentedArtifact } from "./artifact-types.ts";
 
-/** In-progress work belongs in the chat that started it, not in the archive. */
+/** Only usable work belongs in the archive; progress and failures stay in chat. */
 export function filterArtifactsForArchive(
   artifacts: PresentedArtifact[],
 ): PresentedArtifact[] {
-  return artifacts.filter((artifact) => artifact.status !== "generating");
+  return artifacts.filter(
+    (artifact) => artifact.status !== "generating" && artifact.status !== "failed",
+  );
 }
 
 /**

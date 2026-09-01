@@ -2,10 +2,10 @@ import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 // Single authority for the dashboard's mutable-data and repo-root locations.
 //
-// Development keeps the historical layout (db/ under the dashboard package,
-// repo root one level up). The desktop shell overrides both through
-// environment variables so packaged installs keep user data in the OS
-// user-data directory and read-only assets under the install resources:
+// A dashboard started directly keeps the historical layout (db/ under the
+// dashboard package, repo root one level up). The desktop shell overrides both
+// in development and packaged modes so they share durable data in the OS
+// user-data directory while program assets still come from the selected build:
 //   BREADBOARD_DATA_DIR  — base directory containing db/ (brain.db etc.)
 //   BREADBOARD_REPO_ROOT — directory that mirrors the repo layout for
 //                          read-only assets (hermes-config/, gbrain/, …)
@@ -22,8 +22,8 @@ export function dashboardDataDir(): string {
 
 export function databaseDir(): string {
   const dataDir = dashboardDataDir();
-  // Desktop layout stores databases under <data>/database; the historical dev
-  // layout uses <dashboard>/db. BREADBOARD_DATA_DIR opts into the former.
+  // Desktop layout stores databases under <data>/database; a directly launched
+  // dashboard without BREADBOARD_DATA_DIR retains <dashboard>/db.
   return process.env.BREADBOARD_DATA_DIR?.trim()
     ? path.join(dataDir, "database")
     : path.join(dataDir, "db");

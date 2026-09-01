@@ -8,6 +8,7 @@ import { metaPromptSection, metaPromptingEnabled } from "./meta-prompting.ts";
 import { cogniviaSection } from "../cognivia/index.ts";
 import { loopStateSection } from "../loopx/governance.ts";
 import { goalModeSection, type GoalModeState } from "../goal-mode.ts";
+import { answerDepthSection } from "./answer-depth.ts";
 import { classifyResearch } from "../research/classify.ts";
 import { researchAnswerContract } from "../research/directive.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
@@ -158,11 +159,25 @@ export function composeHermesSystemPrompt(input: {
       sections.push(researchAnswerContract(researchPlan));
     }
   }
+  // How deep a general question gets answered. A scoped question chose its own
+  // resolution and a task request owes nobody a survey, so this ships only
+  // when the newest message names a subject without scoping it, the one shape
+  // where selecting the important details is the server's job rather than the
+  // asker's. Cheap: a pure function over the request text.
+  // See lib/hermes/answer-depth.ts.
+  const answerDepth = answerDepthSection({ userText: input.userText });
+  if (answerDepth) sections.push(answerDepth);
   // The image-results display contract ships whenever image_search is on the
   // turn: the fenced-block shape is Breadboard's own convention, so without
   // this section the model has only the tool description to learn it from.
   if (decision.allowedTools.includes("image_search")) {
     sections.push(readSystemPrompt("image-results"));
+  }
+  // Weather is a compact native resource too. The tool returns measured/model
+  // data and the prompt teaches the assistant to preserve that object exactly
+  // so one requested day always maps to one card.
+  if (decision.allowedTools.includes("weather_forecast")) {
+    sections.push(readSystemPrompt("weather-results"));
   }
   // Product results are a native resource, not prose with shopping links. The
   // tool description is intentionally self-contained, but large Hermes turns
@@ -174,6 +189,12 @@ export function composeHermesSystemPrompt(input: {
   // conversation or web research.
   if (decision.allowedTools.includes("product_search")) {
     sections.push(readSystemPrompt("product-search"));
+  }
+  // Past-chat lookup has its own private index and native navigation result.
+  // Make the intent boundary explicit so requests such as "where was the chat
+  // about Kirchhoff?" do not get answered from memory or generic search.
+  if (decision.allowedTools.includes("chat_search")) {
+    sections.push(readSystemPrompt("chat-search"));
   }
   sections.push(
     [

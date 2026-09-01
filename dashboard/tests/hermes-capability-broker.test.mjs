@@ -64,10 +64,10 @@ const allows = (grant, permission, pattern) =>
 /* Tools start off and are activated by capability                     */
 /* ------------------------------------------------------------------ */
 
-test("a conversational Terminal turn does not expose command execution", () => {
+test("a conversational Terminal turn keeps command execution available to its permission policy", () => {
   const grant = broker("What is the difference between AM and FM?");
   const tools = enabledTools(grant);
-  assert.ok(!tools.includes("terminal_execute_command"));
+  assert.ok(tools.includes("terminal_execute_command"));
   assert.ok(tools.includes("artifact_create"));
   assert.ok(!tools.includes("bash"));
   assert.ok(!tools.includes("write"));
@@ -152,13 +152,23 @@ test("weather research enables web tools and their runtime permissions", () => {
   assert.ok(allows(grant, "websearch", "*"));
 });
 
-test("web research cannot fall back to Terminal command execution", () => {
+test("web research keeps the Terminal escape hatch available without granting ambient bash", () => {
   const tools = enabledTools(
     broker("is the total solar eclipse viewable from turkey tomorrow"),
   );
   assert.ok(tools.includes("websearch"));
   assert.ok(tools.includes("webfetch"));
-  assert.ok(!tools.includes("terminal_execute_command"));
+  assert.ok(tools.includes("terminal_execute_command"));
+  assert.ok(!tools.includes("bash"));
+});
+
+test("a current-time question can reach the system clock even though the planner calls it web research", () => {
+  const grant = broker("do you know the current time");
+  const tools = enabledTools(grant);
+  assert.ok(grant.plan.requiredCapabilities.includes("web_research"));
+  assert.ok(!grant.plan.requiredCapabilities.includes("command_execution"));
+  assert.ok(tools.includes("websearch"));
+  assert.ok(tools.includes("terminal_execute_command"));
 });
 
 test("a Turkish local-recommendation follow-up enables real web tools", () => {

@@ -87,11 +87,27 @@ test("a message goes through the same authenticated turn pipeline as the browser
   // An unattended message must never sit waiting on a permission prompt.
   assert.match(inbound, /"blocked" in result/);
   assert.match(inbound, /surfaceContext: \{ deliveryChannel: "telegram" \}/);
+  // Telegram has no composer switch, so its default must be explicit rather
+  // than inheriting the ordinary-agent default from the shared turn service.
+  assert.match(inbound, /superAgent: true/);
   // And the runtime is checked before anything is created.
   assert.ok(
     inbound.indexOf("requireEnabled()") < inbound.indexOf("createConversation("),
     "a stopped runtime must not leave an empty chat behind",
   );
+});
+
+test("Telegram reminders are scheduled before the agent and retain Telegram provenance", () => {
+  assert.match(inbound, /parseExplicitScheduleRequest\(text, now\)/);
+  assert.match(inbound, /deliveryChannel: "telegram"/);
+  assert.match(inbound, /deliveryMode: "reminder"/);
+  assert.match(inbound, /`Telegram:\$\{initialSummary\}`/);
+  assert.ok(
+    inbound.indexOf("if (scheduledReminder)") < inbound.indexOf("resolveConversationRuntime({"),
+    "a recognized reminder must not enter the agent runtime",
+  );
+  assert.match(inbound, /scheduledChatConfirmationText\(receipt\)/);
+  assert.match(inbound, /completeAssistantMessage\(\{/);
 });
 
 test("an inbound message wakes the on-demand runtime, and a failed turn strands no empty chat", () => {

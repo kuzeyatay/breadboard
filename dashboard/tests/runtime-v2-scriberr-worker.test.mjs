@@ -9,6 +9,7 @@ import esbuild from "esbuild";
 import {
   executeScriberrGardenJob,
   expectedScriberrGardenInputCount,
+  projectDevelopmentScriberrSettings,
   resolveScriberrGardenDatabasePath,
   validateScriberrGardenExecutionScope,
   validateScriberrGardenRequest,
@@ -192,6 +193,36 @@ test("worker resolves the historical development database used by Next", async (
   }
 });
 
+test("development worker projects only non-secret Scriberr inference settings", async () => {
+  const root = fs.mkdtempSync(path.join((await import("node:os")).tmpdir(), "bb-scriberr-env-"));
+  const dashboard = path.join(root, "dashboard");
+  fs.mkdirSync(dashboard, { recursive: true });
+  fs.writeFileSync(
+    path.join(dashboard, ".env.local"),
+    [
+      "SCRIBERR_MODEL=small.en",
+      "SCRIBERR_LANGUAGE='en'",
+      "SCRIBERR_DIARIZATION=false",
+      "SCRIBERR_API_TOKEN=must-not-cross",
+      "OPENAI_API_KEY=must-not-cross",
+    ].join("\n"),
+  );
+  const env = { SCRIBERR_MODEL: "large-v3" };
+  try {
+    assert.deepEqual(
+      projectDevelopmentScriberrSettings(root, env).sort(),
+      ["SCRIBERR_DIARIZATION", "SCRIBERR_LANGUAGE"],
+    );
+    assert.equal(env.SCRIBERR_MODEL, "large-v3");
+    assert.equal(env.SCRIBERR_LANGUAGE, "en");
+    assert.equal(env.SCRIBERR_DIARIZATION, "false");
+    assert.equal(env.SCRIBERR_API_TOKEN, undefined);
+    assert.equal(env.OPENAI_API_KEY, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("probe worker loads only the attested staged source and reports bounded health", async () => {
   const dataRoot = fs.mkdtempSync(path.join((await import("node:os")).tmpdir(), "bb-scriberr-worker-"));
   fs.mkdirSync(path.join(dataRoot, "database"), { recursive: true });
@@ -204,6 +235,10 @@ test("probe worker loads only the attested staged source and reports bounded hea
     "YTDLP_PATH",
     "FFMPEG_PATH",
     "FFPROBE_PATH",
+    "CHATMOCK_BASE_URL",
+    "CHATMOCK_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
   ];
   const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   Object.assign(process.env, {
@@ -215,6 +250,10 @@ test("probe worker loads only the attested staged source and reports bounded hea
     YTDLP_PATH: process.execPath,
     FFMPEG_PATH: process.execPath,
     FFPROBE_PATH: process.execPath,
+    CHATMOCK_BASE_URL: "http://127.0.0.1:7777/v1",
+    CHATMOCK_API_KEY: "local",
+    OPENAI_BASE_URL: "https://untrusted.invalid/v1",
+    OPENAI_API_KEY: "must-not-cross",
   });
   try {
     const result = await executeScriberrGardenJob({
@@ -227,6 +266,8 @@ test("probe worker loads only the attested staged source and reports bounded hea
     assert.equal(result.health.enabled, true);
     assert.equal(result.health.scriberr.ok, false);
     assert.equal(result.health.tempDirWritable.ok, true);
+    assert.equal(process.env.OPENAI_BASE_URL, "http://127.0.0.1:7777/v1");
+    assert.equal(process.env.OPENAI_API_KEY, "local");
   } finally {
     for (const name of names) {
       if (saved[name] === undefined) delete process.env[name];
@@ -285,6 +326,37 @@ test("cancel persists intent and targets only the bound native job", async () =>
     authority: { userId: 3, gardenId: "physics", conversationId: null },
     jobId: "job_scriberr_1",
   });
+});
+
+test("retry refuses an inputless failed upload without advancing its generation", async () => {
+  const store = fakeStore(legacyJob({
+    inputKind: "upload",
+    status: "failed",
+    mediaTempPath: null,
+    scriberrJobId: null,
+    transcriptJson: null,
+    runtimeGeneration: 14,
+    errorCode: "job_interrupted",
+  }));
+  let submissions = 0;
+  const control = fakeControl({
+    submit: async () => {
+      submissions += 1;
+      return snapshot();
+    },
+  });
+
+  const updated = await client.retryScriberrRuntimeJob({
+    store,
+    jobId: store.current().id,
+    control,
+    env: {},
+  });
+
+  assert.equal(submissions, 0);
+  assert.equal(updated.status, "failed");
+  assert.equal(updated.errorCode, "media_missing");
+  assert.equal(updated.runtimeGeneration, 14);
 });
 
 test("probe output is accepted only with matching worker identity and sequence", async () => {

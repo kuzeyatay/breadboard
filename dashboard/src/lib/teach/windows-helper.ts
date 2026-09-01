@@ -25,6 +25,17 @@ const execFileAsync = promisify(execFile);
 
 const COMPILE_TIMEOUT_MS = 120_000;
 
+/**
+ * The in-box .NET Framework compiler predates Windows extended path syntax and
+ * rejects an otherwise valid `\\\\?\\` path as CS2021. Keep the namespaced path
+ * for Node's cache operations, and remove it only from arguments parsed by csc.
+ */
+export function pathForLegacyWindowsCompiler(value: string): string {
+  if (value.startsWith("\\\\?\\UNC\\")) return `\\\\${value.slice(8)}`;
+  if (value.startsWith("\\\\?\\")) return value.slice(4);
+  return value;
+}
+
 /** Assemblies csc does not reference by default. */
 const GAC_REFERENCES = [
   ["UIAutomationClient", "31bf3856ad364e35"],
@@ -149,9 +160,11 @@ async function buildHelperBinary(): Promise<string> {
     "/target:winexe",
     "/platform:x64",
     "/optimize+",
-    `/out:${staging}`,
-    ...gacReferencePaths().map((assembly) => `/reference:${assembly}`),
-    source,
+    `/out:${pathForLegacyWindowsCompiler(staging)}`,
+    ...gacReferencePaths().map(
+      (assembly) => `/reference:${pathForLegacyWindowsCompiler(assembly)}`,
+    ),
+    pathForLegacyWindowsCompiler(source),
   ];
 
   try {

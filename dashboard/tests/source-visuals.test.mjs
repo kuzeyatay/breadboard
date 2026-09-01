@@ -23,6 +23,7 @@ import {
   saveSourceVisuals,
   sourceSetHashWithReviewedFormulas,
   sourceVisualCachedPageImageUrls,
+  sourceVisualScanCoverageProblems,
   sourceVisualSourceIdentityMapHash,
   sourceVisualSourceIdentityMapPath,
   sourceFormulaTopologyReviewPageReceipts,
@@ -80,6 +81,58 @@ test("source-visual detection gives Sol Ultra one bounded three-minute request",
   assert.equal(
     sourceVisualDetectionTimeoutMs(String(MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS + 1)),
     MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
+  );
+});
+
+test("source visual scan coverage requires a current receipt for every supplied page snapshot", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "source-visual-scan-coverage-"));
+  const garden = "scan-coverage";
+  const [pageOne, pageTwo] = seedPageImages(root, garden, 2);
+  const client = fakeClient(async () => ({
+    choices: [{ message: { content: JSON.stringify([validDetection()]) } }],
+  }));
+
+  await extractSourceVisuals({
+    client,
+    model: "m",
+    contentPath: root,
+    gardenSlug: garden,
+    sourceId: "src",
+    sourceIndex: 1,
+    pageImageUrls: [pageOne],
+  });
+
+  assert.deepEqual(
+    sourceVisualScanCoverageProblems({
+      contentPath: root,
+      gardenSlug: garden,
+      sourceId: "src",
+      pageImageUrls: [pageOne],
+    }),
+    [],
+  );
+  assert.match(
+    sourceVisualScanCoverageProblems({
+      contentPath: root,
+      gardenSlug: garden,
+      sourceId: "src",
+      pageImageUrls: [pageOne, pageTwo],
+    }).join("\n"),
+    /page 2.*has no current visual-scan receipt/i,
+  );
+
+  fs.writeFileSync(
+    path.join(root, garden, "assets", "pages", "src-page-001.png"),
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]),
+  );
+  assert.match(
+    sourceVisualScanCoverageProblems({
+      contentPath: root,
+      gardenSlug: garden,
+      sourceId: "src",
+      pageImageUrls: [pageOne],
+    }).join("\n"),
+    /page 1.*stale visual-scan receipt/i,
   );
 });
 

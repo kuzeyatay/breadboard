@@ -1778,6 +1778,7 @@ b {
 .chat-markdown ol,
 .chat-markdown .chat-code-block,
 .chat-markdown .chat-image-results,
+.chat-markdown .chat-weather-results,
 .chat-markdown blockquote,
 .chat-markdown .chat-table-scroll {
   margin: 0.65rem 0;
@@ -1788,6 +1789,7 @@ b {
 .chat-markdown.compact ol,
 .chat-markdown.compact .chat-code-block,
 .chat-markdown.compact .chat-image-results,
+.chat-markdown.compact .chat-weather-results,
 .chat-markdown.compact blockquote,
 .chat-markdown.compact .chat-table-scroll {
   margin: 0.3rem 0;
@@ -2019,6 +2021,274 @@ b {
   border: 1px solid var(--border);
   padding: 0.35rem 0.5rem;
   vertical-align: top;
+}
+
+/* Weather is a native answer surface, not decorated Markdown. Each requested
+   date keeps its own card so two or more days scan vertically just like the
+   system Weather widget, while one-day answers remain a single compact object. */
+.chat-weather-results {
+  display: grid;
+  width: 100%;
+  max-width: 100%;
+  gap: 0.62rem;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.chat-weather-card {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  width: 100%;
+  min-height: 9.8rem;
+  grid-template-columns: minmax(0, 1fr) minmax(7.5rem, auto);
+  align-items: stretch;
+  gap: 1rem;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 0.13);
+  border-radius: 1.85rem;
+  padding: 1.16rem 1.32rem 1.22rem;
+  background:
+    radial-gradient(circle at 80% -20%, rgb(157 190 255 / 0.25), transparent 58%),
+    linear-gradient(145deg, #111a38 0%, #2f385d 58%, #48506f 100%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.12),
+    0 13px 30px -19px rgb(9 16 38 / 0.76);
+  color: #f8f9ff;
+  contain: paint;
+  animation: chat-weather-materialize 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.chat-weather-card::before,
+.chat-weather-card::after {
+  position: absolute;
+  z-index: -1;
+  border-radius: 999px;
+  content: "";
+  pointer-events: none;
+  filter: blur(24px);
+}
+
+.chat-weather-card::before {
+  top: -4rem;
+  right: -2.8rem;
+  width: 12rem;
+  height: 9rem;
+  background: rgb(168 190 255 / 0.13);
+}
+
+.chat-weather-card::after {
+  bottom: -4rem;
+  left: 12%;
+  width: 15rem;
+  height: 7rem;
+  background: rgb(119 132 191 / 0.12);
+}
+
+.chat-weather-card[data-daylight="day"] {
+  background:
+    radial-gradient(circle at 80% -20%, rgb(217 239 255 / 0.34), transparent 55%),
+    linear-gradient(145deg, #28527a 0%, #4e6f99 54%, #7f8aa9 100%);
+}
+
+.chat-weather-card[data-weather-kind="cloud"] {
+  background:
+    radial-gradient(circle at 78% -20%, rgb(234 240 255 / 0.27), transparent 55%),
+    linear-gradient(145deg, #25364f 0%, #55657c 56%, #788496 100%);
+}
+
+.chat-weather-card[data-weather-kind="fog"] {
+  background:
+    radial-gradient(circle at 75% 0%, rgb(255 255 255 / 0.3), transparent 60%),
+    linear-gradient(145deg, #354353 0%, #697786 56%, #909aa4 100%);
+}
+
+.chat-weather-card[data-weather-kind="rain"] {
+  background:
+    radial-gradient(circle at 80% -20%, rgb(165 208 255 / 0.22), transparent 56%),
+    linear-gradient(145deg, #17283e 0%, #3d5871 58%, #66798e 100%);
+}
+
+.chat-weather-card[data-weather-kind="snow"] {
+  background:
+    radial-gradient(circle at 80% -20%, rgb(255 255 255 / 0.47), transparent 55%),
+    linear-gradient(145deg, #586d83 0%, #8295aa 54%, #aeb8c8 100%);
+}
+
+.chat-weather-card[data-weather-kind="storm"] {
+  background:
+    radial-gradient(circle at 80% -20%, rgb(168 144 255 / 0.25), transparent 53%),
+    linear-gradient(145deg, #121629 0%, #292d4b 56%, #4d4d6c 100%);
+}
+
+.chat-weather-card-left,
+.chat-weather-card-right {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.chat-weather-location {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.38rem;
+}
+
+.chat-weather-location strong {
+  overflow: hidden;
+  color: #fff;
+  font-size: clamp(1.12rem, 3vw, 1.38rem);
+  font-weight: 650;
+  letter-spacing: -0.018em;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-weather-location-arrow {
+  display: inline-flex;
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: 0 0 auto;
+  color: rgb(255 255 255 / 0.93);
+  transform: rotate(2deg);
+}
+
+.chat-weather-location-arrow svg,
+.chat-weather-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.chat-weather-card time {
+  margin-top: 0.22rem;
+  color: rgb(244 247 255 / 0.72);
+  font-size: 0.78rem;
+  font-weight: 520;
+  letter-spacing: 0.012em;
+  line-height: 1.25;
+}
+
+.chat-weather-temperature {
+  margin-top: auto;
+  color: #fff;
+  font-size: clamp(3.55rem, 10vw, 4.8rem);
+  font-weight: 280;
+  letter-spacing: -0.065em;
+  line-height: 0.82;
+  text-shadow: 0 1px 18px rgb(16 25 54 / 0.12);
+}
+
+.chat-weather-card-right {
+  align-items: flex-end;
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.chat-weather-icon {
+  display: block;
+  width: 2.85rem;
+  height: 2.85rem;
+  margin-bottom: auto;
+  color: rgb(255 255 255 / 0.97);
+  filter: drop-shadow(0 3px 8px rgb(17 26 56 / 0.22));
+}
+
+.chat-weather-condition {
+  max-width: 11rem;
+  overflow: hidden;
+  color: rgb(249 250 255 / 0.82);
+  font-size: 1rem;
+  font-weight: 520;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-weather-range {
+  margin-top: 0.26rem;
+  color: rgb(247 249 255 / 0.86);
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+  line-height: 1.2;
+}
+
+.chat-weather-range span {
+  color: rgb(238 242 255 / 0.66);
+}
+
+@keyframes chat-weather-materialize {
+  from {
+    opacity: 0;
+    filter: blur(4px);
+    transform: scale(0.985) translateY(0.2rem);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1) translateY(0);
+  }
+}
+
+@media (max-width: 420px) {
+  .chat-weather-card {
+    min-height: 9.15rem;
+    grid-template-columns: minmax(0, 1fr) minmax(6.8rem, auto);
+    border-radius: 1.55rem;
+    padding: 1rem 1.05rem 1.08rem;
+  }
+
+  .chat-weather-location strong {
+    font-size: 1.05rem;
+  }
+
+  .chat-weather-temperature {
+    font-size: 3.45rem;
+  }
+
+  .chat-weather-condition,
+  .chat-weather-range {
+    font-size: 0.82rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-weather-card {
+    animation: chat-weather-appear 180ms ease-out both;
+  }
+}
+
+@keyframes chat-weather-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .chat-weather-card {
+    border-color: rgb(255 255 255 / 0.24);
+    box-shadow: 0 8px 20px -14px rgb(9 16 38 / 0.68);
+  }
+
+  .chat-weather-card::before,
+  .chat-weather-card::after {
+    display: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .chat-weather-card {
+    border-color: rgb(255 255 255 / 0.72);
+  }
+
+  .chat-weather-card time,
+  .chat-weather-condition,
+  .chat-weather-range,
+  .chat-weather-range span {
+    color: #fff;
+  }
 }
 
 .chat-markdown .katex-display {

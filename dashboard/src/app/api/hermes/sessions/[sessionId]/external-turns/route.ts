@@ -110,6 +110,12 @@ export async function POST(
     if (body.outcome !== undefined && !requestedOutcome) {
       throw new ApiError(400, "invalid_external_agent_outcome", "The external agent outcome is invalid.");
     }
+    const delegatedAgentReason =
+      body.delegatedAgentReason === undefined
+        ? undefined
+        : requireString(body.delegatedAgentReason, "delegatedAgentReason", 240)
+            .replace(/\s+/g, " ")
+            .trim();
     if (body.attachToExistingTurn === true) {
       if (!run && requestedOutcome !== "failed" && requestedOutcome !== "aborted") {
         throw new ApiError(
@@ -126,6 +132,7 @@ export async function POST(
         ...(body.assistantContent === undefined
           ? {}
           : { assistantContent: optionalContent(body.assistantContent) }),
+        delegatedAgentReason,
       });
       return NextResponse.json({
         messages: [presentExternalMessage(assistantMessage)],
@@ -155,6 +162,7 @@ export async function POST(
       attachments,
       delegatedAgentRun: body.delegatedAgentRun === true,
       internalAgentContinuation: body.delegatedAgentRun === true,
+      delegatedAgentReason,
     });
     if (turn.userMessage.order_index === 0) {
       await generateAndApplyConversationTitle({

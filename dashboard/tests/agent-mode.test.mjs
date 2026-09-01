@@ -112,7 +112,9 @@ test("a skill named with agent mode off is explained, not silently dropped", () 
   // already owns that explanation — so there is no switch left to couple.
   assert.match(
     directService,
-    /A message beginning with a `\/token` is a skill[\s\S]{0,200}?needs Agent mode on/,
+    // The window is wide enough to span the `/reference:*` exception sentence
+    // that now sits between the naming and the explanation.
+    /A message beginning with a `\/token` is a skill[\s\S]{0,400}?needs Agent mode on/,
   );
 });
 

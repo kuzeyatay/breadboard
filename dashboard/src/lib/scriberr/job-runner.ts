@@ -63,6 +63,7 @@ export interface ScriberrOps {
     params: {
       modelFamily?: string;
       model?: string;
+      batchSize?: number;
       language?: string | null;
       diarize?: boolean;
     },
@@ -93,6 +94,7 @@ export interface VideoTranscriptionRunnerDeps {
     metadata: Record<string, string | string[]>;
     youtubeVideoId?: string | null;
     mediaSha256?: string | null;
+    mediaFilePath?: string | null;
     mediaKind: "audio" | "video";
     jobId: string;
     onProgress?: (step: string) => void;
@@ -556,7 +558,17 @@ export class VideoTranscriptionRunner {
       return;
     }
     const { errorCode, errorMessage } = sanitizeErrorForClient(error);
-    const detail = error instanceof Error ? error.message : String(error);
+    const chain: string[] = [];
+    const seen = new Set<unknown>();
+    let cursor: unknown = error;
+    for (let depth = 0; depth < 5 && cursor && !seen.has(cursor); depth += 1) {
+      seen.add(cursor);
+      chain.push(cursor instanceof Error ? `${cursor.name}: ${cursor.message}` : String(cursor));
+      cursor = cursor instanceof Error && "cause" in cursor
+        ? (cursor as Error & { cause?: unknown }).cause
+        : undefined;
+    }
+    const detail = chain.join(" <- ");
     this.log(`job ${jobId} failed (${errorCode}): ${detail}`);
     this.deps.store.transition(jobId, "failed", { errorCode, errorMessage });
     // Media is kept for retryable pre-submission failures so retry can rerun;
@@ -668,6 +680,7 @@ export class VideoTranscriptionRunner {
     await client.startTranscription(job.scriberrJobId, {
       modelFamily: this.deps.config.scriberrModelFamily,
       model: this.deps.config.scriberrModel,
+      batchSize: this.deps.config.scriberrBatchSize,
       language: this.deps.config.scriberrLanguage,
       diarize: this.deps.config.scriberrDiarization,
     });
@@ -732,10 +745,8 @@ export class VideoTranscriptionRunner {
       transcriptJson: JSON.stringify(normalized),
     });
 
-    // Scriberr no longer needs the local media copy.
-    if (!this.deps.config.keepMedia) {
-      await this.cleanupTempMedia(jobId);
-    }
+    // Keep the upload until source ingestion has transactionally retained it
+    // in the Garden. completeJob removes this temporary copy afterwards.
   }
 
   private async executeFromTranscriptInner(jobId: string): Promise<void> {
@@ -843,6 +854,8 @@ export class VideoTranscriptionRunner {
         metadata: markdown.metadata,
         youtubeVideoId: job.youtubeVideoId,
         mediaSha256: job.mediaSha256,
+        mediaFilePath:
+          job.inputKind === "upload" ? job.mediaTempPath : null,
         mediaKind,
         jobId,
         onProgress: (step: string) => {

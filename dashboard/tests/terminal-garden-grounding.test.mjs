@@ -25,6 +25,18 @@ test("academic Terminal synthesis automatically consults authorized Gardens", ()
   );
 });
 
+test("explicit requests to find personal Garden knowledge trigger retrieval", () => {
+  for (const request of [
+    "Which garden has my notes about spiking neural networks?",
+    "Search my Gardens for the antenna design notes.",
+    "Where are my knowledge pages about Fourier transforms?",
+    "What do I know about event-driven computing?",
+    "Have I written anything about metamaterials?",
+  ]) {
+    assert.equal(shouldGround(request), true, request);
+  }
+});
+
 test("operational, attachment-grounded, and opted-out requests do not mix in Garden context", () => {
   assert.equal(shouldGround("Fix the bug in this React component."), false);
   assert.equal(

@@ -43,20 +43,29 @@ async function call(
 
 export default tool({
   description:
-    "Import a finished image, audio, video, PPTX, XLSX/CSV, diagram, data, or code file from the current server-authorized workspace as a durable artifact in this exact chat. The server rejects traversal, symlinks, MIME spoofing, unsafe SVG, oversized files, and files outside the workspace.",
+    "Save an original file as a durable artifact in this exact chat. For a file attached to the current user message, pass its exact attachmentName (or 1-based attachmentIndex); path, kind, title, and filename are inferred and the original bytes are preserved. For a generated workspace file, pass path, kind, and title. Supports every chat upload format. The server verifies ownership, signatures, paths, and size limits.",
   args: {
     kind: tool.schema.enum([
+      "text",
+      "markdown",
+      "document",
+      "pdf",
       "image",
       "audio",
       "video",
       "presentation",
       "spreadsheet",
+      "html",
       "diagram",
       "data",
       "code",
-    ]),
-    title: tool.schema.string(),
-    path: tool.schema.string(),
+      "unknown",
+      "model",
+    ]).optional(),
+    title: tool.schema.string().optional(),
+    path: tool.schema.string().optional(),
+    attachmentName: tool.schema.string().optional(),
+    attachmentIndex: tool.schema.number().int().min(1).max(10).optional(),
     filename: tool.schema.string().optional(),
     metadata: tool.schema
       .record(tool.schema.string(), tool.schema.unknown())

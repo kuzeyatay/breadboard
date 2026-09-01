@@ -14,7 +14,9 @@ import {
   type ChangeEvent,
   type DragEvent,
 } from "react";
+import Link from "next/link";
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import OverflowMarquee from "@/app/components/overflow-marquee";
 import {
   ACCEPTED_AUDIO_EXTENSIONS,
   ACCEPTED_VIDEO_EXTENSIONS,
@@ -26,6 +28,8 @@ import {
   isTerminalJob,
   mediaKindForFilename,
   nextPollDelayMs,
+  stageIndexForStatus,
+  stagesForInputKind,
   statusLabel,
   validateMediaFile,
   validateYouTubeInput,
@@ -54,11 +58,27 @@ interface HealthInfo {
   ffprobe: { ok: boolean; detail?: string };
 }
 
+export interface GardenMediaSource {
+  slug: string;
+  title: string;
+  description: string;
+  originalFilename: string;
+  sourceType: string;
+  sourceMedia: string;
+  href: string;
+  wordCount: number;
+}
+
 export interface GardenVideoImportProps {
   clusterSlug: string;
   isOwner: boolean;
   open: boolean;
+  expanded: boolean;
+  mediaSources: GardenMediaSource[];
+  deletingSourceSlug?: string | null;
   onClose: () => void;
+  onExpand: () => void;
+  onDeleteSource?: (sourceSlug: string) => void;
   onSourceCreated?: (info: {
     jobId: string;
     sourceTitle: string;
@@ -72,11 +92,62 @@ function Spinner({ className = "h-3.5 w-3.5" }: { className?: string }) {
   return <BreadboardLoader className={className} />;
 }
 
+function mediaSourceKind(source: GardenMediaSource): "audio" | "video" {
+  return source.sourceType.toLowerCase().includes("audio") ? "audio" : "video";
+}
+
+function mediaSourceFilename(source: GardenMediaSource): string {
+  return source.originalFilename.trim() || source.title.trim() || "Media transcript";
+}
+
+function mediaSourceDescription(source: GardenMediaSource): string {
+  const filename = mediaSourceFilename(source);
+  const description = source.description.trim();
+  if (description && description !== filename) return description;
+  const title = source.title.trim();
+  return title !== filename ? title : "";
+}
+
+function normalizedMediaSearchText(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase();
+}
+
+function mediaSourceSearchText(source: GardenMediaSource): string {
+  return normalizedMediaSearchText(
+    [
+      mediaSourceFilename(source),
+      mediaSourceDescription(source),
+      mediaSourceKind(source),
+      source.sourceType,
+    ].join(" "),
+  );
+}
+
+function PlayIcon({ playing = false }: { playing?: boolean }) {
+  return playing ? (
+    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M6.75 5.25h3.5v13.5h-3.5zM13.75 5.25h3.5v13.5h-3.5z" />
+    </svg>
+  ) : (
+    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M8.25 5.6v12.8a.75.75 0 0 0 1.14.64l9.75-6.4a.75.75 0 0 0 0-1.28l-9.75-6.4a.75.75 0 0 0-1.14.64Z" />
+    </svg>
+  );
+}
+
 export default function GardenVideoImport({
   clusterSlug,
   isOwner,
   open,
+  expanded,
+  mediaSources,
+  deletingSourceSlug = null,
   onClose,
+  onExpand,
+  onDeleteSource,
   onSourceCreated,
 }: GardenVideoImportProps) {
   const [jobs, setJobs] = useState<PublicVideoTranscriptionJob[]>([]);
@@ -94,6 +165,9 @@ export default function GardenVideoImport({
   const [dragActive, setDragActive] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [busyJobId, setBusyJobId] = useState<string | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [playingSourceSlug, setPlayingSourceSlug] = useState<string | null>(null);
+  const [mediaSearch, setMediaSearch] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pollTimerRef = useRef<number | null>(null);
@@ -106,7 +180,14 @@ export default function GardenVideoImport({
 
   const applyJobs = useCallback(
     (nextJobs: PublicVideoTranscriptionJob[]) => {
-      setJobs(nextJobs);
+      // Server polling is authoritative for accepted jobs, but an upload can
+      // spend time in the browser before the server creates its durable job.
+      // Keep those client handoff rows until the submission response replaces
+      // them with the real job (or a terminal error).
+      setJobs((current) => [
+        ...current.filter((job) => job.id.startsWith("client-")),
+        ...nextJobs.filter((job) => !job.id.startsWith("client-")),
+      ]);
       for (const job of nextJobs) {
         if (
           job.status === "completed" &&
@@ -223,13 +304,24 @@ export default function GardenVideoImport({
   }, [jobs]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open && !selectedJobId) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      if (selectedJobId) setSelectedJobId(null);
+      else onClose();
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, open]);
+  }, [onClose, open, selectedJobId]);
+
+  useEffect(() => {
+    if (
+      playingSourceSlug &&
+      !mediaSources.some((source) => source.slug === playingSourceSlug)
+    ) {
+      setPlayingSourceSlug(null);
+    }
+  }, [mediaSources, playingSourceSlug]);
 
   const selectFile = useCallback((file: File | null) => {
     setSubmitError(null);
@@ -312,20 +404,69 @@ export default function GardenVideoImport({
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
+    const submissionFile = selectedFile;
+    const submissionUrl = youtubeUrl.trim();
+    const provisionalId = `client-${crypto.randomUUID()}`;
+    const submittedAt = new Date().toISOString();
+    const provisionalJob: PublicVideoTranscriptionJob = {
+      id: provisionalId,
+      gardenId: clusterSlug,
+      inputKind: submissionFile ? "upload" : "youtube",
+      status: submissionFile ? "uploading" : "validating",
+      progressPercent: null,
+      currentStage: submissionFile ? "Uploading media" : "Checking YouTube URL",
+      originalFilename: submissionFile?.name ?? null,
+      originalUrl: submissionFile ? null : submissionUrl,
+      canonicalUrl: preview?.canonicalUrl ?? null,
+      youtubeVideoId: preview?.videoId ?? null,
+      sourceTitle: preview?.metadata?.title ?? null,
+      videoMetadata: null,
+      outputRelativePath: null,
+      sourceSlug: null,
+      errorCode: null,
+      errorMessage: null,
+      createdAt: submittedAt,
+      updatedAt: submittedAt,
+      completedAt: null,
+    };
+    setJobs((current) => [
+      provisionalJob,
+      ...current.filter((job) => job.id !== provisionalId),
+    ]);
+    setSelectedJobId(provisionalId);
+    onExpand();
+    onClose();
     setSubmitting(true);
     setSubmitError(null);
     setDuplicateNotice(null);
+    const failProvisionalJob = (message: string) => {
+      const completedAt = new Date().toISOString();
+      setJobs((current) =>
+        current.map((job) =>
+          job.id === provisionalId
+            ? {
+                ...job,
+                status: "failed",
+                currentStage: "Transcription could not start",
+                errorMessage: message,
+                updatedAt: completedAt,
+                completedAt,
+              }
+            : job,
+        ),
+      );
+    };
     try {
       let res: Response;
-      if (selectedFile) {
+      if (submissionFile) {
         const form = new FormData();
-        form.append("media", selectedFile, selectedFile.name);
+        form.append("media", submissionFile, submissionFile.name);
         res = await fetch(apiBase, { method: "POST", body: form });
       } else {
         res = await fetch(apiBase, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ youtubeUrl: youtubeUrl.trim() }),
+          body: JSON.stringify({ youtubeUrl: submissionUrl }),
         });
       }
       const data = (await res.json().catch(() => ({}))) as {
@@ -335,7 +476,9 @@ export default function GardenVideoImport({
         source?: { title?: string; sourceRelPath?: string };
       };
       if (!res.ok) {
-        setSubmitError(data.error ?? "Failed to start transcription.");
+        const message = data.error ?? "Failed to start transcription.";
+        setSubmitError(message);
+        failProvisionalJob(message);
         return;
       }
       if (data.duplicate) {
@@ -346,7 +489,9 @@ export default function GardenVideoImport({
         );
       }
       if (!data.job && !data.duplicate) {
-        setSubmitError("The upload was accepted but no transcription job was created.");
+        const message = "The upload was accepted but no transcription job was created.";
+        setSubmitError(message);
+        failProvisionalJob(message);
         return;
       }
 
@@ -356,10 +501,32 @@ export default function GardenVideoImport({
       // yet). Without this bridge an accepted upload appeared to vanish.
       const acceptedJob = data.job ?? null;
       if (acceptedJob) {
-        applyJobs([
+        setJobs((current) => [
           acceptedJob,
-          ...jobs.filter((job) => job.id !== acceptedJob.id),
+          ...current.filter(
+            (job) => job.id !== provisionalId && job.id !== acceptedJob.id,
+          ),
         ]);
+        setSelectedJobId(acceptedJob.id);
+      } else {
+        const completedAt = new Date().toISOString();
+        setJobs((current) =>
+          current.map((job) =>
+            job.id === provisionalId
+              ? {
+                  ...job,
+                  status: "completed",
+                  progressPercent: 100,
+                  currentStage: "Source already available",
+                  sourceTitle: data.source?.title ?? job.sourceTitle,
+                  outputRelativePath:
+                    data.source?.sourceRelPath ?? job.outputRelativePath,
+                  updatedAt: completedAt,
+                  completedAt,
+                }
+              : job,
+          ),
+        );
       }
       setSelectedFile(null);
       setFileError(null);
@@ -377,7 +544,9 @@ export default function GardenVideoImport({
         );
       }
     } catch {
-      setSubmitError("Failed to start transcription.");
+      const message = "Failed to start transcription.";
+      setSubmitError(message);
+      failProvisionalJob(message);
     } finally {
       setSubmitting(false);
     }
@@ -418,6 +587,20 @@ export default function GardenVideoImport({
   const activeJobs = jobs
     .filter((job) => !isTerminalJob(job))
     .slice(0, 6);
+  const selectedJob = selectedJobId
+    ? (jobs.find((job) => job.id === selectedJobId) ?? null)
+    : null;
+  const mediaSearchTerms = normalizedMediaSearchText(mediaSearch)
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const filteredMediaSources =
+    mediaSearchTerms.length === 0
+      ? mediaSources
+      : mediaSources.filter((source) => {
+          const haystack = mediaSourceSearchText(source);
+          return mediaSearchTerms.every((term) => haystack.includes(term));
+        });
 
   const composer = isOwner ? (
         <div className="space-y-3 px-5 py-4">
@@ -586,137 +769,438 @@ export default function GardenVideoImport({
             <p className="text-[11px] text-amber-400/90">{duplicateNotice}</p>
           )}
         </div>
-  ) : null;
+      )
+    : null;
 
-  const jobProgress = activeJobs.length > 0 ? (
-    <div className="border-t border-gray-800 px-5 py-4">
-      <div className="space-y-1.5">
-        {activeJobs.map((job) => {
-          const displayName =
-            job.originalFilename ?? job.sourceTitle ?? "Media transcription";
-          return (
-            <div
-              key={job.id}
-              className="rounded-lg bg-gray-800/50 px-3 py-2"
-            >
-              <div className="flex items-center gap-2">
-                <svg
-                  className="h-4 w-4 shrink-0 text-gray-500"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.5}
-                  aria-hidden="true"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-                  />
-                </svg>
-                <span className="min-w-0 flex-1 truncate text-xs text-gray-300">
-                  {displayName}
-                </span>
-                <Spinner className="h-3.5 w-3.5 shrink-0 text-gray-400" />
-                <button
-                  type="button"
-                  onClick={() => void cancelJob(job.id)}
-                  disabled={busyJobId === job.id}
-                  className="shrink-0 rounded p-0.5 text-gray-600 transition-colors hover:text-white disabled:opacity-40"
-                  aria-label={`Cancel transcription for ${displayName}`}
-                  title="Cancel transcription"
-                >
-                  <svg
-                    className="h-3.5 w-3.5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    aria-hidden="true"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M6 18 18 6M6 6l12 12"
-                    />
-                  </svg>
-                </button>
-              </div>
-              <div className="mt-1.5 flex items-center gap-2 pl-6 text-[11px] leading-4 text-gray-400">
-                <span className="min-w-0 flex-1 truncate">
-                  {statusLabel(job)}
-                  {job.progressPercent !== null
-                    ? ` · ${Math.round(job.progressPercent)}%`
-                    : ""}
-                </span>
-                <span className="shrink-0 tabular-nums text-gray-600">
-                  {formatElapsed(job.createdAt, nowMs)}
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  ) : null;
-
-  if (!open) return null;
-
-  return (
+  const jobProgress = (
     <div
-      className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+      id="garden-media-items"
+      className="bb-neu-accordion-panel border-t border-gray-800/70"
     >
-      <section
-        id="garden-media-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="garden-media-composer-title"
-        className="bb-modal-panel neu-dialog flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border"
-      >
-        <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-5 py-3.5">
-          <div>
-            <h2
-              id="garden-media-composer-title"
-              className="text-base font-semibold text-white"
-            >
-              Video &amp; audio
-            </h2>
-            <p className="mt-0.5 text-xs text-gray-500">
-              {isOwner
-                ? "Upload media or paste a YouTube link to transcribe it."
-                : "View media imports and transcription progress."}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="neu-button-icon rounded-full p-1.5 text-gray-500"
-            aria-label="Close video or audio dialog"
-          >
+      {mediaSources.length > 0 ? (
+        <div className="border-b border-gray-800 px-3 py-2">
+          <div className="relative">
             <svg
-              className="h-4 w-4"
+              className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-600"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
-              strokeWidth={2}
+              strokeWidth={1.7}
               aria-hidden="true"
             >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="M6 18 18 6M6 6l12 12"
+                d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
               />
             </svg>
-          </button>
+            <input
+              value={mediaSearch}
+              onChange={(event) => {
+                setMediaSearch(event.target.value);
+                setPlayingSourceSlug(null);
+              }}
+              placeholder="Search video and audio"
+              className="neu-control h-8 w-full rounded-md border border-gray-800 bg-gray-950 pl-8 pr-8 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+              aria-label="Search video and audio"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {mediaSearch ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setMediaSearch("");
+                  setPlayingSourceSlug(null);
+                }}
+                className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+                aria-label="Clear media search"
+                title="Clear search"
+              >
+                <svg
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 18 18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            ) : null}
+          </div>
         </div>
-        <div className="min-h-0 overflow-y-auto">
-          {composer}
-          {jobProgress}
+      ) : null}
+      {activeJobs.length > 0 || mediaSources.length > 0 ? (
+        <div className="max-h-80 overflow-y-auto">
+          {activeJobs.length > 0 ? (
+            <div className="border-b border-gray-800/70 py-1">
+              {activeJobs.map((job) => {
+                const displayName =
+                  job.originalFilename ?? job.sourceTitle ?? "Media transcription";
+                return (
+                  <button
+                    key={job.id}
+                    type="button"
+                    onClick={() => setSelectedJobId(job.id)}
+                    className="group flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-gray-800/50"
+                    aria-label={`View transcription progress for ${displayName}`}
+                    title="View transcription progress"
+                  >
+                    <Spinner className="h-4 w-4 shrink-0 text-gray-500" />
+                    <span className="min-w-0 flex-1">
+                      <OverflowMarquee className="text-xs text-gray-300 group-hover:text-white">
+                        {displayName}
+                      </OverflowMarquee>
+                      <span className="block truncate text-[11px] text-gray-600">
+                        {statusLabel(job)}
+                        {job.progressPercent !== null
+                          ? ` · ${Math.round(job.progressPercent)}%`
+                          : ""}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-[11px] tabular-nums text-gray-600">
+                      {formatElapsed(job.createdAt, nowMs)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+
+          {filteredMediaSources.length > 0 ? (
+            <ul className="py-1">
+              {filteredMediaSources.map((source) => {
+                const filename = mediaSourceFilename(source);
+                const description = mediaSourceDescription(source);
+                const kind = mediaSourceKind(source);
+                const playing = playingSourceSlug === source.slug;
+                const localPlaybackUrl = source.sourceMedia
+                  ? `/api/gardens/${encodeURIComponent(clusterSlug)}/media/${encodeURIComponent(source.slug)}`
+                  : "";
+                const externalPlaybackUrl =
+                  !localPlaybackUrl &&
+                  source.sourceType.toLowerCase() === "youtube" &&
+                  /^https?:\/\//i.test(source.originalFilename)
+                    ? source.originalFilename
+                    : "";
+                const canPlay = Boolean(localPlaybackUrl || externalPlaybackUrl);
+                return (
+                  <li key={source.slug} className="border-b border-gray-800/50 last:border-b-0">
+                    <div className="group flex items-start gap-2.5 px-3 py-2">
+                      {externalPlaybackUrl ? (
+                        <a
+                          href={externalPlaybackUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-700 text-[var(--botanical)] transition-colors hover:border-[var(--botanical)] hover:bg-[color-mix(in_srgb,var(--botanical)_10%,transparent)]"
+                          aria-label={`Play ${filename}`}
+                          title="Play on YouTube"
+                        >
+                          <PlayIcon />
+                        </a>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPlayingSourceSlug((current) =>
+                              current === source.slug ? null : source.slug,
+                            )
+                          }
+                          disabled={!canPlay}
+                          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-700 text-[var(--botanical)] transition-colors hover:border-[var(--botanical)] hover:bg-[color-mix(in_srgb,var(--botanical)_10%,transparent)] disabled:cursor-not-allowed disabled:text-gray-700 disabled:hover:border-gray-700 disabled:hover:bg-transparent"
+                          aria-label={`${playing ? "Hide player for" : "Play"} ${filename}`}
+                          aria-expanded={playing}
+                          title={canPlay ? (playing ? "Hide player" : `Play ${kind}`) : "Original media is unavailable"}
+                        >
+                          <PlayIcon playing={playing} />
+                        </button>
+                      )}
+
+                      <div className="min-w-0 flex-1">
+                        <Link
+                          href={source.href}
+                          className="block text-xs font-medium text-gray-300 transition-colors hover:text-white"
+                          title="Open transcript Markdown"
+                        >
+                          <OverflowMarquee>{filename}</OverflowMarquee>
+                        </Link>
+                        {description ? (
+                          <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-gray-500" title={description}>
+                            {description}
+                          </p>
+                        ) : null}
+                        <p className="mt-0.5 text-[10px] text-gray-600">
+                          {kind === "audio" ? "Audio" : "Video"} transcript · {source.wordCount}w
+                        </p>
+                      </div>
+
+                      {isOwner && onDeleteSource ? (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteSource(source.slug)}
+                          disabled={deletingSourceSlug === source.slug}
+                          className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-700 opacity-60 transition-colors hover:bg-red-950/40 hover:text-red-300 hover:opacity-100 disabled:cursor-wait disabled:opacity-60"
+                          aria-label={`Delete ${filename}`}
+                          title="Delete media transcript and source"
+                        >
+                          {deletingSourceSlug === source.slug ? (
+                            <Spinner className="h-3.5 w-3.5" />
+                          ) : (
+                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.35 9m-4.78 0L9.26 9m9.97-3.21c.35.05.7.1 1.05.16m-1.05-.16L18.16 19.67a2.25 2.25 0 0 1-2.24 2.08H8.08a2.25 2.25 0 0 1-2.24-2.08L4.77 5.79m14.46 0a48.1 48.1 0 0 0-3.48-.4m-10.98.4c.35-.06.7-.11 1.05-.16m0 0a48.1 48.1 0 0 1 3.48-.4m6.45.16V4.48c0-1.18-.91-2.16-2.09-2.2a52.1 52.1 0 0 0-3.32 0c-1.18.04-2.09 1.02-2.09 2.2v.75m7.5.16a48.7 48.7 0 0 0-7.5-.16" />
+                            </svg>
+                          )}
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {playing && localPlaybackUrl ? (
+                      <div className="px-3 pb-3 pl-[3.875rem]">
+                        {kind === "audio" ? (
+                          <audio key={localPlaybackUrl} className="h-9 w-full" controls autoPlay preload="metadata" src={localPlaybackUrl}>
+                            Your browser cannot play this audio file.
+                          </audio>
+                        ) : (
+                          <video key={localPlaybackUrl} className="max-h-48 w-full rounded-md bg-black" controls autoPlay preload="metadata" src={localPlaybackUrl}>
+                            Your browser cannot play this video file.
+                          </video>
+                        )}
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : mediaSearchTerms.length > 0 ? (
+            <div className="flex flex-col items-center px-4 py-6 text-center">
+              <p className="text-xs text-gray-600">
+                No video or audio matches {mediaSearch.trim()}
+              </p>
+              <button
+                type="button"
+                onClick={() => setMediaSearch("")}
+                className="mt-2 text-xs text-gray-500 underline underline-offset-2 transition-colors hover:text-white"
+              >
+                Clear search
+              </button>
+            </div>
+          ) : null}
         </div>
-      </section>
+      ) : (
+        <p className="px-4 py-4 text-center text-xs text-gray-600">
+          No video or audio yet.
+        </p>
+      )}
     </div>
+  );
+
+  const selectedJobStages = selectedJob
+    ? stagesForInputKind(selectedJob.inputKind)
+    : [];
+  const selectedJobStageIndex = selectedJob
+    ? stageIndexForStatus(selectedJob.inputKind, selectedJob.status)
+    : 0;
+  const selectedJobName = selectedJob
+    ? selectedJob.originalFilename ??
+      selectedJob.sourceTitle ??
+      selectedJob.videoMetadata?.title ??
+      "Media transcription"
+    : "Media transcription";
+
+  return (
+    <>
+      {expanded ? jobProgress : null}
+
+      {open ? (
+        <div
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) onClose();
+          }}
+        >
+          <section
+            id="garden-media-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="garden-media-composer-title"
+            className="bb-modal-panel neu-dialog flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border"
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-5 py-3.5">
+              <div>
+                <h2
+                  id="garden-media-composer-title"
+                  className="text-base font-semibold text-white"
+                >
+                  Video &amp; audio
+                </h2>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  {isOwner
+                    ? "Upload media or paste a YouTube link to transcribe it."
+                    : "View media imports and transcription progress."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="neu-button-icon rounded-full p-1.5 text-gray-500"
+                aria-label="Close video or audio dialog"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="min-h-0 overflow-y-auto">{composer}</div>
+          </section>
+        </div>
+      ) : null}
+
+      {selectedJob ? (
+        <div
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setSelectedJobId(null);
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="garden-media-status-title"
+            className="bb-modal-panel neu-dialog flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border"
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-5 py-3.5">
+              <div className="min-w-0">
+                <h2 id="garden-media-status-title" className="text-base font-semibold text-white">
+                  Transcription status
+                </h2>
+                <p className="mt-0.5 truncate text-xs text-gray-500" title={selectedJobName}>
+                  {selectedJobName}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedJobId(null)}
+                className="neu-button-icon ml-3 shrink-0 rounded-full p-1.5 text-gray-500"
+                aria-label="Close transcription status"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="min-h-0 space-y-5 overflow-y-auto px-5 py-4">
+              <div>
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="font-medium text-gray-300">{statusLabel(selectedJob)}</span>
+                  <span className="tabular-nums text-gray-500">
+                    {selectedJob.progressPercent !== null
+                      ? `${Math.round(selectedJob.progressPercent)}%`
+                      : formatElapsed(selectedJob.createdAt, nowMs)}
+                  </span>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-gray-800">
+                  <div
+                    className="h-full rounded-full bg-[var(--botanical)] transition-[width] duration-300"
+                    style={{
+                      width: `${
+                        selectedJob.status === "completed"
+                          ? 100
+                          : Math.max(4, selectedJob.progressPercent ?? 4)
+                      }%`,
+                    }}
+                    role="progressbar"
+                    aria-label="Transcription progress"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={selectedJob.progressPercent ?? undefined}
+                  />
+                </div>
+              </div>
+
+              <ol className="space-y-2.5" aria-label="Transcription stages">
+                {selectedJobStages.map((stage, index) => {
+                  const complete =
+                    selectedJob.status === "completed" || index < selectedJobStageIndex;
+                  const current =
+                    !isTerminalJob(selectedJob) && index === selectedJobStageIndex;
+                  return (
+                    <li key={stage.status} className="flex items-center gap-2.5 text-xs">
+                      {complete ? (
+                        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--botanical)_18%,transparent)] text-[var(--botanical)]">✓</span>
+                      ) : current ? (
+                        <Spinner className="h-4 w-4 shrink-0 text-[var(--botanical)]" />
+                      ) : (
+                        <span className="h-4 w-4 shrink-0 rounded-full border border-gray-700" />
+                      )}
+                      <span className={complete || current ? "text-gray-300" : "text-gray-600"}>
+                        {stage.label}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 border-t border-gray-800 pt-4 text-xs">
+                <dt className="text-gray-600">Input</dt>
+                <dd className="min-w-0 truncate text-right text-gray-400">
+                  {selectedJob.inputKind === "youtube" ? "YouTube link" : "Media upload"}
+                </dd>
+                <dt className="text-gray-600">Started</dt>
+                <dd className="text-right text-gray-400">
+                  {new Date(selectedJob.createdAt).toLocaleString()}
+                </dd>
+                <dt className="text-gray-600">Elapsed</dt>
+                <dd className="text-right tabular-nums text-gray-400">
+                  {formatElapsed(selectedJob.createdAt, selectedJob.completedAt ? Date.parse(selectedJob.completedAt) : nowMs)}
+                </dd>
+                {selectedJob.outputRelativePath ? (
+                  <>
+                    <dt className="text-gray-600">Source</dt>
+                    <dd className="min-w-0 truncate text-right text-gray-400" title={selectedJob.outputRelativePath}>
+                      {selectedJob.outputRelativePath}
+                    </dd>
+                  </>
+                ) : null}
+              </dl>
+
+              {selectedJob.errorMessage ? (
+                <p className="rounded-lg border border-red-900/40 bg-red-950/20 px-3 py-2 text-xs leading-5 text-red-300">
+                  {selectedJob.errorMessage}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="flex shrink-0 gap-3 border-t border-gray-800 px-5 py-4">
+              {!isTerminalJob(selectedJob) &&
+              !selectedJob.id.startsWith("client-") ? (
+                <button
+                  type="button"
+                  onClick={() => void cancelJob(selectedJob.id)}
+                  disabled={busyJobId === selectedJob.id}
+                  className="neu-button flex flex-1 items-center justify-center gap-2 py-2.5 text-sm disabled:opacity-40"
+                >
+                  {busyJobId === selectedJob.id ? <Spinner /> : null}
+                  Cancel transcription
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setSelectedJobId(null)}
+                className="neu-button-primary flex-1 py-2.5 text-sm"
+              >
+                {isTerminalJob(selectedJob) ? "Close" : "Continue in background"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </>
   );
 }

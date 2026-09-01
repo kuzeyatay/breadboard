@@ -1397,6 +1397,65 @@ export function sourceAppearsVisualRich(source: {
   return hasPageImages && mentionsFigures;
 }
 
+type SourceVisualCoverageRecord = {
+  sourceId?: string;
+  type?: string;
+};
+
+const DECLARED_SOURCE_VISUAL_CAPTION_RE =
+  /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[*_]{0,2})?(Fig(?:ure)?\.?|Table)\s+(\d+)[a-z]?\s*(?=[:.\-–—])/gim;
+
+function declaredSourceVisualCaptionCounts(body: string): { figures: number; tables: number } {
+  const figures = new Set<string>();
+  const tables = new Set<string>();
+  for (const match of body.matchAll(DECLARED_SOURCE_VISUAL_CAPTION_RE)) {
+    const kind = (match[1] ?? "").toLowerCase();
+    const number = match[2] ?? "";
+    if (!number) continue;
+    (kind.startsWith("table") ? tables : figures).add(number);
+  }
+  return { figures: figures.size, tables: tables.size };
+}
+
+/**
+ * Validate extraction per selected source rather than across the source set.
+ * Numbered caption declarations provide an independent deterministic lower
+ * bound, so a detector that returns one of several declared figures cannot
+ * silently satisfy completeness.
+ */
+export function sourceVisualInventoryCoverageProblems(
+  sources: ReadonlyArray<{ slug: string; body?: string; sourceImages?: string[] }>,
+  visuals: readonly SourceVisualCoverageRecord[],
+): string[] {
+  const problems: string[] = [];
+  for (const source of sources) {
+    if (!sourceAppearsVisualRich(source)) continue;
+    const registered = visuals.filter(
+      (visual) => visual.sourceId === source.slug && visual.type !== "full_page_fallback",
+    );
+    if (registered.length === 0) {
+      problems.push(`visual-rich source "${source.slug}" produced no registered figures, tables, graphs, diagrams, or formulas`);
+      continue;
+    }
+    const declared = declaredSourceVisualCaptionCounts(source.body ?? "");
+    const registeredFigures = registered.filter((visual) =>
+      visual.type === "figure" || visual.type === "graph" || visual.type === "diagram"
+    ).length;
+    const registeredTables = registered.filter((visual) => visual.type === "table").length;
+    if (declared.figures > registeredFigures) {
+      problems.push(
+        `visual-rich source "${source.slug}" declares ${declared.figures} figure captions but only registered ${registeredFigures} figure-like artifacts`,
+      );
+    }
+    if (declared.tables > registeredTables) {
+      problems.push(
+        `visual-rich source "${source.slug}" declares ${declared.tables} table captions but only registered ${registeredTables} tables`,
+      );
+    }
+  }
+  return [...new Set(problems)];
+}
+
 export function sourceSetHashForSources(sources: LearnSourceSummary[]): string {
   const stable = sources
     .map((source) => ({

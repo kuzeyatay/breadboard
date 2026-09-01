@@ -4,6 +4,8 @@ import type { TaskPlan } from "./task-plan.ts";
 
 const KNOWLEDGE_SYNTHESIS_INTENT =
   /\b(explain|why|compare|summari[sz]e|analy[sz]e|research|study|academic|report|essay|overview|future|outlook|limitations?|teach|review)\b/i;
+const PERSONAL_KNOWLEDGE_INTENT =
+  /\b(?:my|our)\s+(?:garden|gardens|notes?|knowledge|research|writing|pages?)\b|\b(?:find|search|locate|where|which)\b.{0,80}\b(?:garden|gardens|notes?|knowledge|pages?)\b|\b(?:garden|gardens|notes?|knowledge|pages?)\b.{0,80}\b(?:find|search|locate|where|which)\b|\b(?:what do (?:i|we) know|have (?:i|we) written|where did (?:i|we) (?:write|note|save)|from my notes)\b/i;
 const GARDEN_OPT_OUT =
   /\b(?:do not|don't|dont|without|exclude|skip|ignore)\b.{0,32}\bgardens?\b/i;
 const OPERATIONAL_CAPABILITIES = new Set([
@@ -52,7 +54,8 @@ export function shouldGroundTerminalInGardens(input: {
     !request ||
     input.hasAttachments ||
     GARDEN_OPT_OUT.test(request) ||
-    !KNOWLEDGE_SYNTHESIS_INTENT.test(request)
+    (!KNOWLEDGE_SYNTHESIS_INTENT.test(request) &&
+      !PERSONAL_KNOWLEDGE_INTENT.test(request))
   ) {
     return false;
   }

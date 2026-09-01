@@ -33,6 +33,7 @@ import { ARTIFACT_KINDS, type ArtifactKind } from "@/lib/hermes/artifact-types.t
 import { artifactEditorMode } from "@/lib/hermes/artifact-editor-types.ts";
 import { loadArtifactEditor, saveArtifactEditor, type ArtifactEditorPatch } from "@/lib/hermes/artifact-document-editor.ts";
 import { availableArtifactRenderers } from "@/lib/hermes/artifact-renderers.ts";
+import { createArtifactFromUpload } from "@/lib/hermes/artifact-upload-import.ts";
 import {
   cancelInteractiveVisualizer,
   createInteractiveVisualizer,
@@ -278,7 +279,6 @@ export async function POST(request: Request) {
         })),
       };
     } else if (action === "artifact_create" || action === "artifact_import") {
-      const kind = artifactKind(args.kind);
       const provenance = validateMcpProvenance(
         session.user_id,
         args.provenance,
@@ -295,31 +295,60 @@ export async function POST(request: Request) {
         assistantMessageId: assistantMessage?.id ?? null,
         toolCallId,
         surface: session.surface as "dashboard_terminal" | "garden_chat",
-        kind,
-        title: requiredText(args.title, "title", 240),
-        filename: text(args.filename, 160),
         metadata: record(args.metadata),
         sourceSkill,
         sourceMcpServer: provenance?.server,
         sourceMcpTool: provenance?.tool,
         sourceHermesTool: action,
       };
-      let artifact = action === "artifact_import"
-        ? await createImportedArtifact({
+      const importPath = text(args.path, 1_000);
+      const attachmentName = text(args.attachmentName, 500);
+      const hasAttachmentIndex = args.attachmentIndex !== undefined;
+      if (action === "artifact_import" && importPath && (attachmentName || hasAttachmentIndex)) {
+        throw new ApiError(
+          400,
+          "artifact_import_source_ambiguous",
+          "Provide either path or an attachment selector, not both.",
+        );
+      }
+      let artifact;
+      if (action === "artifact_import" && !importPath) {
+        artifact = await createArtifactFromUpload({
+          ...shared,
+          clientMessageId: requiredText(
+            dispatch.clientMessageId,
+            "clientMessageId",
+            200,
+          ),
+          attachmentName,
+          ...(hasAttachmentIndex ? { attachmentIndex: Number(args.attachmentIndex) } : {}),
+          requestedKind: optionalArtifactKind(args.kind),
+          title: text(args.title, 240),
+        });
+      } else if (action === "artifact_import") {
+        artifact = await createImportedArtifact({
+          ...shared,
+          kind: artifactKind(args.kind),
+          title: requiredText(args.title, "title", 240),
+          filename: text(args.filename, 160),
+          authorizedRoot:
+            session.active_directory ??
+            (() => {
+              throw new ApiError(
+                409,
+                "artifact_workspace_required",
+                "A server-authorized workspace is required to import generated files.",
+              );
+            })(),
+          filePath: importPath!,
+        });
+      } else {
+        const kind = artifactKind(args.kind);
+        artifact = createArtifact({
             ...shared,
-            authorizedRoot:
-              session.active_directory ??
-              (() => {
-                throw new ApiError(
-                  409,
-                  "artifact_workspace_required",
-                  "A server-authorized workspace is required to import generated files.",
-                );
-              })(),
-            filePath: requiredText(args.path, "path", 1_000),
-          })
-        : createArtifact({
-            ...shared,
+            kind,
+            title: requiredText(args.title, "title", 240),
+            filename: text(args.filename, 160),
             rendererId: requiredText(args.renderer, "renderer", 40),
             mimeType: text(args.mimeType, 160),
             // "Rewrite naturally", when the user has it on as a standing
@@ -339,6 +368,7 @@ export async function POST(request: Request) {
                   ).text
                 : content(args.content),
           });
+      }
       if (provenance) {
         addArtifactProvenance({
           artifactId: artifact.id,
@@ -559,6 +589,10 @@ function authorizedArtifact(id: string, scope: AgentArtifactScope) {
 function artifactKind(value: unknown): ArtifactKind {
   if (typeof value === "string" && (ARTIFACT_KINDS as readonly string[]).includes(value)) return value as ArtifactKind;
   throw new ApiError(400, "invalid_artifact_kind", "A valid artifact kind is required.");
+}
+
+function optionalArtifactKind(value: unknown): ArtifactKind | undefined {
+  return value === undefined ? undefined : artifactKind(value);
 }
 
 function requiredText(value: unknown, field: string, max: number): string {

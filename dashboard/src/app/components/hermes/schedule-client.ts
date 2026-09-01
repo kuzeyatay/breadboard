@@ -7,6 +7,7 @@ import type { HermesSurface } from "@/lib/hermes/config.ts";
 import type { ScheduledChatSurface } from "@/lib/schedules/types.ts";
 
 export const SCHEDULES_CHANGED_EVENT = "breadboard:schedules-changed";
+export const OPEN_SCHEDULES_PANEL_EVENT = "breadboard:open-schedules-panel";
 
 export type ScheduleCadence =
   | "daily"
@@ -48,6 +49,11 @@ export function schedulableSurface(
 export function notifySchedulesChanged(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent(SCHEDULES_CHANGED_EVENT));
+}
+
+export function requestOpenSchedulesPanel(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(OPEN_SCHEDULES_PANEL_EVENT));
 }
 
 export function cronFromCadence(input: {

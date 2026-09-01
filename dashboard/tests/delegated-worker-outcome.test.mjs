@@ -109,12 +109,31 @@ test("a stopped delegation says so, and says who stopped it when that is known",
     delegatedWorkersOutcomeNote([
       worker("failed", { externalAgentResult: "Deep Research is not configured.\nmore detail" }),
     ]),
-    "Max Research failed: Deep Research is not configured.",
+    "Max Research could not complete its part: Deep Research is not configured. No result was returned; the main assistant will explain the next step.",
   );
   assert.equal(
     delegatedWorkersOutcomeNote([worker("failed", { externalAgentName: undefined })]),
-    "The delegated agent failed before it returned anything.",
+    "The delegated agent could not complete its part because a supporting service did not start. No result was returned; the main assistant will explain the next step.",
   );
+});
+
+test("a failed delegation explains the choice without exposing launcher debris", () => {
+  const note = delegatedWorkersOutcomeNote([
+    worker("failed", {
+      externalAgentName: "God's Eye",
+      delegatedAgentReason:
+        "God's Eye can display live aircraft positions over the Netherlands.",
+      externalAgentResult: [
+        "Error: EISDIR: illegal operation on a directory, lstat 'C:'",
+        "    at node:internal/modules/run_main:123:4",
+      ].join("\n"),
+    }),
+  ]);
+  assert.equal(
+    note,
+    "Why God's Eye was selected: God's Eye can display live aircraft positions over the Netherlands. God's Eye could not complete its part because a supporting service did not start. No result was returned; the main assistant will explain the next step.",
+  );
+  assert.doesNotMatch(note, /EISDIR|lstat|node:internal|C:/);
 });
 
 test("the abort route and the transcript agree on the words for a person's stop", () => {

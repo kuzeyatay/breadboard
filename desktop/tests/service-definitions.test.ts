@@ -150,19 +150,19 @@ test("packaged ChatMock recovery state is rooted in mutable user data", () => {
   }
 });
 
-test("normal dev keeps the historical Council ledger path", () => {
+test("normal dev shares the durable Council ledger path", () => {
   const { definitions, paths } = fixture("dev");
   const chatmock = definitions.find((definition) => definition.id === "chatmock");
   const dashboard = definitions.find((definition) => definition.id === "dashboard");
   assert.ok(chatmock);
   assert.ok(dashboard);
-  const historicalLedger = path.join(paths.appRoot, ".breadboard", "council-runs");
-  assert.equal(paths.dataRoot, paths.appRoot);
-  assert.equal(chatmock.env["COUNCIL_LEDGER_DIR"], historicalLedger);
-  assert.equal(dashboard.env["COUNCIL_LEDGER_DIR"], historicalLedger);
+  const sharedLedger = path.join(paths.dataRoot, ".breadboard", "council-runs");
+  assert.notEqual(paths.dataRoot, paths.appRoot);
+  assert.equal(chatmock.env["COUNCIL_LEDGER_DIR"], sharedLedger);
+  assert.equal(dashboard.env["COUNCIL_LEDGER_DIR"], sharedLedger);
   assert.equal(
     chatmock.env["COUNCIL_REQUEST_RECEIPT_DIR"],
-    path.join(historicalLedger, "request-receipts"),
+    path.join(sharedLedger, "request-receipts"),
   );
 });
 
@@ -291,7 +291,7 @@ test("dashboard catalog proxy URL honors a server-side environment override", ()
   }
 });
 
-test("dev dashboard retains the historical dashboard/db data layout", () => {
+test("dev dashboard uses the shared durable desktop profile", () => {
   const packaged = fixture("packaged");
   const devPaths = {
     ...packaged.paths,
@@ -305,7 +305,7 @@ test("dev dashboard retains the historical dashboard/db data layout", () => {
   });
   const dashboard = definitions.find((definition) => definition.id === "dashboard");
   assert.ok(dashboard);
-  assert.equal(dashboard.env["BREADBOARD_DATA_DIR"], "");
+  assert.equal(dashboard.env["BREADBOARD_DATA_DIR"], devPaths.dataRoot);
   assert.equal(dashboard.env["NODE_ENV"], "development");
   assert.equal(
     dashboard.env["BREADBOARD_LEARN_WORKER_DASHBOARD_ROOT"],

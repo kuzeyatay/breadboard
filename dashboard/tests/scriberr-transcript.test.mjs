@@ -91,6 +91,21 @@ test("normalization fails loudly when there is no transcript text", () => {
   );
 });
 
+test("normalization preserves a positive-duration recording with no detected speech", () => {
+  const normalized = normalizeScriberrTranscript(rawTranscript([], { text: "" }), {
+    ...NORMALIZE_OPTS,
+    fallbackDurationSeconds: 1115.7,
+  });
+  assert.equal(normalized.segments.length, 1);
+  assert.equal(
+    normalized.segments[0].text,
+    "[No speech was detected in this recording.]",
+  );
+  assert.equal(normalized.segments[0].endSeconds, 1115.7);
+  assert.equal(normalized.durationSeconds, 1115.7);
+  assert.equal(normalized.noSpeechDetected, true);
+});
+
 test("normalization falls back to plain text only when no segments exist", () => {
   const normalized = normalizeScriberrTranscript(
     rawTranscript([], { text: "just plain text" }),
@@ -235,6 +250,30 @@ test("audio uploads render audio provenance in Markdown", () => {
   assert.equal(result.metadata.source_type, "audio_upload");
   assert.deepEqual(result.metadata.tags, ["source", "audio", "transcript"]);
   assert.equal(result.metadata.original_filename, "podcast-1.mp3");
+});
+
+test("no-speech audio carries an explicit transcript status", () => {
+  const transcript = normalizeScriberrTranscript(
+    rawTranscript([], { text: "", modelUsed: "small.en" }),
+    {
+      title: "Silent recording",
+      sourceType: "audio_upload",
+      fallbackDurationSeconds: 1116,
+    },
+  );
+  const result = buildTranscriptMarkdown({
+    transcript,
+    source: {
+      kind: "upload",
+      originalFilename: "silent.mp3",
+      mediaSha256: "c".repeat(64),
+      mediaKind: "audio",
+    },
+    transcribedAt: "2026-09-01T04:22:39.000Z",
+  });
+  assert.match(result.body, /No speech was detected in this recording/);
+  assert.equal(result.metadata.transcript_status, "no_speech_detected");
+  assert.equal(result.metadata.duration_seconds, "1116");
 });
 
 test("frontmatter metadata carries YouTube provenance", () => {

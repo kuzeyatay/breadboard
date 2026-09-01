@@ -14,8 +14,10 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markd
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { parseGodsEyeResult } from '@/lib/gods-eye/view';
 import { isSameTabNavigationClick, rememberWorkflowReturnPath } from '@/lib/workflows/navigation';
 import ChatImageResults from './chat-image-results';
+import ChatWeatherResults from './chat-weather-results';
 import type { ChatHighlightColor } from '@/lib/chat-highlights';
 import { resolveChatTextSelectionAnchor } from '@/lib/chat-text-selection';
 
@@ -183,16 +185,18 @@ async function writeToClipboard(value: string): Promise<void> {
 
 type MarkdownPreProps = ComponentProps<'pre'> & { node?: unknown };
 
-// Dispatches fenced blocks before CodeBlock mounts: an ```image-results block
-// is the image_search tool's display contract and renders as an image grid,
-// not as code. A separate component (not a branch inside CodeBlock) so
-// CodeBlock's hooks are never conditionally skipped.
+// Dispatches structured display contracts before CodeBlock mounts. Separate
+// components (not branches inside CodeBlock) keep CodeBlock's hooks from ever
+// being conditionally skipped.
 function MarkdownPre({ children, node, ...props }: MarkdownPreProps) {
   const language = getCodeClassName(children)
     ?.match(/(?:^|\s)language-([^\s]+)/)?.[1]
     ?.toLowerCase();
   if (language === 'image-results') {
     return <ChatImageResults code={getTextContent(children)} />;
+  }
+  if (language === 'weather-results') {
+    return <ChatWeatherResults code={getTextContent(children)} />;
   }
   return (
     <CodeBlock node={node} {...props}>
@@ -394,7 +398,8 @@ function annotationNodeIsSkipped(node: HastNode): boolean {
     (value) =>
       value === 'math-inline' ||
       value === 'math-display' ||
-      value === 'language-image-results',
+      value === 'language-image-results' ||
+      value === 'language-weather-results',
   );
 }
 
@@ -510,7 +515,13 @@ function ChatMarkdown({
   textAnnotations = [],
   onTextAnnotationClick,
 }: Props) {
-  const normalizedContent = useMemo(() => normalizeMathDelimiters(content), [content]);
+  // Agent control metadata is useful to its inline card but is never prose.
+  // Parse it at the shared Markdown boundary as a fallback for synthesized or
+  // legacy messages that lost their dedicated run-card descriptor.
+  const normalizedContent = useMemo(
+    () => normalizeMathDelimiters(parseGodsEyeResult(content).content),
+    [content],
+  );
   const annotatedRehypePlugins = useMemo(
     () =>
       textAnnotations.length > 0

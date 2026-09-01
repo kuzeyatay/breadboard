@@ -13,6 +13,12 @@ const ORIGIN_SENSITIVE_SUBJECT =
 const LOCATION_SENSITIVE_SUBJECT =
   /\b(weather|forecast|temperature|air quality|sunrise|sunset|time zone|local time|directions?|route|commute|travel time|delivery|places?|venues?|restaurants?|cafes?|coffee shops?|bars?|museums?|galler(?:y|ies)|exhibitions?|events?|concerts?|shows?|tours?|activities|experiences?|attractions?|hotels?|shops?|stores?|hava|hava durumu|sicaklik|hava kalitesi|gunesin dogusu|gunesin batisi|saat dilimi|yerel saat|yol tarifi|rota|ulasim|teslimat|mekan(?:lar)?|yer(?:ler)?|restoran(?:lar)?|kafe(?:ler)?|kahveci(?:ler)?|bar(?:lar)?|muze(?:ler|si)?|sergi(?:ler)?|etkinlik(?:ler)?|konser(?:ler)?|aktivite(?:ler)?|deneyim(?:ler)?|otel(?:ler)?|magaza(?:lar)?)\b/i;
 
+const SHOPPING_ACTION =
+  /\b(buy|purchase|order|shop(?:ping)?|for sale|price|priced|cost|deal|discount|available|availability|in stock|recommend(?:ation)?s?|suggest(?:ion)?s?|what should (?:i|we) get|where can (?:i|we) get|kopen|bestellen|prijs|aanbieding|verkrijgbaar|op voorraad|satın al|siparis|fiyat|stokta|oner\w*|tavsiye)\b/i;
+
+const SHOPPING_OBJECT =
+  /\b(product|item|option|alternative|device|computer|laptop|tablet|phone|smartphone|headphones?|earbuds?|speaker|monitor|display|television|tv|camera|keyboard|mouse|trackpad|touchpad|watch|wearable|printer|router|appliance|furniture|chair|desk|tool|clothing|clothes|shoes?|sneakers?|bag|toy|gift|supplement|cosmetic|makeup|skincare|apparaat|computer|laptop|telefoon|koptelefoon|oordopjes|toetsenbord|muis|trackpad|schoenen|cadeau|urun|cihaz|bilgisayar|telefon|kulaklik|klavye|fare)\b/i;
+
 const LOCAL_DECISION_LANGUAGE =
   /\b(recommend(?:ation)?s?|suggest(?:ion)?s?|find (?:me|us)|best|top|good|great|interesting|unusual|where should|what should (?:i|we)|which|things? to do|places? to (?:visit|eat|stay|go)|what to do|worth (?:visiting|trying)|oner\w*|tavsiye|bul|hangi|en iyi|iyi|ilginc|degisik|guzel|gezilecek|ne yap|nereye|nerede|mesela|baska)\b/i;
 
@@ -37,10 +43,20 @@ function isLocationSensitiveRequest(value: string): boolean {
   if (!text || LOCATION_OPT_OUT.test(text)) return false;
   if (DIRECT_LOCATION_REFERENCE.test(text)) return true;
   if (ORIGIN_SENSITIVE_SUBJECT.test(text)) return true;
+  if (isShoppingRequestText(text)) return true;
   return (
     LOCATION_SENSITIVE_SUBJECT.test(text) &&
     LOCAL_DECISION_LANGUAGE.test(text)
   );
+}
+
+function isShoppingRequestText(value: string): boolean {
+  const text = foldLocationText(value);
+  if (!text || LOCATION_OPT_OUT.test(text)) return false;
+  if (/\b(?:can|could|should|want to|need to) (?:i|we) buy\b/i.test(text)) {
+    return true;
+  }
+  return SHOPPING_ACTION.test(text) && SHOPPING_OBJECT.test(text);
 }
 
 function isLocationFollowUp(value: string): boolean {
@@ -56,6 +72,27 @@ function hasActiveLocationContext(priorRequests: readonly string[]): boolean {
     if (!isLocationFollowUp(request)) return false;
   }
   return false;
+}
+
+function hasActiveShoppingContext(priorRequests: readonly string[]): boolean {
+  for (let index = priorRequests.length - 1; index >= 0; index -= 1) {
+    const request = priorRequests[index]?.trim();
+    if (!request) continue;
+    if (isShoppingRequestText(request)) return true;
+    if (!isLocationFollowUp(request)) return false;
+  }
+  return false;
+}
+
+/** Product discovery uses location only to choose a country-level market. */
+export function requestUsesShoppingLocation(
+  request: string,
+  priorRequests: readonly string[] = [],
+): boolean {
+  return (
+    isShoppingRequestText(request) ||
+    (isLocationFollowUp(request) && hasActiveShoppingContext(priorRequests))
+  );
 }
 
 /**

@@ -42,6 +42,7 @@ const uploadsRoute = source("../src/app/api/hermes/uploads/route.ts");
 const uploadContentRoute = source("../src/app/api/hermes/uploads/[uploadId]/content/route.ts");
 const conversationSchema = source("../src/lib/conversations/schema.ts");
 const conversationStore = source("../src/lib/conversations/store.ts");
+const hookDispatch = source("../src/lib/hooks/dispatch.ts");
 
 test("the rail carries the seven fixed actions, in order, above the chat list", () => {
   const nav = sidebar.slice(
@@ -180,7 +181,7 @@ test("Recents can be picked over and deleted in one go; Pinned cannot", () => {
   // step aside so the list reads as a set of choices.
   assert.match(sidebar, /type="checkbox"/);
   assert.match(sidebar, /aria-label=\{`Select \$\{chat\.title\}`\}/);
-  assert.match(sidebar, /onClick=\{mode === "idle" \? onOpen : \(\) => onPick\?\.\(\)\}/);
+  assert.match(sidebar, /onClick=\{mode === "idle" \? \(\) => onOpen\(chat\) : \(\) => onPick\?\.\(chat\)\}/);
   assert.match(sidebar, /mode !== "idle"\s*\?\s*"hidden"/);
   // One pressed material, read as "open" at rest and "picked" while selecting.
   assert.match(sidebar, /\(mode === "selecting" \? checked : selected\)/);
@@ -489,7 +490,7 @@ test("the row's one status spot runs spinner, then dot, then nothing", () => {
   assert.match(historyClient, /group-hover\/active-chat:opacity-100/);
   assert.match(historyClient, /group-focus-visible\/active-chat:opacity-100/);
   assert.match(sidebar, /onStopChat\?: \(chat: TerminalSidebarChat\)/);
-  assert.match(sidebar, /onStop=\{onStopChat \? \(\) => onStopChat\(chat\) : undefined\}/);
+  assert.match(sidebar, /onStop=\{onStopChat \? stopChat : undefined\}/);
   assert.match(terminal, /onStopChat=\{stopHistorySession\}/);
   assert.match(
     terminal,
@@ -509,6 +510,29 @@ test("the row's one status spot runs spinner, then dot, then nothing", () => {
   // against an empty list, which is what deleting the last chat produces.
   assert.match(terminal, /forgetUnreadChats\(\[item\.id\]\)/);
   assert.match(terminal, /forgetUnreadChats\(deleted\)/);
+});
+
+test("scheduled and hook runs put an automation clock beside their loader", () => {
+  const activeStatus = sidebar.slice(
+    sidebar.indexOf("{chat.active ? ("),
+    sidebar.indexOf(") : chat.unread ? ("),
+  );
+  assert.match(activeStatus, /chat\.scheduled \|\| chat\.hooked/);
+  assert.ok(
+    activeStatus.indexOf('<ScheduledIcon className="h-3.5 w-3.5"') <
+      activeStatus.indexOf("<ActiveChatIcon"),
+    "the automation clock should sit immediately before the loading control",
+  );
+  assert.match(activeStatus, /Started by a scheduled task/);
+  assert.match(activeStatus, /Started by a hook/);
+
+  // Hook provenance is stored on the conversation and projected into the
+  // same summary feed that already identifies scheduler-created chats.
+  assert.match(conversationSchema, /ensureColumn\(database, "conversations", "hook_id", "hook_id TEXT"\)/);
+  assert.match(conversationStore, /hookId: row\.hook_id \?\? null/);
+  assert.match(hookDispatch, /hookId: hook\.id/);
+  assert.match(terminal, /hooked:\s*typeof item\.hookId === "string"/);
+  assert.match(terminal, /hooked: item\.hooked/);
 });
 
 test("the dock bar carries the rollup, so a shut terminal still says something landed", () => {
@@ -704,6 +728,14 @@ test("a scheduling sentence resolves to a cron expression the panel shows back",
   assert.equal(delayed.oneShot, true);
   assert.equal(delayed.runAt, "2026-08-31T13:30:00.000Z");
   assert.equal(delayed.prompt, "start this task");
+  const laterReminder = parseExplicitScheduleRequest(
+    "can you remind me to drink water 5 minutes later",
+    now,
+  );
+  assert.ok(laterReminder);
+  assert.equal(laterReminder.oneShot, true);
+  assert.equal(laterReminder.runAt, "2026-08-31T12:05:00.000Z");
+  assert.equal(laterReminder.prompt, "drink water");
   // Mentioning time in an ordinary question is not enough to hijack the send.
   assert.equal(parseExplicitScheduleRequest("what happened in an hour", now), null);
 
