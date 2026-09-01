@@ -145,6 +145,7 @@ import {
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
 import GardenVideoImport from "@/app/components/garden-video-import";
+import OverflowMarquee from "@/app/components/overflow-marquee";
 import {
   VLM_PARSE_FILE_RE,
   VlmParseOption,
@@ -306,10 +307,9 @@ import type {
   WorkflowRunResponse,
 } from "@/lib/workflows/types";
 import {
-  attachAudioFile,
-  attachModelFile,
   CHAT_ATTACHMENT_ACCEPT,
   chatMessageAttachments,
+  extractChatAttachments,
   reusableChatAttachments,
   type ChatAttachment,
   type ChatMessageAttachment,
@@ -318,8 +318,6 @@ import {
   distillAttachments,
   distillGardenDocumentSkill,
 } from "@/lib/document-skills/client";
-import { modelAttachmentFormat } from "@/lib/model-attachments";
-import { audioAttachmentFormat } from "@/lib/audio-attachments";
 import {
   currentLearnElapsedMs,
   formatLearnElapsedTime,
@@ -605,6 +603,8 @@ interface Message {
   /** Worker output returned to the Super Agent without replacing its message. */
   externalAgentResult?: string;
   externalAgentName?: string;
+  /** Why the Super Agent selected this worker, used in plain-language failures. */
+  delegatedAgentReason?: string;
   externalAgentActivity?: ExternalAgentActivityEntry[];
   externalAgentEdits?: ExternalAgentEdits;
   externalAgentState?: Record<string, unknown>;
@@ -900,6 +900,7 @@ interface DocInfo {
   sourceType: string;
   sourceFile: string;
   sourcePdf: string;
+  sourceMedia: string;
   flagColor: string;
   locations: string[];
   linkCount: number;
@@ -918,6 +919,21 @@ interface SavedLinkInfo {
   provider?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+interface LinkImportTask {
+  id: string;
+  title: string;
+  url: string;
+  status: "importing" | "completed" | "failed";
+  stage: string;
+  startedAt: number;
+  completedAt?: number;
+  duplicate?: boolean;
+  sourceRelPath?: string;
+  capturedImages?: number;
+  referencedImages?: number;
+  error?: string;
 }
 
 type LearnSourceKind = "document" | "link" | "video" | "audio";
@@ -1538,6 +1554,8 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
       storedMessage.textSelection?.mode === "inline" ||
       supersededDelegationAssistants.has(index) ||
       (storedMessage.delegatedAgentRun === true &&
+        !storedMessage.openGymRun &&
+        !storedMessage.godsEyeRun &&
         messages[index + 1]?.internalAgentContinuation === true)
     ) {
       return;
@@ -1806,19 +1824,17 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.role === "assistant" &&
                   messages[i - 1]?.internalAgentContinuation === true,
               );
-              const continuationOwner = isAgentContinuationResponse
-                ? messages[i - 2]
-                : undefined;
               const continuationPreamble =
                 delegatedContinuationPreamble(messages, i);
-              // The delegating turn is hidden behind this row, so its time
-              // belongs to this row's clock. Without it the answer claimed the
-              // seconds of its synthesis as the whole operation's.
+              // Every earlier phase is hidden behind this row, so their time
+              // belongs to this clock. Counting only the adjacent worker still
+              // loses the Super Agent's orchestration phase.
               const carriedDurationMs =
-                delegatedTurnCarriedDurationMs(continuationOwner);
-              // The hidden turn's tokens are part of what this answer cost.
+                delegatedTurnCarriedDurationMs(messages, i);
+              // The hidden phases' tokens are part of what this answer cost.
               const totalUsage = delegatedTurnTotalUsage(
-                continuationOwner,
+                messages,
+                i,
                 msg.usage,
               );
               const storedAssistantContent = assistantVisibleContent(
@@ -3211,6 +3227,8 @@ export default function WorkspaceClient({
   const [graphRefreshVersion, setGraphRefreshVersion] = useState(0);
   const [docsExpanded, setDocsExpanded] = useState(false);
   const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
+  const [linksExpanded, setLinksExpanded] = useState(false);
+  const [mediaExpanded, setMediaExpanded] = useState(false);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [mediaDialogOpen, setMediaDialogOpen] = useState(false);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
@@ -3219,6 +3237,11 @@ export default function WorkspaceClient({
   const [newLinkTitle, setNewLinkTitle] = useState("");
   const [newLinkUrl, setNewLinkUrl] = useState("");
   const [savingLink, setSavingLink] = useState(false);
+  const [linkImportTasks, setLinkImportTasks] = useState<LinkImportTask[]>([]);
+  const [selectedLinkImportId, setSelectedLinkImportId] = useState<string | null>(
+    null,
+  );
+  const [linkImportClock, setLinkImportClock] = useState(() => Date.now());
   const [deletingLinkId, setDeletingLinkId] = useState<string | null>(null);
   const [sourceDocSearch, setSourceDocSearch] = useState("");
 
@@ -5135,6 +5158,7 @@ export default function WorkspaceClient({
   // transcript turn, allowing several workers to run and report independently.
   interface AwaitedLaunch {
     agentName: string;
+    reason: string;
     requestId: string;
     workerClientMessageId: string;
     runId: string | null;
@@ -5442,6 +5466,7 @@ export default function WorkspaceClient({
         const workerClientMessageId = agentLaunchWorkerClientMessageId(request);
         awaitedLaunchesRef.current.set(workerClientMessageId, {
           agentName: request.agentName,
+          reason: request.reason,
           requestId: request.requestId,
           workerClientMessageId,
           runId: null,
@@ -5528,6 +5553,7 @@ export default function WorkspaceClient({
     const terminalResults: Array<{
       continuationKey: string;
       agentName: string;
+      reason?: string;
       outcome: "completed" | "failed";
       content: string;
     }> = [];
@@ -5556,6 +5582,7 @@ export default function WorkspaceClient({
         if (runId) {
           awaitedLaunchesRef.current.set(continuationKey, {
             agentName,
+            reason: message.delegatedAgentReason ?? "",
             requestId: continuationKey,
             workerClientMessageId: continuationKey,
             runId,
@@ -5575,6 +5602,7 @@ export default function WorkspaceClient({
       terminalResults.push({
         continuationKey,
         agentName,
+        reason: message.delegatedAgentReason,
         outcome:
           message.externalAgentOutcome === "completed" ? "completed" : "failed",
         content: externalAgentCardContent(message),
@@ -5588,6 +5616,7 @@ export default function WorkspaceClient({
         agentLaunchContinuationMessage({
           continuationId: result.continuationKey,
           agentName: result.agentName,
+          reason: result.reason,
           outcome: result.outcome,
           content: result.content,
           remaining: runningWorkers + terminalResults.length - index - 1,
@@ -5673,6 +5702,12 @@ export default function WorkspaceClient({
     return () => clearInterval(id);
   }, [isUploading]);
 
+  useEffect(() => {
+    if (!linkImportTasks.some((task) => task.status === "importing")) return;
+    const id = window.setInterval(() => setLinkImportClock(Date.now()), 1_000);
+    return () => window.clearInterval(id);
+  }, [linkImportTasks]);
+
   // ── New markdown note ────────────────────────────────────────────────────────
 
   function openNewNoteModal(defaultFolder = "") {
@@ -5722,6 +5757,27 @@ export default function WorkspaceClient({
   async function handleSaveLink(e: React.FormEvent) {
     e.preventDefault();
     if (!newLinkUrl.trim() || savingLink) return;
+    const title = newLinkTitle.trim() || newLinkUrl.trim();
+    const url = newLinkUrl.trim();
+    const taskId = crypto.randomUUID();
+    const startedAt = Date.now();
+    setLinkImportTasks((current) => [
+      {
+        id: taskId,
+        title,
+        url,
+        status: "importing",
+        stage: "Fetching and converting page to Markdown…",
+        startedAt,
+      },
+      ...current,
+    ]);
+    setLinkImportClock(startedAt);
+    setLinksExpanded(true);
+    // Leave the add form immediately. The dedicated status dialog owns the
+    // in-flight work, while its compact row remains beneath Links.
+    setLinkDialogOpen(false);
+    setSelectedLinkImportId(taskId);
     setSavingLink(true);
     try {
       const res = await fetch(
@@ -5731,7 +5787,7 @@ export default function WorkspaceClient({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             title: newLinkTitle.trim(),
-            url: newLinkUrl.trim(),
+            url,
           }),
         },
       );
@@ -5740,12 +5796,44 @@ export default function WorkspaceClient({
         links?: SavedLinkInfo[];
         duplicate?: boolean;
         source?: { sourceTitle?: string; sourceRelPath?: string };
+        capturedImages?: number;
+        referencedImages?: number;
       };
       if (!res.ok) {
-        addToast(data.error ?? "Failed to save link");
+        const error = data.error ?? "Failed to save link";
+        setLinkImportTasks((current) =>
+          current.map((task) =>
+            task.id === taskId
+              ? {
+                  ...task,
+                  status: "failed",
+                  stage: "Import failed",
+                  completedAt: Date.now(),
+                  error,
+                }
+              : task,
+          ),
+        );
+        addToast(error);
         return;
       }
       setSavedLinks(Array.isArray(data.links) ? data.links : []);
+      setLinkImportTasks((current) =>
+        current.map((task) =>
+          task.id === taskId
+            ? {
+                ...task,
+                status: "completed",
+                stage: data.duplicate ? "Source already available" : "Source ready",
+                completedAt: Date.now(),
+                duplicate: data.duplicate,
+                sourceRelPath: data.source?.sourceRelPath,
+                capturedImages: data.capturedImages,
+                referencedImages: data.referencedImages,
+              }
+            : task,
+          ),
+      );
       setNewLinkTitle("");
       setNewLinkUrl("");
       setSourceDocsExpanded(true);
@@ -5758,6 +5846,19 @@ export default function WorkspaceClient({
         "success",
       );
     } catch {
+      setLinkImportTasks((current) =>
+        current.map((task) =>
+          task.id === taskId
+            ? {
+                ...task,
+                status: "failed",
+                stage: "Import failed",
+                completedAt: Date.now(),
+                error: "Failed to save link",
+              }
+            : task,
+        ),
+      );
       addToast("Failed to save link");
     } finally {
       setSavingLink(false);
@@ -5920,118 +6021,27 @@ export default function WorkspaceClient({
     if (files.length === 0) return;
 
     setExtractingAttachments(true);
-    const results: ChatAttachment[] = [];
-
-    for (const file of files) {
-      const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-      try {
-        // A mesh is checked and stored whole; there is no text to extract from
-        // it, and /api/extract-text would attach its bytes decoded as mojibake.
-        const modelFormat = modelAttachmentFormat(file.name);
-        if (modelFormat) {
-          results.push(await attachModelFile(file, modelFormat));
-          continue;
-        }
-
-        // A song is stored whole for the same reason: its content is a
-        // waveform, and the audio analyzer reads it server-side during the
-        // turn. Without this branch an mp3 dropped here would go to the text
-        // extractor and come back as an unreadable file.
-        const audioFormat = audioAttachmentFormat(file.name);
-        if (audioFormat) {
-          results.push(await attachAudioFile(file, audioFormat));
-          continue;
-        }
-
-        if (["jpg", "jpeg", "png", "webp"].includes(ext)) {
-          // Extract via API (handles vision / OCR)
-          const fd = new FormData();
-          fd.append("file", file);
-          fd.append(
-            "isHandwriting",
-            String(isHandwriting && HANDWRITING_FILE_RE.test(file.name)),
-          );
-          const res = await fetch("/api/extract-text", {
-            method: "POST",
-            body: fd,
-          });
-          const data = await res.json();
-          if (!res.ok || data.error)
-            throw new Error(data.error ?? "Extraction failed");
-          if (data.warning) addToast(`${file.name}: ${data.warning}`);
-          if (data.type === "image") {
-            results.push({
-              type: "image",
-              dataUrl: data.dataUrl,
-              name: file.name,
-            });
-          } else {
-            results.push({ type: "text", text: data.text, name: file.name });
-          }
-        } else if (
-          [
-            "txt",
-            "md",
-            "csv",
-            "json",
-            "xml",
-            "html",
-            "js",
-            "ts",
-            "py",
-            "java",
-            "c",
-            "cpp",
-            "css",
-            "yaml",
-            "yml",
-            "toml",
-            "ini",
-            "sql",
-            "sh",
-          ].includes(ext)
-        ) {
-          // Text files — read client-side
-          const text = await file.text();
-          results.push({ type: "text", text, name: file.name });
-        } else {
-          // Binary formats (pdf, docx, pptx, xlsx, zip) — extract server-side
-          const fd = new FormData();
-          fd.append("file", file);
-          fd.append(
-            "isHandwriting",
-            String(isHandwriting && HANDWRITING_FILE_RE.test(file.name)),
-          );
-          const res = await fetch("/api/extract-text", {
-            method: "POST",
-            body: fd,
-          });
-          const data = await res.json();
-          if (!res.ok || data.error)
-            throw new Error(data.error ?? "Extraction failed");
-          if (data.warning) addToast(`${file.name}: ${data.warning}`);
-          results.push({ type: "text", text: data.text, name: file.name });
-        }
-      } catch (error) {
-        addToast(
-          error instanceof Error
-            ? `${file.name}: ${error.message}`
-            : `Could not read ${file.name}`,
-        );
+    try {
+      const extracted = await extractChatAttachments(files, {
+        isHandwriting: (file) =>
+          isHandwriting && HANDWRITING_FILE_RE.test(file.name),
+      });
+      for (const message of [...extracted.warnings, ...extracted.errors]) {
+        addToast(message);
       }
+      setChatAttachments((prev) => [...prev, ...extracted.attachments]);
+      // A document too large to paste into every turn becomes a book-to-skill
+      // skill now, while the user is still typing. The turn builds it too if it
+      // has to, but by then this has almost always already cached it.
+      const distillErrors = await distillAttachments(extracted.attachments, {
+        clusterSlug,
+        onStatus: (status) => setAttachmentDistillStatus(status),
+      });
+      for (const message of distillErrors) addToast(message);
+    } finally {
+      setAttachmentDistillStatus(null);
+      setExtractingAttachments(false);
     }
-
-    setChatAttachments((prev) => [...prev, ...results]);
-    // A document too large to paste into every turn becomes a book-to-skill
-    // skill now, while the user is still typing. The turn builds it too if it
-    // has to, but by then this has almost always already cached it.
-    const distillErrors = await distillAttachments(results, {
-      clusterSlug,
-      onStatus: (status) => setAttachmentDistillStatus(status),
-    });
-    setAttachmentDistillStatus(null);
-    for (const message of distillErrors) addToast(message);
-    setExtractingAttachments(false);
   }
 
   async function handleChatFileInput(e: React.ChangeEvent<HTMLInputElement>) {
@@ -6171,7 +6181,7 @@ export default function WorkspaceClient({
       const deleted = new Set(deletedSlugs);
       setDocuments((prev) => prev.filter((item) => !deleted.has(item.slug)));
       setGraphRefreshVersion((v) => v + 1);
-      addToast(isSource ? "Source PDF deleted" : "Document deleted", "success");
+      addToast(isSource ? "Source deleted" : "Document deleted", "success");
     } catch {
       setDocuments(previousDocuments);
       addToast("Failed to delete document");
@@ -6833,6 +6843,9 @@ export default function WorkspaceClient({
 
   const hasExistingLearnContent = Boolean(
     learnState?.latestTextbookVersionId || learnState?.hasTextbook,
+  );
+  const learnPanelAvailable = Boolean(
+    learnState?.hasSources || hasExistingLearnContent,
   );
   const shouldRestartCancelledPlanning =
     learnState?.job?.status === "cancelled" &&
@@ -8235,6 +8248,12 @@ export default function WorkspaceClient({
                 ? {
                     externalAgentName:
                       delegatedAgentLaunchRef.current.agentName,
+                  }
+                : {}),
+              ...(delegatedAgentLaunchRef.current?.reason
+                ? {
+                    delegatedAgentReason:
+                      delegatedAgentLaunchRef.current.reason,
                   }
                 : {}),
               externalAgentStartedAt:
@@ -11642,6 +11661,7 @@ export default function WorkspaceClient({
       agentLaunchContinuationMessage({
         continuationId: workerClientMessageId,
         agentName: awaited.agentName,
+        reason: awaited.reason,
         outcome: result.outcome,
         content: result.content,
         remaining: awaitedLaunchesRef.current.size,
@@ -12888,6 +12908,12 @@ export default function WorkspaceClient({
   const activeUploadTasks = uploadTasks.filter(
     (task) => task.state === "uploading",
   );
+  const activeLinkImportTasks = linkImportTasks.filter(
+    (task) => task.status === "importing",
+  );
+  const selectedLinkImportTask = selectedLinkImportId
+    ? (linkImportTasks.find((task) => task.id === selectedLinkImportId) ?? null)
+    : null;
   const allDoneOrError =
     modalUploadFiles.length > 0 &&
     modalUploadFiles.every((f) => {
@@ -12904,14 +12930,32 @@ export default function WorkspaceClient({
   const sourceDocuments = documents.filter(
     (doc) => doc.type === "source-document",
   );
+  const mediaSourceDocuments = sourceDocuments.filter((doc) => {
+    const kind = learnSourceKind(doc);
+    return kind === "audio" || kind === "video";
+  });
+  const documentSourceDocuments = sourceDocuments.filter((doc) => {
+    const kind = learnSourceKind(doc);
+    return kind !== "audio" && kind !== "video";
+  });
+  const gardenMediaSources = mediaSourceDocuments.map((doc) => ({
+    slug: doc.slug,
+    title: doc.title,
+    description: doc.description,
+    originalFilename: doc.sourceFile,
+    sourceType: doc.sourceType,
+    sourceMedia: doc.sourceMedia,
+    href: gardenDocumentHref(clusterSlug, doc),
+    wordCount: doc.wordCount,
+  }));
   const sourceDocSearchTerms = normalizedSearchText(sourceDocSearch)
     .trim()
     .split(/\s+/)
     .filter(Boolean);
   const filteredSourceDocuments =
     sourceDocSearchTerms.length === 0
-      ? sourceDocuments
-      : sourceDocuments.filter((doc) => {
+      ? documentSourceDocuments
+      : documentSourceDocuments.filter((doc) => {
           const haystack = documentSearchText(doc);
           return sourceDocSearchTerms.every((term) => haystack.includes(term));
         });
@@ -13187,10 +13231,23 @@ export default function WorkspaceClient({
     const status = job?.status ?? "idle";
     const active = isLearnActive(status);
     const hasLearnUserInstruction = Boolean(learnUserInstruction.trim());
+    const learnHumanizerStatus = learnState?.humanizer?.status;
+    const learnHumanizerRunning = learnHumanizerStatus === "running";
+    const learnHumanizerRestoring = learnHumanizerStatus === "restoring_ai";
     const learnHumanizerActive =
       learnHumanizerRequestBusy ||
-      learnState?.humanizer?.status === "running" ||
-      learnState?.humanizer?.status === "restoring_ai";
+      learnHumanizerRunning ||
+      learnHumanizerRestoring;
+    const learnHumanizerStatusMessage = learnHumanizerRunning
+      ? "Humanizing completed lessons..."
+      : learnHumanizerRestoring
+        ? "Restoring the original AI lesson copy..."
+        : learnHumanizerRequestBusy
+          ? humanizerEnabled
+            ? "Starting Humanize..."
+            : "Starting AI-copy restore..."
+          : null;
+    const learnStatusBarActive = active || learnHumanizerActive;
     const proposedMap = learnState?.proposedLearningMap ?? null;
     const hasLearnData = Boolean(
       job ||
@@ -13206,11 +13263,13 @@ export default function WorkspaceClient({
     // failure as if it belonged to the retry now starting.
     const startingLearnAction = learnBusy && !isLearnActive(status);
     const showFailedState = status === "failed" && !startingLearnAction;
-    const displayProgress = startingLearnAction
-      ? 2
-      : status === "complete" || status === "failed"
-        ? 100
-        : progress;
+    const displayProgress = learnHumanizerActive
+      ? 100
+      : startingLearnAction
+        ? 2
+        : status === "complete" || status === "failed"
+          ? 100
+          : progress;
     const learnTeachingSourceSlugs = effectiveLearnIncludedSourceSlugs;
     const hasSelectedLearnSources = learnTeachingSourceSlugs.length > 0;
     const paused = status === "paused";
@@ -14252,23 +14311,40 @@ export default function WorkspaceClient({
           </p>
         ) : null}
 
-        {(active || status === "complete" || status === "failed") && (
+        {(learnStatusBarActive || status === "complete" || status === "failed") && (
           <div className="mt-3">
-            <div className="neu-progress-track h-1.5 overflow-hidden rounded-full bg-gray-800">
+            <div
+              className="neu-progress-track h-1.5 overflow-hidden rounded-full bg-gray-800"
+              role="progressbar"
+              aria-label="Learn status"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={learnHumanizerActive ? undefined : displayProgress}
+              aria-valuetext={learnHumanizerStatusMessage ?? undefined}
+            >
               <div
                 className={[
                   "h-full rounded-full transition-all",
-                  active ? "learn-progress-pulse" : "",
+                  learnStatusBarActive ? "learn-progress-pulse" : "",
                   showFailedState
                     ? "bg-red-500"
-                    : status === "complete"
-                      ? "bg-emerald-400"
-                      : "bg-white",
+                    : learnHumanizerActive
+                      ? "bg-emerald-300"
+                      : status === "complete"
+                        ? "bg-emerald-400"
+                        : "bg-white",
                 ].join(" ")}
                 style={{ width: `${displayProgress}%` }}
               />
             </div>
-            {status === "complete" ? (
+            {learnHumanizerStatusMessage ? (
+              <p
+                className="mt-2 text-xs text-emerald-300"
+                aria-live="polite"
+              >
+                {learnHumanizerStatusMessage}
+              </p>
+            ) : status === "complete" ? (
               <p className="mt-2 text-xs text-emerald-300">
                 Finished generating lessons. The garden has been refreshed.
               </p>
@@ -14396,17 +14472,17 @@ export default function WorkspaceClient({
             onClick={() => setHumanizerEnabled(!humanizerEnabled)}
             className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap text-gray-400 transition-colors hover:text-gray-200 disabled:cursor-wait disabled:opacity-60"
             title={
-              learnState?.humanizer?.status === "running"
+              learnHumanizerRunning
                 ? "Rewriting the completed lessons naturally"
-                : learnState?.humanizer?.status === "restoring_ai"
+                : learnHumanizerRestoring
                   ? "Restoring the original AI lesson copy"
                   : "After a full Learn build passes its checks, rewrite only the learner-facing prose locally and keep the original if any safety check fails"
             }
           >
             <span>
-              {learnState?.humanizer?.status === "running"
+              {learnHumanizerRunning
                 ? "Rewriting naturally..."
-                : learnState?.humanizer?.status === "restoring_ai"
+                : learnHumanizerRestoring
                   ? "Restoring AI copy..."
                   : "Rewrite naturally"}
             </span>
@@ -14687,14 +14763,14 @@ export default function WorkspaceClient({
                 <Link
                   href={documentHref}
                   className={[
-                    "block text-xs truncate transition-colors",
+                    "block text-xs transition-colors",
                     isSource
                       ? "text-cyan-100 hover:text-white font-medium"
                       : "text-gray-300 hover:text-white",
                   ].join(" ")}
                   title={isPdfSource ? "Open PDF viewer" : "Open note"}
                 >
-                  {displayTitle}
+                  <OverflowMarquee>{displayTitle}</OverflowMarquee>
                 </Link>
                 {isSource && sourceDescription && (
                   <p
@@ -15280,10 +15356,10 @@ export default function WorkspaceClient({
               />
             </svg>
             Documents
-            {sourceDocuments.length > 0
+            {documentSourceDocuments.length > 0
               ? sourceDocSearchTerms.length > 0
-                ? ` (${filteredSourceDocuments.length}/${sourceDocuments.length})`
-                : ` (${sourceDocuments.length})`
+                ? ` (${filteredSourceDocuments.length}/${documentSourceDocuments.length})`
+                : ` (${documentSourceDocuments.length})`
               : ""}
           </div>
           <div className="flex items-center gap-1.5">
@@ -15330,7 +15406,7 @@ export default function WorkspaceClient({
             id="garden-source-documents"
             className="bb-neu-accordion-panel border-t border-gray-800"
           >
-            {!loadingDocs && sourceDocuments.length > 0 && (
+            {!loadingDocs && documentSourceDocuments.length > 0 && (
               <div className="border-b border-gray-800 px-3 py-2">
                 <div className="relative">
                   <svg
@@ -15423,9 +15499,9 @@ export default function WorkspaceClient({
                             <Spinner className="h-4 w-4 shrink-0 text-gray-500" />
                           )}
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate text-xs text-gray-300 group-hover:text-white">
+                            <OverflowMarquee className="text-xs text-gray-300 group-hover:text-white">
                               {file.name}
-                            </span>
+                            </OverflowMarquee>
                             <span
                               className={`block truncate text-[11px] ${status === "error" ? "text-red-400" : "text-gray-600"}`}
                             >
@@ -15448,7 +15524,7 @@ export default function WorkspaceClient({
                 <div className="flex justify-center py-6">
                   <Spinner className="w-4 h-4 text-gray-700" />
                 </div>
-              ) : sourceDocuments.length === 0 ? (
+              ) : documentSourceDocuments.length === 0 ? (
                 !isUploading && (
                   <div className="flex flex-col items-center py-6 px-4 text-center">
                     <p className="text-xs text-gray-600 mb-2">
@@ -15484,16 +15560,18 @@ export default function WorkspaceClient({
       </div>
 
       <div className="border-t border-gray-800 shrink-0">
-        <button
-          type="button"
-          onClick={() => setLinkDialogOpen(true)}
-          className="bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 hover:text-white transition-colors"
-          aria-haspopup="dialog"
-          aria-label="Open links dialog"
+        <div
+          className={`bb-neu-accordion flex w-full items-center text-xs font-medium text-gray-500 transition-colors hover:text-white ${linksExpanded ? "bb-neu-accordion-open" : ""}`}
         >
-          <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setLinksExpanded((value) => !value)}
+            className="flex min-w-0 flex-1 items-center gap-2 px-4 py-3 text-left focus-visible:outline-none"
+            aria-expanded={linksExpanded}
+            aria-controls="garden-links-panel"
+          >
             <svg
-              className="w-3.5 h-3.5"
+              className="h-3.5 w-3.5 shrink-0"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -15507,51 +15585,193 @@ export default function WorkspaceClient({
             </svg>
             Links
             {savedLinks.length > 0 ? ` (${savedLinks.length})` : ""}
-          </div>
-          <span className="flex items-center gap-1.5" aria-hidden="true">
+          </button>
+          <div className="flex shrink-0 items-center gap-1.5 pr-4">
             {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setLinkDialogOpen(true)}
+                className="rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white focus-visible:outline-none focus-visible:text-[var(--botanical)]"
+                aria-haspopup="dialog"
+                aria-label="Open links dialog"
+                title="Add link"
+              >
+                <svg
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 4.5v15m7.5-7.5h-15"
+                  />
+                </svg>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setLinksExpanded((value) => !value)}
+              className="-m-1 p-1 text-gray-600 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-[var(--botanical)]"
+              aria-label={linksExpanded ? "Collapse links" : "Expand links"}
+              aria-expanded={linksExpanded}
+              aria-controls="garden-links-panel"
+            >
               <svg
-                className="h-3.5 w-3.5 text-gray-600"
+                className={`h-3.5 w-3.5 transition-transform duration-200 ${linksExpanded ? "" : "rotate-180"}`}
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
                 strokeWidth={2}
+                aria-hidden="true"
               >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  d="M12 4.5v15m7.5-7.5h-15"
+                  d="m4.5 15.75 7.5-7.5 7.5 7.5"
                 />
               </svg>
+            </button>
+          </div>
+        </div>
+        {linksExpanded ? (
+          <div
+            id="garden-links-panel"
+            className="bb-neu-accordion-panel border-t border-gray-800/70"
+          >
+            {activeLinkImportTasks.length > 0 ? (
+              <div className="border-b border-gray-800/70 py-1">
+                {activeLinkImportTasks.map((task) => (
+                  <button
+                    key={task.id}
+                    type="button"
+                    onClick={() => setSelectedLinkImportId(task.id)}
+                    className="group flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-gray-800/50"
+                    aria-label={`View link import progress for ${task.title}`}
+                    title="View link import progress"
+                  >
+                    <Spinner className="h-4 w-4 shrink-0 text-gray-500" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs text-gray-300 group-hover:text-white">
+                        {task.title}
+                      </span>
+                      <span className="block truncate text-[11px] text-gray-600">
+                        {task.stage}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-[11px] tabular-nums text-gray-600">
+                      {formatElapsed(
+                        Math.max(0, linkImportClock - task.startedAt),
+                      )}
+                    </span>
+                  </button>
+                ))}
+              </div>
             ) : null}
-            <svg
-              className="h-3.5 w-3.5 rotate-180 text-gray-600"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="m4.5 15.75 7.5-7.5 7.5 7.5"
-              />
-            </svg>
-          </span>
-        </button>
+            {linksLoading ? (
+              <div className="flex justify-center py-6">
+                <Spinner className="h-4 w-4 text-gray-700" />
+              </div>
+            ) : savedLinks.length === 0 ? (
+              <div className="px-4 py-4 text-center">
+                <p className="text-xs text-gray-600">No saved links yet.</p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-gray-800/70">
+                {savedLinks.map((link) => (
+                  <li
+                    key={link.id}
+                    className="group flex items-center gap-2 px-3 py-2.5"
+                  >
+                    <a
+                      href={link.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="min-w-0 flex-1 text-left"
+                      title={link.url}
+                    >
+                      <span className="block truncate text-xs font-medium text-gray-300 transition-colors group-hover:text-white">
+                        {link.title}
+                      </span>
+                      <span className="block truncate text-[11px] text-gray-600">
+                        {link.url}
+                      </span>
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyLink(link.url)}
+                      className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+                      aria-label="Copy link"
+                      title="Copy link"
+                    >
+                      <svg
+                        className="h-3.5 w-3.5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                        aria-hidden="true"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125v-9.75c0-.621.504-1.125 1.125-1.125H8.25m2.25-6.75h8.625c.621 0 1.125.504 1.125 1.125v8.625c0 .621-.504 1.125-1.125 1.125H10.5a1.125 1.125 0 0 1-1.125-1.125V4.125c0-.621.504-1.125 1.125-1.125Z"
+                        />
+                      </svg>
+                    </button>
+                    {isOwner ? (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteLink(link.id)}
+                        disabled={deletingLinkId === link.id}
+                        className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-red-950/30 hover:text-red-400 disabled:opacity-40"
+                        aria-label="Delete link"
+                        title="Delete link"
+                      >
+                        {deletingLinkId === link.id ? (
+                          <Spinner className="h-3.5 w-3.5" />
+                        ) : (
+                          <svg
+                            className="h-3.5 w-3.5"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={2}
+                            aria-hidden="true"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M6 18 18 6M6 6l12 12"
+                            />
+                          </svg>
+                        )}
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <div className="border-t border-gray-800 shrink-0">
-        <button
-          type="button"
-          onClick={() => setMediaDialogOpen(true)}
-          className="bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 hover:text-white transition-colors"
-          aria-haspopup="dialog"
-          aria-label="Open video and audio dialog"
+        <div
+          className={`bb-neu-accordion flex w-full items-center text-xs font-medium text-gray-500 transition-colors hover:text-white ${mediaExpanded ? "bb-neu-accordion-open" : ""}`}
         >
-          <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMediaExpanded((value) => !value)}
+            className="flex min-w-0 flex-1 items-center gap-2 px-4 py-3 text-left focus-visible:outline-none"
+            aria-expanded={mediaExpanded}
+            aria-controls="garden-media-items"
+          >
             <svg
-              className="w-3.5 h-3.5"
+              className="h-3.5 w-3.5 shrink-0"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -15564,43 +15784,76 @@ export default function WorkspaceClient({
               />
             </svg>
             Video &amp; audio
-          </div>
-          <span className="flex items-center gap-1.5" aria-hidden="true">
+            {gardenMediaSources.length > 0 ? ` (${gardenMediaSources.length})` : ""}
+          </button>
+          <div className="flex shrink-0 items-center gap-1.5 pr-4">
             {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setMediaDialogOpen(true)}
+                className="rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white focus-visible:outline-none focus-visible:text-[var(--botanical)]"
+                aria-haspopup="dialog"
+                aria-label="Open video and audio dialog"
+                title="Add video or audio"
+              >
+                <svg
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 4.5v15m7.5-7.5h-15"
+                  />
+                </svg>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setMediaExpanded((value) => !value)}
+              className="-m-1 p-1 text-gray-600 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-[var(--botanical)]"
+              aria-label={
+                mediaExpanded ? "Collapse video and audio" : "Expand video and audio"
+              }
+              aria-expanded={mediaExpanded}
+              aria-controls="garden-media-items"
+            >
               <svg
-                className="h-3.5 w-3.5 text-gray-600"
+                className={`h-3.5 w-3.5 transition-transform duration-200 ${mediaExpanded ? "" : "rotate-180"}`}
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
                 strokeWidth={2}
+                aria-hidden="true"
               >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  d="M12 4.5v15m7.5-7.5h-15"
+                  d="m4.5 15.75 7.5-7.5 7.5 7.5"
                 />
               </svg>
-            ) : null}
-            <svg
-              className="h-3.5 w-3.5 rotate-180 text-gray-600"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="m4.5 15.75 7.5-7.5 7.5 7.5"
-              />
-            </svg>
-          </span>
-        </button>
+            </button>
+          </div>
+        </div>
         <GardenVideoImport
           clusterSlug={clusterSlug}
           isOwner={isOwner}
           open={mediaDialogOpen}
+          expanded={mediaExpanded}
+          mediaSources={gardenMediaSources}
+          deletingSourceSlug={deletingDocumentSlug}
           onClose={() => setMediaDialogOpen(false)}
+          onExpand={() => setMediaExpanded(true)}
+          onDeleteSource={(sourceSlug) => {
+            const source = mediaSourceDocuments.find(
+              (document) => document.slug === sourceSlug,
+            );
+            if (source) void handleDocumentDelete(source);
+          }}
           onSourceCreated={handleMediaSourceCreated}
         />
       </div>
@@ -15736,9 +15989,9 @@ export default function WorkspaceClient({
             <button
               type="button"
               onClick={() => setLearnPanelOpen((open) => !open)}
-              disabled={!learnState?.hasSources}
+              disabled={!learnPanelAvailable}
               title={
-                learnState?.hasSources
+                learnPanelAvailable
                   ? learnPanelOpen
                     ? "Close Learn panel"
                     : learnBusy ||
@@ -16639,10 +16892,10 @@ export default function WorkspaceClient({
                   id="garden-link-composer-title"
                   className="text-base font-semibold text-white"
                 >
-                  Links
+                  Add link
                 </h2>
                 <p className="mt-0.5 text-xs text-gray-500">
-                  Save and manage web sources in {clusterName}.
+                  Save a web source in {clusterName}.
                 </p>
               </div>
               <button
@@ -16720,100 +16973,158 @@ export default function WorkspaceClient({
                   </div>
                 </form>
               ) : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
 
-              <div className={isOwner ? "border-t border-gray-800" : ""}>
-                <div className="border-b border-gray-800 px-5 py-2.5">
-                  <h3 className="text-xs font-medium text-gray-400">
-                    Saved links
-                  </h3>
-                </div>
-                {linksLoading ? (
-                  <div className="flex justify-center py-6">
-                    <Spinner className="h-4 w-4 text-gray-700" />
-                  </div>
-                ) : savedLinks.length === 0 ? (
-                  <div className="px-5 py-6 text-center">
-                    <p className="text-xs text-gray-600">
-                      No saved links yet.
+      {selectedLinkImportTask ? (
+        <div
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setSelectedLinkImportId(null);
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="garden-link-status-title"
+            className="bb-modal-panel neu-dialog flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border"
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-5 py-3.5">
+              <div className="min-w-0">
+                <h2
+                  id="garden-link-status-title"
+                  className="text-base font-semibold text-white"
+                >
+                  Link import status
+                </h2>
+                <p
+                  className="mt-0.5 truncate text-xs text-gray-500"
+                  title={selectedLinkImportTask.title}
+                >
+                  {selectedLinkImportTask.title}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedLinkImportId(null)}
+                className="neu-button-icon ml-3 shrink-0 rounded-full p-1.5 text-gray-500"
+                aria-label="Close link import status"
+              >
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 18 18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            <div className="min-h-0 space-y-5 overflow-y-auto px-5 py-4">
+              <div className="rounded-lg bg-gray-800/50 px-3 py-3">
+                <div className="flex items-center gap-2.5">
+                  {selectedLinkImportTask.status === "importing" ? (
+                    <Spinner className="h-4 w-4 shrink-0 text-[var(--botanical)]" />
+                  ) : selectedLinkImportTask.status === "completed" ? (
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--botanical)_18%,transparent)] text-xs text-[var(--botanical)]">
+                      ✓
+                    </span>
+                  ) : (
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center text-sm font-semibold text-red-400">
+                      !
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-gray-300">
+                      {selectedLinkImportTask.stage}
+                    </p>
+                    <p className="mt-0.5 truncate text-[11px] text-gray-600" title={selectedLinkImportTask.url}>
+                      {selectedLinkImportTask.url}
                     </p>
                   </div>
-                ) : (
-                  <ul className="divide-y divide-gray-800/70">
-                    {savedLinks.map((link) => (
-                      <li
-                        key={link.id}
-                        className="group flex items-center gap-2 px-5 py-3"
-                      >
-                        <a
-                          href={link.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="min-w-0 flex-1 text-left"
-                          title={link.url}
-                        >
-                          <span className="block truncate text-xs font-medium text-gray-300 transition-colors group-hover:text-white">
-                            {link.title}
-                          </span>
-                          <span className="block truncate text-[11px] text-gray-600">
-                            {link.url}
-                          </span>
-                        </a>
-                        <button
-                          type="button"
-                          onClick={() => handleCopyLink(link.url)}
-                          className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
-                          aria-label="Copy link"
-                          title="Copy link"
-                        >
-                          <svg
-                            className="h-3.5 w-3.5"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.8}
-                            aria-hidden="true"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125v-9.75c0-.621.504-1.125 1.125-1.125H8.25m2.25-6.75h8.625c.621 0 1.125.504 1.125 1.125v8.625c0 .621-.504 1.125-1.125 1.125H10.5a1.125 1.125 0 0 1-1.125-1.125V4.125c0-.621.504-1.125 1.125-1.125Z"
-                            />
-                          </svg>
-                        </button>
-                        {isOwner ? (
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteLink(link.id)}
-                            disabled={deletingLinkId === link.id}
-                            className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-red-950/30 hover:text-red-400 disabled:opacity-40"
-                            aria-label="Delete link"
-                            title="Delete link"
-                          >
-                            {deletingLinkId === link.id ? (
-                              <Spinner className="h-3.5 w-3.5" />
-                            ) : (
-                              <svg
-                                className="h-3.5 w-3.5"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                                strokeWidth={2}
-                                aria-hidden="true"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  d="M6 18 18 6M6 6l12 12"
-                                />
-                              </svg>
-                            )}
-                          </button>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                </div>
+                {selectedLinkImportTask.status === "importing" ? (
+                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-gray-800" role="progressbar" aria-label="Link import progress">
+                    <div className="h-full w-2/3 animate-pulse rounded-full bg-[var(--botanical)]" />
+                  </div>
+                ) : null}
               </div>
+
+              <div>
+                <h3 className="text-xs font-medium text-gray-400">What is happening</h3>
+                <p className="mt-1.5 text-xs leading-5 text-gray-600">
+                  {selectedLinkImportTask.status === "importing"
+                    ? "The page is being fetched, converted to Markdown, enriched with its available images, and indexed as a Garden source."
+                    : selectedLinkImportTask.status === "completed"
+                      ? selectedLinkImportTask.duplicate
+                        ? "This page was already available. The existing source has been linked to this Garden."
+                        : "The page has been converted and is ready to use as a Garden source."
+                      : "The page could not be converted into a Garden source."}
+                </p>
+              </div>
+
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 border-t border-gray-800 pt-4 text-xs">
+                <dt className="text-gray-600">Started</dt>
+                <dd className="text-right text-gray-400">
+                  {new Date(selectedLinkImportTask.startedAt).toLocaleString()}
+                </dd>
+                <dt className="text-gray-600">Elapsed</dt>
+                <dd className="text-right tabular-nums text-gray-400">
+                  {formatElapsed(
+                    Math.max(
+                      0,
+                      (selectedLinkImportTask.completedAt ?? linkImportClock) -
+                        selectedLinkImportTask.startedAt,
+                    ),
+                  )}
+                </dd>
+                {selectedLinkImportTask.sourceRelPath ? (
+                  <>
+                    <dt className="text-gray-600">Source</dt>
+                    <dd
+                      className="min-w-0 truncate text-right text-gray-400"
+                      title={selectedLinkImportTask.sourceRelPath}
+                    >
+                      {selectedLinkImportTask.sourceRelPath}
+                    </dd>
+                  </>
+                ) : null}
+                {selectedLinkImportTask.capturedImages !== undefined ? (
+                  <>
+                    <dt className="text-gray-600">Images saved</dt>
+                    <dd className="text-right text-gray-400">
+                      {selectedLinkImportTask.capturedImages}
+                    </dd>
+                  </>
+                ) : null}
+              </dl>
+
+              {selectedLinkImportTask.error ? (
+                <p className="rounded-lg border border-red-900/40 bg-red-950/20 px-3 py-2 text-xs leading-5 text-red-300">
+                  {selectedLinkImportTask.error}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="shrink-0 border-t border-gray-800 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setSelectedLinkImportId(null)}
+                className="neu-button-primary w-full py-2.5 text-sm"
+              >
+                {selectedLinkImportTask.status === "importing"
+                  ? "Continue in background"
+                  : "Close"}
+              </button>
             </div>
           </section>
         </div>

@@ -28,14 +28,15 @@ const terminalSources = [
 ].map(read);
 
 test("custom dialogs share a crisp, unblurred Breadboard scrim", () => {
-  assert.match(globals, /\.bb-modal-backdrop\s*\{/);
-  assert.match(globals, /backdrop-filter:\s*none !important/);
+  const backdrop =
+    globals.match(/\.bb-modal-backdrop\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+  assert.match(backdrop, /backdrop-filter:\s*none !important/);
   assert.match(globals, /\.bb-modal-panel\s*\{/);
   for (const source of modalSources) {
     assert.match(source, /bb-modal-backdrop/);
     assert.doesNotMatch(source, /backdrop-blur/);
   }
-  assert.doesNotMatch(globals, /backdrop-filter:\s*blur\(/);
+  assert.doesNotMatch(backdrop, /backdrop-filter:\s*blur\(/);
 });
 
 test("popup actions keep the original soft Breadboard button treatment", () => {

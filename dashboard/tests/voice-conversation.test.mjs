@@ -333,7 +333,10 @@ test("talking swells the circle; it never takes the circle away", () => {
     styles,
     /\.voice-halo-ring \{[\s\S]*?transform: scale\(calc\(1 \+ var\(--voice-level\) \* var\(--halo-spread[\s\S]*?transition: transform /,
   );
-  assert.match(styles, /\.voice-stage\[data-voicing='true'\] \.voice-halo \{\s*\n\s*opacity: 1;/);
+  assert.match(
+    styles,
+    /\.voice-stage\[data-voicing=["']true["']\] \.voice-halo \{\s*\n\s*opacity: 1;/,
+  );
   assert.match(overlay, /'--halo-spread': `\$\{ring\.spread\}`/);
   assert.match(overlay, /className="voice-halo-ring"/);
 
@@ -367,7 +370,7 @@ test("the screen owns the whole window, chrome and scrollbars included", () => {
   );
   assert.match(
     styles,
-    /html\[data-breadboard-desktop="true"\]\[data-voice-stage="open"\] \.desktop-title-bar \{\s*\n\s*background: transparent;/,
+    /html\[data-breadboard-desktop="true"\]\[data-voice-stage="open"\]\s+\.desktop-title-bar \{\s*\n\s*background: transparent;/,
   );
   // The ground reaches all four edges rather than starting under the caption
   // strip, or the corners of the window read as a band laid over the screen.

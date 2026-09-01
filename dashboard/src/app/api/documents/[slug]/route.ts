@@ -399,6 +399,7 @@ function documentsToDeleteForSource(
       assetUrls: [
         ...frontmatterArrayValue(sourceData, "source_images"),
         frontmatterStringValue(sourceData, "source_pdf"),
+        frontmatterStringValue(sourceData, "source_media"),
       ].filter(Boolean),
     };
   }
@@ -413,6 +414,8 @@ function documentsToDeleteForSource(
   );
   const sourcePdf = frontmatterStringValue(sourceData, "source_pdf");
   if (sourcePdf) assetUrls.add(sourcePdf);
+  const sourceMedia = frontmatterStringValue(sourceData, "source_media");
+  if (sourceMedia) assetUrls.add(sourceMedia);
 
   for (const item of walkClusterMarkdown(clusterDir)) {
     const slug = item.entry.replace(/\.md$/i, "");

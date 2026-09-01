@@ -76,6 +76,7 @@ provides_tools:
   - worldmonitor_snapshot
   - worldmonitor_search
   - worldmonitor_climate
+  - weather_forecast
   - map_search
   - map_reverse
   - map_route
@@ -117,6 +118,7 @@ provides_tools:
   - workspace_search
   - image_search
   - product_search
+  - chat_search
   - artifact_import
   - artifact_search
   - artifact_image_generate

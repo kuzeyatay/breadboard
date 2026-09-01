@@ -234,6 +234,7 @@ test("the stats shown are ones no other surface already answers", () => {
     "Last ${stats.activityWeeks} weeks",
     "When you work",
     "Where you work",
+    "Most used phrases",
     "What came out of it",
     "What it cost to answer you",
   ]) {

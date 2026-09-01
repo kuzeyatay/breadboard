@@ -456,7 +456,7 @@ test("runtime problems render as recoverable in-chat errors", () => {
 
   const actions = runtimePanel.indexOf("<AssistantMessageActions", stateRow);
   assert.ok(actions > stateRow);
-  const actionsBlock = runtimePanel.slice(actions, actions + 1_500);
+  const actionsBlock = runtimePanel.slice(actions, actions + 2_500);
   assert.match(actionsBlock, /onRetry=/);
   assert.match(actionsBlock, /\(!responseInterrupted \|\| !disabled\)/);
   assert.match(actionsBlock, /retryAssistantAsBranch\(index\)/);

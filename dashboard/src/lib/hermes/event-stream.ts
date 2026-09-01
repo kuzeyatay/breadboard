@@ -75,7 +75,10 @@ import {
   type DetachedEventPumpSink,
 } from "./detached-event-pump.ts";
 import { normalizeChatTokenUsage } from "../chat-token-usage.ts";
-import type { GenerativeUiResource } from "../generative-ui/contracts.ts";
+import {
+  gardenNavigationResourceFromSources,
+  type GenerativeUiResource,
+} from "../generative-ui/contracts.ts";
 
 type CompletedToolEvent = Extract<
   NormalizedAgentEvent,
@@ -377,6 +380,13 @@ function driveSessionEventPump(
     if (!grounding?.attempted) return;
 
     if (grounding.sources.length > 0) {
+      const navigator = gardenNavigationResourceFromSources({
+        id: `garden-search:${streamRun.id}`,
+        query: streamRun.instruction,
+        createdAt: streamRun.started_at,
+        sources: grounding.sources,
+      });
+      if (navigator) uiResources.push(navigator);
       for (const [index, source] of grounding.sources.entries()) {
         const label = `${source.title} (${source.gardenName})`;
         if (!sources.includes(label)) sources.push(label);
@@ -467,6 +477,7 @@ function driveSessionEventPump(
         payload: {
           replacementText: assistantText,
           usage: tokenUsage,
+          ...(uiResources.length ? { uiResources } : {}),
         },
       });
     };
@@ -613,7 +624,11 @@ function driveSessionEventPump(
           completedAt: event.timestamp,
         });
         for (const resource of event.payload.uiResources ?? []) {
-          const existing = uiResources.findIndex((item) => item.id === resource.id);
+          const existing = uiResources.findIndex(
+            (item) =>
+              item.id === resource.id ||
+              (resource.kind === "garden-search" && item.kind === resource.kind),
+          );
           if (existing >= 0) uiResources[existing] = resource;
           else uiResources.push(resource);
         }

@@ -4,6 +4,7 @@ import { isChatHighlight } from "./highlights.ts";
 import { removeConversationModelBlobs } from "./model-uploads.ts";
 import { removeConversationVideoBlobs } from "./video-uploads.ts";
 import { removeConversationAudioBlobs } from "./audio-uploads.ts";
+import { removeConversationStoredFileBlobs } from "./stored-file-uploads.ts";
 import db from "../db.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
 import type { HermesSurface } from "../hermes/config.ts";
@@ -21,6 +22,7 @@ export interface ConversationRow {
   default_garden_id: number | null;
   active_agency_agent_slug: string | null;
   scheduled_chat_job_id: number | null;
+  hook_id: string | null;
   legacy_chat_session_id: number | null;
   legacy_runtime_session_id: number | null;
   next_order_index: number;
@@ -87,6 +89,8 @@ export interface CreateConversationInput {
   defaultGardenId?: number | null;
   /** Schedule that created this chat, if it was opened unattended. */
   scheduledChatJobId?: number | null;
+  /** Hook that created this chat, if it was opened unattended. */
+  hookId?: string | null;
   /** Off the record: hidden from history and invisible to memory, for good. */
   temporary?: boolean;
 }
@@ -99,9 +103,9 @@ export function createConversation(
   const result = database.prepare(`
     INSERT INTO conversations(
       public_id, user_id, title, surface, scope_kind, default_garden_id,
-      scheduled_chat_job_id, temporary
+      scheduled_chat_job_id, hook_id, temporary
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     publicId,
     input.userId,
@@ -110,6 +114,7 @@ export function createConversation(
     input.scopeKind ?? "global",
     input.defaultGardenId ?? null,
     input.scheduledChatJobId ?? null,
+    input.hookId ?? null,
     input.temporary ? 1 : 0,
   );
   const id = Number(result.lastInsertRowid);
@@ -382,6 +387,7 @@ export function deleteConversation(
   removeConversationModelBlobs(conversation.id, database);
   removeConversationVideoBlobs(conversation.id, conversation.user_id, database);
   removeConversationAudioBlobs(conversation.id, conversation.user_id, database);
+  removeConversationStoredFileBlobs(conversation.id, conversation.user_id, database);
   database.prepare("DELETE FROM conversations WHERE id = ?").run(conversation.id);
 }
 
@@ -564,9 +570,10 @@ export function createConversationWithInitialTurn(input: {
       conversation,
       ...input.turn,
     }, database);
-    const preDispatchRecovery = parseObject(
-      parseObject(input.turn.metadata).preDispatchRecovery,
-    );
+    const recovery = input.turn.metadata?.preDispatchRecovery;
+    const preDispatchRecovery = recovery && typeof recovery === "object" && !Array.isArray(recovery)
+      ? recovery as Record<string, unknown>
+      : {};
     const assistantMessage = failAssistantMessage({
       conversationId: conversation.id,
       clientMessageId: input.turn.clientMessageId,
@@ -838,10 +845,26 @@ export function completeAssistantMessage(input: {
   sources?: unknown;
   tokenUsage?: unknown;
 }, database: Database.Database = db): ConversationMessageRow {
-  return finishAssistantMessage({
+  const completed = finishAssistantMessage({
     ...input,
     status: "complete",
   }, database);
+  if (database === db) {
+    // Loaded lazily to keep the canonical store independent from hook dispatch
+    // (which itself starts conversation turns). Delivery dedupe in the hook
+    // module makes replaying an already-complete message safe.
+    void import("../hooks/chat-completed.ts")
+      .then(({ fireSuccessfulChatHooks }) =>
+        fireSuccessfulChatHooks({
+          conversationId: input.conversationId,
+          clientMessageId: input.clientMessageId,
+        }),
+      )
+      .catch((error) => {
+        console.error("[hooks] chat completion hook loader failed", error);
+      });
+  }
+  return completed;
 }
 
 export function failAssistantMessage(input: {
@@ -1242,6 +1265,7 @@ export function presentConversation(row: ConversationRow): {
   defaultGardenId: number | null;
   activeAgencyAgentSlug: string | null;
   scheduledChatJobId: number | null;
+  hookId: string | null;
   pinned: boolean;
   pinnedAt: string | null;
   highlight: string | null;
@@ -1256,6 +1280,7 @@ export function presentConversation(row: ConversationRow): {
     defaultGardenId: row.default_garden_id,
     activeAgencyAgentSlug: row.active_agency_agent_slug,
     scheduledChatJobId: row.scheduled_chat_job_id ?? null,
+    hookId: row.hook_id ?? null,
     pinned: row.pinned_at !== null,
     pinnedAt: row.pinned_at ?? null,
     // The client mirrors this rather than remembering what it asked for: a

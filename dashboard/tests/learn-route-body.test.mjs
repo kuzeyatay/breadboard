@@ -182,6 +182,10 @@ test("the Learn plan route uses the explicit selection parser before handoff", (
   assert.match(source, /parseExplicitLearnPlanSelection\(body\)/);
   assert.match(
     source,
+    /hasOwnProperty\.call\(body, "expectedModel"\)[\s\S]*?requireExpectedLearnModel\(body, selectedModel\)/,
+  );
+  assert.match(
+    source,
     /error instanceof InvalidLearnRouteBodyError[\s\S]*?\{ status: 400 \}/,
   );
   assert.doesNotMatch(source, /body\.includedSourceIds\.filter/);

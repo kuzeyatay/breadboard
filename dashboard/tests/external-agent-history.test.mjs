@@ -878,6 +878,28 @@ test("launch failures are also canonical history turns", () => {
   assert.equal(store.listConversationMessages(chat.id).length, 2);
 });
 
+test("a delegated failure keeps why the specialist was selected", () => {
+  const chat = conversation();
+  const failed = turns.recordExternalAgentTurn({
+    conversation: chat,
+    clientMessageId: "delegated-gods-eye-failure",
+    surface: "dashboard_terminal",
+    userContent: "Show live aircraft over the Netherlands",
+    assistantContent: "The live-view service could not start.",
+    outcome: "failed",
+    delegatedAgentRun: true,
+    internalAgentContinuation: true,
+    delegatedAgentReason:
+      "God's Eye can display live aircraft positions over the Netherlands.",
+  });
+  const presented = store.presentConversationMessage(failed.assistantMessage);
+  assert.equal(presented.metadata.delegatedAgentRun, true);
+  assert.equal(
+    presented.metadata.delegatedAgentReason,
+    "God's Eye can display live aircraft positions over the Netherlands.",
+  );
+});
+
 test("legacy Hardware Blueprint cards recover rich state from their owned artifact", () => {
   const chat = conversation();
   const recorded = turns.recordExternalAgentTurn({

@@ -7,6 +7,7 @@ allowed-tools:
   - worldmonitor_snapshot
   - worldmonitor_search
   - worldmonitor_climate
+  - weather_forecast
 ---
 
 # World monitor
@@ -24,6 +25,7 @@ breadboard:
     - worldmonitor_snapshot
     - worldmonitor_search
     - worldmonitor_climate
+    - weather_forecast
   requiredArtifactKinds: []
   requiredRuntimes: []
   requiredMcpServers: []
@@ -42,6 +44,10 @@ ranking, so the most significant match is already first.
 
 `worldmonitor_climate` for the measured layer: global indicators, live hazard
 alerts, and current conditions plus the wall clock at named places.
+
+`weather_forecast` for ordinary current or dated weather at any named place.
+Pass all requested dates together; the answer renderer turns each returned day
+into a stacked native weather card.
 
 `worldmonitor_catalog` when you need a valid id. It hits no network and costs
 nothing, so call it rather than guessing a panel or hub id — a wrong id is

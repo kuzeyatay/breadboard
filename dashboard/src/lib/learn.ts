@@ -49,6 +49,7 @@ import {
 } from "@/lib/visuals";
 import {
   learningMapFromModelAuthoredUnits,
+  figurePlacementProblems,
   modelAuthoredLearningUnitParseProblems,
   modelAuthoredSourceArtifactOmissionParseProblems,
   normalizeLearningUnits,
@@ -86,6 +87,7 @@ import {
   saveSourceFormulaReviewSetManifest,
   sourceSetHashWithReviewedFormulas,
   sourceVisualCachedPageImageUrls,
+  sourceVisualScanCoverageProblems,
   sourceVisualSourceIdentityMapHash,
   sourceVisualEmbedUrl,
   sourceVisualMarkdown,
@@ -127,7 +129,7 @@ import {
   sanitizeLearnerTitle,
   selectLearnSources,
   selectLearnSyllabus,
-  sourceAppearsVisualRich,
+  sourceVisualInventoryCoverageProblems,
   sourceSetHashForSources,
   sourceSetHashWithSyllabus,
   stripMarkdownFence,
@@ -1060,7 +1062,10 @@ Return ONLY JSON with this shape:
   "sourceArtifactOmissions": [
     {
       "sourceArtifactId": "exact id copied from extractedSourceArtifacts",
-      "reason": "specific source-grounded reason this artifact should not be taught in this garden"
+      "disposition": "redundant_with_assigned_artifact|outside_learning_scope|non_instructional|unreliable_extraction",
+      "artifactSummary": "specific description of what this artifact shows",
+      "reason": "specific source-grounded pedagogical reason this artifact should not be taught in this garden",
+      "alternativeArtifactId": "required exact assigned artifact id for redundant_with_assigned_artifact; otherwise null"
     }
   ],
   "warnings": ["..."]
@@ -1074,7 +1079,7 @@ Contract rules:
 - A unit is the smallest meaningful teaching step: one learner question, one conceptual move.
 - Source-rich gardens normally need at least 15 units, and large syllabi may need substantially more. Never stop at an arbitrary unit or section total: create enough precise units to cover every teachable syllabus unit and all in-scope source material at the required depth. Do not produce a table-of-contents-style outline made mostly of one-subsection sections.
 - role names the unit's teaching move, never the type of source artifact it owns. A verified formula may support any semantically appropriate role. Do not relabel a concept, mechanism, application, interpretation, synthesis, comparison, worked example, or practice unit as formula merely because that unit owns one or more equations. For a source-rich spine, use at least three appropriate roles, including at least one conceptual/mechanism role and at least one application/interpretation/synthesis/practice role.
-- Partition every entry in extractedSourceArtifacts exactly once. Assign it to the one precise unit where it teaches best, or put its exact id in the garden-wide sourceArtifactOmissions array with your specific reason. Never forget an artifact, assign it twice, both assign and omit it, or invent a generic omission reason.
+- Partition every entry in extractedSourceArtifacts exactly once. Assign it to the one precise unit where it teaches best, or put its exact id in the garden-wide sourceArtifactOmissions array. Every omission must classify its disposition, specifically summarize what the artifact shows, explain why that content adds no safe in-scope teaching value, and name the different assigned replacement artifact when the disposition is redundant_with_assigned_artifact. Never forget an artifact, assign it twice, both assign and omit it, or invent a generic omission reason.
 - extractedSourceArtifacts is the request's single canonical source-artifact catalog. sources.sourceArtifactCatalogRef and sourceMap.sourceArtifactCatalogRef point to that array instead of repeating it. Each artifact's optional sourceMapAnnotation preserves distinct model-authored Source Map semantics. Resolve every artifact only through its exact canonical id.
 - sourceArtifactOmissions is required even when empty. Omissions are not learning-unit ownership: do not use sourceFigures.placement="not_used_with_reason" in the active contract.
 - IDs in sourceFigures, sourceTables, and sourceFormulas may ONLY be copied verbatim from extractedSourceArtifacts. A figure-like ID mentioned in source prose is not a registered artifact and must never be used unless that exact ID is present in extractedSourceArtifacts.
@@ -3260,9 +3265,6 @@ async function ensureSourceVisualsExtracted({
     sourceIds: context.sources.map((source) => source.slug),
     persist: true,
   });
-  const visualRichSlugs = new Set(
-    context.sources.filter(sourceAppearsVisualRich).map((source) => source.slug),
-  );
   for (let index = 0; index < context.sources.length; index += 1) {
     checkpoint?.();
     const source = context.sources[index];
@@ -3283,6 +3285,17 @@ async function ensureSourceVisualsExtracted({
       checkpoint,
       onProgress,
     });
+    const scanCoverageProblems = sourceVisualScanCoverageProblems({
+      contentPath,
+      gardenSlug: gardenId,
+      sourceId: source.slug,
+      pageImageUrls,
+    });
+    if (scanCoverageProblems.length > 0) {
+      throw new Error(
+        `Source visual extraction did not cover every supplied page snapshot: ${scanCoverageProblems.join("; ")}`,
+      );
+    }
   }
 
   const selectedSourceIds = new Set(context.sources.map((source) => source.slug));
@@ -3296,13 +3309,11 @@ async function ensureSourceVisualsExtracted({
     visualLedger,
   ).sourceArtifactInventoryHash;
 
-  if (!deferEmptyVisualCheck && visualRichSlugs.size > 0) {
-    const realFigures = visuals.filter(
-      (visual) => visual.type !== "full_page_fallback" && visualRichSlugs.has(visual.sourceId),
-    );
-    if (realFigures.length === 0) {
+  if (!deferEmptyVisualCheck) {
+    const inventoryCoverageProblems = sourceVisualInventoryCoverageProblems(context.sources, visuals);
+    if (inventoryCoverageProblems.length > 0) {
       throw new Error(
-        `Source visual extraction failed: ${visualRichSlugs.size} visual-rich source(s) produced zero extracted figures/tables. No meaningful figures or tables were detected in the source page snapshots. Refusing to write learner pages with no source figures.`,
+        `Source visual extraction completeness failed: ${inventoryCoverageProblems.join("; ")}. Refusing to plan or write learner pages from an incomplete figure registry.`,
       );
     }
   }
@@ -8516,7 +8527,10 @@ function writeLearningUnitContractArtifacts({
   if (omissions.length > 0) {
     lines.push("", "## Model-authored omissions", "");
     for (const omission of omissions) {
-      lines.push(`- ${omission.sourceArtifactId}: ${omission.reason}`);
+      lines.push(
+        `- ${omission.sourceArtifactId} [${omission.disposition}]: ${omission.artifactSummary}. ${omission.reason}` +
+          (omission.alternativeArtifactId ? ` Replacement: ${omission.alternativeArtifactId}.` : ""),
+      );
     }
   }
   writeGardenConceptRegistryAndContract({
@@ -9796,7 +9810,7 @@ export async function runLearnPlanning({
               repair: {
                 ...repair,
                 instruction:
-                  "The strongest rejected candidate below failed these hard checks. Return a complete corrected replacement JSON object, not a patch or prose explanation. The bounded repairHistory records the exact hard-check history and whether each prior response became the next repair incumbent. Preserve valid source assignments and omission reasons, regenerate every precise learningUnit needed for full teachable-syllabus and in-scope source coverage without an arbitrary unit or section ceiling, partition every registered artifact exactly once between an owning unit and sourceArtifactOmissions, keep semanticConcepts separate from readable knowledgeClaims, and do not return sections first. Treat role as the teaching move rather than the owned artifact type: formulas may support any appropriate role, so never turn concept/mechanism/application/interpretation/synthesis/practice units into formula units merely because they own equations; a rich spine must use at least three appropriate roles including conceptual/mechanism and application/interpretation/synthesis/practice. If a semanticConcept slug appears in multiple units, every occurrence must use exactly the same preferredLabel and exactly the same aliases array in the same order; author that identity yourself because code will never choose or merge it.",
+                  "The strongest rejected candidate below failed these hard checks. Return a complete corrected replacement JSON object, not a patch or prose explanation. The bounded repairHistory records the exact hard-check history and whether each prior response became the next repair incumbent. Preserve valid source assignments and complete omission records (disposition, artifactSummary, reason, and alternativeArtifactId), regenerate every precise learningUnit needed for full teachable-syllabus and in-scope source coverage without an arbitrary unit or section ceiling, partition every registered artifact exactly once between an owning unit and sourceArtifactOmissions, keep semanticConcepts separate from readable knowledgeClaims, and do not return sections first. Treat role as the teaching move rather than the owned artifact type: formulas may support any appropriate role, so never turn concept/mechanism/application/interpretation/synthesis/practice units into formula units merely because they own equations; a rich spine must use at least three appropriate roles including conceptual/mechanism and application/interpretation/synthesis/practice. If a semanticConcept slug appears in multiple units, every occurrence must use exactly the same preferredLabel and exactly the same aliases array in the same order; author that identity yourself because code will never choose or merge it.",
               },
             }
           : {}),
@@ -11086,6 +11100,11 @@ function assessModelAuthoredLessonQuality(
   body: string,
   options: {
     assignedVisualUrls: string[];
+    assignedVisualRequirements: Array<{
+      sourceVisualId: string;
+      url: string;
+      interpretationGoal: string;
+    }>;
     unavailableCitations?: { detect: (prose: string) => string[] };
     subsection: LearningSubsectionPlan;
     canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>>;
@@ -11096,6 +11115,16 @@ function assessModelAuthoredLessonQuality(
     assignedVisualUrls: options.assignedVisualUrls,
     unavailableCitations: options.unavailableCitations,
   });
+  const figureProblems: QualityProblem[] = figurePlacementProblems(body, {
+    maxFiguresPerPage: Math.max(3, options.assignedVisualRequirements.length),
+    requiredInterpretations: options.assignedVisualRequirements,
+  }).map((message) => ({
+    code: message.includes("interpretation goal")
+      ? "source-figure-interpretation"
+      : "source-figure-placement",
+    message,
+    hard: true,
+  }));
   const pageFormulas = new Set(
     extractVerbatimDisplayMath(body)
       .map((expression) => normalizedFormulaForFrontmatter(expression.formula))
@@ -11126,7 +11155,7 @@ function assessModelAuthoredLessonQuality(
       hard: true,
       evidence: [question.label, question.prompt, question.teachingGoal],
     }));
-  const problems = [...base.problems, ...formulaProblems, ...questionProblems];
+  const problems = [...base.problems, ...figureProblems, ...formulaProblems, ...questionProblems];
   return {
     ok: problems.length === 0,
     hardFail: problems.some((problem) => problem.hard),
@@ -14130,6 +14159,37 @@ export async function runTextbookGeneration({
         const assignedVisualUrls = assignedVisuals
           .map((visual) => sourceVisualEmbedUrl(visual))
           .filter((url): url is string => Boolean(url));
+        const assignedVisualRequirements = assignedVisuals.map((visual) => {
+          const url = sourceVisualEmbedUrl(visual);
+          if (!url) {
+            throw new Error(
+              `Assigned source visual ${visual.sourceVisualId} has no embeddable crop; omit it with a reviewed disposition or repair extraction before generation.`,
+            );
+          }
+          const figureContract = (subsection.sourceFigureContracts ?? []).find(
+            (figure) => figure.id === visual.sourceVisualId,
+          );
+          const tableContract = (subsection.sourceTableContracts ?? []).find(
+            (table) => table.id === visual.sourceVisualId,
+          );
+          const assignment = confirmedSourceArtifactAssignments.find(
+            (candidate) => candidate.sourceArtifactId === visual.sourceVisualId,
+          );
+          const interpretationGoal = figureContract?.interpretationGoal ||
+            (tableContract
+              ? `${tableContract.teachingGoal}; explain ${tableContract.rowsOrColumnsToExplain.join(", ")}`
+              : assignment?.requiredInterpretation ?? "");
+          if (!interpretationGoal.trim()) {
+            throw new Error(
+              `Assigned source visual ${visual.sourceVisualId} has no model-authored interpretation goal.`,
+            );
+          }
+          return {
+            sourceVisualId: visual.sourceVisualId,
+            url,
+            interpretationGoal,
+          };
+        });
 
         // Stage 4: bounded model generation and repair. Code evaluates the
         // returned lesson but never rewrites its pedagogy, inserts a Q&A, adds
@@ -14216,6 +14276,7 @@ export async function runTextbookGeneration({
 
           let quality = assessModelAuthoredLessonQuality(attemptBody, {
             assignedVisualUrls,
+            assignedVisualRequirements,
             unavailableCitations: unavailableCitationGate,
             subsection,
             canonicalSourceAnchors: selectedCanonicalSourceAnchors,
@@ -14293,6 +14354,7 @@ export async function runTextbookGeneration({
             attemptBody = repairedBody;
             quality = assessModelAuthoredLessonQuality(attemptBody, {
               assignedVisualUrls,
+              assignedVisualRequirements,
               unavailableCitations: unavailableCitationGate,
               subsection,
               canonicalSourceAnchors: selectedCanonicalSourceAnchors,

@@ -48,6 +48,10 @@ import { suppliedEvidenceText } from "../hermes/evidence-calibration.ts";
 import { ApiError } from "../hermes/route-core.ts";
 import type { HermesSurface } from "../hermes/config.ts";
 import {
+  scheduledChatConfirmationText,
+  type ScheduledChatReceipt,
+} from "../schedules/types.ts";
+import {
   reserveConversationTurn,
   retryAssistantMessage,
   isPreDispatchReservedAssistant,
@@ -55,6 +59,7 @@ import {
   completeAssistantMessage,
   failAssistantMessage,
   updateConversation,
+  conversationIsTemporary,
   ConversationStoreError,
   presentConversationMessage,
   type ConversationRow,
@@ -70,7 +75,9 @@ import {
 import {
   composeMemoryContext,
   maintainDurableMemoryFromUserTurn,
+  retrieveExplicitCrossConversationContext,
 } from "./memory.ts";
+import { parseChatReferenceCommand } from "./chat-reference.ts";
 import { scheduleMemoryProfileSynthesisForConversation } from "./memory-profile.ts";
 import { loadConversationMemoryBundleHybrid } from "../mem0/retrieval.ts";
 import {
@@ -183,13 +190,20 @@ import {
 } from "../aris/agent.ts";
 import { ARIS_AGENT_SLUG } from "../aris/identity.ts";
 import type { CurrentLocationSnapshot } from "../current-location.ts";
-import { renderCurrentLocationContext } from "../hermes/current-location-context.ts";
+import {
+  renderCurrentLocationContext,
+  requestUsesShoppingLocation,
+} from "../hermes/current-location-context.ts";
 import {
   renderGeographicGroundingDirective,
   requiresGeographicGroundingInContext,
 } from "../map/grounding.ts";
 import { readGeographicContext, recordCurrentLocation } from "../map/store.ts";
 import { parseCurrentLocationPayload } from "../hermes/current-location-context.ts";
+import {
+  resolveProductSearchMarket,
+  setProductSearchMarketContext,
+} from "../product-search/market-context.ts";
 import {
   GOAL_MODE_CONNECTION,
   GOAL_MODE_SKILL,
@@ -235,6 +249,8 @@ export interface StartConversationTurnInput {
   branchContextId?: string;
   /** Internal result hand-back from a delegated agent, not a person's message. */
   internalAgentContinuation?: boolean;
+  /** Schedule the app already created for this user-authored turn. */
+  scheduledChatReceipt?: ScheduledChatReceipt;
   /** Client-observed beginning of the response, persisted for restored clocks. */
   responseStartedAt?: string;
   /**
@@ -311,6 +327,35 @@ export async function startConversationTurn(
       "This conversation is bound to a different assistant surface.",
     );
   }
+  const referenceCommand = parseChatReferenceCommand(input.text);
+  if (referenceCommand.keys.length > 1) {
+    throw new ApiError(
+      400,
+      "multiple_chat_references",
+      "Attach one referenced chat per message.",
+    );
+  }
+  const explicitChatReference = referenceCommand.keys.length === 1
+    ? retrieveExplicitCrossConversationContext({
+        userId: input.conversation.user_id,
+        currentConversationId: input.conversation.id,
+        query: input.text,
+      })
+    : null;
+  if (referenceCommand.keys.length === 1 && conversationIsTemporary(input.conversation)) {
+    throw new ApiError(
+      409,
+      "temporary_chat_reference_unavailable",
+      "A temporary chat cannot read another chat. Start or open a saved chat to use Reference.",
+    );
+  }
+  if (referenceCommand.keys.length === 1 && !explicitChatReference) {
+    throw new ApiError(
+      404,
+      "chat_reference_not_found",
+      "That referenced chat could not be found. Choose it again from the Reference tab.",
+    );
+  }
   const context = normalizeSurfaceContext(input.surfaceContext);
   let preparedBranchSession: AuthorizedRuntimeSession | null = null;
   if (input.branchHistory) {
@@ -351,6 +396,9 @@ export async function startConversationTurn(
         ...(input.internalAgentContinuation
           ? { internalAgentContinuation: true }
           : {}),
+        ...(input.scheduledChatReceipt
+          ? { scheduledChatReceipt: input.scheduledChatReceipt }
+          : {}),
       },
     });
   } catch (error) {
@@ -368,8 +416,18 @@ export async function startConversationTurn(
   })) {
     const titledConversation = await generateAndApplyConversationTitle({
       conversation: reservation.conversation,
-      firstPrompt: input.text,
+      firstPrompt: referenceCommand.userText || (
+        referenceCommand.keys.length === 1
+          ? "Summarize the referenced chat."
+          : input.text
+      ),
       model: input.model,
+      sourcePrefix:
+        context.deliveryChannel === "telegram"
+          ? "Telegram"
+          : context.deliveryChannel === "whatsapp"
+            ? "WhatsApp"
+            : undefined,
     });
     if (titledConversation) {
       reservation = { ...reservation, conversation: titledConversation };
@@ -411,6 +469,9 @@ export async function startConversationTurn(
           : {}),
         ...(input.branchGroupId ? { branchGroupId: input.branchGroupId } : {}),
         ...(input.textSelection ? { textSelection: input.textSelection } : {}),
+        ...(input.scheduledChatReceipt
+          ? { scheduledChatReceipt: input.scheduledChatReceipt }
+          : {}),
       },
     );
   }
@@ -430,6 +491,9 @@ export async function startConversationTurn(
       activeGardenId: session.row.cluster_id,
       activeGardenSlug: session.row.garden_id,
       activePageSlug: session.row.page_slug,
+      ...(explicitChatReference
+        ? { referencedConversationId: explicitChatReference.publicId }
+        : {}),
     },
   });
 
@@ -451,6 +515,27 @@ export async function startConversationTurn(
       "run_already_active",
       "This chat is still working on the previous message. Stop it or wait for it to finish.",
     );
+  }
+
+  // The scheduler already performed this action before the turn was sent. A
+  // deterministic acknowledgement avoids asking the runtime to interpret the
+  // same instruction again (and potentially start the task immediately). The
+  // attached receipt is the richer, durable confirmation rendered below it.
+  if (input.scheduledChatReceipt) {
+    const message = scheduledChatConfirmationText(input.scheduledChatReceipt);
+    markStatus(session, "idle");
+    completeAssistantMessage({
+      conversationId: input.conversation.id,
+      clientMessageId: input.clientMessageId,
+      content: message,
+      metadata: { scheduledChatReceipt: input.scheduledChatReceipt },
+    });
+    return {
+      accepted: false,
+      clarified: true,
+      session,
+      message,
+    };
   }
 
   // Hybrid: the deterministic lexical ranking, fused with mem0 semantic
@@ -1412,13 +1497,27 @@ export async function startConversationTurn(
           : renderAgencyAgentPersona(activeAgencyAgent)
       : undefined,
   });
+  const locationRequest = resolved.userText || input.text;
   const currentLocationContext = input.internalAgentContinuation
     ? ""
     : renderCurrentLocationContext({
-        request: resolved.userText || input.text,
+        request: locationRequest,
         priorRequests,
         location: input.currentLocation,
       });
+  const currentLocationSnapshot = currentLocationContext
+    ? parseCurrentLocationPayload(input.currentLocation)
+    : null;
+  const productSearchMarket =
+    currentLocationSnapshot &&
+    requestUsesShoppingLocation(locationRequest, priorRequests)
+      ? await resolveProductSearchMarket(currentLocationSnapshot)
+      : null;
+  // The product tool runs in Hermes after this request returns. Give it only a
+  // country-level, short-lived market owned by this server-side runtime
+  // session. A new turn always replaces the value, so an unrelated request
+  // cannot inherit yesterday's shopping location.
+  setProductSearchMarketContext(session.row.id, productSearchMarket);
   // The same coarse fix, put where the map tools can reach it. Without this,
   // "what's near me" has no anchor unless the /map page happens to be open —
   // and an agent with no anchor and a geographic question is exactly the
@@ -1427,7 +1526,7 @@ export async function startConversationTurn(
   // an unrelated turn never records where the user is, and the next fix
   // replaces it rather than accumulating a trail.
   if (currentLocationContext && tools.map_search === true) {
-    const snapshot = parseCurrentLocationPayload(input.currentLocation);
+    const snapshot = currentLocationSnapshot;
     if (snapshot) {
       recordCurrentLocation(
         { userId: input.conversation.user_id, conversationId: input.conversation.id },
@@ -1688,6 +1787,7 @@ export async function startConversationTurn(
     await dispatch(session);
   } catch (firstError) {
     try {
+      const previousRuntimeSessionId = session.row.id;
       session = await resolveConversationRuntime({
         conversation: input.conversation,
         surface: input.surface,
@@ -1699,6 +1799,8 @@ export async function startConversationTurn(
           : undefined,
         branchContextId: input.branchContextId,
       });
+      setProductSearchMarketContext(previousRuntimeSessionId, null);
+      setProductSearchMarketContext(session.row.id, productSearchMarket);
       await getAgentRuntimeByKind(session.runtimeKind).applyCapabilityDecision({
         externalSessionId: session.externalSessionId,
         liveSessionId: session.liveSessionId,
@@ -1708,6 +1810,7 @@ export async function startConversationTurn(
       });
       await dispatch(session);
     } catch (retryError) {
+      setProductSearchMarketContext(session.row.id, null);
       finishRuntimeRun(run.id, "error");
       markStatus(session, "failed");
       failAssistantMessage({

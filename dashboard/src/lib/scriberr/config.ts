@@ -19,6 +19,8 @@ export interface VideoTranscriptionConfig {
   /** Transcription parameters forwarded to Scriberr's start endpoint. */
   scriberrModelFamily: string;
   scriberrModel: string;
+  /** WhisperX inference batch size. Lower values trade speed for bounded memory. */
+  scriberrBatchSize: number;
   scriberrLanguage: string | null;
   scriberrDiarization: boolean;
   /** Delete the Scriberr-side job after a successful import (supported API). */
@@ -105,6 +107,10 @@ export function loadVideoTranscriptionConfig(
     scriberrModelFamily:
       stringFromEnv(env.SCRIBERR_MODEL_FAMILY) ?? "whisper",
     scriberrModel: stringFromEnv(env.SCRIBERR_MODEL) ?? "small",
+    scriberrBatchSize: intFromEnv(env.SCRIBERR_BATCH_SIZE, 4, {
+      min: 1,
+      max: 64,
+    }),
     scriberrLanguage: stringFromEnv(env.SCRIBERR_LANGUAGE),
     scriberrDiarization: boolFromEnv(env.SCRIBERR_DIARIZATION, false),
     deleteScriberrJobs: boolFromEnv(

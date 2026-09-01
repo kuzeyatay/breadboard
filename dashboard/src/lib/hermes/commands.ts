@@ -52,6 +52,7 @@ import {
   markSkillLessonsUsed,
   skillGuidanceWithLessons,
 } from "./skill-lessons.ts";
+import { isChatReferenceToken } from "../conversations/chat-reference.ts";
 
 export type CommandHubItemKind = "skill" | "mcp" | "prompt" | "agent";
 
@@ -400,9 +401,14 @@ function requestedSelectors(
   rawText: string,
   registry: CommandHubItem[],
   activeAgentSlug?: string | null,
-): { requested: Array<{ kind: CommandHubItemKind; slug: string }>; remaining: string } {
+): {
+  requested: Array<{ kind: CommandHubItemKind; slug: string }>;
+  remaining: string;
+  consumedContext: boolean;
+} {
   let remaining = rawText.trimStart();
   const requested: Array<{ kind: CommandHubItemKind; slug: string }> = [];
+  let consumedContext = false;
   let arisSelected = activeAgentSlug === ARIS_AGENT_SLUG;
   while (remaining.startsWith("/")) {
     const legacy = remaining.match(LEGACY_TOKEN);
@@ -440,6 +446,11 @@ function requestedSelectors(
       );
     }
     const token = clean[1].toLowerCase();
+    if (isChatReferenceToken(token)) {
+      consumedContext = true;
+      remaining = remaining.slice(clean[0].length).trimStart();
+      continue;
+    }
     const item = registry.find((candidate) => candidate.token === token);
     if (!item) {
       if (arisSelected && isArisSkillSlug(token)) {
@@ -490,7 +501,7 @@ function requestedSelectors(
     requested.push({ kind: item.kind, slug: item.slug });
     remaining = remaining.slice(clean[0].length).trimStart();
   }
-  return { requested, remaining };
+  return { requested, remaining, consumedContext };
 }
 
 export async function resolveCommandMessage(
@@ -520,7 +531,12 @@ export async function resolveCommandMessage(
   const parsed = requestedSelectors(rawText, registry, context.activeAgentSlug);
   const requested = parsed.requested;
   const remaining = parsed.remaining;
-  if (requested.length === 0) return { text: rawText, userText: rawText, invocations: [] };
+  if (requested.length === 0) {
+    const contextRequest = remaining || "Summarize the referenced chat.";
+    return parsed.consumedContext
+      ? { text: contextRequest, userText: contextRequest, invocations: [] }
+      : { text: rawText, userText: rawText, invocations: [] };
+  }
   const capabilityRequests = requested.filter((item) => item.kind !== "agent");
   if (capabilityRequests.length > 2) {
     throw new ApiError(

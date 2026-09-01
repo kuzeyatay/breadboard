@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { readFile } from "node:fs/promises";
 import db from "@/lib/db";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
@@ -9,6 +10,10 @@ import {
 } from "@/lib/conversations/uploads.ts";
 import { readModelBlob } from "@/lib/conversations/model-blob-store.ts";
 import { modelFormatMimeType } from "@/lib/model-attachments.ts";
+import { findStoredFileBlob } from "@/lib/conversations/stored-file-blob-store.ts";
+import { STORED_FILE_ATTACHMENT_FORMATS } from "@/lib/stored-file-attachments.ts";
+import { findDocumentBlob } from "@/lib/conversations/document-blob-store.ts";
+import { DOCUMENT_ATTACHMENT_FORMATS } from "@/lib/document-attachments.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -40,8 +45,7 @@ export async function GET(
     if (!row) throw new ApiError(404, "upload_not_found", "Upload not found.");
 
     const attachment = messageAttachments(row.metadata)[parsed.index];
-    if (!attachment || attachment.type === "file") {
-      // Documents are extracted at send time and their bytes are not retained.
+    if (!attachment) {
       throw new ApiError(404, "upload_content_unavailable", "This upload's contents were not kept.");
     }
 
@@ -64,7 +68,7 @@ export async function GET(
       );
     }
 
-    // A 3D model's bytes live on disk; an image's travel inside the message.
+    // A 3D model and ordinary files live on disk; an image travels inside the message.
     // Kernel-backed formats (STEP, IGES, BREP) keep a derived mesh beside the
     // original. The Uploads viewer asks for that mesh while Download continues
     // to return exactly what the user attached.
@@ -83,6 +87,20 @@ export async function GET(
     if (viewedModel) {
       bytes = readModelBlob(viewedModel);
       contentType = modelFormatMimeType(viewedModel.format);
+    } else if (attachment.type === "document") {
+      const stored = findDocumentBlob({ userId, blobId: attachment.blobId });
+      if (!stored || stored.format !== attachment.format) {
+        throw new ApiError(404, "upload_content_unavailable", "This upload's contents are no longer available.");
+      }
+      bytes = await readFile(stored.path);
+      contentType = DOCUMENT_ATTACHMENT_FORMATS[stored.format].mimeType;
+    } else if (attachment.type === "file" && attachment.blobId && attachment.format) {
+      const stored = findStoredFileBlob({ userId, blobId: attachment.blobId });
+      if (!stored || stored.format !== attachment.format) {
+        throw new ApiError(404, "upload_content_unavailable", "This upload's contents are no longer available.");
+      }
+      bytes = await readFile(stored.path);
+      contentType = STORED_FILE_ATTACHMENT_FORMATS[stored.format].mimeType;
     } else if (attachment.type === "image") {
       bytes = Buffer.from(
         attachment.dataUrl.slice(attachment.dataUrl.indexOf(",") + 1),
@@ -92,7 +110,10 @@ export async function GET(
     } else {
       throw new ApiError(404, "upload_content_unavailable", "This upload cannot be previewed.");
     }
-    const download = new URL(request.url).searchParams.get("download") === "1";
+    const download =
+      new URL(request.url).searchParams.get("download") === "1" ||
+      attachment.type === "file" ||
+      attachment.type === "document";
     const asciiName = attachment.name.replace(/[^\x20-\x7e]/g, "_").replace(/"/g, "'");
 
     return new NextResponse(new Uint8Array(bytes), {

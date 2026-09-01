@@ -35,6 +35,7 @@ import {
   MAP_TOOLS,
   IMAGE_SEARCH_TOOLS,
   PRODUCT_SEARCH_TOOLS,
+  CHAT_SEARCH_TOOLS,
   OFFICE_TOOLS,
   DOCUMENT_TOOLS,
   WATERMARK_TOOLS,
@@ -243,6 +244,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...WORLDMONITOR_TOOLS,
       ...IMAGE_SEARCH_TOOLS,
       ...PRODUCT_SEARCH_TOOLS,
+      ...CHAT_SEARCH_TOOLS,
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
@@ -670,19 +672,16 @@ function buildToolMap(
   // this product boundary. Genuine Terminal access goes through the audited
   // server callback above; Garden and Quartz never receive either executor.
   map.bash = false;
-  const needsTerminal = [
-    "filesystem_read",
-    "filesystem_write",
-    "destructive_filesystem",
-    "document_processing",
-    "media_processing",
-    "command_execution",
-    "coding",
-  ].some((capability) => granted.has(capability as TaskCapability));
+  // The dedicated Terminal is a stable execution surface, not a capability the
+  // lexical task planner has to predict. The server callback below still checks
+  // the authenticated session, active run, command shape, roots and exact
+  // approval. Keeping the tool available is what lets an unplanned but valid
+  // command reach that policy: YOLO approves it automatically, while ordinary
+  // mode raises the native permission widget. A planner miss must never become
+  // a non-actionable 403.
   map.terminal_execute_command =
     authenticated &&
     surface === "dashboard_terminal" &&
-    needsTerminal &&
     options.interactiveApprovals !== false;
   for (const tool of ARTIFACT_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
@@ -813,6 +812,12 @@ function buildToolMap(
   for (const tool of PRODUCT_SEARCH_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // Locating a past chat is an ordinary private knowledge turn. The tool is
+  // read-only and its route narrows every lookup to the signed-in user, the
+  // active surface, and (for Garden Chat) the active Garden.
+  for (const tool of CHAT_SEARCH_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // "How far is the station" is a plain knowledge turn as well, and it is the
   // one where being wrong is least visible: a model that answers it from memory
   // sounds exactly like one that looked it up. So the map tools follow the same
@@ -925,6 +930,7 @@ function buildToolMap(
     // surface is the anonymous public one.
     for (const tool of IMAGE_SEARCH_TOOLS) map[tool] = false;
     for (const tool of PRODUCT_SEARCH_TOOLS) map[tool] = false;
+    for (const tool of CHAT_SEARCH_TOOLS) map[tool] = false;
     // Geographic state is one signed-in person's map session, and this surface
     // is the anonymous public one.
     for (const tool of MAP_TOOLS) map[tool] = false;

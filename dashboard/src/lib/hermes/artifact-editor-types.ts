@@ -35,8 +35,8 @@ export function artifactEditorMode(
   if (artifact.status !== "ready") return null;
   if (artifact.renderer === "pdf-file") return "pdf";
   if (
-    artifact.renderer === "document-file" ||
-    artifact.renderer === "presentation-file"
+    (artifact.renderer === "document-file" && artifact.mimeType.includes("wordprocessingml")) ||
+    (artifact.renderer === "presentation-file" && artifact.mimeType.includes("presentationml"))
   ) {
     return "office-blocks";
   }
@@ -48,6 +48,9 @@ export function artifactEditorMode(
   }
   if (
     artifact.renderer === "data-file" ||
+    artifact.renderer === "text-file" ||
+    artifact.renderer === "markdown-file" ||
+    artifact.renderer === "html-file" ||
     (artifact.renderer === "spreadsheet-file" &&
       /^(?:text\/|application\/(?:json|csv))/i.test(artifact.mimeType)) ||
     (artifact.renderer === "code" && artifact.metadata.imported === true)

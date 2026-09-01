@@ -21,6 +21,9 @@ export class HookError extends Error {
 
 export type HookMode = "chat" | "workflow";
 
+/** Internal trigger fired after a durable assistant answer completes. */
+export const CHAT_COMPLETED_PROVIDER = "chat_completed";
+
 export interface HookRow {
   id: string;
   user_id: number;
@@ -60,6 +63,13 @@ export type UpdateHookInput = Partial<{
 const MAX_NAME_LENGTH = 120;
 const MAX_INSTRUCTIONS_LENGTH = 8_000;
 const URL_SAFE_ALPHABET = "useandom-26T198340PX75pxJACKVERYMINDBUSHWOLF_GQZbfghjklqvwyzrict";
+const REQUIRED_PROVIDER_FIELDS: Record<string, Array<{ key: string; label: string }>> = {
+  generic: [{ key: "token", label: "Authentication token" }],
+  telegram: [{ key: "botToken", label: "Bot token" }],
+  stripe: [{ key: "webhookSecret", label: "Signing secret" }],
+  slack: [{ key: "signingSecret", label: "Signing secret" }],
+  gitlab: [{ key: "webhookSecret", label: "Secret token" }],
+};
 
 /** A 21-character URL-safe id, used as the webhook path segment. */
 function generateHookId(): string {
@@ -79,7 +89,10 @@ function boundedText(value: unknown, max: number, field: string, required = true
 }
 
 function assertProvider(provider: string): void {
-  if (!SUPPORTED_HOOK_PROVIDERS.includes(provider)) {
+  if (
+    provider !== CHAT_COMPLETED_PROVIDER &&
+    !SUPPORTED_HOOK_PROVIDERS.includes(provider)
+  ) {
     throw new HookError(400, `Unknown hook provider: ${provider}`);
   }
 }
@@ -90,10 +103,23 @@ function assertMode(mode: string): asserts mode is HookMode {
   }
 }
 
+function assertProviderConfig(
+  provider: string,
+  providerConfig: Record<string, unknown>,
+): void {
+  for (const field of REQUIRED_PROVIDER_FIELDS[provider] ?? []) {
+    const value = providerConfig[field.key];
+    if (typeof value !== "string" || !value.trim()) {
+      throw new HookError(400, `${field.label} is required for ${provider} hooks.`);
+    }
+  }
+}
+
 export function createHook(userId: number, input: CreateHookInput, db: Db): HookRow {
   const name = boundedText(input.name, MAX_NAME_LENGTH, "Hook name");
   assertProvider(input.provider);
   assertMode(input.mode);
+  assertProviderConfig(input.provider, input.providerConfig ?? {});
 
   if (input.mode === "workflow" && !input.workflowId) {
     throw new HookError(400, "A workflow hook needs a workflow to run.");
@@ -145,6 +171,38 @@ export function listHooksForUser(
   return db
     .prepare(`SELECT * FROM hooks WHERE user_id = ? ORDER BY created_at DESC`)
     .all(userId) as HookRow[];
+}
+
+/**
+ * Enabled hooks that react to a successful chat turn. A dashboard-wide hook
+ * sees every non-temporary chat owned by the user. A Garden hook sees only
+ * completions in that Garden, while a Garden completion still reaches the
+ * user's dashboard-wide hooks.
+ */
+export function listEnabledChatCompletionHooks(
+  userId: number,
+  gardenSlug: string | null,
+  db: Db,
+): HookRow[] {
+  const normalizedGardenSlug = gardenSlug?.trim() || null;
+  if (normalizedGardenSlug) {
+    return db
+      .prepare(
+        `SELECT * FROM hooks
+         WHERE user_id = ? AND provider = ? AND enabled = 1
+           AND (garden_slug IS NULL OR garden_slug = ?)
+         ORDER BY created_at ASC`,
+      )
+      .all(userId, CHAT_COMPLETED_PROVIDER, normalizedGardenSlug) as HookRow[];
+  }
+  return db
+    .prepare(
+      `SELECT * FROM hooks
+       WHERE user_id = ? AND provider = ? AND enabled = 1
+         AND garden_slug IS NULL
+       ORDER BY created_at ASC`,
+    )
+    .all(userId, CHAT_COMPLETED_PROVIDER) as HookRow[];
 }
 
 export function getHookById(id: string, db: Db): HookRow | null {

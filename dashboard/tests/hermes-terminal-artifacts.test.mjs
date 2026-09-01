@@ -39,6 +39,9 @@ import {
 } from "../src/lib/hermes/artifact-store.ts";
 import { resolveSkillCompatibility } from "../src/lib/hermes/skill-compatibility.ts";
 import { createOfficeRuntimeFixture } from "./helpers/office-runtime-fixture.mjs";
+import { createArtifactFromUpload } from "../src/lib/hermes/artifact-upload-import.ts";
+import { storedFileBlobPath } from "../src/lib/conversations/stored-file-blob-store.ts";
+import { inspectArtifactImport } from "../src/lib/hermes/artifact-import.ts";
 
 function grantFor(surface) {
   return brokerCapabilities({
@@ -498,6 +501,18 @@ test("Terminal requests permission for any valid command outside the automatic p
   assert.equal(authorizeTerminalCommand(" ", { approvedCommand: " " }).approvalRequired, false);
 });
 
+test("reading the Windows system clock reaches approval instead of a capability denial", () => {
+  const command = 'Get-Date -Format "yyyy-MM-dd HH:mm:ss K"';
+  const pending = authorizeTerminalCommand(command);
+  assert.equal(pending.allowed, false);
+  assert.equal(pending.approvalRequired, true);
+
+  const approved = authorizeTerminalCommand(command, { approvedCommand: command });
+  assert.equal(approved.allowed, true);
+  assert.equal(approved.category, "approved");
+  assert.equal(approved.approvalRequired, false);
+});
+
 test("Terminal executes an exact-approved write inside its active folder", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-terminal-write-"));
   try {
@@ -544,11 +559,11 @@ test("Terminal permits any download URL and file type only after exact-command a
   );
 });
 
-test("surface broker grants artifacts broadly but Terminal only when the task needs it", () => {
+test("surface broker keeps the permission-gated Terminal on its dedicated interactive surface", () => {
   const terminal = grantFor("dashboard_terminal").allowedTools;
   const garden = grantFor("garden_chat").allowedTools;
   const quartz = grantFor("quartz_ai").allowedTools;
-  assert.equal(terminal.terminal_execute_command, false);
+  assert.equal(terminal.terminal_execute_command, true);
   assert.equal(terminal.artifact_create, true);
   assert.equal(terminal.artifact_import, true);
   assert.equal(terminal.artifact_image_generate, true);
@@ -1165,6 +1180,94 @@ test("generated media imports stay inside the authorized workspace and become re
   }
 });
 
+test("a current-turn HTML upload is imported byte-for-byte without a workspace path", async () => {
+  const fixture = artifactFixture();
+  const filesRoot = path.join(fixture.root, "chat-files");
+  const blobId = `fil_${"d".repeat(32)}`;
+  const original = Buffer.from(
+    "<!doctype html><html><body><main data-source=\"upload\">Original HTML</main></body></html>\n",
+  );
+  try {
+    fixture.database.exec("ALTER TABLE conversation_messages ADD COLUMN metadata TEXT");
+    const storedPath = storedFileBlobPath({ userId: 1, blobId, format: "html", root: filesRoot });
+    fs.writeFileSync(storedPath, original);
+    fixture.database.prepare(`
+      INSERT INTO conversation_messages(
+        id, conversation_id, client_message_id, role, metadata
+      ) VALUES (?, ?, ?, 'user', ?)
+    `).run(
+      120,
+      10,
+      "client_upload_html",
+      JSON.stringify({
+        attachments: [{ type: "file", name: "landing.html", blobId, format: "html", sizeBytes: original.byteLength }],
+      }),
+    );
+
+    const artifact = await createArtifactFromUpload({
+      userId: 1,
+      runtimeSessionId: 20,
+      hermesSessionId: "oh_session",
+      conversationId: 10,
+      clusterId: 7,
+      runId: "run_one",
+      assistantMessageId: null,
+      surface: "garden_chat",
+      clientMessageId: "client_upload_html",
+      attachmentName: "landing.html",
+      sourceHermesTool: "artifact_import",
+      database: fixture.database,
+      storageRoot: fixture.storage,
+      attachmentStorageRoots: { files: filesRoot },
+    });
+
+    assert.equal(artifact.status, "ready");
+    assert.equal(artifact.kind, "html");
+    assert.equal(artifact.renderer_id, "html-file");
+    assert.equal(artifact.filename, "landing.html");
+    assert.equal(artifact.title, "landing");
+    const download = artifactFile({
+      artifact,
+      version: 1,
+      purpose: "download",
+      database: fixture.database,
+      storageRoot: fixture.storage,
+    });
+    assert.deepEqual(fs.readFileSync(download.path), original);
+  } finally {
+    fixture.database.close();
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("plain HTML and unsafe SVG uploads remain saveable with safe preview policy", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-upload-profiles-"));
+  try {
+    const htmlPath = path.join(root, "fragment.html");
+    fs.writeFileSync(htmlPath, "A valid HTML text fragment");
+    assert.deepEqual(inspectArtifactImport(htmlPath, "html"), {
+      rendererId: "html-file",
+      mimeType: "text/html; charset=utf-8",
+      extension: ".html",
+      previewAvailable: true,
+    });
+
+    const svgPath = path.join(root, "external.svg");
+    fs.writeFileSync(
+      svgPath,
+      '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><rect width="1" height="1" /></svg>',
+    );
+    assert.deepEqual(inspectArtifactImport(svgPath, "diagram"), {
+      rendererId: "diagram-file",
+      mimeType: "image/svg+xml",
+      extension: ".svg",
+      previewAvailable: false,
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("malformed renderer input fails safely and emits artifact.failed", async () => {
   const fixture = artifactFixture();
   try {
@@ -1317,12 +1420,15 @@ metadata: {"openclaw":{"envVars":[{"name":"HOSTED_API_KEY","required":false,"des
   );
 });
 
-test("Garden UI places Artifacts directly below Videos and Quartz contains no artifact UI", () => {
+test("Garden UI places Artifacts directly below media sources and Quartz contains no artifact UI", () => {
   const workspace = fs.readFileSync(new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url), "utf8");
-  const videos = workspace.indexOf("Videos");
-  const artifacts = workspace.indexOf("Artifacts", videos);
-  assert.ok(videos >= 0 && artifacts > videos);
-  assert.ok(workspace.slice(videos, artifacts).length < 5_000, "Artifacts should be the next sidebar section after Videos");
+  const mediaImport = workspace.indexOf("<GardenVideoImport");
+  const artifacts = workspace.indexOf("Artifacts", mediaImport);
+  assert.ok(mediaImport >= 0 && artifacts > mediaImport);
+  assert.ok(
+    workspace.slice(mediaImport, artifacts).length < 2_000,
+    "Artifacts should be the next sidebar section after media sources",
+  );
   assert.match(workspace, /event\.type\.startsWith\("artifact\."\)/);
   assert.match(workspace, /new CustomEvent\(ARTIFACT_BROWSER_EVENT, \{ detail: event \}\)/);
   assert.match(workspace, /<ArtifactPanel[\s\S]*?compact[\s\S]*?hideHeader[\s\S]*?gardenSlug=\{clusterSlug\}[\s\S]*?sourceSurface="garden_chat"[\s\S]*?\/>/);

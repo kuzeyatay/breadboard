@@ -160,7 +160,7 @@ export default function PlanBoard({
                       }}
                       role="button"
                       tabIndex={0}
-                      aria-label={`${task.ref} ${task.title}`}
+                      aria-label={task.title}
                       className={`neu-surface-raised cursor-grab rounded-lg border px-2.5 py-2 text-left transition-transform hover:-translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] ${
                         dragging === task.id ? "opacity-50" : ""
                       } ${busy ? "pointer-events-none opacity-60" : ""} ${
@@ -196,7 +196,6 @@ export default function PlanBoard({
                       )}
 
                       <div className="mt-1.5 flex items-center gap-2 text-[11px] text-gray-500">
-                        <span className="tabular-nums">{task.ref}</span>
                         {task.dueDate && (
                           <span className={dueClass(task, today)}>
                             {formatDue(task.dueDate, today)}

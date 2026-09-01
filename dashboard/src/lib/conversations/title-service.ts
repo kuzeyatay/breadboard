@@ -265,9 +265,21 @@ export function applyGeneratedConversationTitle(input: {
   conversationId: number;
   expectedTitle: string;
   generatedTitle: string;
+  /** Provenance carried by an external chat, e.g. `Telegram`. */
+  sourcePrefix?: string;
 }, database: Database.Database = db): ConversationRow | null {
-  const generatedTitle = normalizeGeneratedConversationTitle(input.generatedTitle);
-  if (!generatedTitle) return null;
+  const summary = normalizeGeneratedConversationTitle(input.generatedTitle);
+  if (!summary) return null;
+  const sourcePrefix = typeof input.sourcePrefix === "string"
+    ? input.sourcePrefix.replace(/[^\p{L}\p{N} ._-]/gu, "").trim().slice(0, 24)
+    : "";
+  // Normalize the model-authored summary before adding provenance. The prefix
+  // is metadata, not one of the requested 3-4 title words, so feeding the
+  // combined value back through the word-count validator would reject a valid
+  // four-word title such as `Telegram:Remind Drink Minutes Later`.
+  const generatedTitle = `${sourcePrefix ? `${sourcePrefix}:` : ""}${summary}`
+    .slice(0, 80)
+    .trim();
 
   const apply = database.transaction(() => {
     const current = getConversationById(input.conversationId, database);
@@ -295,6 +307,7 @@ export async function generateAndApplyConversationTitle(input: {
   baseUrl?: string;
   fetcher?: ConversationTitleFetcher;
   timeoutMs?: number;
+  sourcePrefix?: string;
 }, database: Database.Database = db): Promise<ConversationRow | null> {
   // A temporary chat is never listed anywhere its title could be read, so
   // naming it would only send the transcript to one more model for nothing.
@@ -305,5 +318,6 @@ export async function generateAndApplyConversationTitle(input: {
     conversationId: input.conversation.id,
     expectedTitle: input.conversation.title,
     generatedTitle,
+    sourcePrefix: input.sourcePrefix,
   }, database);
 }

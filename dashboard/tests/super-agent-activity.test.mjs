@@ -10,6 +10,7 @@ import {
   delegatedAgentStartedAtForMessage,
   delegatedTurnCarriedDurationMs,
   delegatedTurnTotalUsage,
+  supersededDelegationAssistantIndices,
   superAgentActivityLabelForTool,
 } from "../src/lib/hermes/super-agent-activity.ts";
 
@@ -233,78 +234,114 @@ const usage = (overrides = {}) => ({
   ...overrides,
 });
 
-// A delegation leaves one visible row where two turns happened: the turn that
-// delegated is dropped from the transcript once its hand-back exists. Both of
-// its readings — the clock and the cost — therefore belong to the row that
-// survives, or the answer reports the tail of an operation as the whole of it.
-test("the hand-back inherits the hidden turn's time", () => {
-  assert.equal(
-    delegatedTurnCarriedDurationMs({
-      delegatedAgentRun: true,
-      responseDurationMs: 297_000,
+// This is the durable shape of a Super Agent -> God's Eye -> synthesis chain.
+// The visible synthesis owns the whole wait, not just the adjacent worker and
+// not just its own final model call.
+const delegatedPhases = [
+  { role: "user", content: "Show aircraft over the Netherlands" },
+  {
+    role: "assistant",
+    content: "Opening a live aircraft view now.",
+    responseDurationMs: 30_229,
+    usage: usage({
+      inputTokens: 142_329,
+      outputTokens: 355,
+      totalTokens: 142_684,
+      apiCalls: 4,
     }),
-    297_000,
-  );
-});
-
-test("only a delegating turn is inherited from", () => {
-  assert.equal(
-    delegatedTurnCarriedDurationMs({ responseDurationMs: 297_000 }),
-    undefined,
-  );
-  assert.equal(delegatedTurnCarriedDurationMs(undefined), undefined);
-  const own = usage({ inputTokens: 10, outputTokens: 5, totalTokens: 15 });
-  assert.deepEqual(
-    delegatedTurnTotalUsage({ usage: usage({ totalTokens: 999 }) }, own),
-    own,
-  );
-});
-
-test("the hand-back reports what both turns cost", () => {
-  const total = delegatedTurnTotalUsage(
-    {
-      delegatedAgentRun: true,
-      usage: usage({
-        inputTokens: 100_000,
-        outputTokens: 13_000,
-        totalTokens: 113_000,
-        apiCalls: 7,
-      }),
-    },
-    usage({
-      inputTokens: 35_000,
-      outputTokens: 3_500,
-      totalTokens: 38_500,
+  },
+  {
+    role: "user",
+    content: "/agents:gods-eye …",
+    internalAgentContinuation: true,
+    delegatedAgentRun: true,
+  },
+  {
+    role: "assistant",
+    content: "",
+    internalAgentContinuation: true,
+    delegatedAgentRun: true,
+    godsEyeRun: { runId: "gerun_test" },
+    responseDurationMs: 7_699,
+  },
+  {
+    role: "user",
+    content: "God's Eye finished …",
+    internalAgentContinuation: true,
+  },
+  {
+    role: "assistant",
+    content: "The live view shows aircraft over the Netherlands.",
+    responseDurationMs: 18_797,
+    usage: usage({
+      inputTokens: 38_940,
+      outputTokens: 376,
+      totalTokens: 39_316,
       apiCalls: 1,
       scope: "turn",
       // Window occupancy is measured, not accumulated: the last response's
       // reading is the true one and summing would invent a number.
-      contextUsedTokens: 41_000,
-      contextLimitTokens: 200_000,
-      responseDurationMs: 15_000,
+      contextUsedTokens: 38_940,
+      contextLimitTokens: 1_050_000,
+      responseDurationMs: 18_797,
     }),
+  },
+];
+
+test("the hand-back inherits every hidden phase's time", () => {
+  assert.equal(
+    delegatedTurnCarriedDurationMs(delegatedPhases, 5),
+    30_229 + 7_699,
   );
-  assert.equal(total.totalTokens, 151_500);
-  assert.equal(total.inputTokens, 135_000);
-  assert.equal(total.outputTokens, 16_500);
-  assert.equal(total.apiCalls, 8);
+});
+
+test("only an internal delegation chain is inherited from", () => {
+  const ordinary = [
+    { role: "user", content: "Question" },
+    { role: "assistant", content: "Answer", responseDurationMs: 297_000 },
+  ];
+  assert.equal(delegatedTurnCarriedDurationMs(ordinary, 1), undefined);
+  const own = usage({ inputTokens: 10, outputTokens: 5, totalTokens: 15 });
+  assert.deepEqual(delegatedTurnTotalUsage(ordinary, 1, own), own);
+});
+
+test("the hand-back reports what every hidden model phase cost", () => {
+  const total = delegatedTurnTotalUsage(
+    delegatedPhases,
+    5,
+    delegatedPhases[5].usage,
+  );
+  assert.equal(total.totalTokens, 182_000);
+  assert.equal(total.inputTokens, 181_269);
+  assert.equal(total.outputTokens, 731);
+  assert.equal(total.apiCalls, 5);
   assert.equal(total.scope, "turn");
-  assert.equal(total.contextUsedTokens, 41_000);
-  assert.equal(total.contextLimitTokens, 200_000);
+  assert.equal(total.contextUsedTokens, 38_940);
+  assert.equal(total.contextLimitTokens, 1_050_000);
   // The delegation's share of the clock rides on carriedDurationMs instead, so
   // this stays the row's own duration and is never counted twice.
-  assert.equal(total.responseDurationMs, 15_000);
+  assert.equal(total.responseDurationMs, 18_797);
 });
 
 // A legacy cumulative snapshot already covers rows this would add to it.
 test("a session-scoped snapshot is not summed into the hand-back", () => {
   const own = usage({ inputTokens: 10, outputTokens: 5, totalTokens: 15 });
+  const phases = delegatedPhases.map((message) => ({ ...message }));
+  phases[1] = {
+    ...phases[1],
+    usage: usage({ totalTokens: 900_000, scope: "session" }),
+  };
   const total = delegatedTurnTotalUsage(
-    {
-      delegatedAgentRun: true,
-      usage: usage({ totalTokens: 900_000, scope: "session" }),
-    },
+    phases,
+    5,
     own,
   );
   assert.equal(total.totalTokens, 15);
+});
+
+test("a self-presenting delegation is not superseded by its synthesis", () => {
+  assert.deepEqual(
+    [...supersededDelegationAssistantIndices(delegatedPhases)],
+    [1],
+  );
 });

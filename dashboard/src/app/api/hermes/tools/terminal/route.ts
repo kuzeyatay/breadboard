@@ -56,17 +56,13 @@ export async function POST(request: Request) {
     };
     const run = getActiveRuntimeRun(session.id);
     if (!run) throw new ApiError(409, "terminal_run_required", "A current Terminal run is required.");
+    // The task planner selects a useful initial tool set; it is not an
+    // entitlement boundary for this dedicated, authenticated Terminal. A model
+    // may discover that it needs a command only after the turn has started. The
+    // exact command policy below is the authority boundary: safe reads run,
+    // other valid commands raise a 428 permission request (which YOLO answers),
+    // and ownership/surface checks above remain hard denials.
     const decision = getActiveCapabilityDecision(session.id);
-    if (
-      !decision ||
-      !decision.allowedTools.includes("terminal_execute_command")
-    ) {
-      throw new ApiError(
-        403,
-        "terminal_turn_capability_denied",
-        "Terminal execution is not authorized for the current turn.",
-      );
-    }
     const body = await readJsonBody(request, 16 * 1024);
     // Collecting the rest of a command that outlived its slice. The handle was
     // minted by this server for this runtime session; the command itself was
@@ -110,8 +106,8 @@ export async function POST(request: Request) {
       : undefined;
     const terminalScope = {
       workspaceRoot: session.active_directory ?? undefined,
-      authorizedRoots: decision.authorizedRoots,
-      authorizedDeleteTargets: decision.authorizedDeleteTargets ?? [],
+      authorizedRoots: decision?.authorizedRoots ?? [],
+      authorizedDeleteTargets: decision?.authorizedDeleteTargets ?? [],
       ...(permissionGranted ? { approvedCommand: command } : {}),
     };
     const authorization = authorizeTerminalCommand(command, terminalScope);

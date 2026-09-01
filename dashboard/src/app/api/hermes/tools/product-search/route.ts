@@ -21,6 +21,7 @@ import {
   searchProducts,
   type ProductSearchInput,
 } from "@/lib/product-search/service.ts";
+import { productSearchMarketContext } from "@/lib/product-search/market-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -86,7 +87,17 @@ export async function POST(request: Request) {
     const args = body.args && typeof body.args === "object" && !Array.isArray(body.args)
       ? (body.args as unknown as ProductSearchInput)
       : ({} as ProductSearchInput);
-    const data = await searchProducts(args, { signal: request.signal });
+    const market = productSearchMarketContext(session.id);
+    // A model-supplied country is only a fallback for turns without an opted-in
+    // current-location market. The signed session's server-owned market wins,
+    // so tool arguments cannot silently redirect local purchase links.
+    const data = await searchProducts(
+      {
+        ...args,
+        ...(market ? { country: market.locale } : {}),
+      },
+      { signal: request.signal },
+    );
     recordAuditEvent({
       eventType: "productSearch.tool_completed",
       runtimeSessionId: session.id,
@@ -96,6 +107,7 @@ export async function POST(request: Request) {
         query: data.query,
         productsReturned: data.productsReturned,
         sourceCount: data.sources.length,
+        localizedMarket: Boolean(market),
       },
     });
     return NextResponse.json({ ok: true, data });

@@ -115,6 +115,22 @@ test("applying a rewrite keeps the original and selects the new version", () => 
   assert.equal(reload(assistant.id).content, REWRITE);
 });
 
+test("a manual edit is stored as its own reversible origin", () => {
+  const { conversation, assistant } = completedTurn();
+  const state = versions.addAssistantContentVersion({
+    conversationId: conversation.id,
+    messageId: assistant.id,
+    expectedContent: ORIGINAL,
+    content: REWRITE,
+    origin: "manual",
+  });
+
+  assert.equal(state.versions[0].origin, "original");
+  assert.equal(state.versions[1].origin, "manual");
+  assert.equal(state.versions[1].content, REWRITE);
+  assert.equal(state.activeIndex, 1);
+});
+
 test("an adopted rewrite keeps its compact score for transcript reloads", () => {
   const { conversation, assistant } = completedTurn();
   const review = {

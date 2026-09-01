@@ -77,7 +77,6 @@ export default function PlanTaskPanel({
   return (
     <aside className="bb-neu-sidebar-right flex w-[22rem] shrink-0 flex-col overflow-y-auto border-l">
       <header className="flex items-center gap-2 px-4 py-3">
-        <span className="text-xs tabular-nums text-gray-500">{task.ref}</span>
         {task.completedAt && (
           <span
             className="rounded px-1.5 py-px text-[10px]"
@@ -227,7 +226,7 @@ export default function PlanTaskPanel({
                   <span className="text-gray-500">
                     {relation.relationType.replace("_", " ")}
                   </span>{" "}
-                  {relation.relatedRef} · {relation.relatedTitle}
+                  {relation.relatedTitle}
                 </li>
               ))}
             </ul>

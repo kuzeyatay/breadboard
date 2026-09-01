@@ -119,6 +119,8 @@ export interface NormalizedTranscript {
   durationSeconds: number | null;
   sourceType: "audio_upload" | "video_upload" | "youtube";
   segments: NormalizedTranscriptSegment[];
+  /** Scriberr completed successfully and explicitly returned no speech text. */
+  noSpeechDetected?: boolean;
   speakers: string[];
   transcriptionModel: string | null;
 }

@@ -19,13 +19,30 @@ const tokenRow = workspace.slice(
   tokenRowStart,
   workspace.indexOf("{panelExpanded &&", tokenRowStart),
 );
+const statusBarStart = workspace.indexOf('aria-label="Learn status"');
+const statusBar = workspace.slice(statusBarStart, tokenRowStart);
 
 test("the Learn panel puts Rewrite naturally at the far right of the token row", () => {
   assert.doesNotMatch(workspace, /aria-label="Close Learn panel"/);
   assert.match(workspace, /useHumanizerMode\(\)/);
+  assert.match(
+    workspace,
+    /const learnPanelAvailable = Boolean\([\s\S]{0,120}hasExistingLearnContent/,
+  );
+  assert.match(workspace, /disabled={!learnPanelAvailable}/);
   assert.match(tokenRow, /role="switch"[\s\S]*Rewrite naturally/);
   assert.match(tokenRow, /className="ml-auto flex shrink-0/);
   assert.ok(tokenRow.indexOf("Rewrite naturally") > tokenRow.indexOf("formatAssistantModelName"));
+});
+
+test("a completed Learn shows Humanize work in its status bar", () => {
+  assert.ok(statusBarStart >= 0, "Learn status bar should be rendered");
+  assert.match(statusBar, /learnStatusBarActive/);
+  assert.match(statusBar, /learnStatusBarActive \? "learn-progress-pulse"/);
+  assert.match(workspace, /Humanizing completed lessons/);
+  assert.match(workspace, /Restoring the original AI lesson copy/);
+  assert.match(statusBar, /learnHumanizerStatusMessage/);
+  assert.match(statusBar, /aria-live="polite"/);
 });
 
 test("Learn humanization is a validated post-build pass, never a page-generation step", () => {

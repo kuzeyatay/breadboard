@@ -51,8 +51,13 @@ function metadataFor(
   options: {
     delegatedAgentRun?: boolean;
     internalAgentContinuation?: boolean;
+    delegatedAgentReason?: string;
   } = {},
 ): Record<string, unknown> {
+  const delegatedAgentReason = options.delegatedAgentReason
+    ?.trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 240);
   return {
     externalAgent: EXTERNAL_AGENT_MARKER,
     ...(run ? { externalAgentRun: run } : {}),
@@ -65,6 +70,9 @@ function metadataFor(
       : {}),
     ...(branchGroupId ? { branchGroupId } : {}),
     ...(options.delegatedAgentRun ? { delegatedAgentRun: true } : {}),
+    ...(options.delegatedAgentRun && delegatedAgentReason
+      ? { delegatedAgentReason }
+      : {}),
     ...(options.internalAgentContinuation
       ? { internalAgentContinuation: true }
       : {}),
@@ -100,6 +108,8 @@ export function recordExternalAgentTurn(input: {
   delegatedAgentRun?: boolean;
   /** Hide the synthetic private user half while retaining it in model context. */
   internalAgentContinuation?: boolean;
+  /** Why the Super Agent selected this worker, for a humane failure hand-back. */
+  delegatedAgentReason?: string;
 }, database: Database.Database = db): ExternalAgentTurn {
   const outcome = input.outcome ?? (input.run ? "running" : "failed");
   const metadata = metadataFor(
@@ -110,6 +120,7 @@ export function recordExternalAgentTurn(input: {
     {
       delegatedAgentRun: input.delegatedAgentRun,
       internalAgentContinuation: input.internalAgentContinuation,
+      delegatedAgentReason: input.delegatedAgentReason,
     },
   );
   // A delegated worker is born while its parent Super Agent answer is still
@@ -200,6 +211,8 @@ export function attachExternalAgentRun(input: {
   run?: ExternalAgentRun;
   outcome?: ExternalAgentOutcome;
   assistantContent?: string;
+  /** Why the Super Agent selected this worker, for a humane failure hand-back. */
+  delegatedAgentReason?: string;
 }, database: Database.Database = db): ConversationMessageRow {
   const outcome = input.outcome ?? (input.run ? "running" : "failed");
   let attachedNewRun = false;
@@ -264,6 +277,10 @@ export function attachExternalAgentRun(input: {
         : Number.isFinite(priorResponseDurationMs) && priorResponseDurationMs >= 0
           ? priorResponseDurationMs
           : 0;
+    const delegatedAgentReason = input.delegatedAgentReason
+      ?.trim()
+      .replace(/\s+/g, " ")
+      .slice(0, 240);
     const mergedMetadata = {
       ...metadata,
       externalAgent: EXTERNAL_AGENT_MARKER,
@@ -272,6 +289,12 @@ export function attachExternalAgentRun(input: {
       externalAgentStartedAt,
       externalAgentBaseDurationMs,
       delegatedAgentRun: true,
+      ...(delegatedAgentReason
+        ? { delegatedAgentReason }
+        : typeof metadata.delegatedAgentReason === "string" &&
+            metadata.delegatedAgentReason.trim()
+          ? { delegatedAgentReason: metadata.delegatedAgentReason }
+          : {}),
       ...(delegatedAgentPreamble ? { delegatedAgentPreamble } : {}),
       ...(outcome !== "running" && input.assistantContent !== undefined
         ? { externalAgentResult: input.assistantContent }

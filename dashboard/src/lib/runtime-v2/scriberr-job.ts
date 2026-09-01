@@ -320,6 +320,21 @@ export async function retryScriberrRuntimeJob(input: {
 }): Promise<VideoTranscriptionJob | null> {
   const job = input.store.getJob(input.jobId);
   if (!job || job.status !== "failed") return job;
+  if (
+    job.inputKind === "upload" &&
+    !job.mediaTempPath &&
+    !job.scriberrJobId &&
+    !job.transcriptJson
+  ) {
+    // Native Runtime owns the sealed upload and cleans it after a terminal
+    // generation. Retrying this row without any later checkpoint would submit
+    // a zero-input transcription that can only fail as media_missing. Require
+    // the caller to reseal the original file through the canonical upload API.
+    return input.store.transition(job.id, "failed", {
+      errorCode: "media_missing",
+      errorMessage: new VideoTranscriptionError("media_missing").userMessage,
+    });
+  }
   const prepared = input.store.transition(job.id, "queued", {
     currentStage: null,
     progressPercent: null,

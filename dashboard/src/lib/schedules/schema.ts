@@ -78,6 +78,20 @@ export function ensureScheduledChatSchema(db: Db): void {
     "one_shot",
     "one_shot INTEGER NOT NULL DEFAULT 0 CHECK (one_shot IN (0, 1))",
   );
+  // Messaging-origin reminders are delivered directly by the scheduler. They
+  // do not need an agent turn merely to wait and repeat a short piece of text.
+  ensureColumn(
+    db,
+    "scheduled_chat_jobs",
+    "delivery_channel",
+    "delivery_channel TEXT CHECK (delivery_channel IN ('whatsapp', 'telegram'))",
+  );
+  ensureColumn(
+    db,
+    "scheduled_chat_jobs",
+    "delivery_mode",
+    "delivery_mode TEXT CHECK (delivery_mode IN ('reminder'))",
+  );
 }
 
 function ensureColumn(db: Db, table: string, column: string, definition: string): void {

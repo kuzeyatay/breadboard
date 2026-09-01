@@ -4,6 +4,7 @@ import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import db from "@/lib/db.ts";
 import {
   deleteHook,
+  CHAT_COMPLETED_PROVIDER,
   getHookByIdForUser,
   HookError,
   updateHook,
@@ -34,10 +35,14 @@ function presentHook(hook: HookRow) {
     chatInstructions: hook.chat_instructions,
     providerConfig: redacted,
     enabled: hook.enabled === 1,
+    gardenSlug: hook.garden_slug ?? null,
     createdAt: hook.created_at,
     lastFiredAt: hook.last_fired_at,
     fireCount: hook.fire_count,
-    url: buildWebhookTriggerUrl(hook.id),
+    url:
+      hook.provider === CHAT_COMPLETED_PROVIDER
+        ? null
+        : buildWebhookTriggerUrl(hook.id),
   };
 }
 

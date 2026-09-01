@@ -36,6 +36,9 @@ import { priceUsd } from "./model-pricing.ts";
 /** How many weeks the activity grid covers by default. */
 export const DEFAULT_ACTIVITY_WEEKS = 26;
 
+/** Keep phrase analysis useful without pulling an unbounded chat history into memory. */
+export const PROFILE_PHRASE_PROMPT_LIMIT = 2_000;
+
 export interface ProfileAccount {
   username: string;
   /** Both halves of the name they set on this page. Either may be empty. */
@@ -97,6 +100,19 @@ export interface ProfileHabit {
   /** The hour with the most prompts, or null when there is nothing to rank. */
   peakHour: number | null;
   peakWeekday: number | null;
+}
+
+export interface PhraseUse {
+  phrase: string;
+  /** Prompts containing the phrase, counted once per prompt. */
+  count: number;
+}
+
+export interface ProfilePhrases {
+  items: PhraseUse[];
+  analyzedPrompts: number;
+  /** There were older prompts outside the bounded sample. */
+  truncated: boolean;
 }
 
 export interface ProfileStreaks {
@@ -234,6 +250,7 @@ export interface ProfileStats {
   activity: ActivityDay[];
   activityWeeks: number;
   habit: ProfileHabit;
+  phrases: ProfilePhrases;
   streaks: ProfileStreaks;
   surfaces: SurfaceUse[];
   gardens: GardenUse[];
@@ -456,6 +473,7 @@ export function readProfileStats(
     activity,
     activityWeeks: weeks,
     habit: readHabit(database, userId),
+    phrases: readPhrases(database, userId),
     streaks: readStreaks(dayRows, today),
     surfaces: readSurfaceUse(database, userId),
     gardens: readGardenUse(database, userId),
@@ -1140,6 +1158,192 @@ function readMemory(database: Database.Database, userId: number): ProfileMemory 
     candidate: Number(stateRow.candidate),
     confirmed: Number(stateRow.confirmed),
     superseded: Number(stateRow.superseded),
+  };
+}
+
+// -------------------------------------------------------------- phrases
+
+const PHRASE_RESULT_LIMIT = 8;
+const MIN_PHRASE_PROMPTS = 2;
+const PHRASE_WORDS = [2, 3] as const;
+
+/**
+ * Function words make useful sentences but poor profile statistics on their
+ * own. A candidate may contain them, but needs at least one more distinctive
+ * word before it can become a phrase in the widget.
+ */
+const PHRASE_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "been",
+  "but",
+  "by",
+  "for",
+  "from",
+  "had",
+  "has",
+  "have",
+  "he",
+  "her",
+  "hers",
+  "him",
+  "his",
+  "how",
+  "i",
+  "if",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "me",
+  "my",
+  "of",
+  "on",
+  "or",
+  "our",
+  "ours",
+  "she",
+  "that",
+  "the",
+  "their",
+  "theirs",
+  "them",
+  "they",
+  "this",
+  "those",
+  "to",
+  "was",
+  "we",
+  "were",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
+  "why",
+  "with",
+  "you",
+  "your",
+  "yours",
+]);
+
+interface PhraseCandidate extends PhraseUse {
+  words: string[];
+}
+
+function phraseTokens(content: string): string[][] {
+  // Pasted code and links tend to swamp a person's actual turns with repeated
+  // syntax. Strip those before splitting on sentence boundaries so a phrase
+  // never crosses from one thought into the next.
+  const prose = content
+    .normalize("NFKC")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`]*`/g, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .toLocaleLowerCase();
+
+  return prose
+    .split(/[\n\r.!?…;:]+/u)
+    .map((segment) => segment.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) ?? [])
+    .filter((words) => words.length >= PHRASE_WORDS[0]);
+}
+
+function containsWordSequence(haystack: string[], needle: string[]): boolean {
+  if (needle.length > haystack.length) return false;
+  for (let start = 0; start <= haystack.length - needle.length; start += 1) {
+    if (needle.every((word, offset) => haystack[start + offset] === word)) return true;
+  }
+  return false;
+}
+
+/**
+ * Repeated two- and three-word runs from the user's own prompts.
+ *
+ * A phrase counts at most once per prompt. This keeps one pasted paragraph or
+ * accidental repetition from impersonating a habit. Overlapping candidates
+ * are collapsed so the card does not become a ladder of the same sentence.
+ */
+function readPhrases(database: Database.Database, userId: number): ProfilePhrases {
+  const rows = database
+    .prepare(
+      `SELECT m.content
+       FROM conversation_messages m
+       JOIN conversations c ON c.id = m.conversation_id
+       WHERE c.user_id = ?
+         AND c.temporary = 0
+         AND m.role = 'user'
+         AND m.status = 'complete'
+         AND trim(m.content) <> ''
+       ORDER BY m.id DESC
+       LIMIT ?`,
+    )
+    .all(userId, PROFILE_PHRASE_PROMPT_LIMIT + 1) as Array<{ content: string }>;
+
+  const truncated = rows.length > PROFILE_PHRASE_PROMPT_LIMIT;
+  const sampled = rows.slice(0, PROFILE_PHRASE_PROMPT_LIMIT);
+  const counts = new Map<string, number>();
+
+  for (const row of sampled) {
+    const inPrompt = new Set<string>();
+    for (const words of phraseTokens(row.content)) {
+      for (const width of PHRASE_WORDS) {
+        for (let start = 0; start <= words.length - width; start += 1) {
+          const candidateWords = words.slice(start, start + width);
+          const distinctive = candidateWords.some(
+            (word) => !PHRASE_STOP_WORDS.has(word) && !/^\d+$/u.test(word),
+          );
+          if (!distinctive) continue;
+
+          const phrase = candidateWords.join(" ");
+          if (phrase.length <= 80) inPrompt.add(phrase);
+        }
+      }
+    }
+    for (const phrase of inPrompt) counts.set(phrase, (counts.get(phrase) ?? 0) + 1);
+  }
+
+  const candidates = [...counts.entries()]
+    .filter(([, count]) => count >= MIN_PHRASE_PROMPTS)
+    .map<PhraseCandidate>(([phrase, count]) => ({ phrase, count, words: phrase.split(" ") }))
+    .sort((a, b) => {
+      const scoreA = a.count * (a.words.length === 3 ? 1.2 : 1);
+      const scoreB = b.count * (b.words.length === 3 ? 1.2 : 1);
+      return (
+        scoreB - scoreA ||
+        b.count - a.count ||
+        b.words.length - a.words.length ||
+        a.phrase.localeCompare(b.phrase)
+      );
+    });
+
+  const selected: PhraseCandidate[] = [];
+  for (const candidate of candidates) {
+    const overlaps = selected.some(
+      (existing) =>
+        containsWordSequence(existing.words, candidate.words) ||
+        containsWordSequence(candidate.words, existing.words),
+    );
+    if (!overlaps) selected.push(candidate);
+    if (selected.length === PHRASE_RESULT_LIMIT) break;
+  }
+
+  return {
+    items: selected
+      .sort(
+        (a, b) =>
+          b.count - a.count ||
+          b.words.length - a.words.length ||
+          a.phrase.localeCompare(b.phrase),
+      )
+      .map(({ phrase, count }) => ({ phrase, count })),
+    analyzedPrompts: sampled.length,
+    truncated,
   };
 }
 

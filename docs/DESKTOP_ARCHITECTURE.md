@@ -173,11 +173,11 @@ desktop mode the coordinator is the only component that runs Compose.
 
 ## Modes
 
-- **Dev** (`npm run desktop:dev`, or any non-packaged run): services run from
-  the repo with the system `node`/`bun`/`python`, the historical dev layout
-  (`dashboard/db`, `quartz/content`), and the developer's environment. The
-  Next dev server is used. `start.bat` and `npm run dev` keep working
-  unchanged.
+- **Dev** (`npm run desktop:dev`, or any non-packaged run): services and the
+  Next dev server run from the repo with the development runtimes, but durable
+  account data uses the same Electron user-data profile as the packaged app.
+  Switching builds therefore does not fork gardens, chats, memories, or
+  artifacts. QA launches use their own isolated Electron profile.
 - **Packaged**: production builds only. Services run on bundled runtimes from
   `resources/` (read-only), all mutable data lives under the user-data
   directory, secrets are generated per install, and every port is
@@ -212,8 +212,8 @@ content the way every Breadboard code path expects
 
 `dashboard/src/lib/runtime-paths.ts` is the single authority:
 
-- `BREADBOARD_DATA_DIR` → `<data>/database` for SQLite (desktop), falling back
-  to the historical `<dashboard>/db` in dev;
+- `BREADBOARD_DATA_DIR` → `<data>/database` for SQLite. Desktop supplies the
+  same `<data>` profile to ordinary development and packaged launches;
 - `BREADBOARD_REPO_ROOT` → read-only repo-layout assets
   (`hermes-config/system/*.md`, gbrain checkout detection, skills roots),
   falling back to the historical cwd heuristics in dev.

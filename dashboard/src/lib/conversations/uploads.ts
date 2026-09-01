@@ -6,10 +6,9 @@
 // transcript rather than duplicating it, which means a deleted chat takes its
 // uploads with it and nothing can go stale.
 //
-// Consequence worth knowing: only images (as a data URL) and 3D models and
-// videos (as stored blobs) keep their bytes. Text and documents are extracted at
-// send time and only the filename survives, so those rows are a record of the
-// upload, not a copy of it.
+// Every currently supported upload keeps its original bytes: small images live
+// in metadata and other files use user-scoped blob stores. Legacy file rows may
+// still have only a name, so callers continue to distinguish availability.
 
 import {
   normalizeChatMessageAttachments,
@@ -128,7 +127,9 @@ export function collectUploads(
         attachment.type === "image" ||
         attachment.type === "model" ||
         attachment.type === "video" ||
-        attachment.type === "audio";
+        attachment.type === "audio" ||
+        attachment.type === "document" ||
+        (attachment.type === "file" && Boolean(attachment.blobId && attachment.format));
       const previewAvailable =
         attachment.type === "image" ||
         // Every stored audio format plays in a browser, so there is no

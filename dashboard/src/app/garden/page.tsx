@@ -8,10 +8,12 @@ import NewNoteButton from "@/app/components/new-note-button";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { quartzUrl } from "@/lib/quartz-url";
 import {
-  refreshOrganizationQuartzIndex,
-  refreshPrivateQuartzIndex,
-  refreshPublicQuartzIndex,
+  prepareOrganizationQuartzIndex,
+  preparePrivateClusterQuartzIndex,
+  preparePrivateQuartzIndex,
+  preparePublicQuartzIndex,
 } from "@/lib/quartz-garden-index";
+import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { organizationIdsForUser } from "@/lib/organizations/store";
 import LibraryGardenClient from "./library-garden-client";
 
@@ -32,13 +34,13 @@ function switchClass(active: boolean): string {
 export default async function GardenHomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ view?: string }>;
+  searchParams: Promise<{ view?: string; cluster?: string }>;
 }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/auth/login");
 
   const userId = Number((session.user as { id?: string }).id);
-  const { view: rawView } = await searchParams;
+  const { view: rawView, cluster: rawCluster } = await searchParams;
   const inOrganization = organizationIdsForUser(userId).length > 0;
   const view: QuartzView =
     rawView === "public"
@@ -47,12 +49,32 @@ export default async function GardenHomePage({
         ? "organization"
         : "private";
 
-  const quartzSlug =
-    view === "public"
-      ? refreshPublicQuartzIndex()
+  const scopedPrivateIndex =
+    view === "private" && rawCluster
+      ? preparePrivateClusterQuartzIndex(userId, rawCluster)
+      : null;
+  const preparedIndex =
+    scopedPrivateIndex ??
+    (view === "public"
+      ? preparePublicQuartzIndex()
       : view === "organization"
-        ? refreshOrganizationQuartzIndex(userId)
-        : refreshPrivateQuartzIndex(userId);
+        ? prepareOrganizationQuartzIndex(userId)
+        : preparePrivateQuartzIndex(userId));
+
+  // The library index is generated on demand. Do not hand the iframe a slug
+  // that the currently published Quartz tree does not contain yet: keeping
+  // this await inside the Server Component leaves navigation feedback with the
+  // one global blue progress bar and prevents Quartz's temporary 404 document
+  // from becoming the visible garden.
+  if (preparedIndex?.publishRequired) {
+    await publishQuartzAfterMutation(`refresh ${view} garden index`, {
+      userId,
+      requireSuccess: true,
+    });
+  }
+
+  const quartzSlug = preparedIndex?.slug ?? null;
+  const viewTitle = preparedIndex?.title ?? VIEW_TITLES[view];
 
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
@@ -62,7 +84,7 @@ export default async function GardenHomePage({
           <BackLink fallbackHref="/dashboard" fallbackLabel="Back to dashboard" />
           <span className="text-gray-700">/</span>
           <h1 className="text-sm font-semibold text-white truncate max-w-xs">
-            {VIEW_TITLES[view]}
+            {viewTitle}
           </h1>
         </div>
         <div className="relative z-10 flex items-center gap-2">
@@ -101,7 +123,7 @@ export default async function GardenHomePage({
 
       <LibraryGardenClient
         src={quartzSlug ? quartzUrl(quartzSlug) : quartzUrl()}
-        title={VIEW_TITLES[view]}
+        title={viewTitle}
       />
     </div>
   );

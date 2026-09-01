@@ -33,8 +33,24 @@ async function loadQuartzLeaseModule() {
           path: "supervisor-control",
           namespace: "quartz-lease-stub",
         }));
+        build.onResolve({ filter: /quartz-publish$/ }, () => ({
+          path: "quartz-publish",
+          namespace: "quartz-lease-stub",
+        }));
         build.onLoad({ filter: /.*/, namespace: "quartz-lease-stub" }, (args) => {
           if (args.path === "server-only") return { loader: "js", contents: "" };
+          if (args.path === "quartz-publish") {
+            return {
+              loader: "js",
+              contents: `
+                const state = () => globalThis[${JSON.stringify(testStateKey)}];
+                export async function ensureQuartzPublicationForView(userId) {
+                  state().events.push({ type: "publish-ready", userId });
+                  if (state().publishError) throw state().publishError;
+                }
+              `,
+            };
+          }
           return {
             loader: "js",
             contents: `
@@ -108,7 +124,7 @@ const quartzLease = await loadQuartzLeaseModule();
 const cliproxyLease = await loadCliproxyLeaseModule();
 
 function freshLeaseState() {
-  const value = { events: [], nextLease: 0, error: null };
+  const value = { events: [], nextLease: 0, error: null, publishError: null };
   globalThis[testStateKey] = value;
   return value;
 }
@@ -124,6 +140,10 @@ test("Quartz cold views single-flight and never return the native lease capabili
   assert.deepEqual(second, first);
   assert.equal(Object.hasOwn(first, "leaseId"), false);
   assert.equal(state.events.filter((event) => event.type === "acquire").length, 1);
+  assert.deepEqual(state.events.slice(0, 2), [
+    { type: "publish-ready", userId: 7 },
+    { type: "acquire", serviceId: "quartz", reason: "active-garden-view" },
+  ]);
   await quartzLease.releaseQuartzViewLease(7, viewId);
   assert.deepEqual(state.events.at(-1), { type: "release", id: "lease-1" });
 });
@@ -141,13 +161,27 @@ test("Quartz rotation acquires the replacement before releasing the visible view
     viewId,
     startedAt + quartzLease.QUARTZ_VIEW_LEASE_ROTATION_MS + 1,
   );
-  assert.deepEqual(state.events.slice(0, 3), [
+  assert.deepEqual(state.events.slice(0, 4), [
+    { type: "publish-ready", userId: 8 },
     { type: "acquire", serviceId: "quartz", reason: "active-garden-view" },
     { type: "acquire", serviceId: "quartz", reason: "active-garden-view" },
     { type: "release", id: "lease-1" },
   ]);
   await quartzLease.releaseQuartzViewLease(8, viewId);
   assert.deepEqual(state.events.at(-1), { type: "release", id: "lease-2" });
+});
+
+test("Quartz does not start the static service when cold publication fails", async () => {
+  const state = freshLeaseState();
+  state.publishError = new Error("publisher unavailable");
+  await assert.rejects(
+    quartzLease.renewQuartzViewLease(
+      9,
+      "323e4567-e89b-42d3-a456-426614174000",
+    ),
+    /publisher unavailable/u,
+  );
+  assert.deepEqual(state.events, [{ type: "publish-ready", userId: 9 }]);
 });
 
 test("Quartz frames acquire through the authenticated dashboard route before receiving a source", () => {

@@ -30,7 +30,7 @@ import {
   type ConversationMessageRow,
 } from "./store.ts";
 
-export type MessageVersionOrigin = "original" | "humanizer";
+export type MessageVersionOrigin = "original" | "humanizer" | "manual";
 
 export interface ConversationMessageVersion {
   content: string;
@@ -74,7 +74,10 @@ function parseVersions(value: unknown): ConversationMessageVersion[] {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
     const record = entry as Record<string, unknown>;
     if (typeof record.content !== "string") return [];
-    const origin = record.origin === "humanizer" ? "humanizer" : "original";
+    const origin =
+      record.origin === "humanizer" || record.origin === "manual"
+        ? record.origin
+        : "original";
     const rawReview = record.review;
     const review =
       rawReview && typeof rawReview === "object" && !Array.isArray(rawReview)

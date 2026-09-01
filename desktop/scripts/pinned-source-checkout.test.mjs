@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertPinnedCleanCheckout,
+  pinnedSourceTree,
   SOURCE_COMMIT_RECEIPT_NAME,
   writeSourceCommitReceipt,
 } from "./pinned-source-checkout.mjs";
@@ -37,6 +38,7 @@ test("pinned source check accepts only the exact independent clean checkout", ()
       assertPinnedCleanCheckout({ label: "Fixture", sourceRoot: fixtureRoot, expectedCommit: commit }),
       commit,
     );
+    assert.equal(pinnedSourceTree(fixtureRoot, "."), git(fixtureRoot, "rev-parse", "HEAD^{tree}"));
 
     fs.writeFileSync(path.join(fixtureRoot, "untracked.txt"), "not reviewed\n", "utf8");
     assert.throws(
@@ -97,6 +99,7 @@ test("pinned source check accepts an explicitly receipted vendored snapshot", ()
     fs.writeFileSync(path.join(vendoredRoot, "tracked.txt"), "reviewed\n", "utf8");
     writeSourceCommitReceipt(vendoredRoot, upstreamCommit);
     git(fixtureRoot, "add", "vendored-source");
+    git(fixtureRoot, "commit", "--quiet", "-m", "vendor reviewed source");
 
     assert.equal(
       assertPinnedCleanCheckout({
@@ -106,6 +109,10 @@ test("pinned source check accepts an explicitly receipted vendored snapshot", ()
         allowVendoredSnapshot: true,
       }),
       upstreamCommit,
+    );
+    assert.equal(
+      pinnedSourceTree(vendoredRoot, "tracked.txt"),
+      git(fixtureRoot, "rev-parse", "HEAD:vendored-source/tracked.txt"),
     );
     assert.throws(
       () =>
@@ -171,4 +178,18 @@ test("the app stager and package verifier bind every reviewed local source", () 
   assert.match(verify, /requireSourceCommitReceipt/u);
   assert.match(prepare, /BREADBOARD_UPSTREAM_COMMIT/u);
   assert.match(verify, /28eca2d91fd485213045b86896db671937432a48/u);
+});
+
+test("mem0 source pinning accepts the receipted vendored checkout", () => {
+  const scriptsRoot = path.dirname(fileURLToPath(import.meta.url));
+  const repoRoot = path.resolve(scriptsRoot, "..", "..");
+  const setup = fs.readFileSync(path.join(repoRoot, "scripts", "setup-mem0.mjs"), "utf8");
+  const prepare = fs.readFileSync(path.join(scriptsRoot, "prepare-app-resources.mjs"), "utf8");
+
+  assert.match(setup, /label:\s*["']mem0["'][\s\S]*?allowVendoredSnapshot:\s*true/u);
+  assert.match(prepare, /label:\s*["']Mem0["'][\s\S]*?allowVendoredSnapshot:\s*true/u);
+  assert.equal(
+    fs.readFileSync(path.join(repoRoot, "mem0", SOURCE_COMMIT_RECEIPT_NAME), "utf8"),
+    "4debc58a83377b18be81ae1e5969a300736b2fac\n",
+  );
 });

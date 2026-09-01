@@ -206,6 +206,9 @@ export async function routeWhatsAppMessage(
       surfaceContext: { deliveryChannel: "whatsapp" },
       model: preference.defaultModel,
       reasoningEffort: preference.reasoningEffort,
+      // Messaging has no composer switch, so every inbound phone turn uses
+      // Breadboard's full inventory-aware router by default.
+      superAgent: true,
     });
 
     if (!result.accepted) {

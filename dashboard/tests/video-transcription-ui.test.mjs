@@ -124,11 +124,11 @@ test("video, audio, and YouTube inputs render in the same media-import panel", (
   assert.match(componentSource, /aria-label="YouTube URL"/);
   assert.match(componentSource, /Video: \{ACCEPTED_VIDEO_EXTENSIONS\.join\(" "\)\}/);
   assert.match(componentSource, /Audio: \{ACCEPTED_AUDIO_EXTENSIONS\.join\(" "\)\}/);
-  assert.match(componentSource, /form\.append\("media", selectedFile/);
+  assert.match(componentSource, /form\.append\("media", submissionFile/);
   assert.match(componentSource, /onDrop=\{handleDrop\}/, "drag-and-drop supported");
 });
 
-test("media warnings are unboxed and the file chooser is a dark-blue link", () => {
+test("media warnings are unboxed and the file chooser uses the botanical accent", () => {
   assert.match(componentSource, /className="space-y-0\.5"/);
   assert.match(componentSource, /text-amber-600/);
   assert.doesNotMatch(componentSource, /border border-amber-900/);
@@ -136,7 +136,7 @@ test("media warnings are unboxed and the file chooser is a dark-blue link", () =
   const chooserStart = componentSource.indexOf("Drop video or audio here");
   const chooserEnd = componentSource.indexOf("Audio:", chooserStart);
   const chooser = componentSource.slice(chooserStart, chooserEnd);
-  assert.match(chooser, /text-blue-900 underline/);
+  assert.match(chooser, /text-\[var\(--botanical\)\] underline/);
   assert.doesNotMatch(chooser, /text-cyan-300/);
 });
 
@@ -152,16 +152,17 @@ test("inputs are mutually exclusive in both directions", () => {
 });
 
 test("active progress stays actionable while failed history stays out of the source list", () => {
-  assert.match(componentSource, /stagesForInputKind\(job\.inputKind\)/);
+  assert.match(componentSource, /stagesForInputKind\(selectedJob\.inputKind\)/);
   assert.match(componentSource, /formatElapsed\(job\.createdAt, nowMs\)/);
-  assert.match(componentSource, /cancelJob\(job\.id\)/);
+  assert.match(componentSource, /cancelJob\(selectedJob\.id\)/);
   assert.match(
     componentSource,
-    /filter\(\(job\) => job\.status !== "failed" && job\.status !== "cancelled"\)/,
+    /filter\(\(job\) => !isTerminalJob\(job\)\)/,
   );
   assert.doesNotMatch(componentSource, /postJobAction\(job\.id, "retry"\)/);
-  assert.doesNotMatch(componentSource, /job\.errorMessage/);
-  assert.match(componentSource, /Transcript source/);
+  assert.match(componentSource, /selectedJob\.errorMessage/);
+  assert.match(componentSource, />Source</);
+  assert.match(componentSource, /Continue in background/);
 });
 
 test("jobs are restored on mount and polling is single-loop with terminal stop", () => {

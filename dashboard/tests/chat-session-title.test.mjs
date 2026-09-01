@@ -155,3 +155,25 @@ test('an automatic title updates linked history but never overwrites a manual re
   );
   database.close();
 });
+
+test('an external-chat title keeps its source prefix outside the word cap', () => {
+  const database = new Database(':memory:');
+  database.exec(`
+    CREATE TABLE conversations (
+      id INTEGER PRIMARY KEY,
+      title TEXT NOT NULL,
+      legacy_chat_session_id INTEGER
+    );
+    INSERT INTO conversations(id, title, legacy_chat_session_id)
+      VALUES (9, 'Telegram · Kuzey: remind me', NULL);
+  `);
+
+  const updated = applyGeneratedConversationTitle({
+    conversationId: 9,
+    expectedTitle: 'Telegram · Kuzey: remind me',
+    generatedTitle: 'Remind Drink Minutes Later',
+    sourcePrefix: 'Telegram',
+  }, database);
+  assert.equal(updated.title, 'Telegram:Remind Drink Minutes Later');
+  database.close();
+});

@@ -771,6 +771,31 @@ export default function GardenClient({
 
   return (
     <div className="relative flex min-h-0 flex-1 overflow-hidden bg-gray-950">
+      {!quartzLease.ready && (
+        <div
+          className="absolute inset-0 z-10 grid place-items-center bg-gray-950"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex flex-col items-center gap-4">
+            <div className="flex items-center gap-1.5" aria-hidden="true">
+              {[0, 1, 2].map((index) => (
+                <span
+                  key={index}
+                  className="h-1.5 w-1.5 animate-pulse bg-gray-600"
+                  style={{ animationDelay: `${index * 200}ms` }}
+                />
+              ))}
+            </div>
+            <span className="text-xs uppercase tracking-widest text-gray-700">
+              {quartzLease.failed
+                ? 'Quartz did not respond — retrying'
+                : 'Preparing Quartz'}
+            </span>
+          </div>
+        </div>
+      )}
+
       <iframe
         ref={iframeRef}
         src={

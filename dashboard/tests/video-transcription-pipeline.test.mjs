@@ -18,7 +18,11 @@ const ID = "dQw4w9WgXcQ";
 // ── Fake Scriberr: a real HTTP server implementing the endpoints the client
 //    uses, so the integration test exercises the actual ScriberrClient. ──────
 
-function createFakeScriberr({ failTranscription = false, malformedTranscript = false } = {}) {
+function createFakeScriberr({
+  failTranscription = false,
+  malformedTranscript = false,
+  emptyTranscript = false,
+} = {}) {
   const state = {
     jobs: new Map(),
     startCalls: 0,
@@ -98,6 +102,19 @@ function createFakeScriberr({ failTranscription = false, malformedTranscript = f
     if (req.method === "GET" && transcriptMatch) {
       const job = state.jobs.get(transcriptMatch[1]);
       if (!job) return send(404, { error: "Job not found" });
+      if (emptyTranscript) {
+        return send(200, {
+          job_id: job.id,
+          available: true,
+          status: "completed",
+          transcript: {
+            language: "en",
+            model_used: "small.en",
+            segments: [],
+            text: "",
+          },
+        });
+      }
       if (malformedTranscript) {
         return send(200, {
           job_id: job.id,
@@ -178,6 +195,8 @@ function makeHarness(
     ingestCalls: 0,
     resumeIndexingCalls: 0,
     ingestUserId: null,
+    ingestMediaFilePath: null,
+    ingestMediaSha256: null,
     resumeIndexingUserId: null,
   };
   const runner = new VideoTranscriptionRunner({
@@ -201,6 +220,8 @@ function makeHarness(
     ingest: async (input) => {
       counters.ingestCalls += 1;
       counters.ingestUserId = input.userId;
+      counters.ingestMediaFilePath = input.mediaFilePath ?? null;
+      counters.ingestMediaSha256 = input.mediaSha256 ?? null;
       if (ingestFails) throw new Error("boom");
       const slug = slugify(input.sourceTitle) || "video-source";
       const relPath = `sources/${slug}.md`;
@@ -332,6 +353,8 @@ test("MP3 job uses Scriberr audio upload and writes an audio Markdown source", a
     assert.match(content, /source_type: "audio_upload"/);
     assert.match(content, /Uploaded audio file/);
     assert.match(content, /tags: \[source, audio, transcript\]/);
+    assert.equal(harness.counters.ingestMediaFilePath, mediaPath);
+    assert.equal(harness.counters.ingestMediaSha256, "ab".repeat(32));
   } finally {
     await fake.close();
     harness.cleanup();
@@ -399,6 +422,51 @@ test("malformed Scriberr transcript fails loudly without writing a source", asyn
     assert.equal(failed.errorCode, "transcript_malformed");
     const sources = fs.readdirSync(path.join(harness.contentDir, "physics", "sources"));
     assert.deepEqual(sources, []);
+  } finally {
+    await fake.close();
+    harness.cleanup();
+  }
+});
+
+test("a completed no-speech audio result writes an explicit source", async () => {
+  const fake = await createFakeScriberr({ emptyTranscript: true });
+  const harness = makeHarness(fake);
+  const mediaPath = path.join(harness.tempDir, "silent.mp3");
+  fs.writeFileSync(mediaPath, "fake-silent-mp3-bytes");
+  try {
+    const job = harness.store.createJob({
+      clusterId: 1,
+      gardenSlug: "physics",
+      userId: 1,
+      inputKind: "upload",
+      originalFilename: "silent.mp3",
+      sourceTitle: "Silent recording",
+      mediaTempPath: mediaPath,
+      mediaSha256: "cd".repeat(32),
+      videoMetadata: {
+        videoId: "",
+        canonicalUrl: "",
+        title: "Silent recording",
+        channel: null,
+        durationSeconds: 1116,
+        thumbnailUrl: null,
+        uploadDate: null,
+      },
+    });
+    const done = await harness.runner.runExact(job.id, "start");
+    assert.equal(done.status, "completed");
+    assert.equal(fake.state.startCalls, 1);
+    const normalized = JSON.parse(done.transcriptJson);
+    assert.equal(normalized.noSpeechDetected, true);
+    const sourcePath = path.join(
+      harness.contentDir,
+      "physics",
+      "sources",
+      "silent-recording.md",
+    );
+    const content = fs.readFileSync(sourcePath, "utf8");
+    assert.match(content, /No speech was detected in this recording/);
+    assert.match(content, /transcript_status: "no_speech_detected"/);
   } finally {
     await fake.close();
     harness.cleanup();

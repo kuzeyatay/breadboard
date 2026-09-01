@@ -31,6 +31,8 @@ export interface AssistantResponseBranch {
 
 interface Props {
   content: string;
+  /** Open the response's inline editor. Saving is owned by the transcript. */
+  onEdit?: () => void;
   onRetry?: () => void;
   /** Regenerate this turn as a branch; the standing preference humanizes it. */
   onRewrite?: () => void;
@@ -103,7 +105,7 @@ async function speechError(response: Response): Promise<string> {
 }
 
 const actionClass =
-  "rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] focus:outline-none focus:ring-2 focus:ring-[var(--line-strong)]";
+  "rounded-md p-1.5 text-[var(--ink-muted)] transition-[color,background-color,transform] duration-150 hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] focus:outline-none focus:ring-2 focus:ring-[var(--line-strong)] active:scale-[0.97]";
 
 export function AssistantResponseBranchNavigation({
   branch,
@@ -182,6 +184,7 @@ export function MessageActionsSlot({
 
 export default function AssistantMessageActions({
   content,
+  onEdit,
   onRetry,
   onRewrite,
   verification,
@@ -513,17 +516,19 @@ export default function AssistantMessageActions({
           <path strokeLinecap="round" strokeLinejoin="round" d="M7 14V4H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h3Zm0-10h9.2a3 3 0 0 1 2.94 2.42l1.1 5.5A2.56 2.56 0 0 1 17.73 15H14l.55 2.74A2.73 2.73 0 0 1 11.87 21L7 14Z" />
         </svg>
       </button>
-      <button
-        type="button"
-        onClick={downloadResponse}
-        className={actionClass}
-        title="Download response"
-        aria-label="Download response as Markdown"
-      >
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />
-        </svg>
-      </button>
+      {onEdit ? (
+        <button
+          type="button"
+          onClick={onEdit}
+          className={actionClass}
+          title="Edit response"
+          aria-label="Edit assistant response"
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z" />
+          </svg>
+        </button>
+      ) : null}
       {onRetry ? (
         <button
           type="button"

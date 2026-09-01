@@ -24,6 +24,7 @@ export function ensureConversationSchema(database: Database.Database): void {
       default_garden_id         INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
       active_agency_agent_slug  TEXT,
       scheduled_chat_job_id     INTEGER,
+      hook_id                   TEXT,
       legacy_chat_session_id    INTEGER UNIQUE,
       legacy_runtime_session_id INTEGER UNIQUE,
       next_order_index          INTEGER NOT NULL DEFAULT 0,
@@ -169,6 +170,10 @@ export function ensureConversationSchema(database: Database.Database): void {
     "scheduled_chat_job_id",
     "scheduled_chat_job_id INTEGER",
   );
+  // Hook-created chats need the same durable automation provenance as
+  // scheduled chats. The rail reads this only while the turn is active; the
+  // finished conversation remains an ordinary Recent.
+  ensureColumn(database, "conversations", "hook_id", "hook_id TEXT");
   // A pinned chat keeps its place in the sidebar independently of activity, so
   // pinning deliberately does not touch updated_at. A highlight is a marker on
   // the row rather than a place in the list, and is not activity either.

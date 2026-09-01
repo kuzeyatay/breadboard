@@ -386,7 +386,7 @@ test("Agent TARS thinking matches normal chat metadata without metric tags", () 
   assert.match(responseMeta, /label = "Thinking"/);
   assert.match(responseMeta, /\? "Thought" : label/);
   assert.match(responseMeta, /counting tokens/);
-  assert.match(responseMeta, /tokens unavailable/);
+  assert.doesNotMatch(responseMeta, /tokens unavailable/);
   assert.match(responseMeta, /className="my-1 text-\[var\(--ink\)\]"/);
   assert.doesNotMatch(metrics, /label="(?:Input|Output|Total|Calls)"/);
 

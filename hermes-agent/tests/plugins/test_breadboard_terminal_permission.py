@@ -605,3 +605,35 @@ def test_product_search_is_registered_as_a_bounded_structured_tool():
 def test_product_search_is_declared_in_the_plugin_manifest():
     manifest = Path(breadboard.__file__).with_name("plugin.yaml").read_text(encoding="utf-8")
     assert "  - product_search\n" in manifest.replace("\r\n", "\n")
+
+
+def test_chat_search_is_registered_as_a_bounded_navigation_tool():
+    registered = {}
+
+    class _Context:
+        def register_tool(self, **kwargs):
+            registered[kwargs["name"]] = kwargs
+
+    breadboard.register(_Context())
+
+    tool = registered["chat_search"]
+    parameters = tool["schema"]["parameters"]
+    assert parameters["required"] == ["query"]
+    assert parameters["properties"]["query"]["maxLength"] == 300
+    assert parameters["properties"]["count"]["minimum"] == 1
+    assert parameters["properties"]["count"]["maximum"] == 8
+    assert "compact navigation widget" in tool["schema"]["description"]
+    assert breadboard._request_payload(
+        route_kind="chat_search",
+        tool_name="chat_search",
+        args={"query": "Kirchhoff laws", "count": 4},
+        tool_call_id="call-chat",
+    ) == {
+        "tool": "chat_search",
+        "args": {"query": "Kirchhoff laws", "count": 4},
+    }
+
+
+def test_chat_search_is_declared_in_the_plugin_manifest():
+    manifest = Path(breadboard.__file__).with_name("plugin.yaml").read_text(encoding="utf-8")
+    assert "  - chat_search\n" in manifest.replace("\r\n", "\n")

@@ -2638,7 +2638,7 @@ fn normal_windows_component_is_unambiguous(value: &std::ffi::OsStr) -> bool {
 }
 
 #[cfg(windows)]
-fn child_argv_path_presentation(path: &Path) -> Result<PathBuf, PathError> {
+pub(crate) fn child_argv_path_presentation(path: &Path) -> Result<PathBuf, PathError> {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Prefix;
 
@@ -2708,7 +2708,7 @@ fn child_argv_path_presentation(path: &Path) -> Result<PathBuf, PathError> {
 }
 
 #[cfg(not(windows))]
-fn child_argv_path_presentation(path: &Path) -> Result<PathBuf, PathError> {
+pub(crate) fn child_argv_path_presentation(path: &Path) -> Result<PathBuf, PathError> {
     if !path.is_absolute() {
         return Err(PathError::InvalidChildArgvPath);
     }

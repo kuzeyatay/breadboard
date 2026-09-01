@@ -246,7 +246,14 @@ export function sameSourceArtifactAssignmentRecords(
  */
 export interface SourceArtifactOmission {
   sourceArtifactId: string;
+  disposition:
+    | "redundant_with_assigned_artifact"
+    | "outside_learning_scope"
+    | "non_instructional"
+    | "unreliable_extraction";
+  artifactSummary: string;
   reason: string;
+  alternativeArtifactId: string | null;
 }
 
 /** The dedupe fingerprint for an interactive visual. */
@@ -2065,13 +2072,22 @@ export function modelAuthoredSourceArtifactOmissionParseProblems(raw: unknown): 
     }
     const record = item as Record<string, unknown>;
     const extraKeys = Object.keys(record).filter(
-      (key) => key !== "sourceArtifactId" && key !== "reason",
+      (key) => ![
+        "sourceArtifactId",
+        "disposition",
+        "artifactSummary",
+        "reason",
+        "alternativeArtifactId",
+      ].includes(key),
     );
     if (extraKeys.length > 0) {
       problems.push(`${at} contains unsupported fields: ${extraKeys.join(", ")}`);
     }
     const sourceArtifactId = record.sourceArtifactId;
+    const disposition = record.disposition;
+    const artifactSummary = record.artifactSummary;
     const reason = record.reason;
+    const alternativeArtifactId = record.alternativeArtifactId;
     if (
       typeof sourceArtifactId !== "string" ||
       !sourceArtifactId.trim() ||
@@ -2083,8 +2099,56 @@ export function modelAuthoredSourceArtifactOmissionParseProblems(raw: unknown): 
     } else {
       seenIds.add(sourceArtifactId);
     }
-    if (typeof reason !== "string" || !reason.trim() || reason !== reason.trim()) {
-      problems.push(`${at}.reason must be non-empty model-authored prose without surrounding whitespace`);
+    const allowedDispositions = new Set([
+      "redundant_with_assigned_artifact",
+      "outside_learning_scope",
+      "non_instructional",
+      "unreliable_extraction",
+    ]);
+    if (typeof disposition !== "string" || !allowedDispositions.has(disposition)) {
+      problems.push(`${at}.disposition must be a supported explicit omission disposition`);
+    }
+    if (
+      typeof artifactSummary !== "string" ||
+      artifactSummary !== artifactSummary.trim() ||
+      artifactSummary.trim().length < 12 ||
+      artifactSummary.trim().split(/\s+/).length < 3
+    ) {
+      problems.push(`${at}.artifactSummary must specifically describe what the artifact shows`);
+    }
+    if (
+      typeof reason !== "string" ||
+      reason !== reason.trim() ||
+      reason.trim().length < 48 ||
+      reason.trim().split(/\s+/).length < 8 ||
+      /^(?:not relevant|not needed|not useful|skip(?:ped)?|omit(?:ted)?|unused|out of scope)[.!]?$/i.test(reason.trim())
+    ) {
+      problems.push(`${at}.reason must provide a specific pedagogical justification of at least eight words`);
+    } else if (typeof artifactSummary === "string") {
+      const stopWords = new Set([
+        "about", "after", "artifact", "before", "diagram", "figure", "graph", "image",
+        "into", "relation", "shows", "source", "table", "that", "their", "this", "with",
+      ]);
+      const contentWords = (value: string) => new Set(
+        (value.toLowerCase().match(/[a-z0-9]+/g) ?? [])
+          .filter((word) => word.length >= 4 && !stopWords.has(word)),
+      );
+      const summaryWords = contentWords(artifactSummary);
+      const reasonWords = contentWords(reason);
+      if (summaryWords.size > 0 && ![...summaryWords].some((word) => reasonWords.has(word))) {
+        problems.push(`${at}.reason must refer to the artifactSummary's specific content`);
+      }
+    }
+    if (disposition === "redundant_with_assigned_artifact") {
+      if (
+        typeof alternativeArtifactId !== "string" ||
+        !alternativeArtifactId.trim() ||
+        alternativeArtifactId !== alternativeArtifactId.trim()
+      ) {
+        problems.push(`${at}.alternativeArtifactId must name the assigned artifact that replaces this redundant artifact`);
+      }
+    } else if (alternativeArtifactId !== null) {
+      problems.push(`${at}.alternativeArtifactId must be null unless disposition is redundant_with_assigned_artifact`);
     }
   });
   return [...new Set(problems)];
@@ -2107,8 +2171,18 @@ export function projectModelAuthoredSourceArtifactOmissions(
   return list.flatMap((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return [];
     const record = item as Record<string, unknown>;
-    return typeof record.sourceArtifactId === "string" && typeof record.reason === "string"
-      ? [{ sourceArtifactId: record.sourceArtifactId, reason: record.reason }]
+    return typeof record.sourceArtifactId === "string" &&
+        typeof record.disposition === "string" &&
+        typeof record.artifactSummary === "string" &&
+        typeof record.reason === "string" &&
+        (typeof record.alternativeArtifactId === "string" || record.alternativeArtifactId === null)
+      ? [{
+          sourceArtifactId: record.sourceArtifactId,
+          disposition: record.disposition as SourceArtifactOmission["disposition"],
+          artifactSummary: record.artifactSummary,
+          reason: record.reason,
+          alternativeArtifactId: record.alternativeArtifactId,
+        }]
       : [];
   });
 }
@@ -2442,8 +2516,20 @@ export function sourceArtifactCoverageProblems(
     }
   }
   omissions.forEach((omission, index) => {
-    if (!omission.reason.trim()) {
-      problems.push(`sourceArtifactOmissions[${index}].reason must be non-empty model-authored prose`);
+    if (!omission.reason.trim() || !omission.artifactSummary.trim()) {
+      problems.push(`sourceArtifactOmissions[${index}] must retain its model-authored summary and reason`);
+    }
+    if (
+      omission.disposition === "redundant_with_assigned_artifact" &&
+      (!omission.alternativeArtifactId || omission.alternativeArtifactId === omission.sourceArtifactId)
+    ) {
+      problems.push(`sourceArtifactOmissions[${index}] must name a different assigned alternative artifact`);
+    }
+    if (
+      omission.disposition !== "redundant_with_assigned_artifact" &&
+      omission.alternativeArtifactId !== null
+    ) {
+      problems.push(`sourceArtifactOmissions[${index}] has an alternative artifact for a non-redundant disposition`);
     }
     registerAppearance(
       omission.sourceArtifactId,
@@ -2464,6 +2550,19 @@ export function sourceArtifactCoverageProblems(
       );
     }
   }
+  omissions.forEach((omission, index) => {
+    if (omission.disposition !== "redundant_with_assigned_artifact" || !omission.alternativeArtifactId) return;
+    const alternativeAppearances = appearances.get(omission.alternativeArtifactId) ?? [];
+    if (!registered.has(omission.alternativeArtifactId)) {
+      problems.push(
+        `sourceArtifactOmissions[${index}].alternativeArtifactId references unregistered source artifact "${omission.alternativeArtifactId}"`,
+      );
+    } else if (!alternativeAppearances.some((appearance) => appearance.mode === "assigned")) {
+      problems.push(
+        `sourceArtifactOmissions[${index}].alternativeArtifactId must identify an artifact assigned to a learning unit`,
+      );
+    }
+  });
   return [...new Set(problems)];
 }
 
@@ -2860,7 +2959,15 @@ function sourceImageBlockLooksLikeTable(block: string): boolean {
  */
 export function figurePlacementProblems(
   markdown: string,
-  options: { maxDistanceParagraphs?: number; maxFiguresPerPage?: number } = {},
+  options: {
+    maxDistanceParagraphs?: number;
+    maxFiguresPerPage?: number;
+    requiredInterpretations?: ReadonlyArray<{
+      sourceVisualId: string;
+      url: string;
+      interpretationGoal: string;
+    }>;
+  } = {},
 ): string[] {
   const maxDistance = options.maxDistanceParagraphs ?? 3;
   const maxFigures = options.maxFiguresPerPage ?? 3;
@@ -2906,6 +3013,42 @@ export function figurePlacementProblems(
     if (!hasNearbyProse) {
       const url = (blocks[index].match(/!\[[^\]]*\]\(([^)]*)\)/) ?? [])[1] ?? "(image)";
       problems.push(`source figure ${url} has no interpretive prose within ${maxDistance} paragraphs`);
+    }
+  }
+
+  const interpretationStopWords = new Set([
+    "about", "after", "before", "describe", "explain", "figure", "graph", "image",
+    "inside", "interpret", "notice", "result", "shows", "table", "that", "their", "this",
+    "what", "where", "which", "with",
+  ]);
+  const interpretationKeywords = (value: string): string[] => [
+    ...new Set(
+      (value.toLowerCase().match(/[a-z0-9]+/g) ?? [])
+        .filter((word) => word.length >= 4 && !interpretationStopWords.has(word)),
+    ),
+  ];
+  for (const requirement of options.requiredInterpretations ?? []) {
+    const index = blocks.findIndex((block) => block.includes(requirement.url));
+    if (index < 0) {
+      problems.push(`required source figure ${requirement.sourceVisualId} is not embedded at ${requirement.url}`);
+      continue;
+    }
+    const nearbyProse: string[] = [];
+    for (let d = 1; d <= maxDistance; d += 1) {
+      for (const candidate of [blocks[index - d] ?? "", blocks[index + d] ?? ""]) {
+        if (isProse(candidate)) nearbyProse.push(candidate);
+      }
+    }
+    const keywords = interpretationKeywords(requirement.interpretationGoal);
+    const prose = nearbyProse.join(" ").toLowerCase();
+    const matchedKeywords = keywords.filter((keyword) =>
+      new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(prose)
+    );
+    const requiredMatches = keywords.length >= 3 ? 2 : keywords.length;
+    if (requiredMatches > 0 && matchedKeywords.length < requiredMatches) {
+      problems.push(
+        `source figure ${requirement.sourceVisualId} does not address its interpretation goal near the embed (${requirement.interpretationGoal})`,
+      );
     }
   }
   return problems;

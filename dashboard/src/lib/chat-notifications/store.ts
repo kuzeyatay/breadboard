@@ -44,7 +44,11 @@ interface DismissalCandidateRow {
 
 /**
  * Only assistant turns of a person's own, on-the-record Terminal and Garden
- * chats become notices. Buzz rooms and temporary chats never do.
+ * chats become notices. Buzz rooms, temporary chats, and turns originating in
+ * Telegram never do. Telegram already delivers its reply in the originating
+ * channel; repeating it as a Breadboard corner notice would make one response
+ * look like two separate events. The client message id is durable provenance:
+ * unlike Telegram's current-chat binding, it survives `/new` and chat rotation.
  */
 const NOTIFIABLE_MESSAGES_SQL = `
   FROM conversation_messages m
@@ -54,6 +58,7 @@ const NOTIFIABLE_MESSAGES_SQL = `
     AND c.temporary = 0
     AND c.buzz_room_id IS NULL
     AND c.surface IN ('dashboard_terminal', 'garden_chat')
+    AND COALESCE(m.client_message_id, '') NOT LIKE 'telegram-%'
     AND m.role = 'assistant'
     AND m.status IN ('complete', 'failed')
 `;

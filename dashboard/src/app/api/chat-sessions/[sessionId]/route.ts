@@ -85,6 +85,7 @@ interface ChatMessage {
   delegatedAgentPreamble?: string;
   externalAgentResult?: string;
   externalAgentName?: string;
+  delegatedAgentReason?: string;
 }
 
 function normalizeVerification(value: unknown): VerificationSummary | undefined {
@@ -158,6 +159,12 @@ function mergeRuntimeMetadata(
     if (message.externalAgentResult !== undefined) {
       metadata.externalAgentResult = message.externalAgentResult;
     }
+    if (message.delegatedAgentReason?.trim()) {
+      metadata.delegatedAgentReason = message.delegatedAgentReason
+        .trim()
+        .replace(/\s+/g, " ")
+        .slice(0, 240);
+    }
   }
   // Keep whatever the run already stored when the browser has nothing newer,
   // so saving a chat never erases the record of what the agent did.
@@ -191,6 +198,7 @@ function normalizeExternalAgent(
   | "delegatedAgentPreamble"
   | "externalAgentResult"
   | "externalAgentName"
+  | "delegatedAgentReason"
 > {
   if (role !== "assistant") return {};
   // Every kind is read from the shared field table rather than a list kept by
@@ -223,6 +231,15 @@ function normalizeExternalAgent(
       : {}),
     ...(typeof record.externalAgentResult === "string"
       ? { externalAgentResult: record.externalAgentResult }
+      : {}),
+    ...(typeof record.delegatedAgentReason === "string" &&
+    record.delegatedAgentReason.trim()
+      ? {
+          delegatedAgentReason: record.delegatedAgentReason
+            .trim()
+            .replace(/\s+/g, " ")
+            .slice(0, 240),
+        }
       : {}),
     ...(typeof record.externalAgentName === "string" && record.externalAgentName.trim()
       ? { externalAgentName: record.externalAgentName }

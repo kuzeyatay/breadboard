@@ -22,6 +22,10 @@ import {
   monitorSnapshot,
   WorldMonitorQueryError,
 } from "@/lib/worldmonitor/agent-query.ts";
+import {
+  fetchWeatherForecast,
+  WeatherForecastError,
+} from "@/lib/weather/forecast.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -81,7 +85,7 @@ export async function POST(request: Request) {
         ? (body.args as Record<string, unknown>)
         : {};
 
-    const data = await executeWorldMonitorTool(toolName, args);
+    const data = await executeWorldMonitorTool(toolName, args, request.signal);
 
     recordAuditEvent({
       eventType: "worldmonitor.tool_completed",
@@ -111,6 +115,13 @@ export async function POST(request: Request) {
         { status: error.status },
       );
     }
+    if (error instanceof WeatherForecastError) {
+      const status = error.code === "weather_invalid_arguments" ? 400
+        : error.code === "weather_location_not_found" || error.code === "weather_dates_unavailable" ? 404
+          : error.code === "weather_aborted" ? 499
+            : 502;
+      return apiErrorResponse(new ApiError(status, error.code, error.message));
+    }
     return apiErrorResponse(error);
   }
 }
@@ -118,6 +129,7 @@ export async function POST(request: Request) {
 async function executeWorldMonitorTool(
   tool: string,
   args: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   switch (tool) {
     case "worldmonitor_catalog":
@@ -128,6 +140,8 @@ async function executeWorldMonitorTool(
       return monitorSearch(args);
     case "worldmonitor_climate":
       return monitorClimate(args);
+    case "weather_forecast":
+      return fetchWeatherForecast(args as unknown as { location: string; dates?: string[] }, { signal });
     default:
       throw new ApiError(400, "worldmonitor_unknown_tool", `Unhandled tool ${tool}.`);
   }

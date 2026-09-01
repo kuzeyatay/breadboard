@@ -11,7 +11,10 @@
 // starts on its keyless OSM + Re:Earth terrain globe.
 
 import path from "node:path";
-import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
+import {
+  externalRuntimePathExists,
+  externalRuntimePortableRealpath,
+} from "../external-runtime-filesystem.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 import { googleMapsKeyStatus } from "./credentials.ts";
 
@@ -28,18 +31,37 @@ function configured(value: string | undefined): string | null {
   return trimmed ? path.resolve(trimmed) : null;
 }
 
-function isCheckout(candidate: string | null): boolean {
-  return Boolean(
-    candidate && MARKERS.every((marker) => externalRuntimePathExists(path.join(candidate, marker))),
-  );
+function checkoutPath(candidate: string | null): string | null {
+  if (
+    !candidate ||
+    !MARKERS.every((marker) =>
+      externalRuntimePathExists(path.join(candidate, marker)),
+    )
+  ) {
+    return null;
+  }
+  try {
+    // Runtime V2 deliberately uses Windows verbatim paths (\\?\C:\\...) for
+    // trusted filesystem containment. Node 24's main-module resolver cannot
+    // consume that spelling as argv[1]: it truncates the script to `C:` and
+    // exits with EISDIR. Keep the trust check above, then present the already
+    // validated checkout in the normal absolute spelling used by child argv.
+    return externalRuntimePortableRealpath(candidate);
+  } catch {
+    return null;
+  }
 }
 
 /** The checkout the dev server runs from. */
 export function resolveGodsEyeRoot(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = configured(env.GODS_EYE_ROOT);
-  if (env.BREADBOARD_QA_MODE === "1") return isCheckout(explicit) ? explicit : null;
+  if (env.BREADBOARD_QA_MODE === "1") return checkoutPath(explicit);
   const candidates = [explicit, path.join(repositoryRoot(), "gods-eye-view")];
-  return candidates.find(isCheckout) ?? null;
+  for (const candidate of candidates) {
+    const checkout = checkoutPath(candidate);
+    if (checkout) return checkout;
+  }
+  return null;
 }
 
 /** Vite's own CLI inside the checkout, run through Node so no shim is spawned. */

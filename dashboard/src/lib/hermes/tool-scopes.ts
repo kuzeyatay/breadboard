@@ -242,6 +242,7 @@ export const WORLDMONITOR_TOOLS = [
   "worldmonitor_snapshot",
   "worldmonitor_search",
   "worldmonitor_climate",
+  "weather_forecast",
 ] as const;
 
 // Google image search, served by the vendored mcp-google-images-search MCP
@@ -254,6 +255,11 @@ export const IMAGE_SEARCH_TOOLS = ["image_search"] as const;
 // route returns a versioned Breadboard UI resource as data, never component
 // code or third-party HTML.
 export const PRODUCT_SEARCH_TOOLS = ["product_search"] as const;
+
+// Search over the signed-in user's own durable chat history. The server
+// applies the active surface (and active Garden on Garden Chat), excludes
+// temporary conversations, and returns navigation-only UI resources.
+export const CHAT_SEARCH_TOOLS = ["chat_search"] as const;
 
 // The map at /map, and the geographic state behind it. Every one of these is a
 // read of an external open-data service (Photon, Nominatim, Valhalla, Overpass)
@@ -466,6 +472,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...WORLDMONITOR_TOOLS,
       ...IMAGE_SEARCH_TOOLS,
       ...PRODUCT_SEARCH_TOOLS,
+      ...CHAT_SEARCH_TOOLS,
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
@@ -507,6 +514,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...WORLDMONITOR_TOOLS,
     ...IMAGE_SEARCH_TOOLS,
     ...PRODUCT_SEARCH_TOOLS,
+    ...CHAT_SEARCH_TOOLS,
     ...MAP_TOOLS,
     ...SPOTIFY_TOOLS,
     ...CALENDAR_TOOLS,

@@ -432,6 +432,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
                 if (nextOpen) setSlashMenuOpen(false);
               }}
               onSelect={insertCapability}
+              onSelectReference={(token) => insertToken(`/${token}`)}
               onSelectBrowserAgent={() => insertToken(AGENT_TARS_SLASH_COMMAND)}
               onSelectAgentBrowser={() => insertToken(AGENT_BROWSER_SLASH_COMMAND)}
               onSelectAgentReach={() => insertToken(AGENT_REACH_COMMAND)}

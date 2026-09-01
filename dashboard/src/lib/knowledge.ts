@@ -126,6 +126,7 @@ export interface KnowledgeNode {
   sourceType: string;
   sourceFile: string;
   sourcePdf: string;
+  sourceMedia: string;
   sourceDocument: string;
   textbookPage: string;
   breadboardType: string;
@@ -2809,6 +2810,54 @@ function writeKnowledgeBinaryFile(
   }
 }
 
+let knowledgeFileCopySequence = 0;
+
+/** Copy a potentially multi-gigabyte source asset without buffering it in JS. */
+function copyKnowledgeFile(
+  sourcePath: string,
+  targetPath: string,
+  expectedSha256: string,
+  transaction?: KnowledgeWriteTransaction,
+): void {
+  if (!KNOWLEDGE_TRANSACTION_SHA256.test(expectedSha256)) {
+    throw new Error("Knowledge source asset hash is invalid.");
+  }
+  const source = hashKnowledgeFile(sourcePath);
+  if (source.sha256 !== expectedSha256) {
+    throw new Error("Knowledge source asset changed before it was saved.");
+  }
+  if (fs.existsSync(targetPath)) {
+    const existing = hashKnowledgeFile(targetPath);
+    if (
+      existing.sha256 === source.sha256 &&
+      existing.sizeBytes === source.sizeBytes
+    ) {
+      return;
+    }
+    throw new Error("Knowledge source asset path is already occupied.");
+  }
+
+  transaction?.captureFile(targetPath);
+  const temporaryPath = `${targetPath}.pending.${process.pid}.${knowledgeFileCopySequence++}`;
+  transaction?.captureFile(temporaryPath);
+  try {
+    fs.copyFileSync(sourcePath, temporaryPath, fs.constants.COPYFILE_EXCL);
+    const copied = hashKnowledgeFile(temporaryPath);
+    if (
+      copied.sha256 !== source.sha256 ||
+      copied.sizeBytes !== source.sizeBytes
+    ) {
+      throw new Error("Knowledge source asset copy failed its integrity check.");
+    }
+    fs.renameSync(temporaryPath, targetPath);
+    fsyncKnowledgeFile(targetPath);
+    fsyncKnowledgeDirectory(path.dirname(targetPath));
+  } catch (error) {
+    fs.rmSync(temporaryPath, { force: true });
+    throw error;
+  }
+}
+
 function renameKnowledgeFile(
   sourcePath: string,
   targetPath: string,
@@ -4414,6 +4463,7 @@ export async function writeDocumentKnowledge({
   sourceType,
   sourceLabel,
   sourcePdfPath,
+  sourceMedia,
   isHandwriting,
   markdownText,
   plainText,
@@ -4436,6 +4486,7 @@ export async function writeDocumentKnowledge({
   sourceType: string;
   sourceLabel: string;
   sourcePdfPath?: string;
+  sourceMedia?: { filePath: string; sha256: string };
   isHandwriting?: boolean;
   markdownText: string;
   plainText: string;
@@ -4463,17 +4514,18 @@ export async function writeDocumentKnowledge({
     const outputMarkdownText = cleanGeneratedText(markdownText);
     const outputPlainText = cleanGeneratedText(plainText);
     // Keep the generated/humanized name for learning structure and descriptions,
-    // but never replace a PDF source's visible identity with it. The Documents
-    // panel should show exactly the uploaded filename while the descriptive name
-    // remains available as source metadata and planning context.
+    // but never replace an uploaded file's visible identity with it. Library
+    // rows show the exact filename while the descriptive name remains available
+    // as secondary metadata and planning context.
     const sectionTitle = humanizeSourceTitle(
       extraction.documentTitle || sourceTitle,
       sourceFileName,
       outputPlainText || outputMarkdownText,
     );
     extraction.documentTitle = sectionTitle;
+    const isUploadedMedia = Boolean(sourceMetadata?.original_filename);
     const visibleSourceTitle =
-      sourceType.toLowerCase() === "pdf"
+      sourceType.toLowerCase() === "pdf" || isUploadedMedia
         ? sourceFileName.trim() || sourceTitle
         : sectionTitle || sourceTitle;
     ensureKnowledgeDirectory(sourcesDir, transaction);
@@ -4502,6 +4554,27 @@ export async function writeDocumentKnowledge({
 
     const usedSlugs = extractExistingSlugs(clusterDir);
     const sourceSlug = uniqueSlug(slugify(sourceTitle), usedSlugs);
+    let sourceMediaUrl = "";
+    if (sourceMedia) {
+      const extension = path.extname(sourceFileName).toLowerCase();
+      const safeExtension = /^\.[a-z0-9]{1,8}$/.test(extension)
+        ? extension
+        : ".bin";
+      const mediaAssetName = `${sourceSlug}-media-${sourceMedia.sha256.slice(0, 12)}${safeExtension}`;
+      const mediaAssetDir = ensureKnowledgeDirectory(
+        path.join(clusterDir, "assets"),
+        transaction,
+      );
+      const mediaAssetPath = path.join(mediaAssetDir, mediaAssetName);
+      copyKnowledgeFile(
+        sourceMedia.filePath,
+        mediaAssetPath,
+        sourceMedia.sha256,
+        transaction,
+      );
+      createdFilePaths.push(mediaAssetPath);
+      sourceMediaUrl = `/${clusterSlug.trim()}/assets/${mediaAssetName}`;
+    }
     const date = new Date().toISOString();
     const existingNotes = readExistingTopicNotes(clusterDir);
     onProgress?.(
@@ -4575,6 +4648,7 @@ export async function writeDocumentKnowledge({
     }
     if (sourceImages.length > 0) sourceFrontmatter.source_images = sourceImages;
     if (sourcePdfPath) sourceFrontmatter.source_pdf = sourcePdfPath;
+    if (sourceMediaUrl) sourceFrontmatter.source_media = sourceMediaUrl;
     if (isHandwriting) {
       sourceFrontmatter.source_mode = "handwritten-or-scanned";
       sourceFrontmatter.extraction_method = "chatmock-vision-ocr";
@@ -4974,6 +5048,7 @@ export function scanClusterKnowledge(
     const sourceType = frontmatterString(data, "source_type");
     const sourceFile = frontmatterString(data, "source_file");
     const sourcePdf = frontmatterString(data, "source_pdf");
+    const sourceMedia = frontmatterString(data, "source_media");
     const sourceDocument = frontmatterString(data, "source_document");
     const textbookPage =
       frontmatterString(data, "learning_page") ||
@@ -5042,6 +5117,7 @@ export function scanClusterKnowledge(
       sourceType,
       sourceFile,
       sourcePdf,
+      sourceMedia,
       sourceDocument,
       textbookPage,
       breadboardType: nodeBreadboardType,

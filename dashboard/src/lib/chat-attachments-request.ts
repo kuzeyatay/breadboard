@@ -20,6 +20,10 @@ import {
   normalizeDocumentSummary,
 } from "./document-attachments.ts";
 import { normalizeProductAttachment } from "./generative-ui/contracts.ts";
+import {
+  isStoredFileAttachmentFormat,
+  isStoredFileBlobId,
+} from "./stored-file-attachments.ts";
 
 const MAX_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_TEXT_LENGTH = 2 * 1024 * 1024;
@@ -58,14 +62,27 @@ export function parseChatAttachments(value: unknown): ChatAttachment[] {
       return { type: "product", name, product };
     }
     if (attachment.type === "text") {
-      return {
-        type: "text",
-        name,
-        text: requireString(
+      const stored =
+        isStoredFileBlobId(attachment.blobId) &&
+        isStoredFileAttachmentFormat(attachment.format)
+          ? { blobId: attachment.blobId, format: attachment.format }
+          : {};
+      const attachmentText =
+        typeof attachment.text === "string"
+          ? attachment.text.slice(0, MAX_ATTACHMENT_TEXT_LENGTH)
+          : "";
+      if (!("blobId" in stored) && !attachmentText) {
+        requireString(
           attachment.text,
           `attachments[${index}].text`,
           MAX_ATTACHMENT_TEXT_LENGTH,
-        ),
+        );
+      }
+      return {
+        type: "text",
+        name,
+        text: attachmentText,
+        ...stored,
       };
     }
     if (attachment.type === "image") {

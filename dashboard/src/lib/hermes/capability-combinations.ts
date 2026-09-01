@@ -390,6 +390,7 @@ export type CapabilityTokenKind =
   | "runtime_agent"
   | "unknown_runtime_agent"
   | "persona"
+  | "context"
   | "capability";
 
 export interface CapabilityToken {
@@ -424,6 +425,8 @@ export function leadingCapabilityTokens(text: string): {
       raw: `/${match[1]}`,
       kind: agent
         ? "runtime_agent"
+        : token.startsWith("reference:")
+          ? "context"
         : agencyAgentSlugFromToken(token)
           ? "persona"
         : token.startsWith("agents:")

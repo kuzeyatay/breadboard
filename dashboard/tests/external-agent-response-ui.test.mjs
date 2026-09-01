@@ -81,12 +81,12 @@ test("shared response metadata defaults to an honest token state and can hide ab
   assert.match(responseMeta, /\? "Thought" : label/);
   assert.match(responseMeta, /thinking-shimmer/);
   assert.match(responseMeta, /↓ counting tokens/);
-  assert.match(responseMeta, /↓ tokens unavailable/);
+  assert.doesNotMatch(responseMeta, /tokens unavailable/);
   assert.match(responseMeta, /usage\?\.totalTokens \?\? totalTokens/);
   assert.match(responseMeta, /showTokenUsage = true/);
   assert.match(
     responseMeta,
-    /aria-label=\{`\$\{agentName\} \$\{displayLabel\.toLowerCase\(\)\}\$\{showTokenUsage \? " and token usage" : ""\}`\}/,
+    /aria-label=\{`\$\{agentName\} \$\{displayLabel\.toLowerCase\(\)\}\$\{tokenLabel \? " and token usage" : ""\}`\}/,
   );
 });
 

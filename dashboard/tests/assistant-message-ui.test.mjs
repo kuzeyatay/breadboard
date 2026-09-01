@@ -18,6 +18,9 @@ const runtime = source(
 const agentSession = source(
   "../src/app/components/hermes/use-agent-session.ts",
 );
+const messageRoute = source(
+  "../src/app/api/hermes/sessions/[sessionId]/messages/[clientMessageId]/route.ts",
+);
 const sessionPresentation = source("../src/lib/hermes/session-presentation.ts");
 const eventStream = source("../src/lib/hermes/event-stream.ts");
 const conversationStore = source("../src/lib/conversations/store.ts");
@@ -67,7 +70,7 @@ test("thinking remains visible with response metadata and shimmers while active"
   );
   assert.match(responseMeta, /formatTokenCount/);
   assert.match(responseMeta, /↓ counting tokens/);
-  assert.match(responseMeta, /↓ tokens unavailable/);
+  assert.doesNotMatch(responseMeta, /tokens unavailable/);
   // The row states one answer's cost. A cumulative session snapshot belongs to
   // the whole conversation, so it must never be printed as this message's count.
   assert.match(responseMeta, /usage\?\.scope === "session"/);
@@ -241,14 +244,30 @@ test("evidence opens from the overflow menu without a standalone disclosure", ()
   assert.doesNotMatch(overflowMenu, /Regenerate response/);
 });
 
-test("assistant action buttons perform copy, feedback, download, retry, and menu actions", () => {
+test("assistant action buttons expose inline editing while keeping downloads in the menu", () => {
   assert.match(actions, /navigator\.clipboard\.writeText/);
   assert.match(actions, /localStorage\.setItem/);
   assert.match(actions, /aria-pressed=/);
   assert.match(actions, /new Blob/);
   assert.match(actions, /anchor\.download/);
+  assert.match(actions, /title="Edit response"/);
+  assert.match(actions, /aria-label="Edit assistant response"/);
+  assert.doesNotMatch(actions, /title="Download response"/);
   assert.match(actions, /onRetry\?\.\(\)/);
   assert.match(actions, /More response actions/);
+});
+
+test("assistant response editing is inline, durable, and visually part of the response", () => {
+  assert.match(runtime, /editingAssistantMessageId === assistantMessageEditId/);
+  assert.match(runtime, /aria-label="Edit assistant response"/);
+  assert.match(runtime, /bg-transparent p-0 text-sm leading-7/);
+  assert.match(runtime, /\[field-sizing:content\]/);
+  assert.match(runtime, /event\.currentTarget\.form\?\.requestSubmit\(\)/);
+  assert.match(runtime, /onEditAssistantMessage\(message, content\)/);
+  assert.match(agentSession, /method: "PATCH"/);
+  assert.match(agentSession, /expectedContent: message\.content/);
+  assert.match(messageRoute, /origin: "manual"/);
+  assert.match(messageRoute, /forceRecreate: true/);
 });
 
 test("quoted prompt fields can be copied independently without blocking text selection", () => {
@@ -313,7 +332,26 @@ test("activity and actions render with assistant messages, not above composers",
   assert.equal(knowledgeTerminal.match(/<AssistantResponseMeta/g)?.length, 1);
 });
 
-test("ordinary assistant rows mount metadata without requiring provider metrics", () => {
+test("full chat transcript uses the same wide column as its composer", () => {
+  assert.match(
+    runtime,
+    /const chatColumnWidthClass = compact \? "max-w-3xl" : "max-w-5xl"/,
+  );
+  assert.match(
+    runtime,
+    /const transcriptColumnWidthClass = compact \? "max-w-\[50rem\]" : "max-w-\[66rem\]"/,
+  );
+  assert.match(
+    runtime,
+    /bb-chat-scroll-tail[^`]+\$\{transcriptColumnWidthClass\}[^`]+px-4 py-5/,
+  );
+  assert.ok(
+    (runtime.match(/\$\{chatColumnWidthClass\}/g) ?? []).length >= 2,
+    "pre-composer content and the composer must share one width",
+  );
+});
+
+test("ordinary assistant rows omit missing provider metrics", () => {
   for (const transcript of [workspace, gardenAssistant, runtime]) {
     assert.doesNotMatch(
       transcript,
@@ -325,7 +363,8 @@ test("ordinary assistant rows mount metadata without requiring provider metrics"
     /responseDurationMs !== undefined \? \([\s\S]{0,180}Thinking/,
   );
   assert.match(responseMeta, /active\s*\?\s*"↓ counting tokens\.\.\."/);
-  assert.match(responseMeta, /:\s*"↓ tokens unavailable"/);
+  assert.match(responseMeta, /:\s*null\s*\n\s*:\s*null/);
+  assert.match(responseMeta, /tokenLabel \? " and token usage" : ""/);
 });
 
 test("permission requests use a softly layered action card", () => {

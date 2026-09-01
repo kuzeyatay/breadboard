@@ -84,6 +84,9 @@ test("a WhatsApp message goes through the same authenticated turn pipeline as th
   );
   // An unattended message must never sit waiting on a permission prompt.
   assert.match(inbound, /"blocked" in result/);
+  // WhatsApp has no composer switch, so its default must be explicit rather
+  // than inheriting the ordinary-agent default from the shared turn service.
+  assert.match(inbound, /superAgent: true/);
   // And the runtime is checked before anything is created.
   assert.ok(
     inbound.indexOf("requireEnabled()") < inbound.indexOf("createConversation("),

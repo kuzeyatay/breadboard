@@ -38,7 +38,7 @@ export type LegalRuntimeAttachmentManifest =
       readonly kind: "skipped";
       readonly name: string;
       readonly reason: "unreadable-document" | "oversized-image" | "unsupported";
-      readonly attachmentType: "document" | "image" | "video" | "audio" | "model";
+      readonly attachmentType: "document" | "image" | "video" | "audio" | "model" | "product";
     };
 
 export interface PreparedLegalRuntimeInputs {

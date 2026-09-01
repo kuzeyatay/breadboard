@@ -629,7 +629,10 @@ describe("Learning Unit Contract — source artifact assignment (Fix 3/8)", () =
       learningUnits: units,
       sourceArtifactOmissions: [{
         sourceArtifactId: "S1.P6.E1",
-        reason: "The same relation is already taught from the source's clearer vector form.",
+        disposition: "redundant_with_assigned_artifact",
+        artifactSummary: "Scalar form of the electric-field relation",
+        reason: "The assigned vector-field diagram already teaches this relation more clearly and preserves its directional meaning.",
+        alternativeArtifactId: "S1.P4.F1",
       }],
     };
 
@@ -649,6 +652,54 @@ describe("Learning Unit Contract — source artifact assignment (Fix 3/8)", () =
     assert.match(
       modelAuthoredSourceArtifactOmissionParseProblems(malformed).join("\n"),
       /duplicates omission|unsupported fields/,
+    );
+  });
+
+  test("generic omission prose is rejected before artifact coverage can pass", () => {
+    const shallow = {
+      sourceArtifactOmissions: [{
+        sourceArtifactId: "S1.P6.E1",
+        disposition: "outside_learning_scope",
+        artifactSummary: "Electric-field relation",
+        reason: "Not relevant.",
+        alternativeArtifactId: null,
+      }],
+    };
+
+    assert.match(
+      modelAuthoredSourceArtifactOmissionParseProblems(shallow).join("\n"),
+      /reason.*specific pedagogical justification/i,
+    );
+  });
+
+  test("a redundant omission must point to a registered artifact that is actually assigned", () => {
+    const units = normalizeLearningUnits([{
+      id: "U1",
+      role: "core_concept",
+      title: "Field direction",
+      sourceFigures: [{
+        id: "S1.P4.F1",
+        placement: "inside_concept_explanation",
+        mustBeDiscussedWith: "the field direction",
+        interpretationGoal: "read the direction of every arrow",
+      }],
+      sourceFormulas: [],
+      sourceTables: [],
+    }]);
+    const omissions = [{
+      sourceArtifactId: "S1.P6.E1",
+      disposition: "redundant_with_assigned_artifact",
+      artifactSummary: "Scalar form of the electric-field relation",
+      reason: "The alternate vector-field diagram already teaches the electric-field relation with its directional meaning intact.",
+      alternativeArtifactId: "S1.P9.F1",
+    }];
+
+    assert.match(
+      sourceArtifactCoverageProblems(units, omissions, [
+        { id: "S1.P4.F1", kind: "figure" },
+        { id: "S1.P6.E1", kind: "formula" },
+      ]).join("\n"),
+      /alternativeArtifactId references unregistered source artifact/i,
     );
   });
 
@@ -700,7 +751,13 @@ describe("Learning Unit Contract — source artifact assignment (Fix 3/8)", () =
         sourceTables: [],
       },
     ]);
-    const omissions = [{ sourceArtifactId: "S1.P6.E1", reason: "Do not teach this relation." }];
+    const omissions = [{
+      sourceArtifactId: "S1.P6.E1",
+      disposition: "redundant_with_assigned_artifact",
+      artifactSummary: "Field relation",
+      reason: "The first unit already teaches the same field relation with the complete source notation.",
+      alternativeArtifactId: "S1.P6.E1",
+    }];
     assert.match(sourceArtifactOwnershipProblems(units).join("\n"), /exactly one model-authored owner/);
     assert.match(
       sourceArtifactCoverageProblems(
@@ -982,6 +1039,25 @@ describe("Learning Unit Contract — inline figure placement (Fix 2)", () => {
   test("passes when a figure sits next to interpretive prose", () => {
     const md = `${prose}\n\n![Membrane potential trace](assets/source-visuals/fig1.png)\n\n${prose}`;
     assert.deepEqual(figurePlacementProblems(md), []);
+  });
+
+  test("requires nearby prose to address the assigned figure's interpretation goal", () => {
+    const url = "/garden/assets/source-visuals/latency-curve.png";
+    const generic = `A broad introduction provides enough surrounding words to look like explanatory prose without explaining the plotted result.\n\n![Latency curve](${url})\n\nThis paragraph continues the lesson with general background about the system and its components.`;
+    const interpreted = `The latency curve drops sharply after batching begins, showing that queue amortization matters most in the low-throughput regime.\n\n![Latency curve](${url})\n\nThe flattening trend then shows where additional batching stops improving latency.`;
+    const options = {
+      requiredInterpretations: [{
+        sourceVisualId: "S1.P4.G1",
+        url,
+        interpretationGoal: "Explain the flattening latency trend after batching",
+      }],
+    };
+
+    assert.match(
+      figurePlacementProblems(generic, options).join("\n"),
+      /S1\.P4\.G1.*does not address its interpretation goal/i,
+    );
+    assert.deepEqual(figurePlacementProblems(interpreted, options), []);
   });
 
   test("flags more than 3 figures on one page", () => {

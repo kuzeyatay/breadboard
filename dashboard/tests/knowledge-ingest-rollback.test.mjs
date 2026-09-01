@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -190,6 +191,50 @@ test("captured URL figures are written and rolled back with their source", async
       ...relativePath.split("/"),
     );
     assert.deepEqual(fs.readFileSync(assetPath), bytes);
+
+    transaction.rollback();
+    assertGardenRestored(fixture.clusterDir);
+  } finally {
+    if (previousPublish === undefined) delete process.env.QUARTZ_AUTO_PUBLISH;
+    else process.env.QUARTZ_AUTO_PUBLISH = previousPublish;
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("uploaded media is retained with its exact filename identity and rolls back atomically", async () => {
+  const fixture = createGardenFixture();
+  const previousPublish = process.env.QUARTZ_AUTO_PUBLISH;
+  process.env.QUARTZ_AUTO_PUBLISH = "0";
+  const mediaPath = path.join(fixture.root, "Lecture Recording.mp3");
+  const mediaBytes = Buffer.from("fixture-audio-bytes");
+  fs.writeFileSync(mediaPath, mediaBytes);
+  const mediaSha256 = createHash("sha256").update(mediaBytes).digest("hex");
+  try {
+    const transaction = createKnowledgeWriteTransaction(
+      fixture.contentPath,
+      fixture.clusterSlug,
+    );
+    const saved = await writeFixtureKnowledge(fixture, {
+      sourceFileName: "Lecture Recording.mp3",
+      sourceType: "audio",
+      sourceMetadata: { original_filename: "Lecture Recording.mp3" },
+      sourceMedia: { filePath: mediaPath, sha256: mediaSha256 },
+      knowledgeWriteTransaction: transaction,
+    });
+
+    const sourceMarkdown = fs.readFileSync(
+      path.join(fixture.clusterDir, saved.sourceRelPath),
+      "utf8",
+    );
+    assert.match(sourceMarkdown, /title: "Lecture Recording\.mp3"/);
+    assert.match(sourceMarkdown, /description: "New Course Material"/);
+    const assetName = `new-source-media-${mediaSha256.slice(0, 12)}.mp3`;
+    const retainedPath = path.join(fixture.clusterDir, "assets", assetName);
+    assert.deepEqual(fs.readFileSync(retainedPath), mediaBytes);
+    assert.match(
+      sourceMarkdown,
+      new RegExp(`source_media: "/garden-1/assets/${assetName}"`),
+    );
 
     transaction.rollback();
     assertGardenRestored(fixture.clusterDir);

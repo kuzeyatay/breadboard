@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { externalRuntimePathExists } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   inspectRuntimeJob,
   readRuntimeJobOutput,
@@ -71,6 +73,8 @@ interface PendingPublication {
 
 const pendingReasons = new Map<string, number | null>();
 let activePublish: Promise<void> | null = null;
+let currentPublish: Promise<void> | null = null;
+let viewReadinessPublish: Promise<void> | null = null;
 let sealedWorkerExecutor: SealedRuntimeV2QuartzPublishExecutor | null = null;
 
 function envValue(rawValue: string | undefined): string {
@@ -84,7 +88,26 @@ function isDisabled(rawValue: string | undefined): boolean {
 function shouldAutoPublish(): boolean {
   const configured = process.env.QUARTZ_AUTO_PUBLISH;
   if (configured) return !isDisabled(configured);
-  return process.env.NODE_ENV === "production";
+  // Runtime V2 serves only the atomically published data-root tree. Its hot
+  // dashboard still has NODE_ENV=development, but unlike the legacy Quartz
+  // dev server there is no resident compiler watching content changes. The
+  // authenticated Runtime control capability proves that the disposable
+  // publisher is available, so mutations must publish in every Runtime mode.
+  return (
+    process.env.NODE_ENV === "production" ||
+    Boolean(
+      process.env.BREADBOARD_SUPERVISOR_CONTROL_URL?.trim() &&
+        process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN?.trim(),
+    )
+  );
+}
+
+function quartzPublicIndexIsAvailable(): boolean {
+  const contentPath = process.env.QUARTZ_CONTENT_PATH?.trim();
+  if (!contentPath) return false;
+  return externalRuntimePathExists(
+    path.join(path.resolve(contentPath, ".."), "public", "index.html"),
+  );
 }
 
 function publishMode(): "await" | "background" {
@@ -284,7 +307,13 @@ async function drainQuartzPublishQueue(): Promise<void> {
   try {
     let publication = consumePendingPublication();
     while (publication) {
-      await runQuartzPublication(publication);
+      const publicationAttempt = runQuartzPublication(publication);
+      currentPublish = publicationAttempt;
+      try {
+        await publicationAttempt;
+      } finally {
+        if (currentPublish === publicationAttempt) currentPublish = null;
+      }
       publication = consumePendingPublication();
     }
   } finally {
@@ -323,6 +352,40 @@ export function installSealedRuntimeV2QuartzPublishExecutor(
     throw new Error("The sealed Runtime V2 Quartz executor cannot be installed.");
   }
   sealedWorkerExecutor = executor;
+}
+
+/**
+ * A fresh Runtime V2 profile intentionally has no derived `public` tree. Make
+ * the first authenticated Quartz view create it before acquiring the static
+ * server lease, so every entry point can recover rather than rendering the
+ * static service's 404 preparation document. Concurrent cold views share the
+ * same publication job.
+ */
+export async function ensureQuartzPublicationForView(userId: number): Promise<void> {
+  if (quartzPublicIndexIsAvailable()) return;
+  if (!shouldAutoPublish()) {
+    throw new Error("Quartz publication is disabled while its public tree is missing.");
+  }
+  if (!viewReadinessPublish) {
+    viewReadinessPublish = (async () => {
+      // A library route or content mutation may already be producing the
+      // missing tree. Wait for that one publication attempt and check its
+      // output before enqueueing another several-minute full build.
+      const publicationInFlight = currentPublish;
+      if (publicationInFlight) {
+        await publicationInFlight.catch(() => undefined);
+        if (quartzPublicIndexIsAvailable()) return;
+      }
+
+      await publishQuartzAfterMutation(
+        "prepare Quartz for the first garden view",
+        { userId, requireSuccess: true },
+      );
+    })().finally(() => {
+      viewReadinessPublish = null;
+    });
+  }
+  await viewReadinessPublish;
 }
 
 export async function publishQuartzAfterMutation(

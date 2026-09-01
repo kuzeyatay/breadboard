@@ -108,6 +108,7 @@ import type { ShortsRequest } from "@/lib/shorts/identity.ts";
 import type { FormsmithRequest } from "@/lib/shaper/identity.ts";
 import InlineOpenCodeRun from "./inline-opencode-run";
 import InlineRufloRun from "./inline-ruflo-run";
+import ScheduledChatReceiptCard from "./scheduled-chat-receipt-card";
 import { UserMessageText } from "./command-text";
 import CollapsibleUserMessage from "@/app/components/chat/collapsible-user-message";
 import SavePromptDialog from "./save-prompt-dialog";
@@ -267,6 +268,10 @@ interface Props {
     text: string,
     branchGroupId: string,
   ) => void;
+  onEditAssistantMessage?: (
+    message: AgentMessage,
+    content: string,
+  ) => Promise<boolean>;
   onSelectBranch?: (messages: AgentMessage[]) => void;
   /**
    * Remove one exchange — this message and the answer it produced — for good.
@@ -716,6 +721,7 @@ export default function AgentRuntimePanel({
   steerableRun = true,
   onSendQueued,
   onEditMessage,
+  onEditAssistantMessage,
   onSelectBranch,
   onDeleteMessage,
   onAbort,
@@ -858,6 +864,13 @@ export default function AgentRuntimePanel({
   const copiedUserTimerRef = useRef<number | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [messageEditText, setMessageEditText] = useState("");
+  const [editingAssistantMessageId, setEditingAssistantMessageId] = useState<
+    string | null
+  >(null);
+  const [assistantMessageEditText, setAssistantMessageEditText] = useState("");
+  const [savingAssistantMessageId, setSavingAssistantMessageId] = useState<
+    string | null
+  >(null);
   const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
   const [promptToSave, setPromptToSave] = useState<string | null>(null);
   const {
@@ -1242,6 +1255,8 @@ export default function AgentRuntimePanel({
         inlinedCourseCorrections.hiddenMessageIndices.has(index) ||
         supersededDelegationAssistants.has(index) ||
         (storedMessage.delegatedAgentRun === true &&
+          !storedMessage.openGymRun &&
+          !storedMessage.godsEyeRun &&
           messages[index + 1]?.internalAgentContinuation === true)
       ) {
         return;
@@ -1631,6 +1646,30 @@ export default function AgentRuntimePanel({
     setEditingMessageId(null);
     setMessageEditText("");
     onEditMessage(messageIndex, text, branch.groupId);
+  }
+
+  function beginAssistantMessageEdit(message: AgentMessage, messageId: string) {
+    setEditingAssistantMessageId(messageId);
+    setAssistantMessageEditText(message.content);
+  }
+
+  async function saveAssistantMessageEdit(
+    message: AgentMessage,
+    messageId: string,
+  ) {
+    const content = assistantMessageEditText.trim();
+    if (!content || !onEditAssistantMessage) return;
+    if (content === message.content.trim()) {
+      setEditingAssistantMessageId(null);
+      setAssistantMessageEditText("");
+      return;
+    }
+    setSavingAssistantMessageId(messageId);
+    const saved = await onEditAssistantMessage(message, content);
+    setSavingAssistantMessageId(null);
+    if (!saved) return;
+    setEditingAssistantMessageId(null);
+    setAssistantMessageEditText("");
   }
 
   /**
@@ -2138,6 +2177,12 @@ export default function AgentRuntimePanel({
   const openThread = openInlineAnswer
     ? inlineSelectionThreads.get(openInlineAnswer.id)
     : undefined;
+  // The transcript and composer are one visual column. Full chat keeps both at
+  // five-xl; compact embeds intentionally keep their existing three-xl width.
+  const chatColumnWidthClass = compact ? "max-w-3xl" : "max-w-5xl";
+  // The transcript owns 1rem of padding on each side. Add that padding outside
+  // the content cap so its inner edges equal the composer's outer edges.
+  const transcriptColumnWidthClass = compact ? "max-w-[50rem]" : "max-w-[66rem]";
 
   return (
     // One attribute rather than a prop on every bubble: user messages are drawn
@@ -2157,7 +2202,7 @@ export default function AgentRuntimePanel({
         ref={transcriptScrollRef}
         className="bb-chat-scroller min-h-0 flex-1 overflow-y-auto"
       >
-        <div className="bb-chat-scroll-tail mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 py-5">
+        <div className={`bb-chat-scroll-tail mx-auto flex min-h-full w-full ${transcriptColumnWidthClass} flex-col px-4 py-5`}>
           {conversationLoading ? (
             <div className="flex items-center justify-center py-12">
               <BreadboardLoader
@@ -2215,19 +2260,17 @@ export default function AgentRuntimePanel({
                   message.role === "assistant" &&
                     messages[index - 1]?.internalAgentContinuation === true,
                 );
-                const continuationOwner = isAgentContinuationResponse
-                  ? messages[index - 2]
-                  : undefined;
                 const continuationPreamble =
                   delegatedContinuationPreamble(messages, index);
-                // The delegating turn is hidden behind this row, so its time
-                // belongs to this row's clock. Without it the answer claimed
-                // the seconds of its synthesis as the whole operation's.
+                // Every earlier phase is hidden behind this row, so their time
+                // belongs to this clock. Counting only the adjacent worker
+                // still loses the Super Agent's orchestration phase.
                 const carriedDurationMs =
-                  delegatedTurnCarriedDurationMs(continuationOwner);
-                // The hidden turn's tokens are part of what this answer cost.
+                  delegatedTurnCarriedDurationMs(messages, index);
+                // The hidden phases' tokens are part of what this answer cost.
                 const totalUsage = delegatedTurnTotalUsage(
-                  continuationOwner,
+                  messages,
+                  index,
                   message.usage,
                 );
                 const storedAssistantContent = assistantVisibleContent(
@@ -2246,6 +2289,11 @@ export default function AgentRuntimePanel({
                       (!streaming ? storedAssistantContent : "") ||
                       continuationPreamble
                     : storedAssistantContent || continuationPreamble;
+                const assistantMessageEditId =
+                  message.role === "assistant"
+                    ? message.id ??
+                      `${message.clientMessageId ?? `row-${index}`}:assistant`
+                    : "";
                 const inlineMapKind =
                   message.role === "assistant" &&
                   index === lastAssistantIndex &&
@@ -2343,7 +2391,9 @@ export default function AgentRuntimePanel({
                     <MessageActionsSlot
                       suppressActions={
                         message.delegatedAgentRun === true ||
-                        (index === lastVisibleAssistantIndex && delegationInFlight)
+                        (index === lastVisibleAssistantIndex && delegationInFlight) ||
+                        (message.role === "assistant" &&
+                          editingAssistantMessageId === assistantMessageEditId)
                       }
                     >
                     {message.role === "user" ? (
@@ -3598,8 +3648,67 @@ export default function AgentRuntimePanel({
                             activeProductComparison={activeProductComparison}
                           />
                         ) : null}
-                        {visibleAssistantContent ||
-                        inlinedCourseCorrections.byAssistantIndex.has(index) ? (
+                        {editingAssistantMessageId === assistantMessageEditId ? (
+                          <form
+                            className="w-full border-b border-transparent pb-1 focus-within:border-[var(--line-strong)]"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              void saveAssistantMessageEdit(
+                                message,
+                                assistantMessageEditId,
+                              );
+                            }}
+                          >
+                            <textarea
+                              value={assistantMessageEditText}
+                              onChange={(event) =>
+                                setAssistantMessageEditText(event.target.value)
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Escape") {
+                                  event.preventDefault();
+                                  setEditingAssistantMessageId(null);
+                                  setAssistantMessageEditText("");
+                                } else if (
+                                  event.key === "Enter" &&
+                                  (event.ctrlKey || event.metaKey)
+                                ) {
+                                  event.preventDefault();
+                                  event.currentTarget.form?.requestSubmit();
+                                }
+                              }}
+                              className="max-h-[60vh] min-h-24 w-full resize-none overflow-y-auto bg-transparent p-0 text-sm leading-7 text-[var(--ink)] outline-none [field-sizing:content]"
+                              aria-label="Edit assistant response"
+                              autoFocus
+                            />
+                            <div className="mt-2 flex justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingAssistantMessageId(null);
+                                  setAssistantMessageEditText("");
+                                }}
+                                disabled={savingAssistantMessageId === assistantMessageEditId}
+                                className="rounded-full px-3 py-1 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-strong)] disabled:opacity-40"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="submit"
+                                disabled={
+                                  savingAssistantMessageId === assistantMessageEditId ||
+                                  !assistantMessageEditText.trim()
+                                }
+                                className="rounded-full bg-[var(--botanical)] px-3 py-1 text-xs font-medium text-[var(--paper-raised)] transition-[background-color,transform] duration-150 hover:bg-[var(--botanical-hover)] active:scale-[0.97] disabled:cursor-not-allowed disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)]"
+                              >
+                                {savingAssistantMessageId === assistantMessageEditId
+                                  ? "Saving…"
+                                  : "Save"}
+                              </button>
+                            </div>
+                          </form>
+                        ) : visibleAssistantContent ||
+                          inlinedCourseCorrections.byAssistantIndex.has(index) ? (
                           inlinedCourseCorrections.byAssistantIndex.has(index) ? (
                             <SteeredAssistantResponse
                               content={visibleAssistantContent}
@@ -3638,6 +3747,13 @@ export default function AgentRuntimePanel({
                       </div>
                     )}
                     {message.role === "assistant" &&
+                    message.scheduledChatReceipt &&
+                    !(runInFlight && index === lastAssistantIndex) ? (
+                      <ScheduledChatReceiptCard
+                        receipt={message.scheduledChatReceipt}
+                      />
+                    ) : null}
+                    {message.role === "assistant" &&
                     sessionId &&
                     surface !== "quartz_ai" ? (
                       <InlineArtifactCards
@@ -3674,6 +3790,23 @@ export default function AgentRuntimePanel({
                           (message.interrupted
                             ? "Interrupted"
                             : "Response unavailable")
+                        }
+                        onEdit={
+                          onEditAssistantMessage &&
+                          Boolean(message.clientMessageId?.trim()) &&
+                          Boolean(message.content.trim()) &&
+                          !message.pending &&
+                          !message.failed &&
+                          !message.interrupted &&
+                          !activeRun &&
+                          !conversationLocked &&
+                          !disabled
+                            ? () =>
+                                beginAssistantMessageEdit(
+                                  message,
+                                  assistantMessageEditId,
+                                )
+                            : undefined
                         }
                         verification={message.verification}
                         branch={branchNavigationForAssistant(message, index)}
@@ -3832,7 +3965,7 @@ export default function AgentRuntimePanel({
       <div ref={composerInset.ref} className="bb-composer-overlay px-4 pb-3">
         {beforeComposer ? (
           <div
-            className={`mx-auto w-full ${compact ? "max-w-3xl" : "max-w-5xl"}`}
+            className={`mx-auto w-full ${chatColumnWidthClass}`}
           >
             {beforeComposer}
           </div>
@@ -3844,7 +3977,7 @@ export default function AgentRuntimePanel({
           />
         ) : null}
         <AssistantComposer
-          className={`mx-auto w-full ${compact ? "max-w-3xl" : "max-w-5xl"}`}
+          className={`mx-auto w-full ${chatColumnWidthClass}`}
           compact={compact}
           value={input}
           onChange={onInputChange}

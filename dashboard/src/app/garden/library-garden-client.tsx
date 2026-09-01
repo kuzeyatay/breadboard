@@ -96,7 +96,6 @@ export default function LibraryGardenClient({ src, title }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const topologyRequestsRef = useRef(new Set<string>());
   const quartzLease = useQuartzViewLease();
-  const [loadedSource, setLoadedSource] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [activeCluster, setActiveCluster] = useState<string | null>(null);
   const [activeMarkdown, setActiveMarkdown] = useState<ActiveMarkdown | null>(null);
@@ -121,7 +120,6 @@ export default function LibraryGardenClient({ src, title }: Props) {
   }
 
   const quartzUnavailable = loadFailed || quartzLease.failed;
-  const isLoaded = quartzLease.ready && loadedSource === src && !quartzUnavailable;
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
@@ -417,31 +415,20 @@ export default function LibraryGardenClient({ src, title }: Props) {
   return (
     <div className="relative flex min-h-0 flex-1 overflow-hidden bg-gray-950">
       <div className="relative min-h-0 flex-1 bg-gray-950">
-        {!isLoaded && (
+        {quartzUnavailable && (
           <div className="absolute inset-0 z-10 grid place-items-center bg-gray-950">
             <div className="flex flex-col items-center gap-4">
-              <div className="flex items-center gap-1.5">
-                {[0, 1, 2].map((i) => (
-                  <span
-                    key={i}
-                    className="h-1.5 w-1.5 rounded-none bg-gray-600 animate-pulse"
-                    style={{ animationDelay: `${i * 200}ms` }}
-                  />
-                ))}
-              </div>
               <span className="text-xs tracking-widest text-gray-700 uppercase">
-                {quartzUnavailable ? 'Quartz did not respond' : title}
+                Quartz did not respond
               </span>
-              {quartzUnavailable && (
-                <a
-                  href={src}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="neu-button rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
-                >
-                  Open Quartz directly
-                </a>
-              )}
+              <a
+                href={src}
+                target="_blank"
+                rel="noreferrer"
+                className="neu-button rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
+              >
+                Open Quartz directly
+              </a>
             </div>
           </div>
         )}
@@ -456,7 +443,6 @@ export default function LibraryGardenClient({ src, title }: Props) {
             if (!quartzLease.ready) return;
             setMarkdownEditorOpen(false);
             setLoadFailed(false);
-            setLoadedSource(src);
           }}
           onError={() => setLoadFailed(true)}
         />

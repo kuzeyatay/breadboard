@@ -4,6 +4,7 @@ import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import db from "@/lib/db.ts";
 import {
   createHook,
+  CHAT_COMPLETED_PROVIDER,
   getHookByIdForUser,
   listHooksForUser,
   updateHook,
@@ -46,7 +47,10 @@ function presentHook(hook: HookRow) {
     createdAt: hook.created_at,
     lastFiredAt: hook.last_fired_at,
     fireCount: hook.fire_count,
-    url: buildWebhookTriggerUrl(hook.id),
+    url:
+      hook.provider === CHAT_COMPLETED_PROVIDER
+        ? null
+        : buildWebhookTriggerUrl(hook.id),
   };
 }
 

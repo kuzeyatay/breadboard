@@ -1142,6 +1142,8 @@ export function externalAgentMessageFields(
   /** Worker output kept outside the Super Agent's visible assistant text. */
   externalAgentResult?: string;
   externalAgentName?: string;
+  /** Why the Super Agent selected this worker, retained for failure wording. */
+  delegatedAgentReason?: string;
 } {
   if (metadata.externalAgent !== true) return {};
   const run = parseExternalAgentRun(metadata.externalAgentRun);
@@ -1163,6 +1165,12 @@ export function externalAgentMessageFields(
     delegatedAgentRun && typeof metadata.externalAgentResult === "string"
       ? metadata.externalAgentResult
       : undefined;
+  const delegatedAgentReason =
+    delegatedAgentRun &&
+    typeof metadata.delegatedAgentReason === "string" &&
+    metadata.delegatedAgentReason.trim()
+      ? metadata.delegatedAgentReason.trim().replace(/\s+/g, " ").slice(0, 240)
+      : undefined;
   const outcomeField = {
     ...(outcome ? { externalAgentOutcome: outcome } : {}),
     ...(externalAgentStartedAt ? { externalAgentStartedAt } : {}),
@@ -1172,6 +1180,7 @@ export function externalAgentMessageFields(
     ...(delegatedAgentRun ? { delegatedAgentRun: true } : {}),
     ...(delegatedAgentPreamble ? { delegatedAgentPreamble } : {}),
     ...(externalAgentResult !== undefined ? { externalAgentResult } : {}),
+    ...(delegatedAgentReason ? { delegatedAgentReason } : {}),
     ...(run ? { externalAgentName: externalAgentDisplayName(run.kind) } : {}),
   };
   if (!run) return outcomeField;

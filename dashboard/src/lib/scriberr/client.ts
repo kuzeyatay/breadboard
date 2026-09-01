@@ -163,6 +163,7 @@ export function normalizeScriberrTranscriptPayload(raw: unknown): {
 export interface ScriberrStartParams {
   modelFamily?: string;
   model?: string;
+  batchSize?: number;
   language?: string | null;
   diarize?: boolean;
 }
@@ -482,6 +483,7 @@ export class ScriberrClient {
     const body: Record<string, unknown> = {
       model_family: params.modelFamily ?? "whisper",
       model: params.model ?? "small",
+      batch_size: params.batchSize ?? 4,
       diarize: params.diarize ?? false,
     };
     if (params.language) body.language = params.language;

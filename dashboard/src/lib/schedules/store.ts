@@ -55,6 +55,9 @@ export interface ScheduledChatJobRow {
   prompt_slug: string | null;
   model: string;
   reasoning_effort: AssistantReasoningEffort;
+  /** Optional direct destination for a messaging-origin reminder. */
+  delivery_channel: "whatsapp" | "telegram" | null;
+  delivery_mode: "reminder" | null;
   one_shot: number;
   enabled: number;
   next_run_at: string;
@@ -105,6 +108,8 @@ export interface CreateScheduledChatInput {
   promptSlug?: string | null;
   model?: string;
   reasoningEffort?: unknown;
+  deliveryChannel?: "whatsapp" | "telegram" | null;
+  deliveryMode?: "reminder" | null;
   oneShot?: boolean;
   runAt?: string | null;
   enabled?: boolean;
@@ -149,6 +154,27 @@ function normalizeReasoningEffort(value: unknown): AssistantReasoningEffort {
     return effort as AssistantReasoningEffort;
   }
   throw new ScheduleError(400, "The selected reasoning effort is invalid.");
+}
+
+function normalizeDirectDelivery(input: Pick<
+  CreateScheduledChatInput,
+  "deliveryChannel" | "deliveryMode"
+>): {
+  channel: "whatsapp" | "telegram" | null;
+  mode: "reminder" | null;
+} {
+  const channel = input.deliveryChannel ?? null;
+  const mode = input.deliveryMode ?? null;
+  if (channel !== null && channel !== "whatsapp" && channel !== "telegram") {
+    throw new ScheduleError(400, "The reminder delivery channel is invalid.");
+  }
+  if (mode !== null && mode !== "reminder") {
+    throw new ScheduleError(400, "The reminder delivery mode is invalid.");
+  }
+  if ((channel === null) !== (mode === null)) {
+    throw new ScheduleError(400, "A direct reminder needs both a channel and delivery mode.");
+  }
+  return { channel, mode };
 }
 
 function normalizeOneShotRunAt(value: unknown, now: Date): string {
@@ -260,6 +286,10 @@ export class ScheduledChatJobStore {
     const gardenSlug = surface === "garden_chat" ? boundedText(input.gardenSlug, 160, "A garden") : null;
     const model = normalizeModel(input.model);
     const reasoningEffort = normalizeReasoningEffort(input.reasoningEffort);
+    const delivery = normalizeDirectDelivery(input);
+    if (delivery.channel && surface !== "dashboard_terminal") {
+      throw new ScheduleError(400, "A messaging reminder must target the terminal.");
+    }
     // Validate the expression even for one-shot rows. It remains a readable,
     // backwards-compatible description, while next_run_at is authoritative.
     const cronRunAt = firstRunAfter(cron, now);
@@ -272,8 +302,9 @@ export class ScheduledChatJobStore {
       .prepare(
         `INSERT INTO scheduled_chat_jobs
            (user_id, title, prompt, cron_expression, surface, garden_slug, prompt_slug,
-            model, reasoning_effort, one_shot, enabled, next_run_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            model, reasoning_effort, delivery_channel, delivery_mode, one_shot, enabled,
+            next_run_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         userId,
@@ -285,6 +316,8 @@ export class ScheduledChatJobStore {
         typeof input.promptSlug === "string" ? input.promptSlug.slice(0, 100) : null,
         model,
         reasoningEffort,
+        delivery.channel,
+        delivery.mode,
         oneShot ? 1 : 0,
         input.enabled === false ? 0 : 1,
         nextRunAt,
@@ -321,6 +354,17 @@ export class ScheduledChatJobStore {
     const reasoningEffort = input.reasoningEffort === undefined
       ? existing.reasoning_effort
       : normalizeReasoningEffort(input.reasoningEffort);
+    const delivery = normalizeDirectDelivery({
+      deliveryChannel:
+        input.deliveryChannel === undefined
+          ? existing.delivery_channel
+          : input.deliveryChannel,
+      deliveryMode:
+        input.deliveryMode === undefined ? existing.delivery_mode : input.deliveryMode,
+    });
+    if (delivery.channel && surface !== "dashboard_terminal") {
+      throw new ScheduleError(400, "A messaging reminder must target the terminal.");
+    }
     const oneShot = input.oneShot === undefined
       ? existing.one_shot === 1
       : input.oneShot === true;
@@ -345,8 +389,8 @@ export class ScheduledChatJobStore {
       .prepare(
         `UPDATE scheduled_chat_jobs
          SET title = ?, prompt = ?, cron_expression = ?, surface = ?, garden_slug = ?,
-             model = ?, reasoning_effort = ?, one_shot = ?, enabled = ?, next_run_at = ?,
-             updated_at = datetime('now')
+             model = ?, reasoning_effort = ?, delivery_channel = ?, delivery_mode = ?,
+             one_shot = ?, enabled = ?, next_run_at = ?, updated_at = datetime('now')
          WHERE id = ? AND user_id = ?`,
       )
       .run(
@@ -357,6 +401,8 @@ export class ScheduledChatJobStore {
         gardenSlug,
         model,
         reasoningEffort,
+        delivery.channel,
+        delivery.mode,
         oneShot ? 1 : 0,
         enabled ? 1 : 0,
         nextRunAt,

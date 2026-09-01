@@ -3,12 +3,11 @@
 // The artifact archive: a searchable list of everything the chats on a surface
 // have produced.
 //
-// The list itself carries no controls. Acting on artifacts happens through one
-// dots menu, the same way the terminal rail's Recents does it — pick several
-// and delete them, or take up a pen and mark them — because a row that shows a
-// delete button at rest reads as a toolbar, and a destructive control sitting
-// under the cursor of a list people mostly *read* is the one that gets hit by
-// accident.
+// Destructive and organizational controls stay behind one dots menu, the same
+// way the terminal rail's Recents does it. A Terminal archive may also show one
+// quiet checkbox per row: it scopes that artifact into the composer like an
+// uploaded document, and is deliberately separate from the archive's delete
+// selection mode.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
@@ -343,6 +342,12 @@ export interface ArtifactPanelProps {
   creationConversationId?: string | null;
   /** Creates/restores the visible chat before a first-turn image is made. */
   ensureCreationConversation?: () => Promise<string>;
+  /** Artifact ids currently scoped into the visible chat composer. */
+  attachedArtifactIds?: ReadonlySet<string>;
+  /** Artifact downloads currently being converted into chat attachments. */
+  attachingArtifactIds?: ReadonlySet<string>;
+  /** Adds or removes one artifact from the visible chat's attachment scope. */
+  onToggleArtifactAttachment?: (artifact: PresentedArtifact) => void | Promise<void>;
 }
 
 export default function ArtifactPanel({
@@ -354,6 +359,9 @@ export default function ArtifactPanel({
   hideHeader = false,
   creationConversationId,
   ensureCreationConversation,
+  attachedArtifactIds,
+  attachingArtifactIds,
+  onToggleArtifactAttachment,
 }: ArtifactPanelProps) {
   const [artifacts, setArtifacts] = useState<PresentedArtifact[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -698,6 +706,9 @@ export default function ArtifactPanel({
         {filteredArtifacts.map((artifact) => {
           const pdfHref = artifactPdfHref(artifact);
           const checked = selectedIds.has(artifact.id);
+          const attached = attachedArtifactIds?.has(artifact.id) ?? false;
+          const attaching = attachingArtifactIds?.has(artifact.id) ?? false;
+          const attachmentSelectionBusy = (attachingArtifactIds?.size ?? 0) > 0;
           const highlight = chatHighlight(artifact.highlight);
           const rowInner = (
             <>
@@ -712,11 +723,6 @@ export default function ArtifactPanel({
                   {artifactDescription(artifact)}
                 </span>
               </span>
-              {artifact.status === "failed" ? (
-                <span className="shrink-0 rounded-full bg-red-50 px-2 py-0.5 text-[10px] text-[var(--danger)]">
-                  Failed
-                </span>
-              ) : null}
             </>
           );
           const openClasses =
@@ -751,6 +757,39 @@ export default function ArtifactPanel({
                   aria-label={`Select ${artifact.title}`}
                   className="h-3.5 w-3.5 shrink-0 accent-[var(--botanical)]"
                 />
+              ) : null}
+              {mode === "idle" && onToggleArtifactAttachment ? (
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={attached}
+                  aria-label={`${attached ? "Remove" : "Attach"} ${artifact.title} ${attached ? "from" : "to"} this chat`}
+                  title={
+                    artifact.downloadAvailable
+                      ? attached
+                        ? "Remove from chat attachments"
+                        : "Attach to this chat"
+                      : "This artifact cannot be attached"
+                  }
+                  disabled={!artifact.downloadAvailable || attachmentSelectionBusy}
+                  onClick={() => void onToggleArtifactAttachment(artifact)}
+                  className={`flex h-[18px] w-7 shrink-0 items-center justify-center rounded-[4px] border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--paper-surface)] disabled:cursor-not-allowed disabled:opacity-45 ${
+                    attached
+                      ? "border-[var(--botanical)] bg-[var(--botanical)] text-white"
+                      : "border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--botanical)] hover:border-[var(--botanical)]"
+                  }`}
+                >
+                  {attaching ? (
+                    <span
+                      aria-hidden="true"
+                      className="h-2.5 w-2.5 animate-spin rounded-full border border-current border-r-transparent"
+                    />
+                  ) : attached ? (
+                    <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2}>
+                      <path d="m3.25 8.25 3 3 6.5-7" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  ) : null}
+                </button>
               ) : null}
               {mode === "idle" && pdfHref ? (
                 <a href={pdfHref} className={openClasses} title={`Open ${artifact.title} in the PDF viewer`}>

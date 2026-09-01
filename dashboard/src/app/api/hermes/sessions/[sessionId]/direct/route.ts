@@ -24,6 +24,7 @@ import { resolveDocumentAttachments } from "@/lib/document-attachments-server.ts
 import { retrieveDocumentAttachments } from "@/lib/colpali/retrieval.ts";
 import { parseCurrentLocationPayload } from "@/lib/hermes/current-location-context.ts";
 import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
+import { scheduledChatReceiptForUser } from "@/lib/schedules/receipt-server.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -75,6 +76,10 @@ export async function POST(
       currentLocation:
         parseCurrentLocationPayload(body.currentLocation) ?? undefined,
       internalAgentContinuation: body.internalAgentContinuation === true,
+      scheduledChatReceipt: scheduledChatReceiptForUser(
+        userId,
+        body.scheduleReceiptId,
+      ),
       responseStartedAt:
         typeof body.responseStartedAt === "string" &&
         Number.isFinite(Date.parse(body.responseStartedAt))

@@ -33,3 +33,14 @@ test('Explore All uses a direct private-library navigation on the first click', 
   assert.match(dashboard, />\s*Explore All\s*<\/Link>/);
   assert.doesNotMatch(dashboard, />\s*View gardens\s*</);
 });
+
+test('cluster headers expose a flower action that opens a scoped Quartz view', () => {
+  const dashboard = read('src/app/dashboard/dashboard-client.tsx');
+
+  assert.match(
+    dashboard,
+    /<Link\s+data-card-action="true"\s+href=\{`\/garden\?view=private&cluster=\$\{encodeURIComponent\(folder\)\}`\}/,
+  );
+  assert.match(dashboard, /aria-label=\{`Open cluster \$\{folderLabel\(folder\)\} in Quartz`\}/);
+  assert.match(dashboard, /title="Open this cluster in Quartz"/);
+});

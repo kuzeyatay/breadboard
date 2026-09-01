@@ -1063,6 +1063,7 @@ export default function GardenAgentChat({
           steerableRun={Boolean(session.activeRunId)}
           onSendQueued={sendQueued}
           onEditMessage={editMessage}
+          onEditAssistantMessage={session.editAssistantMessage}
           onDeleteMessage={session.deleteMessage}
           onSelectBranch={selectBranch}
           onAbort={() => void session.abort()}

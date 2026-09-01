@@ -30,6 +30,9 @@ const messagesRoute = source(
 const yoloRoute = source(
   "../src/app/api/hermes/sessions/[sessionId]/yolo/route.ts",
 );
+const terminalRoute = source(
+  "../src/app/api/hermes/tools/terminal/route.ts",
+);
 const turnService = source("../src/lib/conversations/turn-service.ts");
 const hermesAdapter = source(
   "../src/lib/agent-runtime/adapters/hermes.ts",
@@ -81,6 +84,17 @@ test("the switch configures Hermes's real session-scoped YOLO mode", () => {
   assert.match(
     hermesAdapter,
     /key: "yolo",\s*value: input\.enabled \? "1" : "0"/,
+  );
+});
+
+test("an unplanned Terminal command reaches permission instead of a hard capability denial", () => {
+  assert.doesNotMatch(terminalRoute, /terminal_turn_capability_denied/);
+  assert.match(terminalRoute, /authorizeTerminalCommand\(command, terminalScope\)/);
+  assert.match(terminalRoute, /terminal_permission_required/);
+  assert.ok(
+    terminalRoute.indexOf("authorizeTerminalCommand(command, terminalScope)") <
+      terminalRoute.indexOf('"terminal_permission_required"'),
+    "the exact-command policy must decide whether the permission widget is needed",
   );
 });
 

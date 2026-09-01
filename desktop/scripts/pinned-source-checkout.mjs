@@ -122,6 +122,35 @@ export function assertPinnedCleanCheckout({
   return actualCommit;
 }
 
+/** Resolve the committed Git object for a path in either checkout form. */
+export function pinnedSourceTree(sourceRoot, relativePath) {
+  const topLevel = runGit(sourceRoot, ["rev-parse", "--show-toplevel"]);
+  const reportedRoot = topLevel.status === 0 ? topLevel.stdout.trim() : "";
+  if (!reportedRoot) {
+    throw new Error(`Pinned source Git root is unavailable: ${sourceRoot}`);
+  }
+
+  const target = path.resolve(sourceRoot, relativePath);
+  const repositoryRelative = path.relative(reportedRoot, target);
+  if (
+    repositoryRelative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(repositoryRelative)
+  ) {
+    throw new Error(`Pinned source path is outside its Git checkout: ${target}`);
+  }
+
+  const treePath = repositoryRelative.split(path.sep).join("/");
+  const tree = runGit(sourceRoot, [
+    "rev-parse",
+    treePath ? `HEAD:${treePath}` : "HEAD^{tree}",
+  ]);
+  const identity = tree.status === 0 ? tree.stdout.trim() : "";
+  if (!FULL_COMMIT_PATTERN.test(identity)) {
+    throw new Error(`Pinned source tree is unavailable: ${target}`);
+  }
+  return identity;
+}
+
 export function writeSourceCommitReceipt(targetRoot, commit) {
   if (!FULL_COMMIT_PATTERN.test(commit)) {
     throw new Error("Cannot write a source receipt for an invalid Git object ID.");

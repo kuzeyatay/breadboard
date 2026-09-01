@@ -16,6 +16,7 @@ import {
   publicLearningVersionId,
   selectLearnSources,
   sourceAppearsVisualRich,
+  sourceVisualInventoryCoverageProblems,
 } from "../src/lib/learn-utils.ts";
 import {
   buildLifThresholdResetVisual,
@@ -540,5 +541,26 @@ describe("routing + terminology helpers", () => {
       }),
       false,
     );
+  });
+
+  test("source visual inventory coverage is per-source and reconciles declared captions", () => {
+    const sources = [
+      {
+        slug: "source-a",
+        body: "Figure 1: Architecture overview.\nFigure 2: Latency curve.",
+        sourceImages: ["/garden/assets/source-a-page-001.png"],
+      },
+      {
+        slug: "source-b",
+        body: "Figure 1: Training dynamics.",
+        sourceImages: ["/garden/assets/source-b-page-001.png"],
+      },
+    ];
+    const problems = sourceVisualInventoryCoverageProblems(sources, [
+      { sourceId: "source-a", type: "figure" },
+    ]);
+
+    assert.ok(problems.some((problem) => /source-a.*declares 2 figure captions.*registered 1/i.test(problem)));
+    assert.ok(problems.some((problem) => /source-b.*produced no registered figures/i.test(problem)));
   });
 });

@@ -29,6 +29,7 @@ import {
 } from "./capability-token.ts";
 import { GARDEN_STRUCTURE_TOOLS, isProposalTool } from "./tool-scopes.ts";
 import { createProposal } from "./runtime-store.ts";
+import { gardenNavigationResourceFromSources } from "../generative-ui/contracts.ts";
 
 export interface GardenToolResult {
   ok: boolean;
@@ -266,19 +267,37 @@ async function executeReadTool(
         ],
         maxChunks: MAX_RESULTS,
       });
+      const chunks = retrieval.chunks.slice(0, MAX_RESULTS);
+      const navigator = gardenNavigationResourceFromSources({
+        id: `garden-search:${cluster.id}:${Date.now()}`,
+        query,
+        createdAt: new Date().toISOString(),
+        sources: chunks.map((chunk) => ({
+          gardenName: cluster.name,
+          gardenSlug: cluster.slug,
+          pageSlug: chunk.pageSlug,
+          title: chunk.pageTitle,
+          ...(chunk.heading ? { heading: chunk.heading } : {}),
+          excerpt: chunk.content.slice(0, 500),
+        })),
+      });
       return {
         ok: true,
         tool,
         data: {
           context: retrieval.context.slice(0, MAX_EXCERPT_CHARS),
           sources: retrieval.sources.slice(0, MAX_RESULTS),
-          chunks: retrieval.chunks.slice(0, MAX_RESULTS).map((chunk) => ({
+          chunks: chunks.map((chunk) => ({
+            pageSlug: chunk.pageSlug,
             pageTitle: chunk.pageTitle,
             heading: chunk.heading,
             content: chunk.content.slice(0, 800),
             evidenceAnchors: chunk.evidenceAnchors?.slice(0, 6),
             locations: chunk.locations?.slice(0, 6),
           })),
+          // The Hermes bridge returns this `data` object as the tool result,
+          // so the native resource must travel inside it rather than beside it.
+          ...(navigator ? { uiResources: [navigator] } : {}),
         },
       };
     }

@@ -2,9 +2,25 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   AppLifecycle,
+  DESKTOP_RUNTIME_EXIT_TIMEOUTS,
   installUnhandledRejectionGuard,
   type UnhandledRejectionActions,
 } from "../src/main/app-lifecycle";
+
+test("closing the desktop has a short bounded Runtime drain", () => {
+  assert.deepEqual(DESKTOP_RUNTIME_EXIT_TIMEOUTS, {
+    controlRequestTimeoutMs: 2_000,
+    gracefulShutdownTimeoutMs: 5_000,
+    forcedShutdownTimeoutMs: 3_000,
+  });
+  assert.ok(
+    Object.values(DESKTOP_RUNTIME_EXIT_TIMEOUTS).reduce(
+      (total, timeout) => total + timeout,
+      0,
+    ) <= 10_000,
+    "the invisible post-window shutdown must not keep the launcher alive for more than ten seconds",
+  );
+});
 
 function harness(overrides: Partial<UnhandledRejectionActions> = {}) {
   let listener: ((reason: unknown) => void) | null = null;

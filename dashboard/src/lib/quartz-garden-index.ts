@@ -2,6 +2,12 @@ import db from "@/lib/db";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { scanClusterKnowledge } from "@/lib/knowledge";
+import {
+  folderLabel,
+  folderPathExists,
+  isInSubtree,
+  normalizeFolderPath,
+} from "@/lib/cluster-folders";
 import { organizationClusterClause } from "@/lib/organizations/store";
 
 interface GardenClusterRow {
@@ -22,6 +28,12 @@ interface GardenClusterRow {
 interface GardenCluster {
   row: GardenClusterRow;
   stats: ReturnType<typeof scanClusterKnowledge>["stats"];
+}
+
+export interface QuartzGardenIndexPreparation {
+  slug: string;
+  title: string;
+  publishRequired: boolean;
 }
 
 const PRIVATE_LIBRARY_ROOT = "private-library";
@@ -92,6 +104,43 @@ function readClusterStats(
   }
 }
 
+function writeIndexIfChanged(filePath: string, content: string): void {
+  try {
+    if (fs.readFileSync(filePath, "utf-8") === content) return;
+  } catch {
+    // The first render creates the account-scoped library index below.
+  }
+  fs.writeFileSync(filePath, content, "utf-8");
+}
+
+function publishedIndexIsCurrent(
+  baseContentPath: string,
+  pageSlug: string,
+  sourcePath: string,
+): boolean {
+  let sourceModifiedAt: number;
+  try {
+    sourceModifiedAt = fs.statSync(sourcePath).mtimeMs;
+  } catch {
+    return false;
+  }
+
+  const publicRoot = path.resolve(baseContentPath, "..", "public");
+  const candidates = [
+    path.join(publicRoot, pageSlug, "index.html"),
+    path.join(publicRoot, `${pageSlug}.html`),
+  ];
+
+  return candidates.some((candidate) => {
+    try {
+      const output = fs.statSync(candidate);
+      return output.isFile() && output.mtimeMs >= sourceModifiedAt;
+    } catch {
+      return false;
+    }
+  });
+}
+
 function writeGardenIndex({
   baseContentPath,
   pageSlug,
@@ -108,7 +157,7 @@ function writeGardenIndex({
   scope: "private" | "organization" | "public";
   clusters: GardenCluster[];
   emptyText: string;
-}): string {
+}): QuartzGardenIndexPreparation {
   const date = new Date().toISOString().split("T")[0];
   const pageDir = path.join(baseContentPath, pageSlug);
   fs.mkdirSync(pageDir, { recursive: true });
@@ -226,11 +275,22 @@ function writeGardenIndex({
     `## Gardens\n\n` +
     `${renderClusters()}\n`;
 
-  fs.writeFileSync(path.join(pageDir, "_index.md"), content, "utf-8");
-  return pageSlug;
+  const sourcePath = path.join(pageDir, "_index.md");
+  writeIndexIfChanged(sourcePath, content);
+  return {
+    slug: pageSlug,
+    title,
+    publishRequired: !publishedIndexIsCurrent(
+      baseContentPath,
+      pageSlug,
+      sourcePath,
+    ),
+  };
 }
 
-export function refreshPrivateQuartzIndex(userId: number): string | null {
+export function preparePrivateQuartzIndex(
+  userId: number,
+): QuartzGardenIndexPreparation | null {
   const baseContentPath = contentPath();
   if (!baseContentPath || !Number.isFinite(userId)) return null;
 
@@ -254,11 +314,62 @@ export function refreshPrivateQuartzIndex(userId: number): string | null {
   });
 }
 
+export function refreshPrivateQuartzIndex(userId: number): string | null {
+  return preparePrivateQuartzIndex(userId)?.slug ?? null;
+}
+
+/**
+ * Build a virtual Quartz landing page for one dashboard cluster. A parent
+ * cluster owns its whole subtree, matching the dashboard's move/delete and
+ * nesting semantics, while every Garden keeps its canonical Quartz URL.
+ */
+export function preparePrivateClusterQuartzIndex(
+  userId: number,
+  folder: string,
+): QuartzGardenIndexPreparation | null {
+  const baseContentPath = contentPath();
+  const cleanFolder = normalizeFolderPath(folder);
+  if (
+    !baseContentPath ||
+    !Number.isFinite(userId) ||
+    !cleanFolder ||
+    !folderPathExists(db, userId, cleanFolder)
+  ) {
+    return null;
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT c.*
+       FROM clusters c
+       WHERE c.user_id = ?
+       ORDER BY c.created_at DESC`,
+    )
+    .all(userId) as GardenClusterRow[];
+  const scopedRows = rows.filter((row) =>
+    isInSubtree(row.folder, cleanFolder),
+  );
+  const scopeToken = Buffer.from(cleanFolder, "utf8").toString("base64url");
+  const title = folderLabel(cleanFolder);
+
+  return writeGardenIndex({
+    baseContentPath,
+    pageSlug: `${PRIVATE_LIBRARY_ROOT}/user-${userId}/cluster-${scopeToken}`,
+    title,
+    description: `Gardens in the ${cleanFolder} cluster and its nested clusters.`,
+    scope: "private",
+    clusters: scopedRows.map((row) => readClusterStats(baseContentPath, row)),
+    emptyText: `No gardens in ${title} yet.`,
+  });
+}
+
 /**
  * One index per account rather than per organization, because someone can be in
  * several and the tab shows all of them at once.
  */
-export function refreshOrganizationQuartzIndex(userId: number): string | null {
+export function prepareOrganizationQuartzIndex(
+  userId: number,
+): QuartzGardenIndexPreparation | null {
   const baseContentPath = contentPath();
   if (!baseContentPath || !Number.isFinite(userId)) return null;
 
@@ -287,7 +398,11 @@ export function refreshOrganizationQuartzIndex(userId: number): string | null {
   });
 }
 
-export function refreshPublicQuartzIndex(): string | null {
+export function refreshOrganizationQuartzIndex(userId: number): string | null {
+  return prepareOrganizationQuartzIndex(userId)?.slug ?? null;
+}
+
+export function preparePublicQuartzIndex(): QuartzGardenIndexPreparation | null {
   const baseContentPath = contentPath();
   if (!baseContentPath) return null;
 
@@ -310,4 +425,8 @@ export function refreshPublicQuartzIndex(): string | null {
     clusters: rows.map((row) => readClusterStats(baseContentPath, row)),
     emptyText: "No public gardens yet.",
   });
+}
+
+export function refreshPublicQuartzIndex(): string | null {
+  return preparePublicQuartzIndex()?.slug ?? null;
 }

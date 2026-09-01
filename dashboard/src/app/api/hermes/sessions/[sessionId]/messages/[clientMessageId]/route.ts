@@ -3,14 +3,27 @@ import { requireUserId } from "@/lib/server-auth";
 import {
   ApiError,
   apiErrorResponse,
+  readJsonBody,
   requireEnabled,
+  requireString,
 } from "@/lib/hermes/route-helpers.ts";
-import { getConversationForUser } from "@/lib/conversations/store.ts";
+import {
+  getConversationForUser,
+  getConversationMessageByClientId,
+  listConversationMessages,
+} from "@/lib/conversations/store.ts";
 import {
   deleteConversationMessages,
   planConversationTurnDeletion,
 } from "@/lib/conversations/turn-delete.ts";
-import { runtimeMessagesForBranch } from "@/lib/conversations/branch-history.ts";
+import {
+  projectConversationBranchMessages,
+  runtimeMessagesForBranch,
+} from "@/lib/conversations/branch-history.ts";
+import {
+  addAssistantContentVersion,
+  presentMessageVersions,
+} from "@/lib/conversations/message-versions.ts";
 import {
   cancelExternalAgentRun,
   listRunningExternalAgentRuns,
@@ -25,6 +38,97 @@ import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
 import { reclaimAbandonedRunForSession } from "@/lib/hermes/run-recovery.ts";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * PATCH: save a human edit as a new version of one completed assistant answer.
+ *
+ * The model's wording remains version zero. Besides making an accidental edit
+ * reversible, that also keeps the evidence ledger honest: it describes the
+ * model's text, not the wording a person changed afterwards.
+ */
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ sessionId: string; clientMessageId: string }> },
+) {
+  try {
+    const userId = await requireUserId();
+    requireEnabled();
+    const { sessionId, clientMessageId } = await params;
+    const body = await readJsonBody(request);
+    const content = requireString(body.content, "content", 120_000);
+    const expectedContent = requireString(
+      body.expectedContent,
+      "expectedContent",
+      120_000,
+    );
+    const conversation = getConversationForUser(sessionId, userId);
+    const assistant = getConversationMessageByClientId(
+      conversation.id,
+      clientMessageId,
+      "assistant",
+    );
+    if (!assistant) {
+      throw new ApiError(
+        404,
+        "message_not_found",
+        "That response no longer exists.",
+      );
+    }
+
+    const runtime = getRuntimeSessionByConversation(conversation.id);
+    if (runtime) {
+      reclaimAbandonedRunForSession(runtime.id);
+      if (getActiveRuntimeRun(runtime.id)) {
+        throw new ApiError(
+          409,
+          "run_already_active",
+          "This chat is still working. Stop it or wait for it to finish.",
+        );
+      }
+    }
+
+    const state = addAssistantContentVersion({
+      conversationId: conversation.id,
+      messageId: assistant.id,
+      expectedContent,
+      content,
+      origin: "manual",
+    });
+
+    // Keep the runtime's next answer grounded in the text now on screen. The
+    // edit itself is already durable if recreation is temporarily unavailable.
+    let runtimeReset = !runtime;
+    if (runtime) {
+      try {
+        const visibleTranscript = projectConversationBranchMessages(
+          listConversationMessages(conversation.id, {
+            limit: 500,
+            includePending: false,
+          }),
+        );
+        await resolveConversationRuntime({
+          conversation,
+          surface: conversation.surface,
+          activeGardenSlug: runtime.garden_id,
+          activePageSlug: runtime.page_slug,
+          forceRecreate: true,
+          historyOverride: runtimeMessagesForBranch(visibleTranscript),
+        });
+        runtimeReset = true;
+      } catch {
+        runtimeReset = false;
+      }
+    }
+
+    return NextResponse.json({
+      content: state.versions[state.activeIndex].content,
+      versions: presentMessageVersions(state),
+      runtimeReset,
+    });
+  } catch (error) {
+    return apiErrorResponse(error);
+  }
+}
 
 /**
  * DELETE: remove one exchange — the message and the answer it produced.

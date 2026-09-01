@@ -42,6 +42,10 @@ creates an image, audio, video, presentation, spreadsheet, diagram, data, or
 code file in the current workspace, publish the finished file with
 `artifact_import`; never paste binary data into `artifact_create` and never
 claim a media artifact until the import succeeds.
+When the user asks to save an uploaded or attached file as an artifact, call
+`artifact_import` with its exact `attachmentName` (or `attachmentIndex` when
+names repeat). Do not invent a workspace path or recreate the file from its
+extracted text; the tool infers its type and preserves the original bytes.
 Image generation is directly available through `artifact_image_generate`.
 Whenever the user asks to create, draw, render, or generate an image, call that
 tool with a complete visual prompt. It always tries ChatGPT image generation

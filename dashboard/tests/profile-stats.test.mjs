@@ -31,7 +31,7 @@ function createDatabase() {
     );
     CREATE TABLE conversation_messages (
       id INTEGER PRIMARY KEY, conversation_id INTEGER, role TEXT, surface TEXT,
-      status TEXT, metadata TEXT, token_usage TEXT, created_at TEXT,
+      content TEXT NOT NULL DEFAULT '', status TEXT, metadata TEXT, token_usage TEXT, created_at TEXT,
       client_message_id TEXT
     );
     CREATE TABLE hermes_runtime_sessions (
@@ -85,20 +85,22 @@ function addMessage(
     surface = "garden_chat",
     metadata,
     usage,
+    content = "",
     status = "complete",
     clientMessageId = `message-${nextMessageId}`,
   },
 ) {
   db.prepare(
     `INSERT INTO conversation_messages
-       (id, conversation_id, role, surface, status, metadata, token_usage, created_at,
+       (id, conversation_id, role, surface, content, status, metadata, token_usage, created_at,
         client_message_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     nextMessageId++,
     conversationId,
     role,
     surface,
+    content,
     status,
     metadata ? JSON.stringify(metadata) : null,
     usage ? JSON.stringify(usage) : null,
@@ -720,6 +722,70 @@ test("an account with no timed replies reports zeroes rather than NaN", () => {
     slowestMs: 0,
     fastestMs: 0,
   });
+});
+
+// ------------------------------------------------------------------ phrases
+
+test("most-used phrases come from repeated prompts, not raw repetitions or other users", () => {
+  const db = createDatabase();
+  addConversation(db, 1, { userId: 1 });
+  addConversation(db, 2, { userId: 2 });
+  db.prepare(
+    "INSERT INTO conversations (id, user_id, title, default_garden_id, created_at, temporary) VALUES (3, 1, 'Off record', NULL, '2026-06-01 08:00:00', 1)",
+  ).run();
+
+  addMessage(db, 1, {
+    role: "user",
+    at: "2026-06-01 08:00:00",
+    content: "Please add dark mode to the profile page. Please add it cleanly.",
+  });
+  addMessage(db, 1, {
+    role: "user",
+    at: "2026-06-01 08:01:00",
+    content: "Please add a shortcut to the profile page.",
+  });
+  addMessage(db, 1, {
+    role: "user",
+    at: "2026-06-01 08:02:00",
+    content: "Please add dark mode to settings.",
+  });
+  addMessage(db, 2, {
+    role: "user",
+    at: "2026-06-01 08:03:00",
+    content: "Please add profile page profile page profile page.",
+  });
+  addMessage(db, 3, {
+    role: "user",
+    at: "2026-06-01 08:04:00",
+    content: "Please add profile page profile page profile page.",
+  });
+
+  const { phrases } = readProfileStats(db, 1, { today: "2026-06-02" });
+
+  assert.deepEqual(phrases.items.find((entry) => entry.phrase === "please add"), {
+    phrase: "please add",
+    count: 3,
+  });
+  assert.equal(
+    phrases.items.find((entry) => entry.phrase.endsWith("profile page"))?.count,
+    2,
+  );
+  assert.equal(phrases.analyzedPrompts, 3);
+  assert.equal(phrases.truncated, false);
+});
+
+test("a phrase must occur in more than one prompt before it is shown", () => {
+  const db = createDatabase();
+  addConversation(db, 1);
+  addMessage(db, 1, {
+    role: "user",
+    at: "2026-06-01 08:00:00",
+    content: "Only once only once only once.",
+  });
+
+  const { phrases } = readProfileStats(db, 1, { today: "2026-06-02" });
+  assert.deepEqual(phrases.items, []);
+  assert.equal(phrases.analyzedPrompts, 1);
 });
 
 // ------------------------------------------------------------------- memory

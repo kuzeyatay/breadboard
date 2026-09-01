@@ -73,6 +73,19 @@ test("minimal background is the default and is raised only on evidence", () => {
   assert.match(style, /is not permission to pad/);
 });
 
+test("illustrative wording expands the intended pattern instead of anchoring on one example", () => {
+  const style = responseStylePrompt();
+  assert.match(style, /# open_ended_examples/);
+  assert.match(style, /"for example"/);
+  assert.match(style, /"etc\."/);
+  assert.match(style, /one instance of a broader pattern/);
+  assert.match(style, /treat their example as a seed and style signal/);
+  assert.match(style, /Produce several genuinely distinct fitting examples/);
+  assert.match(style, /instead of merely repeating or lightly paraphrasing/);
+  assert.match(style, /Respect an explicit count, exact list, requested singular output/);
+  assert.match(style, /Never invent examples that could be mistaken for sourced facts/);
+});
+
 test("human-facing answers pass a final first-time-reader comprehension check", () => {
   const layer = readerComprehensionPrompt();
   assert.match(layer, /final quality gate for human-facing explanatory prose/i);
