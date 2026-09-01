@@ -40,11 +40,12 @@ export async function POST(request: Request) {
       !session ||
       session.user_id === null ||
       session.conversation_id === null ||
-      session.surface !== "dashboard_terminal" ||
+      (session.surface !== "dashboard_terminal" &&
+        session.surface !== "garden_chat") ||
       runtimeExternalSessionId(session) !== verified.token.hermesSessionId ||
       verified.token.conversationId !== session.conversation_id
     ) {
-      throw new ApiError(403, "watch_session_scope_mismatch", "Watch is available only in an authenticated Terminal session.");
+      throw new ApiError(403, "watch_session_scope_mismatch", "Watch is available only in an authenticated Terminal or Garden Chat session.");
     }
     const conversation = db.prepare(
       "SELECT public_id FROM conversations WHERE id = ? AND user_id = ?",
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
     }
     const run = getActiveRuntimeRun(session.id);
     if (!run) {
-      throw new ApiError(409, "watch_run_required", "Watch requires a current Terminal run.");
+      throw new ApiError(409, "watch_run_required", "Watch requires a current authenticated chat run.");
     }
     const decision = getActiveCapabilityDecision(session.id);
     if (

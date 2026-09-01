@@ -12,6 +12,7 @@ import {
 } from "../src/lib/hermes/watch-service.ts";
 import { watchCommandText } from "../src/lib/hermes/watch-intent.ts";
 import {
+  prepareGardenVideosForWatch,
   prepareVideosForWatch,
   recentVideoAttachment,
   renderWatchVideoContext,
@@ -23,7 +24,7 @@ function source(relativePath) {
   return fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 }
 
-test("Watch is a ready ChatMock-compatible prebuilt Terminal skill", () => {
+test("Watch is ready in authenticated workspace-backed chats", () => {
   const terminal = listFirstPartySkills("dashboard_terminal").find(
     (skill) => skill.slug === "watch",
   );
@@ -38,13 +39,17 @@ test("Watch is a ready ChatMock-compatible prebuilt Terminal skill", () => {
     "yt-dlp",
   ]);
 
-  for (const surface of ["garden_chat", "quartz_ai"]) {
-    const candidate = listFirstPartySkills(surface).find(
-      (skill) => skill.slug === "watch",
-    );
-    assert.ok(candidate);
-    assert.notEqual(candidate.availability, "ready");
-  }
+  const garden = listFirstPartySkills("garden_chat").find(
+    (skill) => skill.slug === "watch",
+  );
+  assert.ok(garden);
+  assert.equal(garden.availability, "ready");
+
+  const quartz = listFirstPartySkills("quartz_ai").find(
+    (skill) => skill.slug === "watch",
+  );
+  assert.ok(quartz);
+  assert.notEqual(quartz.availability, "ready");
 });
 
 test("Watch guidance uses the guarded runtime and has no Claude-only tool dependency", () => {
@@ -60,7 +65,7 @@ test("Watch guidance uses the guarded runtime and has no Claude-only tool depend
   assert.match(openai, /Use \$watch/);
   assert.match(tool, /api\/hermes\/tools\/watch/);
   assert.match(route, /selectedConditionalSkills\.includes\("watch"\)/);
-  assert.match(route, /session\.surface !== "dashboard_terminal"/);
+  assert.match(route, /session\.surface !== "dashboard_terminal"[\s\S]*session\.surface !== "garden_chat"/);
 });
 
 test("Watch arguments are bounded before a process is launched", () => {
@@ -437,6 +442,14 @@ test("An attached video selects Watch without the user typing a command", () => 
     false,
   );
   assert.equal(
+    selection({
+      text: "what is in this",
+      surface: "garden_chat",
+      hasSelectedGardenVideo: true,
+    }).automatic,
+    true,
+  );
+  assert.equal(
     selection({ text: "what is in this", hasVideoAttachment: true, authenticated: false }).automatic,
     false,
   );
@@ -527,6 +540,40 @@ test("An attached video is linked into the workspace and named as the watch_run 
   }
 });
 
+test("A selected Garden video is linked into the workspace for Watch", () => {
+  const content = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-garden-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-workspace-"));
+  try {
+    const assets = path.join(content, "physics", "assets");
+    fs.mkdirSync(assets, { recursive: true });
+    const assetName = "lecture-media-abc123.mp4";
+    fs.writeFileSync(path.join(assets, assetName), "retained garden video");
+    const [prepared] = prepareGardenVideosForWatch({
+      contentPath: content,
+      clusterSlug: "physics",
+      workspaceRoot: workspace,
+      sources: [
+        {
+          slug: "lecture",
+          title: "Lecture",
+          sourceFile: "lecture.mp4",
+          sourceMedia: `/physics/assets/${assetName}`,
+        },
+      ],
+    });
+
+    assert.equal(prepared.selectedFromGarden, true);
+    assert.ok(prepared.workspacePath);
+    assert.equal(fs.readFileSync(prepared.workspacePath, "utf8"), "retained garden video");
+    const context = renderWatchVideoContext([prepared]);
+    assert.match(context, /\[Selected Garden video\]/);
+    assert.ok(context.includes(`watch_run source: ${prepared.workspacePath}`));
+  } finally {
+    fs.rmSync(content, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("A follow-up question finds the video attached earlier in the conversation", () => {
   const blobId = `vid_${"a".repeat(32)}`;
   const messages = [
@@ -551,9 +598,14 @@ test("A follow-up question finds the video attached earlier in the conversation"
 test("The Watch skill tells the model where an attached video actually is", () => {
   const manifest = source("../hermes-skills/prebuilt/watch/SKILL.md");
   assert.match(manifest, /\[Attached video\]/);
+  assert.match(manifest, /\[Selected Garden video\]/);
   assert.match(manifest, /never\s+answer that you cannot see videos/i);
 
   const turnService = source("src/lib/conversations/turn-service.ts");
   assert.match(turnService, /watchCommandText\(/);
   assert.match(turnService, /renderWatchVideoContext\(preparedVideos\)/);
+
+  const gardenAdapter = source("src/lib/hermes/garden-chat-adapter.ts");
+  assert.match(gardenAdapter, /hasSelectedGardenVideo: selectedMedia\.video\.length > 0/);
+  assert.match(gardenAdapter, /renderWatchVideoContext\(preparedGardenVideos\)/);
 });

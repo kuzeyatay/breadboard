@@ -120,7 +120,29 @@ test("media controls use the botanical palette instead of cyan", () => {
   );
 });
 
-test("completed recordings live under Video & audio with exact names and playback", () => {
+test("recordings share the document select and highlight control", () => {
+  assert.match(source, /flagColor: doc\.flagColor/);
+  assert.match(source, /selectedSourceSlugs=\{selectedDocumentSlugs\}/);
+  assert.match(source, /flagColors=\{FLAG_COLORS\}/);
+  assert.match(source, /openFlagPaletteSlug=\{openFlagPaletteSlug\}/);
+  assert.match(source, /savingFlagSlug=\{savingFlagSlug\}/);
+  assert.match(
+    source,
+    /onColorButtonClick=\{\(sourceSlug\) =>\s*handleDocumentColorButtonClick\(sourceSlug, true\)/,
+  );
+  assert.match(source, /void handleDocumentFlag\(sourceSlug, flagColor\)/);
+  assert.match(componentSource, /function SourceColorSelect/);
+  assert.match(componentSource, /Recording highlight; selected for chat/);
+  assert.match(componentSource, /Click once to choose a highlight color\./);
+  assert.match(componentSource, /aria-pressed=\{selected\}/);
+  assert.match(componentSource, /selectedSourceSlugs\.includes\(source\.slug\)/);
+  assert.match(
+    componentSource,
+    /border-l-\[var\(--botanical\)\] bg-\[color-mix\(in_srgb,var\(--botanical\)_8%,transparent\)\]/,
+  );
+});
+
+test("completed recordings live under Video & audio with exact names and a single playback transport", () => {
   assert.match(source, /const mediaSourceDocuments = sourceDocuments\.filter/);
   assert.match(source, /const documentSourceDocuments = sourceDocuments\.filter/);
   assert.match(source, /mediaSources=\{gardenMediaSources\}/);
@@ -137,7 +159,18 @@ test("completed recordings live under Video & audio with exact names and playbac
     /<OverflowMarquee className="text-xs text-gray-300 group-hover:text-white">\s*\{file\.name\}\s*<\/OverflowMarquee>/,
   );
   assert.match(componentSource, /const description = mediaSourceDescription\(source\)/);
-  assert.match(componentSource, /<audio[\s\S]*?controls autoPlay preload="metadata"/);
+  assert.match(componentSource, /function AudioSourceRow/);
+  assert.match(componentSource, /<audio[\s\S]*?preload="metadata"/);
+  assert.doesNotMatch(componentSource, /<audio[^>]*\scontrols(?:\s|>)/);
+  assert.match(
+    componentSource,
+    /aria-label=\{isPlaying \? `Pause \$\{filename\}` : `Play \$\{filename\}`\}/,
+  );
+  assert.match(componentSource, /className=\{styles\.scrubber\}/);
+  assert.match(
+    componentSource,
+    /aria-label=\{`\$\{playing \? "Close player for" : "Open player for"\} \$\{filename\}`\}/,
+  );
   assert.match(componentSource, /<video[\s\S]*?controls autoPlay preload="metadata"/);
   assert.match(
     componentSource,

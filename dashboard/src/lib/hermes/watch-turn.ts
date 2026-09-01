@@ -1,4 +1,4 @@
-// Making an attached video reachable by the Watch skill.
+// Making an attached or Garden-selected video reachable by the Watch skill.
 //
 // Watch will only open a local file that lives inside the session's authorized
 // workspace — that containment is the whole reason the tool can be handed a
@@ -17,7 +17,12 @@ import path from "node:path";
 import type { ChatAttachment } from "../chat-attachments.ts";
 import { messageAttachments } from "../conversations/uploads.ts";
 import { findVideoBlob } from "../conversations/video-blob-store.ts";
-import { formatVideoSize, videoFormatLabel } from "../video-attachments.ts";
+import type { KnowledgeNode } from "../knowledge.ts";
+import {
+  formatVideoSize,
+  videoAttachmentFormat,
+  videoFormatLabel,
+} from "../video-attachments.ts";
 
 /** How far back a follow-up question may reach for the video it is about. */
 const RECENT_MESSAGE_LOOKBACK = 12;
@@ -33,6 +38,8 @@ export interface PreparedVideo {
   formatLabel: string;
   /** True when the video came from an earlier message rather than this one. */
   carriedForward: boolean;
+  /** True when the user selected a retained recording in their Garden. */
+  selectedFromGarden?: boolean;
 }
 
 export function videoAttachments(
@@ -130,6 +137,69 @@ export function prepareVideosForWatch(input: {
   });
 }
 
+function retainedGardenMediaPath(input: {
+  contentPath: string;
+  clusterSlug: string;
+  source: KnowledgeNode;
+}): { path: string; assetName: string; byteSize: number } | null {
+  const normalized = input.source.sourceMedia.trim().replace(/\\/g, "/");
+  const assetPrefix = `/${input.clusterSlug.trim()}/assets/`;
+  const assetName = normalized.startsWith(assetPrefix)
+    ? normalized.slice(assetPrefix.length)
+    : "";
+  if (!assetName || assetName.includes("/")) return null;
+
+  const clusterDirectory = path.resolve(input.contentPath, input.clusterSlug);
+  const mediaPath = path.resolve(clusterDirectory, "assets", assetName);
+  if (!mediaPath.startsWith(`${clusterDirectory}${path.sep}`)) return null;
+  try {
+    const metadata = fs.lstatSync(mediaPath);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
+    return { path: mediaPath, assetName, byteSize: metadata.size };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bridge retained Garden videos into the same authorized workspace Watch uses
+ * for ordinary chat attachments. The Garden lookup has already resolved the
+ * user's selection against an authorized cluster; this function revalidates
+ * the asset path before linking any bytes.
+ */
+export function prepareGardenVideosForWatch(input: {
+  contentPath: string;
+  clusterSlug: string;
+  workspaceRoot: string;
+  sources: readonly KnowledgeNode[];
+}): PreparedVideo[] {
+  return input.sources.map((source) => {
+    const media = retainedGardenMediaPath({
+      contentPath: input.contentPath,
+      clusterSlug: input.clusterSlug,
+      source,
+    });
+    const displayName = source.sourceFile || source.title || source.slug;
+    const format = videoAttachmentFormat(displayName || media?.assetName || "");
+    return {
+      name: displayName,
+      blobId: `garden:${source.slug}`,
+      sizeBytes: media?.byteSize,
+      formatLabel: format ? videoFormatLabel(format) : "Video",
+      carriedForward: false,
+      selectedFromGarden: true,
+      workspacePath: media
+        ? linkIntoWorkspace({
+            sourcePath: media.path,
+            workspaceRoot: input.workspaceRoot,
+            fileName: media.assetName,
+            byteSize: media.byteSize,
+          })
+        : null,
+    };
+  });
+}
+
 /**
  * What the model is told about the videos in play. Naming the exact `source`
  * value matters: the alternative is the model inventing a path from the
@@ -138,6 +208,7 @@ export function prepareVideosForWatch(input: {
  */
 export function renderWatchVideoContext(videos: readonly PreparedVideo[]): string {
   if (videos.length === 0) return "";
+  const selectedFromGarden = videos.every((video) => video.selectedFromGarden);
   const lines = videos.map((video) => {
     const size = formatVideoSize(video.sizeBytes);
     const described = [video.formatLabel, size].filter(Boolean).join(", ");
@@ -148,10 +219,14 @@ export function renderWatchVideoContext(videos: readonly PreparedVideo[]): strin
       : `- "${video.name}" (${described}) — its stored file could not be opened, so say so rather than guessing at its contents.`;
   });
   return [
-    "[Attached video]",
-    videos.length === 1
-      ? "One video is attached to this conversation:"
-      : `${videos.length} videos are attached to this conversation:`,
+    selectedFromGarden ? "[Selected Garden video]" : "[Attached video]",
+    selectedFromGarden
+      ? videos.length === 1
+        ? "The user selected this retained video recording:"
+        : `The user selected these ${videos.length} retained video recordings:`
+      : videos.length === 1
+        ? "One video is attached to this conversation:"
+        : `${videos.length} videos are attached to this conversation:`,
     ...lines,
     "Answer questions about what a video contains by calling watch_run with the exact source path above — " +
       "never from its filename, and never by claiming you cannot see videos. " +

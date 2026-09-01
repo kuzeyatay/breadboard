@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import GardenAssistantSwitch from '@/app/components/hermes/garden-assistant-switch';
-import { QUARTZ_BASE_URL, quartzUrlWithAppTheme } from '@/lib/quartz-url';
+import { quartzUrlWithAppTheme } from '@/lib/quartz-url';
 import { exportFolderPdf, type FolderPdfExportMessage } from '@/lib/folder-pdf-export-client';
 import {
   quartzAssistantSelectionRequest,
@@ -104,13 +104,16 @@ export default function LibraryGardenClient({ src, title }: Props) {
   const [markdownEditorOpen, setMarkdownEditorOpen] = useState(false);
   const activeMarkdownCluster = activeMarkdown?.cluster;
   const activeMarkdownSlug = activeMarkdown?.slug;
+  // The Server Component resolved `src` against the Quartz port of this
+  // launch; the client bundle's own QUARTZ_BASE_URL is a build-time constant
+  // and may point at a dead port, so the frame's origin must come from `src`.
   const quartzOrigin = useMemo(() => {
     try {
-      return new URL(QUARTZ_BASE_URL).origin;
+      return new URL(src).origin;
     } catch {
       return '';
     }
-  }, []);
+  }, [src]);
 
   function postInlineAnswer(update: QuartzInlineAnswerUpdate) {
     iframeRef.current?.contentWindow?.postMessage(

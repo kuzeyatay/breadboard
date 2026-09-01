@@ -759,12 +759,13 @@ function buildToolMap(
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
   for (const tool of WATCH_TOOLS) {
-    map[tool] = authenticated && surface === "dashboard_terminal";
+    map[tool] =
+      authenticated &&
+      (surface === "dashboard_terminal" || surface === "garden_chat");
   }
-  // Reconstructing an attached picture needs no workspace and no filesystem, so
-  // unlike Watch it is not confined to the Terminal. The skill still has to be
-  // selected for the turn, and the route still resolves the picture from a
-  // message this user owns.
+  // Reconstructing an attached picture needs no model-visible filesystem. The
+  // skill still has to be selected for the turn, and the route still resolves
+  // the picture from a message this user owns.
   for (const tool of IMAGE_TO_3D_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
@@ -906,11 +907,12 @@ function buildToolMap(
     for (const tool of GARDEN_READ_TOOLS) map[tool] = true;
   }
   if (surface !== "dashboard_terminal") {
-    for (const tool of [...FS_READ_TOOLS, ...FS_WRITE_TOOLS, ...WATCH_TOOLS, "bash", "shell", "terminal_execute_command"]) {
+    for (const tool of [...FS_READ_TOOLS, ...FS_WRITE_TOOLS, "bash", "shell", "terminal_execute_command"]) {
       map[tool] = false;
     }
   }
   if (surface === "quartz_ai") {
+    for (const tool of WATCH_TOOLS) map[tool] = false;
     for (const tool of ARTIFACT_TOOLS) map[tool] = false;
     for (const tool of GADGET_TOOLS) map[tool] = false;
     for (const tool of PREMORTEM_TOOLS) map[tool] = false;

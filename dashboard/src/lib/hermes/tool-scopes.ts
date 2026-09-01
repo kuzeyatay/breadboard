@@ -462,6 +462,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...PREMORTEM_TOOLS,
       ...FACTCHECK_TOOLS,
       ...PATENT_DISCLOSURE_TOOLS,
+      ...WATCH_TOOLS,
       ...IMAGE_TO_3D_TOOLS,
       ...AUDIO_ANALYSIS_TOOLS,
       ...MUSIC_RECOGNITION_TOOLS,

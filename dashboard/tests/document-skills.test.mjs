@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { gardenMediaKind } from "../src/lib/garden-media-kind.ts";
 
 const bridge = await import("../src/lib/document-skills/bridge.ts");
 const planning = await import("../src/lib/document-skills/planning.ts");
@@ -247,6 +248,39 @@ test("both chat surfaces prepare document context and stop dumping what they dis
     "Garden Chat used to drop attachments entirely",
   );
   assert.match(garden, /parseChatAttachments\(payload\.attachments\)/);
+});
+
+test("selected audio uses transcript Markdown while selected video skips document distillation", () => {
+  assert.equal(
+    gardenMediaKind({
+      sourceType: "audio_upload",
+      sourceFile: "lecture.mp3",
+      sourceMedia: "/physics/assets/lecture.mp3",
+    }),
+    "audio",
+  );
+  assert.equal(
+    gardenMediaKind({
+      sourceType: "video_upload",
+      sourceFile: "lecture.mp4",
+      sourceMedia: "/physics/assets/lecture.mp4",
+    }),
+    "video",
+  );
+  assert.equal(
+    gardenMediaKind({
+      sourceType: "audio_upload",
+      sourceFile: "older-lecture.mp3",
+      sourceMedia: "",
+    }),
+    "audio",
+  );
+
+  const turn = source("src/lib/document-skills/turn.ts");
+  assert.match(turn, /if \(mediaKind === "audio"\)[\s\S]*type: "text"[\s\S]*text: node\.content/);
+  assert.match(turn, /if \(mediaKind === "video"\) continue/);
+  assert.match(turn, /Selected audio recording transcript Markdown/);
+  assert.match(turn, /do not invoke audio analysis/);
 });
 
 test("the turn context names the skill and tells the model how to open it", async () => {

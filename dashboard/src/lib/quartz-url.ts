@@ -44,8 +44,29 @@ function runtimeQuartzBaseUrl(): string | null {
   }
 }
 
+/**
+ * The Quartz URL of THIS launch, read from the server's live environment.
+ *
+ * Runtime V2 gives Quartz a fresh loopback port on every app launch, but the
+ * desktop dashboard is a prebuilt standalone bundle: any literal
+ * `process.env.NEXT_PUBLIC_QUARTZ_URL` was replaced at build time with the
+ * port of whatever launch built it. The computed key below is not statically
+ * resolvable, so the bundler leaves it as a real runtime lookup and the server
+ * sees the environment Runtime V2 actually injected. Client bundles have no
+ * process env; they must receive the resolved base from a Server Component.
+ */
+function runtimeInjectedQuartzBaseUrl(): string | null {
+  if (typeof window !== 'undefined' || typeof process === 'undefined') return null;
+  for (const name of ['BREADBOARD_QUARTZ_RUNTIME_URL', 'NEXT_PUBLIC_QUARTZ_URL']) {
+    const value = normalizeAbsoluteUrl(process.env[name]);
+    if (value) return value;
+  }
+  return null;
+}
+
 export function resolveQuartzBaseUrl(): string {
   return (
+    runtimeInjectedQuartzBaseUrl() ??
     normalizeAbsoluteUrl(process.env.NEXT_PUBLIC_QUARTZ_URL) ??
     deriveQuartzBaseUrlFromDashboard(
       process.env.NEXT_PUBLIC_DASHBOARD_URL ?? process.env.DASHBOARD_URL,
@@ -86,12 +107,22 @@ export function quartzUrlWithAppTheme(url: string): string {
 }
 
 export function quartzUrl(...segments: string[]): string {
-  const baseUrl = resolveQuartzBaseUrl();
+  return quartzUrlFromBase(resolveQuartzBaseUrl(), ...segments);
+}
+
+/**
+ * Build a Quartz page URL against an explicitly provided base. Client
+ * components must use this with a server-resolved base (passed down as a
+ * prop): their own bundle only carries the build-time NEXT_PUBLIC_QUARTZ_URL,
+ * which does not know the port Runtime V2 gave Quartz on this launch.
+ */
+export function quartzUrlFromBase(baseUrl: string, ...segments: string[]): string {
+  const base = normalizeAbsoluteUrl(baseUrl) ?? resolveQuartzBaseUrl();
   const path = segments
     .map((segment) => segment.trim().replace(/^\/+|\/+$/g, ''))
     .filter(Boolean)
     .map(encodeURIComponent)
     .join('/');
 
-  return path ? `${baseUrl}/${path}/` : `${baseUrl}/`;
+  return path ? `${base}/${path}/` : `${base}/`;
 }

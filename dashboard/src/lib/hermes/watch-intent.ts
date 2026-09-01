@@ -7,10 +7,11 @@
 // without the skill the model has a filename and no way to open it, so it either
 // guesses from the name or says it cannot see videos.
 //
-// The rule this module encodes: an attached video makes the turn about that
-// video unless the user's own words say the file is being handled rather than
-// examined. A video *URL* is held to a stricter test, because a pasted link can
-// be anything — there the request has to actually ask about the content.
+// The rule this module encodes: an attached video, or a retained video selected
+// in a Garden, makes the turn about that video unless the user's own words say
+// the file is being handled rather than examined. A video *URL* is held to a
+// stricter test, because a pasted link can be anything — there the request has
+// to actually ask about the content.
 //
 // Same shape as the other intent modules: pure text in, possibly-prefixed text
 // out, with `automatic` recorded on the turn so the choice is auditable.
@@ -57,6 +58,8 @@ export interface WatchIntentInput {
   hasVideoAttachment: boolean;
   /** A video came with an earlier message in this same conversation. */
   hasRecentVideoAttachment?: boolean;
+  /** A retained video recording is selected in the active Garden. */
+  hasSelectedGardenVideo?: boolean;
 }
 
 /**
@@ -73,12 +76,14 @@ export function watchCommandText(
   const available =
     input.authenticated &&
     // Watch runs a local pipeline against the session workspace, so it exists
-    // only where that workspace does.
-    input.surface === "dashboard_terminal";
+    // only where that workspace does. Garden Chat has one too, and exposes it
+    // for retained videos that Breadboard has staged there server-side.
+    (input.surface === "dashboard_terminal" ||
+      (input.surface === "garden_chat" && input.hasSelectedGardenVideo === true));
   // An explicit command already says what the turn is; never argue with it.
   const eligible = available && !text.startsWith("/");
   const automatic = eligible &&
-    (input.hasVideoAttachment
+    (input.hasVideoAttachment || input.hasSelectedGardenVideo
       ? !HANDLING_ONLY.test(prose) || CONTENT_REQUEST.test(prose)
       : Boolean(text) &&
         CONTENT_REQUEST.test(prose) &&

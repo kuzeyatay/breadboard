@@ -1,0 +1,114 @@
+.transport {
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--botanical) 5%, transparent),
+      transparent 28%,
+      transparent 72%,
+      color-mix(in srgb, var(--botanical) 5%, transparent)
+    ),
+    color-mix(in srgb, var(--paper-bg) 58%, var(--paper-surface));
+  box-shadow: var(--bb-run-recess);
+}
+
+.scrubberWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding-inline: 0.3rem;
+}
+
+.scrubberWrap::before,
+.scrubberWrap::after {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  width: 0.3rem;
+  height: 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--botanical) 72%, var(--line));
+  border-radius: 1px;
+  background: var(--paper-raised);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--paper-raised) 70%, transparent);
+  content: "";
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.scrubberWrap::before {
+  left: 0;
+}
+
+.scrubberWrap::after {
+  right: 0;
+}
+
+.scrubber {
+  --bb-media-progress: 0%;
+
+  width: 100%;
+  height: 0.875rem;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.scrubber:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.scrubber::-webkit-slider-runnable-track {
+  height: 0.2rem;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--botanical) 0 var(--bb-media-progress),
+    color-mix(in srgb, var(--line-strong) 72%, var(--paper-bg)) var(--bb-media-progress) 100%
+  );
+  box-shadow: var(--bb-run-recess);
+}
+
+.scrubber::-moz-range-track {
+  height: 0.2rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line-strong) 72%, var(--paper-bg));
+  box-shadow: var(--bb-run-recess);
+}
+
+.scrubber::-moz-range-progress {
+  height: 0.2rem;
+  border-radius: 999px;
+  background: var(--botanical);
+}
+
+.scrubber::-webkit-slider-thumb {
+  width: 0.65rem;
+  height: 0.65rem;
+  margin-top: -0.225rem;
+  appearance: none;
+  border: 2px solid var(--paper-raised);
+  border-radius: 50%;
+  background: var(--botanical);
+  box-shadow: 0 0 0 1px var(--line-strong), 1px 1px 3px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.scrubber::-moz-range-thumb {
+  width: 0.45rem;
+  height: 0.45rem;
+  border: 2px solid var(--paper-raised);
+  border-radius: 50%;
+  background: var(--botanical);
+  box-shadow: 0 0 0 1px var(--line-strong), 1px 1px 3px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.scrubber:focus-visible {
+  outline: none;
+}
+
+.scrubber:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--botanical) 24%, transparent), 0 0 0 1px var(--botanical);
+}
+
+.scrubber:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--botanical) 24%, transparent), 0 0 0 1px var(--botanical);
+}

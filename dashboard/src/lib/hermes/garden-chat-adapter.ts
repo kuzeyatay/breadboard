@@ -88,6 +88,7 @@ import {
   type AgencyAgentDefinition,
 } from "./agency-agents.ts";
 import { prepareDocumentContext } from "../document-skills/turn.ts";
+import { selectedGardenMediaSources } from "../garden-media-sources.ts";
 import { parseChatAttachments } from "../chat-attachments-request.ts";
 import {
   resolveDocumentAttachments,
@@ -142,6 +143,11 @@ import {
   normalizeGenerativeUiResources,
   type GenerativeUiResource,
 } from "../generative-ui/contracts.ts";
+import { watchCommandText } from "./watch-intent.ts";
+import {
+  prepareGardenVideosForWatch,
+  renderWatchVideoContext,
+} from "./watch-turn.ts";
 
 type GardenChatPayload = {
   clusterSlug?: unknown;
@@ -256,6 +262,14 @@ export async function openGardenAgentChat(
     const selectedSlugs = parseSelectedDocumentSlugs(
       payload.selectedDocumentSlugs,
     );
+    const contentPath = process.env.QUARTZ_CONTENT_PATH;
+    const selectedMedia = contentPath
+      ? selectedGardenMediaSources({
+          contentPath,
+          clusterSlug,
+          selectedSlugs,
+        })
+      : { audio: [], video: [] };
     // Garden Chat's own copy of the first-turn titling in
     // conversations/turn-service.ts. This surface persists its transcript through
     // the legacy chat-session route rather than reserveConversationTurn, so the
@@ -351,6 +365,16 @@ export async function openGardenAgentChat(
       authenticated: true,
       priorMessages: messages,
     });
+    // A selected Garden video is the Garden equivalent of attaching a video in
+    // the Terminal: its transcript Markdown is not enough to answer what was
+    // shown, so the recording selects Watch for this turn automatically.
+    const watchSelection = watchCommandText({
+      text: agentLoopSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      hasVideoAttachment: false,
+      hasSelectedGardenVideo: selectedMedia.video.length > 0,
+    });
     // Garden Chat's own copy of the chain in conversations/turn-service.ts. A
     // picture attached here has to select the skill for itself exactly as it does
     // there — missing this second pipeline is how a feature silently works on one
@@ -358,7 +382,7 @@ export async function openGardenAgentChat(
     // legacy path parses messages as role and content only, so an attachment from
     // an earlier turn is not visible from it.
     const imageTo3dSelection = imageTo3dCommandText({
-      text: agentLoopSelection.text,
+      text: watchSelection.text,
       surface: "garden_chat",
       authenticated: true,
       hasImageAttachment: hasReconstructableAttachment(attachments),
@@ -431,6 +455,7 @@ export async function openGardenAgentChat(
       commandContext,
     ).catch(async (error: unknown) => {
       if (
+        !watchSelection.automatic &&
         !patentDisclosureSelection.automatic &&
         !imageTo3dSelection.automatic &&
         !spotifySelection.automatic &&
@@ -457,6 +482,9 @@ export async function openGardenAgentChat(
     decision.selectedConditionalSkills = resolved.invocations
       .filter((item) => item.kind === "skill")
       .map((item) => item.slug);
+    const automaticWatch =
+      watchSelection.automatic &&
+      decision.selectedConditionalSkills.includes("watch");
     const automaticPatentDisclosure =
       patentDisclosureSelection.automatic &&
       decision.selectedConditionalSkills.includes(PATENT_DISCLOSURE_SKILL);
@@ -534,6 +562,7 @@ export async function openGardenAgentChat(
         reasoningEffort: engine.variant,
         reasoningEffortAdjusted: engine.adjusted,
         commands: resolved.invocations,
+        automaticWatch,
         automaticPremortem: premortemSelection.automatic,
         automaticFactcheck: factcheckSelection.automatic,
         automaticPatentDisclosure,
@@ -620,6 +649,15 @@ export async function openGardenAgentChat(
       garden: { clusterSlug, selectedDocumentSlugs: selectedSlugs },
       signal,
     });
+    const preparedGardenVideos =
+      contentPath && decision.selectedConditionalSkills.includes("watch")
+        ? prepareGardenVideosForWatch({
+            contentPath,
+            clusterSlug,
+            workspaceRoot: session.activeDirectory,
+            sources: selectedMedia.video,
+          })
+        : [];
     const runSystem = composeHermesSystemPrompt({
       surface: "garden_chat",
       decision,
@@ -642,6 +680,7 @@ export async function openGardenAgentChat(
         repository?.systemContext ?? "",
         connectedApps.systemContext,
         documents.context,
+        renderWatchVideoContext(preparedGardenVideos),
         editableDocuments.context,
         decision.selectedConditionalSkills.includes(IMAGE_TO_3D_SKILL)
           ? renderImageTo3dContext(reconstructableFromAttachments(attachments))
@@ -679,6 +718,14 @@ export async function openGardenAgentChat(
     const capabilitySelection = turnCapabilitySelection({
       invocations: resolved.invocations,
       automaticSkills: [
+        ...(automaticWatch
+          ? [
+              {
+                slug: "watch",
+                reason: "A retained video recording was selected in the Garden.",
+              },
+            ]
+          : []),
         ...(imageTo3dSelection.automatic ? [{ slug: IMAGE_TO_3D_SKILL }] : []),
         ...(spotifySelection.automatic ? [{ slug: SPOTIFY_SKILL }] : []),
         ...(audioSelection.automatic ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),

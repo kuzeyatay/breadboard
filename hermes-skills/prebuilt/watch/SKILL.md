@@ -26,7 +26,7 @@ evidence streams; do not claim to have seen content that neither stream shows.
 
 breadboard:
   category: featured
-  surfaces: [dashboard_terminal]
+  surfaces: [dashboard_terminal, garden_chat]
   requiredTools:
     - watch_run
   requiredArtifactKinds: []
@@ -36,8 +36,8 @@ breadboard:
 
 ## Breadboard and ChatMock workflow
 
-Breadboard's Terminal is powered through ChatMock. When `watch_run` is
-available, use it instead of invoking the bundled Python files directly. Pass:
+Breadboard's authenticated chats are powered through ChatMock. When `watch_run`
+is available, use it instead of invoking the bundled Python files directly. Pass:
 
 - `source`: the URL or local path exactly as the user supplied it;
 - `question`: the user's question, or a concise request to summarize when no
@@ -48,8 +48,9 @@ available, use it instead of invoking the bundled Python files directly. Pass:
 - optional `maxFrames` and `resolution` only when the request justifies them;
 - `noWhisper: true` only when the user declines remote transcription.
 
-When a video was attached to the chat, this skill is selected automatically and
-the turn's context carries an `[Attached video]` block naming the exact
+When a video was attached to the Terminal or selected from a Garden's retained
+recordings, this skill is selected automatically. The turn's context carries an
+`[Attached video]` or `[Selected Garden video]` block naming the exact
 `watch_run source` path for each one. Pass that path verbatim. Do not build a
 path out of the filename, do not ask the user where the file is, and never
 answer that you cannot see videos — the file is on disk and this tool opens it.
