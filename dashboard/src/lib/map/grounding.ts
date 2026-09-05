@@ -154,6 +154,29 @@ const NON_FACTUAL =
 const NON_GEOGRAPHIC_DOMAIN =
   /\b(code|codebase|source file|files?|functions?|variables?|packages?|repos?|repositor(?:y|ies)|endpoints?|databases?|schemas?|components?|typescript|javascript|python|regexe?s?|commits?|branch(?:es)?|compilers?|algorithms?|api)\b/;
 
+/**
+ * Navigation verbs also target websites and app screens. Remove only those
+ * clauses before looking for geographic intent, preserving a separate request
+ * for real directions. The target must end at a clause boundary: "Instagram
+ * headquarters" is a physical destination, unlike "Instagram" on its own.
+ * Match the original text so URLs retain their dots and slashes.
+ */
+const DIGITAL_NAVIGATION = new RegExp(
+  [
+    /\b(?:navigate(?: me)? to|take me to|get me to|go to|open|visit)\s+(?:the\s+)?/.source,
+    "(?:",
+    [
+      /https?:\/\/[^\s,;]+|(?:[\w-]+\.)+[a-z]{2,}(?:[/:?#][^\s,;]*)?/.source,
+      /(?:instagram|facebook|youtube|tiktok|twitter|reddit|linkedin|github|gmail|spotify|whatsapp|discord|chatgpt)(?:'s)?(?:\s+(?:website|site|app|profile|page|homepage))?/.source,
+      /(?:[\p{L}\p{N}'’-]+\s+){0,5}(?:website|webpage|web page|homepage|home page|settings|dashboard|browser tab)/.source,
+    ].join("|"),
+    ")",
+    /(?:\s+in\s+(?:(?:my|the|a)\s+)?(?:browser|chrome|edge|firefox|safari|new tab))?/.source,
+    /(?=\s*(?:$|[.!?,;]|\b(?:and|then)\b))/.source,
+  ].join(""),
+  "giu",
+);
+
 const OPT_OUT =
   /\b(?:do not|don'?t|without|no need to|skip)\b.{0,30}\b(?:use|check|call|look up)?\s*(?:the )?(?:map|maps|map tools?)\b/;
 
@@ -189,8 +212,9 @@ export function requiresGeographicGrounding(
     structuredPlaceAvailable?: boolean;
   } = {},
 ): GeographicGroundingAssessment {
-  const raw = (request ?? "").trim();
-  if (!raw) return { required: false, asks: [], reason: "empty request" };
+  const original = (request ?? "").trim();
+  if (!original) return { required: false, asks: [], reason: "empty request" };
+  const raw = original.replace(DIGITAL_NAVIGATION, " ").trim();
   const folded = foldRequestText(raw);
 
   if (OPT_OUT.test(folded)) {

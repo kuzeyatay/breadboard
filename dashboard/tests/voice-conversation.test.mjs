@@ -269,7 +269,7 @@ test("the voice screen talks to the chat and takes the whole screen", () => {
   assert.match(overlay, /createPortal\(overlay, document\.body\)/);
   assert.match(overlay, /'\/api\/speech\/transcribe'/);
   assert.match(overlay, /'\/api\/speech\/synthesize'/);
-  assert.match(overlay, /'\/api\/speech\/prepare'/);
+  assert.match(overlay, /await prepareLocalSpeech\(prepareController\.signal\)/);
   assert.match(overlay, /playSpeechBlob/);
   assert.match(overlay, /onSend\(text\)/);
   // Escape closes, and closing tears the microphone and playback down.
@@ -280,12 +280,12 @@ test("the voice screen talks to the chat and takes the whole screen", () => {
   assert.match(overlay, /answeredKeyRef\.current = key;/);
 });
 
-test("voice mode warms local speech before it starts listening", () => {
+test("voice mode prepares the selected speech provider before it starts listening", () => {
   assert.match(
     overlay,
-    /await fetch\('\/api\/speech\/prepare',[\s\S]*?serviceReady = true;[\s\S]*?navigator\.mediaDevices\.getUserMedia/,
+    /await prepareLocalSpeech\(prepareController\.signal\)[\s\S]*?serviceReady = true;[\s\S]*?navigator\.mediaDevices\.getUserMedia/,
   );
-  assert.match(overlay, /response\.status === 503[\s\S]*?enterStage\('unavailable'\)/);
+  assert.match(overlay, /\[401, 403, 409, 429, 503\]\.includes\(response\.status\)[\s\S]*?enterStage\('unavailable'\)/);
   assert.match(overlay, /stage === 'blocked' \|\| stage === 'unavailable'/);
 });
 

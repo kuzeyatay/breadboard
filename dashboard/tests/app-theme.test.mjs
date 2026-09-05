@@ -36,6 +36,8 @@ const dashboard = fs.readFileSync(
   new URL("../src/app/dashboard/dashboard-client.tsx", import.meta.url),
   "utf8",
 );
+const newTab = fs.readFileSync(new URL("../src/app/new-tab/new-tab-client.tsx", import.meta.url), "utf8");
+const appearance = fs.readFileSync(new URL("../src/app/components/page-appearance.tsx", import.meta.url), "utf8");
 const globals = fs.readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
 const themeTransition = fs.readFileSync(
   new URL("../src/app/app-theme-transition.css", import.meta.url),
@@ -286,9 +288,11 @@ test("the remembered theme initializes before paint and is configurable from the
   );
   assert.match(layout, /suppressHydrationWarning/);
   assert.match(layout, /<AppThemeRuntime\s*\/>/);
-  assert.match(dashboard, /aria-label="Customize dashboard appearance"/);
-  assert.match(dashboard, /applyAppTheme\(theme\)/);
-  assert.match(dashboard, /role="radiogroup"/);
+  assert.match(dashboard, /<PageAppearance page="dashboard"/);
+  assert.match(newTab, /<PageAppearance page="new-tab"/);
+  assert.match(appearance, /aria-label="Customize appearance"/);
+  assert.match(appearance, /applyAppTheme\(theme\)/);
+  assert.match(appearance, /aria-label="App theme"/);
   assert.match(
     runtime,
     /setTheme\?\.\(theme, appThemeScheduleForShell\(window\.localStorage\)\)/,

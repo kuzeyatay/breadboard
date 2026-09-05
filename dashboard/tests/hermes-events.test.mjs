@@ -30,15 +30,24 @@ test("maps streamed answer text without exposing the Hermes session id", () => {
   assert.equal(event.payload.text, "Hello");
 });
 
-test("maps Hermes reasoning summaries to the existing persistent reasoning contract", () => {
-  const [event] = normalize({
+test("answer previews are never classified as thinking", () => {
+  const events = normalize({
     type: "reasoning.available",
     session_id: "live-1",
-    payload: { text: "Compared the inspected files." },
+    payload: { text: "Here is the final answer." },
   });
+  assert.deepEqual(events, []);
+});
+
+test("genuine reasoning deltas retain their whitespace between chunks", () => {
+  const chunks = ["Compare", " ", "the sources.\n\n", "Then answer."];
+  const events = chunks.flatMap((text) => normalize({
+    type: "thinking.delta", session_id: "live-1", payload: { text },
+  }));
+  const [event] = events;
   assert.equal(event.type, "reasoning.status");
-  assert.equal(event.payload.detail, "Compared the inspected files.");
-  assert.equal(event.payload.detailMode, "replace");
+  assert.equal(event.payload.detailMode, "append");
+  assert.equal(events.map((entry) => entry.payload.detail).join(""), chunks.join(""));
 });
 
 test("maps tool lifecycle events and failed structured results", () => {

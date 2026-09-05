@@ -203,21 +203,23 @@ test("the profile page leaves to the dashboard rather than following the trail",
   assert.match(profile, /<BackLink[^>]*fallbackHref="\/dashboard"[^>]*\sfixed\b/);
 });
 
-test("garden and profile navigation use only the global progress bar", () => {
+test("page navigation retains the current screen and uses only the global progress bar", () => {
   const layout = fs.readFileSync(
     new URL("../src/app/layout.tsx", import.meta.url),
     "utf8",
   );
 
   assert.match(layout, /<NavigationProgress \/>/);
-  assert.equal(
-    fs.existsSync(new URL("../src/app/garden/loading.tsx", import.meta.url)),
-    false,
-  );
-  assert.equal(
-    fs.existsSync(new URL("../src/app/profile/loading.tsx", import.meta.url)),
-    false,
-  );
+  // A route-level Suspense fallback replaces the outgoing page before the
+  // destination arrives, which also completes the progress bar too early.
+  for (const route of ["new-tab", "dashboard", "garden", "gardens", "profile", "browser",
+    "plan", "calendar", "buzz", "hooks", "map", "pomodoro", "processes", "workflows", "worldmonitor"]) {
+    assert.equal(
+      fs.existsSync(new URL(`../src/app/${route}/loading.tsx`, import.meta.url)),
+      false,
+      `${route} must wait for its page instead of replacing the current screen with a loader`,
+    );
+  }
 });
 
 test("reloading the embedded garden does not stack a history entry", () => {

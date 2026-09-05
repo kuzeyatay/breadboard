@@ -110,7 +110,7 @@ test("live turns hold Thinking for five seconds, then settle on Thought", () => 
   // say what the assistant did rather than what it is doing.
   assert.match(
     responseMeta,
-    /const displayLabel = label === "Thinking" && !active && !failed \? "Thought" : label;/,
+    /const displayLabel = label === "Thinking" && !active\s*\? failed \? "Response interrupted" : "Thought"/,
   );
   assert.match(responseMeta, /\{displayLabel\}<\/span>/);
   // A caller's own label already describes a state ("Interrupted", an
@@ -155,13 +155,13 @@ test("completed response duration remains attached to restored assistant message
   assert.match(chatSessionsRoute, /parseResponseDuration/);
 });
 
-test("dashboard thinking metadata never exposes model reasoning text", () => {
-  assert.doesNotMatch(activity, /expanded && hasReasoningSummary/);
-  assert.doesNotMatch(activity, /\{reasoning\}/);
-  assert.doesNotMatch(activity, /reasoning\?: string/);
-  assert.doesNotMatch(activity, /Done thinking\./);
-  assert.doesNotMatch(activity, /activityStatusSentence/);
-  assert.doesNotMatch(activity, /visibleActivities/);
+test("completed thinking disclosures show the original progress timeline", () => {
+  assert.match(activity, /reasoning\?: string/);
+  assert.doesNotMatch(activity, /data-response-reasoning|ThinkingActivity|ChatMarkdown/);
+  assert.match(activity, /disclosureExpanded=\{canDisclose \? progressOpen : undefined\}/);
+  assert.match(activity, /canDisclose && progressOpen/);
+  assert.doesNotMatch(activity, /No thinking details were recorded/);
+  assert.match(sessionPresentation, /reasoning: metadata\.reasoning/);
 });
 
 test("tool-boundary prose stays behind the thinking disclosure", () => {
@@ -364,11 +364,11 @@ test("activity and actions render with assistant messages, not above composers",
   assert.doesNotMatch(composer, /LiveTokenUsageStatus/);
   assert.doesNotMatch(composer, /tokenUsagePending/);
   assert.match(workspace, /usage=\{msg\.usage\}/);
-  assert.doesNotMatch(workspace, /reasoning=\{msg\.thinking\}/);
+  assert.match(workspace, /reasoning=\{msg\.thinking\}/);
   assert.match(gardenAssistant, /usage=\{message\.usage\}/);
-  assert.doesNotMatch(gardenAssistant, /reasoning=\{message\.thinking\}/);
+  assert.match(gardenAssistant, /reasoning=\{message\.thinking\}/);
   assert.match(runtime, /usage=\{message\.usage\}/);
-  assert.doesNotMatch(runtime, /reasoning=\{message\.reasoning\}/);
+  assert.match(runtime, /reasoning=\{message\.reasoning\}/);
   assert.match(knowledgeTerminal, /usage=\{message\.usage\}/);
   assert.doesNotMatch(knowledgeTerminal, /Thinking \(\{formatResponseDuration/);
   assert.ok((workspace.match(/<ActivityPanel/g)?.length ?? 0) >= 1);
@@ -429,7 +429,7 @@ test("permission requests use a softly layered action card", () => {
 
 test("Hermes tool names stay out of assistant responses", () => {
   assert.doesNotMatch(runtime, /function ToolChip/);
-  assert.doesNotMatch(runtime, /message\.tools/);
+  assert.doesNotMatch(runtime, /message\.tools\??\.map/);
   assert.doesNotMatch(runtime, /tool\.toolName/);
   assert.match(runtime, /<ActivityPanel/);
 });
@@ -490,7 +490,7 @@ test("user messages accent only the leading slash command", () => {
 
 test("stalled agent turns render a recoverable in-chat error", () => {
   assert.match(runtime, /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/);
-  assert.match(runtime, /role="alert"/);
+  assert.match(runtime, /<AssistantResponseNotice/);
   const stateRow = runtime.search(
     /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/,
   );

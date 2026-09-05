@@ -5,6 +5,7 @@ import { externalRunStartedAtMs } from "./external-run-clock";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
+import AssistantResponseNotice from "@/app/components/assistant-response-notice";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { closeAgentRunStream, resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 import type { ExternalAgentOutcome, ExternalAgentTerminalOutcome } from "@/lib/conversations/external-agent-runs";
@@ -156,8 +157,8 @@ export default function InlineOpenGymRun({
           setStatus("failed");
           setFailure(
             reason === "run_not_found"
-              ? "This openGym run is no longer live, but its saved result remains below."
-              : "The openGym event stream is unavailable.",
+              ? "This run is no longer available. Please retry your request."
+              : "The connection to openGym was lost. Please retry your request.",
           );
         },
       });
@@ -172,6 +173,7 @@ export default function InlineOpenGymRun({
   }, [status]);
 
   const terminal = TERMINAL.has(status);
+  const unsuccessful = terminal && status !== "completed";
   const terminalContent = result.trim() || failure.trim() || "openGym finished.";
   const hasExerciseDemonstration =
     status === "completed" &&
@@ -181,12 +183,12 @@ export default function InlineOpenGymRun({
   if (quiet) {
     return (
       <>
-        <AssistantResponseMeta
+        {!unsuccessful ? <AssistantResponseMeta
           active={!terminal}
           failed={terminal && status !== "completed"}
           totalTokens={usage.inputTokens + usage.outputTokens || undefined}
           responseDurationMs={!terminal || elapsed > 0 ? elapsed * 1_000 : undefined}
-        />
+        /> : null}
         {status === "completed" && (result || hasExerciseDemonstration) ? (
           <div className="space-y-[17px]">
             {result ? <ChatMarkdown content={result} compact /> : null}
@@ -230,12 +232,10 @@ export default function InlineOpenGymRun({
             ) : null}
           </div>
         ) : null}
-        {failure ? (
-          <div role="alert">
-            <ChatMarkdown content={failure} compact />
-          </div>
+        {unsuccessful ? (
+          <AssistantResponseNotice kind={status === "aborted" ? "aborted" : "failed"} detail={failure} onRetry={onRetry} />
         ) : null}
-        {terminal ? (
+        {status === "completed" ? (
           <AssistantMessageActions content={terminalContent} onRetry={onRetry} />
         ) : null}
       </>
@@ -244,14 +244,14 @@ export default function InlineOpenGymRun({
 
   return (
     <>
-      <AssistantResponseMeta
+      {!unsuccessful ? <AssistantResponseMeta
         active={!terminal}
         failed={terminal && status !== "completed"}
         totalTokens={usage.inputTokens + usage.outputTokens || undefined}
         responseDurationMs={!terminal || elapsed > 0 ? elapsed * 1_000 : undefined}
         summary={progress}
         agentName="openGym"
-      />
+      /> : null}
       <div className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title">openGym</p>
@@ -307,10 +307,10 @@ export default function InlineOpenGymRun({
             </section>
           ) : null}
           {result ? <section className="bb-agent-run-text"><ChatMarkdown content={result} compact /></section> : null}
-          {failure ? <p className="bb-agent-run-text text-[var(--danger)]">{failure}</p> : null}
+          {unsuccessful ? <AssistantResponseNotice kind={status === "aborted" ? "aborted" : "failed"} detail={failure} onRetry={onRetry} /> : null}
         </div>
       </div>
-      {terminal ? <AssistantMessageActions content={terminalContent} onRetry={onRetry} /> : null}
+      {status === "completed" ? <AssistantMessageActions content={terminalContent} onRetry={onRetry} /> : null}
     </>
   );
 }

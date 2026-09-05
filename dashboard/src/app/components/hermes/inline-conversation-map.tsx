@@ -274,7 +274,7 @@ export default function InlineConversationMap({
     };
   }, [context, kind, mapReady, places, route]);
 
-  if (!enabled) return null;
+  if (!enabled || !hasRenderableData) return null;
 
   const mapHref = `/map?conversation=${encodeURIComponent(conversationPublicId)}`;
   return (
@@ -284,11 +284,6 @@ export default function InlineConversationMap({
     >
       <div className="relative">
         <div ref={containerRef} className="h-80 w-full" />
-        {!hasRenderableData ? (
-          <div className="absolute inset-0 grid place-items-center px-6 text-center text-xs text-[var(--ink-muted)]">
-            Loading verified map results…
-          </div>
-        ) : null}
         <a
           href={mapHref}
           target="_blank"

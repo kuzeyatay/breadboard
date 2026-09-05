@@ -144,7 +144,7 @@ export async function mapSearch(
 }
 
 export async function mapReverse(
-  input: { lat: number; lon: number; signal?: AbortSignal },
+  input: { lat: number; lon: number; language?: string; signal?: AbortSignal },
   providers: MapProviders = mapProviders(),
   config: MapConfig = resolveMapConfig(),
 ): Promise<MapPlace | null> {
@@ -152,6 +152,7 @@ export async function mapReverse(
   return providers.reverseGeocoder.reverse({
     lat: input.lat,
     lon: input.lon,
+    ...(input.language ? { language: input.language } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   });
 }

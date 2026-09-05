@@ -9,6 +9,7 @@ import {
   clearStoredCurrentLocationPreference,
   getStoredCurrentLocationPreference,
   isCurrentLocationFresh,
+  normalizeCurrentLocationLabel,
   normalizeCurrentLocationSnapshot,
   subscribeCurrentLocation,
   writeStoredCurrentLocationPreference,
@@ -58,6 +59,22 @@ test("an untrusted fix is validated and reduced to two-decimal coordinates", () 
       timeZone: "Europe/Istanbul",
     },
   );
+});
+
+test("a minimal location label is normalized and stored with the coarse fix", () => {
+  assert.equal(normalizeCurrentLocationLabel("  London,   United Kingdom  "), "London, United Kingdom");
+  assert.equal(normalizeCurrentLocationLabel("x".repeat(161)), null);
+  assert.equal(normalizeCurrentLocationLabel(42), null);
+
+  const snapshot = normalizeCurrentLocationSnapshot({
+    latitude: 51.5074,
+    longitude: -0.1278,
+    label: "  London,   United Kingdom ",
+    capturedAt: now.toISOString(),
+    accuracyMeters: 80,
+    timeZone: "Europe/London",
+  }, now);
+  assert.equal(snapshot?.label, "London, United Kingdom");
 });
 
 test("invalid coordinates, capture metadata and time zones are rejected", () => {

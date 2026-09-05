@@ -9,6 +9,8 @@
 // they are checked here exactly as they are for an agent turn.
 
 import { NextResponse } from "next/server";
+import { parseBrowserTerminalAccess } from "@/lib/browser-terminal.ts";
+import { conversationRequestSurface } from "@/lib/hermes/session-surface.ts";
 import { requireUserId } from "@/lib/server-auth";
 import {
   apiErrorResponse,
@@ -57,7 +59,7 @@ export async function POST(
       conversation,
       clientMessageId: requireString(body.clientMessageId, "clientMessageId", 128),
       text: requireString(body.text, "text", 100_000),
-      surface: parseSurface(body.surface ?? "dashboard_terminal"),
+      surface: conversationRequestSurface(conversation, parseSurface(body.surface ?? "dashboard_terminal")),
       model: body.model,
       reasoningEffort: body.reasoningEffort,
       // A regenerated turn sends a document's pointer without its words,
@@ -75,6 +77,7 @@ export async function POST(
       adhdMode: body.adhdMode === true,
       currentLocation:
         parseCurrentLocationPayload(body.currentLocation) ?? undefined,
+      browserAccess: (body.surface ?? "dashboard_terminal") === "dashboard_terminal" ? parseBrowserTerminalAccess(body.browserAccess) : undefined,
       internalAgentContinuation: body.internalAgentContinuation === true,
       scheduledChatReceipt: scheduledChatReceiptForUser(
         userId,

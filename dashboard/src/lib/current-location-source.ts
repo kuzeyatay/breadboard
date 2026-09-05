@@ -14,6 +14,11 @@
  * source that can actually answer for it first, and falls back to the other.
  */
 
+import {
+  normalizeCurrentLocationLabel,
+  type CurrentLocationSnapshot,
+} from "./current-location.ts";
+
 export interface CurrentLocationFix {
   latitude: number;
   longitude: number;
@@ -35,6 +40,53 @@ export interface CurrentLocationFailure {
 }
 
 export type CurrentLocationAttempt = { ok: true; fix: CurrentLocationFix } | CurrentLocationFailure;
+
+let labelRequestInFlight: {
+  key: string;
+  request: Promise<string | null>;
+} | null = null;
+
+/**
+ * Name a fresh coarse fix without making location availability depend on the
+ * reverse-geocoding service. An unchanged fix reuses its stored label.
+ */
+export async function resolveCurrentLocationLabel(
+  snapshot: CurrentLocationSnapshot,
+  previous: CurrentLocationSnapshot | null = null,
+): Promise<string | null> {
+  if (
+    previous?.label &&
+    previous.latitude === snapshot.latitude &&
+    previous.longitude === snapshot.longitude
+  ) {
+    return previous.label;
+  }
+  const key = `${snapshot.latitude},${snapshot.longitude}`;
+  if (labelRequestInFlight?.key === key) return labelRequestInFlight.request;
+
+  const request = (async () => {
+    try {
+      const response = await fetch("/api/profile/location-label", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          latitude: snapshot.latitude,
+          longitude: snapshot.longitude,
+        }),
+      });
+      if (!response.ok) return null;
+      const payload = await response.json() as { label?: unknown };
+      return normalizeCurrentLocationLabel(payload.label);
+    } catch {
+      return null;
+    }
+  })();
+  labelRequestInFlight = { key, request };
+  void request.finally(() => {
+    if (labelRequestInFlight?.request === request) labelRequestInFlight = null;
+  });
+  return request;
+}
 
 interface DesktopLocationBridge {
   allowThemeLocation?: () => Promise<boolean>;

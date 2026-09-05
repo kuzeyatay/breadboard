@@ -111,15 +111,15 @@ function parseInitialTurn(
   };
 }
 
-// Conversations are bound to the server-created surface. This prevents a
-// browser from relabelling a Garden/Quartz conversation as a Terminal session.
+// The terminal is the user's conversation hub. Other rails remain scoped to
+// their source surface; the stored source of each conversation never changes.
 export async function GET(request: Request) {
   try {
     const userId = await requireUserId();
     requireEnabled();
     const surface = parseSurface(new URL(request.url).searchParams.get("surface"));
     const conversations = listConversationsForUser(userId)
-      .filter((conversation) => conversation.surface === surface);
+      .filter((conversation) => surface === "dashboard_terminal" || conversation.surface === surface);
     const messageSummaries = summarizeConversationMessages(
       conversations.map((conversation) => conversation.id),
     );

@@ -8,7 +8,10 @@ import {
   normalizeCurrentLocationSnapshot,
   writeStoredCurrentLocationPreference,
 } from "@/lib/current-location.ts";
-import { requestCurrentLocationFix } from "@/lib/current-location-source.ts";
+import {
+  requestCurrentLocationFix,
+  resolveCurrentLocationLabel,
+} from "@/lib/current-location-source.ts";
 
 export const CURRENT_LOCATION_REFRESH_INTERVAL_MS = 15 * 60_000;
 
@@ -40,14 +43,16 @@ async function refreshStoredCurrentLocation(): Promise<boolean> {
       const attempt = await requestCurrentLocationFix({ maxAgeMs: 0 });
       if (!attempt.ok) return false;
 
-      const snapshot = normalizeCurrentLocationSnapshot({
+      const baseSnapshot = normalizeCurrentLocationSnapshot({
         latitude: attempt.fix.latitude,
         longitude: attempt.fix.longitude,
         capturedAt: new Date().toISOString(),
         accuracyMeters: attempt.fix.accuracyMeters,
         timeZone: deviceTimeZone(),
       });
-      if (!snapshot) return false;
+      if (!baseSnapshot) return false;
+      const label = await resolveCurrentLocationLabel(baseSnapshot, preference.snapshot);
+      const snapshot = label ? { ...baseSnapshot, label } : baseSnapshot;
 
       // The user may turn location off while a fix is in flight. Re-read their
       // choice before writing so a late result can never opt them back in.

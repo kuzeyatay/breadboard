@@ -137,3 +137,29 @@ export async function waitForRevealFrame(
     // reveal still brings the tab forward.
   }
 }
+
+/** A native resize can reach Chromium after its next animation frame. Wait for
+ * two frames and check their viewport. A mismatch lets the caller re-read the
+ * native size, which can still be changing during a display/DPI transition. */
+export async function waitForViewportFrame(
+  contents: WebContents,
+  size: readonly number[],
+  maxWaitMs = REVEAL_FRAME_MAX_WAIT_MS,
+): Promise<boolean | undefined> {
+  if (contents.isDestroyed()) return;
+  const zoom = contents.getZoomFactor();
+  const [width, height] = size.map(value => Math.round(value / zoom));
+  try {
+    let painted: boolean | undefined;
+    await settleWithin(contents.executeJavaScript(`new Promise((resolve) => {
+      const matches = () => innerWidth === ${width} && innerHeight === ${height};
+      requestAnimationFrame(() => {
+        const matched = matches();
+        requestAnimationFrame(() => resolve(matched && matches()));
+      });
+    })`, true).then(result => { painted = result === true; }), maxWaitMs);
+    return painted;
+  } catch {
+    // A closing or unavailable renderer must not strand the startup screen.
+  }
+}

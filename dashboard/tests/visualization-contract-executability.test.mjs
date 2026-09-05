@@ -15,6 +15,7 @@ import {
   buildFinalVisualizationPlanFromRoutedContracts,
   buildVisualContractExecutabilityPrompt,
   buildVisualContractExecutabilityLedger,
+  completeVisualContractForUnit,
   VisualContractExecutabilityReviewError,
   loadVisualContractExecutabilityLedger,
   reviewedWholeGardenConstraintProblems,
@@ -1513,6 +1514,116 @@ test("approval preserves the active unit exactly and provider throws escape sema
   assert.equal(cancellationChecks, 1);
   assert.equal(cancellationEvents.includes("visual_contract_executability_review_cancelled"), false);
   assert.equal(cancellationEvents.includes("visual_contract_executability_review_completed"), true);
+});
+
+test("model-authored multiline visual contracts survive routed persistence exactly", async () => {
+  const unit = activeUnit(executablePredictionContract("visual-u3-before-multiline"));
+  unit.interactiveVisualPlan.decision.alternativeCoverage = "uncovered";
+  unit.interactiveVisualPlan.decision.teachingMediumReason =
+    "The source-grounded prediction protocol is the selected teaching medium.";
+  unit.interactiveVisualPlan.decision.confidence = 0.95;
+  const replacement = executablePredictionContract("visual-u3-after-multiline");
+  const multilineInsight = [
+    "Case comparison",
+    "- retain the committed prediction",
+    "- reveal the observed outcome",
+    "$$y_A > y_B$$",
+  ].join("\n");
+  replacement.learnerAction = [
+    "Choose a case and commit a prediction.",
+    "Then reveal the outcome without clearing the prediction.",
+  ].join("\n");
+  replacement.visualIntent.expectedInsight = multilineInsight;
+  replacement.expectedInsight = multilineInsight;
+  replacement.expectedInsightEvidence = [{ anchor: ANCHOR, quote: multilineInsight }];
+  const evidenceByUnit = {
+    U3: [{
+      anchor: ANCHOR,
+      kind: "source_text",
+      text: `${EVIDENCE}\n${multilineInsight}`,
+    }],
+  };
+  const auditContext = {
+    phase: "planning",
+    jobId: "job-multiline-contract",
+    model: "review-model",
+    learningMapId: "map-multiline-contract",
+  };
+  const review = await reviewVisualizationPlanExecutability({
+    gardenId: GARDEN_ID,
+    learningMap: learningMap(),
+    learningUnits: [unit],
+    initialPlan: buildVisualizationPlan({
+      gardenId: GARDEN_ID,
+      learningMap: learningMap(),
+      learningUnits: [unit],
+      visualBudget: BUDGET,
+      canonicalEvidenceByUnit: evidenceByUnit,
+      necessityReviewCalls: 1,
+      rejectedNecessityReviews: 0,
+      visualDecisionOverrides: [],
+    }),
+    canonicalEvidenceByUnit: evidenceByUnit,
+    auditContext,
+    maximumRepeatedInteractionSignature: 1,
+    provider: async () => response([{
+      unitId: "U3",
+      verdict: "replace",
+      reason: "The complete multiline contract is executable.",
+      replacement,
+    }]),
+  });
+  const routedUnits = applyVisualizationRoutesToLearningUnits(
+    review.learningUnits,
+    review.plan,
+  );
+  const persistedRoutedUnits = normalizeLearningUnits(
+    JSON.parse(JSON.stringify(routedUnits)),
+    { modelAuthoredOnly: true },
+  );
+  assert.ok(
+    persistedRoutedUnits[0]?.interactiveVisualPlan?.interactionGoal &&
+      persistedRoutedUnits[0]?.interactiveVisualPlan?.learnerAction &&
+      persistedRoutedUnits[0]?.interactiveVisualPlan?.visualIntent &&
+      persistedRoutedUnits[0]?.interactiveVisualPlan?.controlContract &&
+      persistedRoutedUnits[0]?.interactiveVisualPlan?.observable &&
+      persistedRoutedUnits[0]?.interactiveVisualPlan?.expectedInsightEvidence,
+    JSON.stringify(persistedRoutedUnits[0]?.interactiveVisualPlan),
+  );
+  const persistedContract = completeVisualContractForUnit(persistedRoutedUnits[0]);
+  assert.equal(persistedContract.learnerAction, replacement.learnerAction);
+  assert.equal(persistedContract.expectedInsight, multilineInsight);
+  const { interaction: _beforeInteraction, ...beforeDecision } =
+    review.learningUnits[0].interactiveVisualPlan.decision;
+  const { interaction: _afterInteraction, ...afterDecision } =
+    persistedRoutedUnits[0].interactiveVisualPlan.decision;
+  assert.deepEqual(afterDecision, {
+    ...beforeDecision,
+    recommendedVisualType: afterDecision.recommendedVisualType,
+  });
+
+  const finalPlan = buildFinalVisualizationPlanFromRoutedContracts({
+    gardenId: GARDEN_ID,
+    learningMap: learningMap(),
+    finalRoutedLearningUnits: persistedRoutedUnits,
+    reviewedPlan: review.plan,
+    canonicalEvidenceByUnit: evidenceByUnit,
+  });
+  const ledger = buildVisualContractExecutabilityLedger({
+    gardenId: GARDEN_ID,
+    context: auditContext,
+    review,
+    finalRoutedLearningUnits: persistedRoutedUnits,
+    finalVisualizationPlan: finalPlan,
+    structuralContractRepair: { source: "none", attempts: [] },
+  });
+  assert.deepEqual(visualContractExecutabilityLinkageProblems({
+    gardenId: GARDEN_ID,
+    ledger,
+    finalLearningUnits: persistedRoutedUnits,
+    visualizationPlan: finalPlan,
+    expectedContext: auditContext,
+  }), []);
 });
 
 test("a complete reversed multi-unit review remains exact and links verdicts by unit id", async () => {

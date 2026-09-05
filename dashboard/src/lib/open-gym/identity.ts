@@ -51,6 +51,9 @@ const FITNESS_PROGRAM_CONTEXT =
  * open so a form request still receives the openGym presentation.
  */
 export function isOpenGymSuperAgentRoutingCandidate(task: string): boolean {
+  // A fitness keyword must not steal an explicitly requested research run.
+  // The orchestrator can still delegate the program after doing the research.
+  if (/\b(?:max|deep)\s+research\b|\/agents:(?!open-gym\b)[a-z0-9-]+/i.test(task)) return false;
   return (
     isExerciseTechniqueRequest(task) ||
     (isWorkoutProgramRequest(task) && FITNESS_PROGRAM_CONTEXT.test(task))

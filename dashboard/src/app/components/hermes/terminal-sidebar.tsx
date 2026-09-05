@@ -49,6 +49,8 @@ export const TERMINAL_PANELS: readonly TerminalPanel[] = [
 export interface TerminalSidebarChat {
   id: string;
   title: string;
+  /** Source path shown by the terminal hub; kept outside the editable title. */
+  titlePrefix?: string;
   updatedAt: string;
   active: boolean;
   pinned: boolean;
@@ -479,6 +481,7 @@ function sameSidebarChat(a: TerminalSidebarChat, b: TerminalSidebarChat): boolea
   return (
     a.id === b.id &&
     a.title === b.title &&
+    a.titlePrefix === b.titlePrefix &&
     a.updatedAt === b.updatedAt &&
     a.active === b.active &&
     a.pinned === b.pinned &&
@@ -642,7 +645,7 @@ const ChatRow = memo(function ChatRow({
             ? `Highlight ${chat.title}`
             : chat.pending
               ? chat.title
-              : `${chat.title} · ${formatChatTime(chat.updatedAt)}`
+              : `${chat.titlePrefix ? `${chat.titlePrefix}: ` : ""}${chat.title} · ${formatChatTime(chat.updatedAt)}`
         }
         className="min-w-0 flex-1 rounded-lg px-2.5 py-[7px] text-left"
       >
@@ -676,7 +679,7 @@ const ChatRow = memo(function ChatRow({
               } as CSSProperties
             }
           >
-            {transitionTitle}
+            {chat.titlePrefix ? `${chat.titlePrefix}: ` : ""}{transitionTitle}
           </span>
         </span>
       </button>

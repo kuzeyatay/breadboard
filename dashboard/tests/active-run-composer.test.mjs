@@ -36,9 +36,6 @@ const gardenAdapter = source(
 const steerRoute = source(
   "../src/app/api/hermes/sessions/[sessionId]/steer/route.ts",
 );
-const hermesRuntimeAdapter = source(
-  "../src/lib/agent-runtime/adapters/hermes.ts",
-);
 const conversationStore = source(
   "../src/lib/conversations/store.ts",
 );
@@ -145,12 +142,11 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(queuedFollowUpsModule, /Enlarge attached image/);
   assert.match(queuedFollowUpsModule, /createPortal\(/);
   assert.match(queuedFollowUpsModule, /aria-label="Close image preview"/);
-  // The image does not stop at the UI: it is parsed by the route, persisted in
-  // the correction message, staged on the live runtime, and consumed by steer.
+  // Attachments remain part of queued messages. Hermes desktop steering is
+  // text-only; delivery behavior is exercised in hermes-steering.test.mjs.
   assert.match(steerRoute, /parseChatAttachments\(body\.attachments\)/);
   assert.match(steerRoute, /attachments: chatMessageAttachments\(attachments\)/);
   assert.match(sessionHook, /attachmentOnlyMessageText\(attachments\)/);
-  assert.match(hermesRuntimeAdapter, /steerRun[\s\S]*?image\.attach_bytes/);
   assert.match(conversationStore, /attachmentNames: input\.attachments\.map/);
   assert.match(gateway, /session\.steer[\s\S]*?attached_images[\s\S]*?_enrich_with_attached_images/);
   assert.doesNotMatch(composer, /Run status:/);
@@ -401,15 +397,14 @@ test("the dashboard assistant header is labeled only as Terminal", () => {
   assert.doesNotMatch(terminal, /Breadboard Assistant|Public knowledge assistant|scopeTagline/);
 });
 
-test("steering reuses the active session and only falls back on run_not_active", () => {
+test("steering reuses the active session and leaves follow-ups in the shared queue", () => {
   const start = sessionHook.indexOf("const steer = useCallback");
   const block = sessionHook.slice(start, start + 4_800);
   assert.ok(start >= 0);
   assert.match(block, /activeRunIdRef\.current/);
   assert.match(block, /clientRequestId = crypto\.randomUUID\(\)/);
   assert.match(block, /sessions\/\$\{activeSessionId\}\/steer/);
-  assert.match(block, /response\.status === 409 && body\.code === "run_not_active"/);
-  assert.match(block, /void send\(trimmed, \{[\s\S]*attachments: \[\.\.\.attachments\]/);
+  assert.doesNotMatch(block, /void send\(/);
   assert.doesNotMatch(block, /\/events/);
   assert.doesNotMatch(block, /ensureSession\(/);
 });
@@ -437,7 +432,6 @@ test("the steer route enforces auth, ownership, active-run validation, dedupe, a
   assert.match(steerRoute, /reserveSteerRequest/);
   assert.match(steerRoute, /client_request_conflict/);
   assert.match(steerRoute, /acceptSteerRequest/);
-  assert.match(steerRoute, /eventType: stillActive \? "run\.steered" : "run\.steer_fallback"/);
   assert.match(
     steerRoute,
     /getAgentRuntimeByKind\(session\.runtimeKind\)\.steerRun/,

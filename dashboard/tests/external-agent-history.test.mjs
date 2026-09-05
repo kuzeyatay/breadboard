@@ -45,6 +45,30 @@ function conversation() {
   });
 }
 
+test("completed thinking details survive session restore and a later response", () => {
+  const chat = conversation();
+  for (const [index, reasoning] of ["Compare the sources.", "Check the result."].entries()) {
+    const clientMessageId = `thinking-restore-${index}`;
+    store.reserveConversationTurn({
+      conversation: store.getConversationById(chat.id),
+      clientMessageId,
+      surface: "dashboard_terminal",
+      content: `Question ${index}`,
+    });
+    store.completeAssistantMessage({
+      conversationId: chat.id,
+      clientMessageId,
+      content: `Answer ${index}`,
+      metadata: { reasoning, progressNotes: [`Update ${index}`] },
+    });
+  }
+  const restored = presentation.presentHermesSessionDetail(store.getConversationById(chat.id));
+  const answers = restored.messages.filter((message) => message.role === "assistant");
+  assert.deepEqual(answers.map((message) => message.reasoning), ["Compare the sources.", "Check the result."]);
+  assert.deepEqual(answers.map((message) => message.progressNotes), [["Update 0"], ["Update 1"]]);
+  assert.deepEqual(answers.map((message) => message.content), ["Answer 0", "Answer 1"]);
+});
+
 const descriptors = [
   {
     kind: "agent_tars",

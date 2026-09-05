@@ -13,6 +13,8 @@ export interface CurrentLocationSnapshot {
   latitude: number;
   /** Coarse longitude, deliberately limited to two decimal places. */
   longitude: number;
+  /** Minimal reverse-geocoded label, for example "London, United Kingdom". */
+  label?: string;
   /** ISO-8601 instant at which the browser produced this fix. */
   capturedAt: string;
   /** The browser's estimated radius of uncertainty, in metres. */
@@ -48,6 +50,12 @@ function finiteNumber(value: unknown): number | null {
 function coarseCoordinate(value: number): number {
   const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
   return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+export function normalizeCurrentLocationLabel(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const candidate = value.replace(/\s+/g, " ").trim();
+  return candidate && candidate.length <= 160 ? candidate : null;
 }
 
 function normalizedTimeZone(value: unknown): string | null {
@@ -86,6 +94,7 @@ export function normalizeCurrentLocationSnapshot(
   const longitude = finiteNumber(candidate.longitude);
   const accuracyMeters = finiteNumber(candidate.accuracyMeters);
   const timeZone = normalizedTimeZone(candidate.timeZone);
+  const label = normalizeCurrentLocationLabel(candidate.label);
   if (
     latitude === null ||
     latitude < -90 ||
@@ -113,6 +122,7 @@ export function normalizeCurrentLocationSnapshot(
   return {
     latitude: coarseCoordinate(latitude),
     longitude: coarseCoordinate(longitude),
+    ...(label ? { label } : {}),
     capturedAt: new Date(capturedMilliseconds).toISOString(),
     accuracyMeters: Math.round(accuracyMeters),
     timeZone,

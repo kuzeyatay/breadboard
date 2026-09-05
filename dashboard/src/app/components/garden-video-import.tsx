@@ -1,5 +1,7 @@
 "use client";
 
+import { GARDEN_SOURCE_IMPORTED_EVENT } from "@/lib/hermes/garden-source-import-client";
+
 // Garden Chat media import panel: upload a local video/audio file or paste a
 // YouTube URL (mutually exclusive), submit for asynchronous Scriberr transcription,
 // and follow the job through a persistent progress card that survives page
@@ -19,7 +21,7 @@ import {
 import Link from "next/link";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import OverflowMarquee from "@/app/components/overflow-marquee";
-import styles from "./garden-video-import.module.css";
+import styles from "./breadboard-audio-player.module.css";
 import {
   ACCEPTED_AUDIO_EXTENSIONS,
   ACCEPTED_VIDEO_EXTENSIONS,
@@ -564,6 +566,15 @@ export default function GardenVideoImport({
   }, [apiBase]);
 
   // Restore jobs (and any in-flight progress) on mount.
+  useEffect(() => {
+    const refresh = (event: Event) => {
+      if ((event as CustomEvent<{ gardenId?: string }>).detail?.gardenId !== clusterSlug) return;
+      void fetchJobs().then((next) => { if (next) applyJobs(next); });
+    };
+    window.addEventListener(GARDEN_SOURCE_IMPORTED_EVENT, refresh);
+    return () => window.removeEventListener(GARDEN_SOURCE_IMPORTED_EVENT, refresh);
+  }, [clusterSlug, fetchJobs, applyJobs]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {

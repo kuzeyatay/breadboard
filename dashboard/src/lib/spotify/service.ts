@@ -20,7 +20,10 @@ export const SPOTIFY_SKILL_SLUG = "spotify";
 // the provider boundary so every caller, including playback queue resolution,
 // stays valid even if it asks for a larger local result set.
 export const SPOTIFY_SEARCH_RESULT_LIMIT = 10;
+export const SPOTIFY_LIKED_SONGS_ID = "liked-songs";
+export const SPOTIFY_LIKED_SONGS_URI = "spotify:collection:tracks";
 export const SPOTIFY_PLAYLIST_WRITE_SCOPE = "playlist-modify-private";
+export const SPOTIFY_PUBLIC_PLAYLIST_WRITE_SCOPE = "playlist-modify-public";
 export const SPOTIFY_REQUIRED_SCOPES = [
   "streaming",
   "user-read-email",
@@ -63,6 +66,7 @@ export interface SpotifyPlaybackState {
   positionMs: number;
   shuffle: boolean;
   deviceId: string | null;
+  deviceName: string | null;
 }
 
 export interface SpotifyPlaylist {
@@ -77,6 +81,7 @@ export interface SpotifyPlaylist {
 export interface SpotifyLibraryPlaylist {
   id: string;
   uri: string;
+  kind: "playlist" | "liked-songs";
   name: string;
   description: string;
   imageUrl: string | null;
@@ -84,6 +89,11 @@ export interface SpotifyLibraryPlaylist {
   owner: string;
   ownerId: string;
   collaborative: boolean;
+  isPublic: boolean | null;
+  canAddTracks: boolean;
+  canRemoveTracks: boolean;
+  canEditDetails: boolean;
+  canDelete: boolean;
 }
 
 type PlaybackIntentRow = {
@@ -108,6 +118,7 @@ export function spotifyConnectionStatus(userId: number): {
   connected: boolean;
   status: "connected" | "needs_reauth" | "not_connected";
   playlistAccess: boolean;
+  playlistWriteAccess: boolean;
 } {
   const tokens = readConnectedAppTokens(userId, SPOTIFY_CONNECTION_SLUG);
   if (!tokens) {
@@ -116,10 +127,14 @@ export function spotifyConnectionStatus(userId: number): {
       connected: false,
       status: "not_connected",
       playlistAccess: false,
+      playlistWriteAccess: false,
     };
   }
   const granted = scopes(tokens.scope);
   const playlistAccess = granted.has("playlist-read-private");
+  const playlistWriteAccess =
+    granted.has(SPOTIFY_PLAYLIST_WRITE_SCOPE) ||
+    granted.has(SPOTIFY_PUBLIC_PLAYLIST_WRITE_SCOPE);
   const connected = SPOTIFY_REQUIRED_SCOPES.every(
     (scope) => granted.has(scope) || SPOTIFY_OPTIONAL_CONNECTION_SCOPES.has(scope),
   );
@@ -128,6 +143,7 @@ export function spotifyConnectionStatus(userId: number): {
     connected,
     status: connected ? "connected" : "needs_reauth",
     playlistAccess,
+    playlistWriteAccess,
   };
 }
 
@@ -247,6 +263,38 @@ function spotifyTrack(value: unknown): SpotifyTrack | null {
   };
 }
 
+function spotifyLikedSongsCollection(value: unknown): SpotifyLibraryPlaylist {
+  const page = objectRecord(value);
+  const total = Number(page?.total);
+  return {
+    id: SPOTIFY_LIKED_SONGS_ID,
+    uri: SPOTIFY_LIKED_SONGS_URI,
+    kind: "liked-songs",
+    name: "Liked Songs",
+    description: "Songs saved to your Spotify library.",
+    imageUrl: null,
+    trackCount: Number.isFinite(total) ? Math.max(0, Math.round(total)) : 0,
+    owner: "You",
+    ownerId: "",
+    collaborative: false,
+    isPublic: null,
+    canAddTracks: true,
+    canRemoveTracks: true,
+    canEditDetails: false,
+    canDelete: false,
+  };
+}
+
+function spotifySavedTracks(value: unknown): SpotifyTrack[] {
+  const page = objectRecord(value);
+  return (Array.isArray(page?.items) ? page.items : [])
+    .map((value) => {
+      const item = objectRecord(value);
+      return spotifyTrack(item?.track ?? item?.item ?? value);
+    })
+    .filter((track): track is SpotifyTrack => Boolean(track));
+}
+
 function spotifyLibraryPlaylist(value: unknown): SpotifyLibraryPlaylist | null {
   const playlist = objectRecord(value);
   const owner = objectRecord(playlist?.owner);
@@ -273,6 +321,7 @@ function spotifyLibraryPlaylist(value: unknown): SpotifyLibraryPlaylist | null {
   return {
     id,
     uri,
+    kind: "playlist",
     name: name.slice(0, 300),
     description: description.slice(0, 500),
     imageUrl,
@@ -280,6 +329,27 @@ function spotifyLibraryPlaylist(value: unknown): SpotifyLibraryPlaylist | null {
     owner: ownerName.slice(0, 200),
     ownerId,
     collaborative: playlist?.collaborative === true,
+    isPublic: typeof playlist?.public === "boolean" ? playlist.public : null,
+    canAddTracks: false,
+    canRemoveTracks: false,
+    canEditDetails: false,
+    canDelete: false,
+  };
+}
+
+function spotifyPlaylistCapabilities(
+  playlist: SpotifyLibraryPlaylist,
+  currentUserId: string,
+): SpotifyLibraryPlaylist {
+  if (playlist.kind === "liked-songs") return playlist;
+  const owned = Boolean(currentUserId) && playlist.ownerId === currentUserId;
+  const editable = owned || playlist.collaborative;
+  return {
+    ...playlist,
+    canAddTracks: editable,
+    canRemoveTracks: editable,
+    canEditDetails: owned,
+    canDelete: owned,
   };
 }
 
@@ -306,6 +376,7 @@ export async function spotifyCurrentPlaybackState(
       : 0,
     shuffle: playback.shuffle_state === true,
     deviceId: providerDeviceId,
+    deviceName: typeof device?.name === "string" ? device.name.trim() || null : null,
   };
 }
 
@@ -374,19 +445,47 @@ export async function searchSpotifyTracks(
     .filter((track): track is SpotifyTrack => Boolean(track));
 }
 
+export async function spotifyRecommendedTracks(
+  userId: number,
+  seedTrackId: string,
+  limit = 10,
+): Promise<SpotifyTrack[]> {
+  if (!/^[A-Za-z0-9]{10,64}$/.test(seedTrackId)) {
+    throw new ApiError(400, "invalid_spotify_track", "The Spotify track is invalid.");
+  }
+  const payload = objectRecord(
+    await spotifyApiRequest({
+      userId,
+      method: "GET",
+      endpoint: "/v1/recommendations",
+      query: {
+        seed_tracks: seedTrackId,
+        limit: Math.min(20, Math.max(1, limit)),
+      },
+    }),
+  );
+  return (Array.isArray(payload?.tracks) ? payload.tracks : [])
+    .map(spotifyTrack)
+    .filter((track): track is SpotifyTrack => Boolean(track))
+    .filter((track) => track.id !== seedTrackId);
+}
+
 export async function spotifyUserPlaylists(
   userId: number,
   limit = 20,
 ): Promise<SpotifyLibraryPlaylist[]> {
+  const likedSongsRequest = spotifyApiRequest({
+    userId,
+    method: "GET",
+    endpoint: "/v1/me/tracks",
+    query: { limit: 1 },
+  });
   if (!spotifyConnectionStatus(userId).playlistAccess) {
-    throw new ApiError(
-      409,
-      "spotify_playlist_permission_required",
-      "Reconnect Spotify to show your playlists.",
-    );
+    return [spotifyLikedSongsCollection(await likedSongsRequest)];
   }
   try {
-    const [playlistPayload, profilePayload] = await Promise.all([
+    const [likedSongsPayload, playlistPayload, profilePayload] = await Promise.all([
+      likedSongsRequest,
       spotifyApiRequest({
         userId,
         method: "GET",
@@ -402,19 +501,18 @@ export async function spotifyUserPlaylists(
     const payload = objectRecord(playlistPayload);
     const profile = objectRecord(profilePayload);
     const currentUserId = typeof profile?.id === "string" ? profile.id : "";
-    return (Array.isArray(payload?.items) ? payload.items : [])
+    const likedSongs = spotifyLikedSongsCollection(likedSongsPayload);
+    const playlists = (Array.isArray(payload?.items) ? payload.items : [])
       .map(spotifyLibraryPlaylist)
       .filter((playlist): playlist is SpotifyLibraryPlaylist => Boolean(playlist))
+      .map((playlist) => spotifyPlaylistCapabilities(playlist, currentUserId))
       .filter(
         (playlist) => playlist.ownerId === currentUserId || playlist.collaborative,
       );
+    return [likedSongs, ...playlists];
   } catch (error) {
     if (error instanceof ApiError && error.code === "provider_request_forbidden") {
-      throw new ApiError(
-        409,
-        "spotify_playlist_permission_required",
-        "Reconnect Spotify to show your playlists.",
-      );
+      return [spotifyLikedSongsCollection(await likedSongsRequest)];
     }
     throw error;
   }
@@ -425,10 +523,22 @@ export async function spotifyPlaylistTracks(
   playlistId: string,
   limit = 40,
 ): Promise<{ playlist: SpotifyLibraryPlaylist; tracks: SpotifyTrack[] }> {
+  if (playlistId === SPOTIFY_LIKED_SONGS_ID) {
+    const payload = await spotifyApiRequest({
+      userId,
+      method: "GET",
+      endpoint: "/v1/me/tracks",
+      query: { limit: Math.min(50, Math.max(1, limit)) },
+    });
+    return {
+      playlist: spotifyLikedSongsCollection(payload),
+      tracks: spotifySavedTracks(payload),
+    };
+  }
   if (!/^[A-Za-z0-9]{10,64}$/.test(playlistId)) {
     throw new ApiError(400, "invalid_spotify_playlist", "The Spotify playlist is invalid.");
   }
-  const [playlistPayload, itemsPayload] = await Promise.all([
+  const [playlistPayload, itemsPayload, profilePayload] = await Promise.all([
     spotifyApiRequest({
       userId,
       method: "GET",
@@ -440,11 +550,19 @@ export async function spotifyPlaylistTracks(
       endpoint: `/v1/playlists/${playlistId}/items`,
       query: { limit: Math.min(50, Math.max(1, limit)) },
     }),
+    spotifyApiRequest({
+      userId,
+      method: "GET",
+      endpoint: "/v1/me",
+    }),
   ]);
-  const playlist = spotifyLibraryPlaylist(playlistPayload);
-  if (!playlist) {
+  const parsedPlaylist = spotifyLibraryPlaylist(playlistPayload);
+  if (!parsedPlaylist) {
     throw new ApiError(502, "spotify_playlist_invalid_response", "Spotify returned an invalid playlist.");
   }
+  const profile = objectRecord(profilePayload);
+  const currentUserId = typeof profile?.id === "string" ? profile.id : "";
+  const playlist = spotifyPlaylistCapabilities(parsedPlaylist, currentUserId);
   const items = objectRecord(itemsPayload);
   const tracks = (Array.isArray(items?.items) ? items.items : [])
     .map((value) => {
@@ -453,6 +571,195 @@ export async function spotifyPlaylistTracks(
     })
     .filter((track): track is SpotifyTrack => Boolean(track));
   return { playlist, tracks };
+}
+
+function spotifyTrackUri(value: string): string {
+  const uri = value.trim();
+  if (!/^spotify:track:[A-Za-z0-9]{10,64}$/.test(uri)) {
+    throw new ApiError(400, "invalid_spotify_track", "The Spotify track is invalid.");
+  }
+  return uri;
+}
+
+function spotifyPlaylistId(value: string): string {
+  const id = value.trim();
+  if (!/^[A-Za-z0-9]{10,64}$/.test(id)) {
+    throw new ApiError(400, "invalid_spotify_playlist", "The Spotify playlist is invalid.");
+  }
+  return id;
+}
+
+async function spotifyManagedPlaylist(
+  userId: number,
+  playlistId: string,
+): Promise<SpotifyLibraryPlaylist> {
+  const id = spotifyPlaylistId(playlistId);
+  const [playlistPayload, profilePayload] = await Promise.all([
+    spotifyApiRequest({ userId, method: "GET", endpoint: `/v1/playlists/${id}` }),
+    spotifyApiRequest({ userId, method: "GET", endpoint: "/v1/me" }),
+  ]);
+  const playlist = spotifyLibraryPlaylist(playlistPayload);
+  const profile = objectRecord(profilePayload);
+  const currentUserId = typeof profile?.id === "string" ? profile.id : "";
+  if (!playlist) {
+    throw new ApiError(502, "spotify_playlist_invalid_response", "Spotify returned an invalid playlist.");
+  }
+  return spotifyPlaylistCapabilities(playlist, currentUserId);
+}
+
+async function requireSpotifyPlaylistWriteScope(
+  userId: number,
+  playlist: Pick<SpotifyLibraryPlaylist, "isPublic"> = { isPublic: false },
+): Promise<void> {
+  const requiredScope = playlist.isPublic === true
+    ? SPOTIFY_PUBLIC_PLAYLIST_WRITE_SCOPE
+    : SPOTIFY_PLAYLIST_WRITE_SCOPE;
+  const tokens = await connectedAppTokensFor(userId, SPOTIFY_CONNECTION_SLUG);
+  if (!scopes(tokens.scope).has(requiredScope)) {
+    throw new ApiError(
+      409,
+      "spotify_playlist_permission_required",
+      "Reconnect Spotify from Settings → Connections to manage your playlists.",
+    );
+  }
+}
+
+export async function spotifySetTrackSaved(
+  userId: number,
+  trackUriValue: string,
+  saved: boolean,
+): Promise<void> {
+  const trackUri = spotifyTrackUri(trackUriValue);
+  await spotifyApiRequest({
+    userId,
+    method: saved ? "PUT" : "DELETE",
+    endpoint: "/v1/me/library",
+    query: { uris: trackUri },
+  });
+}
+
+export async function spotifyAddTrackToPlaylist(input: {
+  userId: number;
+  playlistId: string;
+  trackUri: string;
+}): Promise<void> {
+  const trackUri = spotifyTrackUri(input.trackUri);
+  if (input.playlistId === SPOTIFY_LIKED_SONGS_ID) {
+    await spotifySetTrackSaved(input.userId, trackUri, true);
+    return;
+  }
+  const playlist = await spotifyManagedPlaylist(input.userId, input.playlistId);
+  if (!playlist.canAddTracks) {
+    throw new ApiError(403, "spotify_playlist_not_editable", "You cannot add songs to that playlist.");
+  }
+  await requireSpotifyPlaylistWriteScope(input.userId, playlist);
+  await spotifyApiRequest({
+    userId: input.userId,
+    method: "POST",
+    endpoint: `/v1/playlists/${playlist.id}/items`,
+    body: { uris: [trackUri] },
+  });
+}
+
+export async function spotifyRemoveTrackFromPlaylist(input: {
+  userId: number;
+  playlistId: string;
+  trackUri: string;
+}): Promise<void> {
+  const trackUri = spotifyTrackUri(input.trackUri);
+  if (input.playlistId === SPOTIFY_LIKED_SONGS_ID) {
+    await spotifySetTrackSaved(input.userId, trackUri, false);
+    return;
+  }
+  const playlist = await spotifyManagedPlaylist(input.userId, input.playlistId);
+  if (!playlist.canRemoveTracks) {
+    throw new ApiError(403, "spotify_playlist_not_editable", "You cannot remove songs from that playlist.");
+  }
+  await requireSpotifyPlaylistWriteScope(input.userId, playlist);
+  await spotifyApiRequest({
+    userId: input.userId,
+    method: "DELETE",
+    endpoint: `/v1/playlists/${playlist.id}/items`,
+    body: { items: [{ uri: trackUri }] },
+  });
+}
+
+export async function spotifyCreateManagedPlaylist(input: {
+  userId: number;
+  name: string;
+  trackUri?: string;
+}): Promise<SpotifyLibraryPlaylist> {
+  const name = input.name.trim().replace(/\s+/gu, " ").slice(0, 100);
+  if (!name) {
+    throw new ApiError(400, "spotify_playlist_name_required", "A playlist name is required.");
+  }
+  const trackUri = input.trackUri ? spotifyTrackUri(input.trackUri) : null;
+  await requireSpotifyPlaylistWriteScope(input.userId);
+  const createdPayload = await spotifyApiRequest({
+    userId: input.userId,
+    method: "POST",
+    endpoint: "/v1/me/playlists",
+    body: {
+      name,
+      public: false,
+      collaborative: false,
+      description: "Created in Breadboard",
+    },
+  });
+  const parsed = spotifyLibraryPlaylist(createdPayload);
+  if (!parsed) {
+    throw new ApiError(502, "spotify_playlist_invalid_response", "Spotify returned an invalid playlist.");
+  }
+  if (trackUri) {
+    await spotifyApiRequest({
+      userId: input.userId,
+      method: "POST",
+      endpoint: `/v1/playlists/${parsed.id}/items`,
+      body: { uris: [trackUri] },
+    });
+  }
+  return {
+    ...spotifyPlaylistCapabilities(parsed, parsed.ownerId),
+    trackCount: trackUri ? 1 : 0,
+  };
+}
+
+export async function spotifyRenamePlaylist(input: {
+  userId: number;
+  playlistId: string;
+  name: string;
+}): Promise<void> {
+  const name = input.name.trim().replace(/\s+/gu, " ").slice(0, 100);
+  if (!name) {
+    throw new ApiError(400, "spotify_playlist_name_required", "A playlist name is required.");
+  }
+  const playlist = await spotifyManagedPlaylist(input.userId, input.playlistId);
+  if (!playlist.canEditDetails) {
+    throw new ApiError(403, "spotify_playlist_not_editable", "Only the playlist owner can rename it.");
+  }
+  await requireSpotifyPlaylistWriteScope(input.userId, playlist);
+  await spotifyApiRequest({
+    userId: input.userId,
+    method: "PUT",
+    endpoint: `/v1/playlists/${playlist.id}`,
+    body: { name },
+  });
+}
+
+export async function spotifyDeletePlaylist(
+  userId: number,
+  playlistId: string,
+): Promise<void> {
+  const playlist = await spotifyManagedPlaylist(userId, playlistId);
+  if (!playlist.canDelete) {
+    throw new ApiError(403, "spotify_playlist_not_owned", "Only the playlist owner can delete it.");
+  }
+  await spotifyApiRequest({
+    userId,
+    method: "DELETE",
+    endpoint: "/v1/me/library",
+    query: { uris: playlist.uri },
+  });
 }
 
 export async function createSpotifyPlaylist(input: {

@@ -1646,6 +1646,9 @@ log("staging finite-worker production dependency closures");
   const runtimeServiceModules = path.join(stagingRoot, "dashboard", "node_modules");
   fs.rmSync(runtimeServiceModules, { recursive: true, force: true });
   const runtimeServiceCopied = new Set();
+  // Clicky's Electron-owned mouse input uses the same bundled N-API FFI as
+  // dashboard workers. Keep its native platform dependency outside the ASAR.
+  copyDependency("koffi", sourceModules, runtimeServiceModules, runtimeServiceModules, runtimeServiceCopied);
   copyDependency(
     "@modelcontextprotocol/sdk",
     sourceModules,

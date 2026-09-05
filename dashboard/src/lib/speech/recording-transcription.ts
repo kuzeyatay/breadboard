@@ -1,6 +1,6 @@
 import "server-only";
 
-// Turning an uploaded recording into text with the local speech model.
+// Turning an uploaded recording into text with the selected speech provider.
 //
 // Voicebox transcribes one audio file per request and has no notion of a long
 // recording, so this is what stands between the two: the upload is written
@@ -30,6 +30,7 @@ import {
   type RecordingTranscriptionEvent,
 } from "./recording-upload.ts";
 import { voiceboxFetch, voiceboxResponseError } from "./voicebox-client.ts";
+import type { SpeechProvider } from "./providers.ts";
 
 const MODEL_DOWNLOAD_RETRY_MS = 2_000;
 const MODEL_DOWNLOAD_WAIT_MS = 10 * 60_000;
@@ -134,6 +135,7 @@ async function transcribePart(
 }
 
 export interface TranscribeRecordingOptions {
+  speechProvider?: SpeechProvider;
   runtimeScope: SpeechMediaRuntimeScope;
   workspace: RecordingWorkspace;
   filename: string;
@@ -148,6 +150,7 @@ export interface TranscribeRecordingOptions {
  * caller owns the workspace and removes it.
  */
 export async function transcribeStoredRecording({
+  speechProvider = "local",
   runtimeScope,
   workspace,
   filename,
@@ -187,6 +190,7 @@ export async function transcribeStoredRecording({
     for (const [index, part] of parts.entries()) {
       if (signal.aborted) throw new RouteError(499, "The transcription was cancelled.");
       onEvent({ stage: "transcribing", part: index + 1, parts: parts.length });
+      if (speechProvider !== "local") throw new RouteError(409, "Subscription recordings require the browser audio connection.");
       transcripts.push(
         await transcribePart(part, model, language, signal, () => {
           if (announcedDownload) return;
@@ -197,7 +201,7 @@ export async function transcribeStoredRecording({
     }
 
     const text = joinTranscriptSegments(transcripts);
-    if (!text) throw new RouteError(422, "Voicebox did not hear any words in that recording.");
+    if (!text) throw new RouteError(422, "No words were recognized in that recording.");
     return text;
   } finally {
     segmented.cleanup();

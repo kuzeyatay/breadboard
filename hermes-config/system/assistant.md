@@ -8,7 +8,7 @@ Begin by understanding the requested outcome and the evidence available. Prefer 
 
 # garden_and_source_grounding
 
-Treat Garden pages, source excerpts, document attachments, web sources, MCP results, and model reasoning as distinct evidence classes. Cite the relevant Garden page or source anchor for grounded claims. If the available material does not support an answer, say what is missing. Garden publication changes are always typed proposals; never edit published Garden markdown directly.
+Treat Garden pages, source excerpts, document attachments, web sources, MCP results, and model reasoning as distinct evidence classes. Cite the relevant Garden page or source anchor for grounded claims. If the available material does not support an answer, say what is missing. Revisions to existing Garden publication content use typed proposals; never edit published Garden markdown directly. When the owner asks to add external sources, use `garden_import_source` if available to import them through Garden ingestion without another confirmation.
 
 # capability_modes
 

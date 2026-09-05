@@ -37,8 +37,6 @@ fs.writeFileSync(
     'export { MessageMarkdown } from "@/app/buzz/components/message-markdown";',
     'export { Composer } from "@/app/buzz/components/composer";',
     'export { RoomRail } from "@/app/buzz/components/room-rail";',
-    'export { default as BuzzLoading } from "@/app/buzz/loading";',
-    'export { default as RouteLoading } from "@/app/components/route-loading";',
     'export { SidebarProvider } from "@/app/buzz/ui/sidebar";',
     "",
   ].join("\n"),
@@ -68,14 +66,12 @@ const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const {
   AgentsView,
-  BuzzLoading,
   Composer,
   InboxView,
   MembersPanel,
   MessageMarkdown,
   MessageRow,
   RoomRail,
-  RouteLoading,
   SidebarProvider,
 } = require(bundle);
 
@@ -364,35 +360,6 @@ test("the agents view groups one persona's rooms under one heading", () => {
   assert.match(html, /design/);
   // The respond-to chips carry the sentence they abbreviate.
   assert.match(html, /title="Answers when someone names it by handle"/);
-});
-
-/* ── what a route shows before it can paint ──────────────────────────────── */
-
-test("opening Chat paints Buzz's own surface, not a bare window", () => {
-  const html = renderToStaticMarkup(React.createElement(BuzzLoading));
-  // The gradient, so the wait and the room that follows are one surface —
-  // nothing changes colour under the reader when the page arrives.
-  assert.match(html, /buzz-theme-gradient-layer-light/);
-  assert.match(html, /class="buzz-root/);
-  // The shared hand-drawn ring and a line that says where you are going.
-  assert.match(html, /class="bb-loader /);
-  assert.match(html, /bb-loader-sketch-3/);
-  assert.match(html, /Opening Chat/);
-  assert.match(html, /role="status"/);
-});
-
-test("the shared route loader names its destination", () => {
-  const html = renderToStaticMarkup(
-    React.createElement(RouteLoading, {
-      label: "Opening your calendar",
-      hint: "Reading your events.",
-    }),
-  );
-  assert.match(html, /class="bb-loader /);
-  assert.match(html, /bb-loader-sketch-3/);
-  assert.match(html, /Opening your calendar/);
-  assert.match(html, /Reading your events\./);
-  assert.match(html, /aria-live="polite"/);
 });
 
 /** The panel with one person, Bread, and one specialist seated. */

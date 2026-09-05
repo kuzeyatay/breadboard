@@ -1,18 +1,24 @@
 "use client";
 
+import { speechRequest } from "@/lib/speech/request-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import VoiceSampleRecorder from "@/app/components/voice-sample-recorder";
+import SettingsCloudSpeech from "@/app/components/settings-cloud-speech";
+import type { SpeechCredentialStatus } from "@/lib/speech/providers";
 import { calibrationPassage } from "@/lib/speech/calibration";
 import { decodedRecordingAsWav } from "@/lib/speech/live-dictation";
-import { playSpeechBlob, stopSpeechPlayback } from "@/lib/speech/playback";
+import { playSpeechBlob, stopSpeechPlayback, playSubscriptionText } from "@/lib/speech/playback";
 import {
   fetchSpeechApi,
   prepareLocalSpeech,
+  resetSpeechPreparation,
   speechErrorMessage,
 } from "@/lib/speech/prepare-client";
 import { nextSpeechStep, requiredModelName, voiceProfileReady } from "@/lib/speech/voice-model";
 
 type SpeechSettings = {
+  speechProvider: "local" | "chatgpt";
+  openaiVoice: string;
   enabled: boolean;
   profileId: string | null;
   language: string;
@@ -45,6 +51,7 @@ type ModelStatus = {
 };
 
 type SpeechStatus = {
+  cloud: SpeechCredentialStatus;
   available: boolean;
   error?: string;
   settings: SpeechSettings;
@@ -203,15 +210,18 @@ export default function SettingsSpeech() {
   const [now, setNow] = useState(() => Date.now());
   const mountedRef = useRef(true);
   const pickerDecidedRef = useRef(false);
+  const loadVersionRef = useRef(0);
+  const prepareVersionRef = useRef(0);
   const sampleFileRef = useRef<HTMLInputElement | null>(null);
 
   const load = useCallback(async () => {
+    const version = ++loadVersionRef.current;
     setLoading(true);
     try {
       const response = await fetchSpeechApi("/api/speech/status", { cache: "no-store" });
       if (!response.ok) throw new Error(await apiError(response));
       const next = (await response.json()) as SpeechStatus;
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || version !== loadVersionRef.current) return;
       setStatus(next);
       setDraft(next.settings);
       // Open the picker for someone with no voice yet, but only decide that
@@ -220,36 +230,40 @@ export default function SettingsSpeech() {
         pickerDecidedRef.current = true;
         setAddingVoice(next.profiles.length === 0);
       }
+      return next;
     } catch (error) {
-      if (mountedRef.current) {
+      if (mountedRef.current && version === loadVersionRef.current) {
         setNotice(speechErrorMessage(error, "Speech settings could not be loaded."));
       }
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (mountedRef.current && version === loadVersionRef.current) setLoading(false);
     }
   }, []);
 
   const prepare = useCallback(async () => {
+    const version = ++prepareVersionRef.current;
     setPreparing(true);
     setNotice(null);
     try {
       await prepareLocalSpeech();
-      if (mountedRef.current) await load();
+      if (mountedRef.current && version === prepareVersionRef.current) await load();
     } catch (error) {
-      if (mountedRef.current) {
+      if (mountedRef.current && version === prepareVersionRef.current) {
         setNotice(speechErrorMessage(error, "Local speech could not start."));
       }
     } finally {
-      if (mountedRef.current) setPreparing(false);
+      if (mountedRef.current && version === prepareVersionRef.current) setPreparing(false);
     }
   }, [load]);
 
   useEffect(() => {
     mountedRef.current = true;
-    void load();
-    void prepare();
+    void load().then((next) => {
+      if (mountedRef.current && next?.settings.speechProvider === "local") void prepare();
+    });
     return () => {
       mountedRef.current = false;
+      ++prepareVersionRef.current;
       stopSpeechPlayback();
     };
   }, [load, prepare]);
@@ -262,7 +276,7 @@ export default function SettingsSpeech() {
   const modelsDownloading = Boolean(status?.models.some((model) => model.downloading));
 
   useEffect(() => {
-    if (!status || status.available) return;
+    if (!status || status.available || status.settings.speechProvider === "chatgpt") return;
     const timer = window.setTimeout(() => void load(), installActive ? 2_000 : 5_000);
     return () => window.clearTimeout(timer);
   }, [installActive, load, status]);
@@ -288,6 +302,8 @@ export default function SettingsSpeech() {
     async (patch: Partial<SpeechSettings>): Promise<SpeechSettings | null> => {
       const base = draft;
       if (!base) return null;
+      ++loadVersionRef.current;
+      setLoading(false);
       const next = { ...base, ...patch };
       setDraft(next);
       setSaveState("saving");
@@ -295,7 +311,7 @@ export default function SettingsSpeech() {
         const response = await fetch("/api/speech/settings", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(next),
+          body: JSON.stringify(patch),
         });
         if (!response.ok) throw new Error(await apiError(response));
         const result = (await response.json()) as { settings: SpeechSettings };
@@ -303,6 +319,16 @@ export default function SettingsSpeech() {
         setDraft(result.settings);
         setStatus((current) => (current ? { ...current, settings: result.settings } : current));
         setSaveState("saved");
+        if (patch.speechProvider && patch.speechProvider !== base.speechProvider) {
+          stopSpeechPlayback();
+          resetSpeechPreparation();
+          ++prepareVersionRef.current;
+          setPreparing(false);
+          setStatus((current) => current ? { ...current, available: false, health: null, startup: null, profiles: [], models: [] } : current);
+          setNotice(null);
+          void load();
+          if (patch.speechProvider === "local") void prepare();
+        }
         window.setTimeout(() => {
           if (mountedRef.current) setSaveState((state) => (state === "saved" ? "idle" : state));
         }, 1_800);
@@ -310,26 +336,33 @@ export default function SettingsSpeech() {
       } catch (error) {
         if (mountedRef.current) {
           setSaveState("idle");
+          setDraft(base);
           setNotice(error instanceof Error ? error.message : "Speech preferences could not be saved.");
         }
         return null;
       }
     },
-    [draft],
+    [draft, load, prepare],
   );
 
   async function previewVoice(profileId?: string) {
     const target = profileId ?? draft?.profileId ?? null;
-    if (!target) return;
+    if (!target && draft?.speechProvider !== "chatgpt") return;
     setWorking("preview");
     setNotice(null);
     try {
       // Speaking is gated on both the voice and the master switch, so make the
       // preview mean "use this voice" rather than fail with a 409.
       if (target !== draft?.profileId || !draft?.enabled) {
-        await updateSettings({ profileId: target, enabled: true });
+        const saved = await updateSettings(draft?.speechProvider === "chatgpt"
+          ? { enabled: true } : { profileId: target, enabled: true });
+        if (!saved) throw new Error("Save the speech preferences before previewing a voice.");
       }
-      const response = await fetch("/api/speech/synthesize", {
+      if (await playSubscriptionText(previewText, (error) => {
+        setWorking(null);
+        if (error) setNotice(error.message);
+      })) { setWorking("playing"); return; }
+      const response = await speechRequest("/api/speech/synthesize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: previewText }),
@@ -514,7 +547,7 @@ export default function SettingsSpeech() {
   }
 
   if (loading && !draft) {
-    return <div className="py-10 text-center text-sm text-[var(--ink-muted)]">Checking the local speech service…</div>;
+    return <div className="py-10 text-center text-sm text-[var(--ink-muted)]">Checking speech settings…</div>;
   }
 
   if (!draft) {
@@ -617,6 +650,27 @@ export default function SettingsSpeech() {
 
   return (
     <div className="space-y-4">
+      <section className="space-y-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
+        <h3 className="text-sm font-medium text-[var(--ink-heading)]">Speech provider</h3>
+        <div role="group" aria-label="Speech provider" className="flex gap-2">
+          {(["local", "chatgpt"] as const).map((provider) => (
+            <button key={provider} type="button" aria-pressed={draft.speechProvider === provider}
+              className={draft.speechProvider === provider ? primaryButton : secondaryButton}
+              disabled={saveState === "saving" || Boolean(working)}
+              onClick={() => void updateSettings({ speechProvider: provider })}>
+              {provider === "local" ? "Local" : "ChatGPT subscription"}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs leading-5 text-[var(--ink-muted)]">Applies to voice conversations, dictation, Clicky, and response playback. Switch before starting a recording.</p>
+      </section>
+      {draft.speechProvider === "chatgpt" ? (
+        <SettingsCloudSpeech cloud={status?.cloud} voice={draft.openaiVoice} enabled={draft.enabled}
+          language={draft.transcriptionLanguage} languages={LANGUAGES}
+          busy={saveState === "saving" || Boolean(working)} previewText={previewText}
+          onPreviewText={setPreviewText} onPreview={() => void previewVoice()}
+          onUpdate={(patch) => { void updateSettings(patch); }} onCredentialsChanged={load} />
+      ) : <>
       <section className="neu-surface rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -1069,6 +1123,8 @@ export default function SettingsSpeech() {
           </details>
         </>
       ) : null}
+
+      </>}
 
       {notice ? <p role="status" className="rounded-xl bg-[var(--paper-strong)] px-3 py-2 text-xs leading-5 text-[var(--ink)]">{notice}</p> : null}
     </div>

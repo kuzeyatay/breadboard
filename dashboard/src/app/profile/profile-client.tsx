@@ -69,6 +69,7 @@ import {
 import {
   inDesktopShell,
   requestCurrentLocationFix,
+  resolveCurrentLocationLabel,
 } from "@/lib/current-location-source.ts";
 import { persistCurrentLocationPreference } from "@/app/components/current-location-preference.ts";
 import {
@@ -881,6 +882,32 @@ function LocationPanel() {
     };
   }, []);
 
+  useEffect(() => {
+    const snapshot = preference.snapshot;
+    if (!preference.useForAnswers || !snapshot || snapshot.label) return;
+    let active = true;
+    void resolveCurrentLocationLabel(snapshot).then((label) => {
+      if (!active || !label) return;
+      const latest = getStoredCurrentLocationPreference(window.localStorage);
+      if (
+        !latest.useForAnswers ||
+        !latest.snapshot ||
+        latest.snapshot.capturedAt !== snapshot.capturedAt
+      ) {
+        return;
+      }
+      const next = writeStoredCurrentLocationPreference(window.localStorage, {
+        useForAnswers: true,
+        snapshot: { ...latest.snapshot, label },
+      });
+      setPreference(next);
+      announceCurrentLocationChange();
+    });
+    return () => {
+      active = false;
+    };
+  }, [preference.snapshot, preference.useForAnswers]);
+
   function storePreference(
     useForAnswers: boolean,
     snapshot: CurrentLocationSnapshot | null,
@@ -918,18 +945,22 @@ function LocationPanel() {
       return;
     }
 
-    const snapshot = normalizeCurrentLocationSnapshot({
+    const baseSnapshot = normalizeCurrentLocationSnapshot({
       latitude: attempt.fix.latitude,
       longitude: attempt.fix.longitude,
       capturedAt: new Date().toISOString(),
       accuracyMeters: attempt.fix.accuracyMeters,
       timeZone: deviceTimeZone(),
     });
-    if (!snapshot || !storePreference(true, snapshot)) {
+    if (!baseSnapshot) {
       setRequestState("unavailable");
       setError("Breadboard received a location fix it could not safely use.");
       return;
     }
+    const label = await resolveCurrentLocationLabel(baseSnapshot, preference.snapshot);
+    if (requestSequence.current !== requestId) return;
+    const snapshot = label ? { ...baseSnapshot, label } : baseSnapshot;
+    if (!storePreference(true, snapshot)) return;
     // The same coarse fix can improve sunrise/sunset calculations. This does
     // not enable automatic theme mode, and theme consent never enables use of
     // location in answers.
@@ -997,7 +1028,7 @@ function LocationPanel() {
         }
       : displayState === "available"
         ? {
-            title: "Available",
+            title: preference.snapshot?.label ?? "Available",
             detail: preference.snapshot
               ? `Approximate location updated ${locationAge(preference.snapshot.capturedAt)}.`
               : "An approximate location is ready.",
@@ -1031,7 +1062,7 @@ function LocationPanel() {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <p
-              className="flex items-center gap-2 text-sm font-medium text-white"
+              className="flex min-w-0 items-center gap-2 text-sm font-medium text-white"
               role="status"
               aria-live="polite"
               aria-busy={checking}
@@ -1048,7 +1079,7 @@ function LocationPanel() {
                 }`}
                 aria-hidden
               />
-              {status.title}
+              <span className="truncate">{status.title}</span>
             </p>
             {preference.useForAnswers && (
               <button

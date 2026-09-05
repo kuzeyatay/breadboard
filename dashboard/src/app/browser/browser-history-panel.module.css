@@ -1,0 +1,14 @@
+.panel.panel[data-error="true"] {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.pageLink.pageLink small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.pageLink time {
+  color: var(--ink-muted);
+  font-size: 10px;
+}

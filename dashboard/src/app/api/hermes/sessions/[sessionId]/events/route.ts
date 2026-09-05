@@ -1,4 +1,5 @@
 import { requireUserId } from "@/lib/server-auth";
+import { conversationRequestSurface, conversationRequestContext } from "@/lib/hermes/session-surface.ts";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
 import { getConversationForUser } from "@/lib/conversations/store.ts";
 import { resolveConversationRuntime } from "@/lib/hermes/session-service.ts";
@@ -17,12 +18,15 @@ export async function GET(
     const { sessionId } = await params;
     const conversation = getConversationForUser(sessionId, userId);
     const url = new URL(request.url);
-    const surface = parseSurface(url.searchParams.get("surface"));
+    const requestedSurface = parseSurface(url.searchParams.get("surface"));
+    const surface = conversationRequestSurface(conversation, requestedSurface);
     const runtime = await resolveConversationRuntime({
       conversation,
       surface,
-      activeGardenSlug: url.searchParams.get("gardenSlug"),
-      activePageSlug: url.searchParams.get("pageSlug"),
+      ...conversationRequestContext(conversation, requestedSurface, {
+        activeGardenSlug: url.searchParams.get("gardenSlug"),
+        activePageSlug: url.searchParams.get("pageSlug"),
+      }),
     });
     return buildSessionEventStream(runtime, request.signal);
   } catch (error) {

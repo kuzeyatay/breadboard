@@ -87,6 +87,7 @@ const SCOPES: Record<string, string[]> = {
     "user-library-modify",
     "playlist-read-private",
     "playlist-modify-private",
+    "playlist-modify-public",
   ],
   gmail: [
     "openid",

@@ -101,6 +101,20 @@ const InlineGadget = dynamic(() => import("@/app/components/hermes/inline-gadget
   loading: () => <p className="text-sm text-[var(--ink-muted)]">Starting the gadget…</p>,
 });
 
+// The Markdown editor is substantially heavier than the reading view, so only
+// load it when the in-window editor is actually opened.
+const MarkdownArtifactEditor = dynamic(
+  () => import("@/app/artifacts/[artifactId]/markdown/markdown-artifact-editor"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="grid h-full place-items-center text-sm text-[var(--ink-muted)]">
+        Opening Markdown editor…
+      </div>
+    ),
+  },
+);
+
 export const ARTIFACT_BROWSER_EVENT = "breadboard:artifact-event";
 export const GARDEN_DOCUMENTS_CHANGED_EVENT = "breadboard:garden-documents-changed";
 
@@ -256,7 +270,7 @@ export function artifactPdfHref(artifact: PresentedArtifact): string | null {
   return `/artifacts/${encodeURIComponent(artifact.id)}/pdf?${query.toString()}`;
 }
 
-/** Full-window editor for Markdown source artifacts. */
+/** Dedicated editor route for Markdown source artifacts. */
 export function artifactMarkdownEditorHref(
   artifact: PresentedArtifact,
 ): string | null {
@@ -588,6 +602,7 @@ export default function ArtifactViewer({
   // same button and the same result.
   const [expanded, setExpanded] = useState(false);
   const [editingDocument, setEditingDocument] = useState(false);
+  const [markdownEditorOpen, setMarkdownEditorOpen] = useState(false);
 
   // A parametric CAD manifest is JSON, which the textual branch would otherwise
   // dump as raw text; its own renderer needs that same text, so it is fetched
@@ -645,6 +660,7 @@ export default function ArtifactViewer({
   useEffect(() => {
     setExpanded(false);
     setEditingDocument(false);
+    setMarkdownEditorOpen(false);
   }, [artifactId]);
 
   useEffect(() => subscribeToArtifactUpdates((updated) => {
@@ -655,7 +671,7 @@ export default function ArtifactViewer({
   // closing the artifact outright. The listener captures so a surface that
   // closes its own overlays on Escape does not act on the same keystroke.
   useEffect(() => {
-    if (!expanded) return;
+    if (!expanded || markdownEditorOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -664,7 +680,7 @@ export default function ArtifactViewer({
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [expanded]);
+  }, [expanded, markdownEditorOpen]);
 
   useEffect(() => {
     if (!artifact || !isTextual || !artifact.previewAvailable) return;
@@ -752,11 +768,11 @@ export default function ArtifactViewer({
   useEffect(() => {
     if (!artifact) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !markdownEditorOpen) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [artifact, onClose]);
+  }, [artifact, markdownEditorOpen, onClose]);
 
   useEffect(() => {
     if (!interactive || !interactiveChannel) return;
@@ -1230,14 +1246,8 @@ export default function ArtifactViewer({
             <button
               type="button"
               className={actionButton}
-              onClick={() => {
-                window.open(
-                  markdownEditorHref,
-                  `breadboard-markdown-${artifact.id}`,
-                  "popup=yes,width=1440,height=900,resizable=yes,scrollbars=no",
-                );
-              }}
-              aria-label={`Edit ${artifact.title} in a new window`}
+              onClick={() => setMarkdownEditorOpen(true)}
+              aria-label={`Edit ${artifact.title}`}
             >
               Edit
             </button>
@@ -1340,14 +1350,45 @@ export default function ArtifactViewer({
       </aside>
   );
 
+  const markdownEditorModal = markdownEditorOpen && typeof document !== "undefined"
+    ? createPortal(
+        <div className="bb-modal-backdrop bb-viewer-overlay fixed z-[90] p-2 sm:p-5">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Edit ${artifact.title}`}
+            className="h-full min-h-0 overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-bg)] shadow-2xl"
+          >
+            <MarkdownArtifactEditor
+              initialArtifact={artifact}
+              onClose={() => setMarkdownEditorOpen(false)}
+            />
+          </section>
+        </div>,
+        document.body,
+      )
+    : null;
+
   // Expanded, the panel has to leave whatever lane it was living in: a surface
   // that hosts the dock in its own flex row cannot give it the whole window, so
   // it moves to the body for as long as it is expanded.
   if (expanded && typeof document !== "undefined") {
-    return createPortal(panel, document.body);
+    return (
+      <>
+        {createPortal(panel, document.body)}
+        {markdownEditorModal}
+      </>
+    );
   }
 
-  if (dockHost) return createPortal(panel, dockHost);
+  if (dockHost) {
+    return (
+      <>
+        {createPortal(panel, dockHost)}
+        {markdownEditorModal}
+      </>
+    );
+  }
 
   return (
     <>
@@ -1361,6 +1402,7 @@ export default function ArtifactViewer({
         onClick={onClose}
       />
       {panel}
+      {markdownEditorModal}
     </>
   );
 }

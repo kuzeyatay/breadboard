@@ -22,6 +22,7 @@ export interface GeocodeSearchInput {
 export interface GeocodeReverseInput {
   lat: number;
   lon: number;
+  language?: string;
   signal?: AbortSignal;
 }
 

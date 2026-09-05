@@ -19,6 +19,8 @@ import { isGBrainEnabled } from "../gbrain/config.ts";
 export const GARDEN_TOOLS = [
   "garden_list",
   "garden_search",
+  "garden_discover_sources",
+  "garden_import_source",
   "garden_get_page",
   "garden_get_page_context",
   "garden_get_source_excerpt",
@@ -545,6 +547,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...gbrain,
     ...recall,
     "terminal_execute_command",
+    "browser_terminal",
     "capability_gap",
     "capability_search",
     "mcp_call",

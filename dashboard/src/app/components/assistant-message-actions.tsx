@@ -1,5 +1,7 @@
 "use client";
 
+import { speechRequest } from "@/lib/speech/request-client";
+import { playSubscriptionText } from "@/lib/speech/playback";
 import {
   createContext,
   type CSSProperties,
@@ -388,7 +390,13 @@ export default function AssistantMessageActions({
     speechAbortRef.current = controller;
     setSpeechState("loading");
     try {
-      const response = await fetch("/api/speech/synthesize", {
+      if (await playSubscriptionText(text, (error) => {
+        if (mountedRef.current) { setSpeechState("idle"); if (error) setSpeechMessage(error.message); }
+      }, controller.signal)) {
+        if (mountedRef.current) setSpeechState("playing");
+        return;
+      }
+      const response = await speechRequest("/api/speech/synthesize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
@@ -459,7 +467,7 @@ export default function AssistantMessageActions({
     dictationAbortRef.current = controller;
     setDictationState("preparing");
     try {
-      const response = await fetch("/api/speech/synthesize/mp3", {
+      const response = await speechRequest("/api/speech/synthesize/mp3", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),

@@ -9,6 +9,8 @@
  * same chat, not a second one.
  */
 
+import { speechRequest } from "@/lib/speech/request-client";
+import { connectSubscriptionVoice, subscriptionSelected, type SubscriptionVoice } from "@/lib/speech/subscription-live";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { encodePcm16Wav } from '@/lib/speech/live-dictation';
@@ -103,6 +105,7 @@ export default function VoiceConversationOverlay({
     sink: GainNode;
   } | null>(null);
   const chunksRef = useRef<Float32Array[]>([]);
+  const subscriptionRef = useRef<SubscriptionVoice | null>(null);
   const turnRef = useRef(initialVoiceTurn());
   const listeningRef = useRef(false);
   const levelRef = useRef(0);
@@ -149,6 +152,8 @@ export default function VoiceConversationOverlay({
   }, []);
 
   const releaseMicrophone = useCallback(() => {
+    void subscriptionRef.current?.close();
+    subscriptionRef.current = null;
     listeningRef.current = false;
     const capture = captureRef.current;
     captureRef.current = null;
@@ -169,6 +174,8 @@ export default function VoiceConversationOverlay({
     }
     chunksRef.current = [];
     turnRef.current = initialVoiceTurn();
+    subscriptionRef.current?.resetTranscript();
+    subscriptionRef.current?.setListening(true);
     listeningRef.current = true;
     enterStage('listening');
   }, [enterStage]);
@@ -188,7 +195,9 @@ export default function VoiceConversationOverlay({
       try {
         const form = new FormData();
         form.set('file', wav, 'voice-turn.wav');
-        const response = await fetch('/api/speech/transcribe', {
+        const response = subscriptionRef.current
+          ? Response.json({ text: await subscriptionRef.current.finishTranscript() })
+          : await speechRequest('/api/speech/transcribe', {
           method: 'POST',
           body: form,
           signal: controller.signal,
@@ -202,7 +211,7 @@ export default function VoiceConversationOverlay({
         if (!response.ok) {
           const message = await responseMessage(response, 'That could not be transcribed.');
           setNote(message);
-          if (response.status === 503) {
+          if ([401, 403, 409, 429, 503].includes(response.status)) {
             releaseMicrophone();
             enterStage('unavailable');
             return;
@@ -271,7 +280,7 @@ export default function VoiceConversationOverlay({
     let openingStream: MediaStream | null = null;
     let openingContext: AudioContext | null = null;
     try {
-      setNote('Preparing local speech…');
+      setNote('Preparing speech…');
       const prepareController = new AbortController();
       requestAbortRef.current.add(prepareController);
       try {
@@ -340,6 +349,14 @@ export default function VoiceConversationOverlay({
       processor.connect(sink);
       sink.connect(context.destination);
       captureRef.current = { stream, context, source, processor, sink };
+      const cloudController = new AbortController();
+      requestAbortRef.current.add(cloudController);
+      if (await subscriptionSelected(cloudController.signal)) {
+        const voice = await connectSubscriptionVoice({ microphone: stream, signal: cloudController.signal });
+        if (session !== sessionRef.current) { await voice.close(); return; }
+        subscriptionRef.current = voice;
+      }
+      requestAbortRef.current.delete(cloudController);
       openingStream = null;
       openingContext = null;
       beginTurn();
@@ -437,7 +454,12 @@ export default function VoiceConversationOverlay({
       const controller = new AbortController();
       requestAbortRef.current.add(controller);
       try {
-        const response = await fetch('/api/speech/synthesize', {
+        if (subscriptionRef.current) {
+          await subscriptionRef.current.speak(spoken);
+          if (session === sessionRef.current) beginTurn();
+          return;
+        }
+        const response = await speechRequest('/api/speech/synthesize', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: spoken }),
@@ -555,10 +577,12 @@ export default function VoiceConversationOverlay({
   function handleRingClick() {
     if (stage === 'speaking') {
       stopSpeechPlayback();
+      subscriptionRef.current?.stopSpeaking();
       beginTurn();
       return;
     }
     if (stage === 'listening') {
+      subscriptionRef.current?.setListening(false);
       listeningRef.current = false;
       chunksRef.current = [];
       enterStage('paused');

@@ -103,6 +103,50 @@ test("around still identifies an actual place lookup", () => {
   }
 });
 
+test("website and app navigation never requires map data, even after a map request", () => {
+  for (const request of [
+    "navigate to instagram",
+    "Navigate to Instagram.",
+    "Please take me to YouTube in the browser.",
+    "Get me to GitHub",
+    "Navigate to https://www.instagram.com/",
+    "Navigate to instagram.com",
+    "Navigate to example.org/account?tab=profile",
+    "Navigate to Pera Museum's website",
+    "Navigate to Google Maps website",
+    "Navigate to the settings",
+    "Take me to the account settings",
+    "Navigate to the dashboard",
+  ]) {
+    for (const options of [
+      {},
+      {
+        structuredPlaceAvailable: true,
+        priorRequests: ["Give me directions to Galataport."],
+      },
+    ]) {
+      const verdict = requiresGeographicGrounding(request, options);
+      assert.equal(verdict.required, false, request);
+      assert.equal(renderGeographicGroundingDirective(verdict), "", request);
+    }
+  }
+});
+
+test("digital navigation exclusions preserve physical destinations and separate map requests", () => {
+  for (const request of [
+    "Navigate to Amsterdam",
+    "Navigate to Instagram headquarters in Menlo Park",
+    "Take me to the nearest Apple store",
+    "Navigate to Instagram Cafe",
+    "Navigate to Instagram, then give me directions to Galataport.",
+    "Open instagram.com and find cafes near Eindhoven.",
+    "Find cafes near Instagram headquarters.",
+    "Give me directions to Pera Museum in the browser.",
+  ]) {
+    assert.equal(requiresGeographicGrounding(request).required, true, request);
+  }
+});
+
 test("a bare intent with nothing to aim at is not over-classified", () => {
   // "How long does it take?" on its own has no referent, and Breadboard holds
   // no place — so the classifier does not manufacture an obligation.

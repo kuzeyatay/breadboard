@@ -23,6 +23,7 @@ export interface ConversationRow {
   title: string;
   surface: HermesSurface;
   scope_kind: ConversationScopeKind;
+  origin_label?: string | null;
   default_garden_id: number | null;
   active_agency_agent_slug: string | null;
   scheduled_chat_job_id: number | null;
@@ -89,6 +90,8 @@ export interface CreateConversationInput {
   userId: number;
   title?: string;
   surface?: HermesSurface;
+  /** Server-assigned UI origin, independent of the runtime surface. */
+  originLabel?: string;
   scopeKind?: ConversationScopeKind;
   defaultGardenId?: number | null;
   /** Schedule that created this chat, if it was opened unattended. */
@@ -107,9 +110,9 @@ export function createConversation(
   const result = database.prepare(`
     INSERT INTO conversations(
       public_id, user_id, title, surface, scope_kind, default_garden_id,
-      scheduled_chat_job_id, hook_id, temporary
+      scheduled_chat_job_id, hook_id, temporary, origin_label
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     publicId,
     input.userId,
@@ -120,6 +123,7 @@ export function createConversation(
     input.scheduledChatJobId ?? null,
     input.hookId ?? null,
     input.temporary ? 1 : 0,
+    input.originLabel?.trim().slice(0, 80) || null,
   );
   const id = Number(result.lastInsertRowid);
   database.prepare("INSERT INTO conversation_memory_state(conversation_id) VALUES (?)").run(id);
@@ -414,6 +418,8 @@ export function listConversationMessages(
 export interface ConversationMessageSummary {
   messageCount: number;
   externalAgentActive: boolean;
+  transcriptVersion: string;
+  pendingMessageCount: number;
 }
 
 /** One aggregate query for history rows, avoiding a transcript read per chat. */
@@ -427,6 +433,9 @@ export function summarizeConversationMessages(
   const rows = database.prepare(`
     SELECT conversation_id,
            COUNT(*) AS message_count,
+           MAX(updated_at) AS last_message_updated_at,
+           SUM(LENGTH(content)) AS content_length,
+           SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
            MAX(CASE
              WHEN role = 'assistant'
               AND metadata IS NOT NULL
@@ -439,6 +448,9 @@ export function summarizeConversationMessages(
   `).all(...ids) as Array<{
     conversation_id: number;
     message_count: number;
+    last_message_updated_at: string;
+    content_length: number;
+    pending_count: number;
     external_agent_active: number;
   }>;
   return new Map(rows.map((row) => [
@@ -446,6 +458,8 @@ export function summarizeConversationMessages(
     {
       messageCount: row.message_count,
       externalAgentActive: row.external_agent_active === 1,
+      pendingMessageCount: row.pending_count,
+      transcriptVersion: [row.message_count, row.last_message_updated_at, row.content_length, row.pending_count].join(":"),
     },
   ]));
 }
@@ -1145,7 +1159,15 @@ export function appendConversationSteerMessage(input: {
       }
       return existing;
     }
-    const pending = database.prepare(`
+    // A delivered correction still belongs to its original answer when that
+    // answer completes before the runtime acknowledgement reaches this store.
+    // Never attach it to a newer pending answer in the same conversation.
+    const pending = targetClientMessageId
+      ? database.prepare(`
+          SELECT * FROM conversation_messages
+          WHERE conversation_id = ? AND role = 'assistant' AND client_message_id = ?
+        `).get(input.conversationId, targetClientMessageId) as ConversationMessageRow | undefined
+      : database.prepare(`
       SELECT * FROM conversation_messages
       WHERE conversation_id = ? AND role = 'assistant' AND status = 'pending'
       ORDER BY order_index LIMIT 1

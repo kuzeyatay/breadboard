@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 
-test("Windows companion runs its real UI and sandboxed bridge", { skip: process.platform !== "win32" }, () => {
+function runCompanionTest(simulateInput: boolean) {
   const desktopRoot = path.resolve(__dirname, "..", "..");
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-clicky-ui-"));
   try {
@@ -25,7 +25,7 @@ createRoot(document.getElementById('root')).render(<Page />);`);
     const previewPath = path.join(desktopRoot, "..", ".tmp", "clicky-windows-preview.png");
     fs.mkdirSync(path.dirname(previewPath), { recursive: true });
     const configPath = path.join(fixtureRoot, "config.json");
-    fs.writeFileSync(configPath, JSON.stringify({ desktopRoot, fixtureRoot, resultPath, previewPath }));
+    fs.writeFileSync(configPath, JSON.stringify({ desktopRoot, fixtureRoot, resultPath, previewPath, simulateInput }));
     const environment = { ...process.env };
     delete environment.ELECTRON_RUN_AS_NODE;
     const result = spawnSync(path.join(desktopRoot, "node_modules", "electron", "dist", "electron.exe"), [
@@ -37,4 +37,7 @@ createRoot(document.getElementById('root')).render(<Page />);`);
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
-});
+}
+
+test("Windows companion runs its real UI and sandboxed bridge", { skip: process.platform !== "win32" }, () => runCompanionTest(false));
+test("Clicky YOLO switch runs its real UI and bridge with controlled input", { skip: process.platform !== "win32" }, () => runCompanionTest(true));

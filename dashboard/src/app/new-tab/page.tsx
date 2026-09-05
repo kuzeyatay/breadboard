@@ -10,25 +10,13 @@ import {
 } from "@/lib/profile/navbar-shortcuts-store.ts";
 import NavBar from "@/app/components/navbar";
 import NewTabClient from "./new-tab-client";
+import { pickNewTabAddressee } from "./new-tab-greetings";
 
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "New tab — breadboard",
 };
-
-const NEW_TAB_ADDRESSEES = [
-  "sailor",
-  "bub",
-  "champ",
-  "chief",
-  "captain",
-  "pal",
-] as const;
-
-function pickAddressee() {
-  return NEW_TAB_ADDRESSEES[randomInt(NEW_TAB_ADDRESSEES.length)];
-}
 
 /**
  * Where a new tab starts.
@@ -56,14 +44,19 @@ export default async function NewTabPage() {
   }));
 
   return (
-    <div className="dashboard-shell min-h-screen bg-[var(--paper-bg)] text-white flex flex-col">
+    <div className="dashboard-shell h-screen min-h-screen overflow-hidden bg-[var(--paper-bg)] text-white flex flex-col">
       <NavBar
         email={email}
         username={username}
         shortcuts={getNavbarShortcuts(userId)}
         showFlowers={getNavbarFlowers(userId)}
       />
-      <NewTabClient gardens={gardens} addressee={pickAddressee()} />
+      <NewTabClient
+        gardens={gardens}
+        addressee={pickNewTabAddressee({}, [], () => randomInt(0x1000000) / 0x1000000)}
+        greetingOwnerKey={String(userId)}
+        widgetOwnerKey={(email || String(userId)).trim().toLowerCase()}
+      />
     </div>
   );
 }

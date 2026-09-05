@@ -61,7 +61,7 @@ const TABS: Array<{ value: SettingsTab; label: string; description: string }> = 
   {
     value: "speech",
     label: "Voice",
-    description: "Choose local voices, read responses aloud, and dictate messages.",
+    description: "Choose local or subscription speech, read responses aloud, and dictate messages.",
   },
   {
     value: "messaging",

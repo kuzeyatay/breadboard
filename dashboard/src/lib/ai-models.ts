@@ -18,6 +18,7 @@ export const CHATMOCK_PROVIDER = 'chatmock';
 
 /** Models shown when ChatMock's model endpoint is unavailable or incomplete. */
 export const DEFAULT_ASSISTANT_MODELS: readonly string[] = [
+  'gpt-6-astra',
   DEFAULT_MODEL,
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -226,6 +227,7 @@ export function formatAssistantModelName(modelId: string): string {
   const withPrefix = slash < 0 ? modelId : modelId.slice(slash + 1);
   const bare = withPrefix.replace(RELEASE_DATE_SUFFIX, '') || withPrefix;
 
+  if (bare === 'gpt-6-astra') return 'GPT-6 Astra';
   if (bare === 'gpt-5.6-sol' || bare === 'gpt-5.6') return 'GPT-5.6 Sol';
   if (bare === 'gpt-5.6-terra') return 'GPT-5.6 Terra';
   if (bare === 'gpt-5.6-luna') return 'GPT-5.6 Luna';

@@ -551,7 +551,7 @@ test("the dock bar carries the rollup, so a shut terminal still says something l
     terminal,
     /\) : unreadCount > 0 \? \([\s\S]*?bg-\[var\(--signal-live\)\]/,
   );
-  assert.match(terminal, /aria-label=\{isOpen \? undefined : `Open terminal\$\{unreadSuffix\}`\}/);
+  assert.match(terminal, /aria-label=\{!drawerPresentation && !isOpen \? `Open terminal\$\{unreadSuffix\}` : undefined\}/);
   assert.match(terminal, /const unreadSuffix = unreadCount > 0 \? ` — \$\{unreadLabel\}` : "";/);
 });
 

@@ -1271,6 +1271,7 @@ const SOLIDWORKS_MCP_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_SOLIDWORKS_VERSION",
 ];
 const DASHBOARD_ONLY_ENVIRONMENT_NAMES: &[&str] = &[
+    "COMPOSIO_API_KEY",
     "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
     "BREADBOARD_PACKAGED_SERVICE_EVIDENCE",
     "BREADBOARD_PACKAGED_SERVICE_EVIDENCE_ENDPOINTS",
@@ -6967,8 +6968,9 @@ mod tests {
     }
 
     #[test]
-    fn packaged_dashboard_environment_names_are_accepted_only_by_dashboard() {
-        const PACKAGED_DASHBOARD_NAMES: &[&str] = &[
+    fn dashboard_only_environment_names_are_accepted_only_by_dashboard() {
+        const DASHBOARD_ONLY_NAMES: &[&str] = &[
+            "COMPOSIO_API_KEY",
             "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
             "BREADBOARD_PACKAGED_SERVICE_EVIDENCE",
             "BREADBOARD_PACKAGED_SERVICE_EVIDENCE_ENDPOINTS",
@@ -6992,7 +6994,7 @@ mod tests {
             )
         };
 
-        for &name in PACKAGED_DASHBOARD_NAMES {
+        for &name in DASHBOARD_ONLY_NAMES {
             let dashboard = parse("dashboard", name).unwrap();
             assert_eq!(dashboard.inherited_environment, vec![name.to_string()]);
             for other_profile in ["background-worker", "telegram-gateway", "whatsapp-gateway"] {

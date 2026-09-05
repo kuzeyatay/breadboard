@@ -205,6 +205,16 @@ interface ArtifactCardsContextValue {
 
 const ArtifactCardsContext = createContext<ArtifactCardsContextValue | null>(null);
 
+/** An artifact can be the whole answer; lack of prose is not a failed reply. */
+export function InlineArtifactEmptyState({ ownerMessageId, children }: {
+  ownerMessageId: string | null;
+  children: ReactNode;
+}) {
+  const context = useContext(ArtifactCardsContext);
+  return context?.artifacts.some((artifact) => artifact.assistantMessageId === ownerMessageId)
+    ? null : <>{children}</>;
+}
+
 /** Open an artifact in the viewer owned by the surrounding transcript. */
 export function useInlineArtifactViewer():
   | ((artifactId: string) => Promise<void>)

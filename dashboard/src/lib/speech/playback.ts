@@ -1,8 +1,14 @@
+import { connectSubscriptionVoice, subscriptionSelected } from "./subscription-live";
+
 let activeAudio: HTMLAudioElement | null = null;
+let activeSubscriptionStop: (() => void) | null = null;
 let activeUrl: string | null = null;
 let activeFinished: (() => void) | null = null;
 
 export function stopSpeechPlayback(): void {
+  const subscriptionStop = activeSubscriptionStop;
+  activeSubscriptionStop = null;
+  subscriptionStop?.();
   const audio = activeAudio;
   const url = activeUrl;
   const finished = activeFinished;
@@ -30,6 +36,27 @@ export function stopSpeechPlayback(): void {
   }
   if (url) URL.revokeObjectURL(url);
   finished?.();
+}
+
+/** Start cloud audio directly from the remote track, without waiting for a blob. */
+export async function playSubscriptionText(text: string, onFinished: (error?: Error) => void, signal?: AbortSignal): Promise<boolean> {
+  if (!await subscriptionSelected(signal)) return false;
+  stopSpeechPlayback();
+  const operation = new AbortController();
+  const joined = signal ? AbortSignal.any([signal, operation.signal]) : operation.signal;
+  const voice = await connectSubscriptionVoice({ signal: joined });
+  let finished = false;
+  const finish = (error?: Error) => {
+    if (finished) return;
+    finished = true;
+    if (activeSubscriptionStop === stop) activeSubscriptionStop = null;
+    void voice.close();
+    onFinished(error);
+  };
+  const stop = () => { operation.abort(); finish(); };
+  activeSubscriptionStop = stop;
+  void voice.speak(text).then(() => finish(), error => finish(joined.aborted ? undefined : error instanceof Error ? error : new Error("Subscription speech failed.")));
+  return true;
 }
 
 export async function playSpeechBlob(blob: Blob, onFinished: () => void): Promise<void> {

@@ -18,10 +18,6 @@ const dashboard = fs.readFileSync(
   new URL("../src/app/dashboard/dashboard-page-shell.tsx", import.meta.url),
   "utf8",
 );
-const loading = fs.readFileSync(
-  new URL("../src/app/garden/loading.tsx", import.meta.url),
-  "utf8",
-);
 
 test("library routes publish a stale account index before resolving navigation", () => {
   assert.match(page, /preparePrivateQuartzIndex\(userId\)/);
@@ -54,11 +50,6 @@ test("dashboard publication materializes every cluster view before navigation", 
   );
   assert.match(dashboard, /preparePrivateQuartzIndexes\(userId\)/);
   assert.match(dashboard, /publishQuartzIndexesIfIdle\("prepare dashboard cluster garden indexes", userId\)/);
-});
-
-test("garden navigation has an interruptible route fallback during a cold publish", () => {
-  assert.match(loading, /<RouteLoading/);
-  assert.match(loading, /Opening the garden/);
 });
 
 test("My garden delegates pending navigation feedback to the global blue bar", () => {

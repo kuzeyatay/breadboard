@@ -94,6 +94,7 @@ function persistAssistantOnce(
   runtimeStatus: string,
   uiResources: GenerativeUiResource[],
   tokenUsage?: unknown,
+  reasoning?: string,
 ): void {
   let persistedTokenUsage = normalizeChatTokenUsage(tokenUsage) ?? undefined;
   if (session.row.conversation_id !== null) {
@@ -121,6 +122,7 @@ function persistAssistantOnce(
     const metadata = {
       toolCalls,
       ...(progressNotes.length ? { progressNotes } : {}),
+      ...(reasoning ? { reasoning } : {}),
       verification,
       runtimeStatus,
       ...(uiResources.length ? { uiResources } : {}),
@@ -175,6 +177,7 @@ function persistAssistantOnce(
       toolCalls: {
         calls: toolCalls,
         progressNotes,
+        ...(reasoning ? { reasoning } : {}),
         verification,
         ...(uiResources.length ? { uiResources } : {}),
       },
@@ -194,6 +197,7 @@ function persistAssistantOnce(
     toolCalls: {
       calls: toolCalls,
       progressNotes,
+      ...(reasoning ? { reasoning } : {}),
       verification,
       ...(uiResources.length ? { uiResources } : {}),
     },
@@ -213,6 +217,7 @@ function driveSessionEventPump(
   let runtimeSubscription = new AbortController();
 
   let assistantText = "";
+  let reasoning = "";
   // Mid-turn narration segments sealed off the answer buffer (text the model
   // wrote before/between tool calls). They remain durable, user-visible progress
   // notes. The last one is also promoted back if the turn ends with nothing in
@@ -758,6 +763,7 @@ function driveSessionEventPump(
             status,
             uiResources,
             tokenUsage,
+            reasoning,
           );
         } catch {
           // Do not strand the canonical placeholder in `pending` if final
@@ -778,6 +784,7 @@ function driveSessionEventPump(
                   content: assistantText,
                   error: "assistant_persistence_failed",
                   metadata: {
+                    ...(reasoning ? { reasoning } : {}),
                     ...(narrationSegments.length
                       ? { progressNotes: narrationSegments }
                       : {}),
@@ -1025,6 +1032,12 @@ function driveSessionEventPump(
               narrationSegments.push(event.payload.text);
             }
             sawTurnOutput = true;
+          } else if (event.type === "reasoning.status") {
+            if (event.payload.detail) {
+              reasoning = event.payload.detailMode === "replace"
+                ? event.payload.detail
+                : reasoning + event.payload.detail;
+            }
           } else if (event.type === "assistant.completed") {
             if (
               !sawTurnOutput ||

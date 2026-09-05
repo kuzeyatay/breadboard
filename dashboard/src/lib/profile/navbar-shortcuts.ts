@@ -61,7 +61,7 @@ export const NAVBAR_SHORTCUTS: readonly NavbarShortcutDefinition[] = [
     key: "clicky",
     label: "Clicky",
     description:
-      "The native macOS menu-bar companion. Only a supported Breadboard desktop shows it.",
+      "A screen-aware voice companion for the Windows and macOS desktop apps.",
   },
   {
     key: "plan",

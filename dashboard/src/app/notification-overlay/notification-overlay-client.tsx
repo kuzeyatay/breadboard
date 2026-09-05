@@ -13,15 +13,17 @@ export default function NotificationOverlayClient() {
 
   useEffect(() => {
     return onDesktopNotificationToast((notice) => {
+      if (notice.dismissed && notice.website) { dismissToast(`website:${notice.website.id}`); return; }
       addToast(
         notice.message,
         notice.type,
         notice.title,
         notice.chatId,
         notice.response,
+        notice.website,
       );
     }) ?? undefined;
-  }, [addToast]);
+  }, [addToast, dismissToast]);
 
   const reportSize = useCallback((width: number, height: number) => {
     resizeDesktopNotificationOverlay(width, height);

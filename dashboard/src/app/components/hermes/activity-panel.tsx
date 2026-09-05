@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
+import { isAssistantTextPreview } from "@/lib/assistant-thinking";
 import {
   assistantLiveActivityReady,
   assistantResponseElapsedMs,
@@ -18,6 +19,10 @@ interface Props {
   activities: ActivityItem[];
   /** Assistant-authored, user-visible updates emitted before the final answer. */
   progressNotes?: string[];
+  /** Retained for callers with saved reasoning; the dropdown shows progress updates. */
+  reasoning?: string;
+  /** Used to suppress answer previews persisted as reasoning by older runtimes. */
+  answerContent?: string;
   connection: ConnectionState;
   pendingPermission: PermissionPrompt | null;
   /** A question the model is blocked on; answered by a choice or typed text. */
@@ -47,6 +52,7 @@ interface Props {
 export default function ActivityPanel({
   activities,
   progressNotes,
+  answerContent = "",
   connection,
   pendingPermission,
   pendingClarification = null,
@@ -132,12 +138,18 @@ export default function ActivityPanel({
     () =>
       (progressNotes ?? []).reduce<string[]>((notes, note) => {
         const trimmed = note.trim();
-        if (trimmed && notes.at(-1) !== trimmed) notes.push(trimmed);
+        if (trimmed && notes.at(-1) !== trimmed && !isAssistantTextPreview(trimmed, answerContent)) {
+          notes.push(trimmed);
+        }
         return notes;
       }, []),
-    [progressNotes],
+    [progressNotes, answerContent],
   );
   const hasProgressNotes = visibleProgressNotes.length > 0;
+  const canDisclose = hasProgressNotes;
+  const showMeta = responseActive || hasProgressNotes || answerContent.trim() || effectiveFailed || stateAction ||
+    effectiveLabel !== "Thinking" || (elapsedMs !== null && elapsedMs > 0) ||
+    Boolean(usage?.totalTokens && usage.scope !== "session");
 
   useEffect(() => {
     const transitionTick = window.setTimeout(() => setNow(Date.now()), 0);
@@ -151,22 +163,20 @@ export default function ActivityPanel({
 
   return (
     <section className="text-[var(--ink)]">
-      <AssistantResponseMeta
+      {showMeta ? <AssistantResponseMeta
         active={responseActive}
         shimmer={responseActive}
         failed={effectiveFailed}
         label={effectiveLabel}
         usage={usage}
-        responseDurationMs={elapsedMs ?? undefined}
+        responseDurationMs={elapsedMs !== null && (responseActive || elapsedMs > 0) ? elapsedMs : undefined}
         action={stateAction}
-        disclosureExpanded={hasProgressNotes ? progressOpen : undefined}
-        disclosureControls={hasProgressNotes ? progressId : undefined}
-        onDisclosureToggle={
-          hasProgressNotes ? () => setProgressOpen((open) => !open) : undefined
-        }
-      />
+        disclosureExpanded={canDisclose ? progressOpen : undefined}
+        disclosureControls={canDisclose ? progressId : undefined}
+        onDisclosureToggle={canDisclose ? () => setProgressOpen((open) => !open) : undefined}
+      /> : null}
 
-      {hasProgressNotes && progressOpen ? (
+      {canDisclose && progressOpen ? (
         <div
           id={progressId}
           className="relative ml-1 mt-1 pb-1"
@@ -192,7 +202,7 @@ export default function ActivityPanel({
                       responseActive && latest ? "motion-safe:animate-pulse" : ""
                     }`}
                   />
-                  <p className="whitespace-pre-wrap text-sm leading-6 text-[var(--ink-muted)]">
+                  <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--ink-muted)]">
                     {note}
                   </p>
                 </li>

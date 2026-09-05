@@ -6,6 +6,7 @@ import {
   ipcMain,
   Menu,
   powerSaveBlocker,
+  session,
   shell,
 } from "electron";
 import * as fs from "node:fs";
@@ -39,11 +40,13 @@ import {
   defaultPreloadPath,
   defaultStartupHtmlPath,
 } from "./window-manager";
-import { BROWSER_TAB_PATH } from "./tab-manager";
+import { BROWSER_SESSION_PARTITION, BROWSER_TAB_PATH } from "./tab-manager";
+import { BrowserDownloads } from "./browser-downloads";
 import {
   allowThemeLocationFor,
   allowedOriginsFor,
   installGlobalSecurity,
+  isNavigationAllowed,
   revokeThemeLocationFor,
   type AllowedOrigins,
 } from "./security";
@@ -51,6 +54,9 @@ import {
   IPC_CHANNELS,
   isBrowserBookmarkOwnerKey,
   isBrowserBookmarks,
+  isBrowserRecentSearches,
+  isBrowserHistoryCommand,
+  isBrowserDownloadCommand,
   isTabsCommand,
 } from "../shared/ipc-contract";
 import {
@@ -89,6 +95,7 @@ import {
   readBrowserShortcuts,
   writeBrowserShortcuts,
 } from "./browser-bookmarks";
+import { readBrowserRecentSearches, writeBrowserRecentSearches } from "./browser-recent-searches";
 import {
   readCurrentLocationPreference,
   writeCurrentLocationPreference,
@@ -121,6 +128,7 @@ import {
 import { rebuildDevelopmentInstallation } from "./development-rebuild";
 import { createClickyLauncher } from "./clicky-launcher";
 import { ClickyCompanion } from "./clicky-companion";
+import { createWindowsInput } from "./windows-click";
 
 export interface StartupFailure {
   serviceId: string;
@@ -249,6 +257,7 @@ export class AppLifecycle {
   private persistentConfig!: PersistentDesktopConfig;
   private logs!: LogManager;
   private windows!: WindowManager;
+  private browserDownloads!: BrowserDownloads;
   private runtime: RuntimeProcess | null = null;
   private runtimeDashboardUrl: string | null = null;
   private allowedOrigins!: AllowedOrigins;
@@ -431,6 +440,10 @@ export class AppLifecycle {
     ]);
     installGlobalSecurity(this.allowedOrigins);
 
+    this.browserDownloads = new BrowserDownloads(this.paths.configDir, shell, (line) => supervisorLog.write(line));
+    this.browserDownloads.attach(session.fromPartition(BROWSER_SESSION_PARTITION));
+    app.on("before-quit", () => this.browserDownloads.prepareForQuit());
+
     this.windows = new WindowManager({
       allowed: this.allowedOrigins,
       startupHtmlPath,
@@ -455,6 +468,9 @@ export class AppLifecycle {
       },
       devTools: this.paths.mode === "dev",
       browserExtensionsConfigDir: this.paths.configDir,
+      browserVisitedLinksConfigDir: this.paths.configDir,
+      browserHistoryConfigDir: this.paths.configDir,
+      tabSessionConfigDir: this.paths.configDir,
       onBrowserAgentPageReady: async (runId, targetUrl) => {
         const debuggingPort = this.browserAgentDebuggingPort;
         if (!debuggingPort) return false;
@@ -844,7 +860,10 @@ export class AppLifecycle {
     if (!this.dashboardShown && dashboardUrl) {
       this.dashboardShown = true;
       try {
-        await this.windows.showDashboard(dashboardUrl);
+        await this.windows.showDashboard(
+          dashboardUrl,
+          new URL("/new-tab", dashboardUrl).toString(),
+        );
       } catch (error) {
         this.dashboardShown = false;
         this.lastRuntimeStatusSignature = null;
@@ -1132,6 +1151,10 @@ export class AppLifecycle {
     ipcMain.handle(IPC_CHANNELS.getTabsState, (event) =>
       this.windows.tabs.stateFor(event.sender),
     );
+    ipcMain.handle(IPC_CHANNELS.getBrowserTerminalAccess, (event) =>
+      event.senderFrame === event.sender.mainFrame
+        ? this.windows.tabs.browserTerminalAccess(event.sender) : null,
+    );
     ipcMain.handle(IPC_CHANNELS.tabsCommand, (event, command: unknown) => {
       if (!isTabsCommand(command)) return false;
       return this.windows.tabs.handleCommand(event.sender, command);
@@ -1188,6 +1211,47 @@ export class AppLifecycle {
         return false;
       }
     });
+    ipcMain.handle(IPC_CHANNELS.getBrowserRecentSearches, (_event, ownerKey: unknown) => {
+      if (!isBrowserBookmarkOwnerKey(ownerKey)) return null;
+      return readBrowserRecentSearches(this.paths.configDir, ownerKey);
+    });
+    ipcMain.handle(IPC_CHANNELS.getBrowserHistory, (event) => {
+      if (!this.windowForSender(event.sender) || !event.senderFrame ||
+          !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url)) {
+        throw new Error("History is only available in Breadboard.");
+      }
+      return this.windows.tabs.browserHistory.snapshot();
+    });
+    ipcMain.handle(IPC_CHANNELS.browserHistoryCommand, (event, command: unknown) => {
+      if (!this.windowForSender(event.sender) || !event.senderFrame ||
+          !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url) || !isBrowserHistoryCommand(command)) return false;
+      return this.windows.tabs.browserHistory.command(command);
+    });
+    ipcMain.handle(IPC_CHANNELS.setBrowserRecentSearches, (_event, ownerKey: unknown, searches: unknown) => {
+      if (!isBrowserBookmarkOwnerKey(ownerKey) || !isBrowserRecentSearches(searches)) return false;
+      try {
+        writeBrowserRecentSearches(this.paths.configDir, ownerKey, searches);
+        return true;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logs.forService("desktop").write(`[desktop] could not persist browser recent searches: ${reason}`);
+        return false;
+      }
+    });
+    ipcMain.handle(IPC_CHANNELS.getBrowserDownloads, (event) => {
+      if (!this.windowForSender(event.sender) || !event.senderFrame ||
+          !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url)) {
+        throw new Error("Downloads are only available in Breadboard.");
+      }
+      return this.browserDownloads.snapshot();
+    });
+    ipcMain.handle(IPC_CHANNELS.browserDownloadCommand, (event, command: unknown) => {
+      if (!this.windowForSender(event.sender) || !event.senderFrame ||
+          !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url) || !isBrowserDownloadCommand(command)) {
+        return { ok: false, error: "Invalid download action." };
+      }
+      return this.browserDownloads.command(command);
+    });
     ipcMain.handle(IPC_CHANNELS.getClickyState, () =>
       this.clickyLauncher().state(),
     );
@@ -1231,9 +1295,12 @@ export class AppLifecycle {
         process.env["BREADBOARD_CLICKY_APP_PATH"]?.trim() || undefined,
       openPath: (applicationPath) => shell.openPath(applicationPath),
       launchWindowsCompanion: process.platform === "win32" ? async () => {
+        const nativeInput = createWindowsInput(this.paths.appRoot);
         this.clickyCompanion ??= new ClickyCompanion({
           dashboardUrl: () => this.runtimeDashboardUrl,
           allowed: this.allowedOrigins,
+          clickAt: nativeInput.click,
+          typeText: nativeInput.typeText,
         });
         await this.clickyCompanion.launch();
       } : undefined,
@@ -1384,6 +1451,7 @@ export class AppLifecycle {
 
   private registerExitGuards(): void {
     app.on("before-quit", (event) => {
+      this.windows?.tabs.freezeSession();
       this.computerUseIndicator?.stop();
       this.clickyCompanion?.stop();
       this.clickyCompanion = null;
@@ -1414,7 +1482,10 @@ export class AppLifecycle {
           "[desktop] all windows disappeared unexpectedly; reopening the dashboard",
         );
       const reopen = this.runtimeDashboardUrl
-        ? this.windows.showDashboard(this.runtimeDashboardUrl)
+        ? this.windows.showDashboard(
+            this.runtimeDashboardUrl,
+            new URL("/new-tab", this.runtimeDashboardUrl).toString(),
+          )
         : this.windows.showStartupScreen();
       void reopen.catch((error) => {
         this.logs

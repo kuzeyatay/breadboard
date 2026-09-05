@@ -346,6 +346,17 @@ export function markRuntimeRunSubmitted(
   return mark();
 }
 
+export function getSteerRequest(
+  runtimeSessionId: number,
+  clientRequestId: string,
+): SteerRequestRow | null {
+  const request = db.prepare(
+    `SELECT * FROM hermes_steer_requests
+     WHERE runtime_session_id = ? AND client_request_id = ?`,
+  ).get(runtimeSessionId, clientRequestId) as SteerRequestRow | undefined;
+  return request ?? null;
+}
+
 export function reserveSteerRequest(input: {
   runtimeSessionId: number;
   runId: string;

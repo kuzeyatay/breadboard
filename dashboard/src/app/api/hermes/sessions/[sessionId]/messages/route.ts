@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { parseBrowserTerminalAccess } from "@/lib/browser-terminal.ts";
+import { conversationRequestSurface, conversationRequestContext } from "@/lib/hermes/session-surface.ts";
 import { requireUserId } from "@/lib/server-auth";
 import {
   apiErrorResponse,
@@ -45,7 +47,8 @@ export async function POST(
     const body = await readJsonBody(request, MAX_MESSAGE_REQUEST_BYTES);
     const text = requireString(body.text, "text", 100_000);
     clientMessageId = requireString(body.clientMessageId, "clientMessageId", 128);
-    const surface = parseSurface(body.surface ?? "dashboard_terminal");
+    const requestedSurface = parseSurface(body.surface ?? "dashboard_terminal");
+    const surface = conversationRequestSurface(conversation, requestedSurface);
     const branchHistoryReferences = parseConversationBranchHistory(
       body.branchHistory,
     );
@@ -63,7 +66,9 @@ export async function POST(
         "The selected-text reference is invalid.",
       );
     }
-    const surfaceContext = parseSurfaceContext(body.surfaceContext, body);
+    const surfaceContext = conversationRequestContext(
+      conversation, requestedSurface, parseSurfaceContext(body.surfaceContext, body),
+    );
     if (textSelection) surfaceContext.selectedText = textSelection.quote;
     const result = await startConversationTurn({
       conversation,
@@ -99,6 +104,7 @@ export async function POST(
       yoloMode: body.yoloMode === true,
       currentLocation:
         parseCurrentLocationPayload(body.currentLocation) ?? undefined,
+      browserAccess: requestedSurface === "dashboard_terminal" ? parseBrowserTerminalAccess(body.browserAccess) : undefined,
       confirmedPermissionIds: Array.isArray(body.confirmedPermissionIds)
         ? body.confirmedPermissionIds.filter((value): value is string =>
             typeof value === "string" && value.length > 0 && value.length <= 500)

@@ -68,9 +68,11 @@ test("the caption strip draws the window's tabs and stays the drag handle", () =
   assert.match(titleBar, /type: "activate", id: tab\.id/);
   assert.match(titleBar, /type: "close", id: tab\.id/);
   assert.match(titleBar, /type: "move", id: tab\.id, index: drag\.target/);
+  assert.match(titleBar, /const dragRef = useRef<DragState \| null>\(null\)/);
+  assert.match(titleBar, /const drag = dragRef\.current;[\s\S]*?type: "activate", id: tab\.id/);
   // Only the tabs and their buttons opt out of the window drag region.
   assert.match(globals, /\.bb-tab \{[\s\S]*?-webkit-app-region: no-drag/);
-  assert.match(globals, /\.bb-tab-close,\s*\.bb-tab-new \{[\s\S]*?-webkit-app-region: no-drag/);
+  assert.match(globals, /\.bb-tab-anchor,\s*\.bb-tab-close,\s*\.bb-tab-new \{[\s\S]*?-webkit-app-region: no-drag/);
   // The strip stops where Electron paints the native caption buttons.
   assert.match(globals, /max-width: env\(titlebar-area-width, calc\(100% - 140px\)\)/);
   // Voice mode owns the whole window; the strip hides under it.
@@ -121,6 +123,11 @@ test("Ctrl+T opens on the places there are to go, not on a copy of the page", ()
     "utf8",
   );
   assert.match(lifecycle, /setNewTabUrl\(new URL\("\/new-tab", ready\.dashboardUrl\)/);
+  assert.match(
+    lifecycle,
+    /showDashboard\([\s\S]*?dashboardUrl,[\s\S]*?new URL\("\/new-tab", dashboardUrl\)\.toString\(\)/,
+    "Breadboard itself opens on the same New tab destination as Ctrl+T",
+  );
   assert.match(lifecycle, /setBrowserUrl\(new URL\(BROWSER_TAB_PATH, ready\.dashboardUrl\)/);
   assert.match(tabManager, /net\.fetch\(url, \{ redirect: "manual" \}\)/);
   const page = read("../src/app/new-tab/page.tsx");
@@ -152,13 +159,23 @@ test("Ctrl+T opens on the places there are to go, not on a copy of the page", ()
 test("a new tab greets the user with a stable, randomly selected addressee", () => {
   const page = read("../src/app/new-tab/page.tsx");
   const client = read("../src/app/new-tab/new-tab-client.tsx");
+  const greeting = read("../src/app/new-tab/new-tab-greeting.tsx");
 
-  assert.match(page, /const NEW_TAB_ADDRESSEES = \[/);
-  assert.match(page, /"sailor"/);
-  assert.match(page, /"bub"/);
-  assert.match(page, /"champ"/);
-  assert.match(page, /"chief"/);
-  assert.match(page, /return NEW_TAB_ADDRESSEES\[randomInt\(NEW_TAB_ADDRESSEES\.length\)\]/);
-  assert.match(page, /addressee=\{pickAddressee\(\)\}/);
-  assert.match(client, /Where to, <span[^>]*>\{addressee\}\?/);
+  assert.match(page, /pickNewTabAddressee/);
+  assert.match(client, /useNewTabAddressee\(initialAddressee, greetingOwnerKey\)/);
+  assert.match(client, /<NewTabGreeting addressee=\{addressee\}/);
+  assert.match(greeting, /const PREFIX = "Where to, "/);
+  assert.match(greeting, /useGreetingTypewriter\(target, target\)/);
+});
+
+test("the app New tab shares the Browser home quote and dock", () => {
+  const page = read("../src/app/new-tab/page.tsx");
+  const client = read("../src/app/new-tab/new-tab-client.tsx");
+  const accessories = read("../src/app/browser/browser-home-accessories.tsx");
+
+  assert.match(client, /<BrowserHomeAccessories ownerKey=\{widgetOwnerKey\}/);
+  assert.match(client, /browser-home-widget-surface/);
+  assert.match(page, /widgetOwnerKey=\{\(email \|\| String\(userId\)\)\.trim\(\)\.toLowerCase\(\)\}/);
+  assert.match(accessories, /<BrowserDailyQuote ownerKey=\{ownerKey\}/);
+  assert.match(accessories, /<BrowserDock openConnections=/);
 });

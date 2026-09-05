@@ -1,5 +1,7 @@
 "use client";
 
+import { handleGardenSourceImportResult } from "@/lib/hermes/garden-source-import-client";
+
 // Client-side hook that drives an Hermes-backed agent session for any of
 // the three surfaces (terminal, garden chat, Quartz AI). It owns the runtime
 // session lifecycle, streaming, tool activity, permission prompts, abort, and
@@ -100,6 +102,7 @@ import {
   type CurrentLocationSnapshot,
 } from "@/lib/current-location";
 import { requestUsesCurrentLocation } from "@/lib/hermes/current-location-context";
+import { currentBrowserTerminalAccess, type BrowserTerminalAccess } from "@/lib/browser-terminal";
 import {
   delegatedAgentActivityLabel,
   delegatedAgentCompletedLabel,
@@ -2548,6 +2551,7 @@ export function useAgentSession(
               break;
             }
             case "tool.completed": {
+              if (payload.success && payload.toolName === "garden_import_source") handleGardenSourceImportResult(payload.details);
               const id = String(payload.toolCallId);
               const toolName = String(payload.toolName);
               const existing = tools.get(id);
@@ -3632,6 +3636,7 @@ export function useAgentSession(
       responseStartedAtMs: number;
       viewEpoch: number;
       currentLocation?: CurrentLocationSnapshot;
+      browserAccess?: BrowserTerminalAccess;
     }): Promise<void> => {
       let assistant = input.assistant;
       const clientMessageId = assistant.clientMessageId ?? "";
@@ -3660,6 +3665,7 @@ export function useAgentSession(
             adhdMode: isDirectModeEnabled(),
             personalize: isPersonalizeEnabled(),
             currentLocation: input.currentLocation,
+            browserAccess: input.browserAccess,
           }),
         },
       );
@@ -4053,6 +4059,8 @@ export function useAgentSession(
       > | null = null;
       let streamController: AbortController | null = null;
       try {
+        const browserAccess = surface === "dashboard_terminal"
+          ? await currentBrowserTerminalAccess() : undefined;
         const initialCreation = {
           viewEpoch,
           promise: ensureSession(
@@ -4147,6 +4155,7 @@ export function useAgentSession(
             responseStartedAtMs,
             viewEpoch,
             currentLocation,
+            browserAccess,
           });
           return;
         }
@@ -4218,6 +4227,7 @@ export function useAgentSession(
               personalize: isPersonalizeEnabled(),
               yoloMode: isYoloModeEnabled(),
               currentLocation,
+              browserAccess,
             },
           );
           if (dispatched.ok) markTurnPersisted(activeSessionId);
@@ -4610,24 +4620,16 @@ export function useAgentSession(
         );
         const body = await response.json().catch(() => ({}));
 
-        // This is the only automatic fallback: the server authoritatively says
-        // the run ended before it could accept steering. Reuse the same
-        // Breadboard session and let normal send create the next run.
-        if (response.status === 409 && body.code === "run_not_active") {
-          await activeStreamRef.current?.catch(() => undefined);
-          await Promise.resolve();
-          activeRunIdRef.current = null;
-          setActiveRunId(null);
-          if (isActiveAgentRunState(runStateRef.current)) {
-            transition("completed");
+        // The conversation-scoped queue owns follow-ups. Starting one here
+        // after awaiting the old stream could send into a newly selected chat.
+        if (response.status === 409 &&
+            (body.code === "run_not_active" || body.code === "steer_unavailable")) {
+          if (sessionRef.current === activeSessionId && activeRunIdRef.current === runId && !stopWasRequested()) {
+            transition(pendingPermission ? "waiting_for_permission" : "running");
           }
-          void send(trimmed, {
-            ...latestSendOptionsRef.current,
-            attachments: [...attachments],
-          });
-          return true;
+          return false;
         }
-        if (!response.ok) {
+        if (!response.ok || body.accepted !== true) {
           throw new Error(
             typeof body.error === "string"
               ? body.error
@@ -4635,6 +4637,7 @@ export function useAgentSession(
           );
         }
 
+        if (sessionRef.current !== activeSessionId) return true;
         setMessages((current) => {
           if (
             current.some(
@@ -4671,17 +4674,6 @@ export function useAgentSession(
           ];
         });
         setActiveInstruction(trimmed);
-        if (body.mode === "follow_up" && typeof body.runId === "string") {
-          void adoptDispatchedRun(
-            activeSessionId,
-            body.runId,
-            trimmed,
-            undefined,
-            undefined,
-            activeSuperAgentRef.current,
-          );
-          return true;
-        }
         if (
           activeRunIdRef.current === runId &&
           !stopWasRequested()
@@ -4692,6 +4684,7 @@ export function useAgentSession(
         }
         return true;
       } catch (steeringError) {
+        if (sessionRef.current !== activeSessionId) throw steeringError;
         setSteerError(
           steeringError instanceof Error
             ? steeringError.message
@@ -4705,15 +4698,13 @@ export function useAgentSession(
             pendingPermission ? "waiting_for_permission" : "running",
           );
         }
-        return false;
+        throw steeringError;
       } finally {
         steeringRef.current = false;
       }
     },
     [
-      adoptDispatchedRun,
       pendingPermission,
-      send,
       stopWasRequested,
       transition,
     ],
@@ -5369,7 +5360,7 @@ export function useAgentSession(
     const activeSessionId = sessionRef.current;
     if (!activeSessionId || isActiveAgentRunState(runStateRef.current)) return;
     const restored = await loadHermesSessionDetail(surface, activeSessionId).catch(() => null);
-    if (sessionRef.current !== activeSessionId) return;
+    if (sessionRef.current !== activeSessionId || isActiveAgentRunState(runStateRef.current)) return;
     if (restored?.id === activeSessionId) {
       setMessages(normalizeRestoredMessages(restored.messages));
     }

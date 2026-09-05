@@ -51,10 +51,7 @@ export default function ClickyShortcut() {
         ? await control.openProject()
         : await control.launch();
       setState(result.state);
-      publishClickyNotification(
-        result.message,
-        result.ok ? "success" : "error",
-      );
+      if (!result.ok) publishClickyNotification(result.message, "error");
     } catch {
       publishClickyNotification(
         "Breadboard could not reach the Clicky launcher.",

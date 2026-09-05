@@ -259,10 +259,15 @@ export function normalizeHermesEvent(
       }];
     }
 
+    // Hermes conversation_loop emits this from assistant_message.content[:500],
+    // including final answers. It is a narration preview, not model reasoning.
+    // The answer/segment events already carry that text in the correct place.
+    case "reasoning.available":
+      return [];
+
     case "thinking.delta":
-    case "reasoning.delta":
-    case "reasoning.available": {
-      const detail = asString(payload.text)?.trim();
+    case "reasoning.delta": {
+      const detail = asString(payload.text);
       if (!detail) return [];
       return [{
         type: "reasoning.status",
@@ -271,8 +276,7 @@ export function normalizeHermesEvent(
         payload: {
           label: "Thinking",
           detail,
-          detailMode:
-            raw.type === "reasoning.available" ? "replace" : "append",
+          detailMode: "append",
         },
       }];
     }

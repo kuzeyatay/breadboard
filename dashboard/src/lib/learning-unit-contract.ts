@@ -454,6 +454,27 @@ function asStringArray(value: unknown): string[] {
   return single ? [single] : [];
 }
 
+/** Preserve validated model-authored prose byte-for-byte. Contract review
+ * receipts are an immutable audit boundary, so later persistence
+ * normalization must not collapse meaningful line breaks in formulas,
+ * procedures, or comparison text. */
+function authoredText(value: unknown, modelAuthoredOnly: boolean): string {
+  return modelAuthoredOnly && typeof value === "string" ? value : compact(value);
+}
+
+function authoredStringArray(
+  value: unknown,
+  modelAuthoredOnly: boolean,
+): string[] {
+  if (!modelAuthoredOnly) return asStringArray(value);
+  if (Array.isArray(value)) {
+    return value.filter(
+      (item): item is string => typeof item === "string" && Boolean(item.trim()),
+    );
+  }
+  return typeof value === "string" && value.trim() ? [value] : [];
+}
+
 function asRole(value: unknown): LearningUnitRole {
   const raw = compact(value).toLowerCase().replace(/[\s-]+/g, "_");
   return (LEARNING_UNIT_ROLES as readonly string[]).includes(raw)
@@ -1476,19 +1497,29 @@ function normalizeInteractiveVisual(raw: unknown, modelAuthoredOnly = false): In
   if (!raw || typeof raw !== "object") return undefined;
   const record = raw as Record<string, unknown>;
   const visualType = normalizeInteractiveVisualType(compact(record.visualType ?? record.type));
-  const uniqueConcept = compact(record.uniqueConcept ?? record.concept);
+  const uniqueConcept = authoredText(
+    record.uniqueConcept ?? record.concept,
+    modelAuthoredOnly,
+  );
   if (!visualType && !uniqueConcept) return undefined;
   if (!/^[a-z][a-z0-9_]{1,79}$/.test(visualType) || !uniqueConcept) return undefined;
-  const learnerManipulates = asStringArray(record.learnerManipulates ?? record.controls ?? record.manipulates);
+  const learnerManipulates = authoredStringArray(
+    record.learnerManipulates ?? record.controls ?? record.manipulates,
+    modelAuthoredOnly,
+  );
   const sourceAnchors = asStringArray(record.sourceAnchors ?? record.anchors);
-  const expectedInsight = compact(record.expectedInsight ?? record.insight);
+  const expectedInsight = authoredText(
+    record.expectedInsight ?? record.insight,
+    modelAuthoredOnly,
+  );
   const declaredSignature = compact(record.duplicateSignature);
   const provisional: InteractiveVisualContract = {
     id: compact(record.id) || "",
     uniqueConcept,
     visualType,
-    whyStaticSourceFigureIsNotEnough: compact(
+    whyStaticSourceFigureIsNotEnough: authoredText(
       record.whyStaticSourceFigureIsNotEnough ?? record.whyInteractive ?? record.why,
+      modelAuthoredOnly,
     ),
     learnerManipulates,
     expectedInsight,
@@ -1542,23 +1573,27 @@ const OUTPUT_REPRESENTATIONS: readonly InteractiveVisualOutputRepresentation[] =
 
 function normalizeInteractivePedagogyContract(
   raw: unknown,
+  modelAuthoredOnly = false,
 ): InteractiveVisualPedagogyContract | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
   const interactionGoal = compact(record.interactionGoal) as VisualizationInteractionGoal;
-  const uniqueConcept = compact(record.uniqueConcept);
-  const whyStaticSourceFigureIsNotEnough = compact(record.whyStaticSourceFigureIsNotEnough);
-  const learnerAction = compact(record.learnerAction);
+  const uniqueConcept = authoredText(record.uniqueConcept, modelAuthoredOnly);
+  const whyStaticSourceFigureIsNotEnough = authoredText(
+    record.whyStaticSourceFigureIsNotEnough,
+    modelAuthoredOnly,
+  );
+  const learnerAction = authoredText(record.learnerAction, modelAuthoredOnly);
   const controls = normalizeInteractiveVisualControls(record.controls);
   const observableRecord = record.observable && typeof record.observable === "object" && !Array.isArray(record.observable)
     ? record.observable as Record<string, unknown>
     : undefined;
-  const observableLabel = compact(observableRecord?.label);
+  const observableLabel = authoredText(observableRecord?.label, modelAuthoredOnly);
   const observableRepresentation = compact(
     observableRecord?.representation,
   ) as InteractiveVisualOutputRepresentation;
   const observableEvidence = normalizeInteractiveVisualEvidence(observableRecord?.evidence);
-  const expectedInsight = compact(record.expectedInsight);
+  const expectedInsight = authoredText(record.expectedInsight, modelAuthoredOnly);
   const expectedInsightEvidence = normalizeInteractiveVisualEvidence(record.expectedInsightEvidence);
   const duplicateSignature = compact(record.duplicateSignature);
   if (
@@ -1632,7 +1667,10 @@ function normalizeVisualNecessityDecision(
     record.evidence && typeof record.evidence === "object"
       ? (record.evidence as Record<string, unknown>)
       : {};
-  const interaction = normalizeInteractivePedagogyContract(record.interaction);
+  const interaction = normalizeInteractivePedagogyContract(
+    record.interaction,
+    modelAuthoredOnly,
+  );
   const alternativeCoverage = compact(record.alternativeCoverage);
   const teachingMediumReason = compact(record.teachingMediumReason);
   const hasAlternativeCoverage = ["covered", "uncovered", "unverified"].includes(
@@ -1702,12 +1740,12 @@ function normalizeContractInteractiveVisualPlan(
     (modelAuthoredOnly ? undefined : fallbackIntent);
   const controlContract = normalizeInteractiveVisualControls(record.controlContract);
   const interactionGoal = compact(record.interactionGoal) as VisualizationInteractionGoal;
-  const learnerAction = compact(record.learnerAction);
+  const learnerAction = authoredText(record.learnerAction, modelAuthoredOnly);
   const observableRecord =
     record.observable && typeof record.observable === "object"
       ? (record.observable as Record<string, unknown>)
       : undefined;
-  const observableLabel = compact(observableRecord?.label);
+  const observableLabel = authoredText(observableRecord?.label, modelAuthoredOnly);
   const observableRepresentation = compact(
     observableRecord?.representation,
   ) as InteractiveVisualOutputRepresentation;
@@ -1737,7 +1775,9 @@ function normalizeContractInteractiveVisualPlan(
     ...(requirement !== "none" && expectedInsightEvidence.length > 0
       ? { expectedInsightEvidence }
       : {}),
-    ...(compact(record.omissionReason) ? { omissionReason: compact(record.omissionReason) } : {}),
+    ...(authoredText(record.omissionReason, modelAuthoredOnly)
+      ? { omissionReason: authoredText(record.omissionReason, modelAuthoredOnly) }
+      : {}),
     ...(["covered", "uncovered", "unverified"].includes(compact(record.alternativeCoverage))
       ? {
           alternativeCoverage: compact(

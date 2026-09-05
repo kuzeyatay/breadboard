@@ -28,8 +28,7 @@ test("two Hermes narration segments never become disappearing answer text", () =
     text: "Now I will inspect the diagram tools.",
   });
   assert.equal(message.content, "");
-  assert.match(message.thinking, /inspect the runtime/u);
-  assert.match(message.thinking, /inspect the diagram tools/u);
+  assert.equal(message.thinking, "", "progress notes are displayed separately from reasoning");
   assert.deepEqual(message.progressNotes, [
     "I will inspect the runtime first.",
     "Now I will inspect the diagram tools.",
@@ -166,6 +165,22 @@ test("both Garden surfaces use the stable text projection", () => {
   assert.match(assistant, /applyGardenStableTextEvent/u);
   assert.match(workspace, /assistantVisibleContent/u);
   assert.match(assistant, /assistantVisibleContent/u);
-  assert.match(workspace, /progressNotes=\{msg\.progressNotes\}/u);
+  assert.match(workspace, /progressNotes=\{thinkingUpdates\}/u);
   assert.match(assistant, /progressNotes=\{message\.progressNotes\}/u);
+});
+
+test("reasoning remains available after the final answer and respects replacement snapshots", () => {
+  let message = { content: "", thinking: "" };
+  for (const event of [
+    { type: "thinking", text: "Compare " },
+    { type: "thinking", text: "the sources." },
+    { type: "thinking", text: "The sources agree.", detailMode: "replace" },
+    { type: "provisional", text: "I checked both sources." },
+    { type: "replace", text: "Here is the answer." },
+  ]) {
+    message = applyGardenStableTextEvent(message, event);
+  }
+  assert.equal(message.content, "Here is the answer.");
+  assert.equal(message.thinking, "The sources agree.");
+  assert.deepEqual(message.progressNotes, ["I checked both sources."]);
 });

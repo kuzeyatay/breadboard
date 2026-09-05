@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import sys
 import time
 
@@ -98,6 +99,12 @@ def main() -> int:
     query = str(request.get("query") or "")
     safe_limit = max(1, int(request.get("safe_limit") or 1))
     try:
+        # Desktop's embedded Python ignores PYTHONPATH (its ._pth enables
+        # isolated mode). Resolve the bundled package from this worker, not
+        # the caller's working directory, before importing the provider.
+        package_root = str(Path(__file__).resolve().parents[3])
+        if package_root not in sys.path:
+            sys.path.insert(0, package_root)
         # Import inside main so script startup stays light / patchable.
         from plugins.web.ddgs.provider import _run_ddgs_search
 

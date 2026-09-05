@@ -78,7 +78,7 @@ test("every external agent uses the shared Breadboard neumorphic run-card system
 test("shared response metadata defaults to an honest token state and can hide absent telemetry", () => {
   // "Thinking" while the run is going, "Thought" once it is over.
   assert.match(responseMeta, /label = "Thinking"/);
-  assert.match(responseMeta, /\? "Thought" : label/);
+  assert.match(responseMeta, /failed \? "Response interrupted" : "Thought"/);
   assert.match(responseMeta, /thinking-shimmer/);
   assert.match(responseMeta, /↓ counting tokens/);
   assert.doesNotMatch(responseMeta, /tokens unavailable/);

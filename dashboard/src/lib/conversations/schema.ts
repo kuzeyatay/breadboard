@@ -180,6 +180,8 @@ export function ensureConversationSchema(database: Database.Database): void {
   // the row rather than a place in the list, and is not activity either.
   ensureColumn(database, "conversations", "pinned_at", "pinned_at TEXT");
   ensureColumn(database, "conversations", "highlight", "highlight TEXT");
+  // Display provenance for companions that use the shared terminal runtime.
+  ensureColumn(database, "conversations", "origin_label", "origin_label TEXT");
   // Use is evidence. A memory that keeps reaching prompts is one the user's
   // questions keep needing, and ranking treats that as the same kind of signal
   // as a fresh confirmation: retrieval stamps the rows it selected, and the

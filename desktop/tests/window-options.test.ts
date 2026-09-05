@@ -14,7 +14,6 @@ import {
   titleBarForTheme,
 } from "../src/main/window-options";
 import {
-  DASHBOARD_PAINT_MAX_WAIT_MS,
   DEFAULT_MINIMUM_STARTUP_VISIBLE_MS,
   FIRST_PAINT_MAX_WAIT_MS,
   FIRST_PAINT_PROBE_MAX_WAIT_MS,
@@ -458,7 +457,7 @@ test("the startup screen keeps loading until the dashboard behind it has painted
   // Nothing is preloading yet, so the welcome must not be held back for a
   // window that was never started — that would stall the one case already fine.
   const idle = Date.now();
-  await manager.waitForDashboardPaint(500);
+  await manager.waitForDashboardPaint();
   assert.ok(Date.now() - idle < 400, "an absent preload should not be waited on");
 
   // Reaching the preload through the private field keeps this a unit test of
@@ -472,20 +471,19 @@ test("the startup screen keeps loading until the dashboard behind it has painted
     }),
   };
 
-  // A dashboard that never paints is capped, so it cannot trap anyone here.
-  const capped = Date.now();
-  await manager.waitForDashboardPaint(60);
-  assert.ok(Date.now() - capped >= 40, "the wait should have hit its cap");
-
-  // One that does paint releases the greeting immediately.
-  settle("loaded");
-  const painted = Date.now();
-  await manager.waitForDashboardPaint(10_000);
-  assert.ok(Date.now() - painted < 500, "a painted dashboard should not be waited on");
-
-  // Generous, because waiting here is the whole point: it is time the click
-  // does not spend. Reaching it means giving up and offering the welcome anyway.
-  assert.equal(DASHBOARD_PAINT_MAX_WAIT_MS, 60_000);
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let ready = false;
+    const pending = manager.waitForDashboardPaint().then(() => { ready = true; });
+    mock.timers.tick(5 * 60_000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(ready, false, "elapsed time must not reveal unfinished startup tabs");
+    settle("loaded");
+    await pending;
+    assert.equal(ready, true);
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test("a fresh startup screen asks for the welcome to be dismissed again", async () => {

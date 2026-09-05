@@ -171,6 +171,7 @@ export class PhotonGeocoder implements GeocodingProvider {
     url.searchParams.set("lat", String(input.lat));
     url.searchParams.set("lon", String(input.lon));
     url.searchParams.set("limit", "1");
+    if (input.language) url.searchParams.set("lang", input.language);
     const response = await requestProviderJson<PhotonResponse>({
       url: url.toString(),
       provider: this.name,

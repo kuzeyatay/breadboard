@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { conversationRequestSurface, conversationRequestContext } from "@/lib/hermes/session-surface.ts";
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import {
@@ -37,7 +38,8 @@ export async function POST(
     const { sessionId } = await params;
     const conversation = getConversationForUser(sessionId, userId);
     const body = await readJsonBody(request);
-    const surface = parseSurface(body.surface);
+    const requestedSurface = parseSurface(body.surface);
+    const surface = conversationRequestSurface(conversation, requestedSurface);
     const references = parseConversationBranchHistory(body.branchHistory);
     if (!references) {
       throw new ApiError(
@@ -50,7 +52,9 @@ export async function POST(
       conversation.id,
       references,
     );
-    const context = parseSurfaceContext(body.surfaceContext);
+    const context = conversationRequestContext(
+      conversation, requestedSurface, parseSurfaceContext(body.surfaceContext),
+    );
     const current = await resolveConversationRuntime({
       conversation,
       surface,

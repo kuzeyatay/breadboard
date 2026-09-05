@@ -136,12 +136,14 @@ export default function AssistantResponseMeta({
   // message for good, and a finished answer should say what it did, not what it
   // is doing. Every other label a caller passes ("Interrupted", an artifact's
   // own) already describes a state of its own and is shown exactly as given.
-  const displayLabel = label === "Thinking" && !active && !failed ? "Thought" : label;
+  const displayLabel = label === "Thinking" && !active
+    ? failed ? "Response interrupted" : "Thought"
+    : label;
   const metaContents = (
     <>
-      <span className={shimmer ? "thinking-shimmer" : ""}>{displayLabel}</span>
+      <span className={`assistant-response-label ${shimmer ? "thinking-shimmer" : ""}`}>{displayLabel}</span>
       {metadata ? (
-        <span title={usageBreakdown}>
+        <span className="assistant-response-metrics" title={usageBreakdown}>
           (
           {elapsedMs === undefined
             ? null
@@ -164,7 +166,7 @@ export default function AssistantResponseMeta({
       {onDisclosureToggle ? (
         <svg
           aria-hidden="true"
-          className={`ml-0.5 h-3 w-3 self-center transition-transform ${
+          className={`assistant-response-chevron ml-0.5 h-3 w-3 self-center transition-transform ${
             disclosureExpanded ? "rotate-90" : ""
           }`}
           viewBox="0 0 24 24"
@@ -181,10 +183,10 @@ export default function AssistantResponseMeta({
   return (
     <section
       aria-label={`${agentName} ${displayLabel.toLowerCase()}${tokenLabel ? " and token usage" : ""}`}
-      className="my-1 text-[var(--ink)]"
+      className="assistant-response-meta my-1 text-[var(--ink)]"
       data-response-state={failed ? "failed" : active ? "active" : "complete"}
     >
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center justify-between gap-3">
         {onDisclosureToggle ? (
           <button
             type="button"
@@ -192,7 +194,7 @@ export default function AssistantResponseMeta({
             aria-expanded={disclosureExpanded}
             aria-controls={disclosureControls}
             title={disclosureExpanded ? "Hide thinking updates" : "Show thinking updates"}
-            className="-ml-1 flex min-w-0 cursor-pointer flex-wrap items-baseline gap-x-1 rounded-md px-1 py-1 text-left text-sm leading-6 text-[var(--ink-muted)] transition-colors hover:text-[var(--ink-heading)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
+            className="assistant-response-trigger -ml-1 flex min-w-0 cursor-pointer flex-wrap items-baseline gap-x-1 rounded-md px-1 py-1 text-left text-sm leading-6 text-[var(--ink-muted)] transition-colors hover:text-[var(--ink-heading)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
           >
             {metaContents}
           </button>

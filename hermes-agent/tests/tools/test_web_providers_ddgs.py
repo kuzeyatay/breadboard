@@ -11,6 +11,9 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+import subprocess
 import sys
 import time
 import types
@@ -240,6 +243,51 @@ def _assert_worker_reaped(prov) -> None:
 
 @pytest.mark.live_system_guard_bypass
 class TestDDGSProcessIsolation:
+    def test_worker_imports_provider_with_isolated_python(self, tmp_path):
+        """Embedded desktop Python ignores PYTHONPATH, just like python -I.
+
+        Disable site initialization too, so an editable install cannot mask
+        the missing import path. Replace only the network client to stay offline.
+        """
+        from plugins.web.ddgs import _search_worker
+
+        bootstrap = """
+import runpy, sys, types
+fake = types.ModuleType('ddgs')
+class DDGS:
+    def __init__(self, **kwargs): pass
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
+    def text(self, query, max_results):
+        return [{'title': query, 'href': 'https://example.com/study', 'body': 'Evidence'}]
+fake.DDGS = DDGS
+sys.modules['ddgs'] = fake
+runpy.run_path(sys.argv[1], run_name='__main__')
+"""
+        env = dict(os.environ, HERMES_HOME=str(tmp_path / "hermes"))
+        env.pop("PYTHONPATH", None)
+        proc = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", bootstrap, str(Path(_search_worker.__file__).resolve())],
+            input=json.dumps({"query": "dopamine in the morning", "safe_limit": 3}),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=tmp_path,
+            env=env,
+            timeout=10,
+            **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}),
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert json.loads(proc.stdout) == {
+            "ok": True,
+            "results": [{
+                "title": "dopamine in the morning",
+                "url": "https://example.com/study",
+                "description": "Evidence",
+                "position": 1,
+            }],
+        }
+
     def test_gil_holding_worker_times_out_and_is_reaped(self, monkeypatch):
         """#68096: parent deadline still fires when the child holds its GIL."""
         _install_fake_ddgs(monkeypatch)

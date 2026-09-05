@@ -1,15 +1,26 @@
 import {
   BrowserWindow,
+  app,
+  clipboard,
+  Menu,
   WebContentsView,
   dialog,
   net,
   session,
+  type BrowserWindowConstructorOptions,
   type Event as ElectronEvent,
+  type HandlerDetails,
   type Input,
   type Session,
   type WebContents,
 } from "electron";
 import * as path from "node:path";
+import { BrowserPreferenceStore } from "./browser-preferences";
+import { BrowserNotifications } from "./browser-notifications";
+import { BrowserTranslation, type TranslatePageBatch } from "./browser-translation";
+import { TRANSLATION_LANGUAGES } from "../shared/browser-preferences";
+import { readTabSession, restoredTabUrl, saveTab, writeTabSession, type SavedTabWindow } from "./tab-session";
+import { BrowserTerminalBridge } from "./browser-terminal";
 import {
   hardenExternalBrowserWebContents,
   hardenWebContents,
@@ -24,6 +35,7 @@ import {
   type BreadboardWindowTheme,
 } from "./window-options";
 import { waitForFirstPaint, waitForRevealFrame } from "./first-paint";
+import { waitForStartupPageLoad } from "./startup-page-load";
 import {
   IPC_CHANNELS,
   type BrowserExtensionView,
@@ -50,12 +62,25 @@ import {
 } from "./browser-agent-session";
 import { browserPageBackgroundColor } from "./browser-theme";
 import { browserNavigationTargetIndex } from "./browser-navigation-history";
+import { BrowserVisitedLinks } from "./browser-visited-links";
+import { BrowserHistory } from "./browser-history";
+import { browserMenuTemplate, browserMenuShortcut, savedPageFilename, type BrowserMenuAction } from "./browser-menu";
 import {
+  MAX_EXTENSION_ARCHIVE_BYTES,
+  browserExtensionInstallId,
+  browserWebStoreInstallBootstrapScript,
+  browserWebStoreInstallCleanupScript,
+  chromeWebStoreDownloadUrl,
+  chromeWebStoreExtensionId,
+  installChromeWebStorePackage,
   readBrowserExtensionPaths,
   writeBrowserExtensionPaths,
 } from "./browser-extensions";
 
 export interface TabManagerOptions {
+  browserPreferencesConfigDir?: string;
+  /** Dependency injection for deterministic page translation integration checks. */
+  translatePageBatch?: TranslatePageBatch;
   allowed: AllowedOrigins;
   preloadPath: string;
   /** The same animated field shown while Breadboard itself opens. */
@@ -72,6 +97,9 @@ export interface TabManagerOptions {
   log?: (line: string) => void;
   /** Directory containing the durable list of unpacked browser extensions. */
   browserExtensionsConfigDir?: string;
+  browserVisitedLinksConfigDir?: string;
+  browserHistoryConfigDir?: string;
+  tabSessionConfigDir?: string;
   /** Publish the loopback CDP handoff after the exact visible page exists. */
   onBrowserAgentPageReady?: (runId: string, targetUrl: string) => Promise<boolean>;
 }
@@ -98,6 +126,11 @@ export async function loadRecoveryUrlIfAlive(
  * The untrusted page beneath a browser tab's trusted Breadboard chrome.
  */
 interface BrowserPage {
+  translation?: BrowserTranslation;
+  menu?: Menu;
+  find?: { matches: number; activeMatchOrdinal: number };
+  findQuery?: string;
+  findRequestId?: number;
   /** The authenticated local page that owns the trusted toolbar. */
   shellUrl: string;
   /**
@@ -194,6 +227,25 @@ export const TAB_LOADING_SCENE_TOP_INSET =
   BREADBOARD_TITLE_BAR.height + BROWSER_TOOLBAR_HEIGHT;
 /** Cookies and storage persist, but never share Breadboard's local session. */
 export const BROWSER_SESSION_PARTITION = "persist:breadboard-browser";
+const BROWSER_WEB_PREFERENCES = {
+  preload: path.join(__dirname, "../preload/browser-preload.js"),
+  contextIsolation: true,
+  nodeIntegration: false,
+  sandbox: true,
+  webviewTag: false,
+  spellcheck: true,
+  backgroundThrottling: false,
+  partition: BROWSER_SESSION_PARTITION,
+};
+// Electron annotates popup preferences internally. Pass a fresh copy to each
+// constructor/handler so later tabs cannot adopt the preceding popup's contents.
+
+interface BrowserPopup {
+  details: HandlerDetails;
+  // Electron supplies the native popup contents to createWindow, though its
+  // BrowserWindow options type omits this internal constructor property.
+  options: BrowserWindowConstructorOptions & { webContents?: WebContents };
+}
 /** Back off quickly at first, then keep checking without spinning forever. */
 export const TAB_RECOVERY_DELAYS_MS = [500, 1_000, 2_000, 3_000, 5_000] as const;
 /** Ctrl+Shift+T reaches back this many closed tabs. */
@@ -209,6 +261,7 @@ export const REVEAL_MAX_WAIT_MS = 10_000;
 
 interface Tab {
   id: number;
+  anchored: boolean;
   /** The view this tab draws in, or null for the window's own page. */
   view: WebContentsView | null;
   contents: WebContents;
@@ -243,6 +296,8 @@ interface ClosedTab {
 
 interface Host {
   window: BrowserWindow;
+  sessionTracked: boolean;
+  sessionMain: boolean;
   /** In strip order. The window's own page is in here until it is closed. */
   tabs: Tab[];
   activeId: number;
@@ -262,6 +317,8 @@ interface Host {
    * as it is; see {@link TabManager.show}.
    */
   pending: Tab | null;
+  /** The pending reveal replaces a page during navigation, rather than selecting a tab. */
+  pendingNavigation: boolean;
   /** Invalidates a reveal when the requested front tab changes under it. */
   revealToken: number;
   /**
@@ -439,8 +496,8 @@ export function browserContentTop(addressSuggestionsOpen: boolean): number {
  * still what the person sees. Reserving the future bookmarks row at that
  * point creates a conspicuous empty strip between it and the loading field.
  */
-export function tabLoadingSceneTop(isBrowserTab: boolean, shellLoaded: boolean): number {
-  return isBrowserTab && shellLoaded
+export function tabLoadingSceneTop(isBrowserTab: boolean, shellVisible: boolean): number {
+  return isBrowserTab && shellVisible
     ? BROWSER_CONTENT_TOP_INSET
     : TAB_LOADING_SCENE_TOP_INSET;
 }
@@ -500,6 +557,23 @@ function isNavigationShortcut(shortcut: TabShortcut): boolean {
  * to the front already has the strip drawn when it is seen.
  */
 export class TabManager {
+  private readonly browserTerminal = new BrowserTerminalBridge();
+
+  async browserTerminalAccess(sender: WebContents) {
+    const host = this.hostByContents.get(sender.id);
+    const tab = host?.tabs.find(candidate => candidate.contents === sender);
+    if (!tab?.browser || sender.getURL() !== tab.browser.shellUrl || !tab.browser.terminalOpen) return null;
+    const target = () => {
+      const browser = tab.browser;
+      return !sender.isDestroyed() && sender.getURL() === browser?.shellUrl
+        && this.hostByContents.get(sender.id)?.tabs.includes(tab)
+        && browser.terminalOpen && !browser.showingHome
+        && browser.contents && !browser.contents.isDestroyed()
+        ? browser.contents : null;
+    };
+    if (!target()) return null;
+    return this.browserTerminal.grant(target);
+  }
   private readonly options: TabManagerOptions;
   private readonly hosts = new Map<number, Host>();
   private readonly hostByContents = new Map<number, Host>();
@@ -509,10 +583,42 @@ export class TabManager {
   private notificationOverlayUrl: string | null = null;
   private browserExtensionSession: Session | null = null;
   private browserExtensionsReady: Promise<void> | null = null;
+  private readonly browserVisitedLinks: BrowserVisitedLinks;
+  private readonly browserPreferences: BrowserPreferenceStore;
+  private readonly browserNotifications: BrowserNotifications;
+  readonly browserHistory: BrowserHistory;
   private browserExtensionPaths: string[];
+  private readonly browserExtensionInstalls = new Map<string, Promise<boolean>>();
+  private readonly savedWindows = new Map<number, SavedTabWindow>();
+  private sessionDashboardUrl: string | null = null;
+  private sessionRestored = false;
+  private restoringSession = false;
+  private sessionFrozen = false;
+  private sessionWriteTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastSessionJson = "";
 
   constructor(options: TabManagerOptions) {
     this.options = options;
+    this.browserPreferences = new BrowserPreferenceStore(options.browserPreferencesConfigDir ?? options.browserExtensionsConfigDir ?? app.getPath("userData"), message => this.log(message));
+    this.browserNotifications = new BrowserNotifications(this.browserPreferences,
+      contents => this.hostByContents.get(contents.id)?.window,
+      (contents, notice) => this.publishNotificationToast(contents, notice),
+      contents => {
+        const host = this.hostByContents.get(contents.id);
+        const tab = host?.tabs.find(tab => tab.browser?.contents === contents);
+        if (host && tab) { if (host.window.isMinimized()) host.window.restore(); host.window.show(); this.activate(host, tab.id); host.window.focus(); }
+      },
+      () => { for (const host of this.hosts.values()) this.broadcast(host); },
+    );
+    this.browserVisitedLinks = new BrowserVisitedLinks(options.browserVisitedLinksConfigDir, (message) => this.log(message));
+    this.browserHistory = new BrowserHistory(options.browserHistoryConfigDir, () => {
+      for (const host of this.hosts.values()) {
+        for (const tab of host.tabs) {
+          if (tab.contents.isDestroyed()) continue;
+          try { tab.contents.send(IPC_CHANNELS.browserHistoryChanged); } catch { /* Tab closed during navigation. */ }
+        }
+      }
+    });
     this.browserExtensionPaths = options.browserExtensionsConfigDir
       ? readBrowserExtensionPaths(options.browserExtensionsConfigDir)
       : [];
@@ -558,6 +664,140 @@ export class TabManager {
           `browser shell warmup failed: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
+    }
+  }
+
+  /**
+   * Restore behind the startup screen, before the fresh page is revealed.
+   * Anchors are the durable places a person deliberately keeps; ordinary tabs
+   * belong to the previous run. Every restored window therefore starts with
+   * its anchors followed by the already-loaded fresh page, which stays active.
+   */
+  async restoreSession(
+    window: BrowserWindow,
+    dashboardUrl: string,
+    createWindow: () => BrowserWindow,
+    paintBeforeReveal = false,
+  ): Promise<void> {
+    const host = this.hosts.get(window.id);
+    if (!host || !this.options.tabSessionConfigDir || this.sessionRestored) return;
+    // Keep a saved tabbed session intact while the Profile switch is off.
+    if (!this.enabled) return;
+    this.sessionRestored = true;
+    this.sessionDashboardUrl = dashboardUrl;
+    this.restoringSession = true;
+    const saved = readTabSession(this.options.tabSessionConfigDir);
+    const ready: Promise<void>[] = [];
+    try {
+      this.trackSessionWindow(window, true);
+      for (const [index, entry] of saved.windows.entries()) {
+        const anchoredTabs = entry.tabs.filter((tab) => tab.anchored);
+        if (index > 0 && !anchoredTabs.length) continue;
+        const target = index === 0 ? host : this.hosts.get(createWindow().id);
+        if (!target) continue;
+        target.sessionTracked = true;
+        ready.push(this.prepareStartupTab(target, target.base, paintBeforeReveal));
+        const restored: Tab[] = [];
+        for (const savedTab of anchoredTabs) {
+          const url = restoredTabUrl(savedTab, dashboardUrl);
+          if (url === null) continue;
+          const tab = savedTab.kind === "browser"
+            ? this.openBrowserTab(target, url || undefined, true)
+            : this.openTab(target, url, { background: true, origin: "blank" });
+          if (!tab) continue;
+          tab.anchored = savedTab.anchored;
+          // Older sessions persisted the browser home as "New tab". Keep the
+          // trusted browser surface named consistently after an upgrade.
+          tab.title = savedTab.kind === "browser" && url === "" ? "Browser" : savedTab.title;
+          restored.push(tab);
+          ready.push(this.prepareStartupTab(target, tab, paintBeforeReveal));
+        }
+        if (!restored.length) continue;
+        // Anchors occupy the stable left edge; the fresh New tab is the open
+        // workspace immediately beside them, regardless of last run's focus.
+        target.tabs = [...restored, target.base];
+        this.activate(target, target.base.id);
+      }
+    } finally {
+      this.restoringSession = false;
+      for (const owner of this.hosts.values()) this.rememberSession(owner);
+      this.flushSession();
+    }
+    await Promise.all(ready);
+  }
+
+  private async prepareStartupTab(host: Host, tab: Tab, paint: boolean): Promise<void> {
+    // A browser tab has a trusted shell and, except on its home page, a
+    // separate web page. Both must finish even when the tab stays inactive.
+    const pages = [
+      { contents: tab.contents, view: tab.view },
+      ...(tab.browser?.contents ? [{ contents: tab.browser.contents, view: tab.browser.view }] : []),
+    ];
+    await Promise.all(pages.map(async ({ contents, view }) => {
+      if (!await waitForStartupPageLoad(contents) || !paint || host.window.isDestroyed() || contents.isDestroyed()) return;
+      // Detached views cannot paint. The owning startup window is transparent
+      // and parked offscreen, so they can render at their real size here.
+      if (view) {
+        const [width = 1, height = 1] = host.window.getContentSize();
+        const browser = contents === tab.browser?.contents ? tab.browser : null;
+        const x = browser ? browserContentLeft(width, browser.terminalOpen, browser.terminalWidth) : 0;
+        const y = browser ? browserContentTop(browser.addressSuggestionsOpen) : 0;
+        view.setBounds({ x, y, width: Math.max(1, width - x), height: Math.max(1, height - y) });
+        host.window.contentView.addChildView(view);
+        view.setVisible(true);
+      }
+      try {
+        await waitForFirstPaint(contents);
+      } finally {
+        if (view && !host.window.isDestroyed() && !contents.isDestroyed()) {
+          host.window.contentView.removeChildView(view);
+        }
+      }
+    }));
+  }
+
+  trackSessionWindow(window: BrowserWindow, main = false): void {
+    const host = this.hosts.get(window.id);
+    if (!host) return;
+    host.sessionTracked = true;
+    host.sessionMain = main;
+    this.rememberSession(host);
+  }
+
+  /** Snapshot before services or windows begin tearing down. */
+  freezeSession(): void {
+    if (this.sessionFrozen) return;
+    for (const host of this.hosts.values()) this.rememberSession(host);
+    this.flushSession();
+    this.sessionFrozen = true;
+  }
+
+  private rememberSession(host: Host): void {
+    if (!host.sessionTracked || !this.sessionDashboardUrl || this.sessionFrozen || this.restoringSession) return;
+    const tabs = host.tabs.map((tab) => ({ tab, saved: saveTab(tab, this.sessionDashboardUrl!) }))
+      .filter((entry) => entry.saved !== null);
+    this.savedWindows.set(host.window.id, {
+      tabs: tabs.map((entry) => entry.saved!),
+      activeIndex: Math.max(0, tabs.findIndex((entry) => entry.tab.id === host.activeId)),
+    });
+    if (!this.sessionWriteTimer) {
+      this.sessionWriteTimer = setTimeout(() => this.flushSession(), 200);
+      this.sessionWriteTimer.unref();
+    }
+  }
+
+  private flushSession(): void {
+    if (this.sessionWriteTimer) clearTimeout(this.sessionWriteTimer);
+    this.sessionWriteTimer = null;
+    if (!this.options.tabSessionConfigDir || !this.sessionRestored) return;
+    const session = { version: 1 as const, windows: [...this.savedWindows.values()].filter((entry) => entry.tabs.length) };
+    const json = JSON.stringify(session);
+    if (json === this.lastSessionJson) return;
+    try {
+      writeTabSession(this.options.tabSessionConfigDir, session);
+      this.lastSessionJson = json;
+    } catch (error) {
+      this.log(`could not save tab session: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -617,6 +857,7 @@ export class TabManager {
     if (this.hosts.has(window.id)) return;
     const base: Tab = {
       id: 1,
+      anchored: false,
       view: null,
       contents: window.webContents,
       title: "",
@@ -631,6 +872,8 @@ export class TabManager {
     };
     const host: Host = {
       window,
+      sessionTracked: false,
+      sessionMain: false,
       tabs: [base],
       activeId: base.id,
       base,
@@ -638,6 +881,7 @@ export class TabManager {
       closedTabs: [],
       nextId: 2,
       pending: null,
+      pendingNavigation: false,
       revealToken: 0,
       afterReveal: [],
       notificationOverlay: null,
@@ -659,9 +903,33 @@ export class TabManager {
       if (command === "browser-backward") this.run(host, { type: "back" });
       else if (command === "browser-forward") this.run(host, { type: "forward" });
     });
+    window.on("close", () => {
+      if (host.sessionMain) this.freezeSession();
+      else {
+        this.rememberSession(host);
+        this.flushSession();
+      }
+    });
     window.once("closed", () => {
+      if (host.sessionMain && !this.sessionFrozen) {
+        // A native window lost without a close request is recovered in-process.
+        this.freezeSession();
+        this.sessionFrozen = false;
+        this.sessionRestored = false;
+        this.savedWindows.clear();
+        host.sessionTracked = false;
+      }
+      if (!this.sessionFrozen && host.sessionTracked) {
+        // A separately closed window keeps only tabs explicitly anchored.
+        const anchored = this.savedWindows.get(window.id)?.tabs.filter((tab) => tab.anchored) ?? [];
+        if (anchored.length) this.savedWindows.set(window.id, { tabs: anchored, activeIndex: 0 });
+        else this.savedWindows.delete(window.id);
+        this.flushSession();
+      }
       this.hosts.delete(window.id);
+      if (this.hosts.size === 0) void this.browserTerminal.close();
       host.pending = null;
+      host.pendingNavigation = false;
       host.revealToken += 1;
       // Closed views still waiting for a replacement to come forward go too.
       this.runAfterReveal(host);
@@ -686,19 +954,39 @@ export class TabManager {
     const source = this.hosts.get(from.id);
     const target = this.hosts.get(to.id);
     if (!source || !target || source === target) return;
+    target.sessionTracked = source.sessionTracked;
+    target.sessionMain = source.sessionMain;
+    source.sessionTracked = false;
+    source.sessionMain = false;
+    const saved = this.savedWindows.get(from.id);
+    if (saved) {
+      // Keep the primary window first when a recovery window replaces it.
+      const entries = [...this.savedWindows.entries()].map(([id, entry]) =>
+        [id === from.id ? to.id : id, entry] as const);
+      this.savedWindows.clear();
+      for (const [id, entry] of entries) this.savedWindows.set(id, entry);
+    }
+    target.base.anchored = source.base.anchored;
     this.cancelReveal(source);
     this.runAfterReveal(source);
     const views = source.tabs.filter((tab) => tab.view);
-    if (views.length === 0) return;
+    if (views.length === 0) {
+      this.broadcast(target);
+      return;
+    }
     for (const tab of views) {
       if (!tab.view) continue;
       this.detach(from, tab);
       tab.spawned = 0;
-      target.tabs.push(tab);
       this.hostByContents.set(tab.contents.id, target);
       if (tab.browser?.contents) this.hostByContents.set(tab.browser.contents.id, target);
     }
+    target.tabs = source.tabs.map((tab) => tab === source.base ? target.base : tab);
     source.tabs = source.tabs.filter((tab) => !tab.view);
+    target.nextId = Math.max(target.nextId, ...target.tabs.map((tab) => tab.id + 1));
+    if (source.baseRetired) {
+      target.baseRetired = true;
+    }
     if (source.activeId !== source.base.id) target.activeId = source.activeId;
     source.activeId = source.base.id;
     target.closedTabs = [...source.closedTabs, ...target.closedTabs].slice(
@@ -706,6 +994,7 @@ export class TabManager {
     );
     this.layout(target);
     this.present(target);
+    if (source.baseRetired) this.retireBase(target);
     this.broadcast(target);
   }
 
@@ -714,7 +1003,31 @@ export class TabManager {
   handleCommand(sender: WebContents, command: TabsCommand): boolean | Promise<boolean> {
     const host = this.hostByContents.get(sender.id);
     if (!host || host.window.isDestroyed()) return false;
+    if (host.tabs.some(tab => tab.browser?.contents === sender)) return false;
     switch (command.type) {
+      case "browser-notifications-enabled":
+      case "browser-notification-permission":
+      case "browser-translation-language": {
+        const saved = this.browserPreferences.update(command);
+        if (saved) this.browserNotifications.preferencesChanged();
+        return saved;
+      }
+      case "browser-notification-action":
+        return sender === host.notificationOverlay?.contents && this.browserNotifications.action(command.id, command.action, host.window);
+      case "browser-translation-menu": {
+        const tab = host.tabs.find(tab => tab.contents === sender);
+        if (!tab?.browser) return false;
+        this.showTranslationMenu(host, tab);
+        return true;
+      }
+      case "browser-translate":
+      case "browser-translation-restore": {
+        const tab = host.tabs.find(tab => tab.contents === sender);
+        const translation = tab?.browser?.translation;
+        if (!translation || tab?.browser?.showingHome) return false;
+        if (command.type === "browser-translation-restore") return translation.restore().then(() => true);
+        return translation.start(command.language).then(() => true);
+      }
       case "open": {
         if (!this.enabled) return false;
         const from = host.tabs.find((tab) => tab.contents.id === sender.id);
@@ -723,6 +1036,7 @@ export class TabManager {
             background: command.background === true,
             origin: "link",
             from,
+            showLoader: sender !== host.notificationOverlay?.contents,
           }) !== null
         );
       }
@@ -735,6 +1049,15 @@ export class TabManager {
       case "close":
         if (!this.enabled) return false;
         return this.closeTab(host, command.id ?? host.activeId);
+      case "anchor": {
+        if (!this.enabled) return false;
+        const tab = tabById(host, command.id);
+        if (!tab) return false;
+        tab.anchored = !tab.anchored;
+        this.broadcast(host);
+        this.flushSession();
+        return true;
+      }
       case "move": {
         if (!this.enabled) return false;
         const from = tabIndex(host, command.id);
@@ -777,6 +1100,42 @@ export class TabManager {
         const browser = liveBrowserPage(tab?.browser);
         if (!browser) return false;
         browser.contents.stop();
+        return true;
+      }
+      case "browser-menu": {
+        const tab = host.tabs.find(candidate => candidate.contents.id === sender.id && candidate.id === host.activeId);
+        if (!tab?.browser) return false;
+        const browser = liveBrowserPage(tab.browser);
+        const menu = Menu.buildFromTemplate(browserMenuTemplate({
+          profileLabel: command.profileLabel, hasPage: Boolean(browser && !tab.browser.showingHome),
+          zoomPercent: browser ? Math.round(browser.contents.getZoomFactor() * 100) : 100,
+          fullscreen: host.window.isFullScreen(),
+        }, action => setImmediate(() => { void this.browserMenuAction(host, tab, action); })));
+        tab.browser.menu?.closePopup(host.window);
+        tab.browser.menu = menu;
+        const [width = 1200, height = 800] = host.window.getContentSize();
+        return new Promise<boolean>(resolve => menu.popup({
+          window: host.window, x: Math.min(width - 1, Math.round(command.x)), y: Math.min(height - 1, Math.round(command.y)),
+          callback: () => { if (tab.browser?.menu === menu) tab.browser.menu = undefined; resolve(true); },
+        }));
+      }
+      case "browser-find":
+      case "browser-find-close": {
+        const tab = host.tabs.find(candidate => candidate.contents.id === sender.id);
+        const browser = liveBrowserPage(tab?.browser);
+        if (!browser) return false;
+        if (command.type === "browser-find-close" || !command.text) {
+          browser.findQuery = undefined;
+          browser.findRequestId = undefined;
+          browser.contents.stopFindInPage("clearSelection");
+          browser.find = undefined;
+          this.broadcast(host);
+        } else {
+          browser.findQuery = command.text;
+          // Electron's findNext means start a new session; our command means
+          // advance to another match in the existing session.
+          browser.findRequestId = browser.contents.findInPage(command.text, { forward: command.forward !== false, findNext: command.findNext !== true });
+        }
         return true;
       }
       case "browser-terminal": {
@@ -832,13 +1191,125 @@ export class TabManager {
     }
   }
 
+  private async browserMenuAction(host: Host, tab: Tab, action: BrowserMenuAction): Promise<void> {
+    if (host.window.isDestroyed() || tab.contents.isDestroyed() || !host.tabs.includes(tab) || !tab.browser) return;
+    const browser = liveBrowserPage(tab.browser);
+    const page = browser && !tab.browser.showingHome ? browser.contents : null;
+    const internal = (pathname: string) => this.openTab(host, new URL(pathname, tab.browser!.shellUrl).toString(), { background: false, origin: "link", from: tab });
+    try {
+      switch (action) {
+        case "profile": internal("/profile"); return;
+        case "settings": internal("/browser/settings"); return;
+        case "appearance": internal("/browser/settings?section=appearance"); return;
+        case "new-tab": this.openBrowserTab(host); return;
+        case "new-window": this.options.openWindow(tab.browser.shellUrl); return;
+        case "history": case "bookmarks": case "downloads": case "find":
+          tab.contents.focus();
+          await tab.contents.executeJavaScript(`window.dispatchEvent(new CustomEvent('breadboard:browser-menu-action', { detail: ${JSON.stringify(action)} }))`, true);
+          return;
+        case "extensions": {
+          const run = (operation: () => Promise<boolean>) => { void operation().catch(error => {
+            this.log(`browser extension action failed: ${String(error)}`);
+            return false;
+          }).then(ok => {
+            if (!ok) this.publishNotificationToast(tab.contents, { type: "error", message: "Couldn’t update this extension." });
+          }); };
+          const extensions = this.browserExtensionViews();
+          const menu = Menu.buildFromTemplate([
+            ...extensions.map(extension => ({ label: extension.name.replace(/&/g, "&&"), submenu: [
+              { label: "Reload", click: () => run(() => this.reloadBrowserExtension(tab, extension.id)) },
+              { label: "Remove", click: () => run(() => this.removeBrowserExtension(tab, extension.id)) },
+            ] })),
+            ...(extensions.length ? [{ type: "separator" as const }] : []),
+            { label: "Load Unpacked Extension…", click: () => run(() => this.loadBrowserExtension(host, tab)) },
+            { label: "Chrome Web Store", click: () => { this.openBrowserTab(host, "https://chromewebstore.google.com/"); } },
+          ]);
+          tab.browser.menu = menu;
+          menu.popup({ window: host.window, callback: () => { if (tab.browser?.menu === menu) tab.browser.menu = undefined; } });
+          return;
+        }
+        case "print":
+          if (page) page.print({ silent: false, printBackground: true }, (success, reason) => {
+            if (!success && !/cancel/i.test(reason)) this.publishNotificationToast(tab.contents, { type: "error", message: "Printing did not finish. Check the selected printer and try again." });
+          });
+          return;
+        case "save": {
+          if (!page) return;
+          const selection = await dialog.showSaveDialog(host.window, {
+            title: "Save Page As", defaultPath: path.join(app.getPath("downloads"), savedPageFilename(tab.title)),
+            filters: [{ name: "Web page, complete", extensions: ["html"] }],
+          });
+          if (selection.canceled || !selection.filePath || page.isDestroyed()) return;
+          await page.savePage(selection.filePath, "HTMLComplete");
+          this.publishNotificationToast(tab.contents, { type: "success", message: "Page saved." });
+          return;
+        }
+        case "translate": {
+          if (!page) return;
+          this.showTranslationMenu(host, tab);
+          return;
+        }
+        case "zoom-in": case "zoom-out": case "zoom-reset":
+          if (page) this.zoomBrowserPage(host, page, action === "zoom-reset" ? "reset" : action === "zoom-in" ? "in" : "out");
+          return;
+        case "fullscreen": host.window.setFullScreen(!host.window.isFullScreen()); return;
+        case "developer-tools": page?.toggleDevTools(); return;
+        case "copy-link": if (page) clipboard.writeText(page.getURL()); return;
+        case "help": this.openBrowserTab(host, "https://github.com/kuzeyatay/breadboard#readme"); return;
+        case "report": this.openBrowserTab(host, "https://github.com/kuzeyatay/breadboard/issues/new"); return;
+        case "about":
+          await dialog.showMessageBox(host.window, { type: "info", title: "About Breadboard", message: "Breadboard", detail: `Version ${app.getVersion()}\nChromium ${process.versions.chrome}\nElectron ${process.versions.electron}` });
+          return;
+        case "quit": app.quit(); return;
+      }
+    } catch (error) {
+      this.log(`browser menu action ${action} failed: ${String(error)}`);
+      this.publishNotificationToast(tab.contents, { type: "error", message: "Couldn’t complete this browser action. Try again." });
+    }
+  }
+
+  private zoomBrowserPage(host: Host, contents: WebContents, direction: "in" | "out" | "reset"): void {
+    const factor = contents.getZoomFactor();
+    contents.setZoomFactor(direction === "reset" ? 1 : Math.max(.25, Math.min(3, Math.round((factor + (direction === "in" ? .1 : -.1)) * 100) / 100)));
+    this.broadcast(host);
+  }
+
+  private showTranslationMenu(host: Host, tab: Tab): void {
+    const translation = tab.browser?.translation;
+    if (!translation || tab.browser?.showingHome) return;
+    const language = this.browserPreferences.snapshot().translationLanguage;
+    const names = new Intl.DisplayNames([app.getLocale() || "en"], { type: "language" });
+    const label = (code: string) => names.of(code) ?? code;
+    const run = (target: string) => {
+      this.browserPreferences.update({ type: "browser-translation-language", language: target });
+      this.browserNotifications.preferencesChanged();
+      void translation.start(target);
+    };
+    const menu = Menu.buildFromTemplate([
+      { label: `Translate to ${label(language)}`, click: () => run(language) },
+      { label: "Translate to…", submenu: TRANSLATION_LANGUAGES.map(code => ({
+        label: label(code), type: "radio" as const, checked: code === language, click: () => run(code),
+      })).sort((a, b) => a.label.localeCompare(b.label)) },
+      { label: "Show original", enabled: translation.state.status !== "original", click: () => { void translation.restore(); } },
+      { type: "separator" },
+      { label: "Page text is sent to your configured AI provider", enabled: false },
+    ]);
+    tab.browser!.menu?.closePopup(host.window);
+    tab.browser!.menu = menu;
+    menu.popup({ window: host.window, callback: () => { if (tab.browser?.menu === menu) tab.browser.menu = undefined; } });
+  }
+
   stateFor(sender: WebContents): TabsState {
     const host = this.hostByContents.get(sender.id);
     return host
-      ? this.state(host)
+      ? {
+          ...this.state(host),
+          selfId: host.tabs.find((tab) => tab.contents.id === sender.id)?.id ?? null,
+        }
       : {
           enabled: this.enabled,
           activeId: null,
+          selfId: null,
           tabs: [],
           extensions: this.browserExtensionViews(),
         };
@@ -882,8 +1353,14 @@ export class TabManager {
       return this.browserExtensionsReady;
     }
     this.browserExtensionSession = browserSession;
-    browserSession.on("extension-loaded", () => this.broadcastAll());
-    browserSession.on("extension-unloaded", () => this.broadcastAll());
+    browserSession.on("extension-loaded", () => {
+      this.broadcastAll();
+      this.refreshBrowserStoreInstallButtons();
+    });
+    browserSession.on("extension-unloaded", () => {
+      this.broadcastAll();
+      this.refreshBrowserStoreInstallButtons();
+    });
     const restore = async () => {
       const loadedPaths = new Set(
         browserSession.getAllExtensions().map((extension) =>
@@ -985,6 +1462,139 @@ export class TabManager {
     return true;
   }
 
+  private refreshBrowserStoreInstallButtons(): void {
+    for (const host of this.hosts.values()) {
+      for (const tab of host.tabs) {
+        const browser = liveBrowserPage(tab.browser);
+        if (browser && !browser.automationRunId) this.refreshBrowserStoreInstallButton(browser);
+      }
+    }
+  }
+
+  /** Keep the Web Store's Breadboard-owned button in step with native state. */
+  private refreshBrowserStoreInstallButton(
+    browser: LiveBrowserPage,
+    override?: "available" | "installing" | "installed" | "failed",
+  ): void {
+    if (browser.contents.isDestroyed()) return;
+    const extensionId = chromeWebStoreExtensionId(browser.contents.getURL());
+    if (!extensionId) {
+      void browser.contents
+        .executeJavaScript(browserWebStoreInstallCleanupScript(), true)
+        .catch(() => undefined);
+      return;
+    }
+    const state = override ?? (
+      this.browserExtensionSession?.getExtension(extensionId)
+        ? "installed"
+        : this.browserExtensionInstalls.has(extensionId)
+          ? "installing"
+          : "available"
+    );
+    void browser.contents
+      .executeJavaScript(browserWebStoreInstallBootstrapScript(extensionId, state), true)
+      .catch(() => undefined);
+  }
+
+  private async responseBytes(response: Response, maximum: number): Promise<Buffer> {
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > maximum) {
+      throw new Error("The browser extension package is too large.");
+    }
+    if (!response.body) return Buffer.alloc(0);
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let length = 0;
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        const bytes = Buffer.from(chunk.value);
+        length += bytes.length;
+        if (length > maximum) {
+          await reader.cancel();
+          throw new Error("The browser extension package is too large.");
+        }
+        chunks.push(bytes);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return Buffer.concat(chunks, length);
+  }
+
+  private async performBrowserStoreInstall(extensionId: string): Promise<boolean> {
+    const configDir = this.options.browserExtensionsConfigDir;
+    if (!configDir) return false;
+    const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
+    await this.ensureBrowserExtensions(browserSession);
+    if (browserSession.getExtension(extensionId)) return true;
+    const chromeVersion = process.versions.chrome;
+    if (!chromeVersion) throw new Error("Chromium version is unavailable.");
+    const response = await net.fetch(chromeWebStoreDownloadUrl(extensionId, chromeVersion), {
+      redirect: "follow",
+      headers: {
+        accept: "application/x-chrome-extension",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`Chrome Web Store download failed with HTTP ${response.status}.`);
+    }
+    const finalUrl = new URL(response.url);
+    if (finalUrl.protocol !== "https:") {
+      throw new Error("Chrome Web Store redirected to an unsafe download.");
+    }
+    const archive = await this.responseBytes(response, MAX_EXTENSION_ARCHIVE_BYTES);
+    const extensionPath = installChromeWebStorePackage(configDir, extensionId, archive);
+    const extension = await browserSession.loadExtension(extensionPath);
+    if (extension.id !== extensionId) {
+      browserSession.removeExtension(extension.id);
+      throw new Error("The loaded extension id does not match the Web Store item.");
+    }
+    const extensionKey = this.browserExtensionPathKey(extensionPath);
+    if (!this.browserExtensionPaths.some(
+      (candidate) => this.browserExtensionPathKey(candidate) === extensionKey,
+    )) {
+      this.browserExtensionPaths.push(extensionPath);
+      this.persistBrowserExtensionPaths();
+    }
+    this.broadcastAll();
+    return true;
+  }
+
+  private async installBrowserStoreExtension(tab: Tab, extensionId: string): Promise<boolean> {
+    const browser = liveBrowserPage(tab.browser);
+    if (
+      !browser ||
+      browser.automationRunId ||
+      chromeWebStoreExtensionId(browser.contents.getURL()) !== extensionId
+    ) {
+      return false;
+    }
+    const existing = this.browserExtensionInstalls.get(extensionId);
+    if (existing) return existing;
+    const install = this.performBrowserStoreInstall(extensionId);
+    this.browserExtensionInstalls.set(extensionId, install);
+    this.refreshBrowserStoreInstallButton(browser, "installing");
+    try {
+      const installed = await install;
+      this.refreshBrowserStoreInstallButton(browser, installed ? "installed" : "failed");
+      return installed;
+    } catch (error) {
+      this.log(
+        `Chrome Web Store extension ${extensionId} failed to install: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      this.refreshBrowserStoreInstallButton(browser, "failed");
+      return false;
+    } finally {
+      if (this.browserExtensionInstalls.get(extensionId) === install) {
+        this.browserExtensionInstalls.delete(extensionId);
+      }
+    }
+  }
+
   /** Reload the page in front of `window`, which is not always its own page. */
   reloadActive(window: BrowserWindow): void {
     const host = this.hosts.get(window.id);
@@ -1020,9 +1630,10 @@ export class TabManager {
   private state(host: Host): TabsState {
     const tabs: TabView[] = host.tabs.map((tab) => ({
       id: tab.id,
+      anchored: tab.anchored,
       title: tab.title,
       url: tab.url,
-      loading: tab.loading,
+      loading: tab.loading || !tab.loaded,
       ...(tab.browser
         ? {
             browser: {
@@ -1043,6 +1654,9 @@ export class TabManager {
                 : this.browserNavigationTarget(tab, "forward") !== null,
               terminalOpen: tab.browser.terminalOpen,
               terminalWidth: tab.browser.terminalWidth,
+              zoomPercent: liveBrowserPage(tab.browser) ? Math.round(tab.browser.contents!.getZoomFactor() * 100) : 100,
+              ...(tab.browser.translation ? { translation: tab.browser.translation.state } : {}),
+              ...(tab.browser.find ? { find: tab.browser.find } : {}),
               ...(tab.browser.favicon ? { favicon: tab.browser.favicon } : {}),
               ...(tab.browser.selection ? { selection: tab.browser.selection } : {}),
             },
@@ -1052,14 +1666,18 @@ export class TabManager {
     return {
       enabled: this.enabled,
       activeId: host.activeId,
+      navigationPending: host.pending !== null && host.pendingNavigation && !host.loadingScene?.attached,
+      selfId: null,
       tabs,
       extensions: this.browserExtensionViews(),
+      browserPreferences: this.browserPreferences.snapshot(),
     };
   }
 
   private broadcast(host: Host): void {
+    this.rememberSession(host);
     const state = this.state(host);
-    for (const tab of host.tabs) this.send(tab.contents, state);
+    for (const tab of host.tabs) this.send(tab.contents, { ...state, selfId: tab.id });
   }
 
   private send(contents: WebContents, state: TabsState): void {
@@ -1094,6 +1712,7 @@ export class TabManager {
     view.setBackgroundColor(backgroundColorForTheme(this.options.theme()));
     const tab: Tab = {
       id: host.nextId++,
+      anchored: false,
       view,
       contents: view.webContents,
       title: "",
@@ -1124,7 +1743,7 @@ export class TabManager {
   private openTab(
     host: Host,
     url: string,
-    options: { background: boolean; origin: "link" | "blank"; from?: Tab },
+    options: { background: boolean; origin: "link" | "blank"; from?: Tab; showLoader?: boolean },
   ): Tab | null {
     if (host.window.isDestroyed() || !isTabPageUrl(this.options.allowed, url)) return null;
     const tab = this.createView(host, url);
@@ -1141,7 +1760,9 @@ export class TabManager {
     host.tabs.splice(index, 0, tab);
 
     if (options.background) this.broadcast(host);
-    else this.activate(host, tab.id);
+    // Notification arrows retain the current page while their destination
+    // loads. Explicit tab creation and selection keep the cold-tab scene.
+    else this.activate(host, tab.id, options.showLoader);
     return tab;
   }
 
@@ -1207,6 +1828,7 @@ export class TabManager {
     background = false,
     automationRunId?: string,
     replace?: Tab,
+    popup?: BrowserPopup,
   ): Tab | null {
     const shellUrl = this.browserUrl;
     const initialUrl = requestedUrl === undefined ? null : browserUrlForInput(requestedUrl);
@@ -1217,6 +1839,7 @@ export class TabManager {
     }
 
     const tab = this.createView(host, shellUrl);
+    tab.anchored = replace?.anchored ?? false;
     tab.browser = {
       shellUrl,
       view: null,
@@ -1226,13 +1849,13 @@ export class TabManager {
       terminalOpen: false,
       terminalWidth: BROWSER_TERMINAL_WIDTH,
       addressSuggestionsOpen: false,
-      homeEntryAvailable: requestedUrl === undefined && !automationRunId,
-      showingHome: requestedUrl === undefined && !automationRunId,
+      homeEntryAvailable: requestedUrl === undefined && !automationRunId && !popup,
+      showingHome: requestedUrl === undefined && !automationRunId && !popup,
       homeHistoryIndex: null,
       pendingHomeNavigation: false,
       ...(automationRunId ? { automationRunId } : {}),
     };
-    tab.title = automationRunId ? "Agent Browser" : "New tab";
+    tab.title = automationRunId ? "Agent Browser" : "Browser";
     tab.url = "";
     this.setTabLoading(tab, false);
     // A blank browser tab is entirely the trusted home page. Creating the
@@ -1246,10 +1869,32 @@ export class TabManager {
     } else {
       host.tabs.splice(tabIndex(host, host.activeId) + 1, 0, tab);
     }
-    if (initialUrl) this.navigateBrowser(host, tab, initialUrl);
+    if (popup) {
+      const browser = this.ensureBrowserPage(host, tab, popup.options.webContents);
+      if (!browser) return null;
+      tab.url = popup.details.url;
+      tab.title = browserFallbackTitle(tab.url);
+      this.setTabLoading(tab, true);
+      if (!popup.options.webContents) {
+        // Link/form opens may have no native guest yet. Electron's custom
+        // createWindow callback owns navigation in that case, including POST.
+        const postBody = popup.details.postBody;
+        const contentType = postBody?.boundary
+          ? `${postBody.contentType}; boundary=${postBody.boundary}`
+          : postBody?.contentType;
+        void browser.contents.loadURL(popup.details.url, {
+          httpReferrer: popup.details.referrer,
+          ...(postBody ? { postData: postBody.data, extraHeaders: `content-type: ${contentType}` } : {}),
+        }).catch(() => undefined);
+      }
+      // With native guest contents Chromium performs the navigation itself;
+      // a second loadURL would interrupt the login request or discard its POST.
+    } else if (initialUrl) this.navigateBrowser(host, tab, initialUrl);
     if (background) this.broadcast(host);
     else {
-      this.activate(host, tab.id);
+      // Replacing the page is navigation: retain its content and progress bar
+      // until the browser shell paints. Opening a separate tab uses the loader.
+      this.activate(host, tab.id, !replace);
       if (replace && replaceIndex >= 0) {
         if (replace.view) {
           this.whenRevealed(host, () => this.dispose(host, replace));
@@ -1262,7 +1907,7 @@ export class TabManager {
   }
 
   /** Materialize the sandboxed half of a browser tab on first navigation. */
-  private ensureBrowserPage(host: Host, tab: Tab): LiveBrowserPage | null {
+  private ensureBrowserPage(host: Host, tab: Tab, popupContents?: WebContents): LiveBrowserPage | null {
     const browser = tab.browser;
     if (!browser || host.window.isDestroyed()) return null;
     const existing = liveBrowserPage(browser);
@@ -1270,15 +1915,8 @@ export class TabManager {
 
     if (browser.contents) this.hostByContents.delete(browser.contents.id);
     const view = new WebContentsView({
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        webviewTag: false,
-        spellcheck: true,
-        backgroundThrottling: false,
-        partition: BROWSER_SESSION_PARTITION,
-      },
+      ...(popupContents ? { webContents: popupContents } : {}),
+      webPreferences: { ...BROWSER_WEB_PREFERENCES },
     });
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     browser.view = view;
@@ -1287,6 +1925,15 @@ export class TabManager {
     browser.attached = false;
     const live = browser as LiveBrowserPage;
     this.trackBrowser(host, tab, live);
+    browser.translation = new BrowserTranslation(live.contents, this.options.translatePageBatch ?? (async (segments, language, signal) => {
+      const response = await tab.contents.session.fetch(new URL("/api/browser/translate", browser.shellUrl).toString(), {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", redirect: "error",
+        body: JSON.stringify({ segments, language }), signal: AbortSignal.any([signal, AbortSignal.timeout(100000)]),
+      });
+      const value = await response.json() as { segments?: Array<{ id: number; text: string }>; error?: string };
+      if (!response.ok || !Array.isArray(value.segments)) throw new Error(value.error || "Translation is unavailable. Check your AI connection in Settings and try again.");
+      return value.segments;
+    }), () => { const owner = this.hostByContents.get(live.contents.id); if (owner) this.broadcast(owner); });
     return live;
   }
 
@@ -1374,6 +2021,12 @@ export class TabManager {
     if (!contents) return;
     this.hostByContents.set(contents.id, host);
     const current = (): Host | undefined => this.hostByContents.get(contents.id);
+    contents.on("found-in-page", (_event, result) => {
+      if (!browser.findQuery || result.requestId !== browser.findRequestId) return;
+      browser.find = { matches: result.matches, activeMatchOrdinal: result.activeMatchOrdinal };
+      const owner = current();
+      if (owner) this.broadcast(owner);
+    });
     contents.once("destroyed", () => {
       const owner = current();
       this.hostByContents.delete(contents.id);
@@ -1389,12 +2042,36 @@ export class TabManager {
       browser.view = null;
       browser.ready = false;
       browser.attached = false;
+      // A login popup can close itself after messaging its opener. Retire its
+      // trusted chrome too, otherwise an empty, stale tab is left behind.
+      if (owner && !owner.window.isDestroyed()) {
+        const index = tabIndex(owner, tab.id);
+        if (index >= 0) this.dropTab(owner, index);
+      }
     });
 
     hardenExternalBrowserWebContents(contents, {
-      onOpenUrl: (url, background) => {
+      configurePermissions: target => this.browserNotifications.installSession(target),
+      onOpenWindow: (details) => {
         const owner = current();
-        if (owner) this.openBrowserTab(owner, url, background);
+        if (!owner || !this.enabled || !this.browserUrl || owner.window.isDestroyed()) {
+          return { action: "deny" };
+        }
+        if (!browser.automationRunId) this.browserVisitedLinks.remember(contents.getURL(), details.url);
+        return {
+          action: "allow",
+          outlivesOpener: true,
+          overrideBrowserWindowOptions: { webPreferences: { ...BROWSER_WEB_PREFERENCES } },
+          createWindow: (options) => {
+            const popup = this.openBrowserTab(
+              owner, undefined, details.disposition === "background-tab",
+              undefined, undefined, { details, options },
+            );
+            const page = liveBrowserPage(popup?.browser);
+            if (!page) throw new Error("The browser popup could not be attached to a tab.");
+            return page.contents;
+          },
+        };
       },
       isTrustedBootstrapUrl: (url) =>
         Boolean(
@@ -1402,6 +2079,9 @@ export class TabManager {
             isBrowserAgentBootstrapUrl(url, browser.automationRunId),
         ),
     });
+    this.browserNotifications.attach(contents);
+    if (!browser.automationRunId) this.browserVisitedLinks.attach(contents);
+    if (!browser.automationRunId) this.browserHistory.attach(contents);
     contents.on("page-title-updated", (_event, title) => {
       if (browser.showingHome) return;
       if (
@@ -1441,9 +2121,13 @@ export class TabManager {
         browser.homeHistoryIndex = contents.navigationHistory.getActiveIndex();
         browser.pendingHomeNavigation = false;
       }
+      if (!browser.automationRunId) this.refreshBrowserStoreInstallButton(browser as LiveBrowserPage);
     });
     contents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
-      if (isMainFrame) remember(url);
+      if (isMainFrame) {
+        remember(url);
+        if (!browser.automationRunId) this.refreshBrowserStoreInstallButton(browser as LiveBrowserPage);
+      }
     });
     contents.on("did-start-loading", () => {
       if (browser.showingHome) {
@@ -1470,17 +2154,35 @@ export class TabManager {
     });
     contents.on("dom-ready", () => {
       browser.ready = true;
+      if (browser.findQuery) {
+        browser.find = undefined;
+        browser.findRequestId = contents.findInPage(browser.findQuery, { findNext: true });
+      }
       const owner = current();
       if (!owner) return;
       if (!browser.automationRunId) {
         void contents
           .executeJavaScript(browserSelectionBootstrapScript(), true)
           .catch(() => undefined);
+        this.refreshBrowserStoreInstallButton(browser as LiveBrowserPage);
       }
       this.syncBrowser(owner);
       this.broadcast(owner);
     });
     contents.on("will-navigate", (event, targetUrl) => {
+      const extensionId = browserExtensionInstallId(targetUrl);
+      if (extensionId) {
+        event.preventDefault();
+        const owner = current();
+        if (
+          owner &&
+          !browser.automationRunId &&
+          chromeWebStoreExtensionId(contents.getURL()) === extensionId
+        ) {
+          void this.installBrowserStoreExtension(tab, extensionId);
+        }
+        return;
+      }
       const text = browserSelectionText(targetUrl);
       if (!text) return;
       event.preventDefault();
@@ -1530,7 +2232,7 @@ export class TabManager {
     const index = tabIndex(host, id);
     if (index < 0) return false;
     const tab = host.tabs[index];
-    if (!tab) return false;
+    if (!tab || tab.anchored) return false;
     return this.dropTab(host, index);
   }
 
@@ -1547,6 +2249,9 @@ export class TabManager {
     host.tabs.splice(index, 1);
 
     if (host.tabs.length === 0) {
+      this.rememberSession(host);
+      // It is already out of host.tabs, so window teardown cannot dispose it.
+      if (tab.view) this.dispose(host, tab);
       // The last tab: the window goes with it, as in a browser.
       host.window.close();
       return true;
@@ -1567,6 +2272,7 @@ export class TabManager {
 
   /** A view that is no longer a tab: off the window, out of the maps, closed. */
   private dispose(host: Host, tab: Tab): void {
+    tab.browser?.menu?.closePopup(host.window);
     this.detach(host.window, tab);
     this.hostByContents.delete(tab.contents.id);
     if (tab.browser?.contents) this.hostByContents.delete(tab.browser.contents.id);
@@ -1613,7 +2319,17 @@ export class TabManager {
       if (host.base.contents.isDestroyed()) return;
       // Not a navigation the page started, so the origin guard does not run —
       // and a blank page is the one thing there is no reason to guard against.
-      void host.base.contents.loadURL("about:blank").catch(() => undefined);
+      void host.base.contents.loadURL("about:blank").then(async () => {
+        if (!host.baseRetired || host.base.contents.isDestroyed()) return;
+        // Electron 33 retains the previous document's native drag region on
+        // about:blank. The base is still attached underneath the live tabs, so
+        // its old caption gaps swallow clicks on tabs added later. Publish an
+        // explicit non-draggable region from the blank document to clear it.
+        await host.base.contents.executeJavaScript(`
+          document.documentElement.style.setProperty('-webkit-app-region', 'no-drag');
+          document.documentElement.style.minHeight = '100vh';
+        `);
+      }).catch(() => undefined);
     });
   }
 
@@ -1652,26 +2368,29 @@ export class TabManager {
 
   // ---------------------------------------------------------- presentation
 
-  private activate(host: Host, id: number): void {
+  private activate(host: Host, id: number, showLoader = true): void {
     const tab = tabById(host, id);
     if (!tab) return;
     if (host.activeId !== id) {
       const previous = tabById(host, host.activeId);
-      if (previous?.browser) previous.browser.addressSuggestionsOpen = false;
+      if (previous?.browser) {
+        previous.browser.addressSuggestionsOpen = false;
+        previous.browser.menu?.closePopup(host.window);
+      }
       for (const other of host.tabs) other.spawned = 0;
       host.activeId = id;
     }
-    this.present(host);
+    this.present(host, showLoader);
     this.broadcast(host);
   }
 
   /** Put the active tab on screen without ever exposing a view that has no
    * frame yet. A loading tab gets the startup field beneath the still-visible
    * window tabs and Garden navbar. */
-  private present(host: Host): void {
+  private present(host: Host, showLoader = true): void {
     if (host.window.isDestroyed()) return;
     const active = tabById(host, host.activeId);
-    if (active) this.show(host, active);
+    if (active) this.show(host, active, showLoader);
   }
 
   /**
@@ -1691,18 +2410,28 @@ export class TabManager {
    * puts the shared loading field over the content area during that wait while
    * leaving the previous page's live tabs and Garden navbar exposed above it.
    */
-  private show(host: Host, active: Tab): void {
+  private show(host: Host, active: Tab, showLoader: boolean): void {
     if (host.window.isDestroyed()) return;
     // The window's title follows the strip at once, even while the page
     // itself is still on its way.
     this.applyTitle(host);
+    if (host.pending === active) {
+      // Clicking the loading tab opts into the startup scene, even if its
+      // initial reveal began as a page replacement without that scene.
+      if (showLoader && (active.loading || !active.loaded)) {
+        this.showLoadingScene(host, active);
+        this.raiseNotificationOverlay(host);
+      }
+      return;
+    }
     const view = active.view;
     if (!view) {
       if (active.loading || !active.loaded) {
         this.cancelReveal(host);
         host.pending = active;
+        host.pendingNavigation = !showLoader;
         const token = ++host.revealToken;
-        this.showLoadingScene(host, active);
+        if (showLoader) this.showLoadingScene(host, active);
         this.raiseNotificationOverlay(host);
         void this.reveal(host, active, token);
         return;
@@ -1715,7 +2444,6 @@ export class TabManager {
       return;
     }
     if (active.contents.isDestroyed()) return;
-    if (host.pending === active) return;
     if (active.attached) {
       // Already the page in front; a reveal that was under way is abandoned.
       this.cancelReveal(host);
@@ -1725,6 +2453,9 @@ export class TabManager {
     }
     this.cancelReveal(host);
     host.pending = active;
+    // Every child-view selection waits for a reveal, including already loaded
+    // tabs. Only page navigation should start the blue progress bar.
+    host.pendingNavigation = !showLoader;
     const token = ++host.revealToken;
     const [width, height] = host.window.getContentSize();
     if (typeof width === "number" && typeof height === "number") {
@@ -1735,12 +2466,17 @@ export class TabManager {
     active.attached = true;
     view.setVisible(true);
     this.layout(host);
-    if (active.loading || !active.loaded) this.showLoadingScene(host, active);
+    if (showLoader && (active.loading || !active.loaded)) this.showLoadingScene(host, active);
     this.raiseNotificationOverlay(host);
-    void this.reveal(host, active, token);
+    void this.reveal(host, active, token, !showLoader);
   }
 
-  private async reveal(host: Host, tab: Tab, token: number): Promise<void> {
+  private async reveal(host: Host, tab: Tab, token: number, retainUntilLoaded = false): Promise<void> {
+    // Route compilation can outlast the compositor timeout. A navigation must
+    // keep its outgoing page until a document exists, then wait for its frame.
+    if (retainUntilLoaded && !tab.loaded) {
+      await new Promise<void>((resolve) => tab.onLoaded.push(resolve));
+    }
     let ceiling: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       this.frameReady(tab),
@@ -1753,6 +2489,7 @@ export class TabManager {
     if (host.window.isDestroyed() || host.pending !== tab || host.revealToken !== token) return;
     if (tab.contents.isDestroyed()) return;
     host.pending = null;
+    host.pendingNavigation = false;
     tab.painted = true;
     this.layout(host);
     for (const other of host.tabs) {
@@ -1763,6 +2500,9 @@ export class TabManager {
     // expose one stale frame between the loading field and the finished page.
     this.hideLoadingScene(host);
     this.settle(host, tab);
+    // DOM-ready can precede the actual reveal. Release the navigation bar only
+    // after the destination is in place, including on the outgoing renderer.
+    this.broadcast(host);
   }
 
   /** The first document has arrived and the renderer has composited it. */
@@ -1779,6 +2519,7 @@ export class TabManager {
   private cancelReveal(host: Host): void {
     const pending = host.pending;
     host.pending = null;
+    host.pendingNavigation = false;
     host.revealToken += 1;
     if (pending) this.detach(host.window, pending);
     this.hideLoadingScene(host);
@@ -1923,7 +2664,9 @@ export class TabManager {
     if (!scene || host.window.isDestroyed() || scene.contents.isDestroyed()) return;
     const [width, height] = host.window.getContentSize();
     if (typeof width !== "number" || typeof height !== "number") return;
-    const top = tabLoadingSceneTop(Boolean(tab.browser), tab.loaded);
+    // DOM-ready is not visible: the arriving shell remains offscreen until
+    // reveal commits its frame. Keep covering the future bookmarks row until then.
+    const top = tabLoadingSceneTop(Boolean(tab.browser), host.pending !== tab && tab.painted);
     scene.view.setBounds({
       x: 0,
       y: top,
@@ -2055,7 +2798,7 @@ export class TabManager {
     browser.addressSuggestionsOpen = false;
     browser.favicon = undefined;
     tab.url = "";
-    tab.title = "New tab";
+    tab.title = "Browser";
     if (browser.contents.isLoading()) browser.contents.stop();
     this.setTabLoading(tab, false);
     this.detachBrowser(host.window, tab);
@@ -2197,6 +2940,8 @@ export class TabManager {
       const waiting = tab.onLoaded;
       tab.onLoaded = [];
       for (const resume of waiting) resume();
+      const owner = current();
+      if (owner && !contents.isDestroyed()) this.broadcast(owner);
     };
     // A cold view can be closed before DOM readiness (for example, Ctrl+W
     // during a slow navigation). `reveal()` may already be waiting in
@@ -2209,6 +2954,7 @@ export class TabManager {
 
     contents.on("page-title-updated", (event, title) => {
       const owner = current();
+      if (owner?.baseRetired && tab === owner.base) return;
       // A browser tab is named after the untrusted page, not its trusted shell.
       if (tab.browser) {
         event.preventDefault();
@@ -2225,8 +2971,9 @@ export class TabManager {
     const remember = (url: string) => {
       if (tab.browser) return;
       if (!isTabPageUrl(this.options.allowed, url)) return;
-      tab.url = url;
       const owner = current();
+      if (owner?.baseRetired && tab === owner.base) return;
+      tab.url = url;
       if (owner) this.broadcast(owner);
     };
     contents.on("did-navigate", (_event, url) => remember(url));
@@ -2288,6 +3035,13 @@ export class TabManager {
   }
 
   private handleInput(host: Host, event: ElectronEvent, input: Input): void {
+    const browserAction = browserMenuShortcut(input);
+    const browserTab = tabById(host, host.activeId);
+    if (browserAction && browserTab?.browser) {
+      event.preventDefault();
+      void this.browserMenuAction(host, browserTab, browserAction);
+      return;
+    }
     if (isFullScreenShortcut(input)) {
       event.preventDefault();
       if (!host.window.isDestroyed()) host.window.setFullScreen(!host.window.isFullScreen());
@@ -2402,6 +3156,7 @@ export class TabManager {
       case "zoom": {
         if (!active) return;
         const contents = this.navigationContents(active);
+        if (active.browser) { this.zoomBrowserPage(host, contents, shortcut.direction); return; }
         const level = contents.getZoomLevel();
         contents.setZoomLevel(
           shortcut.direction === "reset" ? 0 : level + (shortcut.direction === "in" ? 0.5 : -0.5),

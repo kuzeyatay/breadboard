@@ -191,13 +191,14 @@ async function complete(
     });
     if (!response.ok) throw new Error(`ChatMock returned ${response.status}`);
     const data = await response.json() as {
-      choices?: Array<{ message?: ChatMessage }>;
+      choices?: Array<{ message?: ChatMessage; finish_reason?: string }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const message = data.choices?.[0]?.message;
     if (!message) throw new Error("ChatMock returned no message");
     return {
       message,
+      finishReason: data.choices?.[0]?.finish_reason,
       usage: {
         inputTokens: data.usage?.prompt_tokens ?? 0,
         outputTokens: data.usage?.completion_tokens ?? 0,
@@ -376,10 +377,17 @@ async function drive(run: RunState, input: OpenGymRuntimeWorkerRunInput): Promis
     emit(run, "agent.usage", usage);
     const { thinking, answer } = splitReasoning(completion.message.content ?? "");
     if (thinking) emit(run, "agent.thinking", { step: step + 1, summary: thinking.split(/\r?\n/).filter(Boolean).at(-1)?.slice(0, 200) ?? "" });
-    if (answer) finalText = answer;
     messages.push(completion.message);
     const calls = completion.message.tool_calls ?? [];
-    if (!calls.length) break;
+    if (!calls.length) {
+      if (completion.finishReason === "length" || completion.finishReason === "content_filter") {
+        throw new Error("openGym stopped before the answer was complete. Please retry the request.");
+      }
+      finalText = answer;
+      break;
+    }
+    // Prose accompanying tool calls is progress, not the completed program.
+    // In particular, never save it if the next step exceeds the run's limit.
     for (const call of calls) {
       let args: Record<string, unknown> = {};
       try { args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>; } catch { /* tool receives empty args */ }
@@ -387,7 +395,7 @@ async function drive(run: RunState, input: OpenGymRuntimeWorkerRunInput): Promis
       messages.push({ role: "tool", tool_call_id: call.id, content: result });
     }
   }
-  if (!finalText) finalText = "openGym reached its step limit before it could produce a useful answer.";
+  if (!finalText) throw new Error("openGym ended before it could finish an answer. Please retry the request.");
   // Tool searches often return substitutions the final answer never chose.
   // Animate only the exact registered names that actually reached the answer.
   const answerNames = finalText.toLowerCase();
@@ -406,7 +414,7 @@ async function drive(run: RunState, input: OpenGymRuntimeWorkerRunInput): Promis
     emit(run, "state.saved", { kind: "program", programId: saved.id, title });
     let artifactCreated = false;
     if (input.conversationPublicId) {
-      artifactCreated = Boolean(await publishOpenGymProgram({
+      const artifact = await publishOpenGymProgram({
         userId: run.userId,
         conversationPublicId: input.conversationPublicId,
         agentRunId: run.runId,
@@ -415,10 +423,11 @@ async function drive(run: RunState, input: OpenGymRuntimeWorkerRunInput): Promis
         title,
         markdown: finalText,
         exerciseIds: selected.map((exercise) => exercise.id),
-      }));
+      });
+      artifactCreated = artifact?.status === "ready";
     }
     emit(run, "artifact.published", { created: artifactCreated, title });
-    if (!artifactCreated) summary += "\n\n_This program is saved in openGym's persistent state; this launch had no artifact-capable conversation context._";
+    if (!artifactCreated) summary += "\n\nYour program is saved in openGym, but couldn’t be added to this chat.";
   }
   await completeRun(run, summary, usage);
 }

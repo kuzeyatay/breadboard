@@ -15,6 +15,7 @@ export const HERMES_CHATMOCK_PROVIDER_ID = "chatmock";
 export const HERMES_MODEL_IDS: readonly string[] = DEFAULT_ASSISTANT_MODELS;
 
 const MAX_REASONING_MODELS = new Set([
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",

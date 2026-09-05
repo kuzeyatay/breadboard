@@ -145,6 +145,7 @@ export function evidenceKindForTool(toolName: string): EvidenceKind {
   if (name === "edit" || name === "write" || name === "patch" || name === "applypatch" || name === "writefile") return "file_write";
   if (name === "task") return "subagent";
   if (name.startsWith("map")) return "map";
+  if (name === "gardendiscoversources") return "web_search";
   if (name.startsWith("garden")) return "garden";
   if (name.startsWith("gbrain") || name.includes("gbrain") || name.startsWith("memory") || name === "savememory") return "memory";
   if (name.includes("mcp")) return "mcp";
@@ -197,6 +198,8 @@ export function evidenceKindForTool(toolName: string): EvidenceKind {
 }
 
 export function activityLabelForTool(toolName: string): string {
+  if (toolName === "garden_discover_sources") return "Finding Garden sources";
+  if (toolName === "garden_import_source") return "Adding Garden source";
   if (toolName === "artifact_image_generate") return "Generating image";
   if (toolName === "document_skill_read") return "Reading the document";
   const kind = evidenceKindForTool(toolName);
