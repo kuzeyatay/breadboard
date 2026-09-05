@@ -18,6 +18,55 @@ import { styleText } from "util"
 export type QuartzMdProcessor = Processor<MDRoot, MDRoot, MDRoot>
 export type QuartzHtmlProcessor = Processor<undefined, MDRoot, HTMLRoot>
 
+type MutableMdNode = {
+  type: string
+  value?: unknown
+  children?: MutableMdNode[]
+}
+
+function readableRawHtmlText(value: string): string {
+  return value
+    .replace(
+      /<\s*\/\s*(?:td|th)\s*>\s*<\s*(?:td|th)\b[^>]*>/gi,
+      " | ",
+    )
+    .replace(/<\s*br\b[^>]*\/?\s*>/gi, "\n")
+    .replace(
+      /<\s*\/\s*(?:address|article|blockquote|div|figcaption|figure|footer|h[1-6]|header|li|main|nav|ol|p|pre|section|table|tbody|tfoot|thead|tr|ul)\s*>/gi,
+      "\n",
+    )
+    // The final alternative deliberately consumes an unterminated trailing tag
+    // such as `</t`, which can occur in bounded document-extraction output.
+    .replace(/<[^>]*(?:>|$)/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+/** Replace raw HTML nodes with readable text for a one-file recovery retry.
+ * The normal render path is unchanged. This fallback prevents one malformed
+ * extracted table or truncated closing tag from aborting the global garden
+ * publication while retaining the source's visible text. */
+export function degradeRawHtmlNodesForRetry(tree: MDRoot): number {
+  let degraded = 0
+  const visitNode = (node: MutableMdNode): void => {
+    if (!Array.isArray(node.children)) return
+    node.children = node.children.map((child) => {
+      if (child.type === "html" && typeof child.value === "string") {
+        degraded += 1
+        return {
+          type: "text",
+          value: readableRawHtmlText(child.value),
+        }
+      }
+      visitNode(child)
+      return child
+    })
+  }
+  visitNode(tree as MutableMdNode)
+  return degraded
+}
+
 export function createMdProcessor(ctx: BuildCtx): QuartzMdProcessor {
   const transformers = ctx.cfg.plugins.transformers
 
@@ -126,8 +175,33 @@ export function createMarkdownParser(ctx: BuildCtx, mdContent: MarkdownContent[]
     for (const [ast, file] of mdContent) {
       try {
         const perf = new PerfTimer()
-
-        const newAst = await processor.run(ast as MDRoot, file)
+        const fileDataBeforeRender = structuredClone(file.data)
+        const messageCountBeforeRender = file.messages.length
+        let newAst: HTMLRoot
+        try {
+          // HTML transformers are allowed to mutate their input. Keep the
+          // Markdown tree pristine so a malformed raw fragment can be retried
+          // without any partial mutations from the failed first pass.
+          newAst = await processor.run(structuredClone(ast) as MDRoot, file)
+        } catch (initialError) {
+          file.data = fileDataBeforeRender
+          file.messages.length = messageCountBeforeRender
+          const fallbackAst = structuredClone(ast) as MDRoot
+          const degradedRawNodeCount = degradeRawHtmlNodesForRetry(fallbackAst)
+          if (degradedRawNodeCount === 0) throw initialError
+          try {
+            newAst = await processor.run(fallbackAst, file)
+            console.warn(
+              `[quartz] Recovered malformed raw HTML in ${file.data.filePath ?? file.path} ` +
+                `by rendering ${degradedRawNodeCount} raw node(s) as text.`,
+            )
+          } catch (fallbackError) {
+            throw new AggregateError(
+              [initialError, fallbackError],
+              "HTML rendering failed before and after the malformed-raw-HTML fallback.",
+            )
+          }
+        }
         res.push([newAst, file])
 
         if (ctx.argv.verbose) {

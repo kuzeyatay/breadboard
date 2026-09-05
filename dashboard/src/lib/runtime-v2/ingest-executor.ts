@@ -1,6 +1,11 @@
 // Disposable document-ingestion executor. Never import this module from Next routes.
 import fs from "fs";
 import path from "path";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
+import { setFlagsFromString } from "node:v8";
 import AdmZip from "adm-zip";
 import { PDFParse } from "pdf-parse";
 import type OpenAI from "openai";
@@ -8,12 +13,14 @@ import { withCouncil } from "@/lib/council";
 import {
   cleanGeneratedText,
   extractDocumentKnowledge,
+  IncompleteKnowledgeExtractionError,
   normalizeSourceFileIdentity,
   scanClusterKnowledge,
   slugify,
   writeDocumentKnowledge,
   type DocumentPage,
   type KnowledgeExtraction,
+  type KnowledgeExtractionChunkCheckpoint,
   type KnowledgeWriteTransaction,
 } from "@/lib/knowledge";
 import {
@@ -22,18 +29,34 @@ import {
   scanDocumentForHiddenContent,
   type DocumentSafetyReport,
 } from "@/lib/document-safety";
-import { ANYDOC_VERSION, convertWithAnydoc } from "@/lib/anydoc/convert";
-import type { AnydocImageSaver } from "@/lib/anydoc/convert";
+import {
+  ANYDOC_VERSION,
+  convertWithAnydoc,
+} from "@/lib/anydoc/convert";
+import type {
+  AnydocConversion,
+  AnydocImageSaver,
+} from "@/lib/anydoc/convert";
 import {
   anydocFormatForExtension,
   anydocPageLabel,
 } from "@/lib/anydoc/formats";
-import { getVlmOcrConfig } from "@/lib/vlm-ocr/config";
+import {
+  getVlmOcrConfig,
+  type VlmOcrConfig,
+} from "@/lib/vlm-ocr/config";
 import {
   VlmOcrDisabledError,
   VlmOcrUnavailableError,
 } from "@/lib/vlm-ocr/errors";
-import { parsePagesWithVlm } from "@/lib/vlm-ocr/parse";
+import {
+  parsePagesWithVlm,
+  type VlmOcrDocument,
+} from "@/lib/vlm-ocr/parse";
+import {
+  createOcrTextCompanionPdf,
+  type OcrTextLayerPage,
+} from "@/lib/pdf-text-layer";
 import type { FigureSaver } from "@/lib/vlm-ocr/figures";
 import type { VlmOcrTask } from "@/lib/vlm-ocr/prompts";
 import { toBreadboardMarkdown } from "@/lib/vlm-ocr/quartz-safe";
@@ -72,6 +95,581 @@ const PDF_OUTLINE_MAX_ENTRIES = 36;
 // of PNGs up front. This is not a source-page limit: Learn renders any later
 // syllabus/contract page from the preserved source_pdf on demand.
 const PDF_EAGER_SNAPSHOT_CACHE_PAGES = 24;
+// A 1,400 px page is often several megabytes as a data URL. Rendering an
+// entire textbook before OCR retained gigabytes of page images and exhausted
+// Node's heap. Keep only one small render batch live at a time.
+const PDF_VLM_RENDER_BATCH_PAGES = 4;
+const PDF_RENDER_BATCH_MAX_STDOUT_BYTES = 128 * 1024 * 1024;
+const PDF_ANYDOC_MAX_STDOUT_BYTES = 256 * 1024 * 1024;
+const PDF_ANYDOC_TIMEOUT_MS = 5 * 60_000;
+const PDF_VLM_CHECKPOINT_SCHEMA_VERSION = 1;
+const PDF_VLM_CHECKPOINT_MAX_BYTES = 256 * 1024 * 1024;
+const KNOWLEDGE_CHECKPOINT_SCHEMA_VERSION = 1;
+const KNOWLEDGE_CHECKPOINT_MAX_BYTES = 64 * 1024 * 1024;
+const PDF_RENDER_BATCH_WORKER_PATH = fileURLToPath(
+  new URL("../../../scripts/runtime-v2-pdf-render-batch-worker.mjs", import.meta.url),
+);
+const PDF_ANYDOC_WORKER_PATH = fileURLToPath(
+  new URL("../../../scripts/runtime-v2-anydoc-pdf-worker.mjs", import.meta.url),
+);
+let collectPdfBatchGarbage: (() => void) | null | undefined;
+let anydocTemporarySequence = 0;
+let vlmCheckpointWriteSequence = 0;
+let knowledgeCheckpointWriteSequence = 0;
+
+interface PdfVlmCheckpointBatch {
+  first: number;
+  last: number;
+  result: VlmOcrDocument;
+}
+
+interface PdfVlmCheckpoint {
+  schemaVersion: number;
+  identity: string;
+  totalPages: number;
+  batches: PdfVlmCheckpointBatch[];
+}
+
+interface PdfVlmCheckpointLocation {
+  filePath: string;
+  identity: string;
+}
+
+interface KnowledgeCheckpointEntry {
+  index: number;
+  total: number;
+  inputHash: string;
+  extraction: KnowledgeExtraction;
+}
+
+interface KnowledgeCheckpointFile {
+  schemaVersion: number;
+  identity: string;
+  totalChunks: number;
+  chunks: KnowledgeCheckpointEntry[];
+}
+
+interface KnowledgeCheckpointLocation {
+  filePath: string;
+  identity: string;
+}
+
+function collectReleasedPdfBatchMemory(): void {
+  if (collectPdfBatchGarbage === undefined) {
+    try {
+      const existing = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+      if (typeof existing === "function") {
+        collectPdfBatchGarbage = existing.bind(globalThis);
+      } else {
+        // The disposable ingestion worker owns its isolate. Expose a local GC
+        // hook so multi-thousand-page PDFs do not wait for V8's multi-gigabyte
+        // heap-growth threshold before releasing completed image batches.
+        setFlagsFromString("--expose_gc");
+        const exposed = runInNewContext("gc") as unknown;
+        collectPdfBatchGarbage =
+          typeof exposed === "function" ? (exposed as () => void) : null;
+      }
+    } catch {
+      collectPdfBatchGarbage = null;
+    }
+  }
+  collectPdfBatchGarbage?.();
+}
+
+function pdfVlmCheckpointLocation({
+  contentPath,
+  clusterSlug,
+  filename,
+  buffer,
+  config,
+  task,
+}: {
+  contentPath: string;
+  clusterSlug: string;
+  filename: string;
+  buffer: Buffer;
+  config: VlmOcrConfig;
+  task: VlmOcrTask;
+}): PdfVlmCheckpointLocation {
+  const profile = JSON.stringify({
+    schemaVersion: PDF_VLM_CHECKPOINT_SCHEMA_VERSION,
+    filename,
+    task,
+    model: config.model,
+    contextSize: config.contextSize,
+    maxTokens: config.maxTokens,
+    temperature: config.temperature,
+    topP: config.topP,
+    topK: config.topK,
+    repeatPenalty: config.repeatPenalty,
+    pageImageWidth: config.pageImageWidth,
+    maxPages: config.maxPages,
+  });
+  const identity = createHash("sha256")
+    .update(buffer)
+    .update("\0")
+    .update(profile)
+    .digest("hex");
+  const directory = path.join(
+    path.dirname(contentPath),
+    ".ingest-checkpoints",
+    "vlm",
+    clusterSlug,
+  );
+  return { filePath: path.join(directory, `${identity}.json`), identity };
+}
+
+function validCheckpointBatch(
+  value: unknown,
+  totalPages: number,
+): value is PdfVlmCheckpointBatch {
+  if (typeof value !== "object" || value === null) return false;
+  const batch = value as Partial<PdfVlmCheckpointBatch>;
+  if (
+    !Number.isSafeInteger(batch.first) ||
+    !Number.isSafeInteger(batch.last) ||
+    batch.first! < 1 ||
+    batch.last! < batch.first! ||
+    batch.last! > totalPages ||
+    batch.first! % PDF_VLM_RENDER_BATCH_PAGES !== 1 ||
+    batch.last! !==
+      Math.min(batch.first! + PDF_VLM_RENDER_BATCH_PAGES - 1, totalPages) ||
+    typeof batch.result !== "object" ||
+    batch.result === null
+  ) {
+    return false;
+  }
+  const result = batch.result as VlmOcrDocument;
+  return (
+    typeof result.markdown === "string" &&
+    Array.isArray(result.pages) &&
+    result.pages.length === batch.last! - batch.first! + 1 &&
+    result.pages.every(
+      (page, index) =>
+        typeof page === "object" &&
+        page !== null &&
+        page.pageNumber === batch.first! + index &&
+        typeof page.label === "string" &&
+        typeof page.text === "string" &&
+        typeof page.failed === "boolean",
+    ) &&
+    Array.isArray(result.warnings) &&
+    result.warnings.every((warning) => typeof warning === "string") &&
+    Number.isSafeInteger(result.failedPages) &&
+    Number.isSafeInteger(result.truncatedPages) &&
+    Number.isSafeInteger(result.figureCount) &&
+    result.failedPages === 0 &&
+    result.truncatedPages === 0 &&
+    result.figureCount === 0
+  );
+}
+
+function readPdfVlmCheckpoint(
+  location: PdfVlmCheckpointLocation,
+  totalPages: number,
+): Map<number, PdfVlmCheckpointBatch> {
+  try {
+    const metadata = fs.lstatSync(location.filePath, { throwIfNoEntry: false });
+    if (
+      !metadata?.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size <= 0 ||
+      metadata.size > PDF_VLM_CHECKPOINT_MAX_BYTES
+    ) {
+      return new Map();
+    }
+    const parsed = JSON.parse(
+      fs.readFileSync(location.filePath, "utf8"),
+    ) as Partial<PdfVlmCheckpoint>;
+    if (
+      parsed.schemaVersion !== PDF_VLM_CHECKPOINT_SCHEMA_VERSION ||
+      parsed.identity !== location.identity ||
+      parsed.totalPages !== totalPages ||
+      !Array.isArray(parsed.batches)
+    ) {
+      return new Map();
+    }
+    const batches = new Map<number, PdfVlmCheckpointBatch>();
+    for (const batch of parsed.batches) {
+      if (!validCheckpointBatch(batch, totalPages) || batches.has(batch.first)) {
+        return new Map();
+      }
+      batches.set(batch.first, batch);
+    }
+    return batches;
+  } catch {
+    // A partial or stale cache is never authoritative; the page is OCR'd again.
+    return new Map();
+  }
+}
+
+function writePdfVlmCheckpoint(
+  location: PdfVlmCheckpointLocation,
+  totalPages: number,
+  batches: Map<number, PdfVlmCheckpointBatch>,
+): void {
+  const value: PdfVlmCheckpoint = {
+    schemaVersion: PDF_VLM_CHECKPOINT_SCHEMA_VERSION,
+    identity: location.identity,
+    totalPages,
+    batches: [...batches.values()].sort((left, right) => left.first - right.first),
+  };
+  const serialized = `${JSON.stringify(value)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > PDF_VLM_CHECKPOINT_MAX_BYTES) {
+    throw new Error("The VLM checkpoint exceeded its bounded size.");
+  }
+  fs.mkdirSync(path.dirname(location.filePath), { recursive: true });
+  vlmCheckpointWriteSequence += 1;
+  const pending = `${location.filePath}.pending.${process.pid}.${vlmCheckpointWriteSequence}`;
+  try {
+    fs.writeFileSync(pending, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    fs.renameSync(pending, location.filePath);
+  } finally {
+    fs.rmSync(pending, { force: true });
+  }
+}
+
+function validStringArray(value: unknown, maximumItems = 10_000): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= maximumItems &&
+    value.every((item) => typeof item === "string")
+  );
+}
+
+function validKnowledgeExtraction(value: unknown): value is KnowledgeExtraction {
+  if (typeof value !== "object" || value === null) return false;
+  const extraction = value as Partial<KnowledgeExtraction>;
+  return (
+    typeof extraction.documentTitle === "string" &&
+    typeof extraction.summary === "string" &&
+    validStringArray(extraction.suggestedTags, 1_000) &&
+    Array.isArray(extraction.topics) &&
+    extraction.topics.length <= 10_000 &&
+    extraction.topics.every(
+      (topic) =>
+        typeof topic === "object" &&
+        topic !== null &&
+        typeof topic.title === "string" &&
+        (topic.slug === undefined || typeof topic.slug === "string") &&
+        typeof topic.explanation === "string" &&
+        validStringArray(topic.keyPoints) &&
+        validStringArray(topic.sourceEvidence) &&
+        validStringArray(topic.locations) &&
+        validStringArray(topic.relatedTopics) &&
+        validStringArray(topic.tags),
+    ) &&
+    Array.isArray(extraction.relationships) &&
+    extraction.relationships.length <= 50_000 &&
+    extraction.relationships.every(
+      (relationship) =>
+        typeof relationship === "object" &&
+        relationship !== null &&
+        typeof relationship.source === "string" &&
+        typeof relationship.target === "string" &&
+        typeof relationship.relation === "string",
+    )
+  );
+}
+
+function knowledgeCheckpointLocation({
+  contentPath,
+  clusterSlug,
+  filename,
+  buffer,
+  model,
+  sourceType,
+  isHandwriting,
+}: {
+  contentPath: string;
+  clusterSlug: string;
+  filename: string;
+  buffer: Buffer;
+  model: string;
+  sourceType: string;
+  isHandwriting: boolean;
+}): KnowledgeCheckpointLocation {
+  const profile = JSON.stringify({
+    schemaVersion: KNOWLEDGE_CHECKPOINT_SCHEMA_VERSION,
+    filename,
+    model,
+    sourceType,
+    isHandwriting,
+  });
+  // Keep the outer checkpoint stable across nondeterministic OCR retries. Each
+  // chunk is still independently fenced by its exact source-text SHA below, so
+  // changed OCR is re-extracted without throwing away unaffected sections.
+  const identity = createHash("sha256")
+    .update(buffer)
+    .update("\0")
+    .update(profile)
+    .digest("hex");
+  const directory = path.join(
+    path.dirname(contentPath),
+    ".ingest-checkpoints",
+    "knowledge",
+    clusterSlug,
+  );
+  return { filePath: path.join(directory, `${identity}.json`), identity };
+}
+
+function readKnowledgeCheckpoint(
+  location: KnowledgeCheckpointLocation,
+): Map<number, KnowledgeCheckpointEntry> {
+  try {
+    const metadata = fs.lstatSync(location.filePath, { throwIfNoEntry: false });
+    if (
+      !metadata?.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size <= 0 ||
+      metadata.size > KNOWLEDGE_CHECKPOINT_MAX_BYTES
+    ) {
+      return new Map();
+    }
+    const parsed = JSON.parse(
+      fs.readFileSync(location.filePath, "utf8"),
+    ) as Partial<KnowledgeCheckpointFile>;
+    if (
+      parsed.schemaVersion !== KNOWLEDGE_CHECKPOINT_SCHEMA_VERSION ||
+      parsed.identity !== location.identity ||
+      !Number.isSafeInteger(parsed.totalChunks) ||
+      parsed.totalChunks! < 1 ||
+      parsed.totalChunks! > 10_000 ||
+      !Array.isArray(parsed.chunks)
+    ) {
+      return new Map();
+    }
+    const chunks = new Map<number, KnowledgeCheckpointEntry>();
+    for (const entry of parsed.chunks) {
+      if (
+        typeof entry !== "object" ||
+        entry === null ||
+        !Number.isSafeInteger(entry.index) ||
+        entry.index < 0 ||
+        entry.index >= parsed.totalChunks! ||
+        entry.total !== parsed.totalChunks ||
+        !/^[a-f0-9]{64}$/u.test(entry.inputHash) ||
+        !validKnowledgeExtraction(entry.extraction) ||
+        chunks.has(entry.index)
+      ) {
+        return new Map();
+      }
+      chunks.set(entry.index, entry);
+    }
+    return chunks;
+  } catch {
+    return new Map();
+  }
+}
+
+function writeKnowledgeCheckpoint(
+  location: KnowledgeCheckpointLocation,
+  totalChunks: number,
+  chunks: Map<number, KnowledgeCheckpointEntry>,
+): void {
+  const value: KnowledgeCheckpointFile = {
+    schemaVersion: KNOWLEDGE_CHECKPOINT_SCHEMA_VERSION,
+    identity: location.identity,
+    totalChunks,
+    chunks: [...chunks.values()].sort((left, right) => left.index - right.index),
+  };
+  const serialized = `${JSON.stringify(value)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > KNOWLEDGE_CHECKPOINT_MAX_BYTES) {
+    throw new Error("The knowledge checkpoint exceeded its bounded size.");
+  }
+  fs.mkdirSync(path.dirname(location.filePath), { recursive: true });
+  knowledgeCheckpointWriteSequence += 1;
+  const pending = `${location.filePath}.pending.${process.pid}.${knowledgeCheckpointWriteSequence}`;
+  try {
+    fs.writeFileSync(pending, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    fs.renameSync(pending, location.filePath);
+  } finally {
+    fs.rmSync(pending, { force: true });
+  }
+}
+
+function knowledgeChunkCheckpoint(
+  location: KnowledgeCheckpointLocation,
+): KnowledgeExtractionChunkCheckpoint {
+  const chunks = readKnowledgeCheckpoint(location);
+  const inputHash = (sourceChunk: string) =>
+    createHash("sha256").update(sourceChunk).digest("hex");
+  return {
+    load({ index, total, sourceChunk }) {
+      const entry = chunks.get(index);
+      return entry?.total === total && entry.inputHash === inputHash(sourceChunk)
+        ? entry.extraction
+        : null;
+    },
+    save({ index, total, sourceChunk, extraction }) {
+      // A changed chunking strategy invalidates the old positional layout.
+      // Prune it before the next durable write so the checkpoint cannot become
+      // internally inconsistent while the new layout is filled.
+      for (const [cachedIndex, entry] of chunks) {
+        if (entry.total !== total) chunks.delete(cachedIndex);
+      }
+      chunks.set(index, {
+        index,
+        total,
+        inputHash: inputHash(sourceChunk),
+        extraction,
+      });
+      writeKnowledgeCheckpoint(location, total, chunks);
+    },
+  };
+}
+
+function renderPdfBatchInSubprocess({
+  sourceFilePath,
+  first,
+  last,
+  desiredWidth,
+  signal,
+}: {
+  sourceFilePath: string;
+  first: number;
+  last: number;
+  desiredWidth: number;
+  signal?: AbortSignal;
+}): Promise<PdfScreenshotPage[]> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      [
+        PDF_RENDER_BATCH_WORKER_PATH,
+        sourceFilePath,
+        String(first),
+        String(last),
+        String(desiredWidth),
+      ],
+      {
+        encoding: "utf8",
+        maxBuffer: PDF_RENDER_BATCH_MAX_STDOUT_BYTES,
+        windowsHide: true,
+        signal,
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(stdout) as unknown;
+          if (!Array.isArray(parsed) || parsed.length !== last - first + 1) {
+            throw new Error("The isolated PDF renderer returned an incomplete batch.");
+          }
+          const pages = parsed.map((value, index) => {
+            const expectedPageNumber = first + index;
+            if (
+              typeof value !== "object" ||
+              value === null ||
+              (value as { pageNumber?: unknown }).pageNumber !== expectedPageNumber ||
+              typeof (value as { dataUrl?: unknown }).dataUrl !== "string" ||
+              !(value as { dataUrl: string }).dataUrl.startsWith("data:image/png;base64,")
+            ) {
+              throw new Error("The isolated PDF renderer returned an invalid page.");
+            }
+            return {
+              pageNumber: expectedPageNumber,
+              dataUrl: (value as { dataUrl: string }).dataUrl,
+            };
+          });
+          resolve(pages);
+        } catch (parseError) {
+          reject(parseError);
+        }
+      },
+    );
+  });
+}
+
+function validatePdfAnydocConversion(value: unknown): AnydocConversion {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    (value as { format?: unknown }).format !== "pdf" ||
+    typeof (value as { markdown?: unknown }).markdown !== "string" ||
+    !(value as { markdown: string }).markdown.trim() ||
+    !Array.isArray((value as { sections?: unknown }).sections) ||
+    !Array.isArray((value as { imagePaths?: unknown }).imagePaths) ||
+    !Array.isArray((value as { warnings?: unknown }).warnings)
+  ) {
+    throw new Error("The isolated anydoc converter returned an invalid result.");
+  }
+  const conversion = value as AnydocConversion;
+  if (
+    conversion.sections.some(
+      (section) =>
+        typeof section !== "object" ||
+        section === null ||
+        typeof section.label !== "string" ||
+        typeof section.text !== "string",
+    ) ||
+    conversion.imagePaths.some((entry) => typeof entry !== "string") ||
+    conversion.warnings.some((entry) => typeof entry !== "string")
+  ) {
+    throw new Error("The isolated anydoc converter returned invalid fields.");
+  }
+  return conversion;
+}
+
+async function convertPdfWithAnydocInSubprocess({
+  bytes,
+  sourceFilePath,
+  signal,
+  onProgress,
+  knowledgeWriteTransaction,
+}: {
+  bytes: Buffer;
+  sourceFilePath: string;
+  signal?: AbortSignal;
+  onProgress: (step: string) => void;
+  knowledgeWriteTransaction?: KnowledgeWriteTransaction;
+}): Promise<AnydocConversion> {
+  throwIfRequestAborted(signal);
+  onProgress("Converting the PDF with isolated anydoc…");
+  anydocTemporarySequence += 1;
+  const temporaryPath = path.join(
+    path.dirname(sourceFilePath),
+    `.${path.basename(sourceFilePath)}.anydoc-${process.pid}-${anydocTemporarySequence}.pdf`,
+  );
+  writeTrackedIngestionAsset(
+    temporaryPath,
+    bytes,
+    knowledgeWriteTransaction,
+  );
+  try {
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile(
+        process.execPath,
+        [PDF_ANYDOC_WORKER_PATH, temporaryPath],
+        {
+          encoding: "utf8",
+          maxBuffer: PDF_ANYDOC_MAX_STDOUT_BYTES,
+          timeout: PDF_ANYDOC_TIMEOUT_MS,
+          windowsHide: true,
+          signal,
+        },
+        (error, childStdout, childStderr) => {
+          if (error) {
+            const detail = childStderr.trim().slice(0, 1_000);
+            reject(
+              new Error(
+                `The isolated anydoc converter failed${detail ? `: ${detail}` : `: ${error.message}`}`,
+              ),
+            );
+            return;
+          }
+          resolve(childStdout);
+        },
+      );
+    });
+    throwIfRequestAborted(signal);
+    return validatePdfAnydocConversion(JSON.parse(stdout) as unknown);
+  } finally {
+    fs.rmSync(temporaryPath, { force: true });
+  }
+}
 
 // Formats whose original bytes carry concealment the extracted text no longer
 // shows — white-on-white runs, 1pt type, render mode 3. Everything else is
@@ -1154,6 +1752,125 @@ async function getPdfScreenshotPages(
   }
 }
 
+async function parsePdfPagesWithVlm({
+  buffer,
+  sourceFilePath,
+  config,
+  task,
+  signal,
+  onProgress,
+  saveFigure,
+  checkpoint,
+}: {
+  buffer: Buffer;
+  sourceFilePath: string;
+  config: VlmOcrConfig;
+  task: VlmOcrTask;
+  signal?: AbortSignal;
+  onProgress: (step: string) => void;
+  saveFigure: FigureSaver;
+  checkpoint: PdfVlmCheckpointLocation;
+}): Promise<{
+  vlm: VlmOcrDocument;
+  snapshots: PdfScreenshotPage[];
+  totalPages: number;
+}> {
+  const infoParser = new PDFParse({ data: buffer });
+  let sourcePageCount: number;
+  try {
+    const info = await infoParser.getInfo();
+    sourcePageCount = info.total;
+  } finally {
+    await infoParser.destroy();
+  }
+  const totalPages = config.maxPages > 0
+    ? Math.min(sourcePageCount, config.maxPages)
+    : sourcePageCount;
+  const snapshots: PdfScreenshotPage[] = [];
+  const checkpointBatches = readPdfVlmCheckpoint(checkpoint, totalPages);
+  const results: PdfVlmCheckpointBatch[] = [];
+
+  for (
+    let first = 1;
+    first <= totalPages;
+    first += PDF_VLM_RENDER_BATCH_PAGES
+  ) {
+    throwIfRequestAborted(signal);
+    const last = Math.min(first + PDF_VLM_RENDER_BATCH_PAGES - 1, totalPages);
+    const cached = checkpointBatches.get(first);
+    let rendered: PdfScreenshotPage[] = [];
+    try {
+      if (!cached || first <= PDF_EAGER_SNAPSHOT_CACHE_PAGES) {
+        // pdf.js and its canvas backend retain process-level allocation pools.
+        // Run each bounded render in a short-lived subprocess so Windows
+        // releases that native memory before the next batch begins.
+        rendered = await renderPdfBatchInSubprocess({
+          sourceFilePath,
+          first,
+          last,
+          desiredWidth: config.pageImageWidth,
+          signal,
+        });
+        for (const page of rendered) {
+          if (snapshots.length >= PDF_EAGER_SNAPSHOT_CACHE_PAGES) break;
+          snapshots.push(page);
+        }
+      }
+
+      if (cached) {
+        results.push(cached);
+        onProgress(`Restoring VLM checkpoint (${last}/${totalPages} pages)…`);
+        continue;
+      }
+
+      const result = await parsePagesWithVlm({
+        config: { ...config, maxPages: 0 },
+        pages: rendered.map((page) => ({
+          label: `Page ${page.pageNumber}`,
+          pageNumber: page.pageNumber,
+          dataUrl: page.dataUrl,
+        })),
+        task,
+        signal,
+        onProgress,
+        saveFigure,
+        progressOffset: first - 1,
+        progressTotal: totalPages,
+      });
+      const batch = { first, last, result };
+      results.push(batch);
+      if (
+        result.failedPages === 0 &&
+        result.truncatedPages === 0 &&
+        result.figureCount === 0
+      ) {
+        checkpointBatches.set(first, batch);
+        writePdfVlmCheckpoint(checkpoint, totalPages, checkpointBatches);
+      }
+    } finally {
+      collectReleasedPdfBatchMemory();
+    }
+  }
+
+  const vlm: VlmOcrDocument = {
+    markdown: results.map((batch) => batch.result.markdown.trim()).filter(Boolean).join("\n\n"),
+    pages: results.flatMap((batch) => batch.result.pages),
+    warnings: [...new Set(results.flatMap((batch) => batch.result.warnings))],
+    failedPages: results.reduce((count, batch) => count + batch.result.failedPages, 0),
+    truncatedPages: results.reduce(
+      (count, batch) => count + batch.result.truncatedPages,
+      0,
+    ),
+    figureCount: results.reduce((count, batch) => count + batch.result.figureCount, 0),
+  };
+  if (totalPages < sourcePageCount) {
+    vlm.warnings.unshift(
+      `Only the first ${totalPages} of ${sourcePageCount} pages were parsed (VLM_OCR_MAX_PAGES).`,
+    );
+  }
+  return { vlm, snapshots, totalPages };
+}
+
 async function getPdfTextPages(
   buffer: Buffer,
 ): Promise<{ text: string; pages: DocumentPage[]; warning: string }> {
@@ -1291,6 +2008,33 @@ async function transcribePdfPages(
         ? `Handwriting OCR failed for ${warnings.length} page${warnings.length === 1 ? "" : "s"}: ${warnings.join("; ")}`
         : "",
   };
+}
+
+/**
+ * Keep the uploaded PDF byte-for-byte authoritative. The OCR transcript is
+ * already retained in the source note and generated learning pages; rewriting
+ * the source asset with an invisible text layer would silently change the file
+ * the user uploaded and makes hash-based recovery/auditing impossible.
+ */
+async function preserveOriginalSourcePdf({
+  pages,
+  signal,
+  emit,
+}: {
+  pages: OcrTextLayerPage[];
+  signal?: AbortSignal;
+  emit: (step: string) => void;
+}): Promise<string> {
+  if (
+    !pages.some(
+      (page) => Number.isInteger(page.pageNumber) && page.text.trim().length > 0,
+    )
+  ) {
+    return "";
+  }
+  throwIfRequestAborted(signal);
+  emit("Preserving the original source PDF; OCR text is retained in the notes…");
+  return "";
 }
 
 /**
@@ -1442,6 +2186,7 @@ export async function runIngest({
   createdFilePaths,
   createdMarkdownPaths,
   knowledgeWriteTransaction,
+  deferredCheckpointCleanupPaths,
   emit,
 }: {
   request: Request;
@@ -1463,6 +2208,11 @@ export async function runIngest({
   createdFilePaths: string[];
   createdMarkdownPaths: string[];
   knowledgeWriteTransaction?: KnowledgeWriteTransaction;
+  /**
+   * Runtime V2 defers checkpoint deletion until its external garden/result
+   * transaction commits. Legacy callers omit this and keep eager cleanup.
+   */
+  deferredCheckpointCleanupPaths?: string[];
   emit: (step: string) => void;
 }): Promise<Record<string, unknown>> {
   // Multipart bytes are staged to a private file before this worker boundary.
@@ -1512,6 +2262,8 @@ export async function runIngest({
   // Pictures pulled out of the document: figures the VLM cropped off a page, or
   // images anydoc lifted out of a document package.
   let figureCount = 0;
+  let completedVlmCheckpointPath = "";
+  let completedKnowledgeCheckpointPath = "";
 
   // The VLM reads pixels, so it only applies to formats that rasterize.
   const useVlm = parseWithVlm && (isImageExt(ext) || ext === "pdf");
@@ -1522,11 +2274,12 @@ export async function runIngest({
     );
   }
 
-  // anydoc reads document packages, so it applies to everything the VLM does
-  // not — and to PDFs with a text layer, where the VLM still wins if both were
-  // asked for (it is the one that can read a page the text layer lies about).
+  // anydoc reads document packages. When it is requested alongside the VLM for
+  // a PDF, both readers run: the VLM remains the visual primary and anydoc is
+  // retained as a text-layer cross-check in the source note and map input.
   const anydocFormat = parseWithAnydoc ? anydocFormatForExtension(ext) : null;
-  const useAnydoc = Boolean(anydocFormat) && !useVlm;
+  const useAnydoc = Boolean(anydocFormat);
+  let anydocApplied = false;
   if (parseWithAnydoc && !anydocFormat) {
     screenshotWarning = joinWarnings(
       screenshotWarning,
@@ -1534,7 +2287,7 @@ export async function runIngest({
     );
   }
 
-  if (useAnydoc) {
+  if (useAnydoc && !useVlm) {
     throwIfRequestAborted(request.signal);
     const buffer = await fileBytes();
     // A PDF keeps its original beside the note: anydoc reads the text layer,
@@ -1562,6 +2315,7 @@ export async function runIngest({
       }),
       onProgress: emit,
     });
+    anydocApplied = true;
     throwIfRequestAborted(request.signal);
 
     pages =
@@ -1664,34 +2418,32 @@ export async function runIngest({
   } else if (ext === "pdf") {
     throwIfRequestAborted(request.signal);
     const buffer = await fileBytes();
-    sourcePdfPath = saveUploadedPdfAsset({
+    const sourcePdf = saveUploadedPdfAsset({
       contentPath,
       clusterSlug: normalizedClusterSlug,
       baseName: nameWithoutExt,
       buffer,
       createdFilePaths,
       knowledgeWriteTransaction,
-    }).relativePath;
+    });
+    sourcePdfPath = sourcePdf.relativePath;
     try {
       if (useVlm) {
         const vlmConfig = getVlmOcrConfig();
-        emit("Rendering PDF pages for the VLM…");
-        const screenshots = await getPdfScreenshotPages(buffer, {
-          desiredWidth: vlmConfig.pageImageWidth,
-        });
-        if (screenshots.length === 0) {
-          throw new Error(
-            "The PDF produced no page images, so the VLM had nothing to read.",
-          );
-        }
-
-        const vlm = await parsePagesWithVlm({
+        const vlmCheckpoint = pdfVlmCheckpointLocation({
+          contentPath,
+          clusterSlug: normalizedClusterSlug,
+          filename,
+          buffer,
           config: vlmConfig,
-          pages: screenshots.map((screenshot) => ({
-            label: `Page ${screenshot.pageNumber}`,
-            pageNumber: screenshot.pageNumber,
-            dataUrl: screenshot.dataUrl,
-          })),
+          task: vlmTask,
+        });
+        completedVlmCheckpointPath = vlmCheckpoint.filePath;
+        emit("Rendering PDF pages for the VLM…");
+        const streamedVlm = await parsePdfPagesWithVlm({
+          buffer,
+          sourceFilePath: sourcePdf.filePath,
+          config: vlmConfig,
           task: vlmTask,
           signal: request.signal,
           onProgress: emit,
@@ -1702,7 +2454,14 @@ export async function runIngest({
             createdFilePaths,
             knowledgeWriteTransaction,
           }),
+          checkpoint: vlmCheckpoint,
         });
+        const { vlm, snapshots: snapshotPages, totalPages } = streamedVlm;
+        if (vlm.pages.length === 0) {
+          throw new Error(
+            "The PDF produced no page images, so the VLM had nothing to read.",
+          );
+        }
 
         pages = vlm.pages.map((page) => ({
           label: page.label,
@@ -1718,11 +2477,18 @@ export async function runIngest({
           skipKnowledgeExtraction = true;
         }
 
-        throwIfRequestAborted(request.signal);
-        const snapshotPages = screenshots.slice(
-          0,
-          PDF_EAGER_SNAPSHOT_CACHE_PAGES,
+        screenshotWarning = joinWarnings(
+          screenshotWarning,
+          await preserveOriginalSourcePdf({
+            pages: vlm.pages
+              .filter((page) => !page.failed)
+              .map((page) => ({ pageNumber: page.pageNumber, text: page.text })),
+            signal: request.signal,
+            emit,
+          }),
         );
+
+        throwIfRequestAborted(request.signal);
         pages = attachPdfScreenshotAssets({
           pages,
           screenshots: snapshotPages,
@@ -1732,10 +2498,10 @@ export async function runIngest({
           createdFilePaths,
           knowledgeWriteTransaction,
         });
-        if (screenshots.length > snapshotPages.length) {
+        if (totalPages > snapshotPages.length) {
           screenshotWarning = joinWarnings(
             screenshotWarning,
-            `Cached the first ${snapshotPages.length} source page${snapshotPages.length === 1 ? "" : "s"}; later pages remain available from the full PDF and are rendered when Learn needs them. The VLM parsed ${screenshots.length} pages.`,
+            `Cached the first ${snapshotPages.length} source page${snapshotPages.length === 1 ? "" : "s"}; later pages remain available from the full PDF and are rendered when Learn needs them. The VLM parsed ${totalPages} pages.`,
           );
         }
 
@@ -1745,6 +2511,84 @@ export async function runIngest({
           finalized.warnings.join(" "),
         );
         markdownText = appendSnapshots(finalized.markdown, pages);
+
+        if (useAnydoc) {
+          emit("Cross-checking PDF text with anydoc…");
+          const applyAnydocCrossCheck = (conversion: AnydocConversion) => {
+            anydocApplied = true;
+            const anydocPages = conversion.sections.map((section) => ({
+              label: `AnyDoc · ${section.label}`,
+              text: section.text,
+            }));
+            const anydocText = pagePlainText(anydocPages);
+            if (anydocText.trim()) {
+              pages = [...pages, ...anydocPages];
+              plainText = `${plainText}\n\n${anydocText}`;
+            }
+            markdownText = `${markdownText}\n\n## AnyDoc cross-check\n\n${conversion.markdown}`;
+            screenshotWarning = joinWarnings(
+              screenshotWarning,
+              conversion.warnings.join(" "),
+            );
+          };
+          try {
+            const conversion = await convertPdfWithAnydocInSubprocess({
+              bytes: buffer,
+              sourceFilePath: sourcePdf.filePath,
+              signal: request.signal,
+              onProgress: emit,
+              knowledgeWriteTransaction,
+            });
+            throwIfRequestAborted(request.signal);
+            applyAnydocCrossCheck(conversion);
+          } catch (error) {
+            if (
+              error instanceof UploadAbortedError ||
+              (error instanceof Error && error.name === "AbortError")
+            ) {
+              throw error;
+            }
+            try {
+              emit("Retrying anydoc with the VLM OCR text companion…");
+              const companion = await createOcrTextCompanionPdf({
+                pages: vlm.pages
+                  .filter((page) => !page.failed)
+                  .map((page) => ({
+                    pageNumber: page.pageNumber,
+                    text: page.text,
+                  })),
+              });
+              if (companion.pagesWritten === 0) {
+                throw new Error("the VLM produced no usable OCR text pages");
+              }
+              const conversion = await convertPdfWithAnydocInSubprocess({
+                bytes: Buffer.from(companion.bytes),
+                sourceFilePath: sourcePdf.filePath,
+                signal: request.signal,
+                onProgress: emit,
+                knowledgeWriteTransaction,
+              });
+              throwIfRequestAborted(request.signal);
+              applyAnydocCrossCheck(conversion);
+              screenshotWarning = joinWarnings(
+                screenshotWarning,
+                `AnyDoc cross-checked a text-only companion generated from the VLM OCR after the original PDF conversion failed: ${errorMessage(error, "conversion failed")}.`,
+              );
+            } catch (fallbackError) {
+              if (
+                fallbackError instanceof UploadAbortedError ||
+                (fallbackError instanceof Error &&
+                  fallbackError.name === "AbortError")
+              ) {
+                throw fallbackError;
+              }
+              screenshotWarning = joinWarnings(
+                screenshotWarning,
+                `AnyDoc could not cross-check this PDF: ${errorMessage(fallbackError, "conversion failed")}. The VLM result was preserved.`,
+              );
+            }
+          }
+        }
       } else if (!generateMap) {
         emit("Extracting text from the PDF…");
         const extractedPdf = await getPdfTextPages(buffer);
@@ -1798,6 +2642,19 @@ export async function runIngest({
                 ? `${screenshotWarning} ${transcription.warning}`
                 : transcription.warning;
             }
+            screenshotWarning = joinWarnings(
+              screenshotWarning,
+              await preserveOriginalSourcePdf({
+                pages: transcription.pages
+                  .map((page, index) => ({
+                    pageNumber: pageNumberFromLabel(page.label) ?? index + 1,
+                    text: page.text,
+                  }))
+                  .filter((page) => !page.text.startsWith("[OCR failed for ")),
+                signal: request.signal,
+                emit,
+              }),
+            );
             throwIfRequestAborted(request.signal);
             const snapshotPages = screenshots.slice(
               0,
@@ -1975,8 +2832,9 @@ export async function runIngest({
       bytes: STRUCTURALLY_SCANNABLE.has(ext) ? await fileBytes() : undefined,
       ext,
       // Both forms are scanned because a carrier can survive into one and not
-      // the other — anydoc's markdown is the content, while a VLM page's plain
-      // text is. Duplicate findings collapse in the report's dedupe pass.
+      // the other — anydoc's markdown is content, while a VLM page's plain text
+      // is. In combined mode both forms are present; duplicate findings collapse
+      // in the report's dedupe pass.
       extractedText:
         markdownText === plainText
           ? plainText
@@ -2005,6 +2863,16 @@ export async function runIngest({
   throwIfRequestAborted(request.signal);
   if (generateMap && !skipKnowledgeExtraction) {
     try {
+      const knowledgeCheckpoint = knowledgeCheckpointLocation({
+        contentPath,
+        clusterSlug: normalizedClusterSlug,
+        filename,
+        buffer: await fileBytes(),
+        model,
+        sourceType: ext || "text",
+        isHandwriting,
+      });
+      completedKnowledgeCheckpointPath = knowledgeCheckpoint.filePath;
       extraction = await extractDocumentKnowledge({
         client: client!,
         model,
@@ -2015,8 +2883,10 @@ export async function runIngest({
         pages,
         text: plainText,
         onProgress: emit,
+        checkpoint: knowledgeChunkCheckpoint(knowledgeCheckpoint),
       });
     } catch (error) {
+      if (error instanceof IncompleteKnowledgeExtractionError) throw error;
       const reason = errorMessage(error, "map generation failed");
       console.warn(
         `[ingest] Map generation failed for ${filename}; saved source note without extracted lesson topics. ${reason}`,
@@ -2064,13 +2934,20 @@ export async function runIngest({
     pages,
     extraction,
     sourceMetadata: {
-      ...(useVlm
+      ...(useVlm && anydocApplied
+        ? {
+            extraction_method: `hunyuan-ocr-gguf+anydoc-${ANYDOC_VERSION}`,
+            parse_mode: "vlm+anydoc",
+            vlm_task: vlmTask,
+            anydoc_format: anydocFormat ?? ext,
+          }
+        : useVlm
         ? {
             extraction_method: "hunyuan-ocr-gguf",
             parse_mode: "vlm",
             vlm_task: vlmTask,
           }
-        : useAnydoc
+        : anydocApplied
           ? {
               extraction_method: `anydoc-${ANYDOC_VERSION}`,
               parse_mode: "anydoc",
@@ -2087,6 +2964,18 @@ export async function runIngest({
     onProgress: emit,
   });
   const imageCount = pages.filter((page) => page.imagePath).length;
+
+  for (const checkpointPath of [
+    completedVlmCheckpointPath,
+    completedKnowledgeCheckpointPath,
+  ]) {
+    if (!checkpointPath) continue;
+    if (deferredCheckpointCleanupPaths) {
+      deferredCheckpointCleanupPaths.push(checkpointPath);
+    } else {
+      fs.rmSync(checkpointPath, { force: true });
+    }
+  }
 
   emit("Finishing up…");
   return {

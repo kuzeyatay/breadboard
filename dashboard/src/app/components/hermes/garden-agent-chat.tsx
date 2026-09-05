@@ -153,7 +153,6 @@ export default function GardenAgentChat({
     reasoningEffort: selectedReasoningEffort,
     setReasoningEffort,
     intelligenceModes: selectedIntelligenceModes,
-    failover: modelFailover,
   } = useAssistantIntelligence();
   const [activeAnswerIntelligence, setActiveAnswerIntelligence] = useState<{
     model: string;
@@ -617,7 +616,7 @@ export default function GardenAgentChat({
 
   const askSelection = useCallback(
     async (question: string, selection: ChatTextSelectionReference) => {
-      if (busy) return;
+      if (busy) await session.abort();
       await session.send(question, {
         model,
         reasoningEffort,
@@ -1082,7 +1081,6 @@ export default function GardenAgentChat({
           reasoningEffort={selectedReasoningEffort}
           onReasoningEffortChange={setReasoningEffort}
           intelligenceModes={selectedIntelligenceModes}
-          modelFailover={modelFailover}
           statusMessage={researchNotice}
           deepResearchAgent={deepResearch.agent}
           onSelectDeepResearch={() => {

@@ -116,7 +116,9 @@ function looksLikeUrl(value: string): boolean {
 function samePath(left: string, right: string): boolean {
   const a = path.resolve(left);
   const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return process.platform === "win32"
+    ? path.toNamespacedPath(a).toLowerCase() === path.toNamespacedPath(b).toLowerCase()
+    : a === b;
 }
 
 export function containWorkspacePath(workspace: string, raw: string, label: string): string {

@@ -194,6 +194,31 @@ test("structural page catalog projects only exact Page blocks in selected-source
   );
 });
 
+test("structural page catalog excludes repeated AnyDoc cross-check page headings", () => {
+  assert.deepEqual(modelSourcePageAnchors([
+    source("dual-parser", [
+      "## Page 1",
+      "Canonical VLM page one.",
+      "## Page 2",
+      "Canonical VLM page two.",
+      "## AnyDoc cross-check",
+      "## Page 1",
+      "Supplemental AnyDoc page one.",
+    ].join("\n")),
+  ]).map(({ id, page, exactText }) => ({ id, page, exactText })), [
+    {
+      id: "text-dual-parser-page-1",
+      page: 1,
+      exactText: "Canonical VLM page one.",
+    },
+    {
+      id: "text-dual-parser-page-2",
+      page: 2,
+      exactText: "Canonical VLM page two.",
+    },
+  ]);
+});
+
 test("Source Map structural selection requests only its exact late PDF page", () => {
   const selectedSources = [source(
     "electromagnetics",

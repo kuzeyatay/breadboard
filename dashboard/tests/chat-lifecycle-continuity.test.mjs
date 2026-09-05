@@ -150,6 +150,15 @@ test("Garden Workspace checkpoints a prompt before runtime dispatch", () => {
   assert.ok(checkpointAt >= 0 && dispatchAt > checkpointAt);
   assert.match(gardenWorkspace, /const clientMessageId = crypto\.randomUUID\(\)/);
   assert.match(gardenWorkspace, /assistantMsg\.id = checkpoint\.assistantMessageId/);
+  // The checkpoint and runtime adapter reserve the same clientMessageId. The
+  // last user content must stay byte-for-byte identical between both calls;
+  // attachments and selections have their own request fields.
+  assert.match(
+    gardenWorkspace,
+    /messages: nextMessages\.map\(\(\{ role, content \}\) => \(\{ role, content \}\)\)/,
+  );
+  assert.doesNotMatch(gardenWorkspace, /content: runtimeText/);
+  assert.match(gardenWorkspace, /selectedTextContext:\s*\{[\s\S]*text: textSelection\.quote/);
   assert.match(gardenWorkspace, /chatPersistenceChainsRef/);
   assert.match(gardenWorkspace, /chatPersistenceVersionsRef/);
   assert.match(gardenWorkspace, /inFlightChatMessagesRef/);

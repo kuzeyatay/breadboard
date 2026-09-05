@@ -568,3 +568,214 @@ test("both Learn operation aliases are cut over without loading the detached han
       cancelRoute.indexOf('await import("@/lib/learn")'),
   );
 });
+
+/** A job store whose `cancelling` jobs flip to `cancelled` after N reads. */
+class SettlingJobs extends Map {
+  constructor(entries, readsBeforeSettle) {
+    super(entries);
+    this.readsBeforeSettle = readsBeforeSettle;
+    this.reads = 0;
+  }
+
+  get(jobId) {
+    const job = super.get(jobId);
+    if (job?.state !== "cancelling") return job;
+    this.reads += 1;
+    if (this.reads < this.readsBeforeSettle) return job;
+    const cancelled = { ...job, state: "cancelled" };
+    super.set(jobId, cancelled);
+    return cancelled;
+  }
+}
+
+test("a stopping Runtime Learn job is settled instead of blocking fresh planning", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-restart-"));
+  try {
+    const state = freshState();
+    const first = await cutover.executeLearnOperationForRoute(
+      planRequest(temporaryRoot),
+      "planning",
+    );
+    // Cancel reached Runtime, but the worker has not acknowledged yet.
+    state.jobs.set(first.jobId, {
+      ...snapshot(first.jobId, "cancelling"),
+      cancellationRequested: true,
+    });
+    // The worker acknowledges on the next status poll after the route re-reads it.
+    state.jobs = new SettlingJobs(state.jobs, 2);
+
+    const restarted = await cutover.executeLearnOperationForRoute(
+      { ...planRequest(temporaryRoot), includedSourceIds: ["source-a"] },
+      "planning restart",
+    );
+
+    assert.equal(restarted.accepted, true);
+    assert.notEqual(restarted.jobId, first.jobId);
+    assert.equal(state.cancellations.length, 0);
+    assert.notEqual(
+      state.submissions[0].submission.idempotencyKey,
+      state.submissions[1].submission.idempotencyKey,
+    );
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("an orphaned Runtime Learn job whose durable row is cancelled is cancelled and superseded", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-orphan-"));
+  try {
+    const state = freshState();
+    const first = await cutover.executeLearnOperationForRoute(
+      planRequest(temporaryRoot),
+      "planning",
+    );
+    state.jobs.set(first.jobId, snapshot(first.jobId, "running"));
+    const { writeRuntimeV2LearnBinding } = await import(
+      "../src/lib/runtime-v2/learn-binding.ts"
+    );
+    writeRuntimeV2LearnBinding({
+      contentPath: temporaryRoot,
+      gardenId: "garden-1",
+      userId: 7,
+      runtimeJobId: first.jobId,
+      learnJobId: "learn_runtime_owned",
+    });
+    // The legacy Cancel transaction already recorded the row as cancelled, but
+    // the Runtime cancellation never reached the worker.
+    state.latestLearnJob = {
+      id: "learn_runtime_owned",
+      model: "gpt-test",
+      status: "cancelled",
+      updatedAt: "2026-01-01T00:00:02.000Z",
+    };
+    state.jobs = new SettlingJobs(state.jobs, 1);
+
+    const restarted = await cutover.executeLearnOperationForRoute(
+      { ...planRequest(temporaryRoot), includedSourceIds: ["source-a"] },
+      "planning restart",
+    );
+
+    assert.equal(restarted.accepted, true);
+    assert.notEqual(restarted.jobId, first.jobId);
+    assert.deepEqual(state.cancellations, [
+      {
+        authority: { userId: 7, gardenId: "garden-1", conversationId: null },
+        jobId: first.jobId,
+      },
+    ]);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("a genuinely active different Learn request still conflicts", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-conflict-"));
+  try {
+    const state = freshState();
+    const first = await cutover.executeLearnOperationForRoute(
+      planRequest(temporaryRoot),
+      "planning",
+    );
+    state.jobs.set(first.jobId, snapshot(first.jobId, "running"));
+    await assert.rejects(
+      cutover.executeLearnOperationForRoute(
+        { ...planRequest(temporaryRoot), includedSourceIds: ["source-a"] },
+        "planning again",
+      ),
+      /is still active for this garden/u,
+    );
+    assert.equal(state.cancellations.length, 0);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Runtime-bridged status reports the submitted selection and syllabus, not the prior job's", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-selection-"));
+  try {
+    const state = freshState();
+    // The previous run predates the Runtime job (snapshot updatedAt is epoch 1ms).
+    state.latestLearnJob = {
+      id: "learn_previous_cancelled",
+      model: "gpt-test",
+      status: "cancelled",
+      updatedAt: "1970-01-01T00:00:00.000Z",
+    };
+    const submitted = await cutover.executeLearnOperationForRoute(
+      {
+        ...planRequest(temporaryRoot),
+        includedSourceIds: ["source-b", "source-a", " source-a ", ""],
+        syllabusSourceId: "source-syllabus",
+      },
+      "planning",
+    );
+    const projected = {
+      job: { ...state.latestLearnJob },
+      selectedSourceIds: ["source-old"],
+      syllabusSourceId: null,
+      syllabusCoverage: { unitCount: 1 },
+    };
+    for (const runtimeState of ["queued", "running", "failed"]) {
+      state.jobs.set(submitted.jobId, snapshot(submitted.jobId, runtimeState));
+      const merged = await cutover.mergeRuntimeV2LearnStatus(
+        { userId: 7, gardenId: "garden-1", contentPath: temporaryRoot },
+        projected,
+      );
+      assert.equal(merged.job.id, submitted.jobId, runtimeState);
+      assert.deepEqual(merged.selectedSourceIds, ["source-b", "source-a"], runtimeState);
+      assert.equal(merged.syllabusSourceId, "source-syllabus", runtimeState);
+      assert.equal(merged.syllabusCoverage, null, runtimeState);
+    }
+    const receipt = JSON.parse(
+      fs.readFileSync(
+        path.join(temporaryRoot, "garden-1", ".breadboard", "runtime-v2-learn-submission.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(receipt.version, 2);
+    assert.deepEqual(receipt.selectedSourceIds, ["source-b", "source-a"]);
+    assert.equal(receipt.syllabusSourceId, "source-syllabus");
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("a version 1 receipt without a recorded selection is still honoured", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-legacy-receipt-"));
+  try {
+    const state = freshState();
+    const submitted = await cutover.executeLearnOperationForRoute(
+      planRequest(temporaryRoot),
+      "planning",
+    );
+    const receiptPath = path.join(
+      temporaryRoot,
+      "garden-1",
+      ".breadboard",
+      "runtime-v2-learn-submission.json",
+    );
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
+    delete receipt.selectedSourceIds;
+    delete receipt.syllabusSourceId;
+    receipt.version = 1;
+    fs.writeFileSync(receiptPath, `${JSON.stringify(receipt)}\n`);
+    state.jobs.set(submitted.jobId, snapshot(submitted.jobId, "running"));
+
+    const projected = { job: null, selectedSourceIds: ["source-old"], syllabusSourceId: "kept" };
+    const merged = await cutover.mergeRuntimeV2LearnStatus(
+      { userId: 7, gardenId: "garden-1", contentPath: temporaryRoot },
+      projected,
+    );
+    assert.equal(merged.job.id, submitted.jobId);
+    assert.deepEqual(merged.selectedSourceIds, ["source-old"]);
+    assert.equal(merged.syllabusSourceId, "kept");
+
+    const retry = await cutover.executeLearnOperationForRoute(
+      planRequest(temporaryRoot),
+      "planning retry",
+    );
+    assert.equal(retry.jobId, submitted.jobId);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});

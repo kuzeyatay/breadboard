@@ -609,3 +609,24 @@ test("web_search_tool and web_extract_tool names correctly extract websites and 
   assert.equal(completeEvents[0].payload.websites[0].title, "Student Teams | TU/e");
   assert.equal(completeEvents[0].payload.websites[0].domain, "tue.nl");
 });
+
+test("context-compression progress never becomes the Thinking label", () => {
+  for (const payload of [
+    { kind: "compressing", text: "⠋ compressing 6 messages (~6,000 tok)…" },
+    { kind: "compacting", text: "🗜️ Compacting context — summarizing earlier conversation so I can continue..." },
+    { kind: "lifecycle", text: "🗜️ Compacting context — summarizing earlier conversation so I can continue..." },
+  ]) {
+    assert.deepEqual(
+      normalize({ type: "status.update", session_id: "live-1", payload }),
+      [],
+      payload.text,
+    );
+  }
+  const [kept] = normalize({
+    type: "status.update",
+    session_id: "live-1",
+    payload: { kind: "process", text: "Reconnecting to the provider" },
+  });
+  assert.equal(kept.type, "reasoning.status");
+  assert.equal(kept.payload.label, "Reconnecting to the provider");
+});

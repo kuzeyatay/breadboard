@@ -30,6 +30,44 @@ describe("source document ingest path", () => {
     assert.match(ingestRoute, /sourceRelPath: saved\.sourceRelPath/);
   });
 
+  test("Windows knowledge writes avoid redundant post-rename flushes", () => {
+    const knowledgeSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "knowledge.ts"),
+      "utf8",
+    );
+    const directoryFsync = knowledgeSource.match(
+      /function fsyncKnowledgeDirectory\(directoryPath: string\): void \{([\s\S]*?)\n\}/u,
+    )?.[1];
+
+    assert.ok(directoryFsync, "expected the directory durability helper");
+    assert.match(directoryFsync, /if \(process\.platform === "win32"\) return;/u);
+    assert.ok(
+      directoryFsync.indexOf('process.platform === "win32"') <
+        directoryFsync.indexOf('fs.openSync(directoryPath, "r")'),
+      "Windows must return before opening a directory for FlushFileBuffers",
+    );
+
+    const fileFsync = knowledgeSource.match(
+      /function fsyncKnowledgeFile\(filePath: string\): void \{([\s\S]*?)\n\}/u,
+    )?.[1];
+    assert.ok(fileFsync, "expected the file durability helper");
+    assert.match(fileFsync, /if \(process\.platform === "win32"\) return;/u);
+    assert.ok(
+      fileFsync.indexOf('process.platform === "win32"') <
+        fileFsync.indexOf("fs.lstatSync(filePath)"),
+      "Windows must not reopen an already flushed file after atomic rename",
+    );
+
+    const sourceCopy = knowledgeSource.match(
+      /function copyKnowledgeFile\(([\s\S]*?)\n\}/u,
+    )?.[1];
+    assert.ok(sourceCopy, "expected the source asset copy helper");
+    assert.match(
+      sourceCopy,
+      /fs\.openSync\(temporaryPath, "r\+"\);[\s\S]*?fs\.fsyncSync\(descriptor\);[\s\S]*?fs\.renameSync\(temporaryPath, targetPath\);/u,
+    );
+  });
+
   test("PDF sources keep their uploaded filename and expose the generated title as a description", () => {
     const knowledgeSource = fs.readFileSync(
       path.join(repoRoot, "src", "lib", "knowledge.ts"),
@@ -57,6 +95,12 @@ describe("source document ingest path", () => {
     assert.match(workspace, /isPdf \? doc\.sourceFile\?\.trim\(\) : ""/);
     assert.match(workspace, /sourceDescription/);
     assert.match(workspace, /\{sourceDescription\}/);
+    const sourceRows = workspace.slice(
+      workspace.indexOf("function renderMarkdownRows"),
+      workspace.indexOf("type FolderTreeNode"),
+    );
+    assert.match(sourceRows, /formatDocumentUploadTime\(doc\.date\)/);
+    assert.doesNotMatch(sourceRows, /\{doc\.wordCount\}w/);
   });
 
   test("re-uploading the same source filename is idempotent", () => {

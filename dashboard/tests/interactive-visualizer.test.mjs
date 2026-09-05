@@ -20,6 +20,7 @@ import {
 } from "../src/lib/hermes/interactive-visualizer-custom.ts";
 import {
   appendBoundedBrowserOutput,
+  interactiveVisualizerBrowserProfileRoot,
   removeOwnedBrowserProfile,
   runInteractiveVisualizerBrowserTestsInWorker as runInteractiveVisualizerBrowserTests,
 } from "../scripts/runtime-v2-interactive-visualizer-executor.mjs";
@@ -163,6 +164,23 @@ function customThreeFixture() {
     },
   };
   return { plan: visualPlan, package: packageValue };
+}
+
+function customProjectedThreeDimensionalSvgFixture() {
+  const title = "Cylindrical wedge projection";
+  const fixture = customWaveFixture();
+  fixture.plan.title = title;
+  fixture.plan.objective = "Explain a three-dimensional cylindrical wedge with a rotatable SVG projection.";
+  fixture.plan.mode = "3d";
+  fixture.plan.rationale = "A projected spatial view makes the bounded volume legible.";
+  fixture.package.manifest.title = title;
+  fixture.package.manifest.description = "Rotate a projected cylindrical wedge.";
+  fixture.package.manifest.accessibilityDescription = "A dependency-free SVG projection of a rotatable cylindrical wedge.";
+  fixture.package.manifest.mode = "3d";
+  fixture.package.files["index.html"] = `<main id="app"><header><h1>${title}</h1><div><button data-action="play-pause" aria-label="Pause rotation" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zm6 0h4v14h-4z"></path></svg></button><button data-action="reset" aria-label="Reset view"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 11V5m0 6h-6"></path></svg></button></div></header><svg class="stage" viewBox="0 0 640 360" role="img" aria-label="Projected cylindrical wedge"><g class="wedge"><path d="M180 245 L320 90 L500 170 L350 310 Z"></path><path d="M180 245 Q310 180 500 170"></path></g></svg><script src="main.js"></script></main>`;
+  fixture.package.files["styles.css"] = `#app{display:grid;gap:18px}header{display:flex;align-items:center;justify-content:space-between}header div{display:flex;gap:8px}h1{margin:0}button{border:0;background:var(--viz-control);color:var(--viz-text);padding:12px}.stage{width:100%;height:auto;background:var(--viz-panel)}.wedge{transform-origin:center}.wedge path{fill:var(--viz-control);stroke:var(--viz-text)}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}`;
+  fixture.package.files["main.js"] = `const wedge=document.querySelector(".wedge");const pause=document.querySelector('[data-action="play-pause"]');let running=!matchMedia("(prefers-reduced-motion: reduce)").matches;let angle=0;const sync=()=>{pause.setAttribute("aria-pressed",String(running));pause.setAttribute("aria-label",running?"Pause rotation":"Play rotation")};const draw=()=>wedge.setAttribute("transform",\`rotate(\${angle} 330 200)\`);pause.addEventListener("click",()=>{running=!running;sync()});document.querySelector('[data-action="reset"]').addEventListener("click",()=>{angle=0;draw()});function frame(){if(running&&!document.hidden)angle=(angle+.15)%360;draw();requestAnimationFrame(frame)}sync();requestAnimationFrame(frame);`;
+  return fixture;
 }
 
 const input = (id) => ({ kind: "input", id });
@@ -319,6 +337,32 @@ test("schema-2 custom visualizers publish a flat prompt-specific mini-app", asyn
   assert.match(rejected.validation.errors.join("\n"), /external|fetch/i);
 });
 
+test("schema-2 accepts a projected 3D SVG without loading or requiring Three.js", async () => {
+  const fixture = customProjectedThreeDimensionalSvgFixture();
+  const compiled = compileCustomInteractiveVisualizerPackage(fixture.plan, fixture.package);
+  assert.equal(compiled.validation.valid, true, compiled.validation.errors.join("\n"));
+  assert.ok(compiled.package);
+  const bundle = await bundleCustomInteractiveVisualizer(compiled.package);
+  assert.match(bundle.html, /three:!1/);
+  assert.doesNotMatch(bundle.html, /globalThis\.THREE=THREE/);
+
+  const missingPin = structuredClone(fixture.package);
+  missingPin.files["main.js"] += "\nvoid THREE.Scene;";
+  assert.match(
+    compileCustomInteractiveVisualizerPackage(fixture.plan, missingPin)
+      .validation.errors.join("\n"),
+    /references THREE.*pin Three\.js 0\.185\.1/i,
+  );
+
+  const legacyBehaviorProperty = structuredClone(fixture.package);
+  legacyBehaviorProperty.files["styles.css"] += "\n#app{behavior:none}";
+  assert.match(
+    compileCustomInteractiveVisualizerPackage(fixture.plan, legacyBehaviorProperty)
+      .validation.errors.join("\n"),
+    /cannot import or load external capabilities/i,
+  );
+});
+
 test("schema-2 accepts its local stylesheet convention without weakening host isolation", async () => {
   const fixture = customThreeFixture();
   fixture.package.files["index.html"] = `<!doctype html><html><head><link rel="stylesheet" href="styles.css"><style>.head-only{color:var(--viz-text)}</style></head><body>${fixture.package.files["index.html"]}</body></html>`;
@@ -441,6 +485,19 @@ test("owned browser profile cleanup retries transient Windows release races and 
   } finally {
     realRemove(outputDir, { recursive: true, force: true });
   }
+});
+
+test("Windows browser profiles use the short temporary root outside the deep job fence", () => {
+  const outputDir = path.join(os.tmpdir(), "runtime", "jobs", "j".repeat(64), "attempts", "1", "w".repeat(48), "workspace", "interactive-visualizer-output");
+  const tempDir = path.join(os.tmpdir(), "bb-iv-profile-root");
+  assert.equal(
+    interactiveVisualizerBrowserProfileRoot({ outputDir, platform: "win32", tempDir }),
+    path.resolve(tempDir),
+  );
+  assert.equal(
+    interactiveVisualizerBrowserProfileRoot({ outputDir, platform: "linux", tempDir }),
+    path.resolve(outputDir),
+  );
 });
 
 test("schema-2 rejects theme-breaking text, ambiguous transport controls, and unreviewed geometry", () => {
@@ -588,6 +645,30 @@ test("schema-2 custom visualizers receive pinned Three.js and an accessible WebG
         .filter((check) => /^(browser mount|desktop preview|mobile preview)/.test(check.name))
         .every((check) => /process tree closed/.test(check.detail)),
       true,
+    );
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("a projected 3D SVG passes the browser gate without WebGL", { timeout: 90_000 }, async () => {
+  const fixture = customProjectedThreeDimensionalSvgFixture();
+  const compiled = compileCustomInteractiveVisualizerPackage(fixture.plan, fixture.package);
+  assert.ok(compiled.package, compiled.validation.errors.join("\n"));
+  const bundle = await bundleCustomInteractiveVisualizer(compiled.package);
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-custom-svg-3d-test-"));
+  try {
+    const result = await runInteractiveVisualizerBrowserTests({
+      html: bundle.html,
+      mode: "3d",
+      requiresWebgl: false,
+      outputDir,
+      runtimeSessionId: 91_007,
+    });
+    assert.equal(result.passed, true, JSON.stringify(result.checks, null, 2));
+    assert.equal(
+      result.checks.some((check) => check.name === "WebGL unavailable fallback"),
+      false,
     );
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });

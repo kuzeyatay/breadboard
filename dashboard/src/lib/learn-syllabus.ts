@@ -268,7 +268,17 @@ export function canonicalSourceMaterialBody(body: string | undefined): string {
   if (markers.length > 1) {
     throw new Error("Canonical source material contains duplicate Source material sections.");
   }
-  return markers[0] ? text.slice(markers[0].end) : text;
+  const material = markers[0] ? text.slice(markers[0].end) : text;
+  // Dual-parser PDF ingestion appends AnyDoc's supplemental transcript after
+  // the canonical VLM page sequence. It deliberately repeats `## Page N`
+  // headings for the same physical pages, so it must not be interpreted as a
+  // second canonical sequence. Only an exact, outside-fence section delimiter
+  // ends the canonical material; malformed or quoted markers remain evidence
+  // and continue through the parser's normal fail-closed checks.
+  const anyDocCrossCheck = markdownLineRecords(material).find(
+    (line) => !line.insideFence && /^## AnyDoc cross-check[ \t]*$/.test(line.content),
+  );
+  return anyDocCrossCheck ? material.slice(0, anyDocCrossCheck.start) : material;
 }
 
 /** Parse every canonical source page without changing CRLF/LF bytes, trimming
@@ -574,21 +584,49 @@ export function buildSyllabusCoverageSourceCatalog(
     }
     sourceIds.add(source.slug);
   }
-  const totalCharsPerSource = Math.floor(
-    SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS / Math.max(1, sources.length),
-  );
-  // Reserve raw canonical pages before allocating generated planning context,
-  // so an oversized preamble can never crowd out title/author/locator pages.
-  const rawPageChars = Math.min(
-    SYLLABUS_COVERAGE_RAW_PAGE_MAX_CHARS_PER_SOURCE,
-    Math.max(
-      Math.min(SYLLABUS_COVERAGE_RAW_PAGE_MIN_CHARS_PER_SOURCE, totalCharsPerSource),
-      Math.floor(totalCharsPerSource / 4),
+  const baselineRawChars = Math.max(
+    1,
+    Math.min(
+      SYLLABUS_COVERAGE_RAW_PAGE_MIN_CHARS_PER_SOURCE,
+      Math.floor(SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS / Math.max(1, sources.length)),
     ),
   );
-  const planningIndexChars = Math.max(0, totalCharsPerSource - rawPageChars);
-  return sources.map((source) => {
+  // Reserve each source's complete canonical identity prefix before allocating
+  // generated planning context. Equal per-source slices are unsafe here: one
+  // textbook's first eight complete pages can be larger than another source's
+  // entire note even though both prefixes fit comfortably in the catalog-wide
+  // transport bound.
+  const preparedSources = sources.map((source) => {
     const rawMaterial = canonicalSourceMaterialBody(source.body);
+    const requiredRawPageChars = parseCanonicalSourceRawPages(source.slug, source.body)
+      .pages
+      .slice(0, SYLLABUS_COVERAGE_IDENTITY_PAGE_PREFIX)
+      .reduce((sum, page) => sum + page.exactText.length, 0);
+    if (requiredRawPageChars > SYLLABUS_COVERAGE_RAW_PAGE_MAX_CHARS_PER_SOURCE) {
+      throw new Error(
+        `Canonical source-page evidence cannot carry its complete fixed identity prefix for source "${source.slug}" within its bounded transport budget.`,
+      );
+    }
+    return {
+      source,
+      rawMaterial,
+      rawPageChars: Math.max(baselineRawChars, requiredRawPageChars),
+    };
+  });
+  const totalRawPageChars = preparedSources.reduce(
+    (sum, source) => sum + source.rawPageChars,
+    0,
+  );
+  if (totalRawPageChars > SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS) {
+    throw new Error(
+      "Canonical source-page evidence cannot carry every complete fixed identity prefix within the bounded catalog transport budget.",
+    );
+  }
+  const planningIndexChars = Math.floor(
+    (SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS - totalRawPageChars)
+      / Math.max(1, sources.length),
+  );
+  return preparedSources.map(({ source, rawMaterial, rawPageChars }) => {
     const planningIndex = sourcePlanningIndexForCoverage(source.body, planningIndexChars);
     return {
       id: source.slug,

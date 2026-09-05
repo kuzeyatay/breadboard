@@ -616,8 +616,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     // Dev uses the hermes-agent virtualenv; packaged uses the bundled CPython.
     command: resolveHermesPython(paths, binaries),
     args: [
-      "-m",
-      "hermes_cli.main",
+      path.join(paths.hermesAppDir, "breadboard_runtime.py"),
       "serve",
       "--isolated",
       "--host",
@@ -900,6 +899,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       HERMES_BASE_URL: hermesUrl,
       HERMES_DASHBOARD_SESSION_TOKEN: persistent.hermesSessionToken,
       BREADBOARD_HERMES_TOOL_SECRET: persistent.hermesToolSecret,
+      // Learned-workflow replay starts the same Hermes computer-use runtime as
+      // chat, but in a short-lived worker owned by that run. Pass the resolved
+      // interpreter and source root explicitly so packaged and dev installs do
+      // not depend on the dashboard server's cwd or PATH.
+      BREADBOARD_HERMES_PYTHON: resolveHermesPython(paths, binaries),
+      BREADBOARD_HERMES_APP_DIR: paths.hermesAppDir,
+      BREADBOARD_HERMES_HOME: paths.hermesHome,
       HERMES_ENABLED: "true",
       HERMES_MODE: "required",
       HERMES_CAPABILITY_SECRET: persistent.hermesCapabilitySecret,

@@ -164,7 +164,7 @@ test("dashboard thinking metadata never exposes model reasoning text", () => {
   assert.doesNotMatch(activity, /visibleActivities/);
 });
 
-test("tool-boundary prose uses the answer body until the final answer replaces it", () => {
+test("tool-boundary prose stays behind the thinking disclosure", () => {
   const serverDelta = eventStream.slice(
     eventStream.indexOf('if (event.type === "assistant.delta")'),
     eventStream.indexOf('} else if (event.type === "assistant.segment")'),
@@ -195,14 +195,36 @@ test("tool-boundary prose uses the answer body until the final answer replaces i
   );
   assert.match(clientSegment, /progressNotes/);
   assert.doesNotMatch(clientSegment, /content: ""/);
-  assert.doesNotMatch(activity, /data-response-progress/);
-  assert.doesNotMatch(activity, /Assistant progress notes/);
+  assert.match(activity, /progressNotes\?: string\[\]/);
+  assert.match(activity, /data-response-progress/);
+  assert.match(activity, /aria-label="Thinking updates"/);
+  assert.match(activity, /grid-cols-\[8px_minmax\(0,1fr\)\]/);
+  assert.match(activity, /bg-\[var\(--botanical\)\]/);
+  assert.match(activity, /setProgressOpen\(\(open\) => !open\)/);
+  assert.match(responseMeta, /aria-expanded=\{disclosureExpanded\}/);
+  assert.match(responseMeta, /aria-controls=\{disclosureControls\}/);
   assert.match(runtime, /assistantVisibleContent/);
   assert.match(workspace, /assistantVisibleContent/);
   assert.match(gardenAssistant, /assistantVisibleContent/);
-  assert.doesNotMatch(activity, /progressNotes.*reasoning|reasoning.*progressNotes/);
+  assert.match(runtime, /progressNotes=\{thinkingUpdates\}/);
+  assert.match(workspace, /progressNotes=\{thinkingUpdates\}/);
+  assert.match(gardenAssistant, /progressNotes=\{message\.progressNotes\}/);
   assert.match(eventStream, /progressNotes\.length \? \{ progressNotes \} : \{\}/);
   assert.match(sessionPresentation, /metadata\.progressNotes/);
+});
+
+test("clarification replies remain runtime input instead of transcript messages", () => {
+  assert.match(agentSession, /clarificationAnswer: true/);
+  assert.match(conversationStore, /clarificationAnswer\?: boolean/);
+  assert.match(conversationStore, /\{ clarificationAnswer: true \}/);
+  assert.match(sessionPresentation, /metadata\.clarificationAnswer === true/);
+  assert.match(chatSessionsRoute, /parseClarificationAnswer\(/);
+  assert.match(chatSessionRoute, /record\.clarificationAnswer === true/);
+  assert.match(
+    runtime,
+    /isClarificationAnswerMessage\(message\)[\s\S]{0,160}hiddenMessageIndices\.add\(correctionIndex\)/,
+  );
+  assert.match(workspace, /isClarificationAnswerMessage\(storedMessage\)/);
 });
 
 test("Quartz activity states use full sentences without status glyphs", () => {
@@ -255,6 +277,29 @@ test("assistant action buttons expose inline editing while keeping downloads in 
   assert.doesNotMatch(actions, /title="Download response"/);
   assert.match(actions, /onRetry\?\.\(\)/);
   assert.match(actions, /More response actions/);
+});
+
+test("assistant actions reveal the response time when its message is hovered", () => {
+  assert.match(actions, /responseStartedAt\?: string/);
+  assert.match(actions, /responseDurationMs\?: number/);
+  assert.match(actions, /responseCompletedAt\?: string/);
+  assert.match(actions, /chatResponseCompletedAt/);
+  assert.match(actions, /formatChatClockTime/);
+  assert.match(actions, /<time/);
+  assert.match(actions, /aria-label=\{`Response completed at \$\{responseTime\}`\}/);
+  assert.match(actions, /opacity-0/);
+  assert.match(actions, /group-hover\/assistant-message:opacity-100/);
+  assert.match(actions, /group-focus-within\/assistant-message:opacity-100/);
+  assert.match(actions, /group\/assistant-message contents/);
+
+  assert.match(workspace, /responseStartedAt=\{msg\.createdAt\}/);
+  assert.match(workspace, /responseDurationMs=\{msg\.responseDurationMs\}/);
+  assert.match(workspace, /responseCompletedAt=\{msg\.responseCompletedAt\}/);
+  assert.match(runtime, /message\.responseStartedAt \?\? message\.createdAt/);
+  assert.match(runtime, /responseDurationMs=\{message\.responseDurationMs\}/);
+  assert.match(runtime, /responseCompletedAt=\{message\.responseCompletedAt\}/);
+  assert.match(gardenAssistant, /responseStartedAt=\{message\.createdAt\}/);
+  assert.match(knowledgeTerminal, /responseStartedAt=\{message\.createdAt\}/);
 });
 
 test("assistant response editing is inline, durable, and visually part of the response", () => {

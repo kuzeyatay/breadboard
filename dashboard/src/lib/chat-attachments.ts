@@ -223,6 +223,43 @@ export type ChatMessageAttachment =
     };
 
 /**
+ * Runtime-safe text for a message whose useful content is entirely in its
+ * attachments. Image-only turns render this as no duplicate text via
+ * `visibleChatMessageText`, while the stored sentence still gives text-only
+ * transports a stable description of what arrived.
+ */
+export function attachmentOnlyMessageText(
+  attachments: readonly Pick<ChatAttachment, 'name'>[],
+): string {
+  const names = attachments.map((attachment) => attachment.name.trim()).filter(Boolean);
+  return names.length > 0 ? `Attached: ${names.join(', ')}` : '';
+}
+
+/**
+ * Attachment-only image turns keep a synthetic filename prompt in storage so
+ * the runtime still receives a useful question. The image preview already
+ * communicates that prompt in the transcript, though, so do not render a
+ * duplicate user-message bubble for it.
+ */
+export function visibleChatMessageText(
+  content: string,
+  attachments: readonly ChatMessageAttachment[] | undefined,
+  attachmentNames: readonly string[] | undefined,
+): string {
+  if (
+    !attachments?.length ||
+    attachments.some((attachment) => attachment.type !== 'image')
+  ) {
+    return content;
+  }
+
+  const names = attachmentNames?.length
+    ? attachmentNames
+    : attachments.map((attachment) => attachment.name);
+  return content === `Attached: ${names.join(', ')}` ? '' : content;
+}
+
+/**
  * Where an attached file opens, for the ones that open anywhere.
  *
  * Every stored document does. A PDF gets the same reader the garden opens a

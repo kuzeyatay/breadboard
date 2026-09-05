@@ -9,7 +9,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from chatmock.app import create_app
 from chatmock.cli import cmd_login
-from chatmock.serving import MemoryEfficientWSGIRequestHandler
+from chatmock.serving import run_memory_efficient_server
 from chatmock.utils import load_chatgpt_tokens, parse_jwt_claims
 
 
@@ -33,12 +33,10 @@ def run_server(
         expose_reasoning_models=expose_reasoning_models,
         default_web_search=default_web_search,
     )
-    app.run(
+    run_memory_efficient_server(
+        app,
         host=host,
         port=port,
-        use_reloader=False,
-        threaded=True,
-        request_handler=MemoryEfficientWSGIRequestHandler,
     )
 
 

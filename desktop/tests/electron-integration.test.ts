@@ -71,6 +71,15 @@ app.whenReady().then(async () => {
   window.webContents.sendInputEvent({ type: "keyDown", keyCode: "F11" });
   await new Promise((resolve) => setTimeout(resolve, 100));
   const f11ExitedFullScreen = !window.isFullScreen();
+  // Reproduce the normal maximized launch. The replacement must enter this
+  // native state while it is still transparent, not animate into it after the
+  // welcome is dismissed.
+  if (!window.isMaximized()) {
+    await new Promise((resolve) => {
+      window.once("maximize", resolve);
+      window.maximize();
+    });
+  }
   await window.webContents.executeJavaScript(
     "window.__breadboardStatePromise = new Promise((resolve) => { const off = window.breadboardDesktop.onStartupState((state) => { off(); resolve(state); }); }); true",
   );
@@ -103,6 +112,7 @@ app.whenReady().then(async () => {
     sizedLikeTheStartupWindow:
       Math.abs(preloadWindow.getBounds().width - startupBounds.width) <= 2 &&
       Math.abs(preloadWindow.getBounds().height - startupBounds.height) <= 2,
+    maximizedBeforeWelcomeDismissal: preloadWindow.isMaximized(),
     // The whole point of the arrangement: a window that is merely hidden runs
     // its scripts and its animation frames but is never rasterized, so the swap
     // would reveal a window with nothing painted in it.
@@ -110,6 +120,10 @@ app.whenReady().then(async () => {
       "performance.getEntriesByType('paint').map((entry) => entry.name)",
     ),
   };
+  let maximizeEventsAfterWelcomeDismissal = 0;
+  preloadWindow.on("maximize", () => {
+    maximizeEventsAfterWelcomeDismissal += 1;
+  });
   manager.markStartupContinued();
   await swapped;
   const dashboardWindow = manager.window;
@@ -122,6 +136,7 @@ app.whenReady().then(async () => {
     title: await dashboardWindow.webContents.executeJavaScript("document.title"),
     url: dashboardWindow.webContents.getURL(),
     windowCount: require("electron").BrowserWindow.getAllWindows().length,
+    maximizeEventsAfterWelcomeDismissal,
   };
 
   // A dashboard renderer can disappear while the supervised Next.js service
@@ -215,6 +230,7 @@ app.whenReady().then(async () => {
         opacity: number;
         offScreen: boolean;
         sizedLikeTheStartupWindow: boolean;
+        maximizedBeforeWelcomeDismissal: boolean;
         startupBounds: Record<string, number>;
         preloadBounds: Record<string, number>;
         paints: string[];
@@ -228,6 +244,7 @@ app.whenReady().then(async () => {
         title: string;
         url: string;
         windowCount: number;
+        maximizeEventsAfterWelcomeDismissal: number;
       };
       recovery: {
         title: string;
@@ -252,18 +269,36 @@ app.whenReady().then(async () => {
       "closeTeachController",
       "continueToDashboard",
       "copyDiagnostics",
+      "getBrowserBookmarks",
+      "getBrowserNavigation",
+      "getBrowserShortcuts",
+      "getClickyState",
+      "getCurrentLocationPreference",
       "getStartupSound",
       "getStartupState",
+      "getTabsState",
       "getVersions",
+      "launchClicky",
+      "onNotificationToast",
       "onStartupState",
+      "onTabsState",
+      "openClickyProject",
       "openLogsFolder",
       "openMicrophoneSettings",
       "openTeachController",
       "pickFolder",
+      "publishNotificationToast",
       "quit",
+      "resizeNotificationOverlay",
+      "restartBreadboard",
       "retryService",
+      "setBrowserBookmarks",
+      "setBrowserNavigation",
+      "setBrowserShortcuts",
+      "setCurrentLocationPreference",
       "setStartupSound",
       "setTheme",
+      "tabs",
     ]);
     assert.equal(result.versions.app, "0.1.0");
     assert.equal(result.state.phase, "ready");
@@ -283,7 +318,10 @@ app.whenReady().then(async () => {
     assert.deepEqual(result.preloading.paints, ["first-paint", "first-contentful-paint"]);
     assert.equal(result.preloading.isTheMainWindow, false);
     assert.equal(result.preloading.opacity, 0);
-    assert.equal(result.preloading.offScreen, true);
+    // Windows places a maximized window on its display even when it was parked
+    // offscreen first. Opacity is what keeps that already-final native frame
+    // invisible behind the welcome.
+    assert.equal(result.preloading.maximizedBeforeWelcomeDismissal, true);
     // Painted at the size it will be revealed at, or the swap is a full relayout.
     assert.equal(
       result.preloading.sizedLikeTheStartupWindow,
@@ -299,10 +337,11 @@ app.whenReady().then(async () => {
     assert.equal(result.swap.onScreen, true);
     assert.equal(result.swap.keptBounds, true);
     assert.equal(result.swap.title, "fixture dashboard");
-    assert.match(result.swap.url, /dashboard\.html$/);
+    assert.match(result.swap.url, /dashboard\.html\?theme=dark$/);
     // Exactly one window survives the swap; a hidden leftover would keep the
     // app alive after the last visible window closed.
     assert.equal(result.swap.windowCount, 1);
+    assert.equal(result.swap.maximizeEventsAfterWelcomeDismissal, 0);
 
     assert.equal(result.recovery.title, "fixture recovery");
     assert.equal(result.recovery.visible, true);
@@ -313,7 +352,7 @@ app.whenReady().then(async () => {
     assert.equal(result.recovered.onScreen, true);
     assert.equal(result.recovered.keptBounds, true);
     assert.equal(result.recovered.title, "fixture dashboard");
-    assert.match(result.recovered.url, /dashboard\.html$/);
+    assert.match(result.recovered.url, /dashboard\.html\?theme=dark$/);
     assert.equal(result.recovered.windowCount, 1);
   },
 );

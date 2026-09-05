@@ -43,6 +43,8 @@ interface ConversationMemory {
   workingState: WorkingState;
   messageCount: number;
   updatedAt: string;
+  hasSavedMemory: boolean;
+  memoryUpdatedAt: string | null;
 }
 
 interface SemanticStatus {
@@ -143,6 +145,8 @@ export default function SettingsAgentMemory() {
   // Keyed as "profile:<action>" / "chat:<id>" so every control shares one in-flight slot.
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [chatSearch, setChatSearch] = useState("");
+  const [visibleChatCount, setVisibleChatCount] = useState(10);
   const [editingProfile, setEditingProfile] = useState(false);
   const [profileContent, setProfileContent] = useState("");
   const [instruction, setInstruction] = useState("");
@@ -312,6 +316,11 @@ export default function SettingsAgentMemory() {
   }
 
   const profile = overview?.profile;
+  const conversations = overview?.conversations ?? [];
+  const matchingConversations = conversations.filter((conversation) =>
+    conversation.title.toLocaleLowerCase().includes(chatSearch.trim().toLocaleLowerCase()),
+  );
+  const savedSummaryCount = conversations.filter((conversation) => conversation.hasSavedMemory).length;
 
   return (
     <div className="space-y-4">
@@ -514,19 +523,36 @@ export default function SettingsAgentMemory() {
 
       </section>
 
-      {overview?.conversations.length ? (
+      {overview ? (
         <section className="space-y-2 border-t border-[var(--line)] pt-4">
           <div>
             <h3 className="text-sm font-medium text-[var(--ink-heading)]">
               Per-chat working memory
             </h3>
             <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-              The compacted state each chat keeps once it grows past a few dozen messages.
-              Clearing one leaves its transcript untouched.
+              Each chat uses its recent messages as context. Longer chats also keep a
+              saved summary of older messages. Clearing a summary keeps the chat history.
+            </p>
+            <p className="mt-1 text-[11px] text-[var(--ink-muted)]">
+              {conversations.length} {conversations.length === 1 ? "chat" : "chats"} ·{" "}
+              {savedSummaryCount} saved {savedSummaryCount === 1 ? "summary" : "summaries"}
             </p>
           </div>
+          {conversations.length > 0 ? (
+            <input
+              type="search"
+              aria-label="Search chat memory"
+              placeholder="Search chats…"
+              value={chatSearch}
+              onChange={(event) => {
+                setChatSearch(event.target.value);
+                setVisibleChatCount(10);
+              }}
+              className="neu-inset w-full rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3 py-2 text-xs text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--botanical)]"
+            />
+          ) : null}
           <ul className="space-y-2">
-            {overview.conversations.map((conversation) => {
+            {matchingConversations.slice(0, visibleChatCount).map((conversation) => {
               const open = expanded === conversation.conversationId;
               const state = conversation.workingState;
               const busy = pendingKey === `chat:${conversation.conversationId}`;
@@ -547,10 +573,17 @@ export default function SettingsAgentMemory() {
                       </span>
                       <span className="mt-0.5 block text-[11px] text-[var(--ink-muted)]">
                         {SURFACE_LABELS[conversation.surface] ?? conversation.surface} ·{" "}
-                        {conversation.messageCount} messages
+                        {conversation.messageCount} {conversation.messageCount === 1 ? "message" : "messages"}
                         {formatDate(conversation.updatedAt)
                           ? ` · updated ${formatDate(conversation.updatedAt)}`
                           : ""}
+                      </span>
+                      <span className="mt-1 block text-[11px] text-[var(--ink-muted)]">
+                        {conversation.hasSavedMemory
+                          ? "Saved summary"
+                          : conversation.messageCount > 0
+                            ? "Using recent messages"
+                            : "No messages yet"}
                       </span>
                     </span>
                     <svg
@@ -566,6 +599,15 @@ export default function SettingsAgentMemory() {
                   </button>
                   {open ? (
                     <div className="space-y-3 border-t border-[var(--line)] px-3.5 py-3 text-xs leading-5 text-[var(--ink-muted)]">
+                      {!conversation.hasSavedMemory ? (
+                        <p>
+                          {conversation.messageCount > 0
+                            ? "No separate summary is saved for this chat. It uses recent messages as context; a summary is saved automatically as the conversation grows."
+                            : "Start chatting to give this conversation context. A summary is saved automatically as the conversation grows."}
+                        </p>
+                      ) : conversation.memoryUpdatedAt ? (
+                        <p>Summary updated {formatDate(conversation.memoryUpdatedAt)}</p>
+                      ) : null}
                       {state.currentGoal ? (
                         <p>
                           <span className="font-medium text-[var(--ink-heading)]">Goal: </span>
@@ -615,7 +657,7 @@ export default function SettingsAgentMemory() {
                           <p className="mt-1 whitespace-pre-wrap">{conversation.summary}</p>
                         </details>
                       ) : null}
-                      <button
+                      {conversation.hasSavedMemory ? <button
                         type="button"
                         disabled={busy}
                         onClick={() =>
@@ -627,14 +669,27 @@ export default function SettingsAgentMemory() {
                         }
                         className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-2.5 py-1 text-[11px] text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
                       >
-                        {busy ? "Clearing…" : "Clear this chat's memory"}
-                      </button>
+                        {busy ? "Clearing…" : "Clear saved summary"}
+                      </button> : null}
                     </div>
                   ) : null}
                 </li>
               );
             })}
           </ul>
+          {matchingConversations.length === 0 ? (
+            <p className="py-3 text-xs text-[var(--ink-muted)]" role="status">
+              {conversations.length === 0 ? "Your chats will appear here once you start a conversation." : "No chats match your search."}
+            </p>
+          ) : matchingConversations.length > visibleChatCount ? (
+            <button
+              type="button"
+              onClick={() => setVisibleChatCount((count) => count + 10)}
+              className="neu-button rounded-lg border border-[var(--line)] px-3 py-1.5 text-xs text-[var(--ink-muted)]"
+            >
+              Show more chats ({matchingConversations.length - visibleChatCount} remaining)
+            </button>
+          ) : null}
         </section>
       ) : null}
 

@@ -17,6 +17,7 @@ import {
   ensureLearnCouncilCheckpointSchema,
   exactFailedLearnCouncilLineage,
   exactLearnCouncilRetryJobBinding,
+  hasDurableLearnCouncilNoDispatchBoundary,
   hasNativeLearnCouncilCheckpoint,
   isExactLegacyLearnCouncilFailureShape,
   legacyLearnCouncilLineageQuiescenceDelayMs,
@@ -60,6 +61,8 @@ function database() {
       model TEXT,
       status TEXT NOT NULL,
       mode TEXT NOT NULL,
+      current_step TEXT,
+      error TEXT,
       requires_replan INTEGER NOT NULL DEFAULT 0,
       confirmed_learning_map_id TEXT,
       source_set_hash TEXT,
@@ -104,10 +107,11 @@ function addJob(db, input) {
   db.prepare(`
     INSERT INTO learn_jobs (
       id, garden_id, user_id, model, status, mode, requires_replan,
+      current_step, error,
       confirmed_learning_map_id, source_set_hash, source_ids_json,
       syllabus_source_id, source_only, include_source_snapshots,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.id,
     input.gardenId ?? "garden-generic",
@@ -116,6 +120,8 @@ function addJob(db, input) {
     input.status,
     input.mode ?? "generate",
     input.requiresReplan ?? 0,
+    input.currentStep ?? null,
+    input.error ?? null,
     input.mapId ?? "map-generic",
     input.sourceSetHash ?? HASH_A,
     JSON.stringify(input.sourceIds ?? ["source-a", "source-b"]),
@@ -343,6 +349,53 @@ describe("ordinary Learn Council checkpoints", () => {
     assert.deepEqual(
       exactFailedLearnCouncilLineage(db, "job-current").map((job) => job.id),
       ["job-origin"],
+    );
+  });
+
+  it("recognizes only durable strict failures that happened before ordinary dispatch", () => {
+    const db = database();
+    addJob(db, {
+      id: "job-setup-failed",
+      status: "failed",
+      currentStep: "Generation could not start",
+      error: "ENOSPC: no space left on device",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    addJob(db, {
+      id: "job-old-recovery-guard",
+      status: "failed",
+      currentStep: "Lesson generation failed; last internal step: Writing overview pages",
+      error: "Prior exact Learn jobs are not durably quiescent or have no completed failure boundary; 404 absence cannot authorize a model request.",
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:01:01.000Z",
+    });
+    addJob(db, {
+      id: "job-ordinary-failed",
+      status: "failed",
+      currentStep: "Lesson generation failed; last internal step: Writing overview pages",
+      error: "connection closed",
+      createdAt: "2026-01-01T00:02:00.000Z",
+      updatedAt: "2026-01-01T00:02:01.000Z",
+    });
+
+    assert.equal(
+      hasDurableLearnCouncilNoDispatchBoundary(
+        learnCouncilRetryJob(db, "job-setup-failed"),
+      ),
+      true,
+    );
+    assert.equal(
+      hasDurableLearnCouncilNoDispatchBoundary(
+        learnCouncilRetryJob(db, "job-old-recovery-guard"),
+      ),
+      true,
+    );
+    assert.equal(
+      hasDurableLearnCouncilNoDispatchBoundary(
+        learnCouncilRetryJob(db, "job-ordinary-failed"),
+      ),
+      false,
     );
   });
 

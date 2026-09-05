@@ -1,6 +1,7 @@
 import "server-only";
 
 import { ApiError } from "../hermes/route-core.ts";
+import { describeLeadTime } from "../calendar/reminder-request.ts";
 import { getScheduledChatJobStore } from "./instance.ts";
 import { presentScheduledChatJob } from "./store.ts";
 import {
@@ -25,13 +26,36 @@ export function scheduledChatReceiptForUser(
       "The schedule receipt is invalid.",
     );
   }
-  const row = getScheduledChatJobStore().get(userId, id);
+  const store = getScheduledChatJobStore();
+  const row = store.get(userId, id);
   if (!row) {
     throw new ApiError(
       404,
       "schedule_receipt_not_found",
       "That scheduled task no longer exists.",
     );
+  }
+  if (row.prompt_slug?.startsWith("class-reminders:")) {
+    const batch = store
+      .list(userId)
+      .filter((candidate) => candidate.prompt_slug === row.prompt_slug);
+    const next = [...batch]
+      .filter((candidate) => candidate.enabled === 1)
+      .sort((left, right) => left.next_run_at.localeCompare(right.next_run_at))[0] ?? row;
+    const lead = Number(row.prompt_slug.split(":").at(-1));
+    const channel = row.delivery_channel === "telegram"
+      ? "Telegram with chat fallback"
+      : row.delivery_channel === "whatsapp"
+        ? "WhatsApp with chat fallback"
+        : "Breadboard chat";
+    return {
+      id: row.id,
+      title: `${batch.length} class reminder${batch.length === 1 ? "" : "s"} for today`,
+      cronDescription: `${describeLeadTime(lead)} before each · ${channel}`,
+      oneShot: true,
+      nextRunAt: next.next_run_at,
+      batchCount: batch.length,
+    };
   }
   return scheduledChatReceiptFromJob(presentScheduledChatJob(row));
 }

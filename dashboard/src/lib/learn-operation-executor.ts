@@ -28,7 +28,11 @@ function requireCurrentProposal(
     gardenId: request.gardenId,
     contentPath: request.contentPath,
   });
-  if (status.latestTextbookVersionId || status.hasTextbook) {
+  const additiveUpdate = status.job?.mode === "update_sources";
+  if (
+    (status.latestTextbookVersionId || status.hasTextbook) &&
+    !additiveUpdate
+  ) {
     rejectExistingLearnerContent();
   }
   if (
@@ -75,13 +79,13 @@ async function executeLearnOperationInner(
         gardenId: request.gardenId,
         contentPath: request.contentPath,
       });
-      if (status.latestTextbookVersionId || status.hasTextbook) {
-        rejectExistingLearnerContent();
-      }
+      const additiveUpdate = Boolean(
+        status.latestTextbookVersionId || status.hasTextbook,
+      );
       return runLearnPipeline({
         gardenId: request.gardenId,
         userId: request.userId,
-        mode: "plan",
+        mode: additiveUpdate ? "update_sources" : "plan",
         client: createChatmockClient(request.baseURL),
         contentPath: request.contentPath,
         includedSourceIds: request.includedSourceIds,
@@ -104,9 +108,15 @@ async function executeLearnOperationInner(
         status.hasTextbook &&
         status.job?.mode === "generate" &&
         status.job.status === "failed";
+      const additiveUpdate =
+        status.job?.mode === "update_sources" &&
+        status.job.confirmedLearningMapId === status.confirmedLearningMapId &&
+        request.requestedConfirmedLearningMapId ===
+          status.confirmedLearningMapId;
       if (
         (status.latestTextbookVersionId || status.hasTextbook) &&
-        !mayResumeFailedInitialGeneration
+        !mayResumeFailedInitialGeneration &&
+        !additiveUpdate
       ) {
         rejectExistingLearnerContent();
       }
@@ -157,6 +167,7 @@ async function executeLearnOperationInner(
         client: createChatmockClient(request.baseURL),
         contentPath: request.contentPath,
         confirmedLearningMapId: status.confirmedLearningMapId,
+        mode: additiveUpdate ? "update_sources" : "generate",
         model: request.model,
         sourceOnly: request.sourceOnly,
         includeSourceSnapshots: request.includeSourceSnapshots,
@@ -175,12 +186,20 @@ async function executeLearnOperationInner(
     }
     case "confirm_generate": {
       const learningMap = requireCurrentProposal(request);
+      const status = getLearnStatusSnapshot({
+        gardenId: request.gardenId,
+        contentPath: request.contentPath,
+      });
       const generation = await runTextbookGeneration({
         gardenId: request.gardenId,
         userId: request.userId,
         client: createChatmockClient(request.baseURL),
         contentPath: request.contentPath,
         confirmedLearningMapId: request.proposedLearningMapId,
+        mode:
+          status.job?.mode === "update_sources"
+            ? "update_sources"
+            : "generate",
         model: request.model,
         sourceOnly: request.sourceOnly,
         includeSourceSnapshots: request.includeSourceSnapshots,

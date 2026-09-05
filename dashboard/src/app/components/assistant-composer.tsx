@@ -17,6 +17,7 @@ import {
   useState,
 } from 'react';
 import dynamic from 'next/dynamic';
+import AttachmentPreviewDialog from '@/app/components/attachment-preview-dialog';
 import SettingsDialog, { type SettingsTab } from '@/app/components/settings-dialog';
 import BreadboardLoader from '@/app/components/breadboard-loader';
 import SpeechDictationButton from '@/app/components/speech-dictation-button';
@@ -42,7 +43,6 @@ import { useHumanizerMode } from '@/app/components/use-humanizer-mode';
 import { useYoloMode } from '@/app/components/use-yolo-mode';
 import { useAgentMode, useSuperAgent } from '@/app/components/use-agent-mode';
 import { useComposerSwitchHydration } from '@/app/components/composer-switch-preferences';
-import type { ModelFailoverNotice } from '@/app/components/use-assistant-intelligence';
 import type { CommandHubItem } from '@/lib/hermes/commands.ts';
 import type { HermesSurface } from '@/lib/hermes/config.ts';
 import type { LocalWorkflowSummary } from '@/lib/workflows/types';
@@ -112,19 +112,23 @@ import { VOX_DIRECTOR_COMMAND } from '@/lib/vox-director/identity.ts';
 import { MONEY_PRINTER_COMMAND } from '@/lib/money-printer/identity.ts';
 import { LEGAL_COMMAND } from '@/lib/legal/identity.ts';
 import { WARDROBE_COMMAND } from '@/lib/wardrobe/identity.ts';
-import { describeDocumentSummary, type DocumentAttachmentSummary } from '@/lib/document-attachments.ts';
+import { describeDocumentSummary } from '@/lib/document-attachments.ts';
 import { useDocumentIndexStatus } from '@/app/components/use-document-index-status';
-import type { ModelAttachmentSummary } from '@/lib/model-attachments.ts';
 import { OPENCODE_COMMAND } from '@/lib/opencode/identity.ts';
 import { CODEX_COMMAND } from '@/lib/codex/identity.ts';
 import { RUFLO_COMMAND } from '@/lib/ruflo/identity.ts';
 import { AGENT_TARS_SLASH_COMMAND } from '@/lib/ui-tars/identity.ts';
-import { imageFilesFromClipboard } from '@/lib/chat-attachments';
+import {
+  chatAttachmentHref,
+  imageFilesFromClipboard,
+  type ChatAttachment,
+} from '@/lib/chat-attachments';
 import { composerSegments } from '@/lib/composer-links';
 import { modelAttachmentHref } from '@/lib/model-attachments';
+import { isPlayableVideoFormat } from '@/lib/video-attachments';
 import ModelCubeIcon from '@/app/components/model-cube-icon';
 import SignInRequiredCard from '@/app/components/sign-in-required-card';
-import type { ProductSearchItem } from '@/lib/generative-ui/contracts.ts';
+import { launchClickyFromPrompt } from '@/lib/clicky/desktop-control.ts';
 
 /** What the goal card's play button sends when a goal has stalled. */
 const GOAL_CONTINUATION_MESSAGE = 'Continue working on the goal.';
@@ -141,25 +145,8 @@ function workflowInputFromComposer(value: string, stagedPrompt: string): string 
   return draft;
 }
 
-export interface ComposerAttachment {
-  name: string;
-  type?: 'text' | 'image' | 'model' | 'video' | 'audio' | 'document' | 'product';
-  /** Data URL for image attachments — enables an inline thumbnail + lightbox preview. */
-  dataUrl?: string;
-  /** Set for 3D models, videos, audio and documents; the chip links to the stored file so it can be checked before sending. */
-  blobId?: string;
-  /**
-   * For a document, what the extractor found in it. Declared here so a
-   * `ChatAttachment` still assigns to this structurally and no caller has to
-   * map — the chip reads it to say "12 pages · 3 tables · 2 figures", which is
-   * the one moment the person can see that the figures were noticed before
-   * they press send. A mesh carries a `summary` of its own shape, so this
-   * accepts either and the chip reads whichever the attachment actually is.
-   */
-  summary?: DocumentAttachmentSummary | ModelAttachmentSummary;
-  /** Structured product selected from a native product-search result. */
-  product?: ProductSearchItem;
-}
+/** The composer keeps the complete payload so queued attachments can travel. */
+export type ComposerAttachment = ChatAttachment;
 
 interface Props {
   value: string;
@@ -212,8 +199,6 @@ interface Props {
    * rather than a ladder that would silently do nothing.
    */
   intelligenceModes?: IntelligenceMode[];
-  /** Set when the chosen model is out of quota and a stand-in is serving. */
-  modelFailover?: ModelFailoverNotice | null;
   onAddDocuments?: () => void;
   isAddingDocuments?: boolean;
   attachments?: ComposerAttachment[];
@@ -240,7 +225,16 @@ interface Props {
    * agent's own card is hidden by a delegated turn.
    */
   externalRunActive?: boolean;
-  onQueueSteer?: (text: string) => void;
+  onQueueSteer?: (
+    text: string,
+    attachments: readonly ChatAttachment[],
+  ) => void;
+  /**
+   * Submit the current draft directly while a chat turn is running. This is
+   * reserved for interactions that replace that turn (currently "Ask here");
+   * ordinary follow-ups must continue through `onQueueSteer`.
+   */
+  onSubmitDuringRun?: () => void;
   onStop?: () => void;
   /** A stop request was accepted locally and is waiting for terminal state. */
   stopPending?: boolean;
@@ -504,7 +498,6 @@ export default function AssistantComposer({
   reasoningEffort,
   onReasoningEffortChange,
   intelligenceModes,
-  modelFailover,
   onAddDocuments,
   isAddingDocuments = false,
   attachments = [],
@@ -519,6 +512,7 @@ export default function AssistantComposer({
   runState = 'idle',
   externalRunActive = false,
   onQueueSteer,
+  onSubmitDuringRun,
   onStop,
   stopPending = false,
   permissionPending = false,
@@ -705,6 +699,11 @@ export default function AssistantComposer({
       onChange('');
       window.setTimeout(() => internalTextareaRef.current?.focus(), 0);
       void onRunWorkflow(workflow, input);
+      return;
+    }
+    if (attachments.length === 0 && launchClickyFromPrompt(value)) {
+      onChange('');
+      window.setTimeout(() => internalTextareaRef.current?.focus(), 0);
       return;
     }
     onSubmit();
@@ -1032,8 +1031,17 @@ export default function AssistantComposer({
   const canQueueFollowUp =
     queueHeld &&
     !queueDisabled &&
+    Boolean(value.trim() || attachments.length > 0) &&
+    Boolean(onQueueSteer) &&
+    !onSubmitDuringRun;
+  const canSubmitDuringRun =
+    runInFlight &&
+    !loading &&
+    !disabled &&
+    !queueDisabled &&
+    Boolean(onSubmitDuringRun) &&
     Boolean(value.trim()) &&
-    Boolean(onQueueSteer);
+    canSubmit;
 
   useEffect(() => {
     if (!capabilitySessionId || capabilitySurface === 'quartz_ai') {
@@ -1159,9 +1167,14 @@ export default function AssistantComposer({
 
   function queueSteer() {
     const text = value.trim();
-    if (!text || !canQueueFollowUp) return;
-    onQueueSteer?.(text);
+    if ((!text && attachments.length === 0) || !canQueueFollowUp) return;
+    onQueueSteer?.(text, attachments);
     onChange('');
+    // The queued row now owns the payload. Removing from the end keeps
+    // index-based host callbacks correct while React batches their updates.
+    for (let index = attachments.length - 1; index >= 0; index -= 1) {
+      onRemoveAttachment?.(index);
+    }
     window.setTimeout(() => internalTextareaRef.current?.focus(), 0);
   }
 
@@ -1416,25 +1429,55 @@ export default function AssistantComposer({
                       {attachment.name}
                     </a>
                   ) : attachment.type === 'audio' && attachment.blobId ? (
-                    <a
-                      href={`/api/chat-attachments/audio/${attachment.blobId}`}
-                      target="_blank"
-                      rel="noreferrer"
+                    <AttachmentPreviewDialog
+                      source={{
+                        kind: 'audio',
+                        name: attachment.name,
+                        href: `/api/chat-attachments/audio/${attachment.blobId}`,
+                      }}
                       className="truncate underline decoration-dotted underline-offset-2"
                       title={`Play ${attachment.name}`}
                     >
                       {attachment.name}
-                    </a>
+                    </AttachmentPreviewDialog>
                   ) : attachment.type === 'video' && attachment.blobId ? (
-                    <a
-                      href={`/api/chat-attachments/videos/${attachment.blobId}`}
-                      target="_blank"
-                      rel="noreferrer"
+                    <AttachmentPreviewDialog
+                      source={{
+                        kind: 'video',
+                        name: attachment.name,
+                        href: `/api/chat-attachments/videos/${attachment.blobId}`,
+                        playable: isPlayableVideoFormat(attachment.format),
+                      }}
                       className="truncate underline decoration-dotted underline-offset-2"
-                      title={`Open ${attachment.name}`}
+                      title={`Play ${attachment.name}`}
                     >
                       {attachment.name}
-                    </a>
+                    </AttachmentPreviewDialog>
+                  ) : attachment.type === 'document' &&
+                    attachment.blobId &&
+                    attachment.format === 'pdf' ? (
+                    <AttachmentPreviewDialog
+                      source={{
+                        kind: 'pdf',
+                        name: attachment.name,
+                        href: chatAttachmentHref(attachment),
+                      }}
+                      className="truncate underline decoration-dotted underline-offset-2"
+                      title={
+                        [
+                          describeDocumentSummary(
+                            attachment.summary && 'figureCount' in attachment.summary
+                              ? attachment.summary
+                              : null,
+                          ) || `Open ${attachment.name}`,
+                          documentIndexStatus[attachment.blobId]?.label,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')
+                      }
+                    >
+                      {attachment.name}
+                    </AttachmentPreviewDialog>
                   ) : attachment.type === 'document' && attachment.blobId ? (
                     // The document is kept whole now, so the chip links to the
                     // stored original — and `detail` says what was found inside
@@ -2238,6 +2281,10 @@ export default function AssistantComposer({
                       // message in the visible follow-up queue. The host drains
                       // it only after the conversation is safe to write.
                       if (queueHeld) {
+                        if (canSubmitDuringRun) {
+                          onSubmitDuringRun?.();
+                          return;
+                        }
                         queueSteer();
                         return;
                       }
@@ -2494,7 +2541,6 @@ export default function AssistantComposer({
                       onOpenChange={(open) => setIntelligencePanel(open ? 'usage' : null)}
                       showBackdrop={false}
                       activeModel={model}
-                      modelFailover={modelFailover}
                       buttonClassName="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition"
                       activeButtonClassName="bg-[var(--paper-surface)] text-[var(--botanical)]"
                       inactiveButtonClassName="text-[var(--ink)] hover:bg-[var(--paper-strong)]"
@@ -2554,7 +2600,7 @@ export default function AssistantComposer({
               (a quiet run) or never arrive at all, and then nothing on screen
               could stop a working conversation. Enter still queues the draft
               either way, exactly as it does during a chat turn. */}
-          {runInFlight && onStop && !canQueueFollowUp ? (
+          {runInFlight && onStop && !canQueueFollowUp && !canSubmitDuringRun ? (
             <button
               type="button"
               onClick={onStop}
@@ -2569,14 +2615,16 @@ export default function AssistantComposer({
           ) : (
           <button
             type="button"
-            // A typed draft takes precedence over the loading/stop affordance:
-            // its arrow queues the message, matching Enter. With the field empty
-            // the active run still exposes Stop above.
+            // A typed draft takes precedence over the loading/stop affordance.
+            // Ordinary follow-ups queue; an interaction with its own active-run
+            // submitter (currently "Ask here") replaces the running turn.
             onClick={() =>
               formAgent
                 ? submitFormAgent()
                 : queueHeld
-                  ? queueSteer()
+                  ? canSubmitDuringRun
+                    ? onSubmitDuringRun?.()
+                    : queueSteer()
                   : submitMessage()
             }
             disabled={
@@ -2584,14 +2632,18 @@ export default function AssistantComposer({
               (formAgent
                 ? disabled || queueHeld || isSending
                 : queueHeld
-                  ? !canQueueFollowUp
+                  ? canSubmitDuringRun
+                    ? false
+                    : !canQueueFollowUp
                   : disabled || isSending)
             }
             // While the chat loads with no draft, the button keeps its accent
             // colour and spinner. A draft restores the enabled arrow immediately.
             className={`neu-button-accent flex shrink-0 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] ${loading ? 'disabled:cursor-wait disabled:opacity-55' : 'disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)]'} ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
             aria-label={
-              canQueueFollowUp
+              canSubmitDuringRun
+                ? 'Send'
+                : canQueueFollowUp
                 ? 'Queue message'
                 : loading
                   ? 'Loading this chat'
@@ -2604,7 +2656,9 @@ export default function AssistantComposer({
                       : 'Send'
             }
             title={
-              canQueueFollowUp
+              canSubmitDuringRun
+                ? 'Send'
+                : canQueueFollowUp
                 ? 'Queue until the conversation is ready'
                 : loading
                   ? 'Loading this chat…'
@@ -2619,7 +2673,7 @@ export default function AssistantComposer({
                   : 'Send'
             }
           >
-            {(isSending || loading) && !canQueueFollowUp ? (
+            {(isSending || loading) && !canQueueFollowUp && !canSubmitDuringRun ? (
               <Spinner />
             ) : (
               <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>

@@ -812,13 +812,12 @@ ensureColumn(
   "humanizer_auto",
   "humanizer_auto INTEGER NOT NULL DEFAULT 0",
 );
-// The composer's Intelligence-menu switches (YOLO, Agent mode, Super agent,
-// Direct mode, Personalize) as an account setting. The browser stores keep
-// them in localStorage, which is keyed by origin, and the desktop dashboard is
-// served on a different loopback port after every restart - so without this
-// column every switch silently reset each time Breadboard was reopened. A
-// partial JSON record: an absent key means "never set", and the browser keeps
-// its own default. See lib/hermes/composer-switches.ts.
+// Browser switches as an account setting: the composer's Intelligence-menu
+// controls and the Profile's automatic-theme and location-consent controls.
+// Their localStorage is keyed by origin, while the desktop dashboard is served
+// on a different loopback port after every restart. A partial JSON record: an
+// absent key means "never set", and the browser keeps its own default. Location
+// coordinates are not stored here. See lib/hermes/composer-switches.ts.
 ensureColumn(
   "hermes_user_settings",
   "composer_switches",

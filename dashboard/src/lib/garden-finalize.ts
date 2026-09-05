@@ -2392,7 +2392,7 @@ export function ungroundableFormulaWarnings(gardenDir: string): string[] {
 // ---------------------------------------------------------------------------
 
 function cleanExportTree(gardenDir: string, report: FinalizeReport): void {
-  const allowedTop = new Set(["_index.md", "learning", "sources", "assets", ".breadboard"]);
+  const allowedTop = new Set(["_index.md", "Concepts", "learning", "sources", "assets", ".breadboard"]);
   // Source-file basenames, so a numbered folder named after the raw upload can
   // be recognized even without an exact "source-conversion" marker.
   const sourceBases = new Set<string>();
@@ -8730,13 +8730,13 @@ function collectFinalizeChecks({
   );
 
   // Export tree.
-  const allowed = new Set(["_index.md", "learning", "sources", "assets", ".breadboard"]);
+  const allowed = new Set(["_index.md", "Concepts", "learning", "sources", "assets", ".breadboard"]);
   const treeProblems: string[] = [];
   for (const entry of fs.readdirSync(gardenDir)) {
     if (!allowed.has(entry)) treeProblems.push(`unexpected top-level: ${entry}`);
   }
   if (!fs.existsSync(path.join(gardenDir, "sources", "_index.md"))) treeProblems.push("sources/_index.md missing");
-  push("exported tree only _index.md/learning/sources/assets/.breadboard", treeProblems);
+  push("exported tree only _index.md/Concepts/learning/sources/assets/.breadboard", treeProblems);
 
   push("semantic navigation links point to the expected page family", semanticNavigationProblems(gardenDir));
   push("Semantic Navigation Number Matching", semanticNavigationNumberProblems(gardenDir));
@@ -9216,7 +9216,7 @@ function runCriticalGate({
 }): void {
   const problems: string[] = [];
   // Dirty tree.
-  const allowed = new Set(["_index.md", "learning", "sources", "assets", ".breadboard"]);
+  const allowed = new Set(["_index.md", "Concepts", "learning", "sources", "assets", ".breadboard"]);
   for (const entry of fs.readdirSync(gardenDir)) {
     if (!allowed.has(entry)) problems.push(`dirty top-level export entry: ${entry}`);
   }
@@ -9248,6 +9248,7 @@ function runCriticalGate({
   const visible: Array<{ abs: string; rel: string }> = [];
   const rootIndex = path.join(gardenDir, "_index.md");
   if (fs.existsSync(rootIndex)) visible.push({ abs: rootIndex, rel: "_index.md" });
+  listMarkdown(path.join(gardenDir, "Concepts"), "Concepts", visible);
   listMarkdown(path.join(gardenDir, "learning"), "learning", visible);
   listMarkdown(path.join(gardenDir, "sources"), "sources", visible);
   for (const { abs, rel } of visible) {

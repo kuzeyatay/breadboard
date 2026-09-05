@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import MusicRecognitionButton from "@/app/components/music-recognition-button";
 import MicrophonePermissionHelp from "./microphone-permission-help";
@@ -21,9 +21,16 @@ import {
   readRecordingEvents,
   type RecordingTranscriptionEvent,
 } from "@/lib/speech/recording-upload";
+import { prepareLocalSpeech, speechErrorMessage } from "@/lib/speech/prepare-client";
 import { VOICE_DOUBLE_TAP_MS } from "@/lib/speech/voice-conversation";
 
-type DictationState = "idle" | "requesting" | "recording" | "transcribing" | "reading-file";
+type DictationState =
+  | "idle"
+  | "requesting"
+  | "recording"
+  | "paused"
+  | "transcribing"
+  | "reading-file";
 
 interface SpeechDictationButtonProps {
   value: string;
@@ -52,6 +59,7 @@ type PcmCapture = {
   chunks: Float32Array[];
   sampleRate: number;
   totalSamples: number;
+  paused: boolean;
 };
 
 const PARTIAL_TRANSCRIPT_INTERVAL_MS = 2_750;
@@ -223,6 +231,7 @@ export default function SpeechDictationButton({
   const partialTimerRef = useRef<number | null>(null);
   const partialAbortRef = useRef<AbortController | null>(null);
   const finalAbortRef = useRef<AbortController | null>(null);
+  const prepareAbortRef = useRef<AbortController | null>(null);
   const partialPromiseRef = useRef<Promise<void> | null>(null);
   const sessionRef = useRef(0);
   const mountedRef = useRef(true);
@@ -233,8 +242,21 @@ export default function SpeechDictationButton({
   const shellRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
+  const pauseButtonRef = useRef<HTMLButtonElement>(null);
+  const levelBarsRef = useRef<Array<HTMLSpanElement | null>>([]);
 
-  function releaseMicrophone() {
+  const paintDictationLevel = useCallback((rms: number) => {
+    const level = Math.min(1, Math.max(0, rms * 9));
+    const shape = [0.56, 0.82, 1, 0.76, 0.52];
+    levelBarsRef.current.forEach((bar, index) => {
+      if (!bar) return;
+      const scale = Math.min(1, 0.24 + level * (shape[index] ?? 0.6));
+      bar.style.transform = `scaleY(${scale.toFixed(3)})`;
+      bar.style.opacity = `${(0.62 + level * 0.38).toFixed(3)}`;
+    });
+  }, []);
+
+  const releaseMicrophone = useCallback(() => {
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
     timeoutRef.current = null;
     if (partialTimerRef.current !== null) window.clearInterval(partialTimerRef.current);
@@ -242,6 +264,7 @@ export default function SpeechDictationButton({
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     recorderRef.current = null;
+    paintDictationLevel(0);
 
     const capture = pcmCaptureRef.current;
     pcmCaptureRef.current = null;
@@ -252,16 +275,16 @@ export default function SpeechDictationButton({
       capture.sink.disconnect();
       void capture.context.close();
     }
-  }
+  }, [paintDictationLevel]);
 
-  function stopPartialRecognition(): Promise<void> | null {
+  const stopPartialRecognition = useCallback((): Promise<void> | null => {
     if (partialTimerRef.current !== null) window.clearInterval(partialTimerRef.current);
     partialTimerRef.current = null;
     const pending = partialPromiseRef.current;
     partialAbortRef.current?.abort();
     partialAbortRef.current = null;
     return pending;
-  }
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -271,12 +294,15 @@ export default function SpeechDictationButton({
       if (tapTimerRef.current !== null) window.clearTimeout(tapTimerRef.current);
       tapTimerRef.current = null;
       stopPartialRecognition();
+      prepareAbortRef.current?.abort();
       finalAbortRef.current?.abort();
       uploadAbortRef.current?.abort();
-      if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        recorderRef.current.stop();
+      }
       releaseMicrophone();
     };
-  }, []);
+  }, [releaseMicrophone, stopPartialRecognition]);
 
   // The menu is dismissed the way the text-selection menu is: a pointer landing
   // anywhere else, or Escape. The shell wraps the button too, so tapping the
@@ -327,9 +353,14 @@ export default function SpeechDictationButton({
         chunks: [],
         sampleRate: context.sampleRate,
         totalSamples: 0,
+        paused: false,
       };
       processor.onaudioprocess = (event) => {
+        if (capture.paused) return;
         const input = event.inputBuffer.getChannelData(0);
+        let energy = 0;
+        for (const sample of input) energy += sample * sample;
+        paintDictationLevel(Math.sqrt(energy / input.length));
         const copy = new Float32Array(input.length);
         copy.set(input);
         capture.chunks.push(copy);
@@ -433,7 +464,7 @@ export default function SpeechDictationButton({
         mountedRef.current &&
         !(caught instanceof DOMException && caught.name === "AbortError")
       ) {
-        setError(caught instanceof Error ? caught.message : "Dictation failed.");
+        setError(speechErrorMessage(caught, "Dictation failed."));
       }
     } finally {
       finalAbortRef.current = null;
@@ -450,6 +481,15 @@ export default function SpeechDictationButton({
     }
     setState("requesting");
     try {
+      const prepareController = new AbortController();
+      prepareAbortRef.current = prepareController;
+      try {
+        await prepareLocalSpeech(prepareController.signal);
+      } finally {
+        if (prepareAbortRef.current === prepareController) prepareAbortRef.current = null;
+      }
+      if (!mountedRef.current) return;
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
@@ -497,16 +537,18 @@ export default function SpeechDictationButton({
       // can produce WebM fragments without their header in Chromium/WebKit.
       recorder.start();
       setState("recording");
+      requestAnimationFrame(() => pauseButtonRef.current?.focus());
       partialTimerRef.current = window.setInterval(
         () => recognizePartial(session),
         PARTIAL_TRANSCRIPT_INTERVAL_MS,
       );
       timeoutRef.current = window.setTimeout(() => {
-        if (recorder.state === "recording") recorder.stop();
+        if (recorder.state === "recording" || recorder.state === "paused") recorder.stop();
       }, 5 * 60_000);
     } catch (caught) {
       releaseMicrophone();
       setState("idle");
+      if (caught instanceof DOMException && caught.name === "AbortError") return;
       // A refusal is not an error message: it is a setting somewhere the user
       // has to be walked to, so it gets the guidance panel instead.
       if (caught instanceof DOMException && caught.name === "NotAllowedError") {
@@ -514,7 +556,41 @@ export default function SpeechDictationButton({
         if (mountedRef.current) setBlocked(fix);
         return;
       }
-      setError(caught instanceof Error ? caught.message : "The microphone could not be opened.");
+      setError(speechErrorMessage(caught, "The microphone could not be opened."));
+    }
+  }
+
+  function toggleRecordingPause() {
+    const recorder = recorderRef.current;
+    const capture = pcmCaptureRef.current;
+    if (!recorder) return;
+
+    if (state === "recording" && recorder.state === "recording") {
+      recorder.pause();
+      if (capture) capture.paused = true;
+      stopPartialRecognition();
+      paintDictationLevel(0);
+      setState("paused");
+      return;
+    }
+
+    if (state === "paused" && recorder.state === "paused") {
+      recorder.resume();
+      if (capture) capture.paused = false;
+      const session = sessionRef.current;
+      partialTimerRef.current = window.setInterval(
+        () => recognizePartial(session),
+        PARTIAL_TRANSCRIPT_INTERVAL_MS,
+      );
+      setState("recording");
+    }
+  }
+
+  function stopRecording() {
+    const recorder = recorderRef.current;
+    if (recorder && (recorder.state === "recording" || recorder.state === "paused")) {
+      recorder.stop();
+      requestAnimationFrame(() => textareaRef.current?.focus());
     }
   }
 
@@ -590,7 +666,7 @@ export default function SpeechDictationButton({
         mountedRef.current &&
         !(caught instanceof DOMException && caught.name === "AbortError")
       ) {
-        setError(caught instanceof Error ? caught.message : "That recording could not be transcribed.");
+        setError(speechErrorMessage(caught, "That recording could not be transcribed."));
       }
     } finally {
       uploadAbortRef.current = null;
@@ -634,8 +710,8 @@ export default function SpeechDictationButton({
       setMenuOpen(false);
       return;
     }
-    if (state === "recording") {
-      recorderRef.current?.stop();
+    if (state === "recording" || state === "paused") {
+      stopRecording();
       return;
     }
     // The menu and the error panel share a corner, so opening one puts the
@@ -665,24 +741,31 @@ export default function SpeechDictationButton({
   }
 
   const busy = state === "requesting" || state === "transcribing" || state === "reading-file";
+  const dictationActive = state === "recording" || state === "paused";
   const popupPosition = placement === "below" ? "top-full mt-2" : "bottom-full mb-2";
   const label =
     musicBusy
       ? "Cancel song identification"
-      : state === "recording"
+      : dictationActive
       ? "Stop dictation — words appear as you speak"
       : state === "transcribing"
         ? "Finishing dictation"
         : state === "reading-file"
           ? "Transcribing a recording"
           : state === "requesting"
-            ? "Opening microphone"
+            ? "Starting local speech"
             : onOpenVoiceMode
               ? "Voice options — double-tap to talk to the assistant"
               : "Voice options";
 
   return (
-    <div ref={shellRef} className="relative shrink-0 self-end">
+    <div
+      ref={shellRef}
+      className={`relative shrink-0 self-end ${compact ? "h-9 w-9" : "h-11 w-11"}`}
+      data-dictation-active={dictationActive}
+      data-dictation-paused={state === "paused"}
+      data-dictation-compact={compact}
+    >
       <input
         ref={fileInputRef}
         type="file"
@@ -703,11 +786,11 @@ export default function SpeechDictationButton({
         disabled={disabled || busy}
         aria-label={label}
         title={label}
-        aria-pressed={state === "recording" || musicBusy}
-        className={`neu-button-icon relative flex items-center justify-center rounded-full transition disabled:opacity-45 ${
-          compact ? "h-9 w-9" : "h-11 w-11"
-        } ${
-          state === "recording" || musicBusy
+        aria-pressed={dictationActive || musicBusy}
+        aria-hidden={dictationActive}
+        tabIndex={dictationActive ? -1 : undefined}
+        className={`dictation-trigger-button neu-button-icon relative flex h-full w-full items-center justify-center rounded-full disabled:opacity-45 ${
+          dictationActive || musicBusy
             ? "bg-[#c96d6d]/15 text-[#b85353] ring-1 ring-[#c96d6d]/50"
             : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"
         }`}
@@ -720,10 +803,67 @@ export default function SpeechDictationButton({
             <path strokeLinecap="round" strokeLinejoin="round" d="M5.75 10.5v.75a6.25 6.25 0 0 0 12.5 0v-.75M12 17.5V21m-3 0h6" />
           </svg>
         )}
-        {state === "recording" || musicBusy ? (
+        {dictationActive || musicBusy ? (
           <span className="absolute right-1 top-1 h-2 w-2 animate-pulse rounded-full bg-[#c96d6d]" aria-hidden />
         ) : null}
       </button>
+      <div
+        className="dictation-live-control"
+        role="group"
+        aria-label={state === "paused" ? "Dictation paused" : "Live dictation controls"}
+        aria-hidden={!dictationActive}
+      >
+        <button
+          ref={pauseButtonRef}
+          type="button"
+          className="dictation-live-action dictation-live-pause"
+          onClick={toggleRecordingPause}
+          disabled={!dictationActive}
+          aria-label={state === "paused" ? "Resume dictation" : "Pause dictation"}
+          title={state === "paused" ? "Resume dictation" : "Pause dictation"}
+        >
+          {state === "paused" ? (
+            <svg viewBox="0 0 20 20" aria-hidden>
+              <path d="m7.2 5.4 6.2 4.1a.6.6 0 0 1 0 1l-6.2 4.1a.6.6 0 0 1-.92-.5V5.9a.6.6 0 0 1 .92-.5Z" fill="currentColor" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 20 20" aria-hidden>
+              <path d="M6.5 5.5h2v9h-2zm5 0h2v9h-2z" fill="currentColor" />
+            </svg>
+          )}
+        </button>
+        <span
+          className="dictation-levels"
+          role="img"
+          aria-label={state === "paused" ? "Microphone paused" : "Live microphone level"}
+        >
+          {[0, 1, 2, 3, 4].map((index) => (
+            <span
+              key={index}
+              ref={(node) => {
+                levelBarsRef.current[index] = node;
+              }}
+              className="dictation-level-bar"
+              aria-hidden
+            />
+          ))}
+        </span>
+        <button
+          type="button"
+          className="dictation-live-action dictation-live-stop"
+          onClick={stopRecording}
+          disabled={!dictationActive}
+          aria-label="Stop dictation"
+          title="Stop dictation"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden>
+            <path d="m6.25 6.25 7.5 7.5m0-7.5-7.5 7.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+          </svg>
+        </button>
+      </div>
+      <span className="sr-only" role="status" aria-live="polite">
+        {state === "paused" ? "Dictation paused" : state === "recording" ? "Dictation listening" : ""}
+      </span>
       {menuOpen && !busy ? (
         <div
           role="menu"
@@ -794,6 +934,22 @@ export default function SpeechDictationButton({
             type="button"
             className="shrink-0 rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
             onClick={() => uploadAbortRef.current?.abort()}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : null}
+      {state === "requesting" ? (
+        <div
+          role="status"
+          className={`neu-popover absolute right-0 z-50 flex w-[17.5rem] max-w-[85vw] items-center gap-2.5 rounded-2xl border p-3.5 text-xs leading-5 text-[var(--ink)] shadow-xl ${popupPosition}`}
+        >
+          <BreadboardLoader className="h-4 w-4 shrink-0" />
+          <span className="min-w-0 flex-1">Starting local speech… Dictation will begin when it is ready.</span>
+          <button
+            type="button"
+            className="shrink-0 rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
+            onClick={() => prepareAbortRef.current?.abort()}
           >
             Cancel
           </button>

@@ -6,6 +6,7 @@ import {
   folderLabel,
   folderPathExists,
   isInSubtree,
+  listFolders,
   normalizeFolderPath,
 } from "@/lib/cluster-folders";
 import { organizationClusterClause } from "@/lib/organizations/store";
@@ -291,6 +292,30 @@ function writeGardenIndex({
 export function preparePrivateQuartzIndex(
   userId: number,
 ): QuartzGardenIndexPreparation | null {
+  const privateIndex = readPrivateGardenIndex(userId);
+  if (!privateIndex) return null;
+
+  return writeGardenIndex({
+    baseContentPath: privateIndex.baseContentPath,
+    pageSlug: `${PRIVATE_LIBRARY_ROOT}/user-${userId}`,
+    title: "My garden",
+    description: "All the gardens attached to your account.",
+    scope: "private",
+    clusters: privateIndex.clusters,
+    emptyText: "No private gardens yet.",
+  });
+}
+
+export function refreshPrivateQuartzIndex(userId: number): string | null {
+  return preparePrivateQuartzIndexes(userId)[0]?.slug ?? null;
+}
+
+interface PrivateGardenIndex {
+  baseContentPath: string;
+  clusters: GardenCluster[];
+}
+
+function readPrivateGardenIndex(userId: number): PrivateGardenIndex | null {
   const baseContentPath = contentPath();
   if (!baseContentPath || !Number.isFinite(userId)) return null;
 
@@ -303,19 +328,60 @@ export function preparePrivateQuartzIndex(
     )
     .all(userId) as GardenClusterRow[];
 
-  return writeGardenIndex({
+  return {
     baseContentPath,
-    pageSlug: `${PRIVATE_LIBRARY_ROOT}/user-${userId}`,
-    title: "My garden",
-    description: "All the gardens attached to your account.",
-    scope: "private",
     clusters: rows.map((row) => readClusterStats(baseContentPath, row)),
-    emptyText: "No private gardens yet.",
+  };
+}
+
+function writePrivateClusterQuartzIndex(
+  userId: number,
+  cleanFolder: string,
+  privateIndex: PrivateGardenIndex,
+): QuartzGardenIndexPreparation {
+  const scopeToken = Buffer.from(cleanFolder, "utf8").toString("base64url");
+  const title = folderLabel(cleanFolder);
+
+  return writeGardenIndex({
+    baseContentPath: privateIndex.baseContentPath,
+    pageSlug: `${PRIVATE_LIBRARY_ROOT}/user-${userId}/cluster-${scopeToken}`,
+    title,
+    description: `Gardens in the ${cleanFolder} cluster and its nested clusters.`,
+    scope: "private",
+    clusters: privateIndex.clusters.filter(({ row }) =>
+      isInSubtree(row.folder, cleanFolder),
+    ),
+    emptyText: `No gardens in ${title} yet.`,
   });
 }
 
-export function refreshPrivateQuartzIndex(userId: number): string | null {
-  return preparePrivateQuartzIndex(userId)?.slug ?? null;
+/**
+ * Materialize the account landing page and every cluster landing page before
+ * the next Quartz publication. Cluster navigation must only read an already
+ * published page; generating one after its flower is clicked otherwise turns
+ * a small navigation into a several-minute full-site build.
+ */
+export function preparePrivateQuartzIndexes(
+  userId: number,
+): QuartzGardenIndexPreparation[] {
+  const privateIndex = readPrivateGardenIndex(userId);
+  if (!privateIndex) return [];
+
+  const prepared = [
+    writeGardenIndex({
+      baseContentPath: privateIndex.baseContentPath,
+      pageSlug: `${PRIVATE_LIBRARY_ROOT}/user-${userId}`,
+      title: "My garden",
+      description: "All the gardens attached to your account.",
+      scope: "private",
+      clusters: privateIndex.clusters,
+      emptyText: "No private gardens yet.",
+    }),
+  ];
+  for (const folder of listFolders(db, userId)) {
+    prepared.push(writePrivateClusterQuartzIndex(userId, folder, privateIndex));
+  }
+  return prepared;
 }
 
 /**
@@ -327,10 +393,8 @@ export function preparePrivateClusterQuartzIndex(
   userId: number,
   folder: string,
 ): QuartzGardenIndexPreparation | null {
-  const baseContentPath = contentPath();
   const cleanFolder = normalizeFolderPath(folder);
   if (
-    !baseContentPath ||
     !Number.isFinite(userId) ||
     !cleanFolder ||
     !folderPathExists(db, userId, cleanFolder)
@@ -338,29 +402,10 @@ export function preparePrivateClusterQuartzIndex(
     return null;
   }
 
-  const rows = db
-    .prepare(
-      `SELECT c.*
-       FROM clusters c
-       WHERE c.user_id = ?
-       ORDER BY c.created_at DESC`,
-    )
-    .all(userId) as GardenClusterRow[];
-  const scopedRows = rows.filter((row) =>
-    isInSubtree(row.folder, cleanFolder),
-  );
-  const scopeToken = Buffer.from(cleanFolder, "utf8").toString("base64url");
-  const title = folderLabel(cleanFolder);
-
-  return writeGardenIndex({
-    baseContentPath,
-    pageSlug: `${PRIVATE_LIBRARY_ROOT}/user-${userId}/cluster-${scopeToken}`,
-    title,
-    description: `Gardens in the ${cleanFolder} cluster and its nested clusters.`,
-    scope: "private",
-    clusters: scopedRows.map((row) => readClusterStats(baseContentPath, row)),
-    emptyText: `No gardens in ${title} yet.`,
-  });
+  const privateIndex = readPrivateGardenIndex(userId);
+  return privateIndex
+    ? writePrivateClusterQuartzIndex(userId, cleanFolder, privateIndex)
+    : null;
 }
 
 /**

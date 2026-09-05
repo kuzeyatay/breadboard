@@ -159,7 +159,10 @@ function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-function parseJavaScript(source: string, errors: string[]): number {
+function inspectJavaScript(
+  source: string,
+  errors: string[],
+): { astNodeCount: number; referencesThree: boolean } {
   const file = ts.createSourceFile(
     "main.js",
     source,
@@ -176,13 +179,17 @@ function parseJavaScript(source: string, errors: string[]): number {
     );
   }
   let count = 0;
+  let referencesThree = false;
   const visit = (node: ts.Node) => {
     count += 1;
+    if (ts.isIdentifier(node) && node.text === "THREE") {
+      referencesThree = true;
+    }
     if (count <= 12_000) ts.forEachChild(node, visit);
   };
   visit(file);
   if (count > 12_000) errors.push("main.js is too structurally complex");
-  return count;
+  return { astNodeCount: count, referencesThree };
 }
 
 function validateManifest(
@@ -219,10 +226,10 @@ function validateManifest(
       errors.push(`manifest.runtime.version must be ${CUSTOM_INTERACTIVE_VISUALIZER_RUNTIME_VERSION}`);
     }
     if (
-      (raw.mode === "3d" || raw.mode === "hybrid") &&
+      raw.runtime.threeVersion !== undefined &&
       raw.runtime.threeVersion !== INTERACTIVE_VISUALIZER_THREE_VERSION
     ) {
-      errors.push(`3d and hybrid visualizers must pin Three.js ${INTERACTIVE_VISUALIZER_THREE_VERSION}`);
+      errors.push(`visualizers that request Three.js must pin ${INTERACTIVE_VISUALIZER_THREE_VERSION}`);
     }
     if (raw.mode === "2d" && raw.runtime.threeVersion !== undefined) {
       errors.push("2d visualizers must not request Three.js");
@@ -326,7 +333,11 @@ export function compileCustomInteractiveVisualizerPackage(
   if (/<script\b(?![^>]*\bsrc\s*=\s*["']main\.js["'])/i.test(html)) {
     errors.push("index.html cannot contain inline scripts");
   }
-  if (/@import\b|\burl\s*\(|\bexpression\s*\(|\bbehavior\s*:/i.test(reviewedCss)) {
+  if (
+    /@import\b|\burl\s*\(|\bexpression\s*\(|(?:^|[;{])\s*behavior\s*:/im.test(
+      reviewedCss,
+    )
+  ) {
     errors.push("styles.css cannot import or load external capabilities");
   }
   if (/\bbox-shadow\s*:/i.test(reviewedCss)) {
@@ -339,7 +350,22 @@ export function compileCustomInteractiveVisualizerPackage(
   for (const entry of ESCAPE_PATTERNS) {
     if (entry.pattern.test(script)) errors.push(entry.message);
   }
-  const astNodeCount = script ? parseJavaScript(script, errors) : 0;
+  const scriptInspection = script
+    ? inspectJavaScript(script, errors)
+    : { astNodeCount: 0, referencesThree: false };
+  const astNodeCount = scriptInspection.astNodeCount;
+  const requestedThreeVersion = isRecord(candidate.manifest) &&
+      isRecord(candidate.manifest.runtime)
+    ? candidate.manifest.runtime.threeVersion
+    : undefined;
+  if (
+    scriptInspection.referencesThree &&
+    requestedThreeVersion !== INTERACTIVE_VISUALIZER_THREE_VERSION
+  ) {
+    errors.push(
+      `main.js references THREE, so the manifest must pin Three.js ${INTERACTIVE_VISUALIZER_THREE_VERSION}`,
+    );
+  }
   if (/<canvas\b/i.test(html) && !/breadboard:themechange/.test(script)) {
     errors.push(
       "Canvas and WebGL visualizers must repaint on breadboard:themechange",
@@ -393,12 +419,18 @@ export function compileCustomInteractiveVisualizerPackage(
   };
 }
 
-const bootstrapCache = new Map<InteractiveVisualizerMode, string>();
+const bootstrapCache = new Map<string, string>();
 
-async function customBootstrap(mode: InteractiveVisualizerMode): Promise<string> {
-  const cached = bootstrapCache.get(mode);
+async function customBootstrap(
+  mode: InteractiveVisualizerMode,
+  provideThree: boolean,
+): Promise<string> {
+  const cacheKey = `${mode}:${provideThree ? "three" : "dom"}`;
+  const cached = bootstrapCache.get(cacheKey);
   if (cached) return cached;
-  const three = mode === "2d" ? "" : `import * as THREE from "three";globalThis.THREE=THREE;`;
+  const three = provideThree
+    ? `import * as THREE from "three";globalThis.THREE=THREE;`
+    : "";
   const source = `${three}
 const protocol="breadboard:interactive-visualizer:v1";
 const params=new URLSearchParams(location.search);const channel=params.get("channel")||"standalone";
@@ -410,7 +442,7 @@ document.documentElement.dataset.theme=matchMedia("(prefers-color-scheme: dark)"
 const onHostMessage=event=>{const data=event.data;if(event.source!==parent||!data||data.protocol!==protocol||data.channel!==channel)return;if(data.type==="host-dispose"){dispose();return}if(data.type==="host-theme"&&(data.theme==="light"||data.theme==="dark")){document.documentElement.dataset.theme=data.theme;dispatchEvent(new CustomEvent("breadboard:themechange",{detail:{theme:data.theme}}))}if(data.type==="host-presentation"&&data.presentation==="inline")document.documentElement.dataset.presentation="inline"};
 addEventListener("message",onHostMessage);addCleanup(()=>removeEventListener("message",onHostMessage));
 addEventListener("pagehide",dispose,{once:true});addEventListener("beforeunload",dispose,{once:true});
-globalThis.__BREADBOARD_VISUALIZER__={mode:${JSON.stringify(mode)},three:${mode === "2d" ? "false" : "true"},send,addCleanup,dispose};`;
+globalThis.__BREADBOARD_VISUALIZER__={mode:${JSON.stringify(mode)},three:${provideThree ? "true" : "false"},send,addCleanup,dispose};`;
   const result = await build({
     stdin: {
       contents: source,
@@ -429,7 +461,7 @@ globalThis.__BREADBOARD_VISUALIZER__={mode:${JSON.stringify(mode)},three:${mode 
   });
   const output = result.outputFiles[0]?.text;
   if (!output) throw new Error("Could not build the custom visualizer bootstrap.");
-  bootstrapCache.set(mode, output);
+  bootstrapCache.set(cacheKey, output);
   return output;
 }
 
@@ -445,7 +477,8 @@ export async function bundleCustomInteractiveVisualizer(
   visualizer: CustomInteractiveVisualizerPackage,
 ): Promise<{ html: string; hash: string }> {
   const mode = visualizer.manifest.mode;
-  const bootstrap = await customBootstrap(mode);
+  const needsThree = visualizer.manifest.runtime.threeVersion !== undefined;
+  const bootstrap = await customBootstrap(mode, needsThree);
   const sourceHtml = visualizer.files["index.html"];
   const documentHead = sourceHtml.match(/<head\b[^>]*>([\s\S]*?)<\/head\s*>/i)?.[1] ?? "";
   const inlineHeadStyles = [...documentHead.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)]
@@ -460,7 +493,7 @@ export async function bundleCustomInteractiveVisualizer(
       "",
     );
   const generated = visualizer.files["main.js"];
-  const needsWebgl = mode !== "2d";
+  const needsWebgl = needsThree;
   const runner = `
 (function(){
   const html=document.documentElement,app=document.getElementById("app");
@@ -488,9 +521,9 @@ export async function bundleCustomInteractiveVisualizer(
     const visual=app&&app.querySelector("canvas,svg");
     const focusable=app&&app.querySelector("button,input,select,[tabindex]");
     if(!html.dataset.breadboardRuntimeTests)html.dataset.breadboardRuntimeTests=visual?"passed":"failed";
-    html.dataset.breadboardInteractionTests=(visual&&(focusable||${visualizer.manifest.mode !== "2d"}))?"passed":"failed";
+    html.dataset.breadboardInteractionTests=(visual&&(focusable||${needsWebgl}))?"passed":"failed";
     inspectOverflow();overflowTimer=setTimeout(inspectOverflow,50);
-    if(${visualizer.manifest.mode !== "2d"}&&visual)html.dataset.breadboardWebgl="ready";
+    if(${needsWebgl}&&visual)html.dataset.breadboardWebgl="ready";
     api.send("ready",{height:html.scrollHeight});
     const bodyObserver=new ResizeObserver(()=>{inspectOverflow();api.send("resize",{height:html.scrollHeight})});bodyObserver.observe(document.body);api.addCleanup(()=>bodyObserver.disconnect());
   });

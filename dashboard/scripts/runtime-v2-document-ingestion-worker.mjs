@@ -820,7 +820,32 @@ function fsyncRuntimeV2OutputFile(filePath) {
   }
 }
 
-function atomicWrite(filePath, bytes, replace) {
+const TRANSIENT_ATOMIC_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const ATOMIC_RENAME_RETRY_DELAYS_MS = [10, 25, 50, 100, 200, 400, 800];
+
+function sleepSync(milliseconds) {
+  Atomics.wait(
+    new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)),
+    0,
+    0,
+    milliseconds,
+  );
+}
+
+function isTransientAtomicRenameError(error) {
+  return TRANSIENT_ATOMIC_RENAME_CODES.has(error?.code);
+}
+
+export function atomicWrite(
+  filePath,
+  bytes,
+  replace,
+  {
+    renameSync = fs.renameSync,
+    fsyncOutputFile = fsyncRuntimeV2OutputFile,
+    waitSync = sleepSync,
+  } = {},
+) {
   const parent = path.dirname(filePath);
   if (!fs.lstatSync(parent).isDirectory()) {
     fail("The Runtime V2 durable output directory is unavailable.");
@@ -836,8 +861,34 @@ function atomicWrite(filePath, bytes, replace) {
     if (!replace && fs.existsSync(filePath)) {
       fail("The durable ingestion result already exists.");
     }
-    fs.renameSync(temporaryPath, filePath);
-    fsyncRuntimeV2OutputFile(filePath);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        renameSync(temporaryPath, filePath);
+        break;
+      } catch (error) {
+        if (
+          !isTransientAtomicRenameError(error) ||
+          attempt >= ATOMIC_RENAME_RETRY_DELAYS_MS.length
+        ) {
+          throw error;
+        }
+        waitSync(ATOMIC_RENAME_RETRY_DELAYS_MS[attempt]);
+      }
+    }
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        fsyncOutputFile(filePath);
+        break;
+      } catch (error) {
+        if (
+          !isTransientAtomicRenameError(error) ||
+          attempt >= ATOMIC_RENAME_RETRY_DELAYS_MS.length
+        ) {
+          throw error;
+        }
+        waitSync(ATOMIC_RENAME_RETRY_DELAYS_MS[attempt]);
+      }
+    }
     fsyncRuntimeV2OutputDirectory(parent);
   } catch (error) {
     if (descriptor !== undefined) fs.closeSync(descriptor);
@@ -1017,6 +1068,7 @@ async function runRuntimeV2DocumentIngestionWorker() {
   events.ready();
   const createdFilePaths = [];
   const createdMarkdownPaths = [];
+  const deferredCheckpointCleanupPaths = [];
   let knowledgeWriteTransaction = null;
   let knowledgeWriteTransactionOutcome = "none";
   const rollbackKnowledgeWrites = () => {
@@ -1116,7 +1168,10 @@ async function runRuntimeV2DocumentIngestionWorker() {
       try {
         await quartzPublishModule.publishQuartzAfterMutation(
           `ingest knowledge into ${launch.executionScope.gardenId}`,
-          { requireSuccess: true },
+          {
+            requireSuccess: true,
+            gardenSlug: launch.executionScope.gardenId,
+          },
         );
       } finally {
         // `writeDocumentKnowledge` must remain unable to publish before the
@@ -1257,6 +1312,7 @@ async function runRuntimeV2DocumentIngestionWorker() {
       createdFilePaths,
       createdMarkdownPaths,
       knowledgeWriteTransaction,
+      deferredCheckpointCleanupPaths,
       emit: (step) => progress.note(step),
     });
     triggerTestIngestionFault("after-garden-mutations");
@@ -1290,6 +1346,19 @@ async function runRuntimeV2DocumentIngestionWorker() {
     knowledgeWriteTransaction.commit();
     knowledgeWriteTransactionOutcome = "committed";
     knowledgeWriteTransaction.seal();
+    // Checkpoints are rollback inputs, so deleting them before the external
+    // garden/result transaction commits turns a late persistence failure into
+    // a full OCR/extraction restart. Cleanup is intentionally best-effort only
+    // after the durable commit boundary has been crossed.
+    for (const checkpointPath of deferredCheckpointCleanupPaths.splice(0)) {
+      try {
+        fs.rmSync(checkpointPath, { force: true });
+      } catch (error) {
+        console.warn(
+          `[runtime-v2-ingestion-worker] Checkpoint cleanup deferred: ${boundedFailureMessage(error)}`,
+        );
+      }
+    }
     triggerTestIngestionFault("after-garden-commit");
     await publishCommittedIngestion();
     await heartbeat.stop();

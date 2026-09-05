@@ -3,8 +3,8 @@
 // A navbar is chrome every page in its area shows, so a seat in it is
 // expensive: each entry is a permanent cost paid by everyone. The Work timer
 // earned its seat by default — it opens and closes in place rather than
-// stealing the tab. Plan keeps its existing default seat, but can be removed
-// from the same profile control. Fast-read is the same bargain on the garden
+// stealing the tab. Clicky and Plan keep default seats, but can be removed from
+// the same profile control. Fast-read is the same bargain on the garden
 // and PDF navbars: a reading mode most sessions never reach for, so it waits to
 // be asked for.
 //
@@ -16,10 +16,14 @@ import type Database from "better-sqlite3";
 
 export interface NavbarShortcuts {
   workTimer: boolean;
+  browser: boolean;
+  clicky: boolean;
   plan: boolean;
   fastRead: boolean;
   buzz: boolean;
 }
+
+export const DEFAULT_NAVBAR_FLOWERS = true;
 
 export interface NavbarShortcutDefinition {
   key: keyof NavbarShortcuts;
@@ -48,6 +52,18 @@ export const NAVBAR_SHORTCUTS: readonly NavbarShortcutDefinition[] = [
       "A pomodoro timer that opens and closes in place; the full Paint Pomodoro page is one click further.",
   },
   {
+    key: "browser",
+    label: "Browser",
+    description:
+      "A sandboxed Chromium browser held beneath Breadboard's own tabs and address toolbar. Only the desktop app shows it.",
+  },
+  {
+    key: "clicky",
+    label: "Clicky",
+    description:
+      "The native macOS menu-bar companion. Only a supported Breadboard desktop shows it.",
+  },
+  {
     key: "plan",
     label: "Plan",
     href: "/plan",
@@ -69,11 +85,13 @@ export const NAVBAR_SHORTCUTS: readonly NavbarShortcutDefinition[] = [
 ];
 
 /**
- * Preserve the existing navbar: Work timer and Plan on, Fast-read and Buzz
- * opt-in.
+ * Preserve the existing navbar and add Clicky alongside Plan. Desktop-only
+ * seats cost nothing in unsupported sessions, where they draw nothing at all.
  */
 export const DEFAULT_NAVBAR_SHORTCUTS: NavbarShortcuts = {
   workTimer: true,
+  browser: true,
+  clicky: true,
   plan: true,
   fastRead: false,
   buzz: false,
@@ -111,6 +129,9 @@ export function ensureNavbarShortcutSchema(database: Database.Database): void {
       plan           INTEGER NOT NULL DEFAULT 1,
       fast_read     INTEGER NOT NULL DEFAULT 0,
       buzz          INTEGER NOT NULL DEFAULT 0,
+      browser       INTEGER NOT NULL DEFAULT 1,
+      clicky        INTEGER NOT NULL DEFAULT 1,
+      show_flowers  INTEGER NOT NULL DEFAULT 1,
       updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `);
@@ -120,8 +141,8 @@ export function ensureNavbarShortcutSchema(database: Database.Database): void {
     .all() as Array<{ name: string }>;
   const has = (name: string) => columns.some((column) => column.name === name);
 
-  // A seat added after an account first saved its choices: the column arrives
-  // with this shortcut's own default, so nobody's existing navbar moves.
+  // A preference added after an account first saved its choices arrives with
+  // its own default, so nobody's existing navbar moves unexpectedly.
   if (!has("plan")) {
     database.exec(
       "ALTER TABLE navbar_shortcut_settings ADD COLUMN plan INTEGER NOT NULL DEFAULT 1",
@@ -137,6 +158,21 @@ export function ensureNavbarShortcutSchema(database: Database.Database): void {
       "ALTER TABLE navbar_shortcut_settings ADD COLUMN buzz INTEGER NOT NULL DEFAULT 0",
     );
   }
+  if (!has("browser")) {
+    database.exec(
+      "ALTER TABLE navbar_shortcut_settings ADD COLUMN browser INTEGER NOT NULL DEFAULT 1",
+    );
+  }
+  if (!has("clicky")) {
+    database.exec(
+      "ALTER TABLE navbar_shortcut_settings ADD COLUMN clicky INTEGER NOT NULL DEFAULT 1",
+    );
+  }
+  if (!has("show_flowers")) {
+    database.exec(
+      "ALTER TABLE navbar_shortcut_settings ADD COLUMN show_flowers INTEGER NOT NULL DEFAULT 1",
+    );
+  }
   // `map_page` and `world_monitor` columns survive on databases written before
   // those shortcuts were withdrawn. They are left alone: both default to 0, so
   // writes that no longer name them still satisfy their NOT NULL.
@@ -148,7 +184,7 @@ export function readNavbarShortcuts(
 ): NavbarShortcuts {
   const row = database
     .prepare(
-      "SELECT work_timer, plan, fast_read, buzz FROM navbar_shortcut_settings WHERE user_id = ?",
+      "SELECT work_timer, plan, fast_read, buzz, browser, clicky FROM navbar_shortcut_settings WHERE user_id = ?",
     )
     .get(userId) as
     | {
@@ -156,6 +192,8 @@ export function readNavbarShortcuts(
         plan: number;
         fast_read: number;
         buzz: number;
+        browser: number;
+        clicky: number;
       }
     | undefined;
 
@@ -163,6 +201,8 @@ export function readNavbarShortcuts(
   if (!row) return { ...DEFAULT_NAVBAR_SHORTCUTS };
   return {
     workTimer: row.work_timer === 1,
+    browser: row.browser === 1,
+    clicky: row.clicky === 1,
     plan: row.plan === 1,
     fastRead: row.fast_read === 1,
     buzz: row.buzz === 1,
@@ -177,13 +217,15 @@ export function writeNavbarShortcuts(
   const next = applyNavbarShortcutPatch(readNavbarShortcuts(database, userId), patch);
   database
     .prepare(
-      `INSERT INTO navbar_shortcut_settings (user_id, work_timer, plan, fast_read, buzz, updated_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO navbar_shortcut_settings (user_id, work_timer, plan, fast_read, buzz, browser, clicky, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(user_id) DO UPDATE SET
          work_timer = excluded.work_timer,
          plan = excluded.plan,
          fast_read = excluded.fast_read,
          buzz = excluded.buzz,
+         browser = excluded.browser,
+         clicky = excluded.clicky,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -192,6 +234,48 @@ export function writeNavbarShortcuts(
       next.plan ? 1 : 0,
       next.fastRead ? 1 : 0,
       next.buzz ? 1 : 0,
+      next.browser ? 1 : 0,
+      next.clicky ? 1 : 0,
     );
   return next;
+}
+
+export function readNavbarFlowers(
+  database: Database.Database,
+  userId: number,
+): boolean {
+  const row = database
+    .prepare(
+      "SELECT show_flowers FROM navbar_shortcut_settings WHERE user_id = ?",
+    )
+    .get(userId) as { show_flowers: number } | undefined;
+
+  return row ? row.show_flowers === 1 : DEFAULT_NAVBAR_FLOWERS;
+}
+
+export function writeNavbarFlowers(
+  database: Database.Database,
+  userId: number,
+  showFlowers: boolean,
+): boolean {
+  database
+    .prepare(
+      `INSERT INTO navbar_shortcut_settings
+         (user_id, work_timer, plan, fast_read, buzz, browser, clicky, show_flowers, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(user_id) DO UPDATE SET
+         show_flowers = excluded.show_flowers,
+         updated_at = excluded.updated_at`,
+    )
+    .run(
+      userId,
+      DEFAULT_NAVBAR_SHORTCUTS.workTimer ? 1 : 0,
+      DEFAULT_NAVBAR_SHORTCUTS.plan ? 1 : 0,
+      DEFAULT_NAVBAR_SHORTCUTS.fastRead ? 1 : 0,
+      DEFAULT_NAVBAR_SHORTCUTS.buzz ? 1 : 0,
+      DEFAULT_NAVBAR_SHORTCUTS.browser ? 1 : 0,
+      DEFAULT_NAVBAR_SHORTCUTS.clicky ? 1 : 0,
+      showFlowers ? 1 : 0,
+    );
+  return showFlowers;
 }

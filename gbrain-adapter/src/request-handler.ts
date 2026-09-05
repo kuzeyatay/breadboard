@@ -32,6 +32,7 @@ function isScope(value: unknown): value is GBrainScope {
 
 const OPERATION_PATHS = new Set([
   "/register-source",
+  "/remove-source",
   "/search",
   "/retrieve",
   "/synthesize",
@@ -49,8 +50,12 @@ export interface AdapterRequestHandler {
   drain(timeoutMs: number): Promise<boolean>;
 }
 
+/** `/embed` runs CPU inference through ChatMock (about a second per long
+ * page), so one batch legitimately outlives the retrieval query budget. */
+const EMBED_TIMEOUT_MS = 120_000;
+
 interface OperationAdmission {
-  run<T>(operation: () => Promise<T>): Promise<T>;
+  run<T>(operation: () => Promise<T>, timeoutMs?: number): Promise<T>;
   /** Release a reservation that failed validation before backend work began. */
   releaseIfUnused(): void;
 }
@@ -122,7 +127,7 @@ export function createAdapterRequestHandler(
     };
 
     return {
-      async run<T>(fn: () => Promise<T>): Promise<T> {
+      async run<T>(fn: () => Promise<T>, timeoutMs: number = config.queryTimeoutMs): Promise<T> {
         if (started) throw new Error("operation_admission_already_used");
         started = true;
         const operation = Promise.resolve().then(fn);
@@ -135,7 +140,7 @@ export function createAdapterRequestHandler(
             new Promise<T>((_, reject) => {
               timeout = setTimeout(
                 () => reject(new AdapterOperationError("query_timeout", 504)),
-                config.queryTimeoutMs,
+                timeoutMs,
               );
             }),
           ]);
@@ -241,7 +246,10 @@ export function createAdapterRequestHandler(
             return errorResponse("invalid_embedding_batch", 400);
           }
           if (!store.embeddingsAvailable) return errorResponse("embedding_unavailable", 503);
-          const result = await admission.run(() => store.embedTexts(texts as string[]));
+          const result = await admission.run(
+            () => store.embedTexts(texts as string[]),
+            Math.max(config.queryTimeoutMs, EMBED_TIMEOUT_MS),
+          );
           return json({ ok: true, data: result });
         }
         case "/register-source": {
@@ -252,6 +260,14 @@ export function createAdapterRequestHandler(
           const result = await admission.run(() =>
             store.registerSource(sourceId, label, pages),
           );
+          return json({ ok: true, data: result });
+        }
+        case "/remove-source": {
+          const sourceId = String(body.sourceId ?? "");
+          if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/u.test(sourceId)) {
+            return errorResponse("invalid_source", 400);
+          }
+          const result = await admission.run(() => store.removeSource(sourceId));
           return json({ ok: true, data: result });
         }
         case "/search": {

@@ -53,7 +53,7 @@ interface ActiveRun {
   approval: { stepId: string; resolve: (approved: boolean) => void } | null;
   stopped: boolean;
   /**
-   * The window this run last brought to the front.
+   * The window this run last selected as its background target.
    *
    * Kept so a step that suddenly cannot find anything can ask whether the
    * desktop simply moved on -- a notification, a background application

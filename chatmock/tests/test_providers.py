@@ -9,6 +9,11 @@ from unittest.mock import patch
 
 import requests
 
+# No unit test may ask a real provider for its catalog: discovery would add
+# whatever OpenRouter lists today to the stand-in candidates and make the
+# fallback assertions depend on the network.
+os.environ.setdefault("CHATMOCK_MODEL_DISCOVERY", "0")
+
 from chatmock import failover
 from chatmock.app import create_app
 from chatmock.council.policy import CouncilConfig
@@ -290,7 +295,11 @@ class ProviderStoreTests(unittest.TestCase):
         self.settings_file = os.path.join(self.tmp.name, "providers.json")
         patcher = patch.dict(
             os.environ,
-            {"CHATMOCK_PROVIDERS_FILE": self.settings_file},
+            {
+                "CHATMOCK_PROVIDERS_FILE": self.settings_file,
+                # Never let a unit test ask a real provider for its catalog.
+                "CHATMOCK_MODEL_DISCOVERY": "0",
+            },
             clear=False,
         )
         patcher.start()
@@ -373,6 +382,27 @@ class ProviderStoreTests(unittest.TestCase):
             credentials = store.resolve_credentials(_spec("anthropic"))
             self.assertEqual(credentials.api_key, "sk-stored")
 
+    def test_runtime_environment_wins_over_stale_cliproxy_session_wiring(self) -> None:
+        store.upsert_provider(
+            "cliproxy",
+            api_key="stale-loopback-secret",
+            base_url="http://127.0.0.1:62155/v1",
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "CLIPROXY_API_KEY": "current-loopback-secret",
+                "CLIPROXY_BASE_URL": "http://127.0.0.1:50369/v1",
+            },
+            clear=False,
+        ):
+            credentials = store.resolve_credentials(_spec("cliproxy"))
+            self.assertEqual(credentials.api_key, "current-loopback-secret")
+            self.assertEqual(credentials.base_url, "http://127.0.0.1:50369/v1")
+            entry = _entry("cliproxy")
+            self.assertEqual(entry["baseUrl"], "http://127.0.0.1:50369/v1")
+            self.assertTrue(entry["keyFromEnvironment"])
+
     def test_deleting_a_provider_clears_the_stored_key(self) -> None:
         store.upsert_provider("anthropic", api_key="sk-ant-key")
         self.assertTrue(store.delete_provider("anthropic"))
@@ -425,6 +455,7 @@ class ModelResolutionTests(unittest.TestCase):
                 "CHATMOCK_PROVIDERS_FILE": os.path.join(self.tmp.name, "providers.json"),
                 "CHATMOCK_MODEL_TELEMETRY_FILE": os.path.join(self.tmp.name, "model-routing.jsonl"),
                 "CHATMOCK_FAILOVER_FILE": os.path.join(self.tmp.name, "failover.json"),
+                "CHATMOCK_MODEL_DISCOVERY": "0",
             },
             clear=False,
         )
@@ -519,6 +550,10 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(entries["custom/llama3.3"], [])
 
     def test_reasoning_efforts_follow_the_specific_chatgpt_model(self) -> None:
+        self.assertEqual(
+            reasoning_efforts_for("gpt-6-astra"),
+            ["low", "medium", "high", "xhigh", "max"],
+        )
         # gpt-5.1 allows only low/medium/high; offering xhigh would be a lie.
         self.assertEqual(reasoning_efforts_for("gpt-5.1"), ["low", "medium", "high"])
         self.assertIn("max", reasoning_efforts_for("gpt-5.6-sol"))
@@ -575,6 +610,7 @@ class ProviderRouterTests(unittest.TestCase):
                 "CHATMOCK_PROVIDERS_FILE": os.path.join(self.tmp.name, "providers.json"),
                 "CHATMOCK_MODEL_TELEMETRY_FILE": os.path.join(self.tmp.name, "model-routing.jsonl"),
                 "CHATMOCK_FAILOVER_FILE": os.path.join(self.tmp.name, "failover.json"),
+                "CHATMOCK_MODEL_DISCOVERY": "0",
             },
             clear=False,
         )
@@ -737,6 +773,45 @@ class OpenAICompatibleTests(unittest.TestCase):
             stream=False,
         )
         self.assertEqual(payload["tools"][0]["function"]["parameters"], schema)
+
+    def test_double_wrapped_tools_are_flattened_for_strict_upstreams(self) -> None:
+        """A client that wraps an already-wrapped definition sends stray
+        `type`/`function` keys inside the function object. Gemini behind
+        CLIProxyAPI rejects the whole request with `Unknown name "type" at
+        request.tools[0].function_declarations[N]`, so flatten it here."""
+        schema = {"type": "object", "properties": {"handle": {"type": "string"}}}
+        payload = openai_compatible.build_payload(
+            {
+                "messages": [],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "type": "function",
+                            "function": {
+                                "name": "expand_output",
+                                "description": "Recover elided text.",
+                                "parameters": schema,
+                            },
+                            "name": "expand_output",
+                        },
+                    }
+                ],
+            },
+            "gemini-3.8-flash-high",
+            stream=False,
+        )
+        self.assertEqual(
+            payload["tools"][0],
+            {
+                "type": "function",
+                "function": {
+                    "name": "expand_output",
+                    "description": "Recover elided text.",
+                    "parameters": schema,
+                },
+            },
+        )
 
     def test_chat_url_appends_the_path_once(self) -> None:
         self.assertEqual(
@@ -1162,6 +1237,17 @@ class ProviderRoutesTests(unittest.TestCase):
         self.client.put("/v1/providers/anthropic", json={"apiKey": "sk-ant-key"})
         after = [m["id"] for m in self.client.get("/v1/models").get_json()["data"]]
         self.assertIn("anthropic/claude-opus-4-5", after)
+
+    def test_openai_models_include_gpt_6_astra_with_full_reasoning_ladder(self) -> None:
+        self.client.put("/v1/providers/openai", json={"apiKey": "sk-openai-key"})
+        models = {
+            item["id"]: item["reasoning_efforts"]
+            for item in self.client.get("/v1/models").get_json()["data"]
+        }
+        self.assertEqual(
+            models["openai/gpt-6-astra"],
+            ["low", "medium", "high", "xhigh", "max"],
+        )
 
     def test_responses_endpoint_adapts_external_models_and_tools(self) -> None:
         self.client.put("/v1/providers/anthropic", json={"apiKey": "sk-ant-key"})

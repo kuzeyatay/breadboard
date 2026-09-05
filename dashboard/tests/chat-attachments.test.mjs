@@ -3,12 +3,14 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+  attachmentOnlyMessageText,
   chatMessageAttachments,
   extractChatAttachments,
   imageFilesFromClipboard,
   normalizeChatMessageAttachments,
   productAttachmentPromptText,
   reusableChatAttachments,
+  visibleChatMessageText,
 } from '../src/lib/chat-attachments.ts';
 import { collectUploads } from '../src/lib/conversations/uploads.ts';
 import { parseChatAttachments } from '../src/lib/chat-attachments-request.ts';
@@ -51,6 +53,47 @@ test('regeneration reuses stored images and source-file pointers', () => {
   assert.deepEqual(
     parseChatAttachments([{ type: 'text', name: 'notes.md', text: '', blobId, format: 'md' }]),
     [{ type: 'text', name: 'notes.md', text: '', blobId, format: 'md' }],
+  );
+});
+
+test('image previews do not repeat the synthetic attachment filename as message text', () => {
+  const image = {
+    type: 'image',
+    name: 'pasted-screenshot-1.png',
+    dataUrl: 'data:image/png;base64,aGVsbG8=',
+  };
+
+  assert.equal(
+    visibleChatMessageText(
+      'Attached: pasted-screenshot-1.png',
+      [image],
+      [image.name],
+    ),
+    '',
+  );
+  assert.equal(
+    visibleChatMessageText('What is shown here?', [image], [image.name]),
+    'What is shown here?',
+  );
+  assert.equal(
+    visibleChatMessageText(
+      'Attached: notes.md',
+      [{ type: 'file', name: 'notes.md' }],
+      ['notes.md'],
+    ),
+    'Attached: notes.md',
+  );
+});
+
+test('attachment-only steering receives a stable text fallback', () => {
+  assert.equal(attachmentOnlyMessageText([]), '');
+  assert.equal(
+    attachmentOnlyMessageText([{ name: 'pasted-screenshot-1.png' }]),
+    'Attached: pasted-screenshot-1.png',
+  );
+  assert.equal(
+    attachmentOnlyMessageText([{ name: 'first.png' }, { name: 'second.png' }]),
+    'Attached: first.png, second.png',
   );
 });
 

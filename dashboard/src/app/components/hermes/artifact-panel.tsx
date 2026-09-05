@@ -4,10 +4,9 @@
 // have produced.
 //
 // Destructive and organizational controls stay behind one dots menu, the same
-// way the terminal rail's Recents does it. A Terminal archive may also show one
-// quiet checkbox per row: it scopes that artifact into the composer like an
-// uploaded document, and is deliberately separate from the archive's delete
-// selection mode.
+// way the terminal rail's Recents does it. Each idle row also carries the same
+// color-and-selection square as Garden documents: one click opens its palette,
+// while two quick clicks scope a downloadable artifact into the composer.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
@@ -331,6 +330,59 @@ function HighlightBar({
   );
 }
 
+/** The compact color picker shared by an idle artifact row's square control. */
+function ArtifactColorPalette({
+  artifact,
+  onChoose,
+  onClose,
+}: {
+  artifact: PresentedArtifact;
+  onChoose: (highlight: string | null) => void;
+  onClose: () => void;
+}) {
+  const paletteRef = useRef<HTMLDivElement>(null);
+  useDismissOnOutside(paletteRef, onClose);
+
+  return (
+    <div
+      ref={paletteRef}
+      role="menu"
+      aria-label={`Choose ${artifact.title} color`}
+      className="absolute left-0 top-6 z-30 w-32 rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] p-2 shadow-[0_10px_26px_rgba(0,0,0,0.18)]"
+    >
+      <div className="grid grid-cols-5 gap-1.5">
+        {CHAT_HIGHLIGHTS.map((highlight) => (
+          <button
+            key={highlight.id}
+            type="button"
+            role="menuitemradio"
+            onClick={() => onChoose(highlight.id)}
+            aria-label={`Color ${artifact.title} ${highlight.label}`}
+            aria-checked={artifact.highlight === highlight.id}
+            title={highlight.label}
+            className={`h-4 w-4 rounded border transition-transform hover:scale-110 ${
+              artifact.highlight === highlight.id
+                ? "border-[var(--ink-heading)]"
+                : "border-[var(--line-strong)]"
+            }`}
+            style={{ backgroundColor: highlight.color }}
+          />
+        ))}
+      </div>
+      {artifact.highlight ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => onChoose(null)}
+          className="mt-2 w-full rounded border border-[var(--line)] px-2 py-1 text-[10px] text-[var(--ink-muted)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink)]"
+        >
+          Clear
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export interface ArtifactPanelProps {
   conversationId?: string | null;
   gardenSlug?: string | null;
@@ -366,12 +418,14 @@ export default function ArtifactPanel({
   const [artifacts, setArtifacts] = useState<PresentedArtifact[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
-  // A surface can offer a proper artifact lane around this archive. The
-  // Terminal uses one beside its transcript; the Garden learning map uses one
-  // over its complete right rail. Only archives without a surface-owned lane
-  // fall back to replacing their own body.
+  // A surface can offer a proper artifact lane around this archive. Garden's
+  // archive is nested in the learning-map rail, so it uses that wider lane.
+  // Terminal's archive already *is* the right-side panel, so an artifact opened
+  // from it must cover this panel instead of consuming a second lane beside it.
   const inheritedViewerHost = useArtifactDockHost();
   const [viewerHost, setViewerHost] = useState<HTMLDivElement | null>(null);
+  const useInheritedViewerHost =
+    sourceSurface !== "dashboard_terminal" && inheritedViewerHost !== null;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [imageStudioSource, setImageStudioSource] = useState<PresentedArtifact | "new" | null>(null);
@@ -385,6 +439,8 @@ export default function ArtifactPanel({
   const [pen, setPen] = useState<string | null>(CHAT_HIGHLIGHTS[0].id);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [openColorPaletteId, setOpenColorPaletteId] = useState<string | null>(null);
+  const artifactColorClickTimersRef = useRef<Map<string, number>>(new Map());
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -445,6 +501,14 @@ export default function ArtifactPanel({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mode, stopWorking]);
+
+  useEffect(() => {
+    const clickTimers = artifactColorClickTimersRef.current;
+    return () => {
+      for (const timer of clickTimers.values()) window.clearTimeout(timer);
+      clickTimers.clear();
+    };
+  }, []);
 
   const archiveArtifacts = useMemo(
     () => filterArtifactsForArchive(artifacts),
@@ -518,14 +582,10 @@ export default function ArtifactPanel({
     setDeleting(false);
   }, [deleting, selectedArtifacts]);
 
-  // Painting an artifact that already carries the pen's color lifts it instead,
-  // so one pen both marks and unmarks and a mis-click is undone by repeating it.
-  //
   // The mark is applied locally first: waiting out a round trip between rows
-  // would make the pen feel stuck. A refused write is put back.
-  const paint = useCallback(
-    async (artifact: PresentedArtifact) => {
-      const next = artifact.highlight === pen ? null : pen;
+  // would make the palette or pen feel stuck. A refused write is put back.
+  const updateArtifactHighlight = useCallback(
+    async (artifact: PresentedArtifact, next: string | null) => {
       const previous = artifact.highlight;
       setError(null);
       setArtifacts((current) =>
@@ -540,7 +600,46 @@ export default function ArtifactPanel({
         setError(cause instanceof Error ? cause.message : "Could not highlight the artifact.");
       }
     },
-    [pen],
+    [],
+  );
+
+  // Painting an artifact that already carries the pen's color lifts it instead,
+  // so one pen both marks and unmarks and a mis-click is undone by repeating it.
+  const paint = useCallback(
+    async (artifact: PresentedArtifact) => {
+      const next = artifact.highlight === pen ? null : pen;
+      await updateArtifactHighlight(artifact, next);
+    },
+    [pen, updateArtifactHighlight],
+  );
+
+  /**
+   * Match Garden documents exactly: the first click waits briefly before
+   * opening the palette; a second click cancels that opening and toggles the
+   * artifact's chat scope instead. Non-downloadable artifacts remain colorable.
+   */
+  const handleArtifactColorButtonClick = useCallback(
+    (artifact: PresentedArtifact, selectableForChat: boolean) => {
+      const pendingTimer = artifactColorClickTimersRef.current.get(artifact.id);
+      if (pendingTimer !== undefined) {
+        window.clearTimeout(pendingTimer);
+        artifactColorClickTimersRef.current.delete(artifact.id);
+        if (!selectableForChat || !onToggleArtifactAttachment) {
+          setOpenColorPaletteId((openId) => (openId === artifact.id ? null : artifact.id));
+          return;
+        }
+        setOpenColorPaletteId(null);
+        void onToggleArtifactAttachment(artifact);
+        return;
+      }
+
+      const timer = window.setTimeout(() => {
+        artifactColorClickTimersRef.current.delete(artifact.id);
+        setOpenColorPaletteId((openId) => (openId === artifact.id ? null : artifact.id));
+      }, 250);
+      artifactColorClickTimersRef.current.set(artifact.id, timer);
+    },
+    [onToggleArtifactAttachment],
   );
 
   const handleImageCreated = useCallback((artifact: PresentedArtifact) => {
@@ -652,11 +751,13 @@ export default function ArtifactPanel({
           onClose={() => setMenuPosition(null)}
           onStartSelecting={() => {
             setMenuPosition(null);
+            setOpenColorPaletteId(null);
             setSelectedIds(new Set());
             setMode("selecting");
           }}
           onStartHighlighting={() => {
             setMenuPosition(null);
+            setOpenColorPaletteId(null);
             setMode("highlighting");
           }}
           onRefresh={() => {
@@ -758,38 +859,68 @@ export default function ArtifactPanel({
                   className="h-3.5 w-3.5 shrink-0 accent-[var(--botanical)]"
                 />
               ) : null}
-              {mode === "idle" && onToggleArtifactAttachment ? (
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={attached}
-                  aria-label={`${attached ? "Remove" : "Attach"} ${artifact.title} ${attached ? "from" : "to"} this chat`}
-                  title={
-                    artifact.downloadAvailable
-                      ? attached
-                        ? "Remove from chat attachments"
-                        : "Attach to this chat"
-                      : "This artifact cannot be attached"
-                  }
-                  disabled={!artifact.downloadAvailable || attachmentSelectionBusy}
-                  onClick={() => void onToggleArtifactAttachment(artifact)}
-                  className={`flex h-[18px] w-7 shrink-0 items-center justify-center rounded-[4px] border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--paper-surface)] disabled:cursor-not-allowed disabled:opacity-45 ${
-                    attached
-                      ? "border-[var(--botanical)] bg-[var(--botanical)] text-white"
-                      : "border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--botanical)] hover:border-[var(--botanical)]"
-                  }`}
-                >
-                  {attaching ? (
-                    <span
-                      aria-hidden="true"
-                      className="h-2.5 w-2.5 animate-spin rounded-full border border-current border-r-transparent"
+              {mode === "idle" ? (
+                <div className="relative shrink-0">
+                  <button
+                    type="button"
+                    data-row-menu-button
+                    onClick={() =>
+                      handleArtifactColorButtonClick(
+                        artifact,
+                        Boolean(
+                          onToggleArtifactAttachment &&
+                          artifact.downloadAvailable &&
+                          !attachmentSelectionBusy,
+                        ),
+                      )
+                    }
+                    className={`flex h-5 w-5 items-center justify-center rounded border bg-[var(--paper-raised)] transition-[border-color,box-shadow,transform,opacity] hover:border-[var(--botanical)] active:scale-[0.96] ${
+                      attached
+                        ? "border-[var(--botanical)] ring-2 ring-[var(--botanical)]/70 ring-offset-1 ring-offset-[var(--paper-surface)]"
+                        : "border-[var(--line-strong)]"
+                    } ${attaching ? "cursor-wait opacity-50" : "cursor-pointer"}`}
+                    title={`${highlight ? `Colored ${highlight.label}. ` : ""}${
+                      onToggleArtifactAttachment
+                        ? artifact.downloadAvailable
+                          ? attached
+                            ? "Selected for chat; click twice to remove."
+                            : "Click twice to select for chat."
+                          : "This artifact cannot be selected for chat."
+                        : ""
+                    } Click once to choose a color.`}
+                    aria-label={
+                      onToggleArtifactAttachment
+                        ? attached
+                          ? "Artifact color; selected for chat"
+                          : "Artifact color; click twice to select for chat"
+                        : "Artifact color"
+                    }
+                    aria-pressed={onToggleArtifactAttachment ? attached : undefined}
+                    aria-expanded={openColorPaletteId === artifact.id}
+                  >
+                    {attaching ? (
+                      <span
+                        aria-hidden="true"
+                        className="h-2.5 w-2.5 animate-spin rounded-full border border-current border-r-transparent"
+                      />
+                    ) : (
+                      <span
+                        className="h-3 w-3 rounded-sm border border-[var(--line-strong)]"
+                        style={{ backgroundColor: highlight?.color ?? "transparent" }}
+                      />
+                    )}
+                  </button>
+                  {openColorPaletteId === artifact.id ? (
+                    <ArtifactColorPalette
+                      artifact={artifact}
+                      onChoose={(next) => {
+                        setOpenColorPaletteId(null);
+                        void updateArtifactHighlight(artifact, next);
+                      }}
+                      onClose={() => setOpenColorPaletteId(null)}
                     />
-                  ) : attached ? (
-                    <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2}>
-                      <path d="m3.25 8.25 3 3 6.5-7" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
                   ) : null}
-                </button>
+                </div>
               ) : null}
               {mode === "idle" && pdfHref ? (
                 <a href={pdfHref} className={openClasses} title={`Open ${artifact.title} in the PDF viewer`}>
@@ -821,18 +952,20 @@ export default function ArtifactPanel({
         })}
       </div>
 
-      {/* Keep a local fallback for compact archives that do not live inside a
-          surface-owned artifact lane. The list stays mounted underneath, so
-          closing the artifact returns to the same scroll position and search. */}
+      {/* Keep a local replacement surface for Terminal's right-side archive and
+          for archives without a surface-owned lane. The list stays mounted
+          underneath, so closing the artifact restores its scroll and search. */}
       <div
         ref={setViewerHost}
-        aria-hidden={openArtifact && !inheritedViewerHost ? undefined : true}
+        aria-hidden={openArtifact && !useInheritedViewerHost ? undefined : true}
         className={`absolute inset-0 z-20 ${
-          openArtifact && !inheritedViewerHost ? "" : "pointer-events-none invisible"
+          openArtifact && !useInheritedViewerHost ? "" : "pointer-events-none invisible"
         }`}
       />
 
-      <ArtifactDockHostProvider host={inheritedViewerHost ?? viewerHost}>
+      <ArtifactDockHostProvider
+        host={useInheritedViewerHost ? inheritedViewerHost : viewerHost}
+      >
         <ArtifactViewer
           artifact={openArtifact}
           onClose={() => setOpenId(null)}

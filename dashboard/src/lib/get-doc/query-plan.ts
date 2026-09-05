@@ -184,12 +184,13 @@ const DESCRIBE_SYSTEM = `You write one-sentence descriptions of academic papers 
 You are given what the person is looking for, and a numbered list of papers with their real metadata and abstracts.
 
 Answer with JSON only:
-{"documents": [{"id": "doc_1", "description": "..."}]}
+{"documents": [{"id": "doc_1", "description": "...", "bearing": "direct" | "adjacent" | "none"}]}
 
 Rules:
 - One sentence per paper, at most 30 words: what the paper does, and how it relates to what was asked for.
 - Ground every word in the metadata and abstract you were given. If a paper has no abstract, describe it from its title and venue and say no abstract was published.
 - Never state a finding, a number, or a claim that is not in the text you were given.
+- "bearing" says how the paper bears on what is being looked for: "direct" when it studies that question or population, "adjacent" when it informs it (same mechanism, neighbouring population, a method the question needs), "none" when it merely shares words with it — a catalog keyword match on "winter", "gas" or "competition" that is about something else. Be strict about "none": a paper set aside costs one line; a paper on the wrong subject presented as evidence costs the reader's trust.
 - Keep the ids exactly as given, and include every paper.`;
 
 /**
@@ -238,17 +239,23 @@ export async function describeDocuments(input: {
         ? ((parsed as Record<string, unknown>).documents as unknown[])
         : [];
     const written = new Map<string, string>();
+    const bearings = new Map<string, DocumentHit["bearing"]>();
     for (const entry of entries) {
       if (!entry || typeof entry !== "object") continue;
       const row = entry as Record<string, unknown>;
       const id = typeof row.id === "string" ? row.id.trim() : "";
       const description = typeof row.description === "string" ? row.description.trim() : "";
       if (id && description) written.set(id, description.replace(/\s+/g, " ").slice(0, 400));
+      const bearing = typeof row.bearing === "string" ? row.bearing.trim().toLowerCase() : "";
+      if (id && (bearing === "direct" || bearing === "adjacent" || bearing === "none")) {
+        bearings.set(id, bearing);
+      }
     }
     return {
       documents: input.documents.map((document) => ({
         ...document,
         description: written.get(document.id) ?? document.description,
+        ...(bearings.has(document.id) ? { bearing: bearings.get(document.id) } : {}),
       })),
       usage,
     };

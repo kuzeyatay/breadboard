@@ -61,6 +61,13 @@ const NOTIFIABLE_MESSAGES_SQL = `
     AND COALESCE(m.client_message_id, '') NOT LIKE 'telegram-%'
     AND m.role = 'assistant'
     AND m.status IN ('complete', 'failed')
+    AND NOT COALESCE((
+      json_valid(m.metadata)
+      AND (
+        json_extract(m.metadata, '$.delegatedAgentRun') = 1
+        OR json_extract(m.metadata, '$.deliveryChannel') IN ('telegram', 'whatsapp')
+      )
+    ), 0)
 `;
 
 export function ensureChatNotificationSchema(database: Database.Database): void {

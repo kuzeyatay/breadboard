@@ -899,7 +899,7 @@ function checkDashboardCompilerRuntime(dashboard, bundledNode, label) {
 const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
   chatmock: { dataRoot: "none", bootstrap: ["app-root:chatmock/chatmock.py"] },
   dashboard: { dataRoot: "none", bootstrap: ["app-root:dashboard-standalone/dashboard/server.js"] },
-  hermes: { dataRoot: "none", bootstrap: ["app-root:hermes-agent/hermes_cli/main.py"] },
+  hermes: { dataRoot: "none", bootstrap: ["app-root:hermes-agent/breadboard_runtime.py", "app-root:hermes-agent/hermes_cli/main.py"] },
   gbrain: { dataRoot: "none", bootstrap: ["app-root:gbrain/runtime-artifact.json"] },
   comfyui: {
     dataRoot: "writable-state",
@@ -5088,6 +5088,49 @@ function checkResourcesRoot(resources, binRoot, label) {
     ),
     `${label} first-party interactive visualizer skill`,
   );
+  const textToCadRoot = path.join(
+    resources,
+    "app-services",
+    "hermes-skills",
+    "prebuilt",
+  );
+  requireFile(
+    path.join(textToCadRoot, "TEXT_TO_CAD_UPSTREAM.json"),
+    `${label} text-to-cad upstream receipt`,
+  );
+  for (const skill of [
+    "bambu-labs",
+    "cad",
+    "cad-viewer",
+    "dfam-check",
+    "dxf",
+    "gcode",
+    "implicit-cad",
+    "sdf",
+    "sendcutsend",
+    "srdf",
+    "step-parts",
+    "urdf",
+  ]) {
+    for (const relative of ["SKILL.md", "LICENSE", path.join("agents", "openai.yaml")]) {
+      requireFile(
+        path.join(textToCadRoot, skill, relative),
+        `${label} text-to-cad ${skill} ${relative}`,
+      );
+    }
+  }
+  for (const [relative, description] of [
+    [["dxf", "scripts", "gen", "__main__.py"], "text-to-cad DXF launcher"],
+    [
+      ["cad-viewer", "scripts", "viewer", "dist", "index.html"],
+      "text-to-cad offline CAD viewer",
+    ],
+  ]) {
+    requireFile(
+      path.join(textToCadRoot, ...relative),
+      `${label} ${description}`,
+    );
+  }
   requireFile(
     path.join(dashboard, "node_modules", "three", "build", "three.module.js"),
     `${label} pinned local Three.js runtime`,
@@ -5154,7 +5197,7 @@ function checkResourcesRoot(resources, binRoot, label) {
   if (fs.existsSync(python)) {
     const hermesImport = spawnSync(
       python,
-      ["-c", "import hermes_cli.main; import plugins.breadboard; import tui_gateway.server"],
+      [path.join(resources, "app-services", "hermes-agent", "breadboard_runtime.py"), "--check-imports"],
       {
         cwd: path.join(resources, "app-services", "hermes-agent"),
         encoding: "utf8",

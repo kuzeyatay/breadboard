@@ -16,6 +16,7 @@ import {
 } from "@/lib/supervisor-control";
 
 const POLL_INTERVAL_MS = 200;
+const SSE_KEEPALIVE_INTERVAL_MS = 15_000;
 const MAX_CHECKPOINT_STEP_BYTES = 4 * 1024;
 const MAX_RESULT_STRING_BYTES = 64 * 1024;
 const MAX_RESULT_TOPICS = 10_000;
@@ -502,6 +503,8 @@ export function createRuntimeIngestSseResponse(input: {
     readonly inspect: typeof inspectRuntimeJob;
     readonly readOutput: typeof readRuntimeJobOutput;
     readonly wait?: (milliseconds: number) => Promise<void>;
+    readonly now?: () => number;
+    readonly keepAliveIntervalMs?: number;
   };
 }): Response {
   const encoder = new TextEncoder();
@@ -512,9 +515,13 @@ export function createRuntimeIngestSseResponse(input: {
     readOutput: readRuntimeJobOutput,
   };
   const wait = input.control?.wait ?? delay;
+  const now = input.control?.now ?? Date.now;
+  const keepAliveIntervalMs =
+    input.control?.keepAliveIntervalMs ?? SSE_KEEPALIVE_INTERVAL_MS;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
+      let lastFrameAt = now();
       let cursor = 0;
       let job = input.job;
       let latestCheckpointRevision = 0;
@@ -529,12 +536,21 @@ export function createRuntimeIngestSseResponse(input: {
       let replayResourceExhaustion: RuntimeResourceExhaustionEvidence | null = null;
       let checkpointed: WorkerFence | null = null;
       let completed: ReturnType<typeof completionFence> = null;
-      const send = (event: Record<string, unknown>) => {
+      const enqueue = (frame: string) => {
         if (closed || disconnected) return;
         try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.enqueue(encoder.encode(frame));
+          lastFrameAt = now();
         } catch {
           disconnected = true;
+        }
+      };
+      const send = (event: Record<string, unknown>) => {
+        enqueue(`data: ${JSON.stringify(event)}\n\n`);
+      };
+      const sendKeepAliveIfIdle = () => {
+        if (now() - lastFrameAt >= keepAliveIntervalMs) {
+          enqueue(": keep-alive\n\n");
         }
       };
       const drainReplay = async (): Promise<boolean> => {
@@ -560,6 +576,7 @@ export function createRuntimeIngestSseResponse(input: {
       };
       try {
         while (!disconnected) {
+          sendKeepAliveIfIdle();
           await drainReplay();
           job = await runtimeControl.inspect(input.authority, input.job.jobId);
           if (TERMINAL_JOB_STATES.has(job.state)) {
@@ -571,6 +588,7 @@ export function createRuntimeIngestSseResponse(input: {
               replayTerminal = await drainReplay();
               if (!replayTerminal && !disconnected) {
                 await wait(POLL_INTERVAL_MS);
+                sendKeepAliveIfIdle();
               }
             }
           }
@@ -625,7 +643,7 @@ export function createRuntimeIngestSseResponse(input: {
           }
 
           if (TERMINAL_JOB_STATES.has(job.state)) break;
-          await delay(POLL_INTERVAL_MS);
+          await wait(POLL_INTERVAL_MS);
         }
 
         if (disconnected) return;

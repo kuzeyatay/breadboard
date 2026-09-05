@@ -49,6 +49,7 @@ insertGarden("owner-private", "private");
 insertGarden("org-readable", "organization", organizationId);
 insertGarden("public-readable", "public");
 insertGarden("public-enabled", "public", null, 1);
+insertGarden("public-incomplete", "public", null, 1);
 
 test("read authorization covers owner, organization member, public, and rejects private strangers", () => {
   assert.equal(auth.requireReadableCluster(owner, "owner-private").slug, "owner-private");
@@ -85,6 +86,9 @@ test("public enabled reads return only the sanitized renderer artifact", async (
   fs.writeFileSync(path.join(derived, "thought-topology.json"), JSON.stringify(topology));
   fs.writeFileSync(path.join(derived, "thought-topology-cache.json"), JSON.stringify({ secretMarker: "PRIVATE_VECTOR_MARKER", nodes: { note: { embedding: [1, 2, 3] } } }));
   const clusterId = db.prepare("SELECT id FROM clusters WHERE slug = 'public-enabled'").get().id;
+  // A historical row can remain `running` if the dashboard missed Runtime's
+  // terminal event. It must not make a newer terminal revision look active.
+  db.prepare("INSERT INTO thought_topology_jobs (cluster_id, revision, reason, status, runtime_job_id) VALUES (?, 0, 'orphan', 'running', 'job_orphan')").run(clusterId);
   db.prepare("INSERT INTO thought_topology_jobs (cluster_id, revision, reason, status, last_error) VALUES (?, 1, 'fixture', 'failed', 'private worker detail')").run(clusterId);
   const response = await route.GET(new Request("http://dashboard.local/api/thought-topology?clusterSlug=public-enabled"));
   assert.equal(response.status, 200);
@@ -95,6 +99,45 @@ test("public enabled reads return only the sanitized renderer artifact", async (
   assert.equal(payload.topology.sourceRevision, "public-fixture");
   assert.deepEqual(payload.status, { state: "failed", message: "Showing the last available topology; the latest update failed." });
   assert.equal(payload.stale, true);
+});
+
+test("an incomplete stored topology is hidden and queued for atomic repair", async () => {
+  const derived = path.join(process.env.QUARTZ_CONTENT_PATH, "public-incomplete", ".breadboard");
+  fs.mkdirSync(derived, { recursive: true });
+  fs.writeFileSync(path.join(derived, "thought-topology.json"), JSON.stringify({
+    schemaVersion: 1,
+    scoringVersion: "thought-topology-affinity-v1",
+    sourceRevision: "partial-fixture",
+    garden: { id: 5, slug: "public-incomplete", title: "Public incomplete", summary: { state: "ready", text: "Summary." } },
+    folders: [],
+    nodes: [],
+    edges: [{
+      id: "edge:partial",
+      source: "page:a",
+      target: "page:b",
+      origin: "inferred",
+      score: 0.9,
+      components: { embedding: 0.9, concept: 0, lexical: 0 },
+      relationType: "related",
+      direction: "undirected",
+      explanation: { state: "pending", text: "This connection will be explained on the next update." },
+      evidence: [],
+      pairHash: "partial",
+      visual: { width: 1, opacity: 1, distance: 1, strength: 1 },
+    }],
+    build: { state: "degraded", generatedAt: "2026-01-01T00:00:00.000Z", embeddingModel: "local/bge-small-en-v1.5", embeddingDimension: 3, summaryModel: "test", nodePromptVersion: "v1", edgePromptVersion: "v1", retrievalMode: "semantic-vector", threshold: 0.68 },
+  }));
+
+  const response = await route.GET(new Request("http://dashboard.local/api/thought-topology?clusterSlug=public-incomplete"));
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.topology.sourceRevision, "pending", "the partial artifact never reaches Quartz");
+  assert.deepEqual(payload.topology.edges, []);
+  assert.equal(payload.status.state, "building");
+  assert.equal(payload.stale, true);
+  const clusterId = db.prepare("SELECT id FROM clusters WHERE slug = 'public-incomplete'").get().id;
+  const queued = db.prepare("SELECT reason FROM thought_topology_jobs WHERE cluster_id = ? ORDER BY id DESC LIMIT 1").get(clusterId);
+  assert.match(queued.reason, /incomplete connection explanations/);
 });
 
 test("published Quartz receives a credentialed, allowlisted read transport", async () => {

@@ -3,6 +3,9 @@
 import Link from "next/link";
 import NavbarFlowerWind from "./navbar-flower-wind";
 import WorkTimerShortcut from "./work-timer-shortcut";
+import BrowserShortcut from "./browser-shortcut";
+import ClickyShortcut from "./clicky-shortcut";
+import LinkContextMenu from "./link-context-menu";
 import {
   DEFAULT_NAVBAR_SHORTCUTS,
   type NavbarShortcuts,
@@ -11,6 +14,7 @@ import {
 interface Props {
   email: string;
   username?: string | null;
+  showFlowers?: boolean;
   /**
    * Which optional shortcuts this account has asked for. Read on the server so
    * the navbar is right on first paint rather than rearranging after hydration.
@@ -21,34 +25,42 @@ interface Props {
 export default function NavBar({
   email,
   username,
+  showFlowers = true,
   shortcuts = DEFAULT_NAVBAR_SHORTCUTS,
 }: Props) {
   return (
     <nav className="breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-2.5 border-b border-gray-800 shrink-0">
-      <NavbarFlowerWind />
-      <Link
-        href="/dashboard"
-        className="relative z-10 flex items-center gap-2.5 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
-        aria-label="Go to Breadboard main page"
-      >
-        {/* logo.png is white line-art; darken it to the ink tone so it reads on the light theme. */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src="/logo.png"
-          alt="breadboard"
-          className="breadboard-logo h-12 w-12 object-contain [filter:brightness(0)_saturate(100%)] opacity-90"
-        />
-        <span className="text-lg font-medium text-white tracking-tight">
-          breadboard
-        </span>
-      </Link>
+      <NavbarFlowerWind showFlowers={showFlowers} />
+      <LinkContextMenu href="/dashboard" label="Dashboard">
+        <Link
+          href="/dashboard"
+          className="relative z-10 flex items-center gap-2.5 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
+          aria-label="Go to Breadboard main page"
+        >
+          {/* logo.png is white line-art; darken it to the ink tone so it reads on the light theme. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/logo.png"
+            alt="breadboard"
+            className="breadboard-logo h-12 w-12 object-contain [filter:brightness(0)_saturate(100%)] opacity-90"
+          />
+          <span className="text-lg font-medium text-white tracking-tight">
+            breadboard
+          </span>
+        </Link>
+      </LinkContextMenu>
       {/* Agents live in the capability palette's Agents tab (the slash button),
           not in this navbar. */}
       <div className="relative z-10 flex items-center gap-4">
-        {/* Work timer and Plan ship on by default; the rest stay opt-in.
+        {/* Work timer, Clicky and Plan ship on by default; the rest stay opt-in.
             Every seat can be changed from the profile page. */}
         {shortcuts.workTimer && <WorkTimerShortcut />}
+        {/* The embedded browser is desktop-only; its seat draws nothing on the web. */}
+        {shortcuts.browser && <BrowserShortcut />}
+        {/* Clicky is available in the Windows and macOS desktop shells. */}
+        {shortcuts.clicky && <ClickyShortcut />}
         {shortcuts.plan && (
+          <LinkContextMenu href="/plan" label="Plan">
           <a
             href="/plan"
             target="_blank"
@@ -70,8 +82,10 @@ export default function NavBar({
             </svg>
             Plan
           </a>
+          </LinkContextMenu>
         )}
         {shortcuts.buzz && (
+          <LinkContextMenu href="/buzz" label="Organization">
           <a
             href="/buzz"
             target="_blank"
@@ -98,10 +112,12 @@ export default function NavBar({
             </svg>
             Organization
           </a>
+          </LinkContextMenu>
         )}
         {/* The profile chip is the way to the profile page, which is where
             inviting and signing out now live — both are account business, and
             neither was worth a permanent seat in the navbar. */}
+        <LinkContextMenu href="/profile" label="Profile">
         <Link
           href="/profile"
           title="Your profile"
@@ -122,6 +138,7 @@ export default function NavBar({
           </svg>
           <span className="truncate font-medium">{username || email}</span>
         </Link>
+        </LinkContextMenu>
       </div>
     </nav>
   );

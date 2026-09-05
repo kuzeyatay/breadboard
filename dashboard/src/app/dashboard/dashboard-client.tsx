@@ -9,10 +9,10 @@ import {
   useTransition,
 } from "react";
 import Link from "next/link";
+import LinkContextMenu from "@/app/components/link-context-menu";
 import { useRouter } from "next/navigation";
 import {
   createCluster,
-  deleteCluster,
   updateClusterDetails,
   setClusterBorderColor,
   setClusterVisibility,
@@ -44,6 +44,7 @@ import LazyDashboardAgentTerminal from "@/app/components/hermes/lazy-dashboard-a
 import type { TerminalPanel } from "@/app/components/hermes/terminal-sidebar";
 import ScheduledChatsDock from "@/app/components/scheduled-chats-dock";
 import PersonProfileDialog from "@/app/components/person-profile-dialog.tsx";
+import { ConfirmDialog } from "@/app/components/confirm-dialog";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
 import OverflowMarquee from "@/app/components/overflow-marquee";
@@ -101,6 +102,8 @@ interface Props {
   initialClusterFolders: string[];
   /** Optional navbar entries this account switched on from its profile page. */
   navbarShortcuts: NavbarShortcuts;
+  /** Whether the decorative flower strip is visible behind the top navbar. */
+  showNavbarFlowers: boolean;
   /** A top-level terminal route, such as /hooks, can open its panel on arrival. */
   initialTerminalPanel?: TerminalPanel | null;
   /** A notification deep-link can open one Terminal conversation on arrival. */
@@ -203,6 +206,7 @@ export default function DashboardClient({
   organizations,
   initialClusterFolders,
   navbarShortcuts,
+  showNavbarFlowers,
   initialTerminalPanel = null,
   initialTerminalChatId = null,
 }: Props) {
@@ -230,6 +234,7 @@ export default function DashboardClient({
   const [editDescription, setEditDescription] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [isCreatingGarden, startCreatingGarden] = useTransition();
   const [clusterView, setClusterView] = useState<ClusterView>("mine");
   const [searchQuery, setSearchQuery] = useState("");
   const [myClusters, setMyClusters] = useState(initialClusters);
@@ -266,7 +271,10 @@ export default function DashboardClient({
   const [expandedClusterFolders, setExpandedClusterFolders] = useState<
     Set<string>
   >(new Set());
-  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const deletingIdsRef = useRef<Set<number>>(new Set());
+  const [deletingIds, setDeletingIds] = useState<Set<number>>(
+    () => new Set(),
+  );
   const [linkingRepoId, setLinkingRepoId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [confirmVisibilityId, setConfirmVisibilityId] = useState<number | null>(
@@ -1177,6 +1185,10 @@ export default function DashboardClient({
         </span>
         <span className="text-[11px] text-gray-600">{count}</span>
         {folder && (
+          <LinkContextMenu
+            href={`/garden?view=private&cluster=${encodeURIComponent(folder)}`}
+            label={`Cluster ${folderLabel(folder)}`}
+          >
           <Link
             data-card-action="true"
             href={`/garden?view=private&cluster=${encodeURIComponent(folder)}`}
@@ -1202,6 +1214,7 @@ export default function DashboardClient({
               <circle cx="6.8" cy="10.3" r="3" />
             </svg>
           </Link>
+          </LinkContextMenu>
         )}
         {folder && (
           <span
@@ -1406,7 +1419,7 @@ export default function DashboardClient({
     if (!name.trim()) return;
     setError(null);
     const folder = newGardenFolder;
-    startTransition(async () => {
+    startCreatingGarden(async () => {
       try {
         await createCluster(name.trim(), description.trim(), folder);
         // Reveal the cluster it landed in, so the new card is not created
@@ -1460,26 +1473,58 @@ export default function DashboardClient({
     });
   }
 
-  function handleDelete(clusterId: number) {
-    setDeletingId(clusterId);
-    startTransition(async () => {
-      try {
-        await deleteCluster(clusterId);
-        setMyClusters((previous) =>
-          previous.filter((cluster) => cluster.id !== clusterId),
-        );
-        setPublicClusters((previous) =>
-          previous.filter((cluster) => cluster.id !== clusterId),
-        );
-        router.refresh();
-      } catch (err: unknown) {
-        addToast(
-          err instanceof Error ? err.message : "Failed to delete garden",
-        );
-      } finally {
-        setDeletingId(null);
+  async function handleDelete(cluster: Pick<Cluster, "id" | "slug">) {
+    const { id: clusterId, slug } = cluster;
+    if (deletingIdsRef.current.has(clusterId)) return;
+
+    deletingIdsRef.current.add(clusterId);
+    setDeletingIds((previous) => new Set(previous).add(clusterId));
+
+    try {
+      const response = await fetch(
+        `/api/gardens/${encodeURIComponent(slug)}/settings`,
+        {
+          method: "DELETE",
+          // Let the request outlive this page when the user navigates away.
+          // The server owns the destructive work once the request arrives.
+          keepalive: true,
+        },
+      );
+      const data = (await response.json().catch(() => null)) as {
+        deleted?: boolean;
+        verified?: boolean;
+        error?: string;
+        message?: string;
+      } | null;
+      if (!response.ok) {
+        throw new Error(data?.message ?? data?.error ?? "Failed to delete garden");
       }
-    });
+      if (data?.deleted !== true || data.verified !== true) {
+        throw new Error("The server could not verify that the garden was deleted.");
+      }
+
+      setMyClusters((previous) =>
+        previous.filter((item) => item.id !== clusterId),
+      );
+      setPublicClusters((previous) =>
+        previous.filter((item) => item.id !== clusterId),
+      );
+      setOrganizationClusters((previous) =>
+        previous.filter((item) => item.id !== clusterId),
+      );
+      router.refresh();
+    } catch (err: unknown) {
+      addToast(
+        err instanceof Error ? err.message : "Failed to delete garden",
+      );
+    } finally {
+      deletingIdsRef.current.delete(clusterId);
+      setDeletingIds((previous) => {
+        const next = new Set(previous);
+        next.delete(clusterId);
+        return next;
+      });
+    }
   }
 
   async function handleVisibilityChange(
@@ -1950,15 +1995,14 @@ export default function DashboardClient({
       uploadStartedAtRef.current[key] = Date.now();
       setUploadStatuses((prev) => ({ ...prev, [key]: "uploading" }));
 
-      // One reader per file, most specific first: the VLM reads pixels, anydoc
-      // reads document packages, handwriting OCR is the fallback for the pages
-      // neither of the first two was asked for.
+      // PDFs can intentionally use both readers: the VLM reads the pixels and
+      // anydoc supplies a text-layer cross-check. Handwriting OCR remains the
+      // fallback when neither reader was selected for the file.
       const usesVlm =
         parseWithVlm &&
         vlmStatus.available &&
         VLM_PARSE_FILE_RE.test(file.name);
       const usesAnydoc =
-        !usesVlm &&
         parseWithAnydoc &&
         anydocStatus.available &&
         ANYDOC_PARSE_FILE_RE.test(file.name);
@@ -2257,6 +2301,10 @@ export default function DashboardClient({
       const status = uploadStatuses[fileKey(f)];
       return status === "done" || status === "error";
     });
+  const gardenPendingDeletion =
+    confirmDeleteId === null
+      ? null
+      : myClusters.find((cluster) => cluster.id === confirmDeleteId) ?? null;
 
   return (
     <div
@@ -2281,6 +2329,7 @@ export default function DashboardClient({
         email={userEmail}
         username={username}
         shortcuts={navbarShortcuts}
+        showFlowers={showNavbarFlowers}
       />
 
       {/* Persistent, top-left: what is scheduled to run on its own. */}
@@ -2341,17 +2390,19 @@ export default function DashboardClient({
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <Link
-                href="/garden?view=private"
-                prefetch={false}
-                onNavigate={(event) => {
-                  event.preventDefault();
-                  window.location.assign("/garden?view=private");
-                }}
-                className="neu-button px-4 py-2 text-sm font-medium text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
-              >
-                Explore All
-              </Link>
+              <LinkContextMenu href="/garden?view=private" label="Explore all gardens">
+                <Link
+                  href="/garden?view=private"
+                  prefetch={false}
+                  onNavigate={(event) => {
+                    event.preventDefault();
+                    window.location.assign("/garden?view=private");
+                  }}
+                  className="neu-button px-4 py-2 text-sm font-medium text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
+                >
+                  Explore All
+                </Link>
+              </LinkContextMenu>
             </div>
           </div>
 
@@ -2619,7 +2670,7 @@ export default function DashboardClient({
                       }}
                     >
                       {section.cards.map((cluster) => {
-                        const isDeleting = deletingId === cluster.id;
+                        const isDeleting = deletingIds.has(cluster.id);
                         const canManage =
                           clusterView === "mine" && cluster.isOwner;
                         const descriptionText = cluster.description?.trim();
@@ -2629,7 +2680,8 @@ export default function DashboardClient({
                         return (
                           <div
                             key={cluster.id}
-                            draggable={cardDraggable}
+                            draggable={cardDraggable && !isDeleting}
+                            aria-busy={isDeleting}
                             onDragStart={(e) => {
                               const dragSource = e.target as HTMLElement;
                               if (
@@ -2712,33 +2764,7 @@ export default function DashboardClient({
                                 </button>
                               </div>
                             )}
-                            {canManage && confirmDeleteId === cluster.id && (
-                              <div className="dashboard-garden-card-overlay absolute top-2.5 flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 shadow-lg">
-                                <span className="text-xs text-gray-400">
-                                  Delete?
-                                </span>
-                                <button
-                                  data-card-action="true"
-                                  onClick={() => {
-                                    setConfirmDeleteId(null);
-                                    handleDelete(cluster.id);
-                                  }}
-                                  disabled={isDeleting || isPending}
-                                  className="text-xs text-red-500 hover:text-red-400 font-medium transition-colors disabled:opacity-40"
-                                >
-                                  Yes
-                                </button>
-                                <button
-                                  data-card-action="true"
-                                  onClick={() => setConfirmDeleteId(null)}
-                                  className="text-xs text-gray-500 hover:text-white transition-colors"
-                                >
-                                  No
-                                </button>
-                              </div>
-                            )}
                             {canManage &&
-                              confirmDeleteId !== cluster.id &&
                               confirmVisibilityId === cluster.id && (
                                 <div className="dashboard-garden-card-overlay absolute top-2.5 flex w-48 flex-col gap-0.5 rounded-lg border border-gray-700 bg-gray-900 p-1 shadow-lg">
                                   {[
@@ -2802,7 +2828,6 @@ export default function DashboardClient({
                                 </div>
                               )}
                             {canManage &&
-                              confirmDeleteId !== cluster.id &&
                               confirmVisibilityId !== cluster.id && (
                                 <div className="dashboard-garden-card-controls absolute flex items-center gap-2">
                                   <button
@@ -2919,10 +2944,11 @@ export default function DashboardClient({
                                   </button>
                                   <button
                                     data-card-action="true"
+                                    type="button"
                                     onClick={() =>
                                       setConfirmDeleteId(cluster.id)
                                     }
-                                    disabled={isDeleting || isPending}
+                                    disabled={isDeleting}
                                     className="p-1 text-gray-700 hover:text-red-500 transition-colors disabled:opacity-40"
                                     title="Delete garden"
                                   >
@@ -2934,12 +2960,13 @@ export default function DashboardClient({
                                         fill="none"
                                         viewBox="0 0 24 24"
                                         stroke="currentColor"
-                                        strokeWidth={2}
+                                        strokeWidth={1.8}
+                                        aria-hidden="true"
                                       >
                                         <path
                                           strokeLinecap="round"
                                           strokeLinejoin="round"
-                                          d="M6 18 18 6M6 6l12 12"
+                                          d="M4 7h16M9.5 7V5.5A1.5 1.5 0 0 1 11 4h2a1.5 1.5 0 0 1 1.5 1.5V7m1.9 0-.6 11.1a2 2 0 0 1-2 1.9H8.7a2 2 0 0 1-2-1.9L6.1 7M10 11v5m4-5v5"
                                         />
                                       </svg>
                                     )}
@@ -3090,6 +3117,36 @@ export default function DashboardClient({
                               {clusterView === "mine" ||
                               cluster.chat_accessible ? (
                                 <>
+                                  <LinkContextMenu
+                                    href={`/garden/${cluster.slug}`}
+                                    label={`Explore ${cluster.name}`}
+                                  >
+                                    <Link
+                                      data-card-action="true"
+                                      href={`/garden/${cluster.slug}`}
+                                      className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
+                                    >
+                                      Explore
+                                    </Link>
+                                  </LinkContextMenu>
+                                  <LinkContextMenu
+                                    href={`/gardens/${cluster.slug}`}
+                                    label={`Workspace for ${cluster.name}`}
+                                  >
+                                    <Link
+                                      data-card-action="true"
+                                      href={`/gardens/${cluster.slug}`}
+                                      className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
+                                    >
+                                      Workspace
+                                    </Link>
+                                  </LinkContextMenu>
+                                </>
+                              ) : (
+                                <LinkContextMenu
+                                  href={`/garden/${cluster.slug}`}
+                                  label={`Explore ${cluster.name}`}
+                                >
                                   <Link
                                     data-card-action="true"
                                     href={`/garden/${cluster.slug}`}
@@ -3097,22 +3154,7 @@ export default function DashboardClient({
                                   >
                                     Explore
                                   </Link>
-                                  <Link
-                                    data-card-action="true"
-                                    href={`/gardens/${cluster.slug}`}
-                                    className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
-                                  >
-                                    Workspace
-                                  </Link>
-                                </>
-                              ) : (
-                                <Link
-                                  data-card-action="true"
-                                  href={`/garden/${cluster.slug}`}
-                                  className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
-                                >
-                                  Explore
-                                </Link>
+                                </LinkContextMenu>
                               )}
 
                               {/* Who put this garden in front of you. */}
@@ -3187,6 +3229,17 @@ export default function DashboardClient({
                                 </div>
                               </>
                             )}
+                            {isDeleting && (
+                              <div
+                                data-card-action="true"
+                                className="absolute inset-0 z-30 flex cursor-wait items-center justify-center rounded-[10px] bg-gray-950/25 backdrop-blur-[1.5px]"
+                              >
+                                <span className="neu-surface flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900/90 px-3 py-1.5 text-xs font-medium text-gray-200 shadow-lg">
+                                  <Spinner className="h-3.5 w-3.5" />
+                                  Deleting in background…
+                                </span>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -3199,6 +3252,29 @@ export default function DashboardClient({
           </>
         )}
       </div>
+
+      {gardenPendingDeletion && (
+        <ConfirmDialog
+          title="Delete garden?"
+          subject={gardenPendingDeletion.name}
+          body="This permanently deletes the garden and all of its notes. This action cannot be undone."
+          detail={
+            gardenPendingDeletion.noteCount === 0
+              ? "The empty garden will be removed from your dashboard."
+              : `${gardenPendingDeletion.noteCount} ${
+                  gardenPendingDeletion.noteCount === 1
+                    ? "knowledge node"
+                    : "knowledge nodes"
+                } will also be deleted.`
+          }
+          confirmLabel="Delete garden"
+          onCancel={() => setConfirmDeleteId(null)}
+          onConfirm={() => {
+            setConfirmDeleteId(null);
+            void handleDelete(gardenPendingDeletion);
+          }}
+        />
+      )}
 
       {clusterFolderModalOpen && (
         <div
@@ -3287,7 +3363,7 @@ export default function DashboardClient({
             if (e.target === e.currentTarget) closeModal();
           }}
         >
-          <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
+          <div className="bb-modal-panel neu-dialog w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-2xl border p-6">
             <h2 className="text-lg font-semibold">New garden</h2>
             <p className="mb-5 mt-0.5 text-sm text-gray-500">
               {newGardenFolder
@@ -3332,11 +3408,11 @@ export default function DashboardClient({
                 </button>
                 <button
                   type="submit"
-                  disabled={isPending || !name.trim()}
+                  disabled={isCreatingGarden || !name.trim()}
                   className="neu-button-primary flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  {isPending && <Spinner />}
-                  {isPending ? "Creating..." : "Create"}
+                  {isCreatingGarden && <Spinner />}
+                  {isCreatingGarden ? "Creating..." : "Create"}
                 </button>
               </div>
             </form>
@@ -3352,7 +3428,7 @@ export default function DashboardClient({
           }}
         >
           <div
-            className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6"
+            className="bb-modal-panel neu-dialog w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-2xl border p-6"
             role="dialog"
             aria-modal="true"
             aria-labelledby="edit-garden-title"
@@ -3459,7 +3535,7 @@ export default function DashboardClient({
             if (e.target === e.currentTarget) closeUploadModal();
           }}
         >
-          <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
+          <div className="bb-modal-panel neu-dialog w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-2xl border p-6">
             <div className="mb-5">
               <h2 className="text-lg font-semibold">Add documents</h2>
               <p className="text-sm text-gray-500 mt-0.5">
@@ -3647,7 +3723,7 @@ export default function DashboardClient({
                   checked={parseWithVlm}
                   onChange={(next) => {
                     setParseWithVlm(next);
-                    // The two page readers are alternatives, not a stack.
+                    // Handwriting OCR remains an alternative to the visual VLM.
                     if (next) setIsHandwriting(false);
                   }}
                   disabled={isUploading}
@@ -3663,7 +3739,7 @@ export default function DashboardClient({
                   disabled={isUploading}
                   status={anydocStatus}
                   loading={anydocStatusLoading}
-                  overriddenByVlm={vlmUploadEnabled}
+                  combinedWithVlm={vlmUploadEnabled}
                 />
               )}
 

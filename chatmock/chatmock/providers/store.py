@@ -222,8 +222,18 @@ def provider_record(provider_id: str) -> ProviderRecord:
 def resolve_credentials(spec: ProviderSpec) -> ResolvedCredentials:
     """Merge stored config with environment fallbacks for one provider."""
     record = provider_record(spec.id)
-    api_key = record.api_key or _usable_env_key(spec)
-    base_url = record.base_url or _env_value(spec.base_url_env) or spec.default_base_url
+    env_api_key = _usable_env_key(spec)
+    env_base_url = _env_value(spec.base_url_env)
+    if spec.id == "cliproxy":
+        # Runtime V2 mints a fresh loopback port for each app session. A model
+        # sync from an older session may still have persisted that session's
+        # URL and bearer, but those values must never override the address and
+        # credential supplied to this ChatMock process by its supervisor.
+        api_key = env_api_key or record.api_key
+        base_url = env_base_url or record.base_url or spec.default_base_url
+    else:
+        api_key = record.api_key or env_api_key
+        base_url = record.base_url or env_base_url or spec.default_base_url
 
     if not record.enabled:
         return ResolvedCredentials(spec.id, api_key, base_url, False, "provider is turned off")
@@ -263,6 +273,8 @@ def public_state() -> List[Dict[str, Any]]:
         resolved = resolve_credentials(spec) if spec.kind != "chatgpt_oauth" else None
         stored_key = record.api_key
         env_key = _usable_env_key(spec)
+        env_base_url = _env_value(spec.base_url_env)
+        environment_first = spec.id == "cliproxy"
         out.append(
             {
                 "id": spec.id,
@@ -273,14 +285,22 @@ def public_state() -> List[Dict[str, Any]]:
                 "requiresApiKey": spec.requires_api_key,
                 "baseUrlEditable": spec.base_url_editable,
                 "defaultBaseUrl": spec.default_base_url,
-                "baseUrl": record.base_url or _env_value(spec.base_url_env) or spec.default_base_url,
+                "baseUrl": (
+                    (env_base_url or record.base_url or spec.default_base_url)
+                    if environment_first
+                    else (record.base_url or env_base_url or spec.default_base_url)
+                ),
                 "enabled": record.enabled,
                 "configured": is_configured(spec),
                 "hasStoredKey": bool(stored_key),
                 # Surfaced so the UI can explain a provider that works without a
                 # key having been entered in the app.
-                "keyFromEnvironment": bool(env_key and not stored_key),
-                "apiKeyHint": mask_secret(stored_key or env_key),
+                "keyFromEnvironment": bool(
+                    env_key and (environment_first or not stored_key)
+                ),
+                "apiKeyHint": mask_secret(
+                    (env_key or stored_key) if environment_first else (stored_key or env_key)
+                ),
                 "apiKeyEnv": list(spec.api_key_env),
                 "models": sorted(set(list(spec.suggested_models) + list(record.models))),
                 "suggestedModels": list(spec.suggested_models),

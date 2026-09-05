@@ -21,6 +21,9 @@ const eventStream = source("../src/lib/hermes/event-stream.ts");
 const detachedPump = source(
   "../src/lib/hermes/detached-event-pump.ts",
 );
+const chatSessionRoute = source(
+  "../src/app/api/chat-sessions/[sessionId]/route.ts",
+);
 
 test("chat navigation detaches the viewer while Hermes remains server-owned", () => {
   assert.match(eventStream, /acquireDetachedEventPump/);
@@ -150,4 +153,18 @@ test("a detached event pump is shared and replays events to a new viewer", async
   assert.equal(completed, "data: finished\n\n");
   assert.equal((await secondReader.read()).done, true);
   assert.equal(driveCount, 1);
+});
+
+test("a detached Garden viewer cannot save its network error as the answer", () => {
+  assert.match(gardenWorkspace, /isRecoverableAgentStreamDisconnect\(error\)/);
+  assert.match(gardenWorkspace, /if \(viewerDetached\)[\s\S]*setChatStreaming\(sessionId, false\)/);
+  const detachedStart = gardenWorkspace.indexOf("if (viewerDetached)");
+  const detachedBranch = gardenWorkspace.slice(
+    detachedStart,
+    gardenWorkspace.indexOf("} else {", detachedStart),
+  );
+  assert.doesNotMatch(detachedBranch, /persistChatSession/);
+  assert.match(chatSessionRoute, /const runtimeOwnsMessages =/);
+  assert.match(chatSessionRoute, /getActiveRuntimeRun\(runtimeSession\.id\)/);
+  assert.match(chatSessionRoute, /const messagesToPersist = runtimeOwnsMessages \? undefined : messages/);
 });

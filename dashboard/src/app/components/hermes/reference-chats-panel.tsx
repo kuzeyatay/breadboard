@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { HermesSurface } from "@/lib/hermes/config.ts";
+import ReloadableFetchError from "@/app/components/reloadable-fetch-error";
 
 interface ReferenceChat {
   id: string;
@@ -35,6 +36,7 @@ export default function ReferenceChatsPanel({ sessionId, surface, onSelect }: Pr
   const [results, setResults] = useState<ReferenceChat[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -77,7 +79,7 @@ export default function ReferenceChatsPanel({ sessionId, surface, onSelect }: Pr
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [endpoint, query]);
+  }, [endpoint, query, reload]);
 
   return (
     <section
@@ -128,7 +130,16 @@ export default function ReferenceChatsPanel({ sessionId, surface, onSelect }: Pr
       </div>
 
       {error ? (
-        <p className="px-3 py-8 text-center text-sm text-[#9a4438]">{error}</p>
+        <ReloadableFetchError
+          message={error}
+          onReload={() => {
+            setError(null);
+            setLoading(true);
+            setReload((current) => current + 1);
+          }}
+          label="Reload chats"
+          className="px-3 py-8 text-center text-sm"
+        />
       ) : loading && results.length === 0 ? (
         <div className="space-y-2" aria-label="Loading recent chats">
           {[0, 1, 2].map((row) => (

@@ -14,6 +14,7 @@ import { createPortal } from 'react-dom';
 import { encodePcm16Wav } from '@/lib/speech/live-dictation';
 import { describeMicrophoneBlock, type MicrophoneFix } from '@/lib/speech/microphone-access';
 import { playSpeechBlob, stopSpeechPlayback } from '@/lib/speech/playback';
+import { prepareLocalSpeech, speechErrorMessage } from '@/lib/speech/prepare-client';
 import {
   advanceVoiceTurn,
   frameLevel,
@@ -274,14 +275,8 @@ export default function VoiceConversationOverlay({
       const prepareController = new AbortController();
       requestAbortRef.current.add(prepareController);
       try {
-        const response = await fetch('/api/speech/prepare', {
-          method: 'POST',
-          signal: prepareController.signal,
-        });
+        await prepareLocalSpeech(prepareController.signal);
         if (session !== sessionRef.current) return;
-        if (!response.ok) {
-          throw new Error(await responseMessage(response, 'Local speech could not start.'));
-        }
         serviceReady = true;
         setNote(null);
       } finally {
@@ -356,7 +351,7 @@ export default function VoiceConversationOverlay({
       if (caught instanceof DOMException && caught.name === 'NotAllowedError') {
         setBlocked(await describeMicrophoneBlock(caught));
       } else if (!serviceReady) {
-        setNote(caught instanceof Error ? caught.message : 'Local speech could not start.');
+        setNote(speechErrorMessage(caught, 'Local speech could not start.'));
         enterStage('unavailable');
         return;
       } else {

@@ -14,6 +14,15 @@ export interface ConversationSearchMessage {
   content: string;
 }
 
+export interface ConversationReferenceMessage extends ConversationSearchMessage {
+  createdAt: string;
+}
+
+export interface BoundedConversationReferenceMessage
+  extends ConversationReferenceMessage {
+  truncated: boolean;
+}
+
 export interface ConversationSearchCandidate {
   id: string;
   title: string;
@@ -51,6 +60,55 @@ const STOP_WORDS = new Set([
 const MAX_MESSAGES_SCANNED = 60;
 const MAX_MESSAGE_CHARS = 2_000;
 const SNIPPET_RADIUS = 70;
+
+/**
+ * Keep a referenced transcript useful without letting an old chat dominate the
+ * live turn. Newest messages win the total budget, then their original order is
+ * restored. Callers remain responsible for redacting sensitive content before
+ * passing messages here.
+ */
+export function boundedConversationReferenceMessages(
+  messages: readonly ConversationReferenceMessage[],
+  options: {
+    maxMessages?: number;
+    maxMessageCharacters?: number;
+    maxTotalCharacters?: number;
+  } = {},
+): BoundedConversationReferenceMessage[] {
+  const maxMessages = Math.max(1, Math.min(30, options.maxMessages ?? 30));
+  const maxMessageCharacters = Math.max(
+    1,
+    Math.min(4_000, options.maxMessageCharacters ?? 4_000),
+  );
+  const maxTotalCharacters = Math.max(
+    1,
+    Math.min(30_000, options.maxTotalCharacters ?? 30_000),
+  );
+  let used = 0;
+  const selected: BoundedConversationReferenceMessage[] = [];
+
+  for (const message of [...messages].slice(-maxMessages).reverse()) {
+    // Preserve paragraphs and code blocks: this is reference context, not the
+    // one-line search snippet produced below.
+    const normalized = message.content.trim();
+    if (!normalized) continue;
+    const remaining = maxTotalCharacters - used;
+    if (remaining <= 0) break;
+    const content = normalized.slice(
+      0,
+      Math.min(maxMessageCharacters, remaining),
+    );
+    selected.push({
+      role: message.role,
+      content,
+      createdAt: message.createdAt,
+      truncated: content.length < normalized.length,
+    });
+    used += content.length;
+  }
+
+  return selected.reverse();
+}
 
 function tokenize(value: string): string[] {
   return (value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(

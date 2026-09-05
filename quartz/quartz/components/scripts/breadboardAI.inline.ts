@@ -42,6 +42,10 @@ interface QuartzTextSelection {
   text: string
 }
 
+interface QuartzTopologyInvestigationEvent {
+  prompt?: unknown
+}
+
 // Mirrors the dashboard's slash-command token grammar: one or more leading
 // "/token" selectors, each followed by whitespace or end of text.
 const LEADING_COMMAND_RUN = /^(?:\/[a-z0-9][a-z0-9_.:-]*(?:\s+|$))+/i
@@ -189,6 +193,20 @@ function setupPanel(root: HTMLElement) {
   }
   window.addEventListener("breadboard:assistant-ask-here", onAskHere)
   window.addCleanup(() => window.removeEventListener("breadboard:assistant-ask-here", onAskHere))
+  const onTopologyInvestigation = (event: Event) => {
+    const detail = (event as CustomEvent<QuartzTopologyInvestigationEvent>).detail
+    const prompt = typeof detail?.prompt === "string" ? detail.prompt.trim().slice(0, 1_600) : ""
+    if (!prompt) return
+    if (panel!.hidden) openPanel()
+    input!.value = prompt
+    syncCommandTint()
+    input!.focus()
+    input!.setSelectionRange(prompt.length, prompt.length)
+  }
+  window.addEventListener("breadboard:assistant-investigate-topology", onTopologyInvestigation)
+  window.addCleanup(() =>
+    window.removeEventListener("breadboard:assistant-investigate-topology", onTopologyInvestigation),
+  )
   selectionCancel?.addEventListener("click", () => {
     clearSelectionQuestion()
     input!.focus()

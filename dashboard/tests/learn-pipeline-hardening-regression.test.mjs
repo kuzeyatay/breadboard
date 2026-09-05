@@ -76,6 +76,58 @@ const sourceVisualsAst = ts.createSourceFile(
   ts.ScriptKind.TS,
 );
 
+test("Learn planning outwaits the provider websocket and receipt grace by default", () => {
+  assert.match(
+    learnSource,
+    /const LEARN_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT_MS\s*=\s*[\s\S]*?CHATMOCK_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT[\s\S]*?\* 1_000;/,
+    "the provider websocket lifetime must have one canonical millisecond value",
+  );
+  assert.match(
+    learnSource,
+    /const LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS\s*=\s*LEARN_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT_MS \+ 60_000;/,
+    "started receipts must retain their final-resolution grace",
+  );
+  assert.match(
+    learnSource,
+    /const LEARN_PLANNING_TIMEOUT_MS = envPositiveInt\(\s*"LEARN_PLANNING_TIMEOUT_MS",\s*LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS \+ 60_000,\s*\);/,
+    "the default client timeout must expire after the authoritative receipt window",
+  );
+});
+
+test("Learn signs visual routing only after the final LUC persistence normalization", () => {
+  const routeProjectionAt = learnSource.indexOf(
+    "learningUnits = applyVisualizationRoutesToLearningUnits(learningUnits, visualizationPlan);",
+  );
+  const persistenceNormalizationAt = learnSource.indexOf(
+    "learningUnits = normalizeLearningUnits(\n      { learningUnits },\n      { modelAuthoredOnly: true },\n    );",
+    routeProjectionAt,
+  );
+  const finalPlanAt = learnSource.indexOf(
+    "visualizationPlan = buildFinalVisualizationPlanFromRoutedContracts({",
+    routeProjectionAt,
+  );
+  const ledgerAt = learnSource.indexOf(
+    "const planningExecutabilityLedger = buildVisualContractExecutabilityLedger({",
+    routeProjectionAt,
+  );
+  const persistenceAt = learnSource.indexOf(
+    "persistRoutedVisualPlans(clusterPath(contentPath, gardenId), learningUnits);",
+    routeProjectionAt,
+  );
+
+  assert.ok(routeProjectionAt >= 0, "the mechanical visual route projection must exist");
+  assert.ok(
+    persistenceNormalizationAt > routeProjectionAt,
+    "the routed LUC must be canonicalized after mechanical route projection",
+  );
+  assert.ok(
+    finalPlanAt > persistenceNormalizationAt &&
+      ledgerAt > finalPlanAt &&
+      persistenceAt > ledgerAt,
+    "the final plan, signed ledger, and persistence must all consume the canonical routed LUC",
+  );
+});
+
 function namedFunction(name) {
   const declaration = learnAst.statements.find(
     (statement) =>
@@ -2494,6 +2546,8 @@ describe("cross-process mutation fences", () => {
 
     const retrySource = sourceOf(namedFunction("recoverPendingLearnPublications"));
     assert.match(retrySource, /unresolvedLearnJob\(publication\.garden_id\)/);
+    assert.match(retrySource, /JOIN clusters AS cluster ON cluster\.slug = retry\.garden_id/);
+    assert.match(retrySource, /userId:\s*publication\.user_id/);
   });
 
   test("repair promotion and Clear restore both recheck fenced ownership", () => {
@@ -2608,6 +2662,7 @@ describe("startup cleanup journals", () => {
       /cancellationCleanupPending[\s\S]*?latest\.currentStep === LEARN_CANCELLATION_REQUESTED_STEP/,
     );
     assert.match(cancelSource, /cancellationCleanupPending\s*\?\s*latest\s*:/);
+    assert.match(cancelSource, /cleanupLearnArtifactsAfterCancel\(\{[\s\S]*?userId,/);
 
     const recoverySource = sourceOf(namedFunction("recoverAbandonedLearnJobs"));
     assert.match(

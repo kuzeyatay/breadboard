@@ -5,6 +5,11 @@ import VoiceSampleRecorder from "@/app/components/voice-sample-recorder";
 import { calibrationPassage } from "@/lib/speech/calibration";
 import { decodedRecordingAsWav } from "@/lib/speech/live-dictation";
 import { playSpeechBlob, stopSpeechPlayback } from "@/lib/speech/playback";
+import {
+  fetchSpeechApi,
+  prepareLocalSpeech,
+  speechErrorMessage,
+} from "@/lib/speech/prepare-client";
 import { nextSpeechStep, requiredModelName, voiceProfileReady } from "@/lib/speech/voice-model";
 
 type SpeechSettings = {
@@ -179,6 +184,7 @@ export default function SettingsSpeech() {
   const [status, setStatus] = useState<SpeechStatus | null>(null);
   const [draft, setDraft] = useState<SpeechSettings | null>(null);
   const [loading, setLoading] = useState(true);
+  const [preparing, setPreparing] = useState(false);
   const [working, setWorking] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
@@ -202,7 +208,7 @@ export default function SettingsSpeech() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/speech/status", { cache: "no-store" });
+      const response = await fetchSpeechApi("/api/speech/status", { cache: "no-store" });
       if (!response.ok) throw new Error(await apiError(response));
       const next = (await response.json()) as SpeechStatus;
       if (!mountedRef.current) return;
@@ -215,25 +221,44 @@ export default function SettingsSpeech() {
         setAddingVoice(next.profiles.length === 0);
       }
     } catch (error) {
-      if (mountedRef.current) setNotice(error instanceof Error ? error.message : "Speech settings could not be loaded.");
+      if (mountedRef.current) {
+        setNotice(speechErrorMessage(error, "Speech settings could not be loaded."));
+      }
     } finally {
       if (mountedRef.current) setLoading(false);
     }
   }, []);
 
+  const prepare = useCallback(async () => {
+    setPreparing(true);
+    setNotice(null);
+    try {
+      await prepareLocalSpeech();
+      if (mountedRef.current) await load();
+    } catch (error) {
+      if (mountedRef.current) {
+        setNotice(speechErrorMessage(error, "Local speech could not start."));
+      }
+    } finally {
+      if (mountedRef.current) setPreparing(false);
+    }
+  }, [load]);
+
   useEffect(() => {
     mountedRef.current = true;
     void load();
+    void prepare();
     return () => {
       mountedRef.current = false;
       stopSpeechPlayback();
     };
-  }, [load]);
+  }, [load, prepare]);
 
   const startup = status?.startup ?? null;
   const installActive = Boolean(
     startup && !SETTLED_STARTUP_PHASES.has(startup.phase) && !startup.stalled,
   );
+  const serviceStarting = preparing || installActive;
   const modelsDownloading = Boolean(status?.models.some((model) => model.downloading));
 
   useEffect(() => {
@@ -596,18 +621,27 @@ export default function SettingsSpeech() {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className={`h-2.5 w-2.5 rounded-full ${status?.available ? "bg-[var(--botanical)]" : stalled || failed ? "bg-[var(--danger)]" : "bg-[#c78b58]"} ${installActive ? "animate-pulse" : ""}`} aria-hidden />
+              <span className={`h-2.5 w-2.5 rounded-full ${status?.available ? "bg-[var(--botanical)]" : stalled || failed ? "bg-[var(--danger)]" : "bg-[#c78b58]"} ${serviceStarting ? "animate-pulse" : ""}`} aria-hidden />
               <h3 className="text-sm font-medium text-[var(--ink-heading)]">Local speech service</h3>
             </div>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
               {status?.available
                 ? `Voicebox is ready${status.health?.gpu_type ? ` on ${status.health.gpu_type}` : ""}. Voice audio and recordings stay on this machine.`
-                : stalled
+                : preparing
+                  ? "Voicebox is starting for Voice settings. The first cold start can take a little while."
+                  : stalled
                   ? "Setup stopped before it finished."
                   : startup?.message || status?.error || "Voicebox is starting with Breadboard."}
             </p>
           </div>
-          <button type="button" onClick={() => void load()} className={secondaryButton} disabled={loading}>Re-check</button>
+          <button
+            type="button"
+            onClick={() => void (status?.available ? load() : prepare())}
+            className={secondaryButton}
+            disabled={loading || preparing}
+          >
+            {preparing ? "Starting…" : status?.available ? "Re-check" : "Start"}
+          </button>
         </div>
         {!status?.available ? (
           <div className="mt-3 space-y-2 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-3 text-xs leading-5 text-[var(--ink-muted)]">

@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureHermesSourceHook } from "./hermes-python-source-hook.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const maximumManifestBytes = 4 * 1024 * 1024;
@@ -258,8 +259,9 @@ function inspectClosureTarget(runtimeRoot, entries, target, { allowMissing }) {
 
 /**
  * Prepares only missing reviewed hot-runtime groups, then proves the complete
- * manifest-derived closure again. Existing complete runtimes are never spawned
- * or rewritten, while links, hard links, non-files, and unknown mappings fail.
+ * manifest-derived closure again. Cached interpreters/dependencies are reused;
+ * the small source-selection hook is repaired independently. Links, hard links,
+ * non-files, and unknown mappings fail before any repair.
  */
 export function prepareHotDevRuntimes({
   manifestPath = path.join(desktopRoot, "runtime-v2", "manifests", "services.json"),
@@ -277,7 +279,16 @@ export function prepareHotDevRuntimes({
 
   const closure = deriveHotRuntimeClosure(readServicesManifest(manifestPath));
   const requiredTargets = targetOrder(closure);
-  const missingTargets = requiredTargets.filter((target) =>
+  const initiallyMissing = requiredTargets.filter((target) =>
+    inspectClosureTarget(runtimeRoot, closure, target, { allowMissing: true }),
+  );
+  // Cached dependencies are reusable; their old app-source selector is not.
+  // Migrate it even when no download/reassembly is necessary.
+  const pythonRoot = path.join(runtimeRoot, "runtimes", "python");
+  if (requiredTargets.includes("python") && fs.existsSync(path.join(pythonRoot, "python.exe"))) {
+    ensureHermesSourceHook(pythonRoot);
+  }
+  const missingTargets = initiallyMissing.filter((target) =>
     inspectClosureTarget(runtimeRoot, closure, target, { allowMissing: true }),
   );
   const preparedTargets = [];

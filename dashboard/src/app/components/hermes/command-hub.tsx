@@ -84,6 +84,7 @@ import {
 import SkillsCatalogPanel from "./skills-catalog-panel";
 import WorkflowTemplatesPanel from "./workflow-templates-panel";
 import ReferenceChatsPanel from "./reference-chats-panel";
+import ReloadableFetchError from "@/app/components/reloadable-fetch-error";
 import FavoriteBox, {
   DEFAULT_CAPABILITY_HIGHLIGHT_COLOR,
   capabilityHighlightStyle,
@@ -1602,7 +1603,12 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                     }}
                   />
                 ) : loading ? <LoadingRows /> : error ? (
-                  <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center"><p className="text-sm text-[var(--ink)]">{error}</p><button type="button" onClick={() => void loadPalette()} className="mt-3 rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white">Try again</button></div>
+                  <ReloadableFetchError
+                    message={error}
+                    onReload={() => void loadPalette(true)}
+                    label="Reload capabilities"
+                    className="min-h-48 px-6 py-8 text-center text-sm"
+                  />
                 ) : tab === "agent" && !detail ? (
                   <>
                     <ul role="listbox" aria-label="Agents" className="divide-y divide-[var(--line)]">

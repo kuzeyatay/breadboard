@@ -78,7 +78,7 @@ test("structure edits are confined to a signed-in owner of the Garden", () => {
   assert.ok(structure.length > 0, "structure executor not found");
   assert.match(
     structure,
-    /token\.surface !== "dashboard_terminal" && token\.surface !== "garden_chat"/,
+    /token\.surface !== "dashboard_terminal"\s*&&\s*token\.surface !== "garden_chat"/,
   );
   assert.match(structure, /token\.userId !== cluster\.user_id/);
   // Only the read is exempt from the ownership check.
@@ -108,9 +108,26 @@ test("agent structure edits run through the same service as the authoring UI", (
   );
   assert.match(library, /publishQuartzAfterMutation/);
   assert.match(library, /refreshClusterIndex/);
+  assert.match(library, /acquireGardenMutationLeaseWithIngestionRecovery/);
   // Containment: nothing may resolve outside the Garden directory.
   assert.match(library, /Invalid folder path/);
   assert.match(library, /startsWith\(clusterDir \+ path\.sep\)/);
+});
+
+test("folder creation retries while a safe Garden mutation lease is busy", () => {
+  const route = source("src/app/api/folders/route.ts");
+  const garden = source("src/app/garden/[clusterSlug]/garden-client.tsx");
+  const library = source("src/app/garden/library-garden-client.tsx");
+
+  assert.match(route, /isGardenMutationBusyError/);
+  assert.match(route, /code: error\.code/);
+  assert.match(route, /retryable: true/);
+  assert.match(route, /retryAfterMs: 2_000/);
+  assert.match(route, /'Retry-After': '2'/);
+  for (const client of [garden, library]) {
+    assert.match(client, /retryable: body\.retryable === true/);
+    assert.match(client, /retryAfterMs: body\.retryAfterMs/);
+  }
 });
 
 test("the skill demands a plan and an explicit yes before destroying anything", () => {

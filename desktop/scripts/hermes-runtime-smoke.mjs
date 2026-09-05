@@ -8,12 +8,16 @@ import { fileURLToPath } from "node:url";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const python = path.join(desktopRoot, "build-resources", "runtimes", "python", "python.exe");
-const hermesSource = path.join(
-  desktopRoot,
-  "build-resources",
-  "app-services",
-  "hermes-agent",
-);
+const development = process.argv.includes("--dev");
+const appRoot = development
+  ? path.resolve(desktopRoot, "..")
+  : path.join(desktopRoot, "build-resources", "app-services");
+const hermesSource = path.join(appRoot, "hermes-agent");
+const serviceManifest = JSON.parse(fs.readFileSync(
+  path.join(desktopRoot, "runtime-v2", "manifests", "services.json"), "utf8",
+));
+const launchProfile = serviceManifest.services.find(({ id }) => id === "hermes")
+  .launchProfiles.find(({ modes }) => modes.includes(development ? "lean" : "packaged"));
 
 function allocatePort() {
   return new Promise((resolve, reject) => {
@@ -27,9 +31,10 @@ function allocatePort() {
   });
 }
 
-function waitForSocket(url, timeoutMs = 15_000) {
+function waitForSocket(url, timeoutMs = 15_000, onSocket = () => {}) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url);
+    onSocket(socket);
     const timer = setTimeout(() => {
       socket.close();
       reject(new Error("Hermes WebSocket timed out"));
@@ -45,11 +50,11 @@ function waitForSocket(url, timeoutMs = 15_000) {
   });
 }
 
-function nextFrame(socket, predicate, timeoutMs = 20_000) {
+function nextFrame(socket, predicate, label, timeoutMs = 60_000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error("Hermes JSON-RPC response timed out"));
+      reject(new Error(`Hermes JSON-RPC response timed out: ${label}`));
     }, timeoutMs);
     const onMessage = (event) => {
       let frame;
@@ -116,6 +121,12 @@ if (!fs.existsSync(python) || !fs.existsSync(path.join(hermesSource, "hermes_cli
   throw new Error("Assemble runtimes and app resources before running the Hermes smoke test");
 }
 
+const sourceProbe = spawnSync(python, [path.join(hermesSource, "breadboard_runtime.py"), "--check-source"], {
+  cwd: hermesSource, encoding: "utf8", windowsHide: true, timeout: 30_000,
+});
+if (sourceProbe.status !== 0) throw new Error(`Hermes source preflight failed: ${sourceProbe.stderr}`);
+const expectedSource = JSON.parse(sourceProbe.stdout);
+
 const port = await allocatePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const token = crypto.randomBytes(32).toString("base64url");
@@ -129,8 +140,13 @@ fs.writeFileSync(
     '  default: "gpt-5.6-sol"',
     "  provider: custom",
     '  base_url: "http://127.0.0.1:8765/v1"',
+    "  context_length: 256000",
     "toolsets:",
     "  - breadboard",
+    "  - web",
+    "web:",
+    "  search_backend: ddgs",
+    "  extract_backend: fetch",
     "memory:",
     "  memory_enabled: false",
     "  user_profile_enabled: false",
@@ -145,17 +161,12 @@ fs.writeFileSync(
 const logChunks = [];
 const child = spawn(
   python,
-  [
-    "-m",
-    "hermes_cli.main",
-    "serve",
-    "--isolated",
-    "--host",
-    "127.0.0.1",
-    "--port",
-    String(port),
-    "--no-open",
-  ],
+  launchProfile.arguments.map((argument) => {
+    if (argument.kind === "literal") return argument.value;
+    if (argument.kind === "app-path") return path.join(appRoot, argument.path);
+    if (argument.kind === "runtime-value" && argument.value === "service-port") return String(port);
+    throw new Error(`Unsupported Hermes launch argument: ${argument.kind}`);
+  }),
   {
     cwd: hermesSource,
     windowsHide: true,
@@ -182,6 +193,16 @@ for (const stream of [child.stdout, child.stderr]) {
 
 try {
   await waitForHealthy(baseUrl, child);
+  const sourceResponse = await fetch(`${baseUrl}/api/runtime/source`, {
+    headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000),
+  });
+  const runningSource = sourceResponse.ok ? await sourceResponse.json() : null;
+  if (runningSource?.sourceRoot !== expectedSource.sourceRoot ||
+      runningSource?.sourceSha256 !== expectedSource.sourceSha256) {
+    throw new Error("Healthy Hermes loaded the wrong or outdated source; refusing to accept the runtime.");
+  }
+  const publicSource = await fetch(`${baseUrl}/api/runtime/source`, { signal: AbortSignal.timeout(5_000) });
+  if (publicSource.status !== 401) throw new Error("Hermes source identity must require authentication.");
 
   // The gateway rejects a client without the unguessable server-only token.
   let unauthorizedRejected = false;
@@ -213,14 +234,26 @@ try {
     // The server accepted then immediately closed with its explicit 4401.
   }
 
+  let ready;
   const socket = await waitForSocket(
     `${baseUrl.replace("http:", "ws:")}/api/ws?token=${encodeURIComponent(token)}`,
+    15_000,
+    (connectingSocket) => {
+      ready = nextFrame(connectingSocket,
+        (frame) => frame?.method === "event" && frame?.params?.type === "gateway.ready",
+        "gateway.ready");
+      // A failed handshake is reported by waitForSocket; don't leak an
+      // unhandled rejection from its companion readiness listener.
+      ready.catch(() => {});
+    },
   );
   try {
-    await nextFrame(
-      socket,
-      (frame) => frame?.method === "event" && frame?.params?.type === "gateway.ready",
-    );
+    await ready;
+    const created = nextFrame(socket, (frame) => frame?.id === "smoke-create", "session.create");
+    const initialized = nextFrame(socket,
+      (frame) => frame?.method === "event" && ["session.info", "error"].includes(frame?.params?.type),
+      "agent initialization");
+    initialized.catch(() => {});
     socket.send(JSON.stringify({
       jsonrpc: "2.0",
       id: "smoke-create",
@@ -237,13 +270,37 @@ try {
         close_on_disconnect: false,
       },
     }));
-    const response = await nextFrame(socket, (frame) => frame?.id === "smoke-create");
+    const response = await created;
     if (
       response.error ||
       !response.result?.session_id ||
       !response.result?.stored_session_id
     ) {
       throw new Error(`Hermes session creation failed: ${response.error?.message ?? "invalid result"}`);
+    }
+    // Creation is lazy. Until session.info arrives, tools.list would inspect
+    // the default CLI toolsets rather than this Breadboard session's toolsets.
+    const initialization = await initialized;
+    if (initialization.params.type === "error") {
+      throw new Error(`Hermes initialization failed: ${initialization.params.payload?.message}`);
+    }
+    const toolsResponse = nextFrame(socket, (frame) => frame?.id === "smoke-tools", "tools.list");
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "smoke-tools",
+      method: "tools.list",
+      params: { session_id: response.result.session_id },
+    }));
+    const available = await toolsResponse;
+    // tools.show intentionally omits deferred schemas. The enabled toolset's
+    // resolved catalog is the source searched by the tool_search bridge.
+    const toolNames = (available.result?.toolsets ?? [])
+      .filter(({ name, enabled }) => name === "breadboard" && enabled)
+      .flatMap(({ tools }) => tools);
+    if (available.error || !toolNames.includes("weather_forecast")) {
+      throw new Error(available.error
+        ? `Hermes tool discovery failed: ${available.error.message}`
+        : `The running Hermes session is missing weather_forecast (${toolNames.length} tools); check its app-source authority.`);
     }
   } finally {
     socket.close();

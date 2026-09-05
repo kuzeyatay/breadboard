@@ -8,7 +8,12 @@ import {
   getPublicClusters,
 } from "@/app/actions/clusters";
 import { listOrganizations } from "@/lib/organizations/store";
-import { getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
+import {
+  getNavbarFlowers,
+  getNavbarShortcuts,
+} from "@/lib/profile/navbar-shortcuts-store.ts";
+import { preparePrivateQuartzIndexes } from "@/lib/quartz-garden-index";
+import { publishQuartzIndexesIfIdle } from "@/lib/quartz-publish";
 import type { TerminalPanel } from "@/app/components/hermes/terminal-sidebar";
 import DashboardClient from "./dashboard-client";
 
@@ -40,6 +45,10 @@ export default async function DashboardPageShell({
   const publicClusters = await getPublicClusters(userId);
   const organizationClusters = await getOrganizationClusters(userId);
   const clusterFolders = await getClusterFolders(userId);
+  const privateGardenIndexes = preparePrivateQuartzIndexes(userId);
+  if (privateGardenIndexes.some((index) => index.publishRequired)) {
+    publishQuartzIndexesIfIdle("prepare dashboard cluster garden indexes", userId);
+  }
   const organizations = listOrganizations(userId).map((organization) => ({
     id: organization.id,
     name: organization.name,
@@ -55,6 +64,7 @@ export default async function DashboardPageShell({
       organizations={organizations}
       initialClusterFolders={clusterFolders}
       navbarShortcuts={getNavbarShortcuts(userId)}
+      showNavbarFlowers={getNavbarFlowers(userId)}
       initialTerminalPanel={initialTerminalPanel}
       initialTerminalChatId={initialTerminalChatId}
     />

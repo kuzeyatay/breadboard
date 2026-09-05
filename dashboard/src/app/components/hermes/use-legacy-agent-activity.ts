@@ -16,6 +16,10 @@ import {
   submitClarificationAnswer,
   submitPermissionDecision,
 } from "./permission-client";
+import {
+  attachmentOnlyMessageText,
+  type ChatAttachment,
+} from "@/lib/chat-attachments.ts";
 
 type LegacyRuntimeEvent = Record<string, unknown> & { type?: string };
 
@@ -28,14 +32,18 @@ export function useLegacyAgentActivity() {
     useState<ClarificationPrompt | null>(null);
   const runtimeSessionId = useRef<number | null>(null);
   const runtimeRunId = useRef<string | null>(null);
+  // Garden Chat knows its canonical conversation before the runtime event
+  // arrives. Keep that reference so Stop works during document preparation.
+  const pendingSessionReference = useRef<string | number | null>(null);
   const requestController = useRef<AbortController | null>(null);
   const [yoloMode] = useYoloMode();
 
-  const start = useCallback(() => {
+  const start = useCallback((sessionReference?: string | number | null) => {
     const controller = new AbortController();
     requestController.current = controller;
     runtimeSessionId.current = null;
     runtimeRunId.current = null;
+    pendingSessionReference.current = sessionReference ?? null;
     setPendingPermission(null);
     setPendingClarification(null);
     setConnection("connecting");
@@ -49,6 +57,11 @@ export function useLegacyAgentActivity() {
       },
     ]);
     return controller.signal;
+  }, []);
+
+  const bindSession = useCallback((reference: string | number | null) => {
+    if (!requestController.current || reference === null) return;
+    pendingSessionReference.current = reference;
   }, []);
 
   const handleEvent = useCallback((
@@ -195,6 +208,18 @@ export function useLegacyAgentActivity() {
       );
       return;
     }
+    if (
+      event.type === "permission" &&
+      event.preflight &&
+      typeof event.preflight === "object" &&
+      !Array.isArray(event.preflight)
+    ) {
+      // A capability preflight has no running Hermes request to approve. Its
+      // owning surface creates the scoped grant and retries the paused turn;
+      // posting this id to /api/hermes/permissions only records a decision
+      // against a run that was already cancelled.
+      return;
+    }
     if (event.type === "permission") {
       const requestId =
         typeof event.requestId === "string" ? event.requestId : "";
@@ -273,6 +298,7 @@ export function useLegacyAgentActivity() {
     }
     requestController.current = null;
     runtimeRunId.current = null;
+    pendingSessionReference.current = null;
     setPendingPermission(null);
     setConnection(failed ? "error" : "idle");
     setActivities((current) =>
@@ -288,15 +314,20 @@ export function useLegacyAgentActivity() {
     );
   }, []);
 
-  const abort = useCallback(() => {
+  const abort = useCallback(async (sessionReference?: string | number | null) => {
     requestController.current?.abort();
-    const id = runtimeSessionId.current;
-    if (id)
-      void fetch(`/api/hermes/sessions/${id}/abort`, {
-        method: "POST",
-      }).catch(() => undefined);
+    const id =
+      runtimeSessionId.current ??
+      sessionReference ??
+      pendingSessionReference.current;
+    const abortRequest = id
+      ? fetch(`/api/hermes/sessions/${id}/abort`, {
+          method: "POST",
+        }).catch(() => undefined)
+      : null;
     setPendingPermission(null);
     runtimeRunId.current = null;
+    pendingSessionReference.current = null;
     setConnection("idle");
     setActivities((current) =>
       current.map((item) =>
@@ -309,12 +340,18 @@ export function useLegacyAgentActivity() {
           : item,
       ),
     );
+    // Callers that immediately replace the turn need the server-side run to be
+    // closed before they dispatch its successor.
+    await abortRequest;
   }, []);
 
-  const steer = useCallback(async (text: string): Promise<boolean> => {
+  const steer = useCallback(async (
+    text: string,
+    attachments: readonly ChatAttachment[] = [],
+  ): Promise<boolean> => {
     const sessionId = runtimeSessionId.current;
     const runId = runtimeRunId.current;
-    const trimmed = text.trim();
+    const trimmed = text.trim() || attachmentOnlyMessageText(attachments);
     if (!sessionId || !runId || !trimmed) return false;
 
     const response = await fetch(`/api/hermes/sessions/${sessionId}/steer`, {
@@ -323,6 +360,7 @@ export function useLegacyAgentActivity() {
       body: JSON.stringify({
         runId,
         text: trimmed,
+        attachments,
         clientRequestId: crypto.randomUUID(),
       }),
     });
@@ -436,6 +474,7 @@ export function useLegacyAgentActivity() {
     pendingPermission,
     pendingClarification,
     start,
+    bindSession,
     handleEvent,
     finish,
     abort,

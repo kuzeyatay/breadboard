@@ -107,6 +107,8 @@ export interface LearnCouncilRetryJobRow {
   model: string | null;
   status: string;
   mode: string;
+  current_step: string | null;
+  error: string | null;
   requires_replan: number | null;
   confirmed_learning_map_id: string | null;
   source_set_hash: string | null;
@@ -482,6 +484,8 @@ const JOB_PROJECTION = `
   j.model,
   j.status,
   j.mode,
+  j.current_step,
+  j.error,
   j.requires_replan,
   j.confirmed_learning_map_id,
   j.source_set_hash,
@@ -493,6 +497,36 @@ const JOB_PROJECTION = `
   j.updated_at,
   (SELECT COUNT(*) FROM learn_versions v WHERE v.job_id = j.id) AS version_count
 `;
+
+const GENERATION_SETUP_FAILED_BEFORE_MODEL_TRACKING_STEP =
+  "Generation could not start";
+export const LEARN_COUNCIL_PRE_DISPATCH_FAILURE_STEP =
+  "Lesson generation failed before first Council dispatch";
+const LEGACY_ABSENCE_PRE_DISPATCH_ERROR =
+  "Prior exact Learn jobs are not durably quiescent or have no completed failure boundary; 404 absence cannot authorize a model request.";
+
+/** Positive terminal-row evidence that a strict generation worker stopped
+ * before it could issue its first ordinary Council request. Callers must also
+ * verify that the job has no native planning or ordinary receipt. The setup
+ * step is written only by the pre-model-tracking setup catch; the dedicated
+ * failure step is written after a strict recovery error with no native
+ * ordinary checkpoint. The exact legacy error recognizes jobs written by the
+ * immediately preceding runtime, before the dedicated step existed. */
+export function hasDurableLearnCouncilNoDispatchBoundary(
+  job: LearnCouncilRetryJobRow,
+): boolean {
+  if (job.status !== "failed" || Number(job.version_count) !== 0) return false;
+  if (job.current_step === GENERATION_SETUP_FAILED_BEFORE_MODEL_TRACKING_STEP) {
+    return true;
+  }
+  if (job.current_step === LEARN_COUNCIL_PRE_DISPATCH_FAILURE_STEP) return true;
+  return (
+    job.error === LEGACY_ABSENCE_PRE_DISPATCH_ERROR &&
+    Boolean(job.current_step?.startsWith(
+      "Lesson generation failed; last internal step:",
+    ))
+  );
+}
 
 export function learnCouncilRetryJob(
   database: Database.Database,
@@ -709,6 +743,8 @@ export function priorLearnCouncilCheckpoints(
             j.model AS job__model,
             j.status AS job__status,
             j.mode AS job__mode,
+            j.current_step AS job__current_step,
+            j.error AS job__error,
             j.requires_replan AS job__requires_replan,
             j.confirmed_learning_map_id AS job__confirmed_learning_map_id,
             j.source_set_hash AS job__source_set_hash,
@@ -748,6 +784,10 @@ export function priorLearnCouncilCheckpoints(
       model: raw.job__model === null ? null : String(raw.job__model),
       status: String(raw.job__status),
       mode: String(raw.job__mode),
+      current_step: raw.job__current_step === null
+        ? null
+        : String(raw.job__current_step),
+      error: raw.job__error === null ? null : String(raw.job__error),
       requires_replan: raw.job__requires_replan === null
         ? null
         : Number(raw.job__requires_replan),

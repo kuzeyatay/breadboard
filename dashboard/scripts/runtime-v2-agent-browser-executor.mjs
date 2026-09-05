@@ -21,12 +21,15 @@ const MODEL_TIMEOUT_MS = 120_000;
 const CLOSE_TIMEOUT_MS = 15_000;
 const SCREENSHOT_TIMEOUT_MS = 15_000;
 const AUTH_PROBE_TIMEOUT_MS = 15_000;
+const DESKTOP_BROWSER_CONNECT_TIMEOUT_MS = 15_000;
+const DESKTOP_BROWSER_RECEIPT_MAX_BYTES = 4 * 1024;
 const APPROVAL_POLL_MS = 200;
 const IDENTIFIER = /^[A-Za-z0-9_-]{1,128}$/u;
 const ACTION_ID = /^act_[0-9a-f]{32}$/u;
 const SCREENSHOT_ID = /^[0-9]{1,6}$/u;
 const APPROVAL_MODES = new Set(["sensitive_actions", "every_action", "none"]);
 const ENGINES = new Set(["chrome", "lightpanda"]);
+const BROWSER_MODES = new Set(["desktop", "external"]);
 const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted"]);
 const AUTH_PROBE_ACTIONS = new Set([
   "open",
@@ -347,6 +350,7 @@ export function validateRuntimeV2AgentBrowserRequest(value) {
       "approvalMode",
       "allowedDomains",
       "engine",
+      "browserMode",
       "agentBrowserEntry",
       "browserExecutable",
       "profilePath",
@@ -366,7 +370,11 @@ export function validateRuntimeV2AgentBrowserRequest(value) {
     !Array.isArray(value.allowedDomains) ||
     value.allowedDomains.length > 100 ||
     value.allowedDomains.some((domain) => !boundedString(domain, 253)) ||
-    !ENGINES.has(value.engine)
+    !ENGINES.has(value.engine) ||
+    !BROWSER_MODES.has(value.browserMode) ||
+    (value.browserMode === "desktop" &&
+      (value.browserExecutable !== null || value.profilePath !== null)) ||
+    (value.browserMode === "external" && value.browserExecutable === null)
   ) {
     fail("The Runtime V2 Agent Browser request is invalid.");
   }
@@ -380,16 +388,20 @@ export function validateRuntimeV2AgentBrowserRequest(value) {
     approvalMode: value.approvalMode,
     allowedDomains: value.allowedDomains.map((domain) => domain.trim().toLowerCase()),
     engine: value.engine,
+    browserMode: value.browserMode,
     agentBrowserEntry: validateDirectFile(
       value.agentBrowserEntry,
       "The agent-browser entrypoint",
       /^agent-browser\.js$/iu,
     ),
-    browserExecutable: validateDirectFile(
-      value.browserExecutable,
-      "The browser executable",
-      /^(?:chrome|msedge|microsoft-edge|chromium|chromium-browser|google-chrome|google-chrome-stable)(?:\.exe)?$/iu,
-    ),
+    browserExecutable:
+      value.browserMode === "external"
+        ? validateDirectFile(
+            value.browserExecutable,
+            "The browser executable",
+            /^(?:chrome|msedge|microsoft-edge|chromium|chromium-browser|google-chrome|google-chrome-stable)(?:\.exe)?$/iu,
+          )
+        : null,
     profilePath: validateOptionalProfile(value.profilePath),
   };
 }
@@ -703,16 +715,141 @@ function childEnvironment(current, timeoutMs) {
     TEMP: temporary,
     AGENT_BROWSER_SESSION: current.identity.jobId,
     AGENT_BROWSER_NAMESPACE: current.identity.jobId,
-    AGENT_BROWSER_EXECUTABLE_PATH: current.request.browserExecutable,
-    AGENT_BROWSER_ENGINE: current.request.engine,
+    ...(current.request.browserMode === "desktop"
+      ? { AGENT_BROWSER_CDP: String(current.cdpPort) }
+      : {
+          AGENT_BROWSER_EXECUTABLE_PATH: current.request.browserExecutable,
+          AGENT_BROWSER_ENGINE: current.request.engine,
+        }),
     AGENT_BROWSER_IDLE_TIMEOUT_MS: String(Math.max(30_000, timeoutMs)),
     AGENT_BROWSER_MAX_OUTPUT: String(MAX_TOOL_RESULT_CHARS),
     AGENT_BROWSER_SCREENSHOT_DIR: toolScreenshots,
     AGENT_BROWSER_DOWNLOAD_PATH: downloads,
-    ...(current.request.profilePath
+    ...(current.request.browserMode === "external" && current.request.profilePath
       ? { AGENT_BROWSER_PROFILE: current.request.profilePath }
       : {}),
   };
+}
+
+function validBrowserAgentReceipt(value, current) {
+  return (
+    hasExactKeys(value, [
+      "protocolVersion",
+      "runId",
+      "cdpPort",
+      "targetUrl",
+      "createdAt",
+    ]) &&
+    value.protocolVersion === 1 &&
+    value.runId === current.identity.jobId &&
+    Number.isInteger(value.cdpPort) &&
+    value.cdpPort >= 1_024 &&
+    value.cdpPort <= 65_535 &&
+    value.targetUrl ===
+      `about:blank#breadboard-browser-agent=${current.identity.jobId}` &&
+    typeof value.createdAt === "string" &&
+    Number.isFinite(Date.parse(value.createdAt))
+  );
+}
+
+function browserAgentTargetTabId(output, targetUrl) {
+  let value;
+  try {
+    value = JSON.parse(output);
+  } catch {
+    fail("agent-browser did not return a valid tab inventory for the built-in browser.");
+  }
+  const tabs = value?.data?.tabs;
+  if (!Array.isArray(tabs) || tabs.length > 100) {
+    fail("agent-browser returned an invalid tab inventory for the built-in browser.");
+  }
+  const matches = tabs.filter(
+    (tab) =>
+      tab !== null &&
+      typeof tab === "object" &&
+      tab.type === "page" &&
+      tab.url === targetUrl &&
+      typeof tab.tabId === "string" &&
+      /^t[1-9][0-9]{0,5}$/u.test(tab.tabId),
+  );
+  if (matches.length !== 1) {
+    fail("agent-browser could not select the exact live Breadboard browser tab.");
+  }
+  return matches[0].tabId;
+}
+
+async function waitForDesktopBrowser(current) {
+  const directory = path.join(current.dataRoot, "browser-agent-sessions");
+  const receiptPath = path.join(directory, `${current.identity.jobId}.json`);
+  if (!pathWithin(current.dataRoot, receiptPath)) {
+    fail("The built-in browser session path escaped Runtime authority.");
+  }
+  const deadline = Date.now() + DESKTOP_BROWSER_CONNECT_TIMEOUT_MS;
+  let receipt = null;
+  while (!receipt && Date.now() < deadline) {
+    if (current.signal.aborted) {
+      throw current.signal.reason ?? new DOMException("Aborted", "AbortError");
+    }
+    try {
+      const directoryMetadata = fs.lstatSync(directory);
+      if (!directoryMetadata.isDirectory() || directoryMetadata.isSymbolicLink()) {
+        fail("The built-in browser session directory is invalid.");
+      }
+      const candidate = readBoundedJson(
+        receiptPath,
+        DESKTOP_BROWSER_RECEIPT_MAX_BYTES,
+        "The built-in browser session receipt",
+      );
+      if (!validBrowserAgentReceipt(candidate, current)) {
+        fail("The built-in browser session receipt is invalid.");
+      }
+      receipt = candidate;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      await delay(100, current.signal);
+    }
+  }
+  if (!receipt) {
+    fail("Breadboard could not open the live built-in browser tab for this run.");
+  }
+  current.cdpPort = receipt.cdpPort;
+  const tabInventory = await runChild(
+    current,
+    [
+      current.request.agentBrowserEntry,
+      "--session",
+      current.identity.jobId,
+      "tab",
+      "--json",
+    ],
+    DESKTOP_BROWSER_CONNECT_TIMEOUT_MS,
+  );
+  const tabId = browserAgentTargetTabId(tabInventory, receipt.targetUrl);
+  await runChild(
+    current,
+    [
+      current.request.agentBrowserEntry,
+      "--session",
+      current.identity.jobId,
+      "tab",
+      tabId,
+    ],
+    DESKTOP_BROWSER_CONNECT_TIMEOUT_MS,
+  );
+  const activeUrl = await runChild(
+    current,
+    [
+      current.request.agentBrowserEntry,
+      "--session",
+      current.identity.jobId,
+      "get",
+      "url",
+    ],
+    DESKTOP_BROWSER_CONNECT_TIMEOUT_MS,
+  );
+  if (activeUrl.trim() !== receipt.targetUrl) {
+    fail("agent-browser did not activate the exact live Breadboard browser tab.");
+  }
 }
 
 function runChild(current, args, timeoutMs) {
@@ -1177,6 +1314,10 @@ async function requestApproval(current, info) {
 
 async function closeSession(current) {
   if (current.signal.aborted) return;
+  // `close` owns a browser launched by agent-browser. In CDP mode the browser
+  // is Breadboard itself. The Runtime V2 process-tree reaper owns the isolated
+  // daemon; never risk translating session cleanup into Browser.close here.
+  if (current.request.browserMode === "desktop") return;
   await runChild(
     current,
     [
@@ -1235,6 +1376,12 @@ async function drive(current) {
     task: current.request.task,
     operator: "browser",
   });
+  if (current.request.browserMode === "desktop") {
+    emit(current, "run.status", {
+      message: "Opening a live Breadboard browser tab…",
+    });
+    await waitForDesktopBrowser(current);
+  }
   startScreenshotPoller(current);
   const deadline = Date.now() + current.request.timeoutMs;
   const messages = [
@@ -1428,6 +1575,7 @@ export function createSealedRuntimeV2AgentBrowserExecutor(options) {
     screenshotIndex: 0,
     screenshotLastSize: -1,
     screenshotTotalBytes: 0,
+    cdpPort: null,
   };
   return {
     run: () => drive(current),

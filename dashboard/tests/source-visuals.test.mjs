@@ -57,6 +57,7 @@ test("formula-review logical timeout covers the full bounded transport schedule"
     SOURCE_FORMULA_REVIEW_FINAL_ATTEMPT_ALLOWANCE_MS +
     SOURCE_FORMULA_REVIEW_SCHEDULING_MARGIN_MS;
 
+  assert.equal(SOURCE_FORMULA_REVIEW_FINAL_ATTEMPT_ALLOWANCE_MS, 600_000);
   assert.equal(DEFAULT_SOURCE_FORMULA_REVIEW_TIMEOUT_MS, requiredDefault);
   assert.equal(sourceFormulaReviewTimeoutMs(""), requiredDefault);
   assert.equal(sourceFormulaReviewTimeoutMs("45000"), 45_000);
@@ -674,6 +675,46 @@ test("source visual detection retries every HTTP 502 until the page scan succeed
   }
 });
 
+test("source visual detection falls back to no figures after five transient failures", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-extract-502-fallback-"));
+  const priorDelay = process.env.SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS;
+  process.env.SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS = "1";
+  try {
+    const [page] = seedPageImages(root, "garden", 1);
+    const progress = [];
+    let calls = 0;
+    const client = fakeClient(async () => {
+      calls += 1;
+      throw Object.assign(new Error("HTTP 502 without a request receipt"), {
+        status: 502,
+      });
+    });
+
+    const found = await extractSourceVisuals({
+      client,
+      model: "gpt-5.6-sol",
+      contentPath: root,
+      gardenSlug: "garden",
+      sourceId: "source-502-fallback",
+      sourceIndex: 1,
+      pageImageUrls: [page],
+      onProgress: (step) => progress.push(step),
+    });
+
+    assert.deepEqual(found, []);
+    assert.equal(calls, 5);
+    assert.ok(progress.some((step) => /continuing without source visual scan.*5 failed attempts/i.test(step)));
+    assert.ok(!progress.some((step) => /retry 5/.test(step)));
+  } finally {
+    if (priorDelay === undefined) {
+      delete process.env.SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS;
+    } else {
+      process.env.SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS = priorDelay;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("source analysis retry loop distinguishes its local timeout from job cancellation", () => {
   const source = fs.readFileSync(
     new URL("../src/lib/source-visuals.ts", import.meta.url),
@@ -783,6 +824,121 @@ for (const invalid of [
     }
   });
 }
+
+test("source visual detection self-heals a malformed successful response with a bounded semantic retry", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-extract-semantic-retry-"));
+  try {
+    const [page] = seedPageImages(root, "garden", 1);
+    const progress = [];
+    let calls = 0;
+    const client = fakeClient(async () => {
+      calls += 1;
+      return {
+        choices: [{
+          message: {
+            content: calls === 1
+              ? JSON.stringify([{ ...validDetection(), caption: "" }])
+              : JSON.stringify([validDetection({ caption: "Recovered visual" })]),
+          },
+        }],
+      };
+    });
+
+    const found = await extractSourceVisuals({
+      client,
+      model: "gpt-5.6-sol",
+      contentPath: root,
+      gardenSlug: "garden",
+      sourceId: "source-semantic-retry",
+      sourceIndex: 1,
+      pageImageUrls: [page],
+      onProgress: (step) => progress.push(step),
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(found.length, 1);
+    assert.equal(found[0].caption, "Recovered visual");
+    assert.ok(progress.some((step) => /semantic retry 1 of 2/i.test(step)));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("source visual detection uses a narrow fallback caption after semantic retries are exhausted", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-extract-caption-fallback-"));
+  try {
+    const [page] = seedPageImages(root, "garden", 1);
+    const progress = [];
+    let calls = 0;
+    const client = fakeClient(async () => {
+      calls += 1;
+      return {
+        choices: [{
+          message: {
+            content: JSON.stringify([{ ...validDetection(), caption: "" }]),
+          },
+        }],
+      };
+    });
+
+    const found = await extractSourceVisuals({
+      client,
+      model: "gpt-5.6-sol",
+      contentPath: root,
+      gardenSlug: "garden",
+      sourceId: "source-caption-fallback",
+      sourceIndex: 1,
+      pageImageUrls: [page],
+      onProgress: (step) => progress.push(step),
+    });
+
+    assert.equal(calls, 3);
+    assert.equal(found.length, 1);
+    assert.equal(found[0].caption, "Detected figure on source page 1");
+    assert.ok(progress.some((step) => /used 1 bounded fallback caption on page 1/i.test(step)));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("source visual detection clamps only marginal page-edge bbox overshoot after semantic retries", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-extract-bbox-fallback-"));
+  try {
+    const [page] = seedPageImages(root, "garden", 1);
+    const progress = [];
+    let calls = 0;
+    const client = fakeClient(async () => {
+      calls += 1;
+      return {
+        choices: [{
+          message: {
+            content: JSON.stringify([validDetection({
+              bbox: { x: -0.01, y: 0.05, width: 0.5, height: 0.97 },
+            })]),
+          },
+        }],
+      };
+    });
+
+    const found = await extractSourceVisuals({
+      client,
+      model: "gpt-5.6-sol",
+      contentPath: root,
+      gardenSlug: "garden",
+      sourceId: "source-bbox-fallback",
+      sourceIndex: 1,
+      pageImageUrls: [page],
+      onProgress: (step) => progress.push(step),
+    });
+
+    assert.equal(calls, 3);
+    assert.equal(found.length, 1);
+    assert.deepEqual(found[0].bbox, { x: 0, y: 0.05, width: 0.49, height: 0.95 });
+    assert.ok(progress.some((step) => /clamped 1 marginal page-edge bbox on page 1/i.test(step)));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("extractSourceVisuals preserves every valid detection beyond the old first-12 cap", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-extract-more-than-twelve-"));

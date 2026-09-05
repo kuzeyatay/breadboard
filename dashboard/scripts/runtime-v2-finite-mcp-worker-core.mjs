@@ -436,6 +436,18 @@ export async function runRuntimeV2FiniteMcpWorker({
           identity: launch.identity,
           snapshot: value,
         });
+        // Finite workers already publish bounded percentage checkpoints. Mirror
+        // those values into the Runtime job snapshot so read-only UI status
+        // endpoints can report real progress without reading worker files.
+        if (
+          value !== null &&
+          typeof value === "object" &&
+          Number.isSafeInteger(value.percent) &&
+          value.percent >= 0 &&
+          value.percent <= 100
+        ) {
+          events.progress("processing", value.percent, 100);
+        }
         if (!checkpointPublished) {
           checkpointPublished = true;
           events.checkpoint("checkpoint", launch.checkpointRelativePath);

@@ -18,7 +18,7 @@ import "./ui/card-texture.css";
 import "./buzz-host.css";
 
 export const metadata: Metadata = {
-  title: "Chat — breadboard",
+  title: "Organization — breadboard",
   description:
     "Rooms where your team and their agents work in one shared transcript.",
 };

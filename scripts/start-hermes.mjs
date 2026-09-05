@@ -7,7 +7,7 @@
 // session token. The packaged desktop app supervises its own bundled Hermes;
 // this launcher is the equivalent for `npm run dev` against the repo checkout.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,6 +81,7 @@ writeFileSync(
     "toolsets:",
     "  - breadboard",
     "  - web",
+    "  - computer_use",
     "web:",
     "  search_backend: ddgs",
     // Search without extract is the worst shape research can have: the model
@@ -193,6 +194,23 @@ const existing = await probeService({
   acceptStatuses: [200, 204, 400, 404, 405],
 });
 if (existing === "running") {
+  const expected = spawnSync(resolvePython(), [path.join(hermesDir, "breadboard_runtime.py"), "--check-source"], {
+    cwd: hermesDir, env, encoding: "utf8", windowsHide: true, timeout: 30_000,
+  });
+  let matches = false;
+  try {
+    const proof = JSON.parse(expected.stdout);
+    const response = await fetch(`http://127.0.0.1:${port}/api/runtime/source`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000),
+    });
+    const running = response.ok ? await response.json() : null;
+    matches = expected.status === 0 && running?.sourceRoot === proof.sourceRoot &&
+      running?.sourceSha256 === proof.sourceSha256;
+  } catch { /* Missing or stale identity must never authorize adoption. */ }
+  if (!matches) {
+    console.error("[hermes] The existing runtime's source is outdated or cannot be verified. Restart it before retrying; it was left running.");
+    process.exit(1);
+  }
   console.log(`[hermes] Already running and healthy on 127.0.0.1:${port} — reusing it.`);
   process.exit(0);
 }
@@ -207,8 +225,8 @@ if (existing === "foreign") {
 
 const child = spawn(
   resolvePython(),
-  ["-m", "hermes_cli.main", "serve", "--isolated", "--host", "127.0.0.1", "--port", port, "--no-open"],
-  { cwd: hermesDir, env, stdio: "inherit" },
+  [path.join(hermesDir, "breadboard_runtime.py"), "serve", "--isolated", "--host", "127.0.0.1", "--port", port, "--no-open"],
+  { cwd: hermesDir, env, stdio: "inherit", windowsHide: true },
 );
 
 child.on("error", (error) => {

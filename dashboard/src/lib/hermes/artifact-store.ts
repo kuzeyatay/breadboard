@@ -17,6 +17,10 @@ import {
 import { isChatHighlight } from "../conversations/highlights.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
 import { scrubFileInPlaceViaRuntime } from "../watermarks/scrub-file.ts";
+import {
+  markdownIntegrityIssue,
+  normalizeProducedMarkdown,
+} from "../markdown-safety.ts";
 import type { WatermarkRuntimeControl } from "../runtime-v2/watermark-job.ts";
 import {
   renderMarkdownArtifactViaRuntime,
@@ -228,11 +232,23 @@ function publicError(value: string | null): { code: string; message: string } | 
  * is actually stored, and it only ever removes invisible characters: no visible
  * character, no code, no math and no anchor is touched. See scrub-text.ts.
  */
-function validateContent(content: unknown): string {
+function validateContent(content: unknown, rendererId?: string): string {
   if (typeof content !== "string") {
     throw new ArtifactStoreError(400, "invalid_artifact_content", "Artifact content must be text for this renderer.");
   }
-  const clean = scrubbed(content);
+  // Repair JSON escape damage before the generic scrubber sees it. In
+  // particular, removing a form-feed first would turn `\f` + `rac` into the
+  // unrecoverable plain text `rac`.
+  const normalized = rendererId === "markdown"
+    ? normalizeProducedMarkdown(content)
+    : content;
+  if (rendererId === "markdown") {
+    const issue = markdownIntegrityIssue(normalized);
+    if (issue) {
+      throw new ArtifactStoreError(400, "invalid_markdown_encoding", issue);
+    }
+  }
+  const clean = scrubbed(normalized);
   if (Buffer.byteLength(clean, "utf8") > MAX_ARTIFACT_CONTENT_BYTES) {
     throw new ArtifactStoreError(413, "artifact_too_large", `Artifact content exceeds ${MAX_ARTIFACT_CONTENT_BYTES} bytes.`);
   }
@@ -351,8 +367,8 @@ export function publishValidatedArtifactVersion(
 ): ArtifactRow {
   const database = input.database ?? db;
   const root = storageRoot(input.storageRoot);
-  const source = validateContent(input.sourceContent);
-  const output = validateContent(input.outputContent);
+  const source = validateContent(input.sourceContent, input.artifact.renderer_id);
+  const output = validateContent(input.outputContent, input.artifact.renderer_id);
   const relativeDirectory = artifactRelativeDirectory(
     input.artifact.user_id,
     input.artifact.id,
@@ -626,7 +642,7 @@ export function createArtifact(input: CreateArtifactInput): ArtifactRow {
   if (input.mimeType && input.mimeType.toLowerCase() !== renderer.mimeType.toLowerCase()) {
     throw new ArtifactStoreError(400, "invalid_artifact_mime", `The MIME type must be ${renderer.mimeType}.`);
   }
-  const content = validateContent(input.content);
+  const content = validateContent(input.content, input.rendererId);
   const title = input.title.trim().slice(0, 240);
   if (!title) throw new ArtifactStoreError(400, "artifact_title_required", "Artifact title is required.");
   const artifactId = `art_${randomUUID()}`;
@@ -1667,7 +1683,10 @@ export function updateArtifactContent(input: {
   if (input.artifact.status === "archived") throw new ArtifactStoreError(409, "artifact_archived", "Archived artifacts cannot be changed.");
   const root = storageRoot(input.storageRoot);
   const existing = readArtifactSource(input.artifact, input.artifact.current_version, input.storageRoot, database);
-  const nextContent = validateContent(input.mode === "append" ? `${existing}${input.content}` : input.content);
+  const nextContent = validateContent(
+    input.mode === "append" ? `${existing}${input.content}` : input.content,
+    input.artifact.renderer_id,
+  );
   const createVersion = input.mode === "fork" || input.artifact.status === "ready";
   const nextVersion = createVersion ? input.artifact.current_version + 1 : input.artifact.current_version;
   const previous = getArtifactVersion(input.artifact.id, input.artifact.current_version, database);

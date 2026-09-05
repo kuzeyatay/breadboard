@@ -23,10 +23,13 @@ import {
   WELCOME_GATE_MAX_WAIT_MS,
   WINDOW_VISIBILITY_FALLBACK_MS,
   WindowManager,
+  dashboardUrlWithTheme,
   isFullScreenShortcut,
   localPageRecoveryDelayMs,
   remainingStartupVisibleMs,
+  synchronizeNativeTheme,
 } from "../src/main/window-manager";
+import { loadRecoveryUrlIfAlive } from "../src/main/tab-manager";
 
 /** A window fake with just enough surface for the recovery paths. */
 function fakeWindow(url: string) {
@@ -167,6 +170,28 @@ test("the startup scene stays visible long enough to perceive its motion", () =>
   assert.equal(remainingStartupVisibleMs(2_000, 1_500), 2_200);
 });
 
+test("a dashboard launch carries the persisted theme into a fresh origin", () => {
+  assert.equal(
+    dashboardUrlWithTheme("http://127.0.0.1:43122/?source=startup", "dark"),
+    "http://127.0.0.1:43122/?source=startup&theme=dark",
+  );
+  assert.equal(
+    dashboardUrlWithTheme("http://127.0.0.1:43122/?theme=light", "dark"),
+    "http://127.0.0.1:43122/?theme=dark",
+  );
+  assert.equal(dashboardUrlWithTheme("not a url", "dark"), "not a url");
+});
+
+test("sandboxed browser pages inherit Breadboard's preferred colour scheme", () => {
+  const target: { themeSource: "system" | "light" | "dark" } = {
+    themeSource: "system",
+  };
+  synchronizeNativeTheme("light", target);
+  assert.equal(target.themeSource, "light");
+  synchronizeNativeTheme("dark", target);
+  assert.equal(target.themeSource, "dark");
+});
+
 test("a failed local page reload retries quickly and then settles into a bounded backoff", () => {
   assert.deepEqual(LOCAL_PAGE_RECOVERY_DELAYS_MS, [250, 500, 1_000, 2_000, 5_000]);
   assert.deepEqual(
@@ -210,6 +235,20 @@ test("only a deliberate close of the current main window requests application ex
     false,
     "close intent must not leak into a later replacement window",
   );
+});
+
+test("a tab destroyed during reconnect cannot escape as an unhandled rejection", async () => {
+  let destroyed = false;
+  const contents = {
+    isDestroyed: () => destroyed,
+    loadURL: async () => {
+      destroyed = true;
+      throw new TypeError("Object has been destroyed");
+    },
+  };
+
+  assert.equal(await loadRecoveryUrlIfAlive(contents, "http://127.0.0.1:3000/browser"), false);
+  assert.equal(await loadRecoveryUrlIfAlive(contents, "http://127.0.0.1:3000/browser"), false);
 });
 
 test("a renderer disposed during a dashboard restart cannot crash the desktop", () => {

@@ -26,6 +26,11 @@ test("skill-owned tools are attributed to the skill that owns them", () => {
   );
   assert.equal(capabilityForTool("audio_compare")?.id, "audio-analysis");
   assert.equal(capabilityForTool("office_export")?.id, "office");
+  assert.deepEqual(capabilityForTool("computer_use"), {
+    kind: "skill",
+    id: "computer-use",
+    label: "Computer use",
+  });
   // Breadboard's own products are named too, but never as skills: nobody
   // installed them and there is no slash command to type.
   assert.deepEqual(capabilityForTool("calendar_agenda"), {

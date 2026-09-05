@@ -342,7 +342,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   ) as AiSettings['providers'],
 }
 
-export function App() {
+export function App({ readOnly = false }: { readOnly?: boolean } = {}) {
   // subscribe to language switches for re-render; strings all go through module-level t, so memoized callbacks never capture stale closures
   const { lang } = useI18n()
   const [doc, setDoc] = useState<DocState | null>(null)
@@ -550,6 +550,9 @@ export function App() {
   const [showRuler, setShowRuler] = useState(false)
   const [showNav, setShowNav] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('print')
+  // A read-only host (the Breadboard artifact preview) keeps the paginated
+  // print layout and only locks editing; Read Mode is a separate reader view
+  // that deliberately removes the page gaps, so it must not be forced here.
   const [readMode, setReadMode] = useState(false)
   const [showGrid, setShowGrid] = useState(false)
   const [splitView, setSplitView] = useState(false)
@@ -816,14 +819,14 @@ export function App() {
   // Read Mode / Protect Document: the document becomes read-only; Esc leaves Read Mode
   useEffect(() => {
     if (!editor) return
-    editor.setEditable(!readMode && !isProtected)
+    editor.setEditable(!readMode && !readOnly && !isProtected)
     if (!readMode) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setReadMode(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [editor, readMode, isProtected])
+  }, [editor, readMode, isProtected, readOnly])
 
   // Track Changes: the recorder plugin reads its toggle from extension storage
   useEffect(() => {
@@ -3102,7 +3105,7 @@ export function App() {
   /** Editor right-click menu, only inside the document body */
   const onDocContextMenu = useCallback(
     (e: ReactMouseEvent) => {
-      if (readMode || isProtected) return
+      if (readMode || readOnly || isProtected) return
       if (!(e.target as HTMLElement).closest('.doc-page')) return
       e.preventDefault()
       // Word behavior: right-clicking outside the selection moves the cursor there first (menu items act on the clicked block)
@@ -3140,7 +3143,7 @@ export function App() {
       }
       setCtxMenu({ x: e.clientX, y: e.clientY })
     },
-    [readMode, isProtected, editor],
+    [readMode, readOnly, isProtected, editor],
   )
 
   // e2e/automation hook: lets tests drive open/edit/save without native dialogs
@@ -3357,7 +3360,7 @@ export function App() {
 
   return (
     <div
-      className={`app ${readMode ? 'read-mode' : ''}${revisionDisplay !== 'all' ? ` rev-display-${revisionDisplay}` : ''}${revisionDisplay === 'all' && viewMode === 'print' ? ' rev-balloon' : ''}`}
+      className={`app ${readMode ? 'read-mode' : ''}${readOnly ? ' read-only' : ''}${revisionDisplay !== 'all' ? ` rev-display-${revisionDisplay}` : ''}${revisionDisplay === 'all' && viewMode === 'print' ? ' rev-balloon' : ''}`}
     >
       <ToastHost />
       {docCss && <style>{docCss}</style>}
@@ -3494,7 +3497,7 @@ export function App() {
                           {watermark}
                         </div>
                       )}
-                      {!readMode && (
+                      {!readMode && !readOnly && (
                         <div
                           className={`hf-variant-chips${titlePg || evenOddHf ? '' : ' hf-chips-idle'}`}
                         >
@@ -3547,7 +3550,7 @@ export function App() {
                           kind="header"
                           value={shownHeader ?? { text: '' }}
                           images={hfImagesOf('header')}
-                          readOnly={isProtected || readMode}
+                          readOnly={isProtected || readMode || readOnly}
                           onCommit={(next) => commitHf('header', next)}
                           pageTotal={pageInfo.total}
                         />
@@ -3578,13 +3581,13 @@ export function App() {
                           kind="footer"
                           value={shownFooter ?? { text: '' }}
                           images={hfImagesOf('footer')}
-                          readOnly={isProtected || readMode}
+                          readOnly={isProtected || readMode || readOnly}
                           onCommit={(next) => commitHf('footer', next)}
                           pageNo={lastPageNo?.text ?? pageInfo.total}
                           pageTotal={pageInfo.total}
                         />
                       )}
-                      {(inkAnnotations.length > 0 || inkTool !== 'select') && !readMode && (
+                      {(inkAnnotations.length > 0 || inkTool !== 'select') && !readMode && !readOnly && (
                         <InkOverlay
                           tool={isProtected ? 'select' : inkTool}
                           color={inkTool === 'highlighter' ? inkHighlighter.color : inkPen.color}
@@ -3627,7 +3630,7 @@ export function App() {
                 </div>
               )}
             </div>
-            {readMode && (
+            {readMode && !readOnly && (
               <button className="read-exit" onClick={() => setReadMode(false)}>
                 {t('appExitReadMode')}
               </button>

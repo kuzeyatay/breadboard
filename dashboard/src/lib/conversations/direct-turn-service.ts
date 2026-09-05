@@ -65,6 +65,7 @@ import {
 import { answerDepthSection } from "../hermes/answer-depth.ts";
 import {
   completeAssistantMessage,
+  conversationTurnWasCancelled,
   failAssistantMessage,
   listRecentConversationMessages,
   reserveConversationTurn,
@@ -452,6 +453,14 @@ export async function startDirectProviderTurn(
       input = { ...input, conversation: titledConversation };
     }
   }
+  if (
+    conversationTurnWasCancelled(
+      input.conversation.id,
+      input.clientMessageId,
+    )
+  ) {
+    throw new ApiError(409, "turn_cancelled", "This turn was stopped.");
+  }
   if (!reservation.isNew) {
     const assistant = reservation.assistantMessage;
     if (assistant.status === "pending") {
@@ -594,6 +603,14 @@ export async function startDirectProviderTurn(
 
   // This controller is server-owned. A browser response is merely one viewer;
   // only the explicit session abort route is allowed to stop the provider.
+  if (
+    conversationTurnWasCancelled(
+      input.conversation.id,
+      input.clientMessageId,
+    )
+  ) {
+    throw new ApiError(409, "turn_cancelled", "This turn was stopped.");
+  }
   const providerAbort = new AbortController();
   const activeDirectTurn: ActiveDirectProviderTurn = {
     clientMessageId: input.clientMessageId,

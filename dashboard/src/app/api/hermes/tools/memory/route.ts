@@ -15,6 +15,7 @@ import {
 import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
 import {
   durableMemoryExclusionReason,
+  inferMemoryKind,
   saveDurableMemory,
   type DurableMemoryKind,
   type DurableMemoryScope,
@@ -71,10 +72,13 @@ export async function POST(request: Request) {
     const content = typeof args.content === "string" ? args.content.trim() : "";
     if (!content) throw new ApiError(400, "memory_content_required", "content is required.");
 
+    // An unclassified save is read for what it is rather than filed as a fact:
+    // kind decides whether a memory is a standing preference, and a model that
+    // omits the field is usually saving exactly one of those.
     const kind: DurableMemoryKind =
       typeof args.kind === "string" && KINDS.has(args.kind as DurableMemoryKind)
         ? (args.kind as DurableMemoryKind)
-        : "project_fact";
+        : inferMemoryKind(content);
     const requestedScope: DurableMemoryScope =
       typeof args.scope === "string" && SCOPES.has(args.scope as DurableMemoryScope)
         ? (args.scope as DurableMemoryScope)

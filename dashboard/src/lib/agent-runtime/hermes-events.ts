@@ -48,6 +48,13 @@ export interface HermesEventNormalizationState {
   activeTools?: Map<string, HermesActiveTool>;
 }
 
+/** The gateway's own context-compaction progress, tagged by kind or, for the
+ *  generic lifecycle line, by its wording. Never shown as Thinking. */
+function isCompressionStatus(kind: string | undefined, text: string): boolean {
+  if (kind === "compressing" || kind === "compacting") return true;
+  return /\b(compress|compact)(ing|ed|ion)?\b/i.test(text);
+}
+
 export function createHermesEventNormalizationState(): HermesEventNormalizationState {
   return {
     assistantText: "",
@@ -273,6 +280,11 @@ export function normalizeHermesEvent(
     case "status.update": {
       const raw = asString(payload.text)?.trim();
       if (!raw) return [];
+      // Context compression is housekeeping, not something the person asked
+      // for. Its progress line ("compressing 6 messages (~6,000 tok)") used
+      // to take over the Thinking label for a moment on models with smaller
+      // windows, which read as the turn doing something odd with the message.
+      if (isCompressionStatus(asString(payload.kind), raw)) return [];
       // Runtime status lines carry the same wrapped upstream errors as a failed
       // completion ("❌ Non-retryable error (HTTP 400): … returned HTTP 400: …"),
       // and they are read as a progress label, so they get the same treatment.

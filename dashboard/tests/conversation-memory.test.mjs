@@ -689,6 +689,33 @@ test("course correction is inserted before the pending assistant deterministical
   });
 });
 
+test("clarification answers retain their hidden runtime-input marker", () => {
+  const chat = conversation();
+  store.reserveConversationTurn({
+    conversation: chat,
+    clientMessageId: "original-message-01",
+    surface: "dashboard_terminal",
+    content: "Initial request",
+  });
+  store.appendConversationSteerMessage({
+    conversationId: chat.id,
+    clientMessageId: "clarify:request-0001",
+    surface: "dashboard_terminal",
+    content: "Dopamine levels and effects in the morning",
+    clarificationAnswer: true,
+    targetClientMessageId: "original-message-01",
+    assistantContentOffset: 24,
+  });
+
+  const rows = store.listConversationMessages(chat.id);
+  assert.deepEqual(store.presentConversationMessage(rows[1]).metadata, {
+    courseCorrection: true,
+    clarificationAnswer: true,
+    courseCorrectionTargetClientMessageId: "original-message-01",
+    courseCorrectionOffset: 24,
+  });
+});
+
 test("one runtime is bound per conversation and active context is replaced", () => {
   const first = conversation(1, "First");
   const second = conversation(1, "Second");
@@ -829,9 +856,12 @@ test("rolling compaction advances once and retains recent exact messages", () =>
       index === 1 ? "Implemented the transcript store." : `Answer ${index}.`,
     );
   }
-  assert.equal(memory.compactConversationMemoryIfNeeded(chat.id), true);
+  // Compaction is a side effect of completing an answer, on every surface,
+  // so by now it has already run: an explicit call finds nothing left to do.
   const state = memory.loadConversationMemoryState(chat.id);
-  assert.ok(state.summarizedThroughOrder >= 0);
+  assert.ok(state.summarizedThroughOrder >= 0, "completion already compacted");
+  assert.ok(state.version >= 1);
+  assert.equal(memory.compactConversationMemoryIfNeeded(chat.id), false);
   assert.match(state.summary, /canonical server transcript/);
   assert.doesNotMatch(state.summary, /quit college|store this in memory/i);
   assert.ok(state.workingState.openQuestions.some((question) => /future migrations/i.test(question)));

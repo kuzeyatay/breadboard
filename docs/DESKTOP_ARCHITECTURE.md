@@ -43,6 +43,36 @@ frame instead of starting a page load. A click that beats the load waits
 dashboard fails to load, the preload is discarded and the visible window
 navigates to it, which surfaces the failure exactly as it did before.
 
+### Embedded Chromium browser tabs
+
+Electron already owns a Chromium renderer, so Breadboard's browser does not
+launch or dock another application's window. A browser tab is a pair of
+`WebContentsView`s in the normal tab model: a trusted local `/browser` page
+draws the shared tab strip and an 82px flower-backed address toolbar, while an
+untrusted page view is layered below it. Switching tabs attaches and detaches both views together,
+so the web page has the same ordering, closing, history, and keyboard behavior
+as every other Breadboard tab without duplicating browser chrome.
+
+The untrusted page runs sandboxed with context isolation, no Node integration,
+no preload, and no `<webview>` support. It uses the persistent but isolated
+`persist:breadboard-browser` session partition, accepts only `http:` and
+`https:` navigation, denies device permissions, and maps `window.open` back to
+a Breadboard browser tab. The process-wide local-origin guard explicitly
+recognizes these registered browser contents; all other renderers retain the
+original local-only navigation policy.
+
+The trusted toolbar sends validated commands over the existing tabs IPC
+channel. Address input accepts web URLs, adds a scheme for hostnames, and turns
+plain text into a Google search. Browser state sent to the toolbar includes the
+current address, loading state, and back/forward availability. `Ctrl+L` and F6
+focus the trusted address field even when the untrusted page has keyboard
+focus.
+
+The effective Breadboard theme is mirrored to Electron's native theme source,
+so sandboxed pages receive the corresponding `prefers-color-scheme` value.
+Browser-view loading backgrounds are updated at the same time, avoiding the
+light-chrome/dark-page mismatch without injecting code into third-party sites.
+
 ## Service graph
 
 ```
@@ -226,4 +256,5 @@ See docs/DESKTOP_SECURITY.md. Highlights: every service binds `127.0.0.1`
 only; per-install random `NEXTAUTH_SECRET`, Hermes gateway/tool/capability secrets
 and capability secret; renderer runs sandboxed with `contextIsolation` and a
 narrow typed preload; navigation restricted to the dashboard and Quartz
-origins; external links open in the OS browser; no command or filesystem IPC.
+origins; external web links open in sandboxed Breadboard browser tabs; no
+command or filesystem IPC.

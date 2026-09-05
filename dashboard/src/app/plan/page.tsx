@@ -13,6 +13,7 @@ import {
 import { getPlanStore } from "@/lib/plan/instance.ts";
 import { isPlanView, type PlanView } from "@/lib/plan/view.ts";
 import PlanClient from "./plan-client";
+import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -83,6 +84,7 @@ export default async function PlanPage({
       initialCalendarView={calendarView}
       initialToday={today}
       initialAnchor={anchor}
+      showNavbarFlowers={getNavbarFlowers(userId)}
     />
   );
 }

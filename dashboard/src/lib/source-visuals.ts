@@ -97,6 +97,8 @@ export const DEFAULT_SOURCE_VISUAL_DETECTION_TIMEOUT_MS =
   MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS;
 const DEFAULT_SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS = 2_000;
 const SOURCE_MODEL_HTTP_502_RETRY_MAX_DELAY_MS = 30_000;
+const SOURCE_VISUAL_DETECTION_MAX_TRANSIENT_FAILURES = 5;
+const SOURCE_VISUAL_DETECTION_MAX_SEMANTIC_ATTEMPTS = 3;
 const DETECTOR_VERSION = 3;
 const DETECTION_IMAGE_MAX_DIMENSION = 768;
 const SOURCE_FORMULA_REVIEW_SCHEMA_VERSION = 1;
@@ -123,9 +125,11 @@ const SOURCE_FORMULA_REVIEW_MAX_FORMULAS_PER_PAGE = 64;
 const SOURCE_FORMULA_REVIEW_MAX_EXACT_TEXT_CHARS = 12_000;
 const SOURCE_FORMULA_REVIEW_MAX_CAPTION_CHARS = 2_000;
 const SOURCE_FORMULA_REVIEW_MAX_REASON_CHARS = 2_000;
-/** Leave the single authoritative source-review request a normal answer window.
- * The scheduling margin covers local orchestration, never a second model POST. */
-export const SOURCE_FORMULA_REVIEW_FINAL_ATTEMPT_ALLOWANCE_MS = 180_000;
+/** Ultra reasoning with a full page plus several high-detail formula crops can
+ * legitimately exceed three minutes before returning a compact JSON review.
+ * Give the single authoritative request a ten-minute answer window; transport
+ * retries still receive a fresh bounded timer and remain cancellation-aware. */
+export const SOURCE_FORMULA_REVIEW_FINAL_ATTEMPT_ALLOWANCE_MS = 600_000;
 export const SOURCE_FORMULA_REVIEW_SCHEDULING_MARGIN_MS = 30_000;
 export const DEFAULT_SOURCE_FORMULA_REVIEW_TIMEOUT_MS =
   SOURCE_FORMULA_REVIEW_FINAL_ATTEMPT_ALLOWANCE_MS +
@@ -483,7 +487,8 @@ async function waitForSourceModelHttp502Retry(
 /** Source-image and formula-review calls are read-only model analyses with no
  * provider receipt to adopt. An HTTP 502 is therefore safe to replay as the
  * same immutable request. Give every retry a fresh per-attempt timeout and
- * keep the Learn cancellation checkpoint live while retrying without a cap. */
+ * keep the Learn cancellation checkpoint live. Callers may provide a bounded
+ * deterministic fallback when a non-essential analysis must not stall Learn. */
 async function createSourceModelCompletionWithHttp502Retry(input: {
   client: OpenAI;
   request: unknown;
@@ -491,6 +496,8 @@ async function createSourceModelCompletionWithHttp502Retry(input: {
   checkpoint?: () => void;
   onProgress?: (step: string) => void;
   stageLabel: string;
+  fallbackAfterFailures?: number;
+  fallbackContent?: string;
 }): Promise<SourceModelCompletionResponse> {
   let retryNumber = 0;
   for (;;) {
@@ -506,6 +513,18 @@ async function createSourceModelCompletionWithHttp502Retry(input: {
       const locallyTimedOut = controller.signal.aborted;
       if (!isSourceModelHttp502(error) && !locallyTimedOut) throw error;
       retryNumber += 1;
+      if (
+        Number.isInteger(input.fallbackAfterFailures) &&
+        retryNumber >= Number(input.fallbackAfterFailures)
+      ) {
+        input.onProgress?.(
+          `${locallyTimedOut ? "Model request timed out" : "HTTP 502"}; ` +
+            `continuing without ${input.stageLabel} after ${retryNumber} failed attempts.`,
+        );
+        return {
+          choices: [{ message: { content: input.fallbackContent ?? "[]" } }],
+        };
+      }
       const delayMs = sourceModelHttp502RetryDelayMs(retryNumber);
       input.onProgress?.(
         `${locallyTimedOut ? "Model request timed out" : "HTTP 502"}; ` +
@@ -2525,6 +2544,43 @@ function parseSourceFormulaReviewJsonV1(raw: string): unknown {
   return JSON.parse(raw);
 }
 
+/**
+ * Whether two LaTeX transcriptions denote the same string up to cosmetic
+ * drift a reviewing model introduces while echoing supplied text: Unicode
+ * normalisation form, insignificant whitespace, and outer math delimiters.
+ */
+export function sourceFormulaReviewLatexEquivalent(
+  left: string | undefined,
+  right: string | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  const canonical = (value: string): string => {
+    let text = value.normalize("NFC").trim();
+    for (const [open, close] of [["$$", "$$"], ["\\[", "\\]"], ["\\(", "\\)"], ["$", "$"]]) {
+      if (text.length > open.length + close.length && text.startsWith(open) && text.endsWith(close)) {
+        text = text.slice(open.length, text.length - close.length).trim();
+        break;
+      }
+    }
+    return text.replace(/\s+/gu, "");
+  };
+  return canonical(left) === canonical(right);
+}
+
+/**
+ * Whether two captions read the same up to Unicode normalisation form,
+ * whitespace runs, and a trailing full stop.
+ */
+export function sourceFormulaReviewCaptionEquivalent(
+  left: string | undefined,
+  right: string | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  const canonical = (value: string): string =>
+    value.normalize("NFC").replace(/\s+/gu, " ").trim().replace(/\.$/u, "").toLowerCase();
+  return canonical(left) === canonical(right);
+}
+
 function parseSourceFormulaReviewResponse(
   raw: unknown,
   inputs: readonly SourceFormulaReviewInput[],
@@ -2592,12 +2648,17 @@ function parseSourceFormulaReviewResponse(
     }
     seen.add(sourceVisualId);
 
-    const action = record.action;
-    if (action !== "approve" && action !== "replace" && action !== "reject") {
+    const requestedAction = record.action;
+    if (
+      requestedAction !== "approve" &&
+      requestedAction !== "replace" &&
+      requestedAction !== "reject"
+    ) {
       throw new SourceFormulaReviewProtocolError(
         `reviews[${index}].action must be approve, replace, or reject`,
       );
     }
+    let action: SourceFormulaReviewAction = requestedAction;
     const identityAssessment = record.identityAssessment;
     if (
       identityAssessment !== "preserved" &&
@@ -2618,10 +2679,10 @@ function parseSourceFormulaReviewResponse(
     const rawAcceptedExactText = typeof record.acceptedExactText === "string"
       ? record.acceptedExactText
       : undefined;
-    const acceptedExactText = rawAcceptedExactText
+    let acceptedExactText = rawAcceptedExactText
       ? rawAcceptedExactText.trim()
       : undefined;
-    const acceptedCaption = typeof record.acceptedCaption === "string"
+    let acceptedCaption = typeof record.acceptedCaption === "string"
       ? record.acceptedCaption.trim()
       : undefined;
     const topologyAssessment: SourceFormulaTopologyAssessment | undefined =
@@ -2687,9 +2748,21 @@ function parseSourceFormulaReviewResponse(
         action === "approve" &&
         (acceptedExactText !== input.inputExactText || acceptedCaption !== input.inputCaption)
       ) {
-        throw new SourceFormulaReviewProtocolError(
-          `reviews[${index}] approve must preserve supplied exactText and caption byte-for-byte after outer trim`,
-        );
+        // Models routinely echo an approved transcription with cosmetic drift
+        // (NFC form, LaTeX spacing, math delimiters, caption punctuation).
+        // "approve" means "keep the supplied fields", so cosmetic drift keeps
+        // them verbatim; a substantive rewrite is the model's replacement with
+        // identity preserved, which is exactly what "replace" denotes. Either
+        // way the page review no longer dies after three identical attempts.
+        if (
+          sourceFormulaReviewLatexEquivalent(acceptedExactText, input.inputExactText) &&
+          sourceFormulaReviewCaptionEquivalent(acceptedCaption, input.inputCaption)
+        ) {
+          acceptedExactText = input.inputExactText;
+          acceptedCaption = input.inputCaption;
+        } else {
+          action = "replace";
+        }
       }
       if (topologyAssessment !== undefined) {
         throw new SourceFormulaReviewProtocolError(
@@ -12494,6 +12567,104 @@ function parseDetections(raw: unknown): SourceVisualDetection[] {
   return validateDetectionRecords(parsed);
 }
 
+const SOURCE_VISUAL_BBOX_FALLBACK_TOLERANCE = 0.05;
+
+function parseDetectionsWithNarrowFallbacks(
+  raw: unknown,
+  pageNumber?: number,
+): {
+  detections: SourceVisualDetection[];
+  repairedCaptionCount: number;
+  repairedBBoxCount: number;
+} {
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new SourceVisualDetectionProtocolError("response was empty or missing");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new SourceVisualDetectionProtocolError(
+      `response was not valid JSON (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new SourceVisualDetectionProtocolError("top level must be a JSON array");
+  }
+  let repairedCaptionCount = 0;
+  let repairedBBoxCount = 0;
+  const repaired = parsed.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+    const record = item as Record<string, unknown>;
+    let nextRecord = record;
+    if (!(typeof record.caption === "string" && record.caption.trim())) {
+      repairedCaptionCount += 1;
+      const type =
+        typeof record.type === "string" && record.type.trim()
+          ? record.type.trim()
+          : "visual";
+      const exactText =
+        typeof record.exactText === "string" ? record.exactText.trim() : "";
+      const pageLabel = pageNumber ? ` on source page ${pageNumber}` : "";
+      nextRecord = {
+        ...nextRecord,
+        caption:
+          type === "equation" && exactText
+            ? `Displayed equation${pageLabel}: ${exactText.slice(0, 240)}`
+            : `Detected ${type}${pageLabel}`,
+      };
+    }
+
+    const rawBox = record.bbox;
+    if (rawBox && typeof rawBox === "object" && !Array.isArray(rawBox)) {
+      const box = rawBox as Record<string, unknown>;
+      const x = box.x;
+      const y = box.y;
+      const width = box.width;
+      const height = box.height;
+      if (
+        typeof x === "number" && Number.isFinite(x) &&
+        typeof y === "number" && Number.isFinite(y) &&
+        typeof width === "number" && Number.isFinite(width) && width > 0 &&
+        typeof height === "number" && Number.isFinite(height) && height > 0
+      ) {
+        const right = x + width;
+        const bottom = y + height;
+        const outsidePage = x < 0 || y < 0 || right > 1 || bottom > 1;
+        const marginalOvershoot =
+          x >= -SOURCE_VISUAL_BBOX_FALLBACK_TOLERANCE &&
+          y >= -SOURCE_VISUAL_BBOX_FALLBACK_TOLERANCE &&
+          right <= 1 + SOURCE_VISUAL_BBOX_FALLBACK_TOLERANCE &&
+          bottom <= 1 + SOURCE_VISUAL_BBOX_FALLBACK_TOLERANCE;
+        if (outsidePage && marginalOvershoot) {
+          const clampedX = Math.max(0, x);
+          const clampedY = Math.max(0, y);
+          const clampedRight = Math.min(1, right);
+          const clampedBottom = Math.min(1, bottom);
+          if (clampedRight > clampedX && clampedBottom > clampedY) {
+            repairedBBoxCount += 1;
+            nextRecord = {
+              ...nextRecord,
+              bbox: {
+                x: clampedX,
+                y: clampedY,
+                width: clampedRight - clampedX,
+                height: clampedBottom - clampedY,
+              },
+            };
+          }
+        }
+      }
+    }
+    return nextRecord;
+  });
+  return {
+    detections: validateDetectionRecords(repaired),
+    repairedCaptionCount,
+    repairedBBoxCount,
+  };
+}
+
 async function detectVisualsOnPage(
   client: OpenAI,
   model: string,
@@ -12504,9 +12675,15 @@ async function detectVisualsOnPage(
   const detectionBuffer =
     resizePngToMaxDimension(pngBuffer, DETECTION_IMAGE_MAX_DIMENSION) ?? pngBuffer;
   const dataUrl = `data:image/png;base64,${detectionBuffer.toString("base64")}`;
-  const response = await createSourceModelCompletionWithHttp502Retry({
-    client,
-    request: {
+  let priorProtocolError = "";
+  for (
+    let semanticAttempt = 1;
+    semanticAttempt <= SOURCE_VISUAL_DETECTION_MAX_SEMANTIC_ATTEMPTS;
+    semanticAttempt += 1
+  ) {
+    const response = await createSourceModelCompletionWithHttp502Retry({
+      client,
+      request: {
         model,
         messages: [
           { role: "system", content: DETECTION_SYSTEM_PROMPT },
@@ -12516,18 +12693,71 @@ async function detectVisualsOnPage(
               { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
               {
                 type: "text",
-                text: "List the meaningful visuals on this page as the JSON array described. Return [] if there are none.",
+                text:
+                  semanticAttempt === 1
+                    ? "List the meaningful visuals on this page as the JSON array described. Return [] if there are none."
+                    : "Re-evaluate this same page and return a fresh, complete JSON array. " +
+                      `The prior response was rejected because ${priorProtocolError}. ` +
+                      "Every entry must satisfy every required field; return [] if no entry can be described validly.",
               },
             ],
           },
         ],
       },
-    timeoutMs: sourceVisualDetectionTimeoutMs(),
-    checkpoint: options.checkpoint,
-    onProgress: options.onProgress,
-    stageLabel: `source visual scan${pageNumber ? ` for page ${pageNumber}` : ""}`,
-  });
-  return parseDetections(response.choices[0]?.message?.content);
+      timeoutMs: sourceVisualDetectionTimeoutMs(),
+      checkpoint: options.checkpoint,
+      onProgress: options.onProgress,
+      stageLabel: `source visual scan${pageNumber ? ` for page ${pageNumber}` : ""}`,
+      fallbackAfterFailures: SOURCE_VISUAL_DETECTION_MAX_TRANSIENT_FAILURES,
+      fallbackContent: "[]",
+    });
+    try {
+      return parseDetections(response.choices[0]?.message?.content);
+    } catch (error) {
+      if (!(error instanceof SourceVisualDetectionProtocolError)) {
+        throw error;
+      }
+      if (semanticAttempt >= SOURCE_VISUAL_DETECTION_MAX_SEMANTIC_ATTEMPTS) {
+        if (
+          /caption must be a non-empty string/u.test(error.message) ||
+          /bbox must be a positive rectangle fully inside the page/u.test(error.message)
+        ) {
+          const repaired = parseDetectionsWithNarrowFallbacks(
+            response.choices[0]?.message?.content,
+            pageNumber,
+          );
+          if (repaired.repairedCaptionCount > 0) {
+            options.onProgress?.(
+              `Source visual scan used ${repaired.repairedCaptionCount} bounded fallback caption${
+                repaired.repairedCaptionCount === 1 ? "" : "s"
+              }${pageNumber ? ` on page ${pageNumber}` : ""}.`,
+            );
+          }
+          if (repaired.repairedBBoxCount > 0) {
+            options.onProgress?.(
+              `Source visual scan clamped ${repaired.repairedBBoxCount} marginal page-edge bbox${
+                repaired.repairedBBoxCount === 1 ? "" : "es"
+              }${pageNumber ? ` on page ${pageNumber}` : ""}.`,
+            );
+          }
+          return repaired.detections;
+        }
+        throw error;
+      }
+      priorProtocolError = error.message;
+      options.checkpoint?.();
+      options.onProgress?.(
+        `Invalid source visual scan response; automatically retrying${
+          pageNumber ? ` page ${pageNumber}` : ""
+        } (semantic retry ${semanticAttempt} of ${
+          SOURCE_VISUAL_DETECTION_MAX_SEMANTIC_ATTEMPTS - 1
+        })...`,
+      );
+    }
+  }
+  throw new SourceVisualDetectionProtocolError(
+    "semantic retry loop exited without a result",
+  );
 }
 
 export interface ExtractSourceVisualsOptions {

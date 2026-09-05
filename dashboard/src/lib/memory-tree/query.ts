@@ -18,7 +18,10 @@ import type {
   DurableMemoryRow,
   RankedDurableMemory,
 } from "../conversations/memory.ts";
-import { retrieveDurableMemories } from "../conversations/memory.ts";
+import {
+  retrieveDurableMemories,
+  touchDurableMemories,
+} from "../conversations/memory.ts";
 import { hybridDurableMemories } from "../mem0/retrieval.ts";
 import { ensureFreshTree } from "./maintain.ts";
 import type { VaultNode } from "./vault.ts";
@@ -318,6 +321,9 @@ export async function memoryQuery(
       ranked = null;
     }
     if (!ranked) ranked = retrieveDurableMemories(retrievalInput, database);
+    // A tool read is a use: the model asked memory a question and these are
+    // the rows that answered it.
+    touchDurableMemories(ranked.map((hit) => hit.id), database);
 
     return {
       mode: "search",

@@ -32,7 +32,7 @@ function memoryStorage(initial = new Map()) {
 
 const now = new Date("2026-08-11T12:00:00.000Z");
 
-test("current location uses a separate browser-local preference and a 24 hour lifetime", () => {
+test("current location uses a separate device-local snapshot and a 24 hour lifetime", () => {
   assert.equal(CURRENT_LOCATION_STORAGE_KEY, "breadboard:current-location");
   assert.equal(CURRENT_LOCATION_CHANGE_EVENT, "breadboard:current-location-change");
   assert.equal(CURRENT_LOCATION_MAX_AGE_MS, 24 * 60 * 60 * 1_000);

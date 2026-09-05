@@ -52,6 +52,7 @@ function metadataFor(
     delegatedAgentRun?: boolean;
     internalAgentContinuation?: boolean;
     delegatedAgentReason?: string;
+    deliveryChannel?: "whatsapp" | "telegram";
   } = {},
 ): Record<string, unknown> {
   const delegatedAgentReason = options.delegatedAgentReason
@@ -75,6 +76,9 @@ function metadataFor(
       : {}),
     ...(options.internalAgentContinuation
       ? { internalAgentContinuation: true }
+      : {}),
+    ...(options.deliveryChannel
+      ? { deliveryChannel: options.deliveryChannel }
       : {}),
     ...(attachments.length
       ? {
@@ -110,6 +114,8 @@ export function recordExternalAgentTurn(input: {
   internalAgentContinuation?: boolean;
   /** Why the Super Agent selected this worker, for a humane failure hand-back. */
   delegatedAgentReason?: string;
+  /** External transport that owns the worker's eventual hand-back. */
+  deliveryChannel?: "whatsapp" | "telegram";
 }, database: Database.Database = db): ExternalAgentTurn {
   const outcome = input.outcome ?? (input.run ? "running" : "failed");
   const metadata = metadataFor(
@@ -121,6 +127,7 @@ export function recordExternalAgentTurn(input: {
       delegatedAgentRun: input.delegatedAgentRun,
       internalAgentContinuation: input.internalAgentContinuation,
       delegatedAgentReason: input.delegatedAgentReason,
+      deliveryChannel: input.deliveryChannel,
     },
   );
   // A delegated worker is born while its parent Super Agent answer is still

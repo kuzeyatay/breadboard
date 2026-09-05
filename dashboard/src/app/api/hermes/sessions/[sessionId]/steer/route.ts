@@ -10,6 +10,8 @@ import {
 import { authorizeRuntimeReference } from "@/lib/hermes/session-service.ts";
 import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import { recordAuditEvent } from "@/lib/hermes/runtime-store.ts";
+import { parseChatAttachments } from "@/lib/chat-attachments-request.ts";
+import { chatMessageAttachments } from "@/lib/chat-attachments.ts";
 import {
   appendConversationSteerMessage,
   ConversationStoreError,
@@ -52,6 +54,7 @@ export async function POST(
     const body = await readJsonBody(request);
     const runId = requireString(body.runId, "runId", 200);
     const text = requireString(body.text, "text", 200_000);
+    const attachments = parseChatAttachments(body.attachments);
     const clientRequestId = requireString(
       body.clientRequestId,
       "clientRequestId",
@@ -123,6 +126,7 @@ export async function POST(
         directory: session.activeDirectory,
         agentName: session.agentName,
         text,
+        attachments,
         model: dispatch.model,
         variant: dispatch.variant,
         tools: dispatch.tools,
@@ -157,6 +161,7 @@ export async function POST(
           clientMessageId: `steer:${clientRequestId}`,
           surface: session.row.surface,
           content: text,
+          attachments: chatMessageAttachments(attachments),
           targetClientMessageId: courseCorrectionTargetClientMessageId,
           assistantContentOffset,
         });

@@ -57,13 +57,21 @@ export class GBrainAdapterError extends Error {
   }
 }
 
+/** Budget for one `/embed` batch; the adapter applies the same allowance. */
+export const EMBED_TIMEOUT_MS = 120_000;
+
 export class GBrainClient {
   private config: GBrainConfig;
   constructor(config: GBrainConfig = resolveGBrainConfig()) {
     this.config = config;
   }
 
-  private async call<T>(pathName: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  private async call<T>(
+    pathName: string,
+    body: unknown,
+    signal?: AbortSignal,
+    timeoutMs: number = this.config.queryTimeoutMs,
+  ): Promise<T> {
     if (signal?.aborted) throw new GBrainAdapterError("cancelled");
     try {
       return await withServiceLease("gbrain", "retrieval", async () => {
@@ -75,7 +83,7 @@ export class GBrainClient {
         const abort = () => controller.abort();
         signal?.addEventListener("abort", abort, { once: true });
         if (signal?.aborted) controller.abort();
-        const timer = setTimeout(() => controller.abort(), this.config.queryTimeoutMs);
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
           const res = await fetch(new URL(pathName, this.config.adapterUrl), {
             method: "POST",
@@ -197,7 +205,9 @@ export class GBrainClient {
     if (texts.length < 1 || texts.length > 64) {
       return Promise.reject(new GBrainAdapterError("invalid_embedding_batch"));
     }
-    return this.call("/embed", { texts }, signal);
+    // Embedding is CPU inference through ChatMock (~1 s per long page), not a
+    // query; a batch legitimately outlives the retrieval budget.
+    return this.call("/embed", { texts }, signal, Math.max(this.config.queryTimeoutMs, EMBED_TIMEOUT_MS));
   }
 
   registerSource(
@@ -215,5 +225,12 @@ export class GBrainClient {
     warnings: string[];
   }> {
     return this.call("/register-source", { sourceId, label, pages }, signal);
+  }
+
+  removeSource(
+    sourceId: string,
+    signal?: AbortSignal,
+  ): Promise<{ sourceId: string; removed: boolean; pagesDeleted: number }> {
+    return this.call("/remove-source", { sourceId }, signal);
   }
 }

@@ -37,6 +37,7 @@ import { databaseDir } from "../runtime-paths.ts";
 import {
   isSensitiveMemoryText,
   retrieveDurableMemories,
+  touchDurableMemories,
   type RankedDurableMemory,
 } from "./memory.ts";
 import { hybridDurableMemories } from "../mem0/retrieval.ts";
@@ -217,6 +218,8 @@ export async function composeAgentMemoryContext(
   const selected = eligible
     .filter((memory) => !isSensitiveMemoryText(memory.content))
     .slice(0, limit);
+  // Handed to an external agent's prompt is a use like any other.
+  touchDurableMemories(selected.map((memory) => memory.id), database);
 
   // Why the block ended up the size it did. Without this, a run starved by the
   // filters is indistinguishable in the log from a run where the user simply

@@ -4,9 +4,11 @@ import path from "node:path";
 import test from "node:test";
 
 const { findNangoIntegration } = await import("../src/lib/nango/catalog.ts");
-const { spotifyClientId, spotifyOAuthCallbackUrl } = await import(
-  "../src/lib/spotify/config.ts"
-);
+const {
+  SPOTIFY_OAUTH_CALLBACK_PATH,
+  spotifyClientId,
+  spotifyOAuthCallbackOrigin,
+} = await import("../src/lib/spotify/config.ts");
 const {
   isSpotifyCatalogRequest,
   isSpotifyPlaybackRequest,
@@ -73,7 +75,7 @@ test("Spotify playback prefers an unrestricted phone over another active device"
   );
 });
 
-test("Spotify uses public-client PKCE with the registered loopback callback", () => {
+test("Spotify uses public-client PKCE with the live loopback callback", () => {
   const spotify = findNangoIntegration("spotify");
   assert.ok(spotify);
   for (const scope of [
@@ -88,9 +90,27 @@ test("Spotify uses public-client PKCE with the registered loopback callback", ()
   }
   assert.equal(spotifyClientId(), "cb7cb4f043ed42759672098759409ba8");
   assert.equal(
-    spotifyOAuthCallbackUrl(),
-    "http://127.0.0.1:3000/api/hermes/mcp/oauth/callback",
+    SPOTIFY_OAUTH_CALLBACK_PATH,
+    "/api/hermes/mcp/oauth/callback",
   );
+  assert.equal(
+    spotifyOAuthCallbackOrigin("http://127.0.0.1:43123"),
+    "http://127.0.0.1:43123",
+  );
+  assert.equal(
+    spotifyOAuthCallbackOrigin("http://localhost:43123"),
+    "http://127.0.0.1:43123",
+  );
+  assert.throws(() => spotifyOAuthCallbackOrigin("http://example.com"));
+  const spotifyRoute = fs.readFileSync(
+    new URL(
+      "../src/app/api/hermes/connections/spotify/route.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(spotifyRoute, /callbackOrigin,/);
+  assert.doesNotMatch(spotifyRoute, /127\.0\.0\.1:3000/);
   const broker = fs.readFileSync(
     new URL("../src/lib/connected-apps/broker.ts", import.meta.url),
     "utf8",
@@ -370,6 +390,10 @@ test("Spotify login lives in Connections and native tools enforce phone-only pla
     new URL("../src/app/components/hermes/inline-spotify-player.tsx", import.meta.url),
     "utf8",
   );
+  const playerPalette = fs.readFileSync(
+    new URL("../src/lib/spotify/player-palette.ts", import.meta.url),
+    "utf8",
+  );
   const runtimePanel = fs.readFileSync(
     new URL("../src/app/components/hermes/agent-runtime-panel.tsx", import.meta.url),
     "utf8",
@@ -436,6 +460,8 @@ test("Spotify login lives in Connections and native tools enforce phone-only pla
   assert.match(nativeToolRoute, /recordSpotifyPlaybackIntent/);
   assert.match(nativeToolRoute, /toolName === "spotify_search" \? 5 : 10/);
   assert.match(spotifyService, /SPOTIFY_SEARCH_RESULT_LIMIT = 10/);
+  assert.match(spotifyService, /SPOTIFY_OPTIONAL_CONNECTION_SCOPES/);
+  assert.match(spotifyService, /playlist-read-private/);
   assert.match(spotifyService, /endpoint: "\/v1\/me\/player\/devices"/);
   assert.match(spotifyService, /endpoint: "\/v1\/me\/playlists"/);
   assert.match(spotifyService, /endpoint: `\/v1\/playlists\/\$\{id\}\/items`/);
@@ -475,7 +501,7 @@ test("Spotify login lives in Connections and native tools enforce phone-only pla
   assert.match(player, /managedQueueLoaded/);
   assert.match(player, /applyManagedPlayback/);
   assert.match(player, /paletteFromCover/);
-  assert.match(player, /relativeLuminance/);
+  assert.match(playerPalette, /relativeLuminance/);
   assert.match(player, /--spotify-control-fg/);
   assert.match(playbackRoute, /spotifyCurrentPlaybackState/);
   assert.match(playbackRoute, /spotifyPhonePlaybackDevice/);

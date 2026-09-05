@@ -7,16 +7,23 @@
 // a Super Agent delegation, where the framed view plus a sentence or two IS
 // the answer — no card chrome, no second synthesis turn.
 //
-// The frame itself borrows the clone's own design language (style.css in
-// gods-eye-view: "Apple meets Blade Runner") — near-black ground, glass
-// borders, cyan accent with a glow, mono readouts — so the widget reads as a
-// window into that cockpit rather than a themed dashboard panel. It is
-// deliberately the same in light and dark: the cockpit has one look.
+// The frame is a Breadboard panel, not a window into the clone's cockpit: the
+// same raised paper, line and botanical tokens as every other run card, in
+// whichever scheme the chat is showing. The globe inside is asked to match —
+// the open route forwards the scheme and the clone's breadboard-theme.css
+// re-dresses its HUD, panels and type in the dashboard's palette, and the
+// dashboard's theme runtime posts later switches into every iframe, so the
+// frame and its contents change together.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import ChatMarkdown from "@/app/components/chat-markdown";
+import { APP_THEME_CHANGE_EVENT, type AppTheme } from "@/lib/app-theme";
+import {
+  normalizeChatTokenUsage,
+  type ChatTokenUsage,
+} from "@/lib/chat-token-usage";
 import type {
   ExternalAgentOutcome,
   ExternalAgentTerminalResult,
@@ -42,12 +49,30 @@ const EVENTS = [
 ];
 const TERMINAL = new Set(["completed", "failed", "aborted"]);
 
-const HUD_MONO = "'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, monospace";
-const HUD_ACCENT = "#00d4ff";
-const HUD_BORDER = "rgba(255, 255, 255, 0.08)";
-
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function currentTheme(): AppTheme {
+  const explicit = document.documentElement.dataset.theme;
+  if (explicit === "light" || explicit === "dark") return explicit;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function subscribeToTheme(onChange: () => void): () => void {
+  window.addEventListener(APP_THEME_CHANGE_EVENT, onChange);
+  return () => window.removeEventListener(APP_THEME_CHANGE_EVENT, onChange);
+}
+
+/**
+ * The scheme the chat is showing, so the frame can be opened in it: null on
+ * the server, read from the document on the client and kept current with the
+ * theme runtime's change event. The frame itself is re-dressed by the
+ * runtime's postMessage broadcast, so this only has to be right when a URL is
+ * built.
+ */
+function useChatTheme(): AppTheme | null {
+  return useSyncExternalStore(subscribeToTheme, currentTheme, () => null);
 }
 
 function coordinateReadout(view: GodsEyeView): string {
@@ -59,107 +84,82 @@ function coordinateReadout(view: GodsEyeView): string {
 }
 
 /**
- * The globe, framed in the clone's own cockpit chrome. As wide as the text
- * column it sits in — never wider than the prose around it. A live completion
- * mounts the feed at once; a reopened card parks it behind one click, so
- * scrolling old chats neither boots the dev server nor spins up Cesium.
+ * The feed itself. Its URL is built once, in the scheme the chat shows at that
+ * moment, and kept: a later theme switch reaches the running globe through the
+ * theme runtime's postMessage rather than a reload that would lose the camera.
  */
-function GodsEyeViewport({ view, parked }: { view: GodsEyeView; parked: boolean }) {
-  const [mounted, setMounted] = useState(!parked);
-  const src = godsEyeOpenPath(view);
+function GodsEyeFrame({ view, theme }: { view: GodsEyeView; theme: AppTheme }) {
+  const [src] = useState(() => godsEyeOpenPath(view, theme));
   return (
-    <figure
-      className="w-full overflow-hidden"
-      style={{
-        margin: 0,
-        borderRadius: 16,
-        border: `1px solid ${HUD_BORDER}`,
-        background: "#0a0a0f",
-        boxShadow: "0 12px 32px rgba(0, 0, 0, 0.35)",
-      }}
-    >
+    <iframe
+      title={`God's Eye view of ${view.label}`}
+      src={src}
+      allow="fullscreen"
+      referrerPolicy="no-referrer"
+      className="block aspect-video w-full border-0 bg-[var(--paper-bg)]"
+    />
+  );
+}
+
+/**
+ * The globe, framed as a Breadboard run panel: label and coordinates in the
+ * caption, the feed below. As wide as the text column it sits in — never
+ * wider than the prose around it. A live completion mounts the feed at once;
+ * a reopened card parks it behind one click, so scrolling old chats neither
+ * boots the dev server nor spins up Cesium.
+ */
+function GodsEyeViewport({
+  view,
+  parked,
+  theme,
+}: {
+  view: GodsEyeView;
+  parked: boolean;
+  theme: AppTheme | null;
+}) {
+  const [mounted, setMounted] = useState(!parked);
+  const live = mounted && theme !== null;
+  return (
+    <figure className="bb-agent-run-panel w-full overflow-hidden" style={{ margin: 0 }}>
       <figcaption
         className="flex items-center justify-between gap-3 px-3.5 py-2"
         style={{
-          fontFamily: HUD_MONO,
-          fontSize: 10,
-          letterSpacing: "0.14em",
-          textTransform: "uppercase",
-          color: "rgba(232, 234, 237, 0.5)",
-          borderBottom: `1px solid ${HUD_BORDER}`,
-          background: "rgba(12, 12, 20, 0.72)",
+          borderBottom: "1px solid color-mix(in srgb, var(--line) 55%, transparent)",
+          background: "color-mix(in srgb, var(--paper-strong) 22%, transparent)",
         }}
       >
         <span className="flex min-w-0 items-center gap-2">
           <span
             aria-hidden
-            className={mounted ? "animate-pulse" : ""}
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: 9999,
-              background: mounted ? HUD_ACCENT : "rgba(232, 234, 237, 0.3)",
-              boxShadow: mounted ? `0 0 8px ${HUD_ACCENT}` : "none",
-              flexShrink: 0,
-            }}
+            className={`bb-agent-run-led inline-block h-1.5 w-1.5 shrink-0 ${
+              live ? "animate-pulse bg-[var(--botanical)]" : "bg-[var(--line-strong)]"
+            }`}
           />
-          <span className="truncate" style={{ color: "#e8eaed" }}>
-            {view.label}
-          </span>
+          <span className="bb-agent-run-title truncate">{view.label}</span>
         </span>
-        <span className="flex shrink-0 items-center gap-3">
+        <span className="bb-agent-run-readout flex shrink-0 items-center gap-3 uppercase tracking-[0.08em]">
           <span>{coordinateReadout(view)}</span>
-          <span style={{ color: HUD_ACCENT, textShadow: `0 0 12px rgba(0, 212, 255, 0.4)` }}>
+          <span className="font-medium text-[var(--botanical)]">
             {view.style === "normal" ? "EO" : view.style.toUpperCase()}
           </span>
         </span>
       </figcaption>
-      {mounted ? (
-        <iframe
-          title={`God's Eye view of ${view.label}`}
-          src={src}
-          allow="fullscreen"
-          referrerPolicy="no-referrer"
-          className="block aspect-video w-full border-0"
-          style={{ background: "#0a0a0f" }}
-        />
+      {live && theme ? (
+        <GodsEyeFrame view={view} theme={theme} />
+      ) : mounted ? (
+        <div aria-hidden className="aspect-video w-full bg-[var(--paper-bg)]" />
       ) : (
         <button
           type="button"
           onClick={() => setMounted(true)}
-          className="flex aspect-video w-full flex-col items-center justify-center gap-3"
+          className="flex aspect-video w-full cursor-pointer flex-col items-center justify-center gap-3 border-0"
           style={{
             background:
-              "radial-gradient(ellipse at center, rgba(0, 212, 255, 0.08) 0%, transparent 65%), #0a0a0f",
-            border: 0,
-            cursor: "pointer",
+              "radial-gradient(ellipse at center, color-mix(in srgb, var(--botanical) 12%, transparent) 0%, transparent 65%), var(--paper-bg)",
           }}
         >
-          <span
-            style={{
-              fontFamily: HUD_MONO,
-              fontSize: 11,
-              letterSpacing: "0.22em",
-              color: HUD_ACCENT,
-              textShadow: "0 0 16px rgba(0, 212, 255, 0.4)",
-              border: `1px solid ${HUD_ACCENT}`,
-              borderRadius: 10,
-              padding: "8px 18px",
-            }}
-          >
-            REACQUIRE FEED
-          </span>
-          <span
-            style={{
-              fontFamily: HUD_MONO,
-              fontSize: 10,
-              letterSpacing: "0.12em",
-              color: "rgba(232, 234, 237, 0.3)",
-              textTransform: "uppercase",
-            }}
-          >
-            feed parked — starts the local globe server
-          </span>
+          <span className="bb-agent-run-action bb-agent-run-action-primary">Reacquire feed</span>
+          <span className="bb-agent-run-label">Feed parked — starts the local globe server</span>
         </button>
       )}
     </figure>
@@ -172,6 +172,7 @@ export default function InlineGodsEyeRun({
   quiet = false,
   persistedContent = "",
   persistedOutcome,
+  persistedUsage,
   onTerminal,
   onRetry,
 }: {
@@ -181,6 +182,7 @@ export default function InlineGodsEyeRun({
   quiet?: boolean;
   persistedContent?: string;
   persistedOutcome?: ExternalAgentOutcome;
+  persistedUsage?: ChatTokenUsage;
   onTerminal?: (result: ExternalAgentTerminalResult) => void;
   onRetry?: () => void;
 }) {
@@ -196,10 +198,12 @@ export default function InlineGodsEyeRun({
   const [failure, setFailure] = useState(
     persistedOutcome === "failed" || persistedOutcome === "aborted" ? persistedContent : "",
   );
+  const [usage, setUsage] = useState<ChatTokenUsage | undefined>(persistedUsage);
   const reported = useRef(false);
   const terminalRef = useRef(onTerminal);
   const base = `/api/gods-eye/runs/${runId}`;
   const replaying = Boolean(persistedOutcome && persistedOutcome !== "running" && persistedContent);
+  const theme = useChatTheme();
 
   useEffect(() => {
     terminalRef.current = onTerminal;
@@ -209,11 +213,19 @@ export default function InlineGodsEyeRun({
   }, [runId]);
 
   const report = useCallback(
-    (outcome: "completed" | "failed" | "aborted", content: string) => {
+    (
+      outcome: "completed" | "failed" | "aborted",
+      content: string,
+      terminalUsage?: ChatTokenUsage,
+    ) => {
       if (reported.current) return;
       reported.current = true;
       if (outcome === "completed") notifyTaskCompleted(`God's Eye — ${task.slice(0, 80)}`);
-      terminalRef.current?.({ outcome, content });
+      terminalRef.current?.({
+        outcome,
+        content,
+        ...(terminalUsage ? { usage: terminalUsage } : {}),
+      });
     },
     [task],
   );
@@ -234,10 +246,12 @@ export default function InlineGodsEyeRun({
       } else if (event.type === "run.completed") {
         const raw = text(payload.summary, "The view is framed.");
         const parsed = parseGodsEyeResult(raw);
+        const terminalUsage = normalizeChatTokenUsage(payload.usage) ?? undefined;
         setStatus("completed");
         setResult(parsed.content);
         if (parsed.view) setView(parsed.view);
-        report("completed", raw);
+        if (terminalUsage) setUsage(terminalUsage);
+        report("completed", raw, terminalUsage);
       } else if (event.type === "run.failed" || event.type === "run.aborted") {
         const outcome = event.type === "run.aborted" ? "aborted" : "failed";
         const reason =
@@ -275,12 +289,13 @@ export default function InlineGodsEyeRun({
         <AssistantResponseMeta
           active={!terminal}
           failed={terminal && status !== "completed"}
+          usage={usage}
           summary={terminal ? undefined : phase}
         />
         {status === "completed" && (result || showView) ? (
           <div className="space-y-[17px]">
             {result ? <ChatMarkdown content={result} compact /> : null}
-            {showView && view ? <GodsEyeViewport view={view} parked={replaying} /> : null}
+            {showView && view ? <GodsEyeViewport view={view} parked={replaying} theme={theme} /> : null}
           </div>
         ) : null}
         {failure ? (
@@ -298,6 +313,7 @@ export default function InlineGodsEyeRun({
       <AssistantResponseMeta
         active={!terminal}
         failed={terminal && status !== "completed"}
+        usage={usage}
         agentName="God's Eye"
         summary={terminal ? status : phase}
       />
@@ -320,7 +336,7 @@ export default function InlineGodsEyeRun({
             {showView && view ? (
               <a
                 className="bb-agent-run-action"
-                href={godsEyeOpenPath(view)}
+                href={godsEyeOpenPath(view, theme ?? undefined)}
                 target="_blank"
                 rel="noreferrer"
               >
@@ -345,7 +361,7 @@ export default function InlineGodsEyeRun({
               {phase.slice(1)}…
             </p>
           ) : null}
-          {showView && view ? <GodsEyeViewport view={view} parked={replaying} /> : null}
+          {showView && view ? <GodsEyeViewport view={view} parked={replaying} theme={theme} /> : null}
           {result ? (
             <section className="bb-agent-run-text">
               <ChatMarkdown content={result} compact />

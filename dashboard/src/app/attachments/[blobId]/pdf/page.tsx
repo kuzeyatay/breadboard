@@ -4,7 +4,10 @@ import { notFound, redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
 import { findDocumentBlob } from "@/lib/conversations/document-blob-store.ts";
 import { attachmentDisplayName } from "@/lib/document-attachments.ts";
-import { getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
+import {
+  getNavbarFlowers,
+  getNavbarShortcuts,
+} from "@/lib/profile/navbar-shortcuts-store.ts";
 import PdfViewerClient from "@/app/gardens/[clusterSlug]/pdf/[slug]/pdf-viewer-client";
 
 export const dynamic = "force-dynamic";
@@ -60,6 +63,7 @@ export default async function ChatAttachmentPdfPage({
         sourceUrl={`/api/chat-attachments/documents/${encodeURIComponent(blob.blobId)}`}
         readOnly
         fastRead={getNavbarShortcuts(userId).fastRead}
+        showNavbarFlowers={getNavbarFlowers(userId)}
       />
     </div>
   );

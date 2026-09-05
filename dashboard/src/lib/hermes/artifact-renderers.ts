@@ -1,6 +1,10 @@
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import type { ArtifactKind, ArtifactRendererId } from "./artifact-types.ts";
+import {
+  markdownIntegrityIssue,
+  normalizeProducedMarkdown,
+} from "../markdown-safety.ts";
 
 export interface ArtifactRenderContext {
   directory: string;
@@ -43,11 +47,19 @@ const textRenderer = (id: "text" | "markdown", kind: "text" | "markdown"): Artif
   mimeType: kind === "markdown" ? "text/markdown; charset=utf-8" : "text/plain; charset=utf-8",
   extension: kind === "markdown" ? ".md" : ".txt",
   async validate(content) {
-    return content.length > 0 ? { ok: true } : { ok: false, error: "Artifact content is empty." };
+    if (content.length === 0) return { ok: false, error: "Artifact content is empty." };
+    if (kind === "markdown") {
+      const issue = markdownIntegrityIssue(normalizeProducedMarkdown(content));
+      if (issue) return { ok: false, error: issue };
+    }
+    return { ok: true };
   },
   async render(content, context) {
     const outputPath = path.join(context.directory, context.filename);
-    atomicWrite(outputPath, content);
+    atomicWrite(
+      outputPath,
+      kind === "markdown" ? normalizeProducedMarkdown(content) : content,
+    );
     return { outputPath, previewPath: outputPath, mimeType: this.mimeType };
   },
 });

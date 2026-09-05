@@ -25,6 +25,15 @@ import {
 } from "../src/lib/product-search/service.ts";
 import { composeHermesSystemPrompt } from "../src/lib/hermes/system-prompts.ts";
 
+const gardenNavigatorSource = readFileSync(
+  new URL("../src/app/components/hermes/garden-navigator.tsx", import.meta.url),
+  "utf8",
+);
+const gardenPageSource = readFileSync(
+  new URL("../src/app/garden/[clusterSlug]/page.tsx", import.meta.url),
+  "utf8",
+);
+
 const productResource = {
   schemaVersion: 1,
   kind: "product-search",
@@ -178,6 +187,23 @@ test("groups retrieved pages into one navigation destination per Garden", () => 
     resource.data.gardens.map((garden) => [garden.slug, garden.results.length]),
     [["physics", 2], ["mathematics", 1]],
   );
+});
+
+test("Garden search destinations support normal clicks and browser-style right-click actions", () => {
+  assert.match(gardenNavigatorSource, /<LinkContextMenu[\s\S]*?href=\{gardenHref\(garden\.slug\)\}/);
+  assert.match(
+    gardenNavigatorSource,
+    /<LinkContextMenu[\s\S]*?href=\{pageHref\(garden\.slug, result\.pageSlug\)\}/,
+  );
+  assert.match(
+    gardenNavigatorSource,
+    /<a[\s\S]*?href=\{pageHref\(garden\.slug, result\.pageSlug\)\}/,
+  );
+});
+
+test("Garden routes resolve legacy basename links to their nested Quartz page", () => {
+  assert.match(gardenPageSource, /resolveGardenNoteSlug\(contentPath, clusterSlug, note\)/);
+  assert.match(gardenPageSource, /note=\{canonicalNote\}/);
 });
 
 test("recovers and promotes a historical live product result exactly once", () => {

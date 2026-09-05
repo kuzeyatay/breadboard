@@ -174,6 +174,13 @@ const MEDIA_OBJECT =
 const MEDIA_VERB =
   /\b(transcribe|transcription|caption|subtitle|diari[sz]e|extract\s+audio|re-?encode|trim|clip)\b/i;
 
+// A media noun says what the conversation is about, not necessarily that raw
+// media bytes must be processed. Garden questions commonly refer to already
+// indexed "recordings", "lectures", or the "Video & audio" section while
+// asking for a chronology/table from retained metadata and transcripts.
+const MEDIA_ANALYSIS_VERB =
+  /\b(analy[sz]e|describe|inspect|listen\s+to|review|summari[sz]e|watch|what\s+(?:happens?|is\s+said|was\s+said))\b/i;
+
 const WEB_VERB =
   /\b(browse|google|research|search\s+(?:the\s+)?(?:web|internet|online)|look\s+up\s+online|check\s+online|latest|current|news|recent\s+developments?|up[- ]to[- ]date)\b/i;
 
@@ -346,7 +353,15 @@ const PATH_LIKE =
 const URL_LIKE = /https?:\/\/[^\s"'`<>)]+/gi;
 
 const KNOWN_FOLDER =
-  /\b(documents?|docments?|docuemnts?|desktop|destkop|downloads?|donwloads?|pictures?|pictuers?|videos?|vidoes?|music|muisc|onedrive|onedirve|home\s+(?:folder|directory))\b/gi;
+  /\b(documents?|docments?|docuemnts?|desktop|destkop|downloads?|donwloads?|pictures?|pictuers?|onedrive|onedirve|home\s+(?:folder|directory))\b/gi;
+
+// "video", "videos", and "music" are usually content categories, especially
+// on the Garden surface (whose library has a "Video & audio" section). Treat
+// them as Windows known folders only when the user actually names a personal
+// folder. The old bare-token match turned "in video and audio" into
+// C:\Users\...\Videos and raised an unrelated filesystem permission prompt.
+const PERSONAL_MEDIA_FOLDER =
+  /\b(?:my\s+(videos?|vidoes?|music|muisc)|(?:videos?|vidoes?|music|muisc)\s+(?:folder|directory))\b/gi;
 
 const KNOWN_FOLDER_CANONICAL_NAMES: Readonly<Record<string, string>> = {
   document: "documents",
@@ -412,6 +427,18 @@ function extractResources(text: string): ResourceReference[] {
   }
   for (const match of withoutUrls.matchAll(KNOWN_FOLDER)) {
     const key = match[0].toLowerCase().replace(/\s+/g, " ");
+    push({
+      kind: "path",
+      value: KNOWN_FOLDER_CANONICAL_NAMES[key] ?? key,
+      absolute: false,
+      resourceType: "directory",
+    });
+  }
+  for (const match of withoutUrls.matchAll(PERSONAL_MEDIA_FOLDER)) {
+    const key = String(match[1] ?? match[0])
+      .toLowerCase()
+      .replace(/\b(?:my|folder|directory)\b/g, "")
+      .trim();
     push({
       kind: "path",
       value: KNOWN_FOLDER_CANONICAL_NAMES[key] ?? key,
@@ -603,7 +630,9 @@ function readSignals(text: string, resources: ResourceReference[]): Signals {
     documents: DOCUMENT_OBJECT.test(text) && !filesystemOnlyMutation,
     media:
       MEDIA_VERB.test(text) ||
-      (MEDIA_OBJECT.test(text) && !filesystemOnlyMutation),
+      (MEDIA_OBJECT.test(text) &&
+        MEDIA_ANALYSIS_VERB.test(text) &&
+        !filesystemOnlyMutation),
     web:
       WEB_VERB.test(text) ||
       LIVE_WEATHER_QUERY.test(text) ||
@@ -762,9 +791,12 @@ export function planTask(input: TaskPlanInput): TaskPlan {
   if (!isolated && (signals.fsMutate || signals.fsCreate)) {
     addStep("Create the target structure and move the files into place.", ["filesystem_write"]);
   }
-  // A produced artifact (converted document, transcript, download) has to land
-  // somewhere, so conversion/media outcomes imply a write.
-  if (!isolated && (signals.convert || signals.media) && !capabilities.has("filesystem_write")) {
+  // A converted/downloaded file has to land somewhere. Media analysis does
+  // not: attached and Garden-retained recordings are staged into the turn's
+  // own workspace, and a summary/transcript can be returned in chat. Requiring
+  // a host-filesystem write for every mention of video or audio both exceeds
+  // the requested outcome and creates an approval the media tools cannot use.
+  if (!isolated && signals.convert && !capabilities.has("filesystem_write")) {
     addStep("Save the generated artifact to the selected location.", ["filesystem_write"]);
   }
 

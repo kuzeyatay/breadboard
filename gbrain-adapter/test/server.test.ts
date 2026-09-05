@@ -184,5 +184,24 @@ test("end-to-end: register -> durable persistence across restart -> scoped query
   expect(body.data.results[0].citation.sourceId).toBe("src-e2e");
   expect(body.data.results[0].citation.pageId).toBe("ohms-law");
   expect(body.data.results[0].citation.path).toBe("e2e/ohms-law.md");
+
+  const removed = await fetch(`http://127.0.0.1:${s2.port}/remove-source`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}` },
+    body: JSON.stringify({ sourceId: "src-e2e" }),
+  });
+  expect(removed.status).toBe(200);
+  expect((await removed.json()).data).toEqual({
+    sourceId: "src-e2e",
+    removed: true,
+    pagesDeleted: 1,
+  });
+
+  const removedAgain = await fetch(`http://127.0.0.1:${s2.port}/remove-source`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}` },
+    body: JSON.stringify({ sourceId: "src-e2e" }),
+  });
+  expect((await removedAgain.json()).data.removed).toBe(false);
   await s2.stop();
 });

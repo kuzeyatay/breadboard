@@ -25,6 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { commitAtomicDirectorySwap } from "./atomic-artifact-swap.mjs";
+import { ensureHermesSourceHook } from "./hermes-python-source-hook.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(desktopRoot, "..");
@@ -312,23 +313,7 @@ function ensureChatMockImportPath(target) {
 }
 
 function ensureHermesImportPath(target) {
-  const sitePackages = path.join(target, "Lib", "site-packages");
-  const hermesSourceRoot = path.join(
-    desktopRoot,
-    "build-resources",
-    "app-services",
-    "hermes-agent",
-  );
-  const relativeHermesRoot = path
-    .relative(sitePackages, hermesSourceRoot)
-    .split(path.sep)
-    .join("/");
-  fs.mkdirSync(sitePackages, { recursive: true });
-  fs.writeFileSync(
-    path.join(sitePackages, "breadboard-hermes.pth"),
-    `${relativeHermesRoot}\n`,
-    "utf8",
-  );
+  ensureHermesSourceHook(target);
 }
 
 function log(message) {

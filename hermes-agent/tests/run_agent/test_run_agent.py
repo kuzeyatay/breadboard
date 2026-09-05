@@ -6426,9 +6426,17 @@ class TestRetryExhaustion:
         """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)
         agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+        lifecycle = []
+        agent.status_callback = (
+            lambda kind, text=None: lifecycle.append(("status", kind, text))
+        )
+
+        def _record_persist(*_args, **_kwargs):
+            lifecycle.append(("persist", None, None))
+
         from agent import conversation_loop as _conv_loop
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", side_effect=_record_persist),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
@@ -6440,6 +6448,15 @@ class TestRetryExhaustion:
         assert result.get("failed") is True
         assert "error" in result
         assert "rate limited" in result["error"]
+        terminal_index = next(
+            index
+            for index, item in enumerate(lifecycle)
+            if item[0] == "status" and item[1] == "turn.failed"
+        )
+        assert lifecycle[terminal_index][2] == result["final_response"]
+        assert any(
+            item[0] == "persist" for item in lifecycle[terminal_index + 1 :]
+        ), "the recoverable terminal result must be published before final persistence"
 
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.

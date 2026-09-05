@@ -58,7 +58,13 @@ const SEARCH_TIMEOUT_MS =
   Number(process.env.DEEP_RESEARCH_SEARCH_TIMEOUT_MS) || 300_000;
 
 function chatmockBaseUrl(): string | undefined {
-  const trimmed = (process.env.CHATMOCK_BASE_URL ?? '').trim();
+  // Runtime V2 hands the gateway over as `OPENAI_BASE_URL` with a
+  // `CHATMOCK_MODEL` beside it; see the same fallback in providers.ts.
+  const trimmed = (
+    process.env.CHATMOCK_BASE_URL ||
+    (process.env.CHATMOCK_MODEL ? process.env.OPENAI_BASE_URL : '') ||
+    ''
+  ).trim();
   if (!trimmed) return undefined;
   try {
     const url = new URL(

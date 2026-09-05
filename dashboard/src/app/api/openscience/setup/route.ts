@@ -43,7 +43,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "unknown_action" }, { status: 400 });
     }
 
-    await stopOpenscienceRuntime({ userId });
+    // Best-effort. Before the CLI is installed the Runtime refuses to launch
+    // the research service at all ("launch prerequisites were unavailable"),
+    // and acquiring the stop lease surfaces that refusal as an error — so the
+    // install that would have fixed it never ran, and the button answered
+    // with a bare internal error. A service that cannot start has nothing to
+    // stop; only a running one needs stopping before it is replaced.
+    await stopOpenscienceRuntime({ userId }).catch(() => undefined);
     const result = await runManagedSetupJob({
       userId,
       serviceId: "openscience",

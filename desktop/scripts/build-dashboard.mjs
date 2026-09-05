@@ -1,6 +1,6 @@
 // Runs the dashboard's desktop production build (Next standalone output into
 // .next-desktop) with the right environment on any platform.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,6 +11,7 @@ import {
   writeDashboardBuildManifest,
 } from "./dashboard-build-cache.mjs";
 import { assertWindowsCommitHeadroom } from "./commit-preflight.mjs";
+import { isTransientDashboardBuildFailure } from "./dashboard-build-retry.mjs";
 import { assertSafeDashboardTraces } from "./dashboard-trace-safety.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -59,26 +60,68 @@ if (genofficeEditor.status !== 0) process.exit(genofficeEditor.status ?? 1);
 // orchestration and output tracing; the lean runtime remains independently
 // bounded, and dev-fast's commit monitor still protects the Windows reserve.
 const dashboardBuildHeapMb = 8_192;
-beginDashboardBuild(repoRoot);
-const result = spawnSync(process.execPath, [
-  `--max-old-space-size=${dashboardBuildHeapMb}`,
-  "--require",
-  traceGuard,
-  nextBin,
-  "build",
-  "--turbopack",
-], {
-  cwd: dashboardDir,
-  stdio: "inherit",
-  env: {
-    ...process.env,
-    BREADBOARD_DESKTOP_BUILD: "1",
-    BREADBOARD_NEXT_DIST_DIR: ".next-desktop",
-  },
-});
-if (result.status !== 0) {
+const maxDashboardBuildAttempts = 2;
+const capturedOutputLimit = 256 * 1024;
+
+function appendCapturedOutput(current, chunk) {
+  const combined = current + chunk.toString();
+  return combined.length <= capturedOutputLimit
+    ? combined
+    : combined.slice(combined.length - capturedOutputLimit);
+}
+
+function runDashboardBuildAttempt() {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [
+      `--max-old-space-size=${dashboardBuildHeapMb}`,
+      "--require",
+      traceGuard,
+      nextBin,
+      "build",
+      "--turbopack",
+    ], {
+      cwd: dashboardDir,
+      stdio: ["inherit", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        BREADBOARD_DESKTOP_BUILD: "1",
+        BREADBOARD_NEXT_DIST_DIR: ".next-desktop",
+      },
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      process.stdout.write(chunk);
+      output = appendCapturedOutput(output, chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      output = appendCapturedOutput(output, chunk);
+    });
+    child.once("error", (error) => resolve({
+      status: 1,
+      output: `${output}\n${error.stack ?? error}`,
+    }));
+    child.once("exit", (status, signal) => resolve({
+      status: status ?? 1,
+      output: signal ? `${output}\nNext build exited on signal ${signal}` : output,
+    }));
+  });
+}
+
+let result;
+for (let attempt = 1; attempt <= maxDashboardBuildAttempts; attempt += 1) {
+  beginDashboardBuild(repoRoot);
+  result = await runDashboardBuildAttempt();
+  if (result.status === 0) break;
+
   recoverInterruptedDashboardBuild(repoRoot);
-  process.exit(result.status ?? 1);
+  const retryable = isTransientDashboardBuildFailure(result.output);
+  if (!retryable || attempt === maxDashboardBuildAttempts) {
+    process.exit(result.status ?? 1);
+  }
+  console.warn(
+    `[desktop] Next hit a transient managed-output filesystem failure; retrying dashboard build (${attempt + 1}/${maxDashboardBuildAttempts}).`,
+  );
 }
 
 // Next intentionally leaves static/public assets beside standalone output.

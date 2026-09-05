@@ -6,6 +6,7 @@ import {
   prepareOfficeExportViaRuntime,
   type RuntimeV2OfficeControl,
 } from "../office/runtime-v2.ts";
+import { OfficeCliError } from "../office/contract.ts";
 import {
   ArtifactStoreError,
   importArtifactVersion,
@@ -50,6 +51,16 @@ function validateExpectedVersion(
       "This artifact changed after the editor opened. Reload it before saving.",
     );
   }
+}
+
+function isIndirectOfficeInputError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.trim() === "The Office input must be a direct file." &&
+    (!(error instanceof OfficeCliError) ||
+      error.code === "office_input_indirect" ||
+      error.code === "office_runtime_failed")
+  );
 }
 
 /**
@@ -100,26 +111,31 @@ export async function saveArtifactOfficeBytes(
         "The artifact conversation scope is unavailable.",
       );
     }
-    const rendered = await prepareOfficeExportViaRuntime(
-      {
-        userId: artifact.user_id,
-        gardenId: artifact.garden_slug ?? null,
-        conversationId: artifact.conversation_public_id,
-      },
-      workspace,
-      { file: path.basename(staged), title: artifact.title },
-      {
-        idempotencySeed: `${artifact.id}:${artifact.current_version}:genoffice-docs`,
-        signal: options.signal,
-        control: options.officeRuntimeControl,
-      },
-    );
+    let rendered: Awaited<ReturnType<typeof prepareOfficeExportViaRuntime>> | null = null;
     try {
+      try {
+        rendered = await prepareOfficeExportViaRuntime(
+          {
+            userId: artifact.user_id,
+            gardenId: artifact.garden_slug ?? null,
+            conversationId: artifact.conversation_public_id,
+          },
+          workspace,
+          { file: path.basename(staged), title: artifact.title },
+          {
+            idempotencySeed: `${artifact.id}:${artifact.current_version}:genoffice-docs`,
+            signal: options.signal,
+            control: options.officeRuntimeControl,
+          },
+        );
+      } catch (error) {
+        if (!isIndirectOfficeInputError(error)) throw error;
+      }
       return await importArtifactVersion({
         artifact,
-        authorizedRoot: path.dirname(rendered.filePath),
-        filePath: rendered.filePath,
-        previewFilePath: rendered.previewFilePath,
+        authorizedRoot: rendered ? path.dirname(rendered.filePath) : workspace,
+        filePath: rendered?.filePath ?? staged,
+        previewFilePath: rendered?.previewFilePath ?? null,
         runId: artifact.originating_run_id,
         assistantMessageId: null,
         metadata: {
@@ -130,7 +146,7 @@ export async function saveArtifactOfficeBytes(
         storageRoot: options.storageRoot,
       });
     } finally {
-      rendered.cleanup();
+      rendered?.cleanup();
     }
   } finally {
     removeTemporaryWorkspace(workspace);

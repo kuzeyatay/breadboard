@@ -85,6 +85,7 @@ const SCOPES: Record<string, string[]> = {
     "user-modify-playback-state",
     "user-library-read",
     "user-library-modify",
+    "playlist-read-private",
     "playlist-modify-private",
   ],
   gmail: [

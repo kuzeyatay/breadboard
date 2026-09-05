@@ -8,7 +8,15 @@ import {
   listPendingChatNotifications,
 } from "@/lib/chat-notifications/store";
 import {
+  dismissLearnNotifications,
+  dismissLearnNotificationsForGarden,
+  listPendingLearnNotifications,
+  parseLearnNotificationId,
+  type LearnNotificationPhase,
+} from "@/lib/chat-notifications/learn";
+import {
   isChatNotificationTarget,
+  type ChatNotificationRecord,
   type ChatNotificationTarget,
 } from "@/lib/chat-notification-inbox";
 
@@ -26,26 +34,36 @@ function errorResponse(error: unknown): NextResponse {
   );
 }
 
+function notificationTime(record: ChatNotificationRecord): number {
+  // Chat rows carry SQLite `datetime('now')` text and Learn rows carry ISO
+  // timestamps; parse both so the merged inbox is in true time order.
+  const parsed = Date.parse(record.updatedAt.replace(" ", "T"));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 /**
- * The account's live set of undismissed "Response ready" / "Response failed"
- * notices. Every open window polls this and shows exactly this list, so a
- * dismissal made anywhere disappears everywhere on the next poll.
+ * The account's live set of undismissed notices — chat answers and Learn
+ * pipeline updates together, oldest first. Every open window polls this and
+ * shows exactly this list, so a dismissal made anywhere disappears
+ * everywhere on the next poll.
  */
 export async function GET() {
   try {
     const userId = await requireUserId();
-    return NextResponse.json({
-      messages: listPendingChatNotifications(db, userId),
-    });
+    const messages = [
+      ...listPendingChatNotifications(db, userId),
+      ...listPendingLearnNotifications(db, userId),
+    ].sort((left, right) => notificationTime(left) - notificationTime(right));
+    return NextResponse.json({ messages });
   } catch (error) {
     return errorResponse(error);
   }
 }
 
 interface DismissRequest {
-  /** Notice ids (`msg_<n>`) the person closed. */
+  /** Notice ids (`msg_<n>` or `learn_<job>:<phase>`) the person closed. */
   dismiss?: unknown;
-  /** A chat the person is looking at: every finished answer in it is seen. */
+  /** A chat or a Garden's Learn panel the person is looking at: everything in it is seen. */
   seen?: unknown;
 }
 
@@ -57,21 +75,31 @@ export async function POST(request: Request) {
       throw new RouteError(400, "A JSON body is required.");
     }
 
-    const messageIds = Array.isArray(body.dismiss)
+    const requestedIds = Array.isArray(body.dismiss)
       ? body.dismiss
           .slice(0, MAX_DISMISSALS_PER_REQUEST)
-          .map((id) => (typeof id === "string" ? chatNotificationMessageId(id) : null))
-          .filter((id): id is number => id !== null)
+          .filter((id): id is string => typeof id === "string")
       : [];
+    const messageIds = requestedIds
+      .map(chatNotificationMessageId)
+      .filter((id): id is number => id !== null);
+    const learnIds = requestedIds
+      .map(parseLearnNotificationId)
+      .filter((id): id is { jobId: string; phase: LearnNotificationPhase } => id !== null);
     const seen: ChatNotificationTarget | null = isChatNotificationTarget(body.seen)
       ? body.seen
       : null;
-    if (messageIds.length === 0 && !seen) {
+    if (messageIds.length === 0 && learnIds.length === 0 && !seen) {
       throw new RouteError(400, "Nothing to dismiss.");
     }
 
     let dismissed = dismissChatNotifications(db, userId, messageIds);
-    if (seen) dismissed += dismissChatNotificationsForTarget(db, userId, seen);
+    dismissed += dismissLearnNotifications(db, userId, learnIds);
+    if (seen) {
+      dismissed += seen.surface === "garden_learn"
+        ? dismissLearnNotificationsForGarden(db, userId, seen.gardenSlug ?? "")
+        : dismissChatNotificationsForTarget(db, userId, seen);
+    }
     return NextResponse.json({ ok: true, dismissed });
   } catch (error) {
     return errorResponse(error);

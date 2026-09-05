@@ -336,6 +336,47 @@ test("approved promotion copies the exact reviewed version and updates registry"
   );
 });
 
+test("promotion preserves reviewed descriptions and portable nested file pins", () => {
+  const writingCandidate = {
+    ...snapshotCandidate("paper-outline"),
+    description: "Academic writing skill for restructuring a paper.",
+  };
+  quarantineSkill({
+    candidate: writingCandidate,
+    files: {
+      "SKILL.md": "---\nname: paper-outline\n---\n\nUse the bundled Python helper only when its runtime is available.",
+      "references/guide.md": "# Paper structure guide",
+    },
+  });
+
+  const reviewed = inspectQuarantine("paper-outline");
+  assert.equal(reviewed.description, writingCandidate.description);
+  assert.equal(reviewed.repository, writingCandidate.repository);
+  assert.equal(reviewed.classification.classification, "eligible_general");
+
+  promoteSkill("paper-outline", {
+    approvedAgents: ["breadboard-assistant", "breadboard-document"],
+    approvedPermissions: [],
+  });
+  const registry = JSON.parse(
+    fs.readFileSync(
+      path.join(process.env.HERMES_SKILLS_APPROVED, "registry.json"),
+      "utf8",
+    ),
+  );
+  const approved = registry.skills["paper-outline"];
+  assert.equal(approved.description, writingCandidate.description);
+  assert.ok(approved.fileHashes["references/guide.md"]);
+  assert.equal(
+    Object.keys(approved.fileHashes).some((file) => file.includes("\\")),
+    false,
+  );
+  assert.equal(
+    listApprovedSkills().find((skill) => skill.slug === "paper-outline")?.healthy,
+    true,
+  );
+});
+
 test("coding skills can be promoted only into the OpenCode conditional store", () => {
   quarantineSkill({
     candidate: {

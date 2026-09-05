@@ -2,16 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 
-/** The reveal never types slower than this, so short answers stay snappy. */
-const MIN_CHARS_PER_SECOND = 90;
+/** The reveal never types slower than this, so short answers stay readable. */
+const MIN_CHARS_PER_SECOND = 60;
 /**
  * Time constant of the catch-up: each frame reveals backlog/horizon chars per
  * second, so the pace eases out as it closes in — quicker through a burst,
  * settling to the floor rate for the tail.
  */
-const CATCH_UP_SECONDS = 1.6;
+const CATCH_UP_SECONDS = 2.4;
 /** A tighter horizon once the turn is over, so the tail never sits unfinished. */
-const SETTLE_SECONDS = 0.6;
+const SETTLE_SECONDS = 0.9;
 
 /**
  * One pacing step: how much of `target` should be shown `dtSeconds` after

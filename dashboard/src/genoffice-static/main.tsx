@@ -16,30 +16,36 @@ const params = new URLSearchParams(window.location.search)
 const artifactId = params.get('artifactId')?.trim() ?? ''
 const conversationId = params.get('conversationId')?.trim() ?? ''
 const version = Number(params.get('version') ?? '0')
+const readOnly = params.get('mode') === 'preview'
 const root = document.getElementById('root')
 const autoSaveDefaultVersionKey = 'breadboard.genoffice.autoSaveDefaultVersion'
 const autoSaveDefaultVersion = '1'
+const storedTheme = localStorage.getItem('breadboard:theme')
+const initialTheme = storedTheme === 'dark' ? 'dark' : 'light'
 
 if (!root || !artifactId || !conversationId) {
   document.body.textContent = 'This editor link is missing its artifact conversation.'
 } else {
+  document.documentElement.setAttribute('data-theme', initialTheme)
   installGenOfficeBridge({
     artifactId,
     conversationId,
     initialVersion: Number.isInteger(version) ? version : 0,
+    initialTheme,
   })
-  localStorage.setItem('aidocs.showAi', '1')
-  if (localStorage.getItem(autoSaveDefaultVersionKey) !== autoSaveDefaultVersion) {
-    localStorage.setItem('aidocs.autoSave', '1')
-    localStorage.setItem(autoSaveDefaultVersionKey, autoSaveDefaultVersion)
+  if (!readOnly) {
+    localStorage.setItem('aidocs.showAi', '1')
+    if (localStorage.getItem(autoSaveDefaultVersionKey) !== autoSaveDefaultVersion) {
+      localStorage.setItem('aidocs.autoSave', '1')
+      localStorage.setItem(autoSaveDefaultVersionKey, autoSaveDefaultVersion)
+    }
   }
   setModuleLang('en')
   document.documentElement.lang = htmlLang('en')
-  document.documentElement.setAttribute('data-theme', 'light')
   installScreenTips()
   createRoot(root).render(
     <LocaleProvider initial="en">
-      <App />
+      <App readOnly={readOnly} />
     </LocaleProvider>,
   )
 }

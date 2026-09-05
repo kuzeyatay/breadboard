@@ -272,7 +272,11 @@ function isPublished(relPath: string, fm: Record<string, string | string[]>): bo
   const learnAuthored =
     fmString(fm, "generated_by") === "learn_button" ||
     fmString(fm, "generatedBy") === "learn_button";
-  if (lessonType && !learnAuthored) return false;
+  const documentIngestConcept =
+    lowerParts.includes("concepts") &&
+    (fmString(fm, "generated_by") === "document_ingestion" ||
+      fmString(fm, "generatedBy") === "document_ingestion");
+  if (lessonType && !learnAuthored && !documentIngestConcept) return false;
 
   const title = fmString(fm, "title").replace(/^\d+(?:\.\d+)*\.?\s*/, "");
   const sourceFile = fmString(fm, "source_file").replace(
@@ -1589,12 +1593,11 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(6, "learner subsections have an example and a Q&A pair", problems, lessonPages.length === 0);
   }
 
-  // 7. Strict exported filesystem: only _index.md, learning/, sources/,
-  //    assets/, and .breadboard/ may exist at the root. Sources publish under
-  //    a visible sources/ folder and are allowed.
+  // 7. Strict exported filesystem: only _index.md, Concepts/, learning/,
+  //    sources/, assets/, and .breadboard/ may exist at the root.
   {
     const problems: string[] = [];
-    const allowedTopLevel = new Set(["_index.md", "learning", "sources", "assets", ".breadboard"]);
+    const allowedTopLevel = new Set(["_index.md", "Concepts", "learning", "sources", "assets", ".breadboard"]);
     try {
       for (const entry of fs.readdirSync(gardenDir, { withFileTypes: true })) {
         if (!allowedTopLevel.has(entry.name)) {
@@ -1622,10 +1625,10 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`planning artifact visible: ${rel}`);
       }
       if (rel.startsWith("Learning/")) problems.push(`uppercase Learning/ page path is not allowed: ${rel}`);
-      // Top-level content outside _index.md, learning/, sources/, assets/.
+      // Top-level content outside _index.md, Concepts/, learning/, sources/, assets/.
       const top = rel.split("/")[0];
-      if (rel !== "_index.md" && top !== "learning" && top !== "sources" && top !== "assets") {
-        problems.push(`top-level page outside learning/: ${rel}`);
+      if (rel !== "_index.md" && top !== "Concepts" && top !== "learning" && top !== "sources" && top !== "assets") {
+        problems.push(`top-level page outside Concepts/learning/: ${rel}`);
       }
     }
     // Numbered folder named after the raw upload.
@@ -1642,7 +1645,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`folder named after raw upload: ${top}/`);
       }
     }
-    check(7, "exported tree is only _index.md, learning/, sources/, assets/, .breadboard/", [...new Set(problems)]);
+    check(7, "exported tree is only _index.md, Concepts/, learning/, sources/, assets/, .breadboard/", [...new Set(problems)]);
   }
 
   // 8. Learner lesson pages carry exactly the Learning Unit Contract's
@@ -2169,8 +2172,13 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`${page.relPath}: internal:true page is still typed as a learning page`);
       }
       const top = page.relPath.split("/")[0];
-      if (page.relPath !== "_index.md" && top !== "learning") {
-        problems.push(`${page.relPath}: learning page exists outside learning/`);
+      const generatedBy =
+        fmString(page.frontmatter, "generated_by") ||
+        fmString(page.frontmatter, "generatedBy");
+      const isIngestConcept =
+        top === "Concepts" && generatedBy === "document_ingestion";
+      if (page.relPath !== "_index.md" && top !== "learning" && !isIngestConcept) {
+        problems.push(`${page.relPath}: learning page exists outside learning/ or document-ingestion Concepts/`);
       }
     }
     check(20, "root index exposes live learning/sources navigation", [...new Set(problems)]);

@@ -2221,7 +2221,10 @@ test("browser mount does not retry a sandbox runtime self-check failure", async 
 });
 
 test("preview capture retries transient Edge-style failures with fresh profiles and a bounded backoff", async () => {
-  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-preview-retry-"));
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-preview-retry-"));
+  const deepSegmentLength = Math.max(16, 220 - outputRoot.length - 1);
+  const outputDir = path.join(outputRoot, `deep-${"x".repeat(deepSegmentLength - 5)}`);
+  fs.mkdirSync(outputDir, { recursive: true });
   const captureProfiles = new Map();
   const captureAttempts = new Map();
   const retryDelays = [];
@@ -2277,6 +2280,24 @@ test("preview capture retries transient Edge-style failures with fresh profiles 
     assert.equal(result.browser?.previewMatrixReceipt?.cells.length, 6);
     assert.deepEqual(retryDelays, Array(6).fill(125));
     assert.equal(captureProfiles.size, 6);
+    const capturePaths = [...captureProfiles.keys()];
+    assert.ok(
+      path.join(
+        outputDir,
+        "preview-desktop-1000x720-light-case_mode-1.png",
+      ).length >= 260,
+      "the fixture must reproduce the legacy Windows MAX_PATH failure",
+    );
+    assert.ok(
+      capturePaths.every((capturePath) => capturePath.length < 260),
+      JSON.stringify(capturePaths),
+    );
+    assert.ok(
+      capturePaths.every((capturePath) =>
+        /^preview(?:-\d+-\d+)?\.png$/.test(path.basename(capturePath)),
+      ),
+      JSON.stringify(capturePaths),
+    );
     for (const receipt of result.browser?.previewMatrixReceipt?.cells ?? []) {
       assert.equal(receipt.captured, true, receipt.id);
       assert.equal(receipt.attempts.length, 2, receipt.id);
@@ -2300,7 +2321,7 @@ test("preview capture retries transient Edge-style failures with fresh profiles 
       }
     }
   } finally {
-    fs.rmSync(outputDir, { recursive: true, force: true });
+    fs.rmSync(outputRoot, { recursive: true, force: true });
   }
 });
 
@@ -2318,7 +2339,7 @@ test("a permanently failed labelled preview remains a complete-or-fail matrix re
         const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
         if (screenshotArg) {
           const screenshotPath = screenshotArg.slice("--screenshot=".length);
-          if (screenshotPath.endsWith("preview-mobile-375x667-light-case_mode-1.png")) {
+          if (screenshotPath.endsWith("preview-0-1.png")) {
             failedCellProfiles.push(profilePath);
             return observedBrowserTransient(
               "EBUSY",

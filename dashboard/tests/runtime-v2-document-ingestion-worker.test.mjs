@@ -8,6 +8,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  atomicWrite,
   canonicalRuntimeV2IngestBlobPath,
   createRuntimeV2IngestionEventWriter,
   loadRuntimeV2DocumentIngestionLaunch,
@@ -29,6 +30,89 @@ test("a terminal event write failure preserves assets after the garden commit", 
   assert.equal(shouldCleanupCreatedIngestionAssets("active"), false);
   assert.equal(shouldCleanupCreatedIngestionAssets("rolled-back"), true);
   assert.equal(shouldCleanupCreatedIngestionAssets("none"), true);
+});
+
+test("ingestion checkpoints are deleted only after the garden transaction commits", () => {
+  const worker = fs.readFileSync(
+    path.join(dashboardRoot, "scripts", "runtime-v2-document-ingestion-worker.mjs"),
+    "utf8",
+  );
+  const runIngestCall = worker.indexOf("const value = await ingestModule.runIngest({");
+  const deferredArgument = worker.indexOf("deferredCheckpointCleanupPaths,", runIngestCall);
+  const commit = worker.indexOf("knowledgeWriteTransaction.commit();", deferredArgument);
+  const cleanup = worker.indexOf("for (const checkpointPath of deferredCheckpointCleanupPaths.splice(0))", commit);
+
+  assert.ok(runIngestCall >= 0, "expected Runtime V2 to call the ingest executor");
+  assert.ok(deferredArgument > runIngestCall, "expected checkpoint cleanup to be deferred");
+  assert.ok(commit > deferredArgument, "expected the external commit after ingestion");
+  assert.ok(cleanup > commit, "checkpoint deletion must happen only after commit");
+});
+
+test("atomic output writes retry transient Windows rename failures", () => {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "runtime-v2-atomic-write-"),
+  );
+  const outputPath = path.join(directory, "checkpoint.json");
+  fs.writeFileSync(outputPath, "old\n", "utf8");
+  const waits = [];
+  let renameAttempts = 0;
+
+  try {
+    atomicWrite(outputPath, Buffer.from("new\n", "utf8"), true, {
+      renameSync(source, destination) {
+        renameAttempts += 1;
+        if (renameAttempts < 3) {
+          const error = new Error("operation not permitted");
+          error.code = "EPERM";
+          throw error;
+        }
+        fs.renameSync(source, destination);
+      },
+      waitSync(milliseconds) {
+        waits.push(milliseconds);
+      },
+    });
+
+    assert.equal(fs.readFileSync(outputPath, "utf8"), "new\n");
+    assert.equal(renameAttempts, 3);
+    assert.deepEqual(waits, [10, 25]);
+    assert.deepEqual(fs.readdirSync(directory).sort(), ["checkpoint.json"]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("atomic output writes retry a transient lock while syncing the installed file", () => {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "runtime-v2-atomic-fsync-"),
+  );
+  const outputPath = path.join(directory, "checkpoint.json");
+  fs.writeFileSync(outputPath, "old\n", "utf8");
+  const waits = [];
+  let fsyncAttempts = 0;
+
+  try {
+    atomicWrite(outputPath, Buffer.from("new\n", "utf8"), true, {
+      fsyncOutputFile() {
+        fsyncAttempts += 1;
+        if (fsyncAttempts < 3) {
+          const error = new Error("resource busy or locked");
+          error.code = "EBUSY";
+          throw error;
+        }
+      },
+      waitSync(milliseconds) {
+        waits.push(milliseconds);
+      },
+    });
+
+    assert.equal(fs.readFileSync(outputPath, "utf8"), "new\n");
+    assert.equal(fsyncAttempts, 3);
+    assert.deepEqual(waits, [10, 25]);
+    assert.deepEqual(fs.readdirSync(directory).sort(), ["checkpoint.json"]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 function pathWithin(root, candidate) {
@@ -945,6 +1029,11 @@ test("Runtime V2 document ingestion is registered as one finite staged worker", 
   assert.match(source, /canonicalRuntimeV2IngestBlobPath/u);
   assert.match(source, /createRuntimeV2WorkerEventWriter/u);
   assert.match(source, /completionSequence/u);
+  assert.match(
+    source,
+    /publishQuartzAfterMutation\([\s\S]{0,240}gardenSlug:\s*launch\.executionScope\.gardenId/u,
+    "a committed upload must invalidate the exact Garden topology before publishing",
+  );
   const eventWriterSource = fs.readFileSync(
     path.join(dashboardRoot, "scripts", "runtime-v2-worker-events.mjs"),
     "utf8",
@@ -1018,6 +1107,7 @@ test("the shared executor performs a real bounded text ingestion without a model
   const dataRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "runtime-v2-real-ingest-"),
   );
+  const previousGlobalDatabase = globalThis.db;
   const contentPath = path.join(dataRoot, "quartz", "content");
   const sourceBytes = Buffer.from(
     "# Runtime V2 ingestion\n\nThis ordinary source is persisted by the real document pipeline.\n",
@@ -1095,6 +1185,22 @@ test("the shared executor performs a real bounded text ingestion without a model
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
-    fs.rmSync(dataRoot, { recursive: true, force: true });
+    // Topology invalidation deliberately runs even when Quartz publication is
+    // disabled, so this direct in-process executor test opens the temporary
+    // application database. Release that test-owned singleton before removing
+    // its data root on Windows.
+    if (
+      globalThis.db !== previousGlobalDatabase &&
+      globalThis.db?.open
+    ) {
+      globalThis.db.close();
+      delete globalThis.db;
+    }
+    fs.rmSync(dataRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: process.platform === "win32" ? 8 : 0,
+      retryDelay: 50,
+    });
   }
 });

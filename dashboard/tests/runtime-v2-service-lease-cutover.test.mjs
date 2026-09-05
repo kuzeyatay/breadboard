@@ -201,6 +201,24 @@ test("Quartz frames acquire through the authenticated dashboard route before rec
     assert.match(client, /src=\{\s*quartzLease\.ready|src=\{quartzLease\.ready/);
   }
   assert.doesNotMatch(source("src", "app", "garden", "page.tsx"), /withServiceLease/);
+  // The Server Component takes the first hold so the global navigation bar
+  // reports the wait; the frames must never paint a loading state of their own.
+  for (const page of [
+    ["src", "app", "garden", "page.tsx"],
+    ["src", "app", "garden", "[clusterSlug]", "page.tsx"],
+  ]) {
+    assert.match(source(...page), /const quartzViewId = await openQuartzViewLease\(userId\)/);
+    assert.match(source(...page), /quartzViewId=\{quartzViewId\}/);
+  }
+  for (const file of [
+    ["src", "app", "garden", "library-garden-client.tsx"],
+    ["src", "app", "garden", "[clusterSlug]", "garden-client.tsx"],
+    ["src", "app", "garden", "garden-quartz-frame.tsx"],
+  ]) {
+    const client = source(...file);
+    assert.match(client, /useQuartzViewLease\(true, quartzViewId\)/);
+    assert.doesNotMatch(client, /Preparing Quartz|animate-pulse/);
+  }
   assert.doesNotMatch(
     source("src", "app", "garden", "[clusterSlug]", "page.tsx"),
     /withServiceLease/,
@@ -302,8 +320,12 @@ test("legacy service adapters retain leases through work, preserve cancellation,
 
   const voiceboxStatus = source("src", "app", "api", "speech", "status", "route.ts");
   const voiceboxClient = source("src", "lib", "speech", "voicebox-client.ts");
+  const voiceboxPreparation = source("src", "lib", "speech", "prepare-client.ts");
+  const voiceboxSettings = source("src", "app", "components", "settings-speech.tsx");
   assert.doesNotMatch(voiceboxStatus, /voiceboxJson/);
   assert.match(voiceboxStatus, /voiceboxObservationJson/);
+  assert.match(voiceboxSettings, /prepareLocalSpeech\(\)/);
+  assert.match(voiceboxPreparation, /fetchSpeechApi\("\/api\/speech\/prepare"/);
   assert.match(voiceboxClient, /SupervisorResourceExhaustedError\) throw error/);
 
   const scriberr = source("src", "lib", "scriberr", "job-runner.ts");

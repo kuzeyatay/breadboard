@@ -51,6 +51,8 @@ export interface ConversationMemoryStateView {
   workingState: ConversationWorkingState;
   messageCount: number;
   updatedAt: string;
+  hasSavedMemory: boolean;
+  memoryUpdatedAt: string | null;
 }
 
 export interface AgentMemoryOverview {
@@ -67,7 +69,6 @@ export interface AgentMemoryOverview {
 }
 
 const MAX_DURABLE_ROWS = 500;
-const MAX_CONVERSATION_ROWS = 40;
 
 interface DurableJoinRow extends DurableMemoryRow {
   source_conversation_title: string | null;
@@ -137,23 +138,24 @@ export function countDurableMemories(
 
 export function listConversationMemoryStates(
   userId: number,
-  limit = MAX_CONVERSATION_ROWS,
+  limit?: number,
   database: Database.Database = db,
 ): ConversationMemoryStateView[] {
   const rows = database
     .prepare(
       `SELECT c.id, c.public_id, c.title, c.surface,
-              s.rolling_summary, s.working_state, s.updated_at,
+              COALESCE(s.rolling_summary, '') AS rolling_summary,
+              COALESCE(s.working_state, '{}') AS working_state,
+              c.updated_at, s.updated_at AS memory_updated_at,
               (SELECT COUNT(*) FROM conversation_messages m
                 WHERE m.conversation_id = c.id AND m.status <> 'pending') AS message_count
-       FROM conversation_memory_state s
-       JOIN conversations c ON c.id = s.conversation_id
-       WHERE c.user_id = ?
-         AND (TRIM(s.rolling_summary) <> '' OR TRIM(COALESCE(s.working_state, '')) NOT IN ('', '{}'))
-       ORDER BY s.updated_at DESC, c.id DESC
+       FROM conversations c
+       LEFT JOIN conversation_memory_state s ON s.conversation_id = c.id
+       WHERE c.user_id = ? AND c.temporary = 0
+       ORDER BY c.updated_at DESC, c.id DESC
        LIMIT ?`,
     )
-    .all(userId, Math.max(1, Math.min(MAX_CONVERSATION_ROWS, limit))) as Array<{
+    .all(userId, limit === undefined ? -1 : Math.max(1, Math.trunc(limit))) as Array<{
       id: number;
       public_id: string;
       title: string;
@@ -161,19 +163,29 @@ export function listConversationMemoryStates(
       rolling_summary: string;
       working_state: string;
       updated_at: string;
+      memory_updated_at: string | null;
       message_count: number;
     }>;
 
-  return rows.map((row) => ({
-    conversationId: row.id,
-    publicId: row.public_id,
-    title: row.title,
-    surface: row.surface,
-    summary: row.rolling_summary,
-    workingState: safeWorkingState(row.working_state),
-    messageCount: row.message_count,
-    updatedAt: row.updated_at,
-  }));
+  return rows.map((row) => {
+    const workingState = safeWorkingState(row.working_state);
+    const hasSavedMemory = Boolean(
+      row.rolling_summary.trim() || workingState.currentGoal ||
+      Object.values(workingState).some((value) => Array.isArray(value) && value.length > 0),
+    );
+    return {
+      conversationId: row.id,
+      publicId: row.public_id,
+      title: row.title,
+      surface: row.surface,
+      summary: row.rolling_summary,
+      workingState,
+      messageCount: row.message_count,
+      updatedAt: row.updated_at,
+      hasSavedMemory,
+      memoryUpdatedAt: hasSavedMemory ? row.memory_updated_at : null,
+    };
+  });
 }
 
 export async function loadAgentMemoryOverview(
@@ -184,7 +196,7 @@ export async function loadAgentMemoryOverview(
   return {
     profile: getMemoryProfile(userId, database),
     durable: listDurableMemories(userId, options, database),
-    conversations: listConversationMemoryStates(userId, MAX_CONVERSATION_ROWS, database),
+    conversations: listConversationMemoryStates(userId, undefined, database),
     counts: countDurableMemories(userId, database),
     // Async because reporting the semantic layer honestly means loading the
     // engine rather than guessing at its files.

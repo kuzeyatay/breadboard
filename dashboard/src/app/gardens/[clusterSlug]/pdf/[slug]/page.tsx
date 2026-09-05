@@ -3,7 +3,10 @@ import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
 import { scanClusterKnowledge } from "@/lib/knowledge";
-import { getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
+import {
+  getNavbarFlowers,
+  getNavbarShortcuts,
+} from "@/lib/profile/navbar-shortcuts-store.ts";
 import { requireReadableClusterFromSlug } from "@/lib/server-auth";
 import PdfViewerClient from "./pdf-viewer-client";
 
@@ -80,6 +83,7 @@ export default async function PdfSourcePage({
         title={data.title}
         browserTitle={data.pdfFileName}
         fastRead={fastRead}
+        showNavbarFlowers={getNavbarFlowers(userId)}
       />
     </div>
   );

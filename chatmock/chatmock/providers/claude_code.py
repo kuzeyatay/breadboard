@@ -66,26 +66,76 @@ def is_claude_model(model: object) -> bool:
     return normalized.startswith("claude-")
 
 
+def claude_executable_candidates(env: Dict[str, str] | None = None) -> List[Path]:
+    """Every fixed location the official CLI installs to, most specific first.
+
+    This list mirrors ``fixedClaudeCommand`` in the dashboard's Claude account
+    worker, which is what decides that Claude Code is "installed". The two must
+    agree: the worker once found the CLI under a managed home
+    (``%APPDATA%\\SPB_Data\\.local\\bin``) that this probe never looked at, so the
+    dashboard offered Claude models the gateway then refused with "not
+    installed". ChatMock runs on a closed PATH under the runtime, so ``which``
+    alone cannot be relied on.
+    """
+    env = os.environ if env is None else env
+    name = "claude.exe" if os.name == "nt" else "claude"
+    candidates: List[Path] = []
+    configured = (env.get("CLAUDE_CLI_PATH") or "").strip()
+    if configured:
+        candidates.append(Path(configured))
+    homes: List[Path] = []
+    for variable in ("USERPROFILE", "HOME"):
+        value = (env.get(variable) or "").strip()
+        if value and Path(value) not in homes:
+            homes.append(Path(value))
+    try:
+        if Path.home() not in homes:
+            homes.append(Path.home())
+    except (RuntimeError, OSError):
+        pass
+    for home in homes:
+        candidates.append(home / ".local" / "bin" / name)
+        if os.name != "nt":
+            candidates.append(home / ".claude" / "local" / "claude")
+    if os.name == "nt":
+        app_data = (env.get("APPDATA") or "").strip()
+        local_app_data = (env.get("LOCALAPPDATA") or "").strip()
+        if app_data:
+            # Managed Windows profiles relocate HOME under APPDATA.
+            candidates.append(Path(app_data) / "SPB_Data" / ".local" / "bin" / name)
+            candidates.append(Path(app_data) / "npm" / "claude.cmd")
+        if local_app_data:
+            candidates.append(Path(local_app_data) / "Programs" / "claude" / name)
+    elif os.sys.platform == "darwin":
+        candidates.extend([Path("/opt/homebrew/bin/claude"), Path("/usr/local/bin/claude")])
+    else:
+        candidates.append(Path("/usr/local/bin/claude"))
+    seen: set[str] = set()
+    unique: List[Path] = []
+    for candidate in candidates:
+        key = str(candidate).lower() if os.name == "nt" else str(candidate)
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
+
+
 def _claude_executable() -> str:
     configured = os.environ.get("CLAUDE_CLI_PATH", "").strip()
-    if configured:
-        executable = shutil.which(configured)
-    else:
-        name = "claude.exe" if os.name == "nt" else "claude"
-        candidates = [Path.home() / ".local" / "bin" / name]
-        if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-            candidates.append(
-                Path(os.environ["LOCALAPPDATA"]) / "Programs" / "claude" / name
-            )
-        elif os.sys.platform == "darwin":
-            candidates.extend([Path("/opt/homebrew/bin/claude"), Path("/usr/local/bin/claude")])
-        executable = next((str(path) for path in candidates if path.is_file()), None)
-        executable = executable or shutil.which("claude")
+    executable = shutil.which(configured) if configured else None
+    if not executable:
+        executable = next(
+            (str(path) for path in claude_executable_candidates() if path.is_file()),
+            None,
+        )
+    if not executable:
+        executable = shutil.which("claude")
     if executable:
         return executable
     raise ProviderError(
         "Claude Code is not installed or is not on Breadboard's PATH. "
-        "Install the official Claude Code CLI and run `claude auth login`."
+        "Install the official Claude Code CLI and run `claude auth login`, "
+        "or set CLAUDE_CLI_PATH to the claude executable."
     )
 
 

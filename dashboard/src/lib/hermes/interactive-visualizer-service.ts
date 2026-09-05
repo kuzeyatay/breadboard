@@ -22,7 +22,6 @@ import type {
 import {
   INTERACTIVE_VISUALIZER_MAX_REPAIR_ATTEMPTS,
   INTERACTIVE_VISUALIZER_RUNTIME_VERSION,
-  INTERACTIVE_VISUALIZER_THREE_VERSION,
   type InteractiveVisualizerBrowserTests,
   type InteractiveVisualizerLifecycleStatus,
   type InteractiveVisualizerPackage,
@@ -697,9 +696,7 @@ export async function generateInteractiveVisualizer(input: {
       sourceHash: compiled.sourceHash,
       bundleHash: bundle.hash,
       runtimeVersion: compiled.manifest.runtime.version ?? INTERACTIVE_VISUALIZER_RUNTIME_VERSION,
-      threeVersion: compiled.manifest.mode !== "2d"
-        ? INTERACTIVE_VISUALIZER_THREE_VERSION
-        : null,
+      threeVersion: compiled.manifest.runtime.threeVersion ?? null,
       assumptions: sourcePackage.assumptions,
       limitations: sourcePackage.limitations,
       sourceReferences: sourcePackage.sourceReferences,

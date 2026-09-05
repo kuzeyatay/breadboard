@@ -40,6 +40,7 @@ import ArtifactDocumentStudio from "./artifact-document-studio";
 import ArtifactGenOfficeEditor from "./artifact-genoffice-editor";
 import ArtifactVvvebEditor from "./artifact-vvveb-editor";
 import { dispatchArtifactAiEdit } from "./artifact-ai-edit";
+import { subscribeToArtifactUpdates } from "@/lib/hermes/artifact-update-channel";
 
 export { ARTIFACT_AI_EDIT_EVENT } from "./artifact-ai-edit";
 
@@ -253,6 +254,18 @@ export function artifactPdfHref(artifact: PresentedArtifact): string | null {
     version: String(artifact.version),
   });
   return `/artifacts/${encodeURIComponent(artifact.id)}/pdf?${query.toString()}`;
+}
+
+/** Full-window editor for Markdown source artifacts. */
+export function artifactMarkdownEditorHref(
+  artifact: PresentedArtifact,
+): string | null {
+  if (artifact.kind !== "markdown" || !artifact.conversationId) return null;
+  if (!artifactEditorMode(artifact)) return null;
+  const query = new URLSearchParams({
+    conversationId: artifact.conversationId,
+  });
+  return `/artifacts/${encodeURIComponent(artifact.id)}/markdown?${query.toString()}`;
 }
 
 /** Deletes an artifact (and any garden note/asset it created) via the API. */
@@ -605,7 +618,11 @@ export default function ArtifactViewer({
   const usesGenOfficeEditor = artifact
     ? artifact.renderer === "document-file" && artifact.filename.toLowerCase().endsWith(".docx")
     : false;
+  const usesGenOfficeFallbackPreview = Boolean(
+    usesGenOfficeEditor && artifact?.downloadAvailable && !artifact.previewAvailable,
+  );
   const pdfEditorHref = artifact ? artifactPdfHref(artifact) : null;
+  const markdownEditorHref = artifact ? artifactMarkdownEditorHref(artifact) : null;
   const interactiveChannel = useMemo(
     () => interactive && artifactId
       ? `${artifactId}:${artifactVersion}:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
@@ -629,6 +646,10 @@ export default function ArtifactViewer({
     setExpanded(false);
     setEditingDocument(false);
   }, [artifactId]);
+
+  useEffect(() => subscribeToArtifactUpdates((updated) => {
+    if (updated.id === artifactId) onUpdated?.(updated);
+  }), [artifactId, onUpdated]);
 
   // While expanded the panel is the window, so Escape shrinks it rather than
   // closing the artifact outright. The listener captures so a surface that
@@ -895,6 +916,15 @@ export default function ArtifactViewer({
             dispatchArtifactAiEdit({ artifact: saved, prompt });
             onClose();
           }}
+        />
+      );
+    }
+    if (usesGenOfficeFallbackPreview) {
+      return (
+        <ArtifactGenOfficeEditor
+          key={`${artifact.id}:${artifact.version}:preview`}
+          artifact={artifact}
+          mode="preview"
         />
       );
     }
@@ -1196,6 +1226,21 @@ export default function ArtifactViewer({
             <a href={pdfEditorHref} className={actionButton}>
               Edit PDF
             </a>
+          ) : markdownEditorHref ? (
+            <button
+              type="button"
+              className={actionButton}
+              onClick={() => {
+                window.open(
+                  markdownEditorHref,
+                  `breadboard-markdown-${artifact.id}`,
+                  "popup=yes,width=1440,height=900,resizable=yes,scrollbars=no",
+                );
+              }}
+              aria-label={`Edit ${artifact.title} in a new window`}
+            >
+              Edit
+            </button>
           ) : editorMode ? (
             <button
               type="button"
@@ -1281,7 +1326,9 @@ export default function ArtifactViewer({
         ) : null}
         <div
           className={`bb-neu-recessed min-h-0 flex-1 ${
-            usesDocumentViewer || (editingDocument && usesVvvebEditor)
+            usesDocumentViewer ||
+            usesGenOfficeFallbackPreview ||
+            (editingDocument && (usesVvvebEditor || usesGenOfficeEditor))
               ? "overflow-hidden p-0"
               : artifact.kind === "document" && !editingDocument
                 ? "overflow-auto p-0"

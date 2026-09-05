@@ -95,6 +95,18 @@ test("every transcript names the conversation it should open at the end of", asy
   }
 });
 
+test("async transcripts wait for their real rows before landing", async () => {
+  const surfaces = {
+    "src/app/components/hermes/agent-runtime-panel.tsx": "conversationLoading",
+    "src/app/gardens/[clusterSlug]/workspace-client.tsx": "chatContentLoading",
+  };
+
+  for (const [path, loading] of Object.entries(surfaces)) {
+    const source = await readFile(new URL(`../${path}`, import.meta.url), "utf8");
+    assert.match(source, new RegExp(`enabled: !${loading},`), path);
+  }
+});
+
 test("all conversation transcripts use response-scoped auto-scroll", async () => {
   const paths = [
     "src/app/components/hermes/agent-runtime-panel.tsx",

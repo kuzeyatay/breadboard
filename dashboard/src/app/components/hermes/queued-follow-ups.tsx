@@ -18,10 +18,14 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
+import type { ChatAttachment } from "@/lib/chat-attachments.ts";
 
 export interface QueuedFollowUp {
   id: string;
   text: string;
+  /** Files are part of the queued message, not leftovers in the composer. */
+  attachments: ChatAttachment[];
   /**
    * Conversation the message was queued in; null while the chat is a draft
    * with no id yet. Queued messages only render and flush in their own
@@ -83,11 +87,20 @@ interface Options {
    * Resolves false when the run ended first; the message stays queued and
    * sends when the queue drains. Omitted on surfaces that cannot steer.
    */
-  onSteer?: (text: string) => Promise<boolean>;
-  /** Remove a queued message and restore it to this surface's composer. */
-  onRestoreDraft: (text: string) => void;
+  onSteer?: (
+    text: string,
+    attachments: readonly ChatAttachment[],
+  ) => Promise<boolean>;
+  /** Remove a queued message and restore all of it to this surface's composer. */
+  onRestoreDraft: (
+    text: string,
+    attachments: readonly ChatAttachment[],
+  ) => void;
   /** Send one queued message as an ordinary follow-up once the run settles. */
-  onSendQueued: (text: string) => Promise<void>;
+  onSendQueued: (
+    text: string,
+    attachments: readonly ChatAttachment[],
+  ) => Promise<void>;
 }
 
 export function useQueuedFollowUps({
@@ -100,7 +113,10 @@ export function useQueuedFollowUps({
   onRestoreDraft,
   onSendQueued,
 }: Options): {
-  queueFollowUp: (text: string) => void;
+  queueFollowUp: (
+    text: string,
+    attachments?: readonly ChatAttachment[],
+  ) => void;
   headerContent: ReactNode | undefined;
 } {
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([]);
@@ -108,6 +124,9 @@ export function useQueuedFollowUps({
   const [sendingQueuedId, setSendingQueuedId] = useState<string | null>(null);
   const [draggedQueuedId, setDraggedQueuedId] = useState<string | null>(null);
   const [dragOverQueuedId, setDragOverQueuedId] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<
+    Extract<ChatAttachment, { type: "image" }> | null
+  >(null);
   // Why the last press of Steer did not steer anything, shown on the row it
   // was pressed on. Steering can be refused for reasons the person cannot see
   // — an agent card owns the run, the turn is not one the runtime can
@@ -128,6 +147,20 @@ export function useQueuedFollowUps({
     [],
   );
 
+  useEffect(() => {
+    if (!previewImage) return;
+    function closePreview(event: KeyboardEvent) {
+      if (event.key === "Escape") setPreviewImage(null);
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closePreview);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closePreview);
+    };
+  }, [previewImage]);
+
   function showSteerNote(id: string, text: string) {
     if (steerNoteTimerRef.current !== null) {
       window.clearTimeout(steerNoteTimerRef.current);
@@ -146,6 +179,14 @@ export function useQueuedFollowUps({
   );
 
   useEffect(() => {
+    if (!previewImage) return;
+    const imageStillVisible = visibleQueued.some((item) =>
+      item.attachments.some((attachment) => attachment === previewImage),
+    );
+    if (!imageStillVisible) setPreviewImage(null);
+  }, [previewImage, visibleQueued]);
+
+  useEffect(() => {
     if (runInFlight || applyingSteerId || sendingQueuedId) return;
     const next = queuedFollowUps.find(
       (item) =>
@@ -157,7 +198,9 @@ export function useQueuedFollowUps({
       current.filter((item) => item.id !== next.id),
     );
     setSendingQueuedId(next.id);
-    void onSendQueued(next.text).finally(() => setSendingQueuedId(null));
+    void onSendQueued(next.text, next.attachments).finally(() =>
+      setSendingQueuedId(null),
+    );
   }, [
     applyingSteerId,
     conversationKey,
@@ -167,12 +210,20 @@ export function useQueuedFollowUps({
     sendingQueuedId,
   ]);
 
-  function queueFollowUp(text: string) {
+  function queueFollowUp(
+    text: string,
+    attachments: readonly ChatAttachment[] = [],
+  ) {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed && attachments.length === 0) return;
     setQueuedFollowUps((current) => [
       ...current,
-      { id: crypto.randomUUID(), text: trimmed, conversationKey },
+      {
+        id: crypto.randomUUID(),
+        text: trimmed,
+        attachments: [...attachments],
+        conversationKey,
+      },
     ]);
   }
 
@@ -210,7 +261,7 @@ export function useQueuedFollowUps({
     setApplyingSteerId(item.id);
     setSteerNote(null);
     try {
-      if (await onSteer(item.text)) {
+      if (await onSteer(item.text, item.attachments)) {
         setQueuedFollowUps((current) =>
           current.filter((candidate) => candidate.id !== item.id),
         );
@@ -243,7 +294,7 @@ export function useQueuedFollowUps({
       current.filter((candidate) => candidate.id !== item.id),
     );
     setSteerNote((current) => (current?.id === item.id ? null : current));
-    onRestoreDraft(item.text);
+    onRestoreDraft(item.text, item.attachments);
   }
 
   function moveQueuedFollowUp(itemId: string, offset: -1 | 1) {
@@ -267,10 +318,62 @@ export function useQueuedFollowUps({
 
   const canSteerNow = Boolean(onSteer) && steerableRunActive && !stopping;
 
+  const previewOverlay =
+    previewImage && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            className="bb-viewer-overlay fixed z-[200] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm sm:p-8"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Image preview: ${previewImage.name}`}
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setPreviewImage(null);
+            }}
+          >
+            {/* Data URLs are local message payloads, not remote image URLs. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={previewImage.dataUrl}
+              alt={previewImage.name}
+              className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
+            />
+            <button
+              type="button"
+              onClick={() => setPreviewImage(null)}
+              className="absolute right-4 top-4 grid h-10 w-10 place-items-center rounded-full border border-white/20 bg-black/55 text-white shadow-lg transition hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+              aria-label="Close image preview"
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6 6 18" />
+              </svg>
+            </button>
+          </div>,
+          document.body,
+        )
+      : null;
+
   const headerContent =
     visibleQueued.length > 0 ? (
-      <div className="space-y-0.5 py-0.5">
-        {visibleQueued.map((item, index) => (
+      <>
+        <div className="space-y-0.5 py-0.5">
+          {visibleQueued.map((item, index) => {
+            const images = item.attachments.filter(
+              (
+                attachment,
+              ): attachment is Extract<ChatAttachment, { type: "image" }> =>
+                attachment.type === "image",
+            );
+            const fileNames = item.attachments
+              .filter((attachment) => attachment.type !== "image")
+              .map((attachment) => attachment.name);
+            const itemDescription =
+              item.text ||
+              (images.length === 1
+                ? "1 image"
+                : images.length > 1
+                  ? `${images.length} images`
+                  : fileNames.join(", "));
+            return (
           <div key={item.id} className="space-y-0.5">
             <div
               onDragOver={(event) => {
@@ -319,7 +422,7 @@ export function useQueuedFollowUps({
                   }
                 }}
                 className="grid h-7 w-7 shrink-0 cursor-grab place-items-center rounded-lg opacity-70 transition hover:bg-[var(--paper-surface)] hover:opacity-100 active:cursor-grabbing"
-                aria-label={`Reorder queued message ${index + 1} of ${visibleQueued.length}: ${item.text}. Drag, or use the Up and Down arrow keys.`}
+                aria-label={`Reorder queued message ${index + 1} of ${visibleQueued.length}: ${itemDescription}. Drag, or use the Up and Down arrow keys.`}
                 title="Drag to change steering order"
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
@@ -327,9 +430,34 @@ export function useQueuedFollowUps({
                 </svg>
               </button>
               <>
-                  <span className="min-w-0 flex-1 truncate" title={item.text}>
-                    {item.text}
-                  </span>
+                  {images.length ? (
+                    <div className="flex shrink-0 -space-x-1" aria-label={`${images.length} attached ${images.length === 1 ? "image" : "images"}`}>
+                      {images.slice(0, 3).map((attachment, imageIndex) => (
+                        <button
+                          key={`${attachment.name}-${imageIndex}`}
+                          type="button"
+                          onClick={() => setPreviewImage(attachment)}
+                          className="relative block h-7 w-7 cursor-zoom-in overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper-surface)] shadow-sm transition hover:z-10 hover:scale-105 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
+                          aria-label={`Enlarge attached image ${attachment.name}`}
+                          title={`View ${attachment.name}`}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={attachment.dataUrl}
+                            alt=""
+                            className="h-full w-full object-cover"
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {item.text || fileNames.length ? (
+                    <span className="min-w-0 flex-1 truncate text-[var(--ink)]" title={item.text || fileNames.join(", ")}>
+                      {item.text || fileNames.join(", ")}
+                    </span>
+                  ) : (
+                    <span className="min-w-0 flex-1" aria-hidden />
+                  )}
                   <button
                     type="button"
                     onClick={() => void applyQueuedSteer(item)}
@@ -341,7 +469,7 @@ export function useQueuedFollowUps({
                     className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40 ${
                       canSteerNow ? "" : "opacity-45"
                     }`}
-                    aria-label={`Steer the active response with: ${item.text}`}
+                    aria-label={`Steer the active response with: ${itemDescription}`}
                     title={
                       canSteerNow
                         ? "Steer the active response"
@@ -375,7 +503,7 @@ export function useQueuedFollowUps({
                     }
                     disabled={applyingSteerId === item.id}
                     className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
-                    aria-label={`Delete queued message: ${item.text}`}
+                    aria-label={`Delete queued message: ${itemDescription}`}
                     title="Delete queued message"
                   >
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
@@ -387,11 +515,13 @@ export function useQueuedFollowUps({
                     onClick={() => editQueuedFollowUp(item)}
                     disabled={applyingSteerId === item.id}
                     className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
-                    aria-label={`Edit queued message: ${item.text}`}
+                    aria-label={`Edit queued message: ${itemDescription}`}
                     title="Edit queued message"
                   >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z" />
+                    <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden>
+                      <circle cx="5" cy="12" r="1.5" />
+                      <circle cx="12" cy="12" r="1.5" />
+                      <circle cx="19" cy="12" r="1.5" />
                     </svg>
                   </button>
               </>
@@ -405,8 +535,11 @@ export function useQueuedFollowUps({
               </p>
             ) : null}
           </div>
-        ))}
-      </div>
+            );
+          })}
+        </div>
+        {previewOverlay}
+      </>
     ) : undefined;
 
   return { queueFollowUp, headerContent };

@@ -9,7 +9,11 @@ from unittest.mock import Mock, patch
 from werkzeug.serving import WSGIRequestHandler
 
 from chatmock.cli import cmd_serve
-from chatmock.serving import MemoryEfficientWSGIRequestHandler, _BoundedDrainReader
+from chatmock.serving import (
+    BoundedThreadPoolWSGIServer,
+    MemoryEfficientWSGIRequestHandler,
+    _BoundedDrainReader,
+)
 
 
 class _AllocationGuardReader:
@@ -102,8 +106,13 @@ class ServingTests(unittest.TestCase):
             MemoryEfficientWSGIRequestHandler.drain_read_size,
         )
 
+    @patch("chatmock.cli.run_memory_efficient_server")
     @patch("chatmock.cli.create_app")
-    def test_serve_uses_memory_efficient_request_handler(self, create_app) -> None:  # type: ignore[no-untyped-def]
+    def test_serve_uses_bounded_memory_efficient_server(
+        self,
+        create_app,
+        run_server,
+    ) -> None:  # type: ignore[no-untyped-def]
         app = create_app.return_value
 
         result = cmd_serve(
@@ -121,13 +130,26 @@ class ServingTests(unittest.TestCase):
         )
 
         self.assertEqual(result, 0)
-        app.run.assert_called_once_with(
+        run_server.assert_called_once_with(
+            app,
             host="127.0.0.1",
-            use_reloader=False,
             port=8765,
-            threaded=True,
-            request_handler=MemoryEfficientWSGIRequestHandler,
         )
+
+    def test_bounded_server_uses_fixed_reusable_worker_pool(self) -> None:
+        server = BoundedThreadPoolWSGIServer(
+            "127.0.0.1",
+            0,
+            lambda environ, start_response: [],
+            MemoryEfficientWSGIRequestHandler,
+            max_workers=3,
+        )
+        try:
+            self.assertEqual(server.max_request_workers, 3)
+            self.assertEqual(server._request_executor._max_workers, 3)
+            self.assertTrue(server.multithread)
+        finally:
+            server.server_close()
 
     def test_gui_server_uses_memory_efficient_request_handler(self) -> None:
         # PySide6 is intentionally an optional dependency. Compile only the
@@ -139,10 +161,7 @@ class ServingTests(unittest.TestCase):
             any(
                 isinstance(node, ast.ImportFrom)
                 and node.module == "chatmock.serving"
-                and any(
-                    name.name == "MemoryEfficientWSGIRequestHandler"
-                    for name in node.names
-                )
+                and any(name.name == "run_memory_efficient_server" for name in node.names)
                 for node in gui_tree.body
             )
         )
@@ -158,19 +177,17 @@ class ServingTests(unittest.TestCase):
         create_app = Mock()
         namespace = {
             "create_app": create_app,
-            "MemoryEfficientWSGIRequestHandler": MemoryEfficientWSGIRequestHandler,
+            "run_memory_efficient_server": Mock(),
         }
         exec(compile(server_module, str(gui_path), "exec"), namespace)
 
         namespace["run_server"]("127.0.0.1", 8000)
 
         app = create_app.return_value
-        app.run.assert_called_once_with(
+        namespace["run_memory_efficient_server"].assert_called_once_with(
+            app,
             host="127.0.0.1",
             port=8000,
-            use_reloader=False,
-            threaded=True,
-            request_handler=MemoryEfficientWSGIRequestHandler,
         )
 
 

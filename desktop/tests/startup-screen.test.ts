@@ -65,7 +65,7 @@ test("startup paints in the last dashboard theme before its stylesheet loads", (
 
 test("dashboard restarts show a themed recovery scene instead of a blank window", () => {
   assert.match(recoveryHtml, /Reconnecting to your workspace/);
-  assert.match(recoveryHtml, /Your chats and garden are safe/);
+  assert.doesNotMatch(recoveryHtml, /The local dashboard is restarting/);
   assert.match(recoveryHtml, /role="status" aria-live="polite"/);
   assert.ok(
     recoveryHtml.indexOf('<script src=".\/theme.js"><\/script>') <
@@ -268,4 +268,20 @@ test("a window opening onto a page waits in the field the app starts in", () => 
   assert.match(loadingCss, /--background: #faf7ef;\s+--chrome: #faf7ef;/);
   assert.match(loadingCss, /--background: #171916;\s+--chrome: #171916;/);
   assert.doesNotMatch(loadingCss, /@keyframes/);
+});
+
+test("the loading field can sit beneath the live Garden navbar", () => {
+  assert.match(themeScript, /params\.get\("embedded"\) === "true"/);
+  assert.match(
+    themeScript,
+    /document\.documentElement\.dataset\.embedded = "true"/,
+  );
+  assert.match(
+    loadingCss,
+    /:root\[data-embedded="true"\]\s*\{\s*--titlebar-height: 0px;/,
+  );
+  assert.match(
+    loadingCss,
+    /:root\[data-embedded="true"\] \.desktop-titlebar\s*\{\s*display: none;/,
+  );
 });

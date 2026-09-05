@@ -194,6 +194,11 @@ export function autofetchForUser(
           // actually said, high enough to surface when nothing else matches.
           confidence: 0.45,
           salience: 0.4,
+          // A changed number is a new reading of the same fact, not a new
+          // fact: rewrite the row rather than retiring it. Superseding here
+          // produced one dead row per tick — fifteen copies of a task count
+          // in a week — and every one of them a line in the curation panel.
+          onKeyConflict: "replace",
         },
         database,
       );
@@ -203,8 +208,30 @@ export function autofetchForUser(
     }
   }
 
-  if (written > 0) ensureFreshTree(userId, database);
+  // The churn from before in-place updates, and anything a future path leaves
+  // behind. Only rows this heartbeat wrote: the prefix is its provenance, and
+  // a superseded row the user stated is history that belongs to them.
+  const purged = purgeSupersededAutofetchRows(userId, database);
+
+  if (written > 0 || purged > 0) ensureFreshTree(userId, database);
   return { userId, written, facts: facts.map((fact) => fact.content) };
+}
+
+/** Delete retired rows that only this heartbeat could have written. */
+export function purgeSupersededAutofetchRows(
+  userId: number,
+  database: Database.Database = db,
+): number {
+  try {
+    return database
+      .prepare(
+        `DELETE FROM durable_memories
+         WHERE user_id = ? AND state = 'superseded' AND memory_key LIKE 'autofetch:%'`,
+      )
+      .run(userId).changes;
+  } catch {
+    return 0;
+  }
 }
 
 /** Run one pass for every account that has memory to keep current. */

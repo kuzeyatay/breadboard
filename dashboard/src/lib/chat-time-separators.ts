@@ -22,6 +22,43 @@ export function parseChatTimestamp(value: string | undefined): number | null {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
+/**
+ * Recover the wall-clock instant at which a streamed response settled.
+ *
+ * Assistant rows are created when a turn begins, while `responseDurationMs`
+ * is frozen only after the response stream closes. Keeping those two durable
+ * values separate lets restored transcripts show the actual finish time
+ * without replacing the message's chronological start time.
+ */
+export function chatResponseCompletedAt(
+  startedAt: string | undefined,
+  responseDurationMs: number | undefined,
+): string | undefined {
+  const startedAtMs = parseChatTimestamp(startedAt);
+  if (
+    startedAtMs === null ||
+    typeof responseDurationMs !== "number" ||
+    !Number.isFinite(responseDurationMs) ||
+    responseDurationMs < 0
+  ) {
+    return undefined;
+  }
+  return new Date(startedAtMs + Math.trunc(responseDurationMs)).toISOString();
+}
+
+/** Format the compact clock shown beside a completed response's actions. */
+export function formatChatClockTime(
+  value: string | undefined,
+  locale?: string,
+): string | null {
+  const timestamp = parseChatTimestamp(value);
+  if (timestamp === null) return null;
+  return new Intl.DateTimeFormat(locale, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
+
 function sameLocalDay(left: number, right: number): boolean {
   const leftDate = new Date(left);
   const rightDate = new Date(right);

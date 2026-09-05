@@ -10,6 +10,7 @@ import type {
   QuartzInlineAnswerStopRequest,
   QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
+import type { QuartzTopologyInvestigationRequest } from '@/lib/quartz-topology-investigation';
 
 interface ActiveMarkdown {
   cluster: string;
@@ -24,6 +25,7 @@ interface Props {
   activeClusterName?: string;
   activeMarkdown?: ActiveMarkdown | null;
   selectedTextRequest?: QuartzAssistantSelectionRequest | null;
+  topologyInvestigationRequest?: QuartzTopologyInvestigationRequest | null;
   inlineAnswerStopRequest?: QuartzInlineAnswerStopRequest | null;
   onInlineAnswerUpdate?: (update: QuartzInlineAnswerUpdate) => void;
   initialOpen?: boolean;

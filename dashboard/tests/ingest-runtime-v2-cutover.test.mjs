@@ -189,6 +189,74 @@ test("terminal admission denial preserves closed Windows commit evidence", async
   assert.doesNotMatch(recoveredError, /Runtime job execution failed/u);
 });
 
+test("a quiet running ingestion stream sends SSE keepalive comments", async () => {
+  process.env.BREADBOARD_LEARN_SOURCE_ROOT = path.join(dashboardRoot, "src");
+  await import("../scripts/learn-worker-import-hook.mjs");
+  const { createRuntimeIngestSseResponse } = await import(
+    "../src/lib/runtime-v2/ingest-compatibility.ts"
+  );
+  const job = {
+    jobId: "job_ingest_keepalive",
+    jobType: "document-ingestion",
+    workerKind: "document-ingestion-node",
+    resourceClass: "document-processing",
+    state: "running",
+    stage: "processing",
+    attempt: 1,
+    workerInstanceId: "worker_ingest_keepalive",
+    gardenId: "garden-1",
+    conversationId: null,
+    createdAt: 100,
+    startedAt: 101,
+    updatedAt: 102,
+    finishedAt: null,
+    lastHeartbeatAt: 102,
+    lastWorkerSequence: 1,
+    progressCurrent: 2,
+    progressTotal: 4,
+    failureCode: null,
+    failureMessage: null,
+    resourceExhaustion: null,
+    cancellationRequested: false,
+  };
+  let clock = 0;
+  const response = createRuntimeIngestSseResponse({
+    authority: { userId: 42, gardenId: "garden-1", conversationId: null },
+    job,
+    model: "selected-model",
+    startedAt: 100,
+    control: {
+      async replay(_authority, _jobId, after) {
+        return {
+          jobId: job.jobId,
+          after,
+          nextAfter: after,
+          terminal: false,
+          hasMore: false,
+          events: [],
+        };
+      },
+      async inspect() {
+        return job;
+      },
+      async readOutput() {
+        throw new Error("a quiet job has no fenced output yet");
+      },
+      async wait(milliseconds) {
+        clock += milliseconds;
+      },
+      now() {
+        return clock;
+      },
+      keepAliveIntervalMs: 200,
+    },
+  });
+  const reader = response.body.getReader();
+  const first = await reader.read();
+  await reader.cancel();
+  assert.equal(new TextDecoder().decode(first.value), ": keep-alive\n\n");
+});
+
 test("an arbitrary worker failure checkpoint cannot disclose internal details", async () => {
   process.env.BREADBOARD_LEARN_SOURCE_ROOT = path.join(dashboardRoot, "src");
   await import("../scripts/learn-worker-import-hook.mjs");

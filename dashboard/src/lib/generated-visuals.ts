@@ -3990,9 +3990,28 @@ export function runGeneratedVisualDeterministicTests(input: {
   };
 }
 
-function sandboxRuntimePath(): string {
+export function resolveGeneratedVisualSandboxRuntimePath(): string {
   const cwd = process.cwd();
-  const candidates = [
+  const candidates: string[] = [];
+  // Runtime V2 Learn jobs execute from a private attempt directory, so cwd is
+  // not a reliable pointer to the development checkout. The sealed worker
+  // publishes the authoritative repository root explicitly. Prefer that
+  // current source runtime when present; the per-install Quartz copy can lag a
+  // development rebuild and must remain a packaged-install fallback.
+  const repositoryRoot = process.env.BREADBOARD_REPO_ROOT?.trim();
+  if (repositoryRoot) {
+    candidates.push(
+      path.resolve(
+        repositoryRoot,
+        "quartz/quartz/components/scripts/generatedVisualSandbox.inline.js",
+      ),
+      path.resolve(
+        repositoryRoot,
+        "quartz-template/quartz/components/scripts/generatedVisualSandbox.inline.js",
+      ),
+    );
+  }
+  candidates.push(
     path.resolve(
       cwd,
       "../quartz/quartz/components/scripts/generatedVisualSandbox.inline.js",
@@ -4001,12 +4020,12 @@ function sandboxRuntimePath(): string {
       cwd,
       "quartz/quartz/components/scripts/generatedVisualSandbox.inline.js",
     ),
-  ];
+  );
   // Desktop/packaged installs: the Quartz workspace is wherever
   // QUARTZ_CONTENT_PATH points (content lives inside the workspace).
   const contentPath = process.env.QUARTZ_CONTENT_PATH?.trim();
   if (contentPath) {
-    candidates.unshift(
+    candidates.push(
       path.resolve(
         path.dirname(path.resolve(contentPath)),
         "quartz/components/scripts/generatedVisualSandbox.inline.js",
@@ -4754,7 +4773,7 @@ export async function runGeneratedVisualBrowserTests(
   let runtime = "";
   try {
     runtime = fs.readFileSync(
-      /* turbopackIgnore: true */ sandboxRuntimePath(),
+      /* turbopackIgnore: true */ resolveGeneratedVisualSandboxRuntimePath(),
       "utf-8",
     );
   } catch {
@@ -5055,20 +5074,24 @@ export async function runGeneratedVisualBrowserTests(
   let screenshotCreated = false;
   let screenshotFailureDetail = "Screenshot was not created";
   const previewPrimarySpatialFrameFailures: string[] = [];
-  for (const previewState of previewStates) {
-    for (const previewViewport of previewViewports) {
+  for (const [previewStateIndex, previewState] of previewStates.entries()) {
+    for (const [previewViewportIndex, previewViewport] of previewViewports.entries()) {
       const isDefaultDesktop =
         previewState.defaultState &&
         previewViewport.id === "desktop-1000x720-light";
+      // Keep Chromium's temporary input/output names short: the visual staging
+      // directory can already be close to Windows MAX_PATH. The receipt below
+      // retains the labelled viewport/state identity used for diagnostics.
+      const previewArtifactSuffix = `${previewViewportIndex}-${previewStateIndex}`;
       const screenshotPath = isDefaultDesktop
         ? path.join(input.outputDir, "preview.png")
         : path.join(
             input.outputDir,
-            `preview-${previewViewport.id}-${previewState.id}.png`,
+            `preview-${previewArtifactSuffix}.png`,
           );
       const screenshotHtmlPath = path.join(
         input.outputDir,
-        `preview-${previewViewport.id}-${previewState.id}.html`,
+        `preview-${previewArtifactSuffix}.html`,
       );
       htmlPaths.push(screenshotHtmlPath);
       fs.writeFileSync(

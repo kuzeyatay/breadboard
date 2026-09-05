@@ -8,17 +8,10 @@ import { reserveLegacyGardenAssistantTurn } from "../src/lib/conversations/store
 import { applyGardenStableTextEvent } from "../src/lib/hermes/garden-stable-stream.ts";
 import { assistantVisibleContent } from "../src/lib/hermes/assistant-visible-content.ts";
 
-test("public thinking prose is ordinary text until the durable answer arrives", () => {
-  const notes = [
-    "I will inspect the runtime first.",
-    "Now I will inspect the diagram tools.",
-  ];
+test("public thinking updates stay out of the durable answer", () => {
+  assert.equal(assistantVisibleContent(""), "");
   assert.equal(
-    assistantVisibleContent("", notes),
-    "I will inspect the runtime first.\n\nNow I will inspect the diagram tools.",
-  );
-  assert.equal(
-    assistantVisibleContent("Here is the stable diagram.", notes),
+    assistantVisibleContent("Here is the stable diagram."),
     "Here is the stable diagram.",
   );
 });
@@ -173,6 +166,6 @@ test("both Garden surfaces use the stable text projection", () => {
   assert.match(assistant, /applyGardenStableTextEvent/u);
   assert.match(workspace, /assistantVisibleContent/u);
   assert.match(assistant, /assistantVisibleContent/u);
-  assert.doesNotMatch(workspace, /progressNotes=\{msg\.progressNotes\}/u);
-  assert.doesNotMatch(assistant, /progressNotes=\{message\.progressNotes\}/u);
+  assert.match(workspace, /progressNotes=\{msg\.progressNotes\}/u);
+  assert.match(assistant, /progressNotes=\{message\.progressNotes\}/u);
 });

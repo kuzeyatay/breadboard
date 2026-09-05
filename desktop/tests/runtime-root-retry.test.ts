@@ -32,3 +32,29 @@ test("Runtime root retry replaces the single-use process only after exit", () =>
     /this\.allowedOrigins\.origins\.delete\(new URL\(this\.runtimeDashboardUrl\)\.origin\);/,
   );
 });
+
+test("an unexpected Runtime root exit schedules bounded automatic recovery", () => {
+  assert.match(
+    source,
+    /export const RUNTIME_ROOT_AUTO_RETRY_DELAYS_MS = Object\.freeze\(\[\s*1_000,\s*2_000,\s*5_000,\s*10_000,\s*30_000,/,
+  );
+  assert.match(
+    source,
+    /private handleUnexpectedRuntimeExit[\s\S]{0,900}this\.scheduleRuntimeRootRetry\(\);/,
+  );
+  assert.match(
+    source,
+    /private scheduleRuntimeRootRetry[\s\S]{0,2500}void this\.retryRuntimeRoot\(\);/,
+  );
+  assert.match(
+    source,
+    /this\.runtimeRootRetryAttempt = 0;[\s\S]{0,300}Runtime recovery is stable; retry backoff reset/,
+  );
+});
+
+test("quitting cancels pending Runtime recovery timers", () => {
+  assert.match(
+    source,
+    /app\.on\("before-quit"[\s\S]{0,400}this\.clearScheduledRuntimeRootRetry\(\);[\s\S]{0,120}this\.clearRuntimeRootStabilityTimer\(\);/,
+  );
+});

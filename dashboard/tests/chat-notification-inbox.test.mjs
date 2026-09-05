@@ -10,8 +10,10 @@ import {
   isChatNotificationTarget,
   queueChatNotificationReply,
   sameChatNotificationTarget,
+  sendChatNotificationReply,
   takeChatNotificationReply,
 } from "../src/lib/chat-notification-inbox.ts";
+import { resolveNotificationReply } from "../src/lib/chat-notifications/reply.ts";
 import {
   chatNotificationMessageId,
   dismissChatNotifications,
@@ -120,6 +122,95 @@ test("a cross-route reply is consumed only by its destination chat", () => {
     "Follow up here",
   );
   assert.equal(takeChatNotificationReply(storage, gardenTarget), null);
+});
+
+test("a notification reply posts to the background endpoint without navigation", async (context) => {
+  let request = null;
+  context.mock.method(globalThis, "fetch", async (url, init) => {
+    request = { url, init };
+    return Response.json({ accepted: true }, { status: 202 });
+  });
+
+  await sendChatNotificationReply(gardenTarget, "Follow up here");
+
+  assert.equal(request.url, "/api/chat-notifications/reply");
+  assert.equal(request.init.method, "POST");
+  assert.deepEqual(JSON.parse(request.init.body), {
+    target: gardenTarget,
+    message: "Follow up here",
+  });
+});
+
+test("background replies resolve only chats owned by the caller", () => {
+  const database = new Database(":memory:");
+  database.exec(`
+    CREATE TABLE clusters (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      slug TEXT NOT NULL
+    );
+    CREATE TABLE chat_sessions (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      conversation_id INTEGER
+    );
+    CREATE TABLE conversations (
+      id INTEGER PRIMARY KEY,
+      public_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      surface TEXT NOT NULL,
+      scope_kind TEXT NOT NULL,
+      default_garden_id INTEGER,
+      active_agency_agent_slug TEXT,
+      scheduled_chat_job_id INTEGER,
+      hook_id TEXT,
+      legacy_chat_session_id INTEGER,
+      legacy_runtime_session_id INTEGER,
+      next_order_index INTEGER NOT NULL DEFAULT 0,
+      pinned_at TEXT,
+      highlight TEXT,
+      temporary INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO clusters(id, user_id, slug) VALUES
+      (7, 1, 'breadboard-dev'),
+      (8, 2, 'foreign-garden');
+    INSERT INTO conversations(
+      id, public_id, user_id, title, surface, scope_kind, default_garden_id,
+      legacy_chat_session_id, created_at, updated_at
+    ) VALUES
+      (11, 'conv_example123', 1, 'Terminal', 'dashboard_terminal', 'global', NULL, NULL, 'now', 'now'),
+      (12, 'conv_garden', 1, 'Garden', 'garden_chat', 'garden', 7, 42, 'now', 'now'),
+      (13, 'conv_foreign', 2, 'Foreign', 'garden_chat', 'garden', 8, 43, 'now', 'now');
+    INSERT INTO chat_sessions(id, user_id, conversation_id) VALUES
+      (42, 1, 12),
+      (43, 2, 13);
+  `);
+
+  assert.equal(
+    resolveNotificationReply(terminalTarget, 1, database).conversation.public_id,
+    "conv_example123",
+  );
+  assert.deepEqual(resolveNotificationReply(gardenTarget, 1, database), {
+    conversation: database.prepare("SELECT * FROM conversations WHERE id = 12").get(),
+    activeGardenSlug: "breadboard-dev",
+  });
+  assert.throws(
+    () => resolveNotificationReply(otherGardenTarget, 1, database),
+    /Conversation not found/,
+  );
+  assert.throws(
+    () =>
+      resolveNotificationReply(
+        { surface: "garden_chat", gardenSlug: "foreign-garden", chatId: "43" },
+        1,
+        database,
+      ),
+    /Conversation not found/,
+  );
+  database.close();
 });
 
 function notificationDatabase() {
@@ -258,6 +349,51 @@ test("Telegram replies never become Breadboard notifications", () => {
   assert.match(
     source("../src/lib/telegram/inbound.ts"),
     /const clientMessageId = `telegram-\$\{/,
+  );
+});
+
+test("hidden workers and Telegram-owned continuations never raise false chat notices", () => {
+  const db = notificationDatabase();
+  listPendingChatNotifications(db, 1);
+
+  addAnswer(
+    db,
+    14,
+    "",
+    "2026-08-30 08:10:00",
+    "complete",
+    JSON.stringify({
+      delegatedAgentRun: true,
+      externalAgentOutcome: "completed",
+      externalAgentResult: "A complete research report",
+      deliveryChannel: "telegram",
+    }),
+    "agent-launch-research-1",
+  );
+  addAnswer(
+    db,
+    14,
+    "The final synthesis",
+    "2026-08-30 08:11:00",
+    "complete",
+    JSON.stringify({
+      internalAgentContinuation: true,
+      deliveryChannel: "telegram",
+    }),
+    "browser-generated-continuation-id",
+  );
+
+  assert.deepEqual(listPendingChatNotifications(db, 1), []);
+
+  const ordinary = addAnswer(
+    db,
+    10,
+    "An ordinary in-app answer",
+    "2026-08-30 08:12:00",
+  );
+  assert.deepEqual(
+    listPendingChatNotifications(db, 1).map((record) => record.id),
+    [`msg_${ordinary}`],
   );
 });
 
@@ -408,6 +544,7 @@ test("every surface reports the chat it shows and opens notices in place", () =>
     "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
   );
   const route = source("../src/app/api/chat-notifications/route.ts");
+  const replyRoute = source("../src/app/api/chat-notifications/reply/route.ts");
   const schema = source("../src/lib/conversations/schema.ts");
 
   // The list on screen is the server's list; nothing is kept per browser.
@@ -419,6 +556,10 @@ test("every surface reports the chat it shows and opens notices in place", () =>
 
   assert.match(route, /export async function POST/);
   assert.match(route, /dismissChatNotificationsForTarget/);
+  assert.match(replyRoute, /resolveNotificationReply/);
+  assert.match(replyRoute, /startSessionEventPump\(runtime\)/);
+  assert.match(replyRoute, /startConversationTurn\(\{/);
+  assert.match(replyRoute, /getHermesUserSettings\(userId\)/);
   assert.match(schema, /ensureChatNotificationSchema\(database\)/);
 
   // Viewing a chat is reported by both surfaces; the Terminal only while the

@@ -296,13 +296,15 @@ export function ChatSelectionMenu({
 export function SelectionComposerContext({
   selection,
   onCancel,
+  widthClassName = "max-w-3xl",
 }: {
   selection: ChatTextSelectionReference;
   onCancel: () => void;
+  widthClassName?: string;
 }) {
   return (
     <div
-      className={`mx-auto mb-2 flex w-full max-w-3xl items-start gap-2 rounded-xl border px-3 py-2 text-xs shadow-sm ${
+      className={`mx-auto mb-2 flex w-full ${widthClassName} items-start gap-2 rounded-xl border px-3 py-2 text-xs shadow-sm ${
         selection.mode === "inline"
           ? "border-[var(--selection-yellow-line)] bg-[var(--selection-yellow)]"
           : "border-[var(--line)] bg-[var(--paper-raised)]"
@@ -415,7 +417,7 @@ export function InlineSelectionAnswerPopover({
       // is acting on.
       if (
         target instanceof Element &&
-        target.closest(".bb-chat-selection-menu")
+        target.closest(".bb-chat-selection-menu, .bb-inline-answer")
       ) {
         return;
       }
@@ -562,12 +564,12 @@ export function InlineSelectionAnswerPopover({
                 onStop?.();
               }}
               disabled={!onStop || stopRequested}
-              className="neu-button-icon flex items-center justify-center rounded-full border p-2 text-[var(--ink-heading)] disabled:cursor-wait disabled:opacity-55"
+              className="neu-button-accent flex h-9 w-9 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-wait disabled:opacity-55"
               aria-label={stopRequested ? "Stopping this answer" : "Stop this answer"}
               aria-busy={stopRequested}
               title={stopRequested ? "Stopping..." : "Stop"}
             >
-              <span className="block h-3.5 w-3.5 rounded-[3px] bg-current" aria-hidden />
+              <span className="block h-3 w-3 rounded-[3px] bg-current" aria-hidden />
             </button>
           ) : question ? (
             <button

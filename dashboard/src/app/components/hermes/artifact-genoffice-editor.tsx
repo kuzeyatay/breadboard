@@ -5,7 +5,8 @@ import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 
 interface ArtifactGenOfficeEditorProps {
   artifact: PresentedArtifact;
-  onSaved: (artifact: PresentedArtifact) => void;
+  mode?: "edit" | "preview";
+  onSaved?: (artifact: PresentedArtifact) => void;
 }
 
 interface GenOfficeMessage {
@@ -15,6 +16,7 @@ interface GenOfficeMessage {
 
 export default function ArtifactGenOfficeEditor({
   artifact,
+  mode = "edit",
   onSaved,
 }: ArtifactGenOfficeEditorProps) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -23,6 +25,7 @@ export default function ArtifactGenOfficeEditor({
       artifactId: artifact.id,
       conversationId: artifact.conversationId,
       version: String(artifact.version),
+      mode,
     });
     return `/genoffice-editor/index.html?${query}`;
   });
@@ -38,21 +41,28 @@ export default function ArtifactGenOfficeEditor({
         event.data.type === "breadboard:genoffice-artifact-saved" &&
         event.data.artifact?.id === artifact.id
       ) {
-        onSaved(event.data.artifact);
+        onSaved?.(event.data.artifact);
       }
     };
+    if (mode !== "edit" || !onSaved) return;
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [artifact.id, onSaved]);
+  }, [artifact.id, mode, onSaved]);
+
+  const readOnly = mode === "preview";
 
   return (
-    <div className="h-full min-h-[42rem] overflow-hidden bg-[#f5efe3]" data-genoffice-artifact-editor>
+    <div
+      className="h-full min-h-[42rem] overflow-hidden bg-[var(--background)]"
+      data-genoffice-artifact-editor={readOnly ? undefined : ""}
+      data-genoffice-artifact-preview={readOnly ? "" : undefined}
+    >
       <iframe
         ref={frameRef}
         src={source}
-        title={`Edit ${artifact.title} in GenOffice`}
-        className="h-full min-h-[42rem] w-full border-0 bg-[#f5efe3]"
-        allow="clipboard-read; clipboard-write"
+        title={readOnly ? `${artifact.title} Word preview` : `Edit ${artifact.title} in GenOffice`}
+        className="h-full min-h-[42rem] w-full border-0 bg-[var(--background)]"
+        allow={readOnly ? "" : "clipboard-read; clipboard-write"}
       />
     </div>
   );

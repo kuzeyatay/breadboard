@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { hydrateCurrentLocationPreference } from "@/app/components/current-location-preference.ts";
 import {
   announceCurrentLocationChange,
   getStoredCurrentLocationPreference,
@@ -100,7 +101,12 @@ export function refreshCurrentLocationIfDue(now = Date.now()): Promise<boolean> 
 
 export default function CurrentLocationAutoRefresh() {
   useEffect(() => {
-    initializationRefresh ??= refreshCurrentLocationAtInitialization();
+    // Durable hydration must win before the first read. On desktop restart the
+    // new loopback origin begins empty, so reading first would incorrectly see
+    // the switch as off and skip the fresh device fix.
+    initializationRefresh ??= hydrateCurrentLocationPreference().then(() =>
+      refreshCurrentLocationAtInitialization(),
+    );
 
     const refreshIfDue = () => {
       void refreshCurrentLocationIfDue();

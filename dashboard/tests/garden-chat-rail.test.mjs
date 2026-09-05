@@ -114,6 +114,28 @@ test("the rail's rows come from a summary read, not from every transcript", () =
   );
 });
 
+test("the Garden capability palette is scoped by canonical conversation id", () => {
+  // A Garden addresses its legacy chat rows numerically, but Hermes capability
+  // endpoints authorize either a runtime row id or the canonical `conv_*` id.
+  // Passing the legacy id made the whole palette return session_not_found.
+  assert.match(
+    sessionsRoute,
+    /c\.public_id AS conversation_public_id/,
+  );
+  assert.match(
+    sessionsRoute,
+    /conversationId: conversationId \?\? null/,
+  );
+  assert.match(
+    workspace,
+    /capabilitySessionId=\{activeChat\?\.conversationId \?\? null\}/,
+  );
+  assert.doesNotMatch(
+    workspace,
+    /capabilitySessionId=\{activeChatId\}/,
+  );
+});
+
 test("pinning and highlighting a Garden chat write the canonical conversation", () => {
   assert.match(sessionRoute, /setConversationPinned\(conversation, body\.pinned\)/);
   assert.match(sessionRoute, /setConversationHighlight\(conversation, body\.highlight\)/);

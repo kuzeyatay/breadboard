@@ -7,13 +7,15 @@
  * in place is exactly what let an old and a new generation tree coexist under a
  * single active `learning/` directory and produce duplicate unit mappings.
  *
- * Every run gets its own workspace under a non-synchronized location. Only
- * durable inputs (sources, stable config, approved non-learning files) are
- * seeded in; the old generated `learning/` tree and every disposable projection
- * are deliberately left behind. The finished, validated staging tree is later
- * promoted atomically (see learn-atomic-promotion.ts). A workspace is disposable
- * only after success, explicit cancellation, or supersession. Ordinary failures
- * retain the exact staged candidate for diagnosis and continuation.
+ * Every run gets its own workspace under a non-synchronized location. Fresh
+ * generation seeds only durable inputs. Additive updates also seed the prior
+ * generated-visual implementations so unchanged lesson bodies can keep their
+ * validated interactives; the old `learning/` paths themselves are still left
+ * behind and are reconstructed by stable learning-unit id. The finished,
+ * validated staging tree is later promoted atomically (see
+ * learn-atomic-promotion.ts). A workspace is disposable only after success,
+ * explicit cancellation, or supersession. Ordinary failures retain the exact
+ * staged candidate for diagnosis and continuation.
  */
 
 import type { Dirent, Stats } from "node:fs";
@@ -162,6 +164,14 @@ const DISPOSABLE_BREADBOARD_ENTRIES = new Set([
   "weak-anchor-self-healing.json",
   "weak-anchor-self-healing.md",
 ]);
+
+/** Generated assets referenced by a reused lesson body. They are safe to seed
+ * only for an additive update; the final exact-live-id prune removes anything
+ * the merged curriculum no longer references before publication. */
+const INCREMENTAL_BREADBOARD_ENTRIES = [
+  "visuals",
+  "visual-index.json",
+] as const;
 
 /** Windows paths are case-insensitive, so exclusion policy must be too. */
 function normalizedEntryName(value: string): string {
@@ -553,11 +563,30 @@ function copyTree(srcDir: string, destDir: string, filter?: (rel: string) => boo
   walk("");
 }
 
+function seedIncrementalGeneratedAssets(
+  repositoryGardenDir: string,
+  stagingGardenDir: string,
+): void {
+  for (const name of INCREMENTAL_BREADBOARD_ENTRIES) {
+    const source = path.join(repositoryGardenDir, ".breadboard", name);
+    if (!fs.existsSync(source)) continue;
+    const destination = path.join(stagingGardenDir, ".breadboard", name);
+    const stat = fs.lstatSync(source);
+    if (stat.isSymbolicLink()) {
+      throw new Error(
+        `Learn incremental input contains unsupported symbolic link: .breadboard/${name}`,
+      );
+    }
+    if (stat.isDirectory()) copyTree(source, destination);
+    else if (stat.isFile()) copyFileResilient(source, destination);
+  }
+}
+
 /**
- * Create an isolated workspace and seed ONLY durable inputs from the repository
- * garden. The old learning tree and disposable projections are never copied —
- * in generate/regenerate mode the staging `learning/` directory starts empty,
- * so mixed-generation active state is structurally impossible from the outset.
+ * Create an isolated workspace. The old learning tree is never copied: even an
+ * additive update reconstructs it from stable unit ids, so stale paths cannot
+ * coexist with the merged order. Update mode additionally carries forward only
+ * generated-visual implementations that a reused lesson body may reference.
  */
 export function createLearnBuildWorkspace(input: {
   gardenSlug: string;
@@ -622,6 +651,12 @@ export function createLearnBuildWorkspace(input: {
       );
     } else {
       seedDurableInputs(input.repositoryGardenDir, stagingGardenDir);
+      if (input.mode === "update") {
+        seedIncrementalGeneratedAssets(
+          input.repositoryGardenDir,
+          stagingGardenDir,
+        );
+      }
     }
     const copiedInputFingerprint = fingerprintDurableGardenState(stagingGardenDir);
     const currentInputFingerprint = fingerprintDurableGardenState(

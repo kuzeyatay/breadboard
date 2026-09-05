@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
+import { expiredStartedLearnCouncilReceiptProof } from "./learn-council-semantic-recovery.ts";
 
 export type LearnPlanningCheckpointState = "started" | "completed";
 
@@ -19,6 +20,26 @@ export interface LearnPlanningCheckpointRow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+}
+
+export interface ExpiredStartedPlanningReceiptBoundaryRow {
+  origin_request_id: string;
+  origin_job_id: string;
+  garden_id: string;
+  stage_key: string;
+  semantic_attempt: number;
+  request_hash: string;
+  receipt_request_id: string;
+  dispatch_generation: number;
+  dispatch_count: number;
+  redispatch_count: number;
+  redispatch_allowed: number;
+  attempt_count: number;
+  started_at: string;
+  observed_at: string;
+  max_started_age_ms: number;
+  failure_code: "council_started_receipt_expired";
+  created_at: string;
 }
 
 export interface PriorPlanningCheckpointRow extends LearnPlanningCheckpointRow {
@@ -676,8 +697,204 @@ export function ensureLearnPlanningCheckpointSchema(database: Database.Database)
       CREATE UNIQUE INDEX IF NOT EXISTS idx_learn_planning_legacy_run_once
         ON learn_planning_request_checkpoints(job_id, council_run_id)
         WHERE result_origin = 'legacy';
+      CREATE TABLE IF NOT EXISTS learn_planning_expired_receipt_boundaries (
+        origin_request_id   TEXT PRIMARY KEY
+          REFERENCES learn_planning_request_checkpoints(request_id) ON DELETE CASCADE,
+        origin_job_id       TEXT NOT NULL REFERENCES learn_jobs(id) ON DELETE CASCADE,
+        garden_id           TEXT NOT NULL,
+        stage_key           TEXT NOT NULL,
+        semantic_attempt    INTEGER NOT NULL CHECK (semantic_attempt >= 0),
+        request_hash        TEXT NOT NULL CHECK (length(request_hash) = 64),
+        receipt_request_id  TEXT NOT NULL UNIQUE,
+        dispatch_generation INTEGER NOT NULL CHECK (dispatch_generation = 1),
+        dispatch_count      INTEGER NOT NULL CHECK (dispatch_count = 1),
+        redispatch_count    INTEGER NOT NULL CHECK (redispatch_count = 0),
+        redispatch_allowed  INTEGER NOT NULL CHECK (redispatch_allowed = 0),
+        attempt_count       INTEGER NOT NULL CHECK (attempt_count = 0),
+        started_at          TEXT NOT NULL,
+        observed_at         TEXT NOT NULL,
+        max_started_age_ms  INTEGER NOT NULL CHECK (max_started_age_ms > 0),
+        failure_code        TEXT NOT NULL
+          CHECK (failure_code = 'council_started_receipt_expired'),
+        created_at          TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_learn_planning_expired_receipt_lookup
+        ON learn_planning_expired_receipt_boundaries(
+          garden_id, stage_key, semantic_attempt, request_hash
+        );
     `);
   }).immediate();
+}
+
+function exactExpiredStartedPlanningReceiptBoundary(
+  database: Database.Database,
+  originRequestId: string,
+): ExpiredStartedPlanningReceiptBoundaryRow | null {
+  const row = database.prepare(
+    `SELECT *
+     FROM learn_planning_expired_receipt_boundaries
+     WHERE origin_request_id = ?`,
+  ).get(originRequestId) as ExpiredStartedPlanningReceiptBoundaryRow | undefined;
+  if (!row) return null;
+
+  const origin = database.prepare(
+    `SELECT c.*, j.status AS job_status,
+            (SELECT COUNT(*) FROM learn_maps m WHERE m.job_id = c.job_id) AS map_count,
+            (SELECT COUNT(*) FROM learn_versions v WHERE v.job_id = c.job_id) AS version_count
+     FROM learn_planning_request_checkpoints c
+     JOIN learn_jobs j ON j.id = c.job_id
+     WHERE c.request_id = ?`,
+  ).get(originRequestId) as (LearnPlanningCheckpointRow & {
+    job_status: string;
+    map_count: number;
+    version_count: number;
+  }) | undefined;
+  const startedAtMs = Date.parse(row.started_at);
+  const observedAtMs = Date.parse(row.observed_at);
+  const createdAtMs = Date.parse(row.created_at);
+  const exact = Boolean(
+    origin &&
+    origin.result_origin === "receipt" &&
+    origin.state === "started" &&
+    origin.job_status === "failed" &&
+    Number(origin.map_count) === 0 &&
+    Number(origin.version_count) === 0 &&
+    row.origin_job_id === origin.job_id &&
+    row.garden_id === origin.garden_id &&
+    row.stage_key === origin.stage_key &&
+    Number(row.semantic_attempt) === Number(origin.semantic_attempt) &&
+    row.request_hash === origin.request_hash &&
+    row.receipt_request_id === (origin.receipt_request_id ?? origin.request_id) &&
+    row.dispatch_generation === 1 &&
+    row.dispatch_count === 1 &&
+    row.redispatch_count === 0 &&
+    row.redispatch_allowed === 0 &&
+    row.attempt_count === 0 &&
+    row.failure_code === "council_started_receipt_expired" &&
+    Number.isSafeInteger(row.max_started_age_ms) &&
+    row.max_started_age_ms > 0 &&
+    Number.isFinite(startedAtMs) &&
+    Number.isFinite(observedAtMs) &&
+    Number.isFinite(createdAtMs) &&
+    row.started_at === origin.updated_at &&
+    observedAtMs - startedAtMs >= row.max_started_age_ms &&
+    createdAtMs === observedAtMs
+  );
+  if (!exact) {
+    throw new Error(
+      `Learn planning expired-receipt boundary ${originRequestId} is not exact.`,
+    );
+  }
+  return row;
+}
+
+/** A durable boundary is required before an abandoned, still-started strict
+ * planning receipt can stop fencing later retries. Planning checkpoints do not
+ * support same-receipt generation two, so only the independently-known first
+ * generation shape is eligible. */
+export function recordExpiredStartedPlanningReceiptBoundary(
+  database: Database.Database,
+  input: {
+    originRequestId: string;
+    receiptRequestId: string;
+    requestHash: string;
+    dispatchGeneration: number;
+    dispatchCount: number;
+    redispatchCount: number;
+    redispatchAllowed: boolean;
+    attemptCount: number;
+    observedAt: string;
+    maxStartedAgeMs: number;
+  },
+): ExpiredStartedPlanningReceiptBoundaryRow | null {
+  return database.transaction(() => {
+    const existing = exactExpiredStartedPlanningReceiptBoundary(
+      database,
+      input.originRequestId,
+    );
+    if (existing) return existing;
+
+    const origin = database.prepare(
+      `SELECT c.*, j.status AS job_status,
+              (SELECT COUNT(*) FROM learn_maps m WHERE m.job_id = c.job_id) AS map_count,
+              (SELECT COUNT(*) FROM learn_versions v WHERE v.job_id = c.job_id) AS version_count
+       FROM learn_planning_request_checkpoints c
+       JOIN learn_jobs j ON j.id = c.job_id
+       WHERE c.request_id = ?`,
+    ).get(input.originRequestId) as (LearnPlanningCheckpointRow & {
+      job_status: string;
+      map_count: number;
+      version_count: number;
+    }) | undefined;
+    if (
+      !origin ||
+      origin.result_origin !== "receipt" ||
+      origin.state !== "started" ||
+      origin.job_status !== "failed" ||
+      Number(origin.map_count) !== 0 ||
+      Number(origin.version_count) !== 0 ||
+      origin.request_hash !== input.requestHash ||
+      (origin.receipt_request_id ?? origin.request_id) !== input.receiptRequestId
+    ) {
+      throw new Error("Learn planning expired-receipt origin is not exact.");
+    }
+    const proof = expiredStartedLearnCouncilReceiptProof({
+      requestId: input.receiptRequestId,
+      requestHash: input.requestHash,
+      dispatchGeneration: input.dispatchGeneration,
+      dispatchCount: input.dispatchCount,
+      redispatchCount: input.redispatchCount,
+      redispatchAllowed: input.redispatchAllowed,
+      attemptCount: input.attemptCount,
+      // Planning owns exactly one initial POST and has no persisted
+      // same-receipt redispatch generation. This independent local shape is
+      // deliberately stricter than reflecting the server metadata back.
+      checkpointDispatchCount: 1,
+      checkpointRedispatchCount: 0,
+      startedAt: origin.updated_at,
+      observedAt: input.observedAt,
+      maxStartedAgeMs: input.maxStartedAgeMs,
+    });
+    if (!proof) return null;
+
+    database.prepare(
+      `INSERT INTO learn_planning_expired_receipt_boundaries (
+         origin_request_id, origin_job_id, garden_id, stage_key,
+         semantic_attempt, request_hash, receipt_request_id,
+         dispatch_generation, dispatch_count, redispatch_count,
+         redispatch_allowed, attempt_count, started_at, observed_at,
+         max_started_age_ms, failure_code, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      origin.request_id,
+      origin.job_id,
+      origin.garden_id,
+      origin.stage_key,
+      origin.semantic_attempt,
+      origin.request_hash,
+      input.receiptRequestId,
+      proof.dispatchGeneration,
+      proof.dispatchCount,
+      proof.redispatchCount,
+      input.attemptCount,
+      origin.updated_at,
+      input.observedAt,
+      input.maxStartedAgeMs,
+      proof.failureCode,
+      input.observedAt,
+    );
+    return exactExpiredStartedPlanningReceiptBoundary(
+      database,
+      input.originRequestId,
+    );
+  }).immediate();
+}
+
+export function hasExactExpiredStartedPlanningReceiptBoundary(
+  database: Database.Database,
+  originRequestId: string,
+): boolean {
+  return exactExpiredStartedPlanningReceiptBoundary(database, originRequestId) !== null;
 }
 
 export function createStartedPlanningCheckpoint(

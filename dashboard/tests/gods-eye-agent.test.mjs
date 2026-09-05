@@ -27,7 +27,9 @@ import {
   attachGodsEyeView,
   godsEyeOpenPath,
   godsEyeShareHash,
+  GODS_EYE_LAYERS,
   GODS_EYE_STYLES,
+  inferGodsEyeLayers,
   normalizeGodsEyeView,
   parseGodsEyeResult,
 } from "../src/lib/gods-eye/view.ts";
@@ -62,6 +64,7 @@ const VIEW = {
   headingDeg: 0,
   pitchDeg: -35,
   style: "flir",
+  layers: ["flights"],
 };
 
 test("the command parser recognises the token, keeps stacked tokens, and leaves prose alone", () => {
@@ -89,6 +92,7 @@ test("the view validator clamps what it can and refuses what it cannot", () => {
   assert.equal(view.pitchDeg, -5, "pitch clamps below the horizon");
   assert.equal(view.headingDeg, 5, "heading wraps into [0, 360)");
   assert.equal(view.style, "flir");
+  assert.deepEqual(view.layers, ["flights"]);
 
   assert.equal(normalizeGodsEyeView({ ...VIEW, lat: 91 }), null, "off-planet latitude refuses");
   assert.equal(normalizeGodsEyeView({ ...VIEW, lon: Number.NaN }), null);
@@ -103,6 +107,27 @@ test("the view validator clamps what it can and refuses what it cannot", () => {
     normalizeGodsEyeView({ ...VIEW, label: "x".repeat(300) })?.label.length,
     120,
   );
+  assert.deepEqual(
+    normalizeGodsEyeView({ ...VIEW, layers: ["not-a-layer", "cctv", "flights"] })?.layers,
+    ["cctv", "flights"],
+  );
+  assert.deepEqual(
+    normalizeGodsEyeView({ ...VIEW, label: "Aircraft over the Netherlands", layers: undefined })?.layers,
+    [],
+    "an explicit invalid layer field does not silently enable a feed",
+  );
+  const legacy = { ...VIEW };
+  delete legacy.layers;
+  assert.deepEqual(
+    normalizeGodsEyeView({ ...legacy, label: "Aircraft over the Netherlands" })?.layers,
+    ["flights"],
+    "old saved views recover their obvious live layer from the label",
+  );
+  assert.deepEqual(inferGodsEyeLayers("ships, earthquakes, and wildfire hotspots"), [
+    "ais-live-vessels",
+    "earthquakes",
+    "local-firms",
+  ]);
 });
 
 test("the share hash speaks the clone's URL dialect", () => {
@@ -117,6 +142,9 @@ test("the share hash speaks the clone's URL dialect", () => {
   assert.equal(params.get("hud"), "tactical");
   assert.equal(params.get("hv"), "1");
   assert.equal(params.get("map"), "photoreal");
+  assert.equal(params.get("v"), "2");
+  assert.equal(params.get("l"), "f");
+  assert.equal(params.get("lo"), "f.e.1");
 });
 
 test("the clone still parses every parameter the hash carries", { skip: !cloneAvailable }, () => {
@@ -136,6 +164,16 @@ test("the clone still parses every parameter the hash carries", { skip: !cloneAv
       `the clone's sharelink.js no longer knows the '${style}' style token`,
     );
   }
+  const layerState = cloneSource(path.join("src", "data", "layerState.js"));
+  assert.match(layerState, /params\.get\('v'\)/, "the clone no longer reads layer codec v=");
+  assert.match(layerState, /params\.get\('l'\)/, "the clone no longer reads enabled layers l=");
+  for (const layer of GODS_EYE_LAYERS) {
+    assert.match(
+      layerState,
+      new RegExp(`id: '${layer}'`),
+      `the clone's layer-state registry no longer knows '${layer}'`,
+    );
+  }
   // The open route suppresses the first-run card with ?welcome=0.
   assert.match(
     cloneSource(path.join("src", "firstRunExperience.js")),
@@ -151,6 +189,22 @@ test("the open path carries only validated view parameters", () => {
   assert.equal(params.get("lat"), "41.0082");
   assert.equal(params.get("style"), "flir");
   assert.equal(params.get("label"), "Istanbul");
+  assert.deepEqual(params.getAll("layer"), ["flights"]);
+  assert.equal(params.get("theme"), null);
+  const themed = new URLSearchParams(godsEyeOpenPath(VIEW, "dark").split("?")[1]);
+  assert.equal(themed.get("theme"), "dark");
+});
+
+test("the clone still wears Breadboard's theme when the open route asks", () => {
+  // The open route turns `theme=` into `?bb=light|dark`; index.html reads it
+  // into <html data-breadboard> and breadboard-theme.css keys off that.
+  const index = cloneSource("index.html");
+  assert.match(index, /breadboard-theme\.css/, "the clone's index.html no longer links the theme");
+  assert.match(index, /get\('bb'\)/, "the clone's index.html no longer reads ?bb=");
+  assert.match(index, /'breadboard:theme'/, "the clone no longer listens for theme switches");
+  const theme = cloneSource("breadboard-theme.css");
+  assert.match(theme, /html\[data-breadboard\]\s*\{/);
+  assert.match(theme, /html\[data-breadboard="dark"\]\s*\{/);
 });
 
 test("a summary carries its view invisibly and parses back losslessly", () => {
@@ -198,6 +252,14 @@ test("the model's answer is accepted fenced, bare, or wrapped in prose — and r
   }
   assert.equal(parseViewAnswer("I cannot help with that."), null);
   assert.equal(parseViewAnswer('{"lat": 91, "lon": 0}'), null);
+  assert.deepEqual(
+    parseViewAnswer(
+      JSON.stringify({ ...VIEW, layers: [], summary: "Watching the sky." }),
+      "aircraft over the Netherlands",
+    )?.view.layers,
+    ["flights"],
+    "the request deterministically repairs a missing model layer",
+  );
 });
 
 test("the run kind is registered, addressable, and round-trips its descriptor", () => {
@@ -284,6 +346,21 @@ test("every event the run manager emits is a name the card subscribes to", () =>
   // Terminal events double as the finish routine's names.
   assert.match(manager, /"run\.completed"/);
   assert.match(manager, /"run\.aborted"/);
+});
+
+test("a God's Eye completion reports and restores its model token usage", () => {
+  const manager = source("src/lib/gods-eye/run-manager.ts");
+  const card = source("src/app/components/hermes/inline-gods-eye-run.tsx");
+  const terminal = source("src/app/components/hermes/agent-runtime-panel.tsx");
+  const garden = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
+
+  assert.match(manager, /chatTokenUsageFromResponse\(data\)/);
+  assert.match(manager, /\.\.\.\(usage \? \{ usage \} : \{\}\)/);
+  assert.match(card, /normalizeChatTokenUsage\(payload\.usage\)/);
+  assert.match(card, /terminalUsage \? \{ usage: terminalUsage \} : \{\}/);
+  assert.match(card, /usage=\{usage\}/);
+  assert.match(terminal, /InlineGodsEyeRun[\s\S]{0,800}persistedUsage=\{message\.usage\}/);
+  assert.match(garden, /InlineGodsEyeRun[\s\S]{0,800}persistedUsage=\{msg\.usage\}/);
 });
 
 test("a delegated God's Eye stays visible as a quiet frame on both surfaces", () => {

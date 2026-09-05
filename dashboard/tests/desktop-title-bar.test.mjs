@@ -20,6 +20,14 @@ const dashboardClient = fs.readFileSync(
   new URL("../src/app/dashboard/dashboard-client.tsx", import.meta.url),
   "utf8",
 );
+const planClient = fs.readFileSync(
+  new URL("../src/app/plan/plan-client.tsx", import.meta.url),
+  "utf8",
+);
+const calendarClient = fs.readFileSync(
+  new URL("../src/app/plan/calendar/calendar-client.tsx", import.meta.url),
+  "utf8",
+);
 
 test("the root layout includes minimal desktop-only window chrome", () => {
   assert.match(layout, /<DesktopTitleBar\s*\/>/);
@@ -73,8 +81,31 @@ test("Garden flower toolbars match the Electron caption surface", () => {
   );
 });
 
+test("every top-level flower navbar keeps the dashboard measure and animation", () => {
+  assert.match(globals, /--breadboard-navbar-height:\s*69px/);
+  assert.match(
+    globals,
+    /\.breadboard-flower-navbar\s*\{[\s\S]*?min-height:\s*var\(--breadboard-navbar-height\)/,
+  );
+  assert.match(
+    planClient,
+    /breadboard-flower-navbar[\s\S]*?<NavbarFlowerWind showFlowers=\{showNavbarFlowers\}\s*\/>/,
+  );
+  assert.match(
+    calendarClient,
+    /!embedded && <NavbarFlowerWind showFlowers=\{showNavbarFlowers\}\s*\/>/,
+  );
+});
+
+test("a cold desktop tab cannot expose the green canvas below the retained navbar", () => {
+  assert.match(
+    globals,
+    /body:has\(\.bb-tab\[data-active="true"\]\[data-loading="true"\]\)[\s\S]*?\.breadboard-flower-navbar\s*\{[\s\S]*?0 var\(--breadboard-titlebar-height, 32px\) 0 var\(--paper-surface\)/,
+  );
+});
+
 test("the application navbar remains on the compact pre-redesign layout", () => {
-  assert.match(navbar, /<NavbarFlowerWind\s*\/>/);
+  assert.match(navbar, /<NavbarFlowerWind showFlowers=\{showFlowers\}\s*\/>/);
   assert.match(navbar, /<Link[\s\S]*?href="\/dashboard"[\s\S]*?aria-label="Go to Breadboard main page"/);
   assert.doesNotMatch(navbar, /\{actions\}|actions\?: ReactNode/);
   assert.match(navbar, /\{username \|\| email\}/);

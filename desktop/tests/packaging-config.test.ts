@@ -19,3 +19,17 @@ test("Windows packages embed the Breadboard application icon", () => {
   assert.equal(icon.readUInt16LE(2), 1, "asset must be a Windows icon");
   assert.ok(icon.readUInt16LE(4) >= 7, "icon must include the full Windows size set");
 });
+
+test("Breadboard icon keeps the white mark large and the canvas transparent", () => {
+  const source = fs.readFileSync(
+    path.join(desktopRoot, "src", "startup", "breadboard-icon.svg"),
+    "utf8",
+  );
+
+  assert.match(source, /viewBox="2 2 96 96"/);
+  assert.doesNotMatch(source, /fill="#0b0b0f"/);
+  assert.doesNotMatch(
+    source,
+    /<rect\s+x="0"\s+y="0"\s+width="100"\s+height="100"/,
+  );
+});

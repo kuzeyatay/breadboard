@@ -46,6 +46,7 @@ export async function POST(
       gardenId: cluster.slug,
       contentPath,
       expectedJobId,
+      userId,
     });
     const ownerCancellation = await cancelRuntimeV2LearnOperation({
       userId,

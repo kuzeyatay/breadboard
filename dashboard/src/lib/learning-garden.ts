@@ -1,4 +1,11 @@
 export const LEARNING_FOLDER = "learning";
+/**
+ * Source-derived, user-facing concept pages created during document ingestion.
+ * Learn-authored curriculum pages continue to live under `learning/`; keeping
+ * the two collections separate prevents an ingest from mutating an approved
+ * learning spine while still making extracted concepts readable immediately.
+ */
+export const CONCEPTS_FOLDER = "Concepts";
 // Learner-facing lesson pages/sections. The word "textbook" is never written to
 // visible markdown, so the current values are learning-* and the older
 // textbook-* values are still accepted when reading existing gardens.
@@ -95,6 +102,10 @@ export function isLearningPageRelPath(relPath = ""): boolean {
   return normalizedRelPath(relPath).startsWith(`${LEARNING_FOLDER.toLowerCase()}/`);
 }
 
+export function isConceptPageRelPath(relPath = ""): boolean {
+  return normalizedRelPath(relPath).startsWith(`${CONCEPTS_FOLDER.toLowerCase()}/`);
+}
+
 /**
  * True only for a learner lesson produced by the Learn pipeline.
  *
@@ -162,12 +173,13 @@ const NON_PUBLIC_LEARNING_FILES = new Set([
 
 /**
  * Filesystem-level gate for what may appear in the published garden. The
- * visible tree is: the garden `_index.md`, everything under `learning/` (except
- * the internal planning artifacts), the raw uploaded sources under `sources/`,
- * and the cropped source figures under `assets/source-visuals/`. Everything
- * else — snapshots, planning, `.breadboard/` internals, legacy generated
- * folders — is private. This is the single source of truth mirrored by the
- * Quartz publish filter and the validator script.
+ * visible tree is: the garden `_index.md`, source-derived pages under
+ * `Concepts/`, everything under `learning/` (except the internal planning
+ * artifacts), the raw uploaded sources under `sources/`, and the cropped
+ * source figures under `assets/source-visuals/`. Everything else — snapshots,
+ * planning, `.breadboard/` internals, legacy generated folders — is private.
+ * This is the single source of truth mirrored by the Quartz publish filter and
+ * the validator script.
  */
 export function isPublicGardenPath(relPath = ""): boolean {
   const p = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -182,6 +194,7 @@ export function isPublicGardenPath(relPath = ""): boolean {
 
   return (
     lower === "_index.md" ||
+    lower.startsWith(`${CONCEPTS_FOLDER.toLowerCase()}/`) ||
     lower.startsWith("learning/") ||
     lower.startsWith("sources/") ||
     lower.startsWith("assets/source-visuals/") ||

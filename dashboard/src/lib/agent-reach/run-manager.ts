@@ -330,6 +330,7 @@ async function complete(
   messages: ChatMessage[],
   apiKey: string,
   signal: AbortSignal,
+  toolChoice: "auto" | "none" = "auto",
 ): Promise<{ message: ChatMessage; usage: ChatUsage }> {
   // Retried rather than fatal.
   //
@@ -341,7 +342,15 @@ async function complete(
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= MODEL_ATTEMPTS; attempt += 1) {
     try {
-      return await completeOnce(baseUrl, model, reasoningEffort, messages, apiKey, signal);
+      return await completeOnce(
+        baseUrl,
+        model,
+        reasoningEffort,
+        messages,
+        apiKey,
+        signal,
+        toolChoice,
+      );
     } catch (error) {
       if (signal.aborted) {
         throw signal.reason ?? new DOMException("Aborted", "AbortError");
@@ -371,6 +380,7 @@ async function completeOnce(
   messages: ChatMessage[],
   apiKey: string,
   signal: AbortSignal,
+  toolChoice: "auto" | "none" = "auto",
 ): Promise<{ message: ChatMessage; usage: ChatUsage }> {
   const controller = new AbortController();
   const timer = setTimeout(
@@ -392,7 +402,7 @@ async function completeOnce(
         model,
         messages,
         tools: TOOLS,
-        tool_choice: "auto",
+        tool_choice: toolChoice,
         reasoning_effort: reasoningEffort,
       }),
       signal: controller.signal,
@@ -576,7 +586,11 @@ async function drive(run: RunState, input: RuntimeWorkerStartRunInput): Promise<
     emit(run, "agent.usage", { ...usage });
 
     const { thinking, answer } = splitReasoning(message.content ?? "");
-    if (answer) run.finalText = answer;
+    // Text beside a tool call is commentary about the next step, not the
+    // answer. Keeping it as the answer meant a run that hit its step limit
+    // reported its first remark — "Using agent-reach, open web via Jina
+    // Reader." — as its finding, after sixteen steps of real reading.
+    if (answer && !(message.tool_calls ?? []).length) run.finalText = answer;
     if (thinking) {
       emit(run, "agent.thinking", {
         state: "active",
@@ -650,6 +664,52 @@ async function drive(run: RunState, input: RuntimeWorkerStartRunInput): Promise<
         preview: result.split(/\r?\n/).slice(0, 2).join(" ").slice(0, 200),
       });
       messages.push({ role: "tool", tool_call_id: call.id, content: result });
+    }
+  }
+
+  // Out of steps with the answer unwritten. Everything it read is still in
+  // the transcript, so ask for the write-up now, with tools withheld: a live
+  // Max Research drive watched this agent fetch national energy-price tables
+  // and a regulator's press release across sixteen steps and then hand back
+  // nothing, because the loop ended on a tool call and no turn was left to
+  // report. One more call costs seconds; the sixteen before it cost minutes.
+  if (!run.finalText && !run.aborted) {
+    emit(run, "agent.thinking", {
+      state: "active",
+      step: maxSteps + 1,
+      summary: "Writing up what was found",
+    });
+    messages.push({
+      role: "user",
+      content:
+        "You have used every step available. Do not call any more tools. Write your findings now from what you have already read: what you actually found and where you found it, quoting or paraphrasing sources and naming the page, thread, post or repository each came from. If something you tried returned nothing, say so plainly. Do not describe your plan or approach.",
+    });
+    try {
+      const { message, usage: turnUsage } = await complete(
+        input.baseUrl,
+        input.model,
+        input.reasoningEffort,
+        messages,
+        input.apiKey,
+        run.abortController.signal,
+        "none",
+      );
+      if (run.aborted) return;
+      usage.calls += 1;
+      usage.inputTokens += turnUsage.inputTokens;
+      usage.outputTokens += turnUsage.outputTokens;
+      emit(run, "agent.usage", { ...usage });
+      const { answer } = splitReasoning(message.content ?? "");
+      if (answer) run.finalText = answer;
+    } catch (error) {
+      if (run.aborted) return;
+      emit(run, "agent.thinking", {
+        state: "active",
+        step: maxSteps + 1,
+        summary: `The write-up call failed: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
+      });
     }
   }
 

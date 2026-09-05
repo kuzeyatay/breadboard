@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { DEFAULT_ASSISTANT_MODELS, mergeAssistantModels } from '@/lib/ai-models';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
+import { scheduleSubscriptionCatalogAutoSync } from '@/lib/cliproxy/catalog-sync';
 import { requireUserId, RouteError, routeErrorResponse } from '@/lib/server-auth';
 import { getAgentRuntime } from '@/lib/agent-runtime/runtime';
 import { readHermesMode } from '@/lib/hermes/config';
@@ -48,7 +49,12 @@ interface ChatmockModel {
 
 export async function GET(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
+
+    // Subscriptions gain models between sign-ins. Refresh their catalog in
+    // the background at most every few minutes; this read is not delayed and
+    // the next one shows whatever the sync found.
+    scheduleSubscriptionCatalogAutoSync(request, userId);
 
     const models = await chatmockModels(request);
 

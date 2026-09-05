@@ -402,10 +402,11 @@ test("a delegated research hand-back remains one populated assistant field", () 
   // Ordinary delegated owners fold into the continuation so there is never a
   // duplicate assistant field. Self-presenting OpenGym and God's Eye rows keep
   // their interactive frame. The continuation carries the old preamble until
-  // its first synthesized text arrives, so the single field never goes blank.
-  for (const [surface, sourceText, messageName] of [
-    ["panel", runtimePanel, "message"],
-    ["garden", garden, "msg"],
+  // its first synthesized text arrives as a Thinking update, so the single
+  // field never goes blank or presents progress narration as an answer.
+  for (const [surface, sourceText] of [
+    ["panel", runtimePanel],
+    ["garden", garden],
   ]) {
     assert.match(
       sourceText,
@@ -414,16 +415,14 @@ test("a delegated research hand-back remains one populated assistant field", () 
     );
     assert.match(
       sourceText,
-      new RegExp(
-        `${messageName}\\.delegatedAgentPreamble[\\s\\S]{0,1200}<ActivityPanel`,
-      ),
-      `${surface} must keep Thought metadata above the delegated preamble`,
+      /const thinkingUpdates = delegatedThinkingUpdates\(/,
+      `${surface} must put delegated progress inside the Thinking disclosure`,
     );
     assert.match(sourceText, /const continuationPreamble =/);
     assert.match(
       sourceText,
-      /revealedAssistantContent[\s\S]{0,300}continuationPreamble/,
-      `${surface} must keep the existing text until synthesis starts`,
+      /progressNotes=\{thinkingUpdates\}/,
+      `${surface} must connect the existing updates to the response header`,
     );
   }
   assert.match(runtimePanel, /"Synthesizing research"/);
@@ -450,6 +449,28 @@ test("a delegated research hand-back remains one populated assistant field", () 
     /suppressActions=\{\s*message\.delegatedAgentRun === true \|\|\s*\(index === lastVisibleAssistantIndex && delegationInFlight\)/,
   );
   assert.match(assistantActions, /if \(suppressActions\) return null;/);
+});
+
+test("delegated hand-off prose joins earlier thinking updates", async () => {
+  const { delegatedThinkingUpdates } = await import(
+    "../src/lib/hermes/super-agent-activity.ts"
+  );
+  assert.deepEqual(
+    delegatedThinkingUpdates(
+      {
+        progressNotes: [
+          "Starting Max Research on morning dopamine levels, timing, and effects.",
+        ],
+        delegatedAgentPreamble:
+          "Max Research is checking morning dopamine patterns against human studies.",
+      },
+      "Max Research is checking morning dopamine patterns against human studies.",
+    ),
+    [
+      "Starting Max Research on morning dopamine levels, timing, and effects.",
+      "Max Research is checking morning dopamine patterns against human studies.",
+    ],
+  );
 });
 
 test("delegation and trusted hand-backs do not trip factual-answer gates", () => {

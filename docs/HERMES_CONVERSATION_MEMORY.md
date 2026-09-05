@@ -139,6 +139,16 @@ limit prevent memory existence alone from causing injection. Exact current-chat
 messages are composed before durable items and the precedence statement is part
 of the runtime context.
 
+Every active row is scored; there is no recency window in front of relevance.
+The recency factor decays from the latest of when a memory was stated,
+confirmed, or last selected for a prompt. Retrieval stamps the rows that reach
+a prompt (`last_retrieved_at`, `retrieval_count`) — once per turn, with the
+final selection, whichever channel produced it — so a memory the user's
+questions keep needing stays fresh and one nothing has needed decays to the
+floor. A short follow-up that carries too few terms to match anything borrows
+the most recent user turns as its retrieval query, and a small standing set of
+confirmed global preferences rides along on every personalized turn.
+
 An explicit “remember” request creates a confirmed item. Conservative stable
 decision phrases may create candidates. Temporary task details, permissions,
 filesystem grants, secrets, API keys, raw attachment bodies, unresolved advice
@@ -146,9 +156,18 @@ requests, and personal deliberations are not promoted. A user instruction such
 as “don't store this in memory” blocks every write path for that turn, including
 `save_memory` and mem0 extraction; the extraction model is not called at all.
 When a stable memory key changes, the old active record is marked `superseded`
-rather than left as a conflicting fact.
+rather than left as a conflicting fact. A writer may instead ask for the row to
+be rewritten in place (`onKeyConflict: "replace"`); the autofetch heartbeat
+does, because a changed task count is a new reading of the same fact rather
+than a prior belief worth keeping, and it deletes any retired rows carrying its
+own `autofetch:` prefix.
 
 ## Rolling compaction
+
+Compaction runs inside `completeAssistantMessage`, the one place every finished
+answer lands regardless of surface or runtime, so Terminal, Garden Chat, the
+provider-only path, and external-agent turns all reach it. A compaction failure
+is logged and never fails the answer.
 
 When more than 28 messages remain unsummarized, Breadboard summarizes the older
 portion while retaining the most recent 18 messages exactly. It records the

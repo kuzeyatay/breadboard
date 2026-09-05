@@ -443,8 +443,8 @@ test("Hermes is a hidden-loopback supervised runtime and its endpoint is not pub
   assert.equal(hermes.idleTtlMs, 10 * 60_000);
   assert.deepEqual(hermes.dependsOn, ["chatmock"]);
   assert.deepEqual(
-    hermes.args.slice(0, 3),
-    ["-m", "hermes_cli.main", "serve"],
+    hermes.args.slice(0, 2),
+    [path.join(paths.hermesAppDir, "breadboard_runtime.py"), "serve"],
   );
   assert.ok(hermes.args.includes("127.0.0.1"));
   assert.ok(!hermes.args.includes(config.persistent.hermesSessionToken));

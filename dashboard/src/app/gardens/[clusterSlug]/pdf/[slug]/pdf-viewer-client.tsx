@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { gardenDocumentHref } from "@/lib/garden-document-route";
+import { isPrimaryShortcut } from "@/lib/keyboard-shortcuts";
 import { useRouter } from "next/navigation";
 import { releaseCanvasPixels } from "@/app/components/canvas-resource";
 import FastReadReader from "@/app/components/fastread-reader";
@@ -122,6 +123,7 @@ interface Props {
    * the default, so a page that has not read the setting shows no button.
    */
   fastRead?: boolean;
+  showNavbarFlowers?: boolean;
   /** Enables the cross-page review handoff for an artifact-owned PDF. */
   aiEditArtifact?: ArtifactAiEditTarget;
 }
@@ -274,12 +276,14 @@ export default function PdfViewerClient({
   readOnly = false,
   kicker,
   fastRead = false,
+  showNavbarFlowers = true,
   aiEditArtifact,
 }: Props) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const eventBusRef = useRef<EventBusLike | null>(null);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
   const pdfViewerRef = useRef<PdfViewerLike | null>(null);
   const pdfjsRef = useRef<PdfJsModule | null>(null);
   const pdfDocumentRef = useRef<PDFDocumentProxy | null>(null);
@@ -1120,6 +1124,34 @@ export default function PdfViewerClient({
     [query],
   );
 
+  // Find shortcuts, matching what a desktop reader does: ⌘F (Ctrl+F) lands in
+  // the find box instead of the browser's own find, which cannot see into the
+  // canvas; ⌘G and F3 step to the next match, with Shift for the previous one.
+  // The latest runFind is read through a ref so the listener binds once.
+  const runFindRef = useRef(runFind);
+  runFindRef.current = runFind;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isPrimaryShortcut(event, "f")) {
+        const input = findInputRef.current;
+        if (!input) return;
+        event.preventDefault();
+        input.focus();
+        input.select();
+        return;
+      }
+      const stepNext = isPrimaryShortcut(event, "g") || (event.key === "F3" && !event.shiftKey);
+      const stepBack =
+        isPrimaryShortcut(event, "g", { shift: true }) || (event.key === "F3" && event.shiftKey);
+      if (!stepNext && !stepBack) return;
+      if (event.defaultPrevented || !findInputRef.current?.value.trim()) return;
+      event.preventDefault();
+      runFindRef.current("again", stepBack);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const downloadEdited = useCallback(async () => {
     const pdfDocument = pdfDocumentRef.current;
     if (!pdfDocument) return;
@@ -1210,7 +1242,7 @@ export default function PdfViewerClient({
       `}</style>
 
       <header className="breadboard-flower-navbar relative flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
-        <NavbarFlowerWind />
+        <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           <button
             type="button"
@@ -1558,8 +1590,20 @@ export default function PdfViewerClient({
           }}
         >
           <input
+            ref={findInputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              // Shift+Enter walks back a match; Escape hands focus back to
+              // the document so the arrow keys scroll it again.
+              if (event.key === "Enter" && event.shiftKey) {
+                event.preventDefault();
+                if (query.trim()) runFind("again", true);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                event.currentTarget.blur();
+              }
+            }}
             placeholder="Find in PDF"
             className="h-8 w-full max-w-64 rounded-md border border-gray-700 bg-gray-950 px-3 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-600 focus:border-gray-500"
           />
@@ -1648,7 +1692,7 @@ export default function PdfViewerClient({
         {outlineOpen && (
         <aside
           id="pdf-document-outline"
-          className="hidden w-64 shrink-0 border-r border-gray-800 bg-[#ece6d8] text-gray-100 shadow-inner md:flex md:min-h-0 md:flex-col"
+          className="hidden w-64 shrink-0 border-r border-gray-800 bg-gray-950 text-gray-100 shadow-inner md:flex md:min-h-0 md:flex-col"
         >
           <div className="flex h-11 shrink-0 items-center gap-2 border-b border-gray-700/60 px-4">
             <svg

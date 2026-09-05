@@ -15,6 +15,22 @@ test("the learning map owns the single Explore action", () => {
 
   assert.match(graph, />\s*Explore\s*</);
   assert.match(graph, /aria-label="Explore"/);
+  assert.match(graph, /import LinkContextMenu from ['"]\.\/link-context-menu['"]/);
+  assert.match(
+    graph,
+    /<LinkContextMenu\s+href=\{graphHref\(clusterSlug\)\}\s+label="Explore learning map"\s*>[\s\S]*?aria-label="Explore"[\s\S]*?<\/LinkContextMenu>/,
+    "the Explore target should expose the shared link context menu",
+  );
+  assert.match(
+    graph,
+    /px-3 py-1\.5 text-xs font-medium[\s\S]*?>\s*Explore\s*</,
+    "the Explore button should use the larger compact-button sizing",
+  );
+  assert.match(
+    graph,
+    /graph\.nodes\.length === 0 \? \([\s\S]*?\) : \([\s\S]*?<\/>\s*\)\}\s*<LinkContextMenu[\s\S]*?aria-label="Explore"/,
+    "the Explore action should remain outside the empty/non-empty preview branches",
+  );
   assert.doesNotMatch(graph, /Open Quartz|Open Quartz Learning Map/);
   assert.doesNotMatch(workspace, />\s*Explore\s*</);
 });
@@ -71,7 +87,10 @@ test("the Quartz preview preserves the browser host and reports real canvas read
   assert.match(route, /title\.match\(\/\\\.\[a-z0-9\]\{2,5\}\$\/i\)/);
   assert.match(graph, /embed: 'graph'/);
   assert.match(graph, /theme,/);
-  assert.match(graph, /h-64/);
+  assert.match(graph, /ref=\{previewHostRef\}/);
+  assert.match(graph, /style=\{\{ height: previewHeight \}\}/);
+  assert.match(graph, /new ResizeObserver\(resizePreview\)/);
+  assert.doesNotMatch(graph, /block h-64/);
   assert.match(graph, /pointer-events-none/);
   assert.match(graph, /colorScheme: previewTheme \?\? 'light'/);
   assert.match(
@@ -109,10 +128,41 @@ test("the Quartz preview preserves the browser host and reports real canvas read
   assert.match(topologyRenderer, /eventMode: interactive \? "static" : "none"/);
   assert.match(topologyRenderer, /const calloutRoot = interactive \?/);
   assert.match(
+    topologyRenderer,
+    /const sourceColor = node\.sourceKind \? colors\.source\[node\.sourceKind\] : null/,
+  );
+  assert.match(
     quartzTheme,
     /new URLSearchParams\(window\.location\.search\)\.get\("theme"\)/,
   );
   assert.doesNotMatch(graph, /setPreviewReady|Preparing preview/);
+});
+
+test("the Learning Map refreshes from server state even when the workspace is idle", () => {
+  const graph = read("src/app/components/knowledge-graph.tsx");
+  const graphRoute = read("src/app/api/knowledge-graph/route.ts");
+  const previewRoute = read("src/app/api/quartz-graph-preview/route.ts");
+
+  assert.match(graphRoute, /gardenContentFingerprint/);
+  assert.match(graphRoute, /revisionOnly/);
+  assert.match(graphRoute, /'Cache-Control': 'private, no-store'/);
+  assert.match(graph, /MAP_PREVIEW_FRESHNESS_POLL_MS = 5_000/);
+  assert.match(graph, /revisionOnly: '1'/);
+  assert.match(graph, /\/api\/thought-topology\?clusterSlug=/);
+  assert.match(graph, /asset: 'revision'/);
+  assert.match(graph, /build\?\.contentFingerprint === gardenRevision/);
+  assert.match(graph, /publishedRevision !== 'pending'/);
+  assert.match(previewRoute, /asset === 'revision'/);
+  assert.match(previewRoute, /publishedQuartzRevision/);
+  assert.match(graph, /window\.setInterval\(checkFreshness/);
+  assert.match(graph, /window\.addEventListener\('focus', checkFreshness\)/);
+  assert.match(graph, /window\.addEventListener\('online', checkFreshness\)/);
+  assert.match(graph, /document\.addEventListener\('visibilitychange', checkWhenVisible\)/);
+  assert.match(graph, /refresh: hashString\(`\$\{refreshKey\}:\$\{serverRefreshKey\}`\)/);
+  assert.match(
+    graph,
+    /src=\{quartzLease\.ready && previewFreshnessReady \? quartzPreviewUrl : undefined\}/,
+  );
 });
 
 test("library pages bridge each scoped Garden into one aggregate Thought Topology", () => {
@@ -143,4 +193,38 @@ test("library pages bridge each scoped Garden into one aggregate Thought Topolog
     topologyLayout,
     /preserves the visible hierarchy as library -> Garden -> folder\/page/,
   );
+});
+
+test("Thought Topology rebuilds stay backgrounded and the right sidebar is folder text only", () => {
+  const quartzGraph = read(
+    "../quartz/quartz/components/scripts/graph.inline.ts",
+  );
+  const topologyRenderer = read(
+    "../quartz/quartz/components/scripts/thoughtTopologyRenderer.ts",
+  );
+
+  assert.match(quartzGraph, /rememberTopologyProgress/);
+  assert.match(quartzGraph, /topologyIsBuilding\(topology\)/);
+  assert.match(quartzGraph, /topologyHasCompleteConnections/);
+  assert.match(quartzGraph, /lastCompleteTopologyByGraph/);
+  assert.match(quartzGraph, /requestedTopologyResult\.mode === "unavailable"/);
+  assert.match(quartzGraph, /window\.setTimeout\(poll, TOPOLOGY_POLL_MS\)/);
+  assert.match(quartzGraph, /await renderGraph\(graph, fullSlug\)/);
+  assert.match(quartzGraph, /graphRoot\.dataset\.activeMode = "topology-pending"/);
+  assert.match(quartzGraph, /topology\.sourceRevision !== "pending"/);
+  assert.match(
+    topologyRenderer,
+    /folderLabelsOnly = !isGlobalGraph && Boolean\(graph\.closest\("\.right\.sidebar"\)\)/,
+  );
+  assert.match(topologyRenderer, /nodeLayer\.visible = !folderLabelsOnly/);
+  assert.match(topologyRenderer, /linkLayer\.visible = !folderLabelsOnly/);
+  assert.match(topologyRenderer, /preference: "webgl"/);
+  assert.match(topologyRenderer, /webglcontextlost/);
+  assert.match(topologyRenderer, /scheduleRecovery/);
+  assert.match(topologyRenderer, /hideCallout\(\)/);
+  assert.match(
+    topologyRenderer,
+    /folderLabelsOnly && node\.kind !== "folder"/,
+  );
+  assert.doesNotMatch(topologyRenderer, /waiting for its short explanation/);
 });

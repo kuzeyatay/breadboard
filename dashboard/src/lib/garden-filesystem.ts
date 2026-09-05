@@ -17,9 +17,10 @@ import {
   slugify,
   walkClusterMarkdown,
 } from "./knowledge.ts";
+import { dashboardDataDir } from "./runtime-paths.ts";
 import { normalizeGardenFolder } from "./garden-documents.ts";
 import { publishQuartzAfterMutation } from "./quartz-publish.ts";
-import { acquireGardenMutationLease } from "./garden-mutation-lease.ts";
+import { acquireGardenMutationLeaseWithIngestionRecovery } from "./garden-mutation-recovery.ts";
 import {
   GardenFilesystemError,
   gardenContentRoot as contentRoot,
@@ -52,6 +53,19 @@ function resolveFolderDir(clusterDir: string, folder: string): string {
     throw new GardenFilesystemError("Invalid folder path", 400);
   }
   return target;
+}
+
+function acquireStructureMutationLease(
+  contentPath: string,
+  clusterSlug: string,
+  operation: string,
+) {
+  return acquireGardenMutationLeaseWithIngestionRecovery({
+    contentPath,
+    dataRoot: dashboardDataDir(),
+    clusterSlug,
+    operation,
+  });
 }
 
 /** Title Quartz shows for a folder, derived from its last path segment. */
@@ -150,7 +164,11 @@ export async function createGardenFolder(input: {
   const folder = normalizeGardenFolder(input.folder);
   if (!folder) throw new GardenFilesystemError("folder is required", 400);
 
-  const lease = acquireGardenMutationLease(clusterDir, "create-folder");
+  const lease = acquireStructureMutationLease(
+    contentPath,
+    input.clusterSlug,
+    "create-folder",
+  );
   try {
     const dir = resolveFolderDir(clusterDir, folder);
     fs.mkdirSync(dir, { recursive: true });
@@ -194,7 +212,11 @@ export async function moveGardenDocument(input: {
     throw new GardenFilesystemError("slug is required", 400);
   }
 
-  const lease = acquireGardenMutationLease(clusterDir, "move-document");
+  const lease = acquireStructureMutationLease(
+    contentPath,
+    input.clusterSlug,
+    "move-document",
+  );
   let moved: { slug: string; folder: string; relPath: string };
   try {
     const folder = normalizeGardenFolder(input.toFolder);
@@ -258,7 +280,11 @@ export async function renameGardenFolder(input: {
   const contentPath = contentRoot();
   const clusterDir = gardenDirectory(input.clusterSlug, contentPath);
 
-  const lease = acquireGardenMutationLease(clusterDir, "rename-folder");
+  const lease = acquireStructureMutationLease(
+    contentPath,
+    input.clusterSlug,
+    "rename-folder",
+  );
   let renamed: { folder: string; newFolder: string };
   try {
     const folder = normalizeGardenFolder(input.folder);
@@ -337,7 +363,11 @@ export async function deleteGardenFolder(input: {
   const contentPath = contentRoot();
   const clusterDir = gardenDirectory(input.clusterSlug, contentPath);
 
-  const lease = acquireGardenMutationLease(clusterDir, "delete-folder");
+  const lease = acquireStructureMutationLease(
+    contentPath,
+    input.clusterSlug,
+    "delete-folder",
+  );
   let deleted: { folder: string; deletedSlugs: string[] };
   try {
     const folder = normalizeGardenFolder(input.folder);

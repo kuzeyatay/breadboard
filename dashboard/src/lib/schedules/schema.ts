@@ -1,5 +1,5 @@
-// Scheduled chat jobs ("cron jobs" in the UI): a saved prompt plus a cron
-// expression that opens a brand-new chat on the surface it was scheduled from.
+// Scheduled task jobs ("cron jobs" in the UI): a saved prompt plus a cron
+// expression and the policy that decides when its result becomes a visible chat.
 //
 // The schema is additive and applied with CREATE TABLE IF NOT EXISTS, matching
 // the repo's migration style, and takes an injected handle so tests can run the
@@ -9,6 +9,7 @@ import type DatabaseType from "better-sqlite3";
 
 import { DEFAULT_MODEL } from "../ai-models.ts";
 import { DEFAULT_ASSISTANT_REASONING_EFFORT } from "../assistant-reasoning.ts";
+import { inferScheduledChatConversationPolicy } from "./conversation-policy.ts";
 
 type Db = DatabaseType.Database;
 
@@ -92,6 +93,43 @@ export function ensureScheduledChatSchema(db: Db): void {
     "delivery_mode",
     "delivery_mode TEXT CHECK (delivery_mode IN ('reminder'))",
   );
+  ensureColumn(
+    db,
+    "scheduled_chat_jobs",
+    "conversation_policy",
+    "conversation_policy TEXT NOT NULL DEFAULT 'always_open' CHECK (conversation_policy IN ('always_open', 'open_when_objective_met'))",
+  );
+
+  // Titles used to be short generated summaries while the full prompt was
+  // repeated beneath them. The prompt is now the schedule's name everywhere.
+  // Also classify older conditional notifications so the fix applies to jobs
+  // that already exist, including availability watches created before this
+  // column was introduced.
+  const rows = db.prepare(`
+    SELECT id, title, prompt, conversation_policy, delivery_channel, delivery_mode
+    FROM scheduled_chat_jobs
+  `).all() as Array<{
+    id: number;
+    title: string;
+    prompt: string;
+    conversation_policy: string;
+    delivery_channel: string | null;
+    delivery_mode: string | null;
+  }>;
+  const update = db.prepare(`
+    UPDATE scheduled_chat_jobs
+    SET title = ?, conversation_policy = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `);
+  for (const row of rows) {
+    const title = row.prompt.trim().slice(0, 120);
+    const policy = row.delivery_mode
+      ? "always_open"
+      : inferScheduledChatConversationPolicy(row.prompt);
+    if (row.title !== title || row.conversation_policy !== policy) {
+      update.run(title, policy, row.id);
+    }
+  }
 }
 
 function ensureColumn(db: Db, table: string, column: string, definition: string): void {

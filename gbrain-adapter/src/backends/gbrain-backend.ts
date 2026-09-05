@@ -21,7 +21,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { createEngine } from "../../../gbrain/src/core/engine-factory.ts";
 import { importFromContent } from "../../../gbrain/src/core/import-file.ts";
-import { addSource } from "../../../gbrain/src/core/sources-ops.ts";
+import {
+  addSource,
+  removeSource as removeGBrainSource,
+  SourceOpError,
+} from "../../../gbrain/src/core/sources-ops.ts";
 import {
   embedBatch,
   embedQuery,
@@ -37,6 +41,7 @@ import type {
   GBrainGraphResponse,
   GBrainIndexPage,
   GBrainMode,
+  GBrainRemoveSourceResponse,
   GBrainRegisterSourceResponse,
   GBrainRetrieveResponse,
   GBrainScope,
@@ -332,6 +337,26 @@ export class GBrainEngineBackend implements RetrievalBackend {
       revision,
       warnings,
     };
+  }
+
+  async removeSource(sourceId: string): Promise<GBrainRemoveSourceResponse> {
+    try {
+      const removed = await removeGBrainSource(this.require(), {
+        id: sourceId,
+        confirmDestructive: true,
+        yes: true,
+      });
+      return {
+        sourceId,
+        removed: true,
+        pagesDeleted: removed.pages_deleted,
+      };
+    } catch (error) {
+      if (error instanceof SourceOpError && error.code === "not_found") {
+        return { sourceId, removed: false, pagesDeleted: 0 };
+      }
+      throw error;
+    }
   }
 
   private toResult(row: EngineSearchRow, fallbackSource: string): GBrainSearchResult {

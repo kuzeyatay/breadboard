@@ -158,7 +158,7 @@ test("Quartz keeps mutation-call parity while submitting exact user-global autho
     const state = freshState();
     const result = await quartz.publishQuartzAfterMutation(
       "update authenticated garden",
-      { userId: 91, requireSuccess: true },
+      { userId: 91, requireSuccess: true, topologyImpact: "none" },
     );
     assert.equal(result, undefined);
     assert.equal(state.submissions.length, 1);
@@ -200,6 +200,25 @@ test("Quartz keeps mutation-call parity while submitting exact user-global autho
   }
 });
 
+test("Garden mutations cannot publish without declaring topology impact", async () => {
+  const previousAutoPublish = process.env.QUARTZ_AUTO_PUBLISH;
+  process.env.QUARTZ_AUTO_PUBLISH = "1";
+  try {
+    const state = freshState();
+    await assert.rejects(
+      quartz.publishQuartzAfterMutation("unscoped Garden mutation", {
+        userId: 91,
+        requireSuccess: true,
+      }),
+      /requires a Garden slug or an explicit topology-neutral scope/u,
+    );
+    assert.equal(state.submissions.length, 0);
+  } finally {
+    if (previousAutoPublish === undefined) delete process.env.QUARTZ_AUTO_PUBLISH;
+    else process.env.QUARTZ_AUTO_PUBLISH = previousAutoPublish;
+  }
+});
+
 test("Runtime failure is returned without a direct Quartz fallback", async () => {
   const previousAutoPublish = process.env.QUARTZ_AUTO_PUBLISH;
   process.env.QUARTZ_AUTO_PUBLISH = "1";
@@ -209,6 +228,7 @@ test("Runtime failure is returned without a direct Quartz fallback", async () =>
       quartz.publishQuartzAfterMutation("failed publication", {
         userId: 91,
         requireSuccess: true,
+        topologyImpact: "none",
       }),
       /Quartz publication failed/u,
     );
@@ -293,7 +313,7 @@ test("an in-flight Quartz publication satisfies a cold view without a duplicate 
 
     const mutation = quartz.publishQuartzAfterMutation(
       "refresh private garden index",
-      { userId: 91, requireSuccess: true },
+      { userId: 91, requireSuccess: true, topologyImpact: "none" },
     );
     const view = quartz.ensureQuartzPublicationForView(91);
     finishPublication();
@@ -309,5 +329,37 @@ test("an in-flight Quartz publication satisfies a cold view without a duplicate 
     else process.env.QUARTZ_AUTO_PUBLISH = previous.autoPublish;
     if (previous.contentPath === undefined) delete process.env.QUARTZ_CONTENT_PATH;
     else process.env.QUARTZ_CONTENT_PATH = previous.contentPath;
+  }
+});
+
+test("dashboard index warmups do not queue duplicate full-site publications", async () => {
+  const previousAutoPublish = process.env.QUARTZ_AUTO_PUBLISH;
+  process.env.QUARTZ_AUTO_PUBLISH = "1";
+  let finishPublication;
+  const publicationGate = new Promise((resolve) => {
+    finishPublication = resolve;
+  });
+
+  try {
+    const state = freshState(jobSnapshot("running"));
+    state.inspectJob = async () => {
+      await publicationGate;
+      return jobSnapshot("succeeded");
+    };
+
+    quartz.publishQuartzIndexesIfIdle("prepare dashboard cluster garden indexes", 91);
+    quartz.publishQuartzIndexesIfIdle("prepare dashboard cluster garden indexes", 91);
+    const waiting = quartz.waitForQuartzPublicationInFlight();
+    finishPublication();
+    assert.equal(await waiting, true);
+
+    assert.equal(state.submissions.length, 1);
+    assert.deepEqual(state.submissions[0].submission.requestPayload.reasons, [
+      "prepare dashboard cluster garden indexes",
+    ]);
+    assert.equal(await quartz.waitForQuartzPublicationInFlight(), false);
+  } finally {
+    if (previousAutoPublish === undefined) delete process.env.QUARTZ_AUTO_PUBLISH;
+    else process.env.QUARTZ_AUTO_PUBLISH = previousAutoPublish;
   }
 });

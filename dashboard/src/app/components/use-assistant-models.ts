@@ -15,12 +15,17 @@ import { invalidateSettingsCache } from "@/lib/settings-client-cache";
  * Settings can serve immediately. The menus were the only layer that did not
  * know: each surface fetched `/api/models` once and kept the result for the life
  * of the page, so a newly connected provider's models stayed missing until the
- * app was restarted. This hook keeps that one-shot load — the catalog is not
- * worth polling — and adds the one signal that actually invalidates it.
+ * app was restarted. This hook keeps that one-shot load and adds the one
+ * signal that actually invalidates it — plus a slow, visibility-gated refresh,
+ * because the catalog is now discovered from the providers themselves and a
+ * model released this afternoon should show up this afternoon.
  */
 
 /** Dispatched when a provider is connected, changed, forgotten or synced. */
 export const ASSISTANT_MODELS_CHANGED_EVENT = "breadboard:assistant-models-changed";
+
+/** How often an open page re-reads the discovered catalog. */
+export const ASSISTANT_MODELS_REFRESH_INTERVAL_MS = 10 * 60_000;
 
 /** Tell every open model picker its catalog is out of date. */
 export function notifyAssistantModelsChanged(): void {
@@ -130,6 +135,18 @@ export function useAssistantModels(
     const handler = () => void fetchModels(true);
     window.addEventListener(ASSISTANT_MODELS_CHANGED_EVENT, handler);
     return () => window.removeEventListener(ASSISTANT_MODELS_CHANGED_EVENT, handler);
+  }, [fetchModels]);
+
+  useEffect(() => {
+    // Discovery happens server-side on a timer; a page that stays open picks
+    // it up here. Only a catalog that was loaded once is refreshed, and only
+    // while someone could see the result.
+    const timer = window.setInterval(() => {
+      if (loaded.current && document.visibilityState === "visible") {
+        void fetchModels(true);
+      }
+    }, ASSISTANT_MODELS_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
   }, [fetchModels]);
 
   return { models, modelsLoading, loadModels };

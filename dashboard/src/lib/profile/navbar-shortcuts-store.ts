@@ -6,7 +6,9 @@ import db from "@/lib/db";
 
 import {
   ensureNavbarShortcutSchema,
+  readNavbarFlowers,
   readNavbarShortcuts,
+  writeNavbarFlowers,
   writeNavbarShortcuts,
   type NavbarShortcuts,
 } from "./navbar-shortcuts.ts";
@@ -19,4 +21,12 @@ export function getNavbarShortcuts(userId: number): NavbarShortcuts {
 
 export function updateNavbarShortcuts(userId: number, patch: unknown): NavbarShortcuts {
   return writeNavbarShortcuts(db, userId, patch);
+}
+
+export function getNavbarFlowers(userId: number): boolean {
+  return readNavbarFlowers(db, userId);
+}
+
+export function updateNavbarFlowers(userId: number, showFlowers: boolean): boolean {
+  return writeNavbarFlowers(db, userId, showFlowers);
 }

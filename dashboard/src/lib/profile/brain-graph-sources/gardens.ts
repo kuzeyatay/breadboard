@@ -1,8 +1,12 @@
 import path from "node:path";
 
-import { readThoughtTopology } from "../../thought-topology/storage.ts";
+import {
+  readThoughtTopology,
+  readThoughtTopologyCache,
+} from "../../thought-topology/storage.ts";
 import type {
   ThoughtTopology,
+  ThoughtTopologyCache,
   TopologyEdge,
   TopologyNode,
 } from "../../thought-topology/types.ts";
@@ -17,6 +21,10 @@ import {
   gardenNodeId,
   knowledgeNodeId,
 } from "../brain-graph-ids.ts";
+import {
+  buildCrossGardenEdges,
+  type CrossGardenDocument,
+} from "../brain-graph-cross-garden.ts";
 import type {
   BrainEdge,
   BrainGraphFragment,
@@ -26,6 +34,10 @@ import type {
   BrainRelation,
   BrainScope,
 } from "../brain-graph-types.ts";
+
+interface GardenFragment extends BrainGraphFragment {
+  crossGardenDocuments: CrossGardenDocument[];
+}
 
 function topologyNodeKind(node: TopologyNode): BrainNodeKind {
   if (node.kind === "source") return "source";
@@ -47,7 +59,7 @@ function gardenFragment(
   scope: BrainScope,
   garden: AuthorizedGarden,
   perGardenLimit: number,
-): BrainGraphFragment {
+): GardenFragment {
   const nodes: BrainNode[] = [];
   const edges: BrainEdge[] = [];
   const org = garden.organizationId
@@ -106,10 +118,11 @@ function gardenFragment(
     return {
       nodes,
       edges,
+      crossGardenDocuments: [],
       warnings: [{
         source: "thought-topology",
-        code: "content_path_unavailable",
-        message: "Thought Topology files are unavailable; Garden anchors are still shown.",
+        code: `content_path_unavailable:${garden.slug}`,
+        message: `Thought Topology files for “${garden.name}” are unavailable; its Garden anchor is still shown.`,
       }],
     };
   }
@@ -119,15 +132,17 @@ function gardenFragment(
     return {
       nodes,
       edges,
+      crossGardenDocuments: [],
       warnings: [{
         source: "thought-topology",
-        code: "topology_unavailable",
-        message: "One authorized Garden is waiting for its Thought Topology to be generated.",
+        code: `topology_unavailable:${garden.slug}`,
+        message: `“${garden.name}” is waiting for its Thought Topology to be generated.`,
       }],
     };
   }
 
-  return topologyFragment(topology, {
+  const cache = readThoughtTopologyCache(path.join(contentRoot, garden.slug));
+  return topologyFragment(topology, cache, {
     nodes,
     edges,
     garden,
@@ -139,6 +154,7 @@ function gardenFragment(
 
 function topologyFragment(
   topology: ThoughtTopology,
+  cache: ThoughtTopologyCache | null,
   context: {
     nodes: BrainNode[];
     edges: BrainEdge[];
@@ -147,12 +163,13 @@ function topologyFragment(
     organizationId?: string;
     perGardenLimit: number;
   },
-): BrainGraphFragment {
+): GardenFragment {
   const { garden, gardenId, organizationId } = context;
   const nodes = [...context.nodes];
   const edges = [...context.edges];
   const folderIdByTopologyId = new Map<string, string>();
   const pageIdByTopologyId = new Map<string, string>();
+  const crossGardenDocuments: CrossGardenDocument[] = [];
   const allFolders = [...topology.folders]
     .sort((left, right) => left.depth - right.depth || left.path.localeCompare(right.path));
   for (const folder of allFolders) {
@@ -238,6 +255,26 @@ function topologyFragment(
         summaryState: page.summary.state,
       },
     });
+    const cached = cache?.nodes[page.id];
+    crossGardenDocuments.push({
+      id: nodeId,
+      folderId: folderIdByTopologyId.get(page.folderId) ?? gardenId,
+      gardenSlug: garden.slug,
+      gardenTitle: garden.name,
+      label: page.title,
+      nodeKind: kind,
+      primaryConcepts: [...page.primaryConcepts],
+      supportingConcepts: [...page.supportingConcepts],
+      lexicalText:
+        cached?.lexicalText ||
+        [page.title, page.summary.text, ...page.primaryConcepts, ...page.supportingConcepts]
+          .filter(Boolean)
+          .join(" "),
+      embeddingModel: cached?.embeddingModel,
+      embedding: cached?.embedding ?? null,
+      sections: cached?.sections,
+      wordCount: page.wordCount,
+    });
     const folderId = folderIdByTopologyId.get(page.folderId);
     if (folderId) {
       edges.push({
@@ -268,6 +305,7 @@ function topologyFragment(
       origin,
       explicit: edge.origin !== "inferred",
       confidence: edge.score,
+      threshold: edge.threshold ?? topology.build.threshold,
       weight: edge.score,
       organizationId,
       gardenId,
@@ -281,13 +319,14 @@ function topologyFragment(
   return {
     nodes,
     edges,
+    crossGardenDocuments,
     truncated: topology.nodes.length > pages.length,
     warnings: topology.build.state === "ready"
       ? []
       : [{
           source: "thought-topology",
-          code: `topology_${topology.build.state}`,
-          message: `One Garden's Thought Topology is ${topology.build.state}; its last safe graph is shown.`,
+          code: `topology_${topology.build.state}:${garden.slug}`,
+          message: `The Thought Topology for “${garden.name}” is ${topology.build.state}; its last safe graph is shown.`,
         }],
   };
 }
@@ -303,9 +342,15 @@ export const gardensBrainSource = {
     const fragments = gardens
       .slice(0, limits.maxGardens)
       .map((garden) => gardenFragment(context, scope, garden, limits.maxKnowledgeNodesPerGarden));
+    const crossGardenEdges = buildCrossGardenEdges(
+      fragments.flatMap((fragment) => fragment.crossGardenDocuments),
+    );
     return {
       nodes: fragments.flatMap((fragment) => fragment.nodes),
-      edges: fragments.flatMap((fragment) => fragment.edges),
+      edges: [
+        ...fragments.flatMap((fragment) => fragment.edges),
+        ...crossGardenEdges,
+      ],
       warnings: fragments.flatMap((fragment) => fragment.warnings ?? []),
       truncated:
         gardens.length > limits.maxGardens || fragments.some((fragment) => fragment.truncated),

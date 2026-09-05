@@ -22,6 +22,7 @@ import { useAssistantIntelligence } from "@/app/components/use-assistant-intelli
 import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
+import { isModalDialogOpen, isPrimaryShortcut } from "@/lib/keyboard-shortcuts";
 import AgentRuntimePanel from "./agent-runtime-panel";
 import ChatGreetingEmptyState from "./chat-greeting-empty-state";
 import { useChatGreeting } from "./use-chat-greeting";
@@ -45,6 +46,7 @@ import {
   sameChatIds,
   writeUnreadChats,
 } from "@/lib/conversations/unread";
+import { recordLastOpenedChat } from "@/lib/conversations/last-opened";
 import {
   chatDraftKey,
   clearChatDraft,
@@ -79,6 +81,7 @@ import {
   OPEN_SCHEDULES_PANEL_EVENT,
 } from "./schedule-client";
 import { parseExplicitScheduleRequest } from "@/lib/schedules/natural-language.ts";
+import { parseCalendarReminderRequest } from "@/lib/calendar/reminder-request.ts";
 import {
   normalizeScheduledChatReceipt,
   type ScheduledChatJob,
@@ -104,6 +107,7 @@ import {
 } from "@/lib/generative-ui/contracts.ts";
 import {
   TERMINAL_ATTACHMENT_ACCEPT,
+  attachmentOnlyMessageText,
   chatMessageAttachments,
   extractChatAttachments,
   reusableChatAttachments,
@@ -116,6 +120,10 @@ import {
   agentBrowserUserMessage,
   taskFromAgentBrowserCommand,
 } from "@/lib/agent-browser/identity.ts";
+import {
+  desktopTabsBridge,
+  openBrowserAgentRunInDesktop,
+} from "@/lib/desktop-browser-tabs";
 import {
   AGENT_REACH_AGENT_ID,
   AGENT_REACH_AGENT_NAME,
@@ -343,6 +351,16 @@ interface Props {
   backdropImage?: string | null;
   /** A notification deep-link can request one durable Terminal conversation. */
   initialChatId?: string | null;
+  /**
+   * The browser keeps the same Terminal in a left-hand workspace instead of
+   * the dashboard's bottom dock. It is still the real Terminal — history,
+   * drafts and active runs are shared — only its spatial presentation changes.
+   */
+  presentation?: "dock" | "drawer";
+  /** The browser drawer has enough horizontal room to show chats beside the transcript. */
+  drawerSidebarExpanded?: boolean;
+  /** A browser text selection can arrive after mount and seed the composer. */
+  initialDraft?: string | null;
 }
 
 interface RuntimeHistorySession {
@@ -467,7 +485,13 @@ function writeActiveTerminalChatSnapshot(
  */
 const HISTORY_REFRESH_FAILED =
   "The chat list could not be refreshed. Showing the last one that loaded.";
-const COLLAPSED_HEIGHT = 48;
+// The resting bar is intentionally compact. Its visible top-corner radius is
+// derived from the bar height with phi squared: 42 / 2.618 ≈ 16px.
+const COLLAPSED_HEIGHT = 42;
+const GOLDEN_RATIO_SQUARED = 2.618;
+const TERMINAL_BAR_RADIUS = Math.round(
+  COLLAPSED_HEIGHT / GOLDEN_RATIO_SQUARED,
+);
 // The shortest the dock can stand open. The composer is anchored to the bottom
 // of the body (`.bb-composer-overlay`), so a body with no room for it does not
 // clip it — it draws the pill back up over the header bar, with the transcript
@@ -609,7 +633,7 @@ const LIQUID_GLASS_BAR_ENABLED = false;
 // rather than a colourful test page — cream cards on pale green leave very
 // little for a lens to bend, so the effect has to come off the rim.
 //
-// zRadius: the bar is only ~48px tall, so a bevel of half that turns the whole
+// zRadius: the bar is only ~42px tall, so a bevel of half that turns the whole
 // cross-section into a lens and the middle over-magnifies into a wash. At 16
 // the centre stays a near-flat pane and only the top and bottom edges bend,
 // which is where edgeHighlight, specular and the chromatic fringe do their work.
@@ -626,7 +650,7 @@ const TERMINAL_BAR_GLASS = {
   specular: 0.6,
   fresnel: 1.0,
   distortion: 0.05,
-  cornerRadius: 22,
+  cornerRadius: TERMINAL_BAR_RADIUS,
   zRadius: 16,
   saturation: 0.36,
   brightness: 0.08,
@@ -644,6 +668,9 @@ export default function DashboardAgentTerminal({
   initialPanel = null,
   backdropImage = null,
   initialChatId = null,
+  presentation = "dock",
+  drawerSidebarExpanded = false,
+  initialDraft = null,
 }: Props) {
   const [health, setHealth] = useState<HealthState>({
     status: "checking",
@@ -731,6 +758,9 @@ export default function DashboardAgentTerminal({
         initialChatId={initialChatId}
         initialPanel={initialPanel}
         backdropImage={backdropImage}
+        presentation={presentation}
+        drawerSidebarExpanded={drawerSidebarExpanded}
+        initialDraft={initialDraft}
         runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
         onConversationEngaged={markRuntimeSurfaceEngaged}
@@ -743,7 +773,8 @@ export default function DashboardAgentTerminal({
   if (
     health.status === "runtime" ||
     health.status === "checking" ||
-    runtimeSurfaceEngaged
+    runtimeSurfaceEngaged ||
+    presentation === "drawer"
   ) {
     return (
       <RuntimeTerminal
@@ -752,6 +783,9 @@ export default function DashboardAgentTerminal({
         initialChatId={initialChatId}
         initialPanel={initialPanel}
         backdropImage={backdropImage}
+        presentation={presentation}
+        drawerSidebarExpanded={drawerSidebarExpanded}
+        initialDraft={initialDraft}
         runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
         onConversationEngaged={markRuntimeSurfaceEngaged}
@@ -766,6 +800,9 @@ export default function DashboardAgentTerminal({
         initialChatId={initialChatId}
         initialPanel={initialPanel}
         backdropImage={backdropImage}
+        presentation={presentation}
+        drawerSidebarExpanded={drawerSidebarExpanded}
+        initialDraft={initialDraft}
         runtimeUnavailable
         onRefreshRuntime={refreshRuntimeHealth}
         onConversationEngaged={markRuntimeSurfaceEngaged}
@@ -792,6 +829,9 @@ function RuntimeTerminal({
   initialPanel = null,
   backdropImage = null,
   initialChatId = null,
+  presentation = "dock",
+  drawerSidebarExpanded = false,
+  initialDraft = null,
   runtimeUnavailable = false,
   onRefreshRuntime,
   onConversationEngaged,
@@ -811,9 +851,13 @@ function RuntimeTerminal({
   const activeChatPersistenceReadyRef = useRef(false);
   const activeChatSnapshotRef = useRef<ActiveTerminalChatSnapshot | null>(null);
   const openedNotificationChatRef = useRef<string | null>(null);
-  const [height, setHeight] = useState(COLLAPSED_HEIGHT);
+  const drawerPresentation = presentation === "drawer";
+  const [height, setHeight] = useState(() =>
+    drawerPresentation ? 720 : COLLAPSED_HEIGHT,
+  );
 
   useEffect(() => {
+    if (drawerPresentation) return;
     const saved = Number(window.localStorage.getItem(HEIGHT_KEY));
     if (Number.isFinite(saved) && saved > COLLAPSED_HEIGHT + 8) {
       preferredOpenHeightRef.current = clampHeight(saved);
@@ -827,7 +871,7 @@ function RuntimeTerminal({
       // opens to exactly what a click would.
       setHeight(openHeight(preferredOpenHeightRef.current));
     }
-  }, [initialPanel]);
+  }, [drawerPresentation, initialPanel]);
   const [isResizing, setIsResizing] = useState(false);
   // The rail's edge drags to any width and clicks between the icon rail and
   // whatever width it was last opened to — the same edge the learning map and
@@ -837,6 +881,30 @@ function RuntimeTerminal({
     ...CHAT_RAIL_RESIZE,
     storageKey: "breadboard:terminal:sidebar-width",
   });
+  const [drawerSidebarChoice, setDrawerSidebarChoice] = useState<{
+    expandedTrigger: boolean;
+    collapsed: boolean;
+  } | null>(null);
+  const terminalRailCollapsed = drawerPresentation
+    ? drawerSidebarChoice?.expandedTrigger === drawerSidebarExpanded
+      ? drawerSidebarChoice.collapsed
+      : !drawerSidebarExpanded
+    : rail.collapsed;
+  function toggleTerminalRail() {
+    if (!drawerPresentation) {
+      rail.toggle();
+      return;
+    }
+    setDrawerSidebarChoice((current) => {
+      const collapsed = current?.expandedTrigger === drawerSidebarExpanded
+        ? current.collapsed
+        : !drawerSidebarExpanded;
+      return {
+        expandedTrigger: drawerSidebarExpanded,
+        collapsed: !collapsed,
+      };
+    });
+  }
   const [input, setInput] = useState("");
   // Keep the just-submitted words in the draft store until the server confirms
   // the user turn is durable. The composer can still clear immediately.
@@ -849,6 +917,12 @@ function RuntimeTerminal({
   // Handed down to the panel so picking an opener can put the caret where the
   // text just landed.
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const next = initialDraft?.trim();
+    if (!next) return;
+    setInput(next);
+    window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+  }, [initialDraft]);
   // A click or keyboard press on the collapsed bar is an intent to start
   // chatting. Remember it across the render that mounts the textarea so focus
   // can follow the dock open instead of remaining on the header.
@@ -859,7 +933,6 @@ function RuntimeTerminal({
     reasoningEffort: selectedReasoningEffort,
     setReasoningEffort,
     intelligenceModes: selectedIntelligenceModes,
-    failover: modelFailover,
   } = useAssistantIntelligence();
   // A model picked while this answer is active is a setting for the next
   // answer. Keep every callback in the current run on the intelligence pair it
@@ -1361,6 +1434,15 @@ function RuntimeTerminal({
   }, [restoreOwnerKey, session.loadingSession, session.sessionId, temporaryChat]);
 
   useEffect(() => {
+    if (temporaryChat || !session.sessionId) return;
+    recordLastOpenedChat(
+      window.localStorage,
+      "dashboard_terminal",
+      session.sessionId,
+    );
+  }, [session.sessionId, temporaryChat]);
+
+  useEffect(() => {
     if (
       !activeChatPersistenceReadyRef.current ||
       temporaryChat ||
@@ -1621,20 +1703,23 @@ function RuntimeTerminal({
   }, []);
 
   useEffect(() => {
+    if (drawerPresentation) return;
     const onResize = () =>
       setHeight((current) => settleHeight(clampHeight(current)));
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, []);
+  }, [drawerPresentation]);
 
   useEffect(() => {
+    if (drawerPresentation) return;
     if (height < minOpenHeight()) return;
     const preferredHeight = clampHeight(height);
     preferredOpenHeightRef.current = preferredHeight;
     window.localStorage.setItem(HEIGHT_KEY, String(preferredHeight));
-  }, [height]);
+  }, [drawerPresentation, height]);
 
   useEffect(() => {
+    if (drawerPresentation) return;
     // The initial collapsed React state is only a hydration-safe placeholder.
     // Do not let that first commit overwrite an open state that the mount
     // effect above is in the process of restoring.
@@ -1646,13 +1731,14 @@ function RuntimeTerminal({
       OPEN_STATE_KEY,
       height > COLLAPSED_HEIGHT + 8 ? "true" : "false",
     );
-  }, [height]);
+  }, [drawerPresentation, height]);
 
   // At full height the dock covers everything below the nav, so the page behind
   // it must stop scrolling — otherwise the wheel chains through to content
   // nobody can see. Padding replaces the scrollbar's width while it is hidden,
   // so the still-visible nav does not jump sideways.
   useEffect(() => {
+    if (drawerPresentation) return;
     const { body } = document;
     const previousOverflow = body.style.overflow;
     const previousPaddingRight = body.style.paddingRight;
@@ -1687,7 +1773,7 @@ function RuntimeTerminal({
       body.style.overflow = previousOverflow;
       body.style.paddingRight = previousPaddingRight;
     };
-  }, [height]);
+  }, [drawerPresentation, height]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2086,12 +2172,16 @@ function RuntimeTerminal({
       });
       let runStarted = false;
       try {
+        const usesDesktopBrowser = desktopTabsBridge() !== undefined;
         const response = await fetch(
           `/api/agent-browser/agents/${selectedAgent.id}/runs`,
           {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ task }),
+            body: JSON.stringify({
+              task,
+              browserMode: usesDesktopBrowser ? "desktop" : "external",
+            }),
           },
         );
         const data = await response.json().catch(() => ({}));
@@ -2099,6 +2189,9 @@ function RuntimeTerminal({
           throw new Error(agentBrowserStartFailure(data?.error));
         }
         runStarted = true;
+        if (usesDesktopBrowser) {
+          await openBrowserAgentRunInDesktop(String(data.run.runId));
+        }
         await session.appendExternalAgentTurn({
           clientMessageId,
           userContent,
@@ -6309,6 +6402,55 @@ function RuntimeTerminal({
         launchRoundOriginsRef.current.clear();
         awaitedLaunchesRef.current.clear();
       }
+      // Calendar-backed class reminders need the user's actual event times, so
+      // they have their own deterministic server planner before the generic
+      // cron parser. The planner is intentionally narrow and typo-tolerant:
+      // “remind my classes and hour erlier today” is a supported request.
+      const calendarReminder = textOverride === undefined && chatAttachments.length === 0
+        ? parseCalendarReminderRequest(text)
+        : null;
+      if (calendarReminder) {
+        setInput("");
+        setAttachmentStatus("");
+        let reminderPlanned = false;
+        try {
+          const response = await fetch("/api/calendar/reminder-requests", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: text, model, reasoningEffort }),
+          });
+          const payload = (await response.json().catch(() => ({}))) as {
+            error?: string;
+            message?: string;
+            receipt?: unknown;
+          };
+          if (!response.ok) {
+            throw new Error(payload.error ?? "These class reminders could not be scheduled.");
+          }
+          reminderPlanned = true;
+          const receipt = normalizeScheduledChatReceipt(payload.receipt);
+          if (!receipt) {
+            throw new Error("The class reminders were created without a valid receipt.");
+          }
+          notifySchedulesChanged();
+          setAttachmentStatus(payload.message ?? "Class reminders scheduled.");
+          await session.send(text, {
+            model,
+            reasoningEffort,
+            scheduledChatReceipt: receipt,
+          });
+        } catch (cause) {
+          if (!reminderPlanned) setInput(text);
+          setAttachmentStatus(
+            reminderPlanned
+              ? "Reminders scheduled, but the confirmation could not be added to this chat."
+              : cause instanceof Error
+                ? cause.message
+                : "These class reminders could not be scheduled.",
+          );
+        }
+        return;
+      }
       // Plain-language time instructions create the schedule before their
       // confirmation turn is persisted. Keep this conservative and attachment-free:
       // the parser only returns explicit recurring language or a relative delay
@@ -7474,6 +7616,14 @@ function RuntimeTerminal({
       }
       const continuationKey =
         message.clientMessageId ?? message.id ?? `delegated-${index}`;
+      // Telegram has no mounted surface of its own, so its gateway completes
+      // and delivers this hand-back. Starting a second browser continuation
+      // would duplicate the answer and turn a transport detail into a toast.
+      if (message.deliveryChannel === "telegram") {
+        continuedDelegatedTurnsRef.current.add(continuationKey);
+        awaitedLaunchesRef.current.delete(continuationKey);
+        continue;
+      }
       if (message.openGymRun) {
         continuedDelegatedTurnsRef.current.add(continuationKey);
         awaitedLaunchesRef.current.delete(continuationKey);
@@ -7588,10 +7738,14 @@ function RuntimeTerminal({
 
   const askSelection = useCallback(
     async (question: string, selection: ChatTextSelectionReference) => {
-      if (runtimeUnavailable || busy) return;
+      if (runtimeUnavailable) return;
       const pendingAttachments = chatAttachments;
       setChatAttachments([]);
       setAttachmentStatus("");
+      // "Ask here" owns a new inline answer. Finish the response the excerpt
+      // came from first; steering would fold the question into that response
+      // and leave the highlight without its own answer.
+      if (busy) await session.abort();
       await session.send(question, {
         model,
         reasoningEffort,
@@ -7610,17 +7764,20 @@ function RuntimeTerminal({
   );
 
   const steer = useCallback(
-    async (text: string): Promise<boolean> => {
-      const trimmed = text.trim();
+    async (
+      text: string,
+      attachments: readonly ChatAttachment[],
+    ): Promise<boolean> => {
+      const trimmed = text.trim() || attachmentOnlyMessageText(attachments);
       if (!trimmed || runtimeUnavailable) return false;
-      return session.steer(trimmed);
+      return session.steer(trimmed, attachments);
     },
     [runtimeUnavailable, session],
   );
 
   const sendQueued = useCallback(
-    async (text: string) => {
-      const trimmed = text.trim();
+    async (text: string, attachments: readonly ChatAttachment[]) => {
+      const trimmed = text.trim() || attachmentOnlyMessageText(attachments);
       if (!trimmed || runtimeUnavailable) return;
       if (
         routeSocialsManagerCommand(trimmed) ||
@@ -7632,7 +7789,7 @@ function RuntimeTerminal({
         routeResource2SkillCommand(trimmed) ||
         routeMatraixCommand(trimmed) ||
         routeBoltSlidesCommand(trimmed) ||
-        routeClassroomCommand(trimmed) ||
+        routeClassroomCommand(trimmed, attachments) ||
         routeOpenMontageCommand(trimmed) ||
         routeOpenworkCommand(trimmed) ||
         routeOpenscienceCommand(trimmed) ||
@@ -7641,8 +7798,8 @@ function RuntimeTerminal({
         routeVimaxCommand(trimmed) ||
       routeVoxDirectorCommand(trimmed) ||
         routeMoneyPrinterCommand(trimmed) ||
-        routeLegalCommand(trimmed) ||
-        routeWardrobeCommand(trimmed)
+        routeLegalCommand(trimmed, attachments) ||
+        routeWardrobeCommand(trimmed, attachments)
       ) {
         return;
       }
@@ -7651,7 +7808,11 @@ function RuntimeTerminal({
         await deepResearch.launch(trimmed);
         return;
       }
-      await session.send(trimmed, { model, reasoningEffort });
+      await session.send(trimmed, {
+        model,
+        reasoningEffort,
+        attachments: [...attachments],
+      });
     },
     [
       deepResearch,
@@ -8665,20 +8826,76 @@ function RuntimeTerminal({
     toggleDock(true);
   }
 
+  // Keyboard shortcuts, the same chords Buzz uses. ⌘J (Ctrl+J elsewhere)
+  // opens or closes the dock from anywhere on the dashboard, the way an
+  // editor's panel toggles. The rest only act on an open dock: ⌘K opens chat
+  // search, ⌘⇧O starts a new saved chat, and ⌘B folds the rail. Handlers are
+  // read through a ref on each keystroke so a single window listener outlives
+  // every render here; this component re-renders far too often to rebind one.
+  const shortcutActionsRef = useRef({
+    isOpen,
+    searchOpen,
+    toggleDock,
+    openSearch: () => setSearchOpen(true),
+    newChat: startNewSavedChat,
+    toggleRail: rail.toggle,
+  });
+  shortcutActionsRef.current = {
+    isOpen,
+    searchOpen,
+    toggleDock,
+    openSearch: () => setSearchOpen(true),
+    newChat: startNewSavedChat,
+    toggleRail: rail.toggle,
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const actions = shortcutActionsRef.current;
+      if (isPrimaryShortcut(event, "j")) {
+        // A dialog owns the keyboard while it is up; closing the dock under
+        // it would leave the dialog floating over nothing.
+        if (actions.searchOpen || isModalDialogOpen()) return;
+        event.preventDefault();
+        actions.toggleDock(!actions.isOpen);
+        return;
+      }
+      if (!actions.isOpen || actions.searchOpen) return;
+      if (isPrimaryShortcut(event, "k")) {
+        if (isModalDialogOpen()) return;
+        event.preventDefault();
+        actions.openSearch();
+      } else if (isPrimaryShortcut(event, "o", { shift: true })) {
+        if (isModalDialogOpen()) return;
+        event.preventDefault();
+        actions.newChat();
+      } else if (isPrimaryShortcut(event, "b")) {
+        if (isModalDialogOpen()) return;
+        event.preventDefault();
+        actions.toggleRail();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const terminalStyle: CSSProperties = {
     // A glide lends the box its own height and moves it by offset instead, so
     // nothing inside is resized while it travels; dragging owns the height
     // directly, one frame at a time, exactly as before.
-    height: glideBox ?? height,
-    transform: glide ? `translate3d(0, ${glideShift}px, 0)` : undefined,
+    height: drawerPresentation ? "100%" : glideBox ?? height,
+    transform:
+      !drawerPresentation && glide
+        ? `translate3d(0, ${glideShift}px, 0)`
+        : undefined,
     // Set for the span of a click-driven open or close and no longer: a dragged
     // edge carrying a transition trails the pointer rather than tracking it.
-    transition: glideMoving
+    transition: !drawerPresentation && glideMoving
       ? glide === "opening"
         ? `transform ${DOCK_OPEN_MS}ms ${DOCK_OPEN_EASING}`
         : `transform ${DOCK_CLOSE_MS}ms ${DOCK_CLOSE_EASING}`
       : undefined,
-    willChange: glide ? "transform" : undefined,
+    willChange: !drawerPresentation && glide ? "transform" : undefined,
     // Once the shader owns the bar, the dock's fill has to get out of the way:
     // the scene layer paints above it, and a solid dock would just be a second,
     // flatter surface behind the glass.
@@ -8704,8 +8921,11 @@ function RuntimeTerminal({
       // artifact dock shortens its right edge through this attribute instead.
       data-terminal-dock
       style={terminalStyle}
-      className={`bb-neu-tray neu-surface-raised fixed inset-x-0 bottom-0 z-40 flex flex-col overflow-hidden text-gray-100 ${
-        glassActive ? "rounded-t-[22px]" : "border-t"
+      data-terminal-presentation={presentation}
+      className={`bb-terminal-dock bb-neu-tray neu-surface-raised z-40 flex flex-col overflow-hidden border-t text-gray-100 ${
+        drawerPresentation
+          ? "bb-terminal-drawer-surface absolute inset-0"
+          : "fixed inset-x-0 bottom-0"
       }`}
     >
       {/* Refraction source: direct children of the dock, painted below the
@@ -8742,39 +8962,47 @@ function RuntimeTerminal({
         </>
       ) : null}
 
-      <div
-        onPointerDown={handleResizeStart}
-        onPointerMove={handleResizeMove}
-        onPointerUp={handleResizeEnd}
-        onPointerCancel={handleResizeEnd}
-        className="group absolute inset-x-0 -top-1.5 z-10 flex h-3 cursor-row-resize items-center justify-center"
-      >
-        <span
-          className={`h-1.5 w-14 rounded-full border border-[rgba(169,193,177,0.7)] shadow-[0_1px_4px_rgba(74,91,70,0.10)] transition-colors ${
-            isResizing
-              ? "bg-[#8faf9a]"
-              : "bg-[#A9C1B1] group-hover:bg-[#8faf9a]"
-          }`}
-        />
-      </div>
+      {!drawerPresentation ? (
+        <div
+          onPointerDown={handleResizeStart}
+          onPointerMove={handleResizeMove}
+          onPointerUp={handleResizeEnd}
+          onPointerCancel={handleResizeEnd}
+          className="group absolute inset-x-0 -top-1.5 z-10 flex h-3 cursor-row-resize items-center justify-center"
+        >
+          <span
+            className={`h-1.5 w-14 rounded-full border border-[rgba(169,193,177,0.7)] shadow-[0_1px_4px_rgba(74,91,70,0.10)] transition-colors ${
+              isResizing
+                ? "bg-[#8faf9a]"
+                : "bg-[#A9C1B1] group-hover:bg-[#8faf9a]"
+            }`}
+          />
+        </div>
+      ) : null}
 
       <header
-        onPointerDown={handleResizeStart}
-        onPointerMove={handleResizeMove}
-        onPointerUp={handleResizeEnd}
-        onPointerCancel={handleResizeEnd}
-        onClick={handleHeaderClick}
-        role={isOpen ? undefined : "button"}
-        tabIndex={isOpen ? undefined : 0}
-        aria-expanded={isOpen ? undefined : false}
-        aria-label={isOpen ? undefined : `Open terminal${unreadSuffix}`}
+        onPointerDown={drawerPresentation ? undefined : handleResizeStart}
+        onPointerMove={drawerPresentation ? undefined : handleResizeMove}
+        onPointerUp={drawerPresentation ? undefined : handleResizeEnd}
+        onPointerCancel={drawerPresentation ? undefined : handleResizeEnd}
+        onClick={drawerPresentation ? undefined : handleHeaderClick}
+        role={!drawerPresentation && !isOpen ? "button" : undefined}
+        tabIndex={!drawerPresentation && !isOpen ? 0 : undefined}
+        aria-expanded={!drawerPresentation && !isOpen ? false : undefined}
+        aria-label={!drawerPresentation && !isOpen ? `Open terminal${unreadSuffix}` : undefined}
         title={
-          isOpen
+          drawerPresentation
+            ? "Browser Terminal"
+            : isOpen
             ? "Click empty space to close, or drag to resize the terminal"
             : `Click to fully open, or drag up to resize the terminal${unreadSuffix}`
         }
         onKeyDown={(event) => {
-          if (!isOpen && (event.key === "Enter" || event.key === " ")) {
+          if (
+            !drawerPresentation &&
+            !isOpen &&
+            (event.key === "Enter" || event.key === " ")
+          ) {
             event.preventDefault();
             toggleDock(true);
           }
@@ -8783,12 +9011,14 @@ function RuntimeTerminal({
         style={{
           background: glassActive ? "transparent" : "var(--terminal-bar)",
         }}
-        className={`bb-neu-toolbar flex h-12 shrink-0 cursor-row-resize touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 py-0 ${
+        className={`bb-neu-toolbar flex h-[42px] shrink-0 touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 py-0 ${
           // The brown bar has one invariant height. The reconnect button is
           // taller than the title, so content-driven vertical padding made the
           // whole dock jump whenever that button appeared or disappeared.
           headerMounted ? "" : "justify-center"
-        } ${glassActive ? "bb-terminal-glass-bar" : ""}`}
+        } ${drawerPresentation ? "cursor-default" : "cursor-row-resize"} ${
+          glassActive ? "bb-terminal-glass-bar" : ""
+        }`}
       >
         {headerMounted ? (
           <>
@@ -8904,9 +9134,9 @@ function RuntimeTerminal({
               back, so it must never leave the layout entirely. */}
             <TerminalSidebar
               surface="tinted"
-              collapsed={rail.collapsed}
-              onToggleCollapsed={rail.toggle}
-              resize={rail}
+              collapsed={terminalRailCollapsed}
+              onToggleCollapsed={toggleTerminalRail}
+              resize={drawerPresentation ? undefined : rail}
               chats={railChats}
               loading={historyLoading}
               error={historyError}
@@ -9048,6 +9278,7 @@ function RuntimeTerminal({
                 </div>
               ) : null}
               <AgentRuntimePanel
+                compact={drawerPresentation}
                 sessionId={session.sessionId}
                 createdSessionId={session.createdSessionId}
                 surface="dashboard_terminal"
@@ -9122,7 +9353,6 @@ function RuntimeTerminal({
                 reasoningEffort={selectedReasoningEffort}
                 onReasoningEffortChange={setReasoningEffort}
                 intelligenceModes={selectedIntelligenceModes}
-                modelFailover={modelFailover}
                 browserAgent={browserAgent}
                 onSelectBrowserAgent={() => void selectBrowserAgent()}
                 onClearBrowserAgent={() => {
@@ -9309,6 +9539,9 @@ function RuntimeTerminal({
                 isAddingDocuments={extractingAttachments}
                 attachments={chatAttachments}
                 onRemoveAttachment={removeChatAttachment}
+                onRestoreQueuedAttachments={(attachments) =>
+                  setChatAttachments(attachments)
+                }
                 statusMessage={attachmentStatus}
                 loadingTranscript={session.loadingSession}
                 emptyState={

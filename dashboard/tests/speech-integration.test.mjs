@@ -23,6 +23,10 @@ import {
   requiredModelName,
   voiceProfileReady,
 } from "../src/lib/speech/voice-model.ts";
+import {
+  prepareLocalSpeech,
+  speechErrorMessage,
+} from "../src/lib/speech/prepare-client.ts";
 
 const source = (relativePath) => fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
@@ -45,6 +49,7 @@ const voiceboxClient = source("../src/lib/speech/voicebox-client.ts");
 const speechStore = source("../src/lib/speech/settings.ts");
 const recorder = source("../src/app/components/voice-sample-recorder.tsx");
 const permissionHelp = source("../src/app/components/microphone-permission-help.tsx");
+const prepareClient = source("../src/lib/speech/prepare-client.ts");
 
 test("Settings label writing calibration as Tone and audio controls as Voice", () => {
   assert.match(settingsDialog, /value: "voice",\s*label: "Tone"/);
@@ -62,6 +67,10 @@ test("Intelligence settings expose Breadboard-styled Voicebox speech controls", 
   assert.match(speechSettings, /Dictation/);
   assert.match(speechSettings, /Local speech models/);
   assert.match(speechSettings, /starts and prepares Voicebox automatically/);
+  assert.match(speechSettings, /prepareLocalSpeech\(\)/);
+  assert.match(prepareClient, /fetchSpeechApi\("\/api\/speech\/prepare"/);
+  assert.match(speechSettings, /void prepare\(\)/);
+  assert.match(speechSettings, /status\?\.available \? load\(\) : prepare\(\)/);
   assert.match(speechSettings, /installActive \? 2_000 : 5_000/);
   assert.match(speechSettings, /Hardware compatibility/);
   assert.match(speechSettings, /Apple Silicon/);
@@ -101,12 +110,60 @@ test("voice mode can warm Voicebox before recording the first turn", () => {
   assert.match(prepare, /requireUserId\(\)/);
   assert.match(prepare, /voiceboxJson<\{ models: unknown\[\] \}>\("\/models\/status"/);
   assert.match(voiceboxClient, /startupFailureMessage\(\)/);
+  assert.match(dictation, /await prepareLocalSpeech\(prepareController\.signal\)/);
+  assert.ok(
+    dictation.indexOf("await prepareLocalSpeech(prepareController.signal)") <
+      dictation.indexOf("navigator.mediaDevices.getUserMedia"),
+    "Dictate live must wait for Voicebox before it starts capturing audio",
+  );
+  assert.match(prepareClient, /SPEECH_RECONNECT_DELAYS_MS/);
+  assert.doesNotMatch(prepareClient, /throw lastFailure/);
+  assert.match(prepareClient, /Breadboard lost its connection to local speech/);
 
   const launcher = source("../../scripts/start-voicebox.mjs");
   assert.doesNotMatch(launcher, /["']import backend\.main["']/);
   assert.match(launcher, /importlib\.util\.find_spec/);
   assert.match(launcher, /stderrTail/);
   assert.match(launcher, /lastStderrLine\(\)/);
+});
+
+test("local speech startup is shared, reconnects once, and hides raw fetch errors", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  let finishFirstRequest;
+  const firstRequest = new Promise((resolve) => {
+    finishFirstRequest = resolve;
+  });
+  try {
+    globalThis.fetch = async () => {
+      calls += 1;
+      await firstRequest;
+      return new Response('{"ready":true}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const first = prepareLocalSpeech();
+    const second = prepareLocalSpeech();
+    assert.equal(first, second);
+    finishFirstRequest();
+    await Promise.all([first, second]);
+    assert.equal(calls, 1);
+
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 2) throw new TypeError("Failed to fetch");
+      return new Response('{"ready":true}', { status: 200 });
+    };
+    await prepareLocalSpeech();
+    assert.equal(calls, 3);
+    assert.equal(
+      speechErrorMessage(new TypeError("Failed to fetch"), "fallback"),
+      "Breadboard lost its connection to local speech. Try again in a moment.",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("live dictation sends Voicebox-native WAV and revises only its own draft", async () => {

@@ -406,11 +406,16 @@ export function resolveAgentBrowserEntry(env: NodeJS.ProcessEnv = process.env): 
   return null;
 }
 
-export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): RuntimeAvailability {
+export function runtimeAvailability(
+  env: NodeJS.ProcessEnv = process.env,
+  options: { browserRequired?: boolean } = {},
+): RuntimeAvailability {
   const entry = resolveAgentBrowserEntry(env);
   const browser = resolveBrowserExecutable(env);
   if (!entry) return { available: false, entry: null, browser, reason: "agent-browser is not installed" };
-  if (!browser) return { available: false, entry, browser: null, reason: "no Chrome/Edge executable found" };
+  if (options.browserRequired !== false && !browser) {
+    return { available: false, entry, browser: null, reason: "no Chrome/Edge executable found" };
+  }
   return { available: true, entry, browser };
 }
 
@@ -432,6 +437,7 @@ export async function startRun(input: {
   task: string;
   requestId?: string;
   config: AgentBrowserConfiguration;
+  browserMode?: "desktop" | "external";
 }): Promise<StartRunResult> {
   const requestId = input.requestId ?? randomUUID();
   if (!REQUEST_ID.test(requestId)) throw new TypeError("The Agent Browser request identity is invalid.");
@@ -469,8 +475,15 @@ export async function startRun(input: {
       };
     }
   }
-  const availability = runtimeAvailability();
-  if (!availability.available || !availability.entry || !availability.browser) {
+  const browserMode = input.browserMode ?? "external";
+  const availability = runtimeAvailability(process.env, {
+    browserRequired: browserMode === "external",
+  });
+  if (
+    !availability.available ||
+    !availability.entry ||
+    (browserMode === "external" && !availability.browser)
+  ) {
     throw new Error(availability.reason ?? "agent-browser runtime unavailable");
   }
   const modelBaseUrl = (
@@ -492,9 +505,10 @@ export async function startRun(input: {
         approvalMode: input.config.approvalMode,
         allowedDomains: input.config.allowedDomains,
         engine: input.config.engine,
+        browserMode,
         agentBrowserEntry: availability.entry,
-        browserExecutable: availability.browser,
-        profilePath: activeProfileDir(),
+        browserExecutable: browserMode === "external" ? availability.browser : null,
+        profilePath: browserMode === "external" ? activeProfileDir() : null,
       },
     }),
     input.agentId,

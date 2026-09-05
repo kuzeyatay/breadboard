@@ -1,4 +1,5 @@
 import type { AssistantReasoningEffort } from "../assistant-reasoning.ts";
+import type { ScheduledChatConversationPolicy } from "./conversation-policy.ts";
 
 // Shared scheduled-chat types. Kept free of the SQLite store so client
 // components can import the shape the API returns without pulling better-sqlite3
@@ -19,6 +20,8 @@ export interface ScheduledChatJob {
   promptSlug: string | null;
   model: string;
   reasoningEffort: AssistantReasoningEffort;
+  /** When this firing is allowed to become a visible conversation. */
+  conversationPolicy: ScheduledChatConversationPolicy;
   /** Runs once at nextRunAt, then disarms itself. */
   oneShot: boolean;
   enabled: boolean;
@@ -53,6 +56,8 @@ export interface ScheduledChatReceipt {
   cronDescription: string;
   oneShot: boolean;
   nextRunAt: string | null;
+  /** Several one-shot rows created by one calendar-reminder request. */
+  batchCount?: number;
 }
 
 export function normalizeScheduledChatReceipt(
@@ -71,13 +76,18 @@ export function normalizeScheduledChatReceipt(
         Number.isFinite(Date.parse(receipt.nextRunAt))
       ? receipt.nextRunAt
       : undefined;
+  const batchCount = receipt.batchCount === undefined
+    ? undefined
+    : Number(receipt.batchCount);
   if (
     !Number.isSafeInteger(id) ||
     id <= 0 ||
     !title ||
     !cronDescription ||
     typeof receipt.oneShot !== "boolean" ||
-    nextRunAt === undefined
+    nextRunAt === undefined ||
+    (batchCount !== undefined &&
+      (!Number.isSafeInteger(batchCount) || batchCount <= 0 || batchCount > 100))
   ) {
     return null;
   }
@@ -87,6 +97,7 @@ export function normalizeScheduledChatReceipt(
     cronDescription: cronDescription.slice(0, 200),
     oneShot: receipt.oneShot,
     nextRunAt,
+    ...(batchCount === undefined ? {} : { batchCount }),
   };
 }
 
@@ -109,6 +120,19 @@ export function scheduledChatReceiptFromJob(
 export function scheduledChatConfirmationText(
   receipt: ScheduledChatReceipt,
 ): string {
+  if (receipt.batchCount && receipt.nextRunAt) {
+    const firstRun = new Date(receipt.nextRunAt);
+    if (!Number.isNaN(firstRun.getTime())) {
+      return `Scheduled ${receipt.title}. The first reminder is ${firstRun.toLocaleString([], {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })}.`;
+    }
+    return `Scheduled ${receipt.title}.`;
+  }
   if (receipt.oneShot && receipt.nextRunAt) {
     const runAt = new Date(receipt.nextRunAt);
     if (!Number.isNaN(runAt.getTime())) {
@@ -139,4 +163,15 @@ export function scheduleTargetLabel(
   return job.surface === "garden_chat" && job.gardenSlug
     ? `${job.gardenSlug} chat`
     : "Dashboard terminal";
+}
+
+export function scheduleConversationBehaviorLabel(
+  job: Pick<
+    ScheduledChatJob,
+    "conversationPolicy" | "surface" | "gardenSlug"
+  >,
+): string {
+  return job.conversationPolicy === "open_when_objective_met"
+    ? `Checks until the objective is met, then opens one chat · ${scheduleTargetLabel(job)}`
+    : `Opens a chat each run · ${scheduleTargetLabel(job)}`;
 }

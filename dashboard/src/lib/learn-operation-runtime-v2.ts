@@ -25,11 +25,40 @@ import {
   type RuntimeJobSnapshot,
 } from "@/lib/supervisor-control";
 
-const RECEIPT_VERSION = 1 as const;
+const RECEIPT_VERSION = 2 as const;
+/** Receipts written before the request's source selection was recorded. */
+const LEGACY_RECEIPT_VERSION = 1 as const;
 const RECEIPT_NAME = "runtime-v2-learn-submission.json";
-const MAX_RECEIPT_BYTES = 16 * 1024;
+const MAX_RECEIPT_BYTES = 64 * 1024;
+const MAX_RECEIPT_SELECTION_ENTRIES = 4096;
+const RECEIPT_BASE_KEYS = [
+  "version",
+  "runtimeJobId",
+  "idempotencyKey",
+  "requestDigest",
+  "operation",
+  "userId",
+  "gardenId",
+  "model",
+  "humanizerEnabled",
+  "humanizerVersionId",
+  "baselineLearnJobId",
+  "baselineLearnJobUpdatedAt",
+  "submittedAt",
+] as const;
+const RECEIPT_SELECTION_KEYS = ["selectedSourceIds", "syllabusSourceId"] as const;
 const MAX_CANONICAL_NODES = 16_384;
 const RUNTIME_JOB_ID = /^job_[0-9a-f]{64}$/;
+/** Durable Learn row statuses after which the bound Runtime job is only winding down. */
+const SETTLED_LEGACY_LEARN_STATUSES = new Set<string>([
+  "cancelled",
+  "failed",
+  "complete",
+]);
+/** How long a route waits for a stopping Runtime Learn job before reporting a conflict. */
+const SETTLEMENT_TIMEOUT_MS = 20_000;
+const SETTLEMENT_POLL_MS = 500;
+
 const TERMINAL_RUNTIME_STATES = new Set<RuntimeJobSnapshot["state"]>([
   "cancelled",
   "succeeded",
@@ -53,7 +82,22 @@ interface RuntimeV2LearnReceipt {
   readonly baselineLearnJobId: string | null;
   readonly baselineLearnJobUpdatedAt: string | null;
   readonly submittedAt: string;
+  /**
+   * The explicit source selection the request carried, so status can keep
+   * reporting what the user asked for before the durable Learn row exists and
+   * after a Runtime failure that never created one. Null when the operation
+   * derives its sources from a map instead.
+   */
+  readonly selectedSourceIds: readonly string[] | null;
+  readonly syllabusSourceId: string | null;
 }
+
+type StoredReceipt =
+  | RuntimeV2LearnReceipt
+  | (Omit<
+      RuntimeV2LearnReceipt,
+      "version" | "selectedSourceIds" | "syllabusSourceId"
+    > & { readonly version: typeof LEGACY_RECEIPT_VERSION });
 
 interface RuntimeV2LearnScopeInput {
   readonly userId: number;
@@ -257,28 +301,44 @@ function receiptPath(contentPath: string, gardenId: string): string {
   return path.join(gardenRoot(contentPath, gardenId), ".breadboard", RECEIPT_NAME);
 }
 
+function validSourceId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 512;
+}
+
+function validReceiptSelection(value: Record<string, unknown>): boolean {
+  if (value.version === LEGACY_RECEIPT_VERSION) {
+    return hasExactKeys(value, RECEIPT_BASE_KEYS);
+  }
+  return (
+    value.version === RECEIPT_VERSION &&
+    hasExactKeys(value, [...RECEIPT_BASE_KEYS, ...RECEIPT_SELECTION_KEYS]) &&
+    (value.selectedSourceIds === null ||
+      (Array.isArray(value.selectedSourceIds) &&
+        value.selectedSourceIds.length <= MAX_RECEIPT_SELECTION_ENTRIES &&
+        value.selectedSourceIds.every(validSourceId))) &&
+    (value.syllabusSourceId === null || validSourceId(value.syllabusSourceId)) &&
+    // A syllabus is only meaningful alongside the selection it was reserved from.
+    (value.syllabusSourceId === null || value.selectedSourceIds !== null)
+  );
+}
+
+function normalizeReceipt(stored: StoredReceipt): RuntimeV2LearnReceipt {
+  if (stored.version === RECEIPT_VERSION) return stored;
+  return {
+    ...stored,
+    version: RECEIPT_VERSION,
+    selectedSourceIds: null,
+    syllabusSourceId: null,
+  };
+}
+
 function validReceipt(
   value: unknown,
   expected: Pick<RuntimeV2LearnReceipt, "userId" | "gardenId">,
-): value is RuntimeV2LearnReceipt {
+): value is StoredReceipt {
   return (
     isRecord(value) &&
-    hasExactKeys(value, [
-      "version",
-      "runtimeJobId",
-      "idempotencyKey",
-      "requestDigest",
-      "operation",
-      "userId",
-      "gardenId",
-      "model",
-      "humanizerEnabled",
-      "humanizerVersionId",
-      "baselineLearnJobId",
-      "baselineLearnJobUpdatedAt",
-      "submittedAt",
-    ]) &&
-    value.version === RECEIPT_VERSION &&
+    validReceiptSelection(value) &&
     typeof value.runtimeJobId === "string" &&
     RUNTIME_JOB_ID.test(value.runtimeJobId) &&
     typeof value.idempotencyKey === "string" &&
@@ -346,7 +406,7 @@ function readReceipt(
     if (!validReceipt(value, { userId, gardenId })) {
       throw new Error("The Runtime Learn receipt is outside its authenticated scope.");
     }
-    return value;
+    return normalizeReceipt(value);
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
     throw error;
@@ -362,7 +422,15 @@ function writeReceipt(
   const target = receiptPath(contentPath, receipt.gardenId);
   const directory = path.dirname(target);
   fs.mkdirSync(directory, { recursive: true });
-  const bytes = Buffer.from(`${JSON.stringify(receipt)}\n`, "utf8");
+  let bytes = Buffer.from(`${JSON.stringify(receipt)}\n`, "utf8");
+  if (bytes.byteLength > MAX_RECEIPT_BYTES && receipt.selectedSourceIds !== null) {
+    // The selection is a convenience for status; the receipt's job identity
+    // must never fail to persist because a garden has an enormous source set.
+    bytes = Buffer.from(
+      `${JSON.stringify({ ...receipt, selectedSourceIds: null, syllabusSourceId: null })}\n`,
+      "utf8",
+    );
+  }
   if (bytes.byteLength > MAX_RECEIPT_BYTES) {
     throw new Error("The Runtime Learn receipt exceeds its storage bound.");
   }
@@ -535,6 +603,58 @@ async function inspectReceiptJob(
     }
     throw error;
   }
+}
+
+/**
+ * The previous Runtime job no longer represents a live Learn run when Runtime
+ * is already stopping it, or when the durable Learn row it drives has already
+ * been cancelled or failed. Cancel records the legacy row first and only then
+ * asks Runtime to stop the worker, so the UI can legitimately offer "Restart
+ * planning" while the old job is still in `cancelling`. Such a job must be
+ * superseded, never reported as a competing operation.
+ */
+function previousJobWindingDown(
+  input: RuntimeV2LearnScopeInput,
+  receipt: RuntimeV2LearnReceipt,
+  job: RuntimeJobSnapshot,
+): boolean {
+  if (job.state === "cancelling" || job.cancellationRequested) return true;
+  const binding = receiptBinding(input, receipt);
+  const bound = binding
+    ? learnJobFenceById(input.gardenId, binding.learnJobId)
+    : null;
+  const legacy = correlatedLearnJob(receipt, bound, binding);
+  return legacy !== null && SETTLED_LEGACY_LEARN_STATUSES.has(legacy.status);
+}
+
+/**
+ * Requests cancellation if Runtime has not been asked yet, then waits a bounded
+ * time for the job to reach a terminal state so the caller can submit a fresh
+ * run. Returns the last observed snapshot, or null when the job disappeared.
+ */
+async function settlePreviousJob(
+  authority: RuntimeJobAuthority,
+  receipt: RuntimeV2LearnReceipt,
+  job: RuntimeJobSnapshot,
+): Promise<RuntimeJobSnapshot | null> {
+  let current: RuntimeJobSnapshot | null = job;
+  if (current.state !== "cancelling" && !current.cancellationRequested) {
+    try {
+      current = await cancelRuntimeJob(authority, receipt.runtimeJobId);
+    } catch (error) {
+      if (error instanceof RuntimeJobControlError && error.code === "JOB_NOT_FOUND") {
+        return null;
+      }
+      throw error;
+    }
+  }
+  const deadline = Date.now() + SETTLEMENT_TIMEOUT_MS;
+  while (current && !terminal(current)) {
+    if (Date.now() >= deadline) return current;
+    await new Promise<void>((resolve) => setTimeout(resolve, SETTLEMENT_POLL_MS));
+    current = await inspectReceiptJob(authority, receipt);
+  }
+  return current;
 }
 
 function runtimeIso(timestamp: number, fallback: string): string {
@@ -721,6 +841,17 @@ export async function mergeRuntimeV2LearnStatus(
   return {
     ...withRuntime,
     job: compatibilityJob(receipt, runtimeJob, snapshotFence?.model ?? null),
+    // While the Runtime job stands in for the Learn row, the persisted legacy
+    // selection belongs to an older run. Report what this request submitted so
+    // the panel keeps the user's documents and syllabus instead of resetting
+    // them to the previous job's choice.
+    ...(receipt.selectedSourceIds !== null
+      ? {
+          selectedSourceIds: [...receipt.selectedSourceIds],
+          syllabusSourceId: receipt.syllabusSourceId,
+          syllabusCoverage: null,
+        }
+      : {}),
   };
 }
 
@@ -820,6 +951,34 @@ export async function getRuntimeV2LearnEventCompatibility(
   };
 }
 
+/** The explicit source selection a request carries, or nulls when a map owns it. */
+function receiptSelection(
+  request: LearnWorkerRequest,
+): Pick<RuntimeV2LearnReceipt, "selectedSourceIds" | "syllabusSourceId"> {
+  const included =
+    request.operation === "plan" || request.operation === "rebuild"
+      ? request.includedSourceIds
+      : undefined;
+  if (!Array.isArray(included)) {
+    return { selectedSourceIds: null, syllabusSourceId: null };
+  }
+  const selectedSourceIds = Array.from(
+    new Set(
+      included
+        .map((sourceId) => (typeof sourceId === "string" ? sourceId.trim() : ""))
+        .filter(validSourceId),
+    ),
+  ).slice(0, MAX_RECEIPT_SELECTION_ENTRIES);
+  const syllabus =
+    request.operation === "plan" || request.operation === "rebuild"
+      ? request.syllabusSourceId?.trim() ?? ""
+      : "";
+  return {
+    selectedSourceIds,
+    syllabusSourceId: validSourceId(syllabus) ? syllabus : null,
+  };
+}
+
 /**
  * Submit one authenticated Learn operation to the native Runtime V2 owner.
  * The legacy request type remains the route-facing API only: path and identity
@@ -843,7 +1002,19 @@ export async function executeLearnOperationForRoute<T>(
   let submittedAt: string;
 
   if (previous) {
-    const previousJob = await inspectReceiptJob(authority, previous);
+    let previousJob = await inspectReceiptJob(authority, previous);
+    if (
+      previousJob &&
+      !terminal(previousJob) &&
+      previousJobWindingDown(request, previous, previousJob)
+    ) {
+      previousJob = await settlePreviousJob(authority, previous, previousJob);
+      if (previousJob && !terminal(previousJob)) {
+        throw new LearnWorkerConflictError(
+          `The previous Learn run (${previous.runtimeJobId}) is still stopping. Try again in a few seconds.`,
+        );
+      }
+    }
     if (previousJob && !terminal(previousJob)) {
       if (previous.requestDigest !== digest) {
         throw new LearnWorkerConflictError(
@@ -892,6 +1063,7 @@ export async function executeLearnOperationForRoute<T>(
     baselineLearnJobId: baseline?.id ?? null,
     baselineLearnJobUpdatedAt: baseline?.updatedAt ?? null,
     submittedAt,
+    ...receiptSelection(request),
   });
   return { accepted: true, jobId: job.jobId };
 }

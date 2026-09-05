@@ -17,7 +17,17 @@ import { RecursiveCharacterTextSplitter } from './text-splitter';
 // function calling but NOT `response_format`, so object generation has to run in
 // tool mode (see `objectGenerationMode`) and the model is created with
 // `structuredOutputs: false`.
-const chatmockBaseUrl = normalizeBaseUrl(process.env.CHATMOCK_BASE_URL);
+//
+// Runtime V2 launches this sidecar with the gateway under `OPENAI_BASE_URL`
+// (plus `OPENAI_API_KEY=local` and a `CHATMOCK_MODEL`), not `CHATMOCK_BASE_URL`.
+// A live desktop run reported "model: none/unset" and every Max Research
+// drive lost its broadest participant to "running but not configured to
+// answer". `CHATMOCK_MODEL` being set is the runtime's signal that the OpenAI
+// variables point at ChatMock, so it is honoured as the same configuration.
+const chatmockBaseUrl = normalizeBaseUrl(
+  process.env.CHATMOCK_BASE_URL ||
+    (process.env.CHATMOCK_MODEL ? process.env.OPENAI_BASE_URL : undefined),
+);
 
 const chatmock = chatmockBaseUrl
   ? createOpenAI({

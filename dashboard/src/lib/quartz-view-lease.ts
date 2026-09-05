@@ -1,5 +1,6 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import {
   acquireServiceLease,
   releaseSupervisorLease,
@@ -156,6 +157,25 @@ export async function renewQuartzViewLease(
     scheduleExpiry(key, hold);
     return { expiresInMs: QUARTZ_VIEW_HOLD_TTL_MS };
   });
+}
+
+/**
+ * Take the first hold for a Quartz frame inside the Server Component render,
+ * so the wait for publication and service start is reported by the global
+ * navigation progress bar and the frame opens with its source on first paint.
+ * The client hook adopts the returned id and only heartbeats it. Returns null
+ * when Quartz cannot be leased; the client then acquires on its own and shows
+ * the unavailable state if that fails as well.
+ */
+export async function openQuartzViewLease(userId: number): Promise<string | null> {
+  const viewId = randomUUID();
+  try {
+    await renewQuartzViewLease(userId, viewId);
+    return viewId;
+  } catch (error) {
+    console.warn("[quartz-view-lease] server-side lease failed", error);
+    return null;
+  }
 }
 
 export async function releaseQuartzViewLease(userId: number, viewId: string): Promise<void> {

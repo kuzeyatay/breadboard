@@ -172,6 +172,73 @@ function resolveOnPath(name, env, platform = process.platform) {
   return null;
 }
 
+/**
+ * `uv`, from the closed Runtime PATH or from the runtime's own bin.
+ *
+ * The setup worker runs on the Runtime's closed PATH, which carries the
+ * bundled Node and system directories and nothing else — so `uv` and
+ * `python` both resolved to nothing and every install ended with "Python is
+ * unavailable" before doing anything, on a machine whose runtime ships
+ * `bin/uv.exe` beside the supervisor. The bundled Python is an embeddable
+ * build without `venv`, so `uv` is the one tool that can create the managed
+ * environment here; it is looked for next to the runtime's Node (`<runtime
+ * root>/runtimes/node/node.exe` → `<runtime root>/bin/uv`) and in the
+ * development layout under the application root.
+ */
+function uvCandidates(context) {
+  const binary = context.platform === "win32" ? "uv.exe" : "uv";
+  // The Runtime launches this worker's Node through an extended-length
+  // (`\\?\C:\...`) path; strip it, or `path.resolve` keeps the prefix and the
+  // direct-path check rejects the candidate as indirect.
+  const execPath = process.execPath.replace(/^\\\\\?\\/u, "");
+  return [
+    path.resolve(path.dirname(execPath), "..", "..", "bin", binary),
+    path.join(context.appRoot, "desktop", "build-resources", "bin", binary),
+    path.join(context.appRoot, "desktop", "resources", "bin", binary),
+  ];
+}
+
+function resolveUv(env, context) {
+  const onPath = resolveOnPath("uv", env, context.platform);
+  if (onPath) return onPath;
+  for (const candidate of uvCandidates(context)) {
+    try {
+      return directPath(candidate, "isFile", "The uv executable", context.platform);
+    } catch {
+      // Not in this layout.
+    }
+  }
+  return null;
+}
+
+/**
+ * The interpreter `uv venv` should build on.
+ *
+ * Asked for "3.12" with none installed, `uv` downloads a CPython from
+ * GitHub — several minutes on a good day and a DNS failure on a locked-down
+ * one, which is how a live install died with "Request failed after 3
+ * retries". The runtime ships an embeddable CPython beside its Node; it has
+ * no `venv` module, but `uv` does not need one to build an environment from
+ * it, and Agent Reach only asks for Python 3.10 or newer.
+ */
+function resolveVenvPython(context) {
+  const binary = context.platform === "win32" ? "python.exe" : "bin/python3";
+  const execPath = process.execPath.replace(/^\\\\\?\\/u, "");
+  const candidates = [
+    path.resolve(path.dirname(execPath), "..", "python", binary),
+    path.join(context.appRoot, "desktop", "build-resources", "runtimes", "python", binary),
+    path.join(context.appRoot, "desktop", "resources", "runtimes", "python", binary),
+  ];
+  for (const candidate of candidates) {
+    try {
+      return directPath(candidate, "isFile", "The bundled Python", context.platform);
+    } catch {
+      // Not in this layout.
+    }
+  }
+  return "3.12";
+}
+
 function quoteForCmd(value) {
   return `"${value.replace(/(\\*)"/gu, '$1$1\\"').replace(/(\\+)$/u, "$1$1")}"`;
 }
@@ -585,11 +652,11 @@ async function ensureCore(context, layout, fingerprint) {
     );
   }
   if (!fs.existsSync(layout.python)) {
-    const uv = resolveOnPath("uv", env, context.platform);
+    const uv = resolveUv(env, context);
     const python = resolveOnPath("python", env, context.platform) ??
       resolveOnPath("python3", env, context.platform);
     const created = uv
-      ? await runAgentReachSetupCommand(uv, ["venv", "--python", "3.12", layout.venv], {
+      ? await runAgentReachSetupCommand(uv, ["venv", "--python", resolveVenvPython(context), layout.venv], {
           cwd: layout.toolchainRoot,
           env: { ...env, UV_LINK_MODE: "copy" },
           signal: context.signal,
@@ -608,7 +675,15 @@ async function ensureCore(context, layout, fingerprint) {
           })
         : null;
     if (!created || created.code !== 0 || !fs.existsSync(layout.python)) {
-      return { ok: false, output: cleanOutput(created ?? { stdout: "", stderr: "Python is unavailable." }) };
+      return {
+        ok: false,
+        output: cleanOutput(
+          created ?? {
+            stdout: "",
+            stderr: `Python is unavailable: no uv or python on the Runtime PATH, and no uv at ${uvCandidates(context).join(", ")}.`,
+          },
+        ),
+      };
     }
   }
   directPath(
@@ -624,7 +699,7 @@ async function ensureCore(context, layout, fingerprint) {
     context.platform,
   );
   if (readVenvMarker(layout) !== fingerprint) {
-    const uv = resolveOnPath("uv", env, context.platform);
+    const uv = resolveUv(env, context);
     const installed = uv
       ? await runAgentReachSetupCommand(
           uv,
@@ -684,7 +759,7 @@ async function ensureCore(context, layout, fingerprint) {
 
 async function pipInstall(context, layout, packages) {
   const env = safeEnvironment(context.env, layout);
-  const uv = resolveOnPath("uv", env, context.platform);
+  const uv = resolveUv(env, context);
   const result = uv
     ? await runAgentReachSetupCommand(uv, ["pip", "install", "--python", layout.python, "--upgrade", ...packages], {
         cwd: layout.sourceRoot,

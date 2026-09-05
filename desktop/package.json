@@ -11,7 +11,7 @@
     "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
     "dev": "npm run build && npm run prepare:native-runtime && node scripts/prepare-hot-dev-runtimes.mjs && npm run prepare:transcription && node scripts/sync-dev-runtime-manifests.mjs --stage-runtime-bins && node scripts/dev.mjs",
     "start": "electron .",
-    "test": "npm run build && node --test dist-tests/tests/*.test.js",
+    "test": "npm run build && node scripts/run-desktop-tests.mjs",
     "test:build": "tsc -p tsconfig.tests.json",
     "pretest": "npm run test:build",
     "build:dashboard": "node scripts/build-dashboard.mjs",

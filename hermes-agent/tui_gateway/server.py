@@ -1391,6 +1391,13 @@ def _forward_compute_host_rpc(message: dict) -> None:
                 elif event_type == "message.complete":
                     turn_id = str(payload.get("turn_id") or "") or None
                     _remember_turn_result(session, turn_id, payload)
+                elif (
+                    event_type == "status.update"
+                    and payload.get("kind") == "turn.failed"
+                ):
+                    _remember_status_terminal_failure(
+                        sid, str(payload.get("text") or "")
+                    )
     finally:
         write_json(message)
 
@@ -1592,6 +1599,26 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     _emit("approval.request", sid, payload)
 
 
+def _remember_status_terminal_failure(sid: str, body: str) -> None:
+    """Make a final provider failure recoverable before turn cleanup returns."""
+    session = _sessions.get(sid)
+    if session is None or not body.strip():
+        return
+    with session["history_lock"]:
+        turn_id = str(session.get("active_client_turn_id") or "").strip()
+    if not turn_id:
+        return
+    _remember_turn_result(
+        session,
+        turn_id,
+        {
+            "text": body.strip(),
+            "status": "error",
+            "turn_id": turn_id,
+        },
+    )
+
+
 def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
@@ -1605,6 +1632,8 @@ def _status_update(sid: str, kind: str, text: str | None = None):
 
         if COMPACTION_STATUS_MARKER in body:
             out_kind = "compacting"
+    if out_kind == "turn.failed":
+        _remember_status_terminal_failure(sid, body)
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
@@ -10660,6 +10689,16 @@ def _(rid, params: dict) -> dict:
     agent = session.get("agent")
     if agent is None or not hasattr(agent, "steer"):
         return _err(rid, 4010, "agent does not support steer")
+    # image.attach_bytes queues pixels on the live session. A normal prompt
+    # consumes them in _run_prompt_submit; a steer never enters that path, so
+    # consume and describe them here before the correction is injected into
+    # the active tool loop. The description also carries the staged image path,
+    # allowing the agent to inspect it again with vision_analyze when needed.
+    with session["history_lock"]:
+        images = list(session.get("attached_images", []))
+        session["attached_images"] = []
+    if images:
+        text = _enrich_with_attached_images(text, images)
     try:
         accepted = agent.steer(text)
     except Exception as exc:

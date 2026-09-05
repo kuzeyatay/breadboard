@@ -1,7 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { splitSteeredResponse } from "../src/lib/steered-response.ts";
+import {
+  isClarificationAnswerMessage,
+  splitSteeredResponse,
+} from "../src/lib/steered-response.ts";
+
+test("answers to assistant clarification questions are not new chat turns", () => {
+  assert.equal(
+    isClarificationAnswerMessage({
+      clientMessageId: "clarify:request-1",
+    }),
+    true,
+  );
+  assert.equal(
+    isClarificationAnswerMessage({
+      clientMessageId: "legacy-message-id",
+      clarificationAnswer: true,
+    }),
+    true,
+  );
+  assert.equal(
+    isClarificationAnswerMessage({ clientMessageId: "steer:request-1" }),
+    false,
+  );
+});
 
 test("steered response continuations render below their correction bubbles", () => {
   assert.deepEqual(

@@ -33,10 +33,12 @@ import {
   sameChatIds,
   writeUnreadChats,
 } from "@/lib/conversations/unread";
+import { recordLastOpenedChat } from "@/lib/conversations/last-opened";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import DocumentContextMenu from "@/app/components/document-context-menu";
+import LinkContextMenu from "@/app/components/link-context-menu";
 import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
 import {
   restoreQueuedFollowUpDraft,
@@ -80,6 +82,9 @@ import {
 } from "@/app/components/chat/chat-row-identity";
 import ChatTimeSeparator from "@/app/components/chat-time-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
+import AttachmentPreviewDialog, {
+  type AttachmentPreviewSource,
+} from "@/app/components/attachment-preview-dialog";
 import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import ActivityPanel from "@/app/components/hermes/activity-panel";
@@ -93,6 +98,7 @@ import GardenSettingsDialog, {
   GardenSettingsIcon,
 } from "@/app/components/garden-settings-dialog";
 import { useLegacyAgentActivity } from "@/app/components/hermes/use-legacy-agent-activity";
+import { isRecoverableAgentStreamDisconnect } from "@/app/components/hermes/agent-stream-watchdog";
 import type {
   ActivityItem,
   ConnectionState,
@@ -109,11 +115,13 @@ import {
   delegatedWorkersOutcome,
   delegatedWorkersOutcomeNote,
   delegatedContinuationPreamble,
+  delegatedThinkingUpdates,
   delegatedAgentStartedAtForMessage,
   delegatedTurnCarriedDurationMs,
   delegatedTurnTotalUsage,
   supersededDelegationAssistantIndices,
 } from "@/lib/hermes/super-agent-activity";
+import { isClarificationAnswerMessage } from "@/lib/steered-response";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import ChatMessageRail, {
@@ -132,7 +140,6 @@ import {
   type FloatingAnchorRect,
 } from "@/app/components/chat-text-selection-ui";
 import {
-  chatTextSelectionQuestionPrompt,
   chatTextSelectionsOverlap,
   normalizeChatTextSelectionReference,
   type ChatTextSelectionReference,
@@ -299,18 +306,31 @@ import {
   normalizeChatTokenUsage,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
-import { formatAssistantModelName } from "@/lib/ai-models";
+import {
+  formatAssistantModelName,
+  groupAssistantModels,
+} from "@/lib/ai-models";
 import { chatTimeSeparatorLabels } from "@/lib/chat-time-separators";
+import {
+  documentUploadTimeTitle,
+  formatDocumentUploadTime,
+} from "@/lib/document-upload-time";
 import { requestChatTitleFromFirstMessage } from "@/lib/chat-session-title";
+import {
+  normalizeFocusedDocumentNames,
+  normalizeFocusedDocumentSlugs,
+} from "@/lib/garden-document-focus";
 import type {
   LocalWorkflowSummary,
   WorkflowRunResponse,
 } from "@/lib/workflows/types";
 import {
   CHAT_ATTACHMENT_ACCEPT,
+  attachmentOnlyMessageText,
   chatMessageAttachments,
   extractChatAttachments,
   reusableChatAttachments,
+  visibleChatMessageText,
   type ChatAttachment,
   type ChatMessageAttachment,
 } from "@/lib/chat-attachments";
@@ -347,6 +367,10 @@ import {
   agentBrowserUserMessage,
   taskFromAgentBrowserCommand,
 } from "@/lib/agent-browser/identity";
+import {
+  desktopTabsBridge,
+  openBrowserAgentRunInDesktop,
+} from "@/lib/desktop-browser-tabs";
 import {
   directDeepResearchInvocation,
   deepResearchUserMessage,
@@ -492,11 +516,21 @@ import {
 } from "@/lib/task-completion-notification";
 import {
   setActiveChatNotificationTarget,
+  setActiveLearnNotificationGarden,
   takeChatNotificationReply,
   type ChatNotificationTarget,
 } from "@/lib/chat-notification-inbox";
-import { reserveGardenTurnCheckpoint } from "@/lib/conversations/garden-turn-client";
+import { LEARN_ACTIVE_STAGE_LABELS } from "@/lib/learn-stage-labels";
+import {
+  abortGardenTurnCheckpoint,
+  reserveGardenTurnCheckpoint,
+} from "@/lib/conversations/garden-turn-client";
 import { gardenDocumentHref } from "@/lib/garden-document-route";
+import {
+  isPlayableVideoFormat,
+  videoAttachmentFormat,
+} from "@/lib/video-attachments";
+import { audioAttachmentFormat } from "@/lib/audio-attachments";
 import {
   normalizeGenerativeUiResources,
   productForAction,
@@ -516,6 +550,8 @@ interface Message {
   content: string;
   /** Model-to-model hand-back; retained in context but hidden from the user. */
   internalAgentContinuation?: boolean;
+  /** Runtime input that answered the assistant's own mid-turn question. */
+  clarificationAnswer?: boolean;
   /**
    * Selected assistant text this turn quotes ("Ask in chat") or answers in
    * place ("Ask here"). Inline turns are hidden from the transcript and read
@@ -528,8 +564,13 @@ interface Message {
   progressNotes?: string[];
   attachmentNames?: string[];
   attachments?: ChatMessageAttachment[];
+  /** Garden documents selected as context when this question was sent. */
+  focusedDocumentNames?: string[];
+  /** Stable references for re-sending those exact Garden documents. */
+  focusedDocumentSlugs?: string[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
+  responseCompletedAt?: string;
   verification?: VerificationSummary;
   uiResources?: GenerativeUiResource[];
   agentBrowserRun?: { agentId: string; runId: string; task: string };
@@ -657,6 +698,8 @@ const NO_MESSAGES: Message[] = [];
 interface ChatSession {
   id: number;
   user_id?: number;
+  /** Stable canonical id used by runtime-scoped capability endpoints. */
+  conversationId?: string | null;
   title: string;
   created_at: string;
   updated_at: string;
@@ -679,6 +722,7 @@ interface ChatSession {
 /** One row of the rail's own feed: the chat without its transcript. */
 interface ChatSessionSummary {
   id: number;
+  conversationId?: string | null;
   title: string;
   created_at: string;
   updated_at: string;
@@ -953,6 +997,56 @@ function learnSourceKind(doc: DocInfo): LearnSourceKind {
   return "document";
 }
 
+interface GardenChatSourceAttachment extends AttachmentPreviewSource {
+  slug: string;
+}
+
+/** Reconnect one selected Garden chip to the retained source it represents. */
+function gardenChatSourceAttachment(
+  clusterSlug: string,
+  doc: DocInfo,
+): GardenChatSourceAttachment | null {
+  const name = doc.sourceFile.trim() || doc.title || doc.name;
+  const aliases = [doc.title, doc.name, doc.sourceFile]
+    .map((value) => value.trim())
+    .filter((value, index, values) => value && values.indexOf(value) === index);
+  const isPdf =
+    doc.sourceType.trim().toLowerCase() === "pdf" || /\.pdf$/i.test(doc.sourceFile);
+  if (isPdf && doc.sourcePdf) {
+    return {
+      slug: doc.slug,
+      kind: "pdf",
+      name,
+      aliases,
+      href: `/gardens/${encodeURIComponent(clusterSlug)}/pdf/${encodeURIComponent(doc.slug)}`,
+    };
+  }
+
+  const declaredKind = learnSourceKind(doc);
+  const kind =
+    declaredKind !== "document"
+      ? declaredKind
+      : audioAttachmentFormat(doc.sourceFile)
+        ? "audio"
+        : videoAttachmentFormat(doc.sourceFile)
+          ? "video"
+          : declaredKind;
+  if ((kind === "audio" || kind === "video") && doc.sourceMedia) {
+    const videoFormat = kind === "video" ? videoAttachmentFormat(doc.sourceFile) : null;
+    return {
+      slug: doc.slug,
+      kind,
+      name,
+      aliases,
+      href: `/api/gardens/${encodeURIComponent(clusterSlug)}/media/${encodeURIComponent(doc.slug)}`,
+      ...(kind === "video"
+        ? { playable: videoFormat ? isPlayableVideoFormat(videoFormat) : true }
+        : {}),
+    };
+  }
+  return null;
+}
+
 function learnSourceKindLabel(kind: LearnSourceKind): string {
   switch (kind) {
     case "link":
@@ -1037,6 +1131,7 @@ interface LearnJobInfo {
   error?: string;
   requiresReplan?: boolean;
   proposedLearningMapId?: string;
+  confirmedLearningMapId?: string;
   userInstruction?: string;
   elapsedMs: number;
   timerStartedAt?: string;
@@ -1155,10 +1250,13 @@ interface Props {
   clusterSlug: string;
   clusterName: string;
   initialChatId?: string | null;
+  /** Arrive with the Learn panel showing (a Learn notice's link, `?learn=1`). */
+  initialLearnPanelOpen?: boolean;
   isOwner?: boolean;
   clusterVisibility: "private" | "organization" | "public";
   chatAccessible: boolean;
   forkAllowed: boolean;
+  showNavbarFlowers: boolean;
 }
 
 const ACCEPTED =
@@ -1208,6 +1306,160 @@ function displayLearnError(message?: string): string {
     return "The AI service connection was lost during Learn. Retry Learn; if it fails again, restart Breadboard's AI service.";
   }
   return value;
+}
+
+function LearnModelPicker({
+  value,
+  groups,
+  disabled,
+  title,
+  onOpen,
+  onChange,
+}: {
+  value: string;
+  groups: ReturnType<typeof groupAssistantModels>;
+  disabled: boolean;
+  title: string;
+  onOpen: () => void;
+  onChange: (model: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const optionRefs = useRef(new Map<string, HTMLButtonElement>());
+  const options = groups.flatMap((group) => group.models);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      optionRefs.current.get(value)?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, value]);
+
+  function openMenu() {
+    if (disabled) return;
+    onOpen();
+    setOpen(true);
+  }
+
+  function choose(model: string) {
+    setOpen(false);
+    if (model !== value) onChange(model);
+    triggerRef.current?.focus();
+  }
+
+  function moveFocus(current: string, direction: -1 | 1) {
+    const currentIndex = Math.max(0, options.indexOf(current));
+    const nextIndex = (currentIndex + direction + options.length) % options.length;
+    optionRefs.current.get(options[nextIndex])?.focus();
+  }
+
+  return (
+    <div className="relative flex min-w-0 max-w-44 items-baseline">
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label="Model for Learn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        title={title}
+        onPointerDown={onOpen}
+        onFocus={onOpen}
+        onClick={() => {
+          if (open) setOpen(false);
+          else setOpen(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            if (open) optionRefs.current.get(value)?.focus();
+            else openMenu();
+          }
+        }}
+        className="group flex w-full min-w-0 cursor-pointer items-center gap-1 bg-transparent p-0 font-mono tabular-nums text-gray-200 outline-none transition-colors hover:text-white focus-visible:ring-1 focus-visible:ring-gray-600 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <span className="min-w-0 truncate">{formatAssistantModelName(value)}</span>
+        <svg
+          className={`h-3 w-3 shrink-0 text-gray-500 transition-transform group-hover:text-gray-300 ${open ? "rotate-180" : ""}`}
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path
+            fillRule="evenodd"
+            d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
+            clipRule="evenodd"
+          />
+        </svg>
+      </button>
+
+      {open ? (
+        <ViewportPopover
+          anchorRef={triggerRef}
+          ariaLabel="Choose a model for Learn"
+          className="neu-popover fixed z-[100] w-64 max-w-[calc(100vw-1.5rem)] overflow-y-auto overscroll-contain rounded-lg border border-gray-800 bg-gray-950 p-1.5 shadow-xl"
+          onClose={() => setOpen(false)}
+        >
+          {groups.map((group) => (
+            <div key={group.vendorId} role="group" aria-label={group.vendorLabel}>
+              <div className="px-2 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wider text-gray-500 first:pt-1">
+                {group.vendorLabel}
+              </div>
+              {group.models.map((item) => {
+                const selected = item === value;
+                return (
+                  <button
+                    key={item}
+                    ref={(element) => {
+                      if (element) optionRefs.current.set(item, element);
+                      else optionRefs.current.delete(item);
+                    }}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    title={item}
+                    onClick={() => choose(item)}
+                    onKeyDown={(event) => {
+                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                        event.preventDefault();
+                        moveFocus(item, event.key === "ArrowDown" ? 1 : -1);
+                      } else if (event.key === "Home" || event.key === "End") {
+                        event.preventDefault();
+                        const target = event.key === "Home" ? options[0] : options.at(-1);
+                        if (target) optionRefs.current.get(target)?.focus();
+                      }
+                    }}
+                    className={`flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left font-mono text-xs transition-colors hover:bg-gray-900 hover:text-white focus:bg-gray-900 focus:text-white focus:outline-none ${selected ? "bg-gray-900 text-white" : "text-gray-300"}`}
+                  >
+                    <span className="min-w-0 truncate">
+                      {formatAssistantModelName(item)}
+                    </span>
+                    {selected ? (
+                      <svg
+                        className="h-3.5 w-3.5 shrink-0 text-white"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="m4.5 10.25 3.25 3.25 7.75-7.75"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </ViewportPopover>
+      ) : null}
+    </div>
+  );
 }
 
 function Spinner({ className = "w-4 h-4" }: { className?: string }) {
@@ -1475,6 +1727,7 @@ interface ChatTranscriptProps {
   isStreaming: boolean;
   loadingChats: boolean;
   messages: Message[];
+  gardenSourceAttachments: readonly GardenChatSourceAttachment[];
   activities: ActivityItem[];
   connection: ConnectionState;
   pendingPermission: PermissionPrompt | null;
@@ -1549,6 +1802,8 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
     if (
       (storedMessage.role === "user" &&
         storedMessage.internalAgentContinuation === true) ||
+      (storedMessage.role === "user" &&
+        isClarificationAnswerMessage(storedMessage)) ||
       // An "Ask here" turn is read inside its highlight's popover, not as
       // transcript rows.
       storedMessage.textSelection?.mode === "inline" ||
@@ -1586,6 +1841,7 @@ const ChatTranscript = memo(function ChatTranscript({
   isStreaming,
   loadingChats,
   messages,
+  gardenSourceAttachments,
   activities,
   connection,
   pendingPermission,
@@ -1638,7 +1894,6 @@ const ChatTranscript = memo(function ChatTranscript({
     lastAssistantIndex >= 0 ? messages[lastAssistantIndex] : undefined;
   const newestAssistantVisibleContent = assistantVisibleContent(
     newestAssistant?.content ?? "",
-    newestAssistant?.progressNotes,
   );
   const transcriptRevealKey = String(chatSessionId ?? "new");
   // The newest answer's text is revealed at a readable pace rather than drawn
@@ -1826,6 +2081,10 @@ const ChatTranscript = memo(function ChatTranscript({
               );
               const continuationPreamble =
                 delegatedContinuationPreamble(messages, i);
+              const thinkingUpdates = delegatedThinkingUpdates(
+                msg,
+                continuationPreamble,
+              );
               // Every earlier phase is hidden behind this row, so their time
               // belongs to this clock. Counting only the adjacent worker still
               // loses the Super Agent's orchestration phase.
@@ -1839,12 +2098,16 @@ const ChatTranscript = memo(function ChatTranscript({
               );
               const storedAssistantContent = assistantVisibleContent(
                 msg.content,
-                msg.progressNotes,
               );
               const visibleAssistantContent =
                 i === lastAssistantIndex
-                  ? revealedAssistantContent || continuationPreamble
-                  : storedAssistantContent || continuationPreamble;
+                  ? revealedAssistantContent
+                  : storedAssistantContent;
+              const visibleUserContent = visibleChatMessageText(
+                msg.content,
+                msg.attachments,
+                msg.attachmentNames,
+              );
               // The hidden workers this row delegated to: the only record of
               // how the hand-off ended. Stopped or failed with no hand-back
               // used to read exactly like a finished answer.
@@ -1885,6 +2148,16 @@ const ChatTranscript = memo(function ChatTranscript({
               const delegatedOutcomeNote = !delegatedAgentActive
                 ? delegatedWorkersOutcomeNote(delegatedWorkers)
                 : undefined;
+              const focusedSlugSet = new Set(msg.focusedDocumentSlugs ?? []);
+              const focusedNameSet = new Set(msg.focusedDocumentNames ?? []);
+              const focusedSourceAttachments = gardenSourceAttachments.filter(
+                (source) =>
+                  focusedSlugSet.has(source.slug) ||
+                  (focusedSlugSet.size === 0 &&
+                    [source.name, ...(source.aliases ?? [])].some((name) =>
+                      focusedNameSet.has(name),
+                    )),
+              );
               return (
                 <div className="flex w-full flex-col gap-3">
                   {timeSeparators[i] ? (
@@ -1900,13 +2173,19 @@ const ChatTranscript = memo(function ChatTranscript({
                       <div className="flex flex-col items-end gap-1 max-w-[80%]">
                         <ChatMessageAttachments
                           attachments={msg.attachments}
-                          attachmentNames={msg.attachmentNames}
+                          sourceAttachments={focusedSourceAttachments}
+                          attachmentNames={[
+                            ...new Set([
+                              ...(msg.attachmentNames ?? []),
+                              ...(msg.focusedDocumentNames ?? []),
+                            ]),
+                          ]}
                         />
                         <ChatVideoLinkEmbeds
                           text={msg.content}
                           attachments={msg.attachments}
                         />
-                        {msg.content ? (
+                        {visibleUserContent ? (
                           editingMessageId === messageInteractionId ? (
                             <form
                               className="neu-chat-message neu-chat-message-user min-w-64 rounded-[22px] p-2"
@@ -1980,14 +2259,14 @@ const ChatTranscript = memo(function ChatTranscript({
                                   selection={msg.textSelection}
                                 />
                               ) : null}
-                              <div className="neu-chat-message neu-chat-message-user w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
+                              <div className="neu-chat-message neu-chat-message-user w-fit max-w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
                                 <CollapsibleUserMessage
                                   messageKey={messageInteractionId}
                                 >
-                                  {splitLeadingCommandTokens(msg.content) ? (
-                                    <UserMessageText content={msg.content} />
+                                  {splitLeadingCommandTokens(visibleUserContent) ? (
+                                    <UserMessageText content={visibleUserContent} />
                                   ) : (
-                                    <ChatMarkdown content={msg.content} compact />
+                                    <ChatMarkdown content={visibleUserContent} compact />
                                   )}
                                 </CollapsibleUserMessage>
                               </div>
@@ -2128,13 +2407,22 @@ const ChatTranscript = memo(function ChatTranscript({
                         ) : null}
                       </div>
                     ) : (
-                      <div className="flex w-full flex-col gap-2">
-                        <MessageActionsSlot>
+                      <div className="bb-garden-assistant-response flex w-full max-w-[90%] flex-col gap-2">
+                        {/* Keep every response-owned surface in the same reading
+                            lane as the prose. Artifact cards, generated UI, and
+                            inline run widgets otherwise stretch to the full
+                            virtualized row even though the answer stops at 90%. */}
+                        <MessageActionsSlot
+                          responseStartedAt={msg.createdAt}
+                          responseDurationMs={msg.responseDurationMs}
+                          responseCompletedAt={msg.responseCompletedAt}
+                        >
                           {msg.delegatedAgentPreamble &&
                           !msg.openGymRun &&
                           !msg.godsEyeRun ? (
                             <ActivityPanel
                               activities={[]}
+                              progressNotes={thinkingUpdates}
                               connection={
                                 delegatedAgentActive ? "streaming" : "idle"
                               }
@@ -2146,15 +2434,6 @@ const ChatTranscript = memo(function ChatTranscript({
                               stateLabel={delegatedAgentLabel}
                               completedLabel={delegatedAgentCompleted}
                             />
-                          ) : null}
-                          {msg.delegatedAgentPreamble &&
-                          !msg.openGymRun &&
-                          !msg.godsEyeRun ? (
-                            <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
-                              <ChatMarkdown
-                                content={msg.delegatedAgentPreamble}
-                              />
-                            </div>
                           ) : null}
                           {delegatedOutcomeNote ? (
                             <div
@@ -2179,6 +2458,7 @@ const ChatTranscript = memo(function ChatTranscript({
                               activities={
                                 i === lastAssistantIndex ? activities : []
                               }
+                              progressNotes={thinkingUpdates}
                               connection={
                                 // A worker running behind this row keeps it
                                 // alive even though the chat connection is
@@ -2682,6 +2962,7 @@ const ChatTranscript = memo(function ChatTranscript({
                                   }
                                   persistedContent={msg.content}
                                   persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
                                   onRetry={
                                     i === lastAssistantIndex && !isStreaming
                                       ? () => onRetryAssistant(i)
@@ -2992,7 +3273,7 @@ const ChatTranscript = memo(function ChatTranscript({
                               ) : null}
                             </div>
                           ) : visibleAssistantContent ? (
-                            <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
+                            <div className="w-full text-sm leading-relaxed text-gray-200">
                               <SelectableAssistantMarkdown
                                 content={visibleAssistantContent}
                                 sourceMessageId={messageSelectionSourceId(
@@ -3029,7 +3310,6 @@ const ChatTranscript = memo(function ChatTranscript({
                             <AssistantMessageActions
                               content={
                                 msg.content ||
-                                continuationPreamble ||
                                 "Response unavailable"
                               }
                               verification={msg.verification}
@@ -3062,7 +3342,11 @@ const ChatTranscript = memo(function ChatTranscript({
             }}
           />
         ) : null}
-        {chatSessionId ? <InlineArtifactCards ownerMessageId={null} /> : null}
+        {chatSessionId ? (
+          <div className="bb-garden-assistant-response w-full max-w-[90%]">
+            <InlineArtifactCards ownerMessageId={null} />
+          </div>
+        ) : null}
       </div>
       {promptToSave !== null ? (
         <SavePromptDialog
@@ -3202,13 +3486,15 @@ export default function WorkspaceClient({
   clusterSlug,
   clusterName,
   initialChatId = null,
+  initialLearnPanelOpen = false,
   isOwner = true,
   clusterVisibility,
   chatAccessible,
   forkAllowed,
+  showNavbarFlowers,
 }: Props) {
   const router = useRouter();
-  const { toasts, addToast, dismissToast, dismissChatToasts } = useToast();
+  const { toasts, addToast, dismissToast, dismissChatToasts, dismissLearnToasts } = useToast();
   // Every artifact entry point in this workspace—archive rows and inline chat
   // cards alike—opens into one overlay bounded by the workspace body. Keeping
   // the host below the header prevents the viewer from covering Garden nav.
@@ -3527,6 +3813,20 @@ export default function WorkspaceClient({
     setStreamingChatIds(next);
   }, []);
   const agentActivity = useLegacyAgentActivity();
+  const activeGardenTurnRef = useRef<{
+    sessionId: number;
+    clientMessageId: string;
+    conversationId: string | null;
+  } | null>(null);
+  const stopActiveGardenTurn = useCallback(async () => {
+    const turn = activeGardenTurnRef.current;
+    await Promise.all([
+      agentActivity.abort(turn?.conversationId),
+      turn
+        ? abortGardenTurnCheckpoint(turn.sessionId, turn.clientMessageId)
+        : Promise.resolve(),
+    ]);
+  }, [agentActivity]);
   // The Thinking an external agent launch raises the moment its turn goes up.
   // It is owned by the launch rather than by any one runtime request, so it is
   // held here and put down wherever the launch's real rows land.
@@ -3729,7 +4029,7 @@ export default function WorkspaceClient({
   // itself is unusable. Read by the primary action, which plans again rather
   // than leaving the Learn button permanently rejected.
   const learnRequiresReplanRef = useRef(false);
-  const [learnPanelOpen, setLearnPanelOpen] = useState(false);
+  const [learnPanelOpen, setLearnPanelOpen] = useState(initialLearnPanelOpen);
   const [gardenSettingsOpen, setGardenSettingsOpen] = useState(false);
   const [learnConfirmationAction, setLearnConfirmationAction] =
     useState<LearnDestructiveAction | null>(null);
@@ -3779,7 +4079,6 @@ export default function WorkspaceClient({
     reasoningEffort,
     setReasoningEffort,
     intelligenceModes,
-    failover: modelFailover,
   } = useAssistantIntelligence();
 
   // Prompts
@@ -4327,6 +4626,10 @@ export default function WorkspaceClient({
           // empty array, so its identity is stable between polls.
           ...(cached.get(row.id) ?? { messages: NO_MESSAGES }),
           id: row.id,
+          conversationId:
+            row.conversationId ??
+            cached.get(row.id)?.conversationId ??
+            null,
           title: row.title,
           created_at: row.created_at,
           updated_at: row.updated_at,
@@ -4397,6 +4700,16 @@ export default function WorkspaceClient({
 
   // A chat counts as read while its transcript is the one on screen.
   const viewingChatId = activeChatId === null ? null : String(activeChatId);
+
+  useEffect(() => {
+    if (!viewingChatId) return;
+    recordLastOpenedChat(
+      window.localStorage,
+      "garden_chat",
+      viewingChatId,
+      clusterSlug,
+    );
+  }, [clusterSlug, viewingChatId]);
 
   useEffect(() => {
     setUnreadChats(readUnreadChats(window.localStorage, clusterSlug));
@@ -4508,6 +4821,16 @@ export default function WorkspaceClient({
     return () => setActiveChatNotificationTarget(null);
   }, [clusterSlug, dismissChatToasts, viewingChatId]);
 
+  // The Learn panel shows the run's stage, progress and outcome itself, so a
+  // Learn notice for this Garden must not repeat it in the corner while the
+  // panel is open. Closing the panel makes later updates announceable again.
+  useEffect(() => {
+    if (!learnPanelOpen) return;
+    setActiveLearnNotificationGarden(clusterSlug);
+    dismissLearnToasts(clusterSlug);
+    return () => setActiveLearnNotificationGarden(null);
+  }, [clusterSlug, dismissLearnToasts, learnPanelOpen]);
+
   useEffect(() => {
     if (!unreadRestored.current) {
       // The first commit carries the empty starting value rather than anything
@@ -4558,36 +4881,17 @@ export default function WorkspaceClient({
   const openChatFromNotification = useCallback((
     target: ChatNotificationTarget,
   ) => {
-    if (
-      target.surface !== "garden_chat" ||
-      target.gardenSlug !== clusterSlug
-    ) {
-      return false;
+    if (target.gardenSlug !== clusterSlug) return false;
+    if (target.surface === "garden_learn") {
+      // A Learn notice for the Garden already on screen opens its panel in
+      // place; navigating would only reload the page to arrive here.
+      setLearnPanelOpen(true);
+      return true;
     }
+    if (target.surface !== "garden_chat") return false;
     openChatById(target.chatId);
     return true;
   }, [clusterSlug, openChatById]);
-
-  const replyToChatFromNotification = useCallback((
-    notificationTarget: ChatNotificationTarget,
-    message: string,
-  ) => {
-    if (
-      notificationTarget.surface !== "garden_chat" ||
-      notificationTarget.gardenSlug !== clusterSlug
-    ) {
-      return false;
-    }
-    const chatId = notificationTarget.chatId;
-    const id = Number(chatId);
-    const target = chatSessions.find((session) => session.id === id);
-    if (!Number.isInteger(id) || !target || target.isOwn === false) {
-      throw new Error("This chat is no longer available for replies.");
-    }
-    pendingNotificationReplyRef.current = { chatId: id, message };
-    openChatById(chatId);
-    return true;
-  }, [chatSessions, clusterSlug, openChatById]);
 
   // The server names a chat from its first prompt, the same way it names a
   // Terminal one. The Terminal sees that name arrive through its history poll;
@@ -4696,14 +5000,34 @@ export default function WorkspaceClient({
   // Agent selection/health checks happen before the concrete launcher's flag
   // rises. Keep the originating assistant turn active across that whole gap.
   const [delegatedAgentLaunching, setDelegatedAgentLaunching] = useState(false);
+  const [pendingImmediateInlineQuestion, setPendingImmediateInlineQuestion] =
+    useState<{
+      chatId: number | null;
+      question: string;
+      selection: ChatTextSelectionReference;
+    } | null>(null);
+  const [stoppingForInlineQuestion, setStoppingForInlineQuestion] =
+    useState(false);
+  const [inlineSelectionRunId, setInlineSelectionRunId] = useState<
+    string | null
+  >(null);
   // A drafted turn is already under way even though no session id exists yet
   // to mark as streaming, so the thinking row comes up with the message rather
   // than after the chat has been created.
-  const isStreaming =
+  const chatTurnStreaming =
     showingDraft ||
     (activeChatId !== null && streamingChatIds.has(activeChatId)) ||
-    activeChat?.active === true ||
-    hasRunningExternalAgentInActiveChat;
+    activeChat?.active === true;
+  const isStreaming =
+    chatTurnStreaming || hasRunningExternalAgentInActiveChat;
+  const respondingToInlineSelection =
+    chatTurnStreaming &&
+    (inlineSelectionRunId !== null ||
+      messages.at(-1)?.textSelection?.mode === "inline");
+  // Inline answers live in their highlight cards. They must not seize the
+  // transcript's follow mode or make the main dialogue look like it is the
+  // surface producing the answer.
+  const transcriptResponding = isStreaming && !respondingToInlineSelection;
 
   useEffect(() => {
     let pending = pendingNotificationReplyRef.current;
@@ -4753,9 +5077,12 @@ export default function WorkspaceClient({
     awayFromBottom: transcriptAwayFromBottom,
     scrollToBottom: jumpToNewestMessage,
   } = useChatAutoScroll<HTMLElement>({
-    isResponding: isStreaming,
+    isResponding: transcriptResponding,
     responseKey: chatAutoScrollResponseKey(messages),
     contentKey: chatAutoScrollContentKey(messages),
+    // Cached rows can arrive behind the loading state. Wait until the
+    // transcript is mounted so opening a chat always has a bottom to land on.
+    enabled: !chatContentLoading,
     conversationKey: activeChatId,
     virtual: transcriptVirtual,
   });
@@ -4801,17 +5128,19 @@ export default function WorkspaceClient({
   const [selectionStorageChatId, setSelectionStorageChatId] = useState<
     number | null
   >(null);
-  const [openInlineAnswer, setOpenInlineAnswer] = useState<{
+  const [openInlineAnswers, setOpenInlineAnswers] = useState<Array<{
     id: string;
     anchor: FloatingAnchorRect;
-  } | null>(null);
+  }>>([]);
   // A shared chat can be read but not asked into; the menu still highlights.
   const canAskSelection = activeChat?.isOwn !== false;
 
   useEffect(() => {
     setSelectionMenu(null);
     setComposerSelection(null);
-    setOpenInlineAnswer(null);
+    setPendingImmediateInlineQuestion(null);
+    setInlineSelectionRunId(null);
+    setOpenInlineAnswers([]);
     if (activeChatId === null) {
       setSavedInlineSelections([]);
       setSavedChatHighlights([]);
@@ -4976,20 +5305,34 @@ export default function WorkspaceClient({
       ).find((annotation) => chatTextSelectionsOverlap(annotation, selection));
       if (overlapping?.kind === "answer") {
         setSelectionMenu(null);
-        setOpenInlineAnswer({ id: overlapping.id, anchor: selection.anchor });
+        const thread = inlineSelectionThreads.get(overlapping.id);
+        setOpenInlineAnswers((current) => {
+          const parentIndex = current.findIndex(
+            (openAnswer) =>
+              inlineSelectionThreads.get(openAnswer.id)?.answerMessageId ===
+              thread?.selection.sourceMessageId,
+          );
+          return parentIndex >= 0
+            ? [
+                ...current.slice(0, parentIndex + 1),
+                { id: overlapping.id, anchor: selection.anchor },
+              ]
+            : [{ id: overlapping.id, anchor: selection.anchor }];
+        });
         window.getSelection()?.removeAllRanges();
         return;
       }
       // A selection made inside the open "Ask here" answer keeps its popover
       // on screen: the menu floats above the very answer it is about, which
       // is what lets a follow-up be asked from an answer, recursively.
-      setOpenInlineAnswer((current) =>
-        current &&
-        inlineSelectionThreads.get(current.id)?.answerMessageId ===
-          selection.sourceMessageId
-          ? current
-          : null,
-      );
+      setOpenInlineAnswers((current) => {
+        const parentIndex = current.findIndex(
+          (openAnswer) =>
+            inlineSelectionThreads.get(openAnswer.id)?.answerMessageId ===
+            selection.sourceMessageId,
+        );
+        return parentIndex >= 0 ? current.slice(0, parentIndex + 1) : [];
+      });
       setSelectionMenu(selection);
     },
     [annotationsByMessage, chatContentLoading, inlineSelectionThreads],
@@ -5058,7 +5401,7 @@ export default function WorkspaceClient({
     }
     setComposerSelection(selection);
     setSelectionMenu(null);
-    setOpenInlineAnswer(null);
+    if (mode === "chat") setOpenInlineAnswers([]);
     window.getSelection()?.removeAllRanges();
     window.setTimeout(() => textareaRef.current?.focus(), 0);
   }
@@ -5082,7 +5425,14 @@ export default function WorkspaceClient({
         (candidate) => candidate.id === annotationId,
       );
       if (highlight) {
-        setOpenInlineAnswer(null);
+        setOpenInlineAnswers((current) => {
+          const parentIndex = current.findIndex(
+            (openAnswer) =>
+              inlineSelectionThreads.get(openAnswer.id)?.answerMessageId ===
+              highlight.sourceMessageId,
+          );
+          return parentIndex >= 0 ? current.slice(0, parentIndex + 1) : [];
+        });
         setSelectionMenu({ ...highlight, anchor });
         window.getSelection()?.removeAllRanges();
         return;
@@ -5094,15 +5444,34 @@ export default function WorkspaceClient({
         window.setTimeout(() => textareaRef.current?.focus(), 0);
         return;
       }
-      setOpenInlineAnswer((current) =>
-        current?.id === annotationId ? null : { id: annotationId, anchor },
-      );
+      setOpenInlineAnswers((current) => {
+        const openIndex = current.findIndex(
+          (openAnswer) => openAnswer.id === annotationId,
+        );
+        if (openIndex >= 0) return current.slice(0, openIndex);
+        const parentIndex = current.findIndex(
+          (openAnswer) =>
+            inlineSelectionThreads.get(openAnswer.id)?.answerMessageId ===
+            thread.selection.sourceMessageId,
+        );
+        return parentIndex >= 0
+          ? [
+              ...current.slice(0, parentIndex + 1),
+              { id: annotationId, anchor },
+            ]
+          : [{ id: annotationId, anchor }];
+      });
     },
     [inlineSelectionThreads, savedChatHighlights],
   );
 
   function deleteInlineSelection(annotationId: string) {
-    setOpenInlineAnswer(null);
+    setOpenInlineAnswers((current) => {
+      const openIndex = current.findIndex(
+        (openAnswer) => openAnswer.id === annotationId,
+      );
+      return openIndex >= 0 ? current.slice(0, openIndex) : current;
+    });
     setSelectionMenu(null);
     setComposerSelection((current) =>
       current?.id === annotationId ? null : current,
@@ -5127,6 +5496,7 @@ export default function WorkspaceClient({
     if (!trimmed || isStreaming || chatContentLoading || !canAskSelection) {
       return;
     }
+    setInlineSelectionRunId(selection.id);
     void handleSubmit(trimmed, undefined, [], false, undefined, {
       textSelection: selection,
     });
@@ -5139,20 +5509,34 @@ export default function WorkspaceClient({
       return;
     }
     const question = input.trim();
-    if (!question || isStreaming || chatContentLoading) return;
+    if (!question || chatContentLoading) return;
+    const replacesActiveTurn =
+      composerSelection.mode === "inline" &&
+      steerableTurnActive &&
+      !externalRunHoldsQueue;
+    if (isStreaming && !replacesActiveTurn) return;
     const selection = composerSelection;
     setComposerSelection(null);
     setSelectionMenu(null);
-    setOpenInlineAnswer(null);
+    if (selection.mode === "chat") setOpenInlineAnswers([]);
+    if (selection.mode === "inline") setInlineSelectionRunId(selection.id);
     setInput("");
+    if (replacesActiveTurn) {
+      setPendingImmediateInlineQuestion({
+        chatId: activeChatId,
+        question,
+        selection,
+      });
+      setStoppingForInlineQuestion(true);
+      void stopActiveGardenTurn().finally(() =>
+        setStoppingForInlineQuestion(false),
+      );
+      return;
+    }
     void handleSubmit(question, undefined, [], false, undefined, {
       textSelection: selection,
     });
   }
-
-  const openInlineThread = openInlineAnswer
-    ? inlineSelectionThreads.get(openInlineAnswer.id)
-    : undefined;
 
   // Runtime agents a Super Agent turn asked for. Each gets a distinct hidden
   // transcript turn, allowing several workers to run and report independently.
@@ -5525,12 +5909,57 @@ export default function WorkspaceClient({
       steerableRunActive: steerableTurnActive,
       externalRunActive: externalRunHoldsQueue,
       onSteer: steerActiveResponse,
-      onRestoreDraft: (text) =>
-        restoreQueuedFollowUpDraft(text, setInput, textareaRef),
-      onSendQueued: async (text) => {
-        await handleSubmit(text);
+      onRestoreDraft: (text, attachments) => {
+        restoreQueuedFollowUpDraft(text, setInput, textareaRef);
+        setChatAttachments([...attachments]);
+      },
+      onSendQueued: async (text, attachments) => {
+        await handleSubmit(text, undefined, attachments);
       },
     });
+
+  // An inline question is a new turn, not a queued follow-up or a correction
+  // to the response it quotes. Once that response is fully stopped, dispatch
+  // the held question with its selection metadata intact.
+  useEffect(() => {
+    if (
+      !pendingImmediateInlineQuestion ||
+      stoppingForInlineQuestion ||
+      isStreaming ||
+      chatContentLoading
+    ) {
+      return;
+    }
+    if (pendingImmediateInlineQuestion.chatId !== activeChatId) {
+      setPendingImmediateInlineQuestion(null);
+      return;
+    }
+    const { question, selection } = pendingImmediateInlineQuestion;
+    setPendingImmediateInlineQuestion(null);
+    void handleSubmit(question, undefined, [], false, undefined, {
+      textSelection: selection,
+    });
+    // handleSubmit is a render-local dispatcher; the readiness flags above are
+    // the only values that should retry this one-shot handoff.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeChatId,
+    chatContentLoading,
+    isStreaming,
+    pendingImmediateInlineQuestion,
+    stoppingForInlineQuestion,
+  ]);
+
+  useEffect(() => {
+    if (
+      isStreaming ||
+      pendingImmediateInlineQuestion ||
+      stoppingForInlineQuestion
+    ) {
+      return;
+    }
+    setInlineSelectionRunId(null);
+  }, [isStreaming, pendingImmediateInlineQuestion, stoppingForInlineQuestion]);
 
   // Bind the launch to the run it started. The queue never has two in flight, so
   // the first run id that was not already in the transcript is this one's — and
@@ -6896,11 +7325,14 @@ export default function WorkspaceClient({
     if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
       return;
     if (learnUserInstruction.trim() && hasExistingLearnContent) {
-      handleFullRebuild();
+      await postLearnAction("plan");
       return;
     }
     if (learnState?.job?.status === "awaiting_confirmation") {
-      if (hasExistingLearnContent) {
+      if (
+        hasExistingLearnContent &&
+        learnState.job.mode !== "update_sources"
+      ) {
         await handleRepairIssues();
         return;
       }
@@ -6912,11 +7344,32 @@ export default function WorkspaceClient({
       setLearnPanelOpen(true);
       return;
     }
-    // Existing learner content always recovers through bounded repair, even if
-    // a cancelled run rolled back (or hid) its learning-map id. Planning first
-    // here would silently turn Regenerate into a new-garden workflow.
+    // A source-update job resumes its exact confirmed map when possible, or
+    // replans the additive merge. Unchanged existing content still uses the
+    // bounded repair path.
     if (hasExistingLearnContent) {
-      await postLearnAction("regenerate", { mode: "repair" });
+      if (
+        learnState?.job?.mode === "update_sources" &&
+        learnState.job.status === "failed" &&
+        !learnState.job.requiresReplan &&
+        learnState.job.confirmedLearningMapId ===
+          learnState.confirmedLearningMapId &&
+        learnState.confirmedLearningMapId &&
+        learnState.confirmedLearningMapModel
+      ) {
+        await postLearnAction("generate", {
+          confirmedLearningMapId: learnState.confirmedLearningMapId,
+          expectedModel: learnState.confirmedLearningMapModel,
+        });
+      } else if (
+        shouldAddNewLearnMaterial ||
+        learnState?.job?.mode === "update_sources"
+      ) {
+        addToast("Planning where the new material fits in the current lessons");
+        await postLearnAction("plan");
+      } else {
+        await postLearnAction("regenerate", { mode: "repair" });
+      }
       return;
     }
     // Cancellation rolls an unfinished planning run back to its last safe
@@ -6970,7 +7423,10 @@ export default function WorkspaceClient({
 
   async function handleConfirmAndGenerate() {
     if (learnBusy || isLearnActive(learnState?.job?.status)) return;
-    if (hasExistingLearnContent) {
+    if (
+      hasExistingLearnContent &&
+      learnState?.job?.mode !== "update_sources"
+    ) {
       await handleRepairIssues();
       return;
     }
@@ -7010,7 +7466,7 @@ export default function WorkspaceClient({
     if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
       return;
     if (learnUserInstruction.trim() && hasExistingLearnContent) {
-      handleFullRebuild();
+      await postLearnAction("plan");
       return;
     }
     if (learnState?.job?.status === "awaiting_confirmation") {
@@ -7036,7 +7492,7 @@ export default function WorkspaceClient({
     setLearnUserInstructionDraft(instruction);
     setLearnUserInstructionOpen(false);
     if (hasExistingLearnContent) {
-      setLearnConfirmationAction("full_rebuild");
+      await postLearnAction("plan", { userInstruction: instruction });
       return;
     }
     await postLearnAction("plan", { userInstruction: instruction });
@@ -7080,7 +7536,8 @@ export default function WorkspaceClient({
     if (
       !learnSkipManualReview ||
       learnBusy ||
-      hasExistingLearnContent ||
+      (hasExistingLearnContent &&
+        learnState?.job?.mode !== "update_sources") ||
       shouldReplanStaleMapBinding ||
       autoConfirmLearnJobStatus !== "awaiting_confirmation" ||
       !autoConfirmLearnJobId ||
@@ -7102,6 +7559,7 @@ export default function WorkspaceClient({
     autoConfirmLearningMapId,
     autoConfirmLearnModel,
     hasExistingLearnContent,
+    learnState?.job?.mode,
     learnBusy,
     learnSkipManualReview,
     postLearnAction,
@@ -7120,6 +7578,21 @@ export default function WorkspaceClient({
     const previousUser = messages[userIndex];
     if (!previousUser || previousUser.role !== "user") return;
     const retryAttachments = reusableChatAttachments(previousUser.attachments);
+    const retryFocusedDocumentNames = normalizeFocusedDocumentNames(
+      previousUser.focusedDocumentNames,
+    );
+    const legacyFocusedNames = new Set(retryFocusedDocumentNames);
+    const retryFocusedDocumentSlugs = normalizeFocusedDocumentSlugs(
+      previousUser.focusedDocumentSlugs?.length
+        ? previousUser.focusedDocumentSlugs
+        : documents
+            .filter(
+              (document) =>
+                document.type === "source-document" &&
+                legacyFocusedNames.has(document.title || document.name),
+            )
+            .map((document) => document.slug),
+    );
     const failedAttempt = messages[messageIndex];
     const attemptDiedEmpty =
       failedAttempt?.role === "assistant" &&
@@ -7161,6 +7634,12 @@ export default function WorkspaceClient({
       previousUser.content,
       messages.slice(0, userIndex),
       retryAttachments,
+      false,
+      undefined,
+      {
+        focusedDocumentNames: retryFocusedDocumentNames,
+        focusedDocumentSlugs: retryFocusedDocumentSlugs,
+      },
     );
   }
 
@@ -7243,14 +7722,17 @@ export default function WorkspaceClient({
   // correction. Resolves false when no steerable turn is active — an external
   // agent run, or a turn that finished first — so the message stays queued
   // and sends as an ordinary follow-up when the queue drains.
-  async function steerActiveResponse(text: string): Promise<boolean> {
-    const correction = text.trim();
+  async function steerActiveResponse(
+    text: string,
+    attachments: readonly ChatAttachment[],
+  ): Promise<boolean> {
+    const correction = text.trim() || attachmentOnlyMessageText(attachments);
     const context = activeSteerContextRef.current;
     if (!correction || !context) return false;
 
     let accepted = false;
     try {
-      accepted = await agentActivity.steer(correction);
+      accepted = await agentActivity.steer(correction, attachments);
     } catch (error) {
       addToast(
         error instanceof Error
@@ -7265,6 +7747,12 @@ export default function WorkspaceClient({
       role: "user",
       content: correction,
       createdAt: new Date().toISOString(),
+      ...(attachments.length > 0
+        ? {
+            attachmentNames: attachments.map((attachment) => attachment.name),
+            attachments: chatMessageAttachments(attachments),
+          }
+        : {}),
     };
     context.messages.push(correctionMessage);
     updateChatMessages(context.sessionId, (current) => {
@@ -8358,17 +8846,25 @@ export default function WorkspaceClient({
       return;
     }
     try {
+      const usesDesktopBrowser = desktopTabsBridge() !== undefined;
       const response = await fetch(
         `/api/agent-browser/agents/${encodeURIComponent(selection.id)}/runs`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, requestId: runtimeRequestId }),
+          body: JSON.stringify({
+            task,
+            requestId: runtimeRequestId,
+            browserMode: usesDesktopBrowser ? "desktop" : "external",
+          }),
         },
       );
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
         throw new Error(agentBrowserStartFailure(data?.error));
+      }
+      if (usesDesktopBrowser) {
+        await openBrowserAgentRunInDesktop(String(data.run.runId));
       }
       setChatStreaming(prepared.session.id, true);
       await commitExternalAgentTurn(
@@ -11612,6 +12108,7 @@ export default function WorkspaceClient({
           : {}),
         externalAgentOutcome: result.outcome,
         ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
+        responseCompletedAt: new Date(completedAtMs).toISOString(),
         ...(result.usage ? { usage: result.usage } : {}),
         ...(result.activity?.length
           ? { externalAgentActivity: result.activity }
@@ -11679,7 +12176,11 @@ export default function WorkspaceClient({
     attachmentOverride?: readonly ChatAttachment[],
     internalAgentContinuation = false,
     onTurnStarted?: () => void,
-    turnOptions?: { textSelection?: ChatTextSelectionReference },
+    turnOptions?: {
+      textSelection?: ChatTextSelectionReference;
+      focusedDocumentNames?: string[];
+      focusedDocumentSlugs?: string[];
+    },
   ) {
     const textSelection = turnOptions?.textSelection;
     // Only a retry sets the branch it is replacing, and only a retry passes a
@@ -12268,8 +12769,30 @@ export default function WorkspaceClient({
 
     const responseStartedAt = performance.now();
 
-    // Snapshot attachments and clear them immediately
+    // Snapshot uploaded attachments and Garden documents together with this
+    // question. Garden focus remains a separate metadata field so the chips
+    // survive a reload without pretending those existing documents are new
+    // uploads elsewhere in the app.
     const attachmentNames = pendingAttachments.map((a) => a.name);
+    const focusedDocumentSlugs = internalAgentContinuation
+      ? []
+      : normalizeFocusedDocumentSlugs(
+          turnOptions?.focusedDocumentSlugs ?? selectedDocumentSlugs,
+        );
+    const focusedSlugSet = new Set(focusedDocumentSlugs);
+    const focusedDocumentNames = internalAgentContinuation
+      ? []
+      : normalizeFocusedDocumentNames(
+          turnOptions?.focusedDocumentNames?.length
+            ? turnOptions.focusedDocumentNames
+            : documents
+                .filter(
+                  (document) =>
+                    document.type === "source-document" &&
+                    focusedSlugSet.has(document.slug),
+                )
+                .map((document) => document.title || document.name),
+        );
 
     const displayText =
       text ||
@@ -12289,6 +12812,8 @@ export default function WorkspaceClient({
       ...(pendingAttachments.length > 0
         ? { attachments: chatMessageAttachments(pendingAttachments) }
         : {}),
+      ...(focusedDocumentNames.length > 0 ? { focusedDocumentNames } : {}),
+      ...(focusedDocumentSlugs.length > 0 ? { focusedDocumentSlugs } : {}),
     };
 
     // Nothing below can run until the chat exists, and on a blank chat that is
@@ -12318,6 +12843,10 @@ export default function WorkspaceClient({
           thinking: "",
         },
       ]);
+      // A draft is only used while the new chat does not exist yet. The local
+      // abort signal still lets Stop win that creation race; the exact durable
+      // turn identity is bound as soon as the session/checkpoint is returned.
+      activeGardenTurnRef.current = null;
       agentSignal = agentActivity.start();
     }
     const abandonTurn = () => {
@@ -12336,6 +12865,19 @@ export default function WorkspaceClient({
     }
 
     const sessionId = session.id;
+    activeGardenTurnRef.current = {
+      sessionId,
+      clientMessageId,
+      conversationId: session.conversationId ?? null,
+    };
+    agentActivity.bindSession(session.conversationId ?? null);
+    // Stop may have been clicked while a new chat was being created. There is
+    // no checkpoint to cancel yet, and the aborted viewer must not dispatch it.
+    if (agentSignal?.aborted) {
+      activeGardenTurnRef.current = null;
+      abandonTurn();
+      return;
+    }
     if (
       streamingChatIdsRef.current.has(sessionId) &&
       !internalAgentContinuation
@@ -12417,6 +12959,15 @@ export default function WorkspaceClient({
       );
       userMsg.id = checkpoint.userMessageId;
       assistantMsg.id = checkpoint.assistantMessageId;
+      activeGardenTurnRef.current = {
+        sessionId,
+        clientMessageId,
+        conversationId:
+          checkpoint.conversationId ?? session.conversationId ?? null,
+      };
+      agentActivity.bindSession(
+        checkpoint.conversationId ?? session.conversationId ?? null,
+      );
       checkpointSaved = true;
     } catch {
       addToast("Chat was not saved");
@@ -12428,6 +12979,21 @@ export default function WorkspaceClient({
         activeSteerContextRef.current = null;
       }
       abandonTurn();
+      return;
+    }
+    if (agentSignal?.aborted) {
+      // Stop can race the checkpoint POST itself. The first DELETE may have
+      // arrived before the row existed, so seal it once more now that the
+      // reservation is authoritative and never enter the model pipeline.
+      await abortGardenTurnCheckpoint(sessionId, clientMessageId);
+      assistantMsg.content = "(stopped)";
+      assistantMsg.responseDurationMs = Math.round(
+        performance.now() - responseStartedAt,
+      );
+      assistantMsg.responseCompletedAt = new Date().toISOString();
+      updateChatMessages(sessionId, messagesWithAssistant());
+      setChatStreaming(sessionId, false);
+      activeGardenTurnRef.current = null;
       return;
     }
     try {
@@ -12487,6 +13053,7 @@ export default function WorkspaceClient({
         assistantMsg.responseDurationMs = Math.round(
           performance.now() - responseStartedAt,
         );
+        assistantMsg.responseCompletedAt = new Date().toISOString();
         finalMessages = messagesWithAssistant();
         updateChatMessages(sessionId, finalMessages);
         await persistChatSession(sessionId, finalMessages, title);
@@ -12532,6 +13099,7 @@ export default function WorkspaceClient({
         assistantMsg.responseDurationMs = Math.round(
           performance.now() - responseStartedAt,
         );
+        assistantMsg.responseCompletedAt = new Date().toISOString();
         finalMessages = messagesWithAssistant();
         updateChatMessages(sessionId, finalMessages);
         await persistChatSession(sessionId, finalMessages, title);
@@ -12547,44 +13115,44 @@ export default function WorkspaceClient({
     let agentFailed = false;
     let agentCompleted = false;
     let agentReportedError = false;
-    // A selected-text question goes to the model wrapped in its excerpt and
-    // the response it was selected from, so the answer stays bound to those
-    // exact words; the transcript keeps only the words the person typed.
-    const selectionSourceContent = textSelection
-      ? history.find(
-          (message) =>
-            message.role === "assistant" &&
-            (message.id === textSelection.sourceMessageId ||
-              message.clientMessageId === textSelection.sourceMessageId),
-        )?.content
-      : undefined;
-    const runtimeText = textSelection
-      ? chatTextSelectionQuestionPrompt(
-          text,
-          textSelection,
-          selectionSourceContent,
-        )
-      : text || "Please review the attached file(s).";
+    // Once the server has accepted a Garden turn, the response belongs to its
+    // detached pump. A browser stream disappearing only retires this viewer; it
+    // is not an assistant answer and must never be written into the transcript.
+    let viewerDetached = false;
+    // The checkpoint above and the Garden adapter both reserve this turn by
+    // clientMessageId. They must see the same user content or an attachment-only
+    // turn (and every selected-text turn) looks like an idempotency collision.
+    // Attachments and selected-text context already travel in their dedicated
+    // request fields, so the model does not need a rewritten last user message.
     try {
       // A drafted turn already raised Thinking when the message went up.
-      agentSignal = agentSignal ?? agentActivity.start();
+      agentSignal =
+        agentSignal ?? agentActivity.start(session.conversationId ?? null);
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           // For the last user message, send the real typed text (attachments add context separately)
-          messages: nextMessages.map(({ role, content }, idx) =>
-            idx === nextMessages.length - 1 && role === "user"
-              ? { role, content: runtimeText }
-              : { role, content },
-          ),
+          messages: nextMessages.map(({ role, content }) => ({ role, content })),
           clusterSlug,
           chatSessionId: sessionId,
           clientMessageId,
           model,
           reasoningEffort,
           attachments: pendingAttachments,
-          selectedDocumentSlugs,
+          selectedDocumentSlugs: focusedDocumentSlugs,
+          ...(textSelection
+            ? {
+                selectedTextContext: {
+                  requestId: textSelection.id,
+                  highlightId: textSelection.id,
+                  mode: textSelection.mode,
+                  text: textSelection.quote,
+                  prefix: textSelection.prefix,
+                  suffix: textSelection.suffix,
+                },
+              }
+            : {}),
           adhdMode: isDirectModeEnabled(),
           personalize: isPersonalizeEnabled(),
           // A worker's result is handed back on a hidden turn, and that turn is
@@ -12781,26 +13349,41 @@ export default function WorkspaceClient({
       }
     } catch (error) {
       const aborted = error instanceof Error && error.name === "AbortError";
-      agentFailed = !aborted;
-      assistantMsg.content = aborted
-        ? assistantMsg.content || "(stopped)"
-        : error instanceof Error && error.message.trim()
-          ? error.message
-          : "Something went wrong. Please try again.";
-      finalMessages = messagesWithAssistant();
-      updateChatMessages(sessionId, finalMessages);
+      viewerDetached = isRecoverableAgentStreamDisconnect(error);
+      if (!viewerDetached) {
+        agentFailed = !aborted;
+        assistantMsg.content = aborted
+          ? assistantMsg.content || "(stopped)"
+          : error instanceof Error && error.message.trim()
+            ? error.message
+            : "Something went wrong. Please try again.";
+        finalMessages = messagesWithAssistant();
+        updateChatMessages(sessionId, finalMessages);
+      }
     } finally {
       agentActivity.finish(agentFailed, agentSignal);
-      assistantMsg.responseDurationMs = Math.round(
-        performance.now() - responseStartedAt,
-      );
-      finalMessages = messagesWithAssistant();
-      updateChatMessages(sessionId, finalMessages);
-      await persistChatSession(sessionId, finalMessages, title);
+      if (viewerDetached) {
+        // Drop the stale browser snapshot before reconciling. Keeping it in the
+        // in-flight map would hide the server-owned checkpoint and, eventually,
+        // the real completed answer.
+        setChatStreaming(sessionId, false);
+        await refreshChatSession(sessionId);
+        void refreshRail();
+      } else {
+        assistantMsg.responseDurationMs = Math.round(
+          performance.now() - responseStartedAt,
+        );
+        assistantMsg.responseCompletedAt = new Date().toISOString();
+        finalMessages = messagesWithAssistant();
+        updateChatMessages(sessionId, finalMessages);
+        await persistChatSession(sessionId, finalMessages, title);
+      }
       // Only a first turn names a chat, and the name it gets is generated on
       // the server during that turn, so this is the one send worth asking for.
       if (history.length === 0) void refreshChatTitles();
-      setChatStreaming(sessionId, awaitedLaunchesRef.current.size > 0);
+      if (!viewerDetached) {
+        setChatStreaming(sessionId, awaitedLaunchesRef.current.size > 0);
+      }
       if (
         agentCompleted &&
         !agentReportedError &&
@@ -12820,6 +13403,9 @@ export default function WorkspaceClient({
       }
       if (activeSteerContextRef.current === steerContext) {
         activeSteerContextRef.current = null;
+      }
+      if (activeGardenTurnRef.current?.clientMessageId === clientMessageId) {
+        activeGardenTurnRef.current = null;
       }
       textareaRef.current?.focus();
     }
@@ -12934,6 +13520,12 @@ export default function WorkspaceClient({
   const sourceDocuments = documents.filter(
     (doc) => doc.type === "source-document",
   );
+  const gardenSourceAttachments = sourceDocuments.flatMap(
+    (doc): GardenChatSourceAttachment[] => {
+      const source = gardenChatSourceAttachment(clusterSlug, doc);
+      return source ? [source] : [];
+    },
+  );
   const mediaSourceDocuments = sourceDocuments.filter((doc) => {
     const kind = learnSourceKind(doc);
     return kind === "audio" || kind === "video";
@@ -12995,6 +13587,23 @@ export default function WorkspaceClient({
   const effectiveLearnIncludedSourceSlugSet = new Set(
     effectiveLearnIncludedSourceSlugs,
   );
+  const persistedLearnTeachingSourceSlugSet = new Set(
+    (learnState?.selectedSourceIds ?? []).filter(
+      (sourceSlug) => sourceSlug !== learnState?.syllabusSourceId,
+    ),
+  );
+  // Status can detect changed bytes for the persisted selection, but the
+  // checkbox state is local until Plan is posted. Include locally-added source
+  // ids so selecting a newly uploaded document immediately chooses the
+  // additive path instead of the old scoped-repair action.
+  const hasLocallyAddedLearnMaterial =
+    Array.isArray(learnState?.selectedSourceIds) &&
+    effectiveLearnIncludedSourceSlugs.some(
+      (sourceSlug) => !persistedLearnTeachingSourceSlugSet.has(sourceSlug),
+    );
+  const shouldAddNewLearnMaterial =
+    hasExistingLearnContent &&
+    (learnState?.sourceSetChanged === true || hasLocallyAddedLearnMaterial);
 
   const learnSyllabusDocument =
     sourceDocuments.find((doc) => doc.slug === learnSyllabusSlug) ?? null;
@@ -13287,6 +13896,9 @@ export default function WorkspaceClient({
     // picker in the chat bar is reflected here immediately instead of leaving
     // the last run's model on screen.
     const learnPanelModel = active ? (job?.model ?? model) : model;
+    const learnPanelModelGroups = groupAssistantModels(
+      Array.from(new Set([learnPanelModel, ...models])),
+    );
     const learnSelectionOwnerKey =
       learnState?.job?.id ?? learnState?.confirmedLearningMapId ?? "idle";
     const learnSelectionHydrated =
@@ -13306,9 +13918,13 @@ export default function WorkspaceClient({
     const shouldShowPanel = learnPanelOpen;
     const panelExpanded = learnPanelOpen;
     const staleReviewForExistingGarden =
-      status === "awaiting_confirmation" && hasExistingLearnContent;
+      status === "awaiting_confirmation" &&
+      hasExistingLearnContent &&
+      job?.mode !== "update_sources";
     const shouldRepairFailedJob =
-      status === "failed" && hasExistingLearnContent;
+      status === "failed" &&
+      hasExistingLearnContent &&
+      job?.mode !== "update_sources";
     const shouldRepairFromPrimaryAction =
       shouldRepairFailedJob || staleReviewForExistingGarden;
     const canClosePanel =
@@ -13326,19 +13942,10 @@ export default function WorkspaceClient({
       staleReviewForExistingGarden;
     const learnDocumentSelectionLocked =
       learnBusy || active || status === "awaiting_confirmation";
-    const activeStageMessage: Partial<Record<LearnStatus, string>> = {
-      planning: "Planning the Learning Map",
-      analyzing_issues: "Analyzing validation issues",
-      repairing: "Repairing affected pages and components",
-      revalidating: "Revalidating the complete garden",
-      publishing_repair: "Publishing repaired projection",
-      generating_learning_pages: "Writing lesson pages",
-      generating_textbook: "Writing lesson pages",
-      generating_visuals: "Generating lesson visuals",
-      writing_quartz: "Writing Quartz files",
-      building_navigation: "Validating and rebuilding navigation",
-      paused: "Paused",
-    };
+    // Shared with the corner notices and the Hermes process-status tool, so
+    // every surface describes a Learn stage with the same words.
+    const activeStageMessage: Partial<Record<LearnStatus, string>> =
+      LEARN_ACTIVE_STAGE_LABELS;
     const statusMessage = active
       ? null
       : status === "complete"
@@ -14036,9 +14643,9 @@ export default function WorkspaceClient({
 
                       {hasExistingLearnContent ? (
                         <p className="mt-2 rounded-lg border border-gray-800 bg-gray-900/60 px-2.5 py-2 text-[10px] leading-4 text-gray-500">
-                          This garden already has lessons. Running a new request
-                          uses the existing rebuild confirmation before anything
-                          is replaced.
+                          This garden already has lessons. Learn will preserve
+                          their units and prose, then place new material where it
+                          fits in the existing teaching order.
                         </p>
                       ) : null}
 
@@ -14066,7 +14673,7 @@ export default function WorkspaceClient({
                           className="neu-button-primary flex h-8 items-center gap-1.5 rounded-lg bg-white px-3 text-xs font-semibold text-gray-950 transition-[background-color,transform] hover:bg-gray-100 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           {hasExistingLearnContent
-                            ? "Review rebuild"
+                            ? "Add to lessons"
                             : "Run request"}
                           <svg
                             className="h-3.5 w-3.5"
@@ -14121,12 +14728,18 @@ export default function WorkspaceClient({
                 {status === "complete" && (
                   <button
                     type="button"
-                    onClick={handleRepairIssues}
+                    onClick={
+                      shouldAddNewLearnMaterial || hasLearnUserInstruction
+                        ? handleLearnPrimary
+                        : handleRepairIssues
+                    }
                     disabled={!canStart}
                     title={
                       hasLearnUserInstruction
-                        ? "Run the attached request through a confirmed garden rebuild"
-                        : "Repairs only failing pages and components; unaffected content is preserved"
+                        ? "Apply the request while preserving existing lesson units and prose"
+                        : shouldAddNewLearnMaterial
+                          ? "Fit newly selected material into the existing lessons"
+                          : "Repairs only failing pages and components; unaffected content is preserved"
                     }
                     className="neu-button-primary flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap px-3 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
@@ -14149,12 +14762,14 @@ export default function WorkspaceClient({
                       </svg>
                     )}
                     {learnBusy
-                      ? hasLearnUserInstruction
+                      ? hasLearnUserInstruction || shouldAddNewLearnMaterial
                         ? "Starting..."
                         : "Repairing..."
                       : hasLearnUserInstruction
                         ? "Run request"
-                        : "Repair issues"}
+                        : shouldAddNewLearnMaterial
+                          ? "Add new material"
+                          : "Repair issues"}
                   </button>
                 )}
                 {hasExistingLearnContent &&
@@ -14222,15 +14837,19 @@ export default function WorkspaceClient({
                             : "Retry Learn"
                         : status === "cancelled"
                           ? learnBusy
-                            ? hasExistingLearnContent
+                            ? hasExistingLearnContent &&
+                              job?.mode !== "update_sources"
                               ? "Repairing..."
-                              : shouldRestartCancelledPlanning ||
+                              : job?.mode === "update_sources" ||
+                                  shouldRestartCancelledPlanning ||
                                   shouldReplanStaleMapBinding
                                 ? "Planning..."
                                 : "Generating..."
-                            : hasExistingLearnContent
+                            : hasExistingLearnContent &&
+                                job?.mode !== "update_sources"
                               ? "Repair issues"
-                              : shouldRestartCancelledPlanning ||
+                              : job?.mode === "update_sources" ||
+                                  shouldRestartCancelledPlanning ||
                                   shouldReplanStaleMapBinding
                                 ? "Restart planning"
                                 : "Generate"
@@ -14456,16 +15075,18 @@ export default function WorkspaceClient({
           {learnPanelModel ? (
             <div className="flex items-baseline gap-1">
               <span className="text-gray-600">Model:</span>
-              <span
-                className="font-mono tabular-nums text-gray-200"
+              <LearnModelPicker
+                value={learnPanelModel}
+                groups={learnPanelModelGroups}
+                onOpen={loadModels}
+                onChange={setModel}
+                disabled={learnDocumentSelectionLocked}
                 title={
                   active
                     ? `Model making these calls: ${learnPanelModel}`
-                    : `Model the next Learn run will use: ${learnPanelModel}`
+                    : `Model the next Learn run will use: ${learnPanelModel}. Click to change it.`
                 }
-              >
-                {formatAssistantModelName(learnPanelModel)}
-              </span>
+              />
             </div>
           ) : null}
           <button
@@ -14609,12 +15230,14 @@ export default function WorkspaceClient({
 
         {panelExpanded && status === "complete" && (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-800 pt-3">
-            <Link
-              href={`/garden/${clusterSlug}`}
-              className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white"
-            >
-              Open lessons
-            </Link>
+            <LinkContextMenu href={`/garden/${clusterSlug}`} label="Lessons">
+              <Link
+                href={`/garden/${clusterSlug}`}
+                className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white"
+              >
+                Open lessons
+              </Link>
+            </LinkContextMenu>
           </div>
         )}
       </section>
@@ -14625,22 +15248,23 @@ export default function WorkspaceClient({
     slug: string,
     selectableForChat: boolean,
   ) {
+    if (!selectableForChat) {
+      setOpenFlagPaletteSlug((openSlug) => (openSlug === slug ? null : slug));
+      return;
+    }
+
     const pendingTimer = documentColorClickTimersRef.current.get(slug);
     if (pendingTimer !== undefined) {
       window.clearTimeout(pendingTimer);
       documentColorClickTimersRef.current.delete(slug);
-      if (!selectableForChat) {
-        setOpenFlagPaletteSlug((openSlug) => (openSlug === slug ? null : slug));
-        return;
-      }
-      setOpenFlagPaletteSlug(null);
-      toggleSelectedDocument(slug);
+      setOpenFlagPaletteSlug((openSlug) => (openSlug === slug ? null : slug));
       return;
     }
 
     const timer = window.setTimeout(() => {
       documentColorClickTimersRef.current.delete(slug);
-      setOpenFlagPaletteSlug((openSlug) => (openSlug === slug ? null : slug));
+      setOpenFlagPaletteSlug(null);
+      toggleSelectedDocument(slug);
     }, 250);
     documentColorClickTimersRef.current.set(slug, timer);
   }
@@ -14681,10 +15305,10 @@ export default function WorkspaceClient({
             <li
               key={rowKey}
               className={[
-                "group flex items-start gap-2.5 px-4 py-2 transition-colors",
-                isSource
-                  ? "border-l-2 border-cyan-400/60 bg-cyan-950/10 hover:bg-cyan-950/20"
-                  : "hover:bg-gray-900",
+                "group flex items-start gap-2.5 border-b border-gray-800/50 px-3 py-2 transition-colors last:border-b-0",
+                isSelectedForChat
+                  ? "border-l-2 border-l-[var(--botanical)] bg-[color-mix(in_srgb,var(--botanical)_8%,transparent)]"
+                  : "",
               ].join(" ")}
             >
               <div className="relative shrink-0 mt-0.5">
@@ -14696,35 +15320,56 @@ export default function WorkspaceClient({
                   disabled={savingFlagSlug === doc.slug}
                   className={[
                     "h-5 w-5 rounded border border-gray-700 bg-gray-950",
-                    "flex items-center justify-center transition-colors hover:border-gray-500",
-                    isSelectedForChat
-                      ? "border-cyan-300 ring-2 ring-cyan-300/80 ring-offset-1 ring-offset-gray-950"
-                      : "",
+                    "flex items-center justify-center transition-[border-color,transform,opacity] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:border-gray-500 active:scale-[0.96]",
                     savingFlagSlug === doc.slug
                       ? "opacity-50 cursor-wait"
                       : "cursor-pointer",
                   ].join(" ")}
                   title={`${doc.flagColor ? `Flagged ${doc.flagColor}. ` : ""}${
-                    isSelectedForChat
-                      ? "Selected for chat; click twice to remove."
-                      : isSource
-                        ? "Click twice to select for chat."
-                        : ""
-                  } Click once to choose a color.`}
+                    isSource
+                      ? isSelectedForChat
+                        ? "Selected for chat; click once to remove. Double-click to choose a color."
+                        : "Click once to select for chat. Double-click to choose a color."
+                      : "Click once to choose a color."
+                  }`}
                   aria-label={
                     isSource
                       ? isSelectedForChat
-                        ? "Document color; selected for chat"
-                        : "Document color; click twice to select for chat"
+                        ? "Document color; selected for chat; click once to remove or twice to choose a color"
+                        : "Document color; click once to select for chat or twice to choose a color"
                       : "Document color"
                   }
                   aria-pressed={isSource ? isSelectedForChat : undefined}
                   aria-expanded={openFlagPaletteSlug === doc.slug}
                 >
                   <span
-                    className="h-3 w-3 rounded-sm border border-gray-800"
+                    className="relative flex h-3 w-3 items-center justify-center rounded-sm border border-gray-800"
                     style={{ backgroundColor: doc.flagColor || "transparent" }}
-                  />
+                  >
+                    {isSelectedForChat ? (
+                      <svg
+                        className="pointer-events-none absolute inset-0 h-3 w-3"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="m2 6.25 2.6 2.6L10 3.35"
+                          stroke="rgb(3 7 18)"
+                          strokeWidth={4}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="m2 6.25 2.6 2.6L10 3.35"
+                          stroke="white"
+                          strokeWidth={2}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    ) : null}
+                  </span>
                 </button>
                 {openFlagPaletteSlug === doc.slug && (
                   <div className="absolute left-0 top-6 z-20 w-32 rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl">
@@ -14738,7 +15383,7 @@ export default function WorkspaceClient({
                             handleDocumentFlag(doc.slug, color);
                           }}
                           className={[
-                            "h-4 w-4 rounded border transition-transform hover:scale-110",
+                            "h-4 w-4 rounded border transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:scale-110 active:scale-[0.96]",
                             doc.flagColor === color
                               ? "border-white"
                               : "border-gray-800",
@@ -14756,7 +15401,7 @@ export default function WorkspaceClient({
                           setOpenFlagPaletteSlug(null);
                           handleDocumentFlag(doc.slug, "");
                         }}
-                        className="mt-2 w-full rounded border border-gray-800 px-2 py-1 text-[10px] text-gray-500 transition-colors hover:border-gray-700 hover:text-white"
+                        className="mt-2 w-full rounded border border-gray-800 px-2 py-1 text-[10px] text-gray-500 transition-[border-color,color,transform] duration-150 hover:border-gray-700 hover:text-white active:scale-[0.97]"
                       >
                         Clear
                       </button>
@@ -14770,7 +15415,7 @@ export default function WorkspaceClient({
                   className={[
                     "block text-xs transition-colors",
                     isSource
-                      ? "text-cyan-100 hover:text-white font-medium"
+                      ? "font-medium text-gray-300 hover:text-white"
                       : "text-gray-300 hover:text-white",
                   ].join(" ")}
                   title={isPdfSource ? "Open PDF viewer" : "Open note"}
@@ -14785,13 +15430,16 @@ export default function WorkspaceClient({
                     {sourceDescription}
                   </p>
                 )}
-                <p className="text-[10px] text-gray-600 mt-0.5">
+                <p
+                  className="text-[10px] text-gray-600 mt-0.5"
+                  title={documentUploadTimeTitle(doc.date)}
+                >
                   {isPdf
                     ? "PDF source"
                     : isSource
                       ? "full source content"
                       : markdownTypeLabel(doc)}{" "}
-                  &middot; {doc.wordCount}w
+                  &middot; {formatDocumentUploadTime(doc.date)}
                 </p>
               </div>
               <button
@@ -15142,14 +15790,21 @@ export default function WorkspaceClient({
         />
       </svg>
       <div className="flex-1 min-w-0">
-        <Link
+        <LinkContextMenu
           href={`/garden/${clusterSlug}?note=${encodeURIComponent(
             doc.relPath ? doc.relPath.replace(/\.md$/i, "") : doc.slug,
           )}`}
-          className="block text-xs text-gray-300 hover:text-white truncate transition-colors"
+          label={`Note ${doc.title ?? doc.name}`}
         >
-          {doc.title ?? doc.name}
-        </Link>
+          <Link
+            href={`/garden/${clusterSlug}?note=${encodeURIComponent(
+              doc.relPath ? doc.relPath.replace(/\.md$/i, "") : doc.slug,
+            )}`}
+            className="block text-xs text-gray-300 hover:text-white truncate transition-colors"
+          >
+            {doc.title ?? doc.name}
+          </Link>
+        </LinkContextMenu>
         <p className="text-[10px] text-gray-600 mt-0.5">
           {markdownTypeLabel(doc)} &middot; {doc.wordCount}w
         </p>
@@ -15921,7 +16576,7 @@ export default function WorkspaceClient({
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
       {/* Header */}
       <header className="bb-neu-toolbar breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
-        <NavbarFlowerWind />
+        <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <div className="relative z-10 flex items-center gap-3">
           {/* Garden chat is the top of its own surface: always leave to the
               dashboard. Routing it through the nav trail made it and the Quartz
@@ -15931,6 +16586,7 @@ export default function WorkspaceClient({
               teardown to a client transition can leave the first click waiting
               on that tree. A document navigation leaves on the first click and
               still gives modified clicks normal browser behavior. */}
+          <LinkContextMenu href="/dashboard" label="Dashboard">
           <a
             href="/dashboard"
             className="text-gray-500 hover:text-white transition-colors text-sm flex items-center gap-1.5"
@@ -15950,7 +16606,16 @@ export default function WorkspaceClient({
             </svg>
             Back to dashboard
           </a>
+          </LinkContextMenu>
           <span className="text-gray-700">/</span>
+          <LinkContextMenu
+            href={
+              primarySourceDocument
+                ? gardenDocumentHref(clusterSlug, primarySourceDocument)
+                : `/garden/${clusterSlug}`
+            }
+            label={`Garden ${clusterName}`}
+          >
           <Link
             href={
               primarySourceDocument
@@ -15966,6 +16631,7 @@ export default function WorkspaceClient({
           >
             {clusterName}
           </Link>
+          </LinkContextMenu>
         </div>
 
         <div className="relative z-10 flex items-center gap-2">
@@ -16462,9 +17128,10 @@ export default function WorkspaceClient({
                     }
                   : null}
                 chatSessionId={activeChatId}
-                isStreaming={isStreaming || delegationInFlight}
+                isStreaming={transcriptResponding || delegationInFlight}
                 loadingChats={chatContentLoading}
                 messages={messages}
+                gardenSourceAttachments={gardenSourceAttachments}
                 activities={agentActivity.activities}
                 connection={visibleAgentConnection}
                 pendingPermission={agentActivity.pendingPermission}
@@ -16500,7 +17167,7 @@ export default function WorkspaceClient({
             <ChatJumpToBottom
               visible={transcriptAwayFromBottom}
               busy={
-                isStreaming ||
+                transcriptResponding ||
                 agentLaunchQueue.queued ||
                 delegatedAgentLaunching
               }
@@ -16528,43 +17195,52 @@ export default function WorkspaceClient({
               onClose={() => setSelectionMenu(null)}
             />
           ) : null}
-          {openInlineAnswer && openInlineThread ? (
-            <InlineSelectionAnswerPopover
-              anchor={openInlineAnswer.anchor}
-              question={openInlineThread.question}
-              answer={openInlineThread.answer}
-              pending={openInlineThread.pending}
-              usage={openInlineThread.usage}
-              responseDurationMs={openInlineThread.responseDurationMs}
-              startedAt={openInlineThread.startedAt}
-              answerMessageId={openInlineThread.answerMessageId}
-              annotations={
-                openInlineThread.answerMessageId
-                  ? annotationsByMessage.get(openInlineThread.answerMessageId)
-                  : undefined
-              }
-              onSelection={receiveTextSelection}
-              onOpenAnnotation={openAnnotation}
-              onClose={() => setOpenInlineAnswer(null)}
-              onDelete={() =>
-                deleteInlineSelection(openInlineThread.selection.id)
-              }
-              onStop={
-                openInlineThread.pending && steerableTurnActive
-                  ? agentActivity.abort
-                  : undefined
-              }
-              onAskAgain={
-                canAskSelection && !isStreaming && !chatContentLoading
-                  ? (question: string) =>
-                      askInlineSelectionAgain(
-                        openInlineThread.selection,
-                        question,
-                      )
-                  : undefined
-              }
-            />
-          ) : null}
+          {openInlineAnswers.map((openAnswer) => {
+            const thread = inlineSelectionThreads.get(openAnswer.id);
+            if (!thread) return null;
+            return (
+              <InlineSelectionAnswerPopover
+                key={openAnswer.id}
+                anchor={openAnswer.anchor}
+                question={thread.question}
+                answer={thread.answer}
+                pending={thread.pending}
+                usage={thread.usage}
+                responseDurationMs={thread.responseDurationMs}
+                startedAt={thread.startedAt}
+                answerMessageId={thread.answerMessageId}
+                annotations={
+                  thread.answerMessageId
+                    ? annotationsByMessage.get(thread.answerMessageId)
+                    : undefined
+                }
+                onSelection={receiveTextSelection}
+                onOpenAnnotation={openAnnotation}
+                onClose={() =>
+                  setOpenInlineAnswers((current) => {
+                    const openIndex = current.findIndex(
+                      (candidate) => candidate.id === openAnswer.id,
+                    );
+                    return openIndex >= 0
+                      ? current.slice(0, openIndex)
+                      : current;
+                  })
+                }
+                onDelete={() => deleteInlineSelection(thread.selection.id)}
+                onStop={
+                  thread.pending && steerableTurnActive
+                    ? stopActiveGardenTurn
+                    : undefined
+                }
+                onAskAgain={
+                  canAskSelection && !isStreaming && !chatContentLoading
+                    ? (question: string) =>
+                        askInlineSelectionAgain(thread.selection, question)
+                    : undefined
+                }
+              />
+            );
+          })}
 
           {/* Input area */}
           <div
@@ -16585,37 +17261,48 @@ export default function WorkspaceClient({
             {/* Chat attachment preview strip */}
             {selectedChatDocuments.length > 0 && (
               <div className="mx-auto mb-2 flex max-w-5xl flex-wrap items-center gap-1.5">
-                <span className="text-[10px] uppercase tracking-wider text-gray-600">
-                  Chat focus
-                </span>
-                {selectedChatDocuments.map((doc) => (
-                  <span
-                    key={doc.slug}
-                    className="flex max-w-[220px] items-center gap-1.5 rounded-lg border border-cyan-900/60 bg-cyan-950/20 px-2.5 py-1 text-xs text-cyan-100"
-                  >
-                    <span className="truncate">{doc.title ?? doc.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => toggleSelectedDocument(doc.slug)}
-                      className="shrink-0 text-cyan-600 transition-colors hover:text-white"
-                      aria-label="Remove document from chat focus"
+                {selectedChatDocuments.map((doc) => {
+                  const preview = gardenChatSourceAttachment(clusterSlug, doc);
+                  const label = doc.title ?? doc.name;
+                  return (
+                    <span
+                      key={doc.slug}
+                      className="flex max-w-[220px] items-center gap-1.5 rounded-lg border border-cyan-900/60 bg-cyan-950/20 px-2.5 py-1 text-xs text-cyan-100"
                     >
-                      <svg
-                        className="h-3 w-3"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={2}
+                      {preview ? (
+                        <AttachmentPreviewDialog
+                          source={{ ...preview, name: label }}
+                          className="min-w-0 flex-1 truncate text-left transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300"
+                          title={`Open ${label}`}
+                        >
+                          {label}
+                        </AttachmentPreviewDialog>
+                      ) : (
+                        <span className="truncate">{label}</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => toggleSelectedDocument(doc.slug)}
+                        className="shrink-0 text-cyan-600 transition-colors hover:text-white"
+                        aria-label="Remove document from chat focus"
                       >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M6 18 18 6M6 6l12 12"
-                        />
-                      </svg>
-                    </button>
-                  </span>
-                ))}
+                        <svg
+                          className="h-3 w-3"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={2}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M6 18 18 6M6 6l12 12"
+                          />
+                        </svg>
+                      </button>
+                    </span>
+                  );
+                })}
               </div>
             )}
 
@@ -16634,24 +17321,37 @@ export default function WorkspaceClient({
               <SelectionComposerContext
                 selection={composerSelection}
                 onCancel={cancelSelectionQuestion}
+                widthClassName="max-w-5xl"
               />
             ) : null}
             <AssistantComposer
-              capabilitySessionId={activeChatId}
+              capabilitySessionId={activeChat?.conversationId ?? null}
               capabilitySurface="garden_chat"
               capabilityGardenSlug={clusterSlug}
               className="mx-auto w-full max-w-5xl"
               value={input}
               onChange={setInput}
               onSubmit={submitComposer}
+              onSubmitDuringRun={
+                composerSelection?.mode === "inline" &&
+                steerableTurnActive &&
+                !externalRunHoldsQueue
+                  ? submitComposer
+                  : undefined
+              }
               onRunWorkflow={runWorkflowAutomation}
               history={sentMessages}
               onPaste={handleChatPaste}
               textareaRef={textareaRef}
               placeholder="Ask about your documents…"
               disabled={chatContentLoading}
-              isSending={isStreaming || launchingExternalAgent !== null}
-              externalRunActive={externalRunHoldsQueue}
+              isSending={
+                (isStreaming && !respondingToInlineSelection) ||
+                launchingExternalAgent !== null
+              }
+              externalRunActive={
+                externalRunHoldsQueue || respondingToInlineSelection
+              }
               headerContent={queuedFollowUpsHeader}
               canSubmit={Boolean(input.trim() || chatAttachments.length > 0)}
               model={model}
@@ -16662,14 +17362,13 @@ export default function WorkspaceClient({
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}
               intelligenceModes={intelligenceModes}
-              modelFailover={modelFailover}
               onAddDocuments={() => chatFileInputRef.current?.click()}
               isAddingDocuments={extractingAttachments}
               attachments={chatAttachments}
               onRemoveAttachment={removeChatAttachment}
               voiceMessages={messages}
               runState={
-                !isStreaming
+                !isStreaming || respondingToInlineSelection
                   ? "idle"
                   : visibleAgentConnection === "waiting"
                     ? "waiting_for_permission"
@@ -16678,7 +17377,11 @@ export default function WorkspaceClient({
                       : "running"
               }
               onQueueSteer={queueFollowUp}
-              onStop={steerableTurnActive ? agentActivity.abort : undefined}
+              onStop={
+                steerableTurnActive && !respondingToInlineSelection
+                  ? stopActiveGardenTurn
+                  : undefined
+              }
               permissionPending={Boolean(agentActivity.pendingPermission)}
               clarificationPending={Boolean(agentActivity.pendingClarification)}
               // Distilling a book blocks the composer for minutes, so what it
@@ -17605,7 +18308,7 @@ export default function WorkspaceClient({
             else closeUploadModal();
           }}
         >
-          <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
+          <div className="bb-modal-panel neu-dialog w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-2xl border p-6">
             <div className="mb-5">
               <h2 className="text-lg font-semibold">
                 {isViewingUploadTask ? "Upload status" : "Add documents"}
@@ -17787,7 +18490,7 @@ export default function WorkspaceClient({
                   checked={parseWithVlm}
                   onChange={(next) => {
                     setParseWithVlm(next);
-                    // The two page readers are alternatives, not a stack.
+                    // Handwriting OCR remains an alternative to the visual VLM.
                     if (next) setIsHandwriting(false);
                   }}
                   disabled={false}
@@ -17806,7 +18509,7 @@ export default function WorkspaceClient({
                   disabled={false}
                   status={anydocStatus}
                   loading={anydocStatusLoading}
-                  overriddenByVlm={vlmUploadEnabled}
+                  combinedWithVlm={vlmUploadEnabled}
                 />
               )}
 
@@ -17957,7 +18660,6 @@ export default function WorkspaceClient({
         toasts={toasts}
         onDismiss={dismissToast}
         onOpenChat={openChatFromNotification}
-        onReplyToChat={replyToChatFromNotification}
       />
     </div>
   );

@@ -16,7 +16,7 @@ import { storeNarration } from "@/lib/teach/session-manager";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export const AUDIO_OFFSET_HEADER = "x-narration-offset-ms";
+const AUDIO_OFFSET_HEADER = "x-narration-offset-ms";
 
 export async function POST(request: NextRequest, context: { params: Promise<{ sessionId: string }> }) {
   try {

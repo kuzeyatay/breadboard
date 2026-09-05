@@ -42,7 +42,7 @@ test("a row keeps its identity while its answer streams", () => {
   assert.notEqual(chatRowKey(partial, 4), chatRowKey(partial, 5));
 });
 
-test("a persisted message id outranks the positional fallback", () => {
+test("persisted rows use their own id and draft turn rows do not collide", () => {
   const persisted = { id: "msg_91", role: "assistant", createdAt: "2026-01-01T10:00:00Z" };
 
   assert.equal(chatRowKey(persisted, 3), "id:msg_91");
@@ -51,7 +51,15 @@ test("a persisted message id outranks the positional fallback", () => {
   assert.equal(chatRowKey(persisted, 800), "id:msg_91");
   assert.equal(
     chatRowKey({ clientMessageId: "draft-7", role: "user" }, 0),
-    "id:draft-7",
+    "client:draft-7:user",
+  );
+  assert.equal(
+    chatRowKey({ clientMessageId: "draft-7", role: "assistant" }, 1),
+    "client:draft-7:assistant",
+  );
+  assert.notEqual(
+    chatRowKey({ clientMessageId: "draft-7", role: "user" }, 0),
+    chatRowKey({ clientMessageId: "draft-7", role: "assistant" }, 1),
   );
 });
 

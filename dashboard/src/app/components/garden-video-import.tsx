@@ -195,28 +195,48 @@ function SourceColorSelect({
         type="button"
         onClick={onColorButtonClick}
         disabled={saving}
-        className={`flex h-5 w-5 items-center justify-center rounded border bg-gray-950 transition-[border-color,box-shadow,transform,opacity] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:border-gray-500 active:scale-[0.96] ${
-          selected
-            ? "border-[var(--botanical)] ring-2 ring-[var(--botanical)]/70 ring-offset-1 ring-offset-[var(--paper-surface)]"
-            : "border-gray-700"
-        } ${saving ? "cursor-wait opacity-50" : "cursor-pointer"}`}
+        className={`flex h-5 w-5 items-center justify-center rounded border border-gray-700 bg-gray-950 transition-[border-color,transform,opacity] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:border-gray-500 active:scale-[0.96] ${saving ? "cursor-wait opacity-50" : "cursor-pointer"}`}
         title={`${source.flagColor ? `Highlighted ${source.flagColor}. ` : ""}${
           selected
-            ? "Selected for chat; click twice to remove."
-            : "Click twice to select for chat."
-        } Click once to choose a highlight color.`}
+            ? "Selected for chat; click once to remove."
+            : "Click once to select for chat."
+        } Double-click to choose a highlight color.`}
         aria-label={
           selected
-            ? "Recording highlight; selected for chat"
-            : "Recording highlight; click twice to select for chat"
+            ? "Recording highlight; selected for chat; click once to remove or twice to choose a color"
+            : "Recording highlight; click once to select for chat or twice to choose a color"
         }
         aria-pressed={selected}
         aria-expanded={paletteOpen}
       >
         <span
-          className="h-3 w-3 rounded-sm border border-gray-800"
+          className="relative flex h-3 w-3 items-center justify-center rounded-sm border border-gray-800"
           style={{ backgroundColor: source.flagColor || "transparent" }}
-        />
+        >
+          {selected ? (
+            <svg
+              className="pointer-events-none absolute inset-0 h-3 w-3"
+              viewBox="0 0 12 12"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="m2 6.25 2.6 2.6L10 3.35"
+                stroke="rgb(3 7 18)"
+                strokeWidth={4}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="m2 6.25 2.6 2.6L10 3.35"
+                stroke="white"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          ) : null}
+        </span>
       </button>
 
       {paletteOpen ? (

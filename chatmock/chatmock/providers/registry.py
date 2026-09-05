@@ -22,6 +22,7 @@ from ..model_registry import (
     ALL_REASONING_EFFORTS,
     DEFAULT_MODEL,
     allowed_efforts_for_model,
+    model_spec_for_name,
     normalize_model_name,
 )
 from .catalog import (
@@ -220,11 +221,25 @@ def reasoning_efforts_for(model: Any) -> List[str]:
             for effort in ALL_REASONING_EFFORTS
             if effort in allowed and effort not in ("none", "minimal")
         ]
+    if resolved.provider.id == "openai" and model_spec_for_name(resolved.upstream_model):
+        allowed = allowed_efforts_for_model(resolved.upstream_model)
+        return [
+            effort
+            for effort in ALL_REASONING_EFFORTS
+            if effort in allowed and effort not in ("none", "minimal")
+        ]
     return list(resolved.provider.reasoning_efforts)
 
 
 def external_model_ids() -> List[str]:
-    """Prefixed model ids for every configured non-ChatGPT provider."""
+    """Prefixed model ids for every configured non-ChatGPT provider.
+
+    Three layers, deduplicated in order: the catalog's suggestions, the ids the
+    person pinned, and whatever the provider itself reports it serves right now
+    (see ``discovery``), so a model released after this build still appears.
+    """
+    from . import discovery
+
     ids: List[str] = []
     for spec in iter_provider_specs():
         if spec.kind == KIND_CHATGPT_OAUTH:
@@ -232,7 +247,8 @@ def external_model_ids() -> List[str]:
         if not store.is_configured(spec):
             continue
         record = store.provider_record(spec.id)
-        for model in list(spec.suggested_models) + list(record.models):
+        configured = list(spec.suggested_models) + list(record.models)
+        for model in configured + discovery.discovered_models_for(spec, configured):
             candidate = f"{spec.id}/{model}"
             if candidate not in ids:
                 ids.append(candidate)

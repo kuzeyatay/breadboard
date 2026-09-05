@@ -68,6 +68,46 @@
       }
     }
 
+    & > .thought-topology-loading-dots {
+      position: absolute;
+      inset: 0;
+      display: none;
+      pointer-events: none;
+
+      & > span {
+        position: absolute;
+        width: 0.65rem;
+        height: 0.65rem;
+        border-radius: 999px;
+        background: var(--secondary);
+        opacity: 0.42;
+        animation: thought-topology-loading-pulse 1.4s ease-in-out infinite alternate;
+
+        &:nth-child(1) {
+          left: 18%;
+          top: 22%;
+        }
+
+        &:nth-child(2) {
+          left: 48%;
+          top: 46%;
+          animation-delay: 120ms;
+        }
+
+        &:nth-child(3) {
+          right: 22%;
+          top: 30%;
+          animation-delay: 240ms;
+        }
+
+        &:nth-child(4) {
+          bottom: 24%;
+          left: 34%;
+          animation-delay: 360ms;
+        }
+      }
+    }
+
     & > .global-graph-icon {
       cursor: pointer;
       background: none;
@@ -89,6 +129,13 @@
         background-color: var(--lightgray);
       }
     }
+  }
+
+  &.home-knowledge-graph[data-active-mode="topology-pending"]
+    > .graph-outer
+    > .graph-container:empty
+    + .thought-topology-loading-dots {
+    display: block;
   }
 
   & > .global-graph-outer {
@@ -316,6 +363,273 @@
     }
   }
 
+  // Filters: a small toggle that opens a panel of folder switches and
+  // connection controls. Inline cards pin it to the surface's corner; the
+  // overlay keeps it in the controls column.
+  .thought-topology-filter {
+    position: relative;
+    z-index: 5;
+    font-size: 0.78rem;
+    color: var(--dark);
+
+    &[data-placement="surface"] {
+      position: absolute;
+      top: 0.65rem;
+      left: 0.65rem;
+    }
+
+    & > .thought-topology-filter-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      height: 1.9rem;
+      padding: 0 0.6rem 0 0.5rem;
+      border: 1px solid color-mix(in srgb, var(--lightgray) 85%, var(--light));
+      border-radius: 7px;
+      background: color-mix(in srgb, var(--light) 92%, white);
+      color: var(--dark);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.78rem;
+      line-height: 1;
+      transition: border-color 0.15s ease;
+
+      &:hover,
+      &[aria-expanded="true"] {
+        border-color: var(--secondary);
+      }
+
+      & > svg {
+        width: 0.85rem;
+        height: 0.85rem;
+        color: var(--gray);
+      }
+
+      & > .thought-topology-filter-badge {
+        min-width: 1.1rem;
+        padding: 0.05rem 0.3rem;
+        border-radius: 999px;
+        background: var(--secondary);
+        color: var(--light);
+        font-size: 0.66rem;
+        font-variant-numeric: tabular-nums;
+        text-align: center;
+
+        &[hidden] {
+          display: none;
+        }
+      }
+    }
+
+    & > .thought-topology-filter-panel {
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      left: 0;
+      width: min(19rem, calc(100vw - 2.5rem));
+      max-height: min(60vh, 30rem);
+      overflow: auto;
+      box-sizing: border-box;
+      padding: 0.75rem 0.85rem 0.85rem;
+      border: 1px solid color-mix(in srgb, var(--lightgray) 85%, var(--light));
+      border-radius: 9px;
+      background: color-mix(in srgb, var(--light) 96%, white);
+      box-shadow: 0 0.75rem 2rem rgba(0, 0, 0, 0.14);
+
+      &[hidden] {
+        display: none;
+      }
+    }
+
+    .thought-topology-filter-summary {
+      margin: 0 0 0.6rem;
+      color: var(--gray);
+      font-size: 0.72rem;
+      line-height: 1.35;
+    }
+
+    .thought-topology-filter-section {
+      & + .thought-topology-filter-section {
+        margin-top: 0.75rem;
+        padding-top: 0.65rem;
+        border-top: 1px solid color-mix(in srgb, var(--lightgray) 70%, transparent);
+      }
+    }
+
+    .thought-topology-filter-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin: 0 0 0.35rem;
+      font-weight: $semiBoldWeight;
+      font-size: 0.74rem;
+      letter-spacing: 0.01em;
+      text-transform: none;
+      color: color-mix(in srgb, var(--gray) 85%, var(--dark));
+    }
+
+    .thought-topology-filter-link {
+      padding: 0;
+      border: 0;
+      background: none;
+      color: var(--secondary);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.72rem;
+      text-transform: none;
+      letter-spacing: 0;
+
+      &[hidden] {
+        display: none;
+      }
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+
+    ul.thought-topology-filter-folders {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+
+      & > li {
+        margin: 0;
+        padding: 0;
+
+        & + li {
+          margin-top: 0.15rem;
+        }
+      }
+
+      &.nested {
+        margin: 0.15rem 0 0.35rem 1.35rem;
+        padding-left: 0.5rem;
+        border-left: 1px solid color-mix(in srgb, var(--lightgray) 80%, transparent);
+      }
+    }
+
+    .thought-topology-filter-row {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      min-height: 1.5rem;
+      cursor: pointer;
+      line-height: 1.25;
+
+      & > input[type="checkbox"] {
+        appearance: none;
+        flex: 0 0 auto;
+        width: 0.875rem;
+        height: 0.875rem;
+        margin: 0;
+        border: 1px solid color-mix(in srgb, var(--gray) 58%, transparent);
+        border-radius: 3px;
+        background-color: color-mix(in srgb, var(--light) 94%, white);
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: 0.7rem 0.7rem;
+        box-sizing: border-box;
+        cursor: pointer;
+
+        &:checked {
+          border-color: var(--secondary);
+          background-color: var(--secondary);
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='m2.75 6.15 2.05 2.1 4.45-4.5' stroke='white' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        }
+
+        &:focus-visible {
+          outline: 2px solid color-mix(in srgb, var(--secondary) 35%, transparent);
+          outline-offset: 2px;
+        }
+
+        &:disabled {
+          cursor: default;
+          opacity: 0.5;
+        }
+      }
+
+      & > .thought-topology-filter-name {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      & > .thought-topology-filter-count {
+        flex: 0 0 auto;
+        color: var(--gray);
+        font-size: 0.68rem;
+        font-variant-numeric: tabular-nums;
+      }
+    }
+
+    .thought-topology-filter-disclose {
+      margin: 0 0 0.1rem 1.35rem;
+      padding: 0;
+      border: 0;
+      background: none;
+      color: var(--gray);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.7rem;
+
+      &:hover {
+        color: var(--dark);
+        text-decoration: underline;
+      }
+    }
+
+    .thought-topology-filter-empty {
+      color: var(--gray);
+      font-size: 0.72rem;
+    }
+
+    .thought-topology-filter-select {
+      justify-content: space-between;
+      cursor: default;
+
+      & > select {
+        max-width: 60%;
+        padding: 0.15rem 0.3rem;
+        border: 1px solid color-mix(in srgb, var(--lightgray) 85%, var(--light));
+        border-radius: 5px;
+        background: color-mix(in srgb, var(--light) 92%, white);
+        color: var(--dark);
+        font: inherit;
+        font-size: 0.74rem;
+      }
+    }
+
+    .thought-topology-filter-range {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-areas:
+        "label value"
+        "input input";
+      row-gap: 0.25rem;
+      cursor: default;
+
+      & > label {
+        grid-area: label;
+      }
+
+      & > .thought-topology-filter-range-value {
+        grid-area: value;
+        color: var(--gray);
+        font-size: 0.7rem;
+      }
+
+      & > input[type="range"] {
+        grid-area: input;
+        width: 100%;
+        margin: 0;
+        accent-color: var(--secondary);
+      }
+    }
+  }
+
   // The full-screen overlay has more room, so its column sits a little
   // further from the edge.
   & > .global-graph-outer > .thought-topology-controls {
@@ -330,16 +644,25 @@
     z-index: 10001;
     top: 0;
     right: 0;
-    width: min(380px, calc(100vw - 2rem));
+    width: min(410px, calc(100vw - 2rem));
     height: 100%;
     box-sizing: border-box;
     overflow: auto;
-    padding: 1.25rem 1.25rem 1.5rem;
+    overscroll-behavior: contain;
+    padding: 1rem 1.15rem 1.4rem;
     border-left: 1px solid var(--lightgray);
-    background: color-mix(in srgb, var(--light) 94%, transparent);
+    background-color: color-mix(in srgb, var(--light) 97%, transparent);
+    background-image: radial-gradient(
+      circle,
+      color-mix(in srgb, var(--gray) 16%, transparent) 1px,
+      transparent 1.2px
+    );
+    background-size: 18px 18px;
     color: var(--dark);
-    box-shadow: -1rem 0 2.5rem rgba(0, 0, 0, 0.16);
-    backdrop-filter: blur(12px);
+    box-shadow:
+      -1px 0 color-mix(in srgb, var(--secondary) 20%, transparent),
+      -1rem 0 2.5rem rgba(0, 0, 0, 0.16);
+    backdrop-filter: blur(10px);
     transform: translateX(105%);
     visibility: hidden;
     transition:
@@ -352,18 +675,40 @@
       transition: transform 240ms cubic-bezier(0.32, 0.72, 0, 1);
     }
 
+    &::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 3px;
+      background: repeating-linear-gradient(
+        to bottom,
+        color-mix(in srgb, var(--secondary) 58%, transparent) 0 12px,
+        transparent 12px 20px
+      );
+      opacity: 0.7;
+    }
+
+    .thought-inspector-content {
+      display: block;
+      width: 100%;
+      position: relative;
+    }
+
     h2 {
-      margin: 0.15rem 2rem 0.5rem 0;
+      margin: 0.15rem 0 0.5rem;
       font-size: 1.12rem;
       line-height: 1.3;
-      overflow-wrap: anywhere;
+      overflow-wrap: break-word;
+      word-break: normal;
     }
     h3 {
       margin: 1.1rem 0 0.4rem;
       font-size: 0.72rem;
       font-weight: $semiBoldWeight;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
+      text-transform: none;
+      letter-spacing: 0.01em;
       color: var(--gray);
     }
     p {
@@ -375,8 +720,8 @@
       margin: 0 2rem 0 0;
       font-size: 0.7rem;
       font-weight: $semiBoldWeight;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
+      text-transform: none;
+      letter-spacing: 0.01em;
       color: var(--gray);
     }
     .thought-breadcrumb {
@@ -391,6 +736,133 @@
     .thought-note {
       font-size: 0.76rem;
       color: var(--gray);
+    }
+    .thought-inspector-header {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      padding-right: 2.5rem;
+      padding-bottom: 0.9rem;
+      border-bottom: 1px solid color-mix(in srgb, var(--lightgray) 72%, transparent);
+    }
+    .thought-connection-count {
+      margin-top: -0.15rem;
+    }
+    .thought-connection-list {
+      display: grid;
+      gap: 0.55rem;
+      margin-top: 0.55rem;
+    }
+    .thought-connection {
+      position: relative;
+      display: grid;
+      gap: 0.32rem;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.65rem 0.7rem;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--lightgray) 78%, var(--light));
+      border-radius: 9px;
+      background: color-mix(in srgb, var(--light) 91%, white);
+      color: var(--dark);
+      cursor: pointer;
+      text-align: left;
+      transition:
+        transform 140ms cubic-bezier(0.23, 1, 0.32, 1),
+        border-color 140ms ease,
+        background-color 140ms ease;
+
+      &::after {
+        content: "";
+        position: absolute;
+        top: 0.55rem;
+        bottom: 0.55rem;
+        left: 0;
+        width: 2px;
+        border-radius: 0 2px 2px 0;
+        background: var(--secondary);
+        opacity: 0.28;
+      }
+
+      &:active {
+        transform: scale(0.985);
+      }
+
+      &:focus-visible {
+        outline: 2px solid color-mix(in srgb, var(--secondary) 38%, transparent);
+        outline-offset: 2px;
+      }
+
+      &.selected {
+        border-color: color-mix(in srgb, var(--secondary) 60%, var(--lightgray));
+        background-color: color-mix(in srgb, var(--secondary) 10%, var(--light));
+
+        &::after {
+          opacity: 0.9;
+        }
+      }
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .thought-connection:hover {
+        border-color: color-mix(in srgb, var(--secondary) 48%, var(--lightgray));
+        background-color: color-mix(in srgb, var(--secondary) 6%, var(--light));
+      }
+    }
+    .thought-connection-heading {
+      display: grid;
+      grid-template-columns: 0.55rem minmax(0, 1fr) auto;
+      gap: 0.45rem;
+      align-items: center;
+    }
+    .thought-connection-port {
+      width: 0.48rem;
+      height: 0.48rem;
+      border: 1px solid var(--secondary);
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--secondary) 24%, var(--light));
+
+      &[data-kind="hierarchy"] {
+        border-color: var(--gray);
+        background: color-mix(in srgb, var(--gray) 18%, var(--light));
+      }
+    }
+    .thought-connection-title {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font-size: 0.82rem;
+      font-weight: $mediumWeight;
+      line-height: 1.3;
+    }
+    .thought-connection-weight {
+      color: var(--gray);
+      font-family: var(--codeFont);
+      font-size: 0.64rem;
+      font-variant-numeric: tabular-nums;
+      text-transform: none;
+    }
+    .thought-connection-relation,
+    .thought-connection-explanation {
+      display: block;
+      padding-left: 1rem;
+    }
+    .thought-connection-relation {
+      color: var(--gray);
+      font-size: 0.66rem;
+      letter-spacing: 0.015em;
+    }
+    .thought-connection-explanation {
+      color: var(--darkgray);
+      font-size: 0.74rem;
+      line-height: 1.45;
+    }
+    .thought-connection-empty {
+      margin: 0;
+      padding: 0.85rem;
+      border: 1px dashed color-mix(in srgb, var(--lightgray) 88%, var(--light));
+      border-radius: 8px;
+      color: var(--gray);
+      font-size: 0.76rem;
+      line-height: 1.45;
     }
     dl.thought-stats {
       display: grid;
@@ -483,6 +955,14 @@
       cursor: pointer;
       text-decoration: none;
       font-size: 0.82rem;
+      transition:
+        transform 140ms cubic-bezier(0.23, 1, 0.32, 1),
+        border-color 140ms ease,
+        background-color 140ms ease;
+
+      &:active {
+        transform: scale(0.97);
+      }
 
       &:hover {
         border-color: var(--secondary);
@@ -492,17 +972,27 @@
       border-color: color-mix(in srgb, var(--secondary) 70%, var(--lightgray));
       background: color-mix(in srgb, var(--secondary) 12%, var(--light));
     }
-    .thought-chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.35rem;
+    .thought-callout-math {
+      color: inherit;
+
+      .katex {
+        color: inherit;
+        font-size: 1em;
+      }
     }
-    .thought-chip {
-      padding: 0.18rem 0.5rem;
-      border-radius: 999px;
-      background: color-mix(in srgb, var(--lightgray) 55%, var(--light));
-      color: var(--darkgray);
-      font-size: 0.72rem;
+    .thought-callout-math-display {
+      display: block;
+      max-width: 100%;
+      margin: 0.35rem 0;
+      overflow: auto;
+
+      .katex-display {
+        margin: 0;
+        text-align: left;
+      }
+    }
+    .thought-callout-math-fallback {
+      font-family: var(--codeFont);
     }
   }
 
@@ -527,6 +1017,14 @@
       opacity: 0.6;
     }
 
+    &[data-state="building"] {
+      padding-left: 0;
+
+      &::before {
+        display: none;
+      }
+    }
+
     &[data-state="failed"]::before {
       background: #b45309;
       opacity: 0.85;
@@ -543,9 +1041,12 @@
     right: 0.75rem;
     width: 2rem;
     height: 2rem;
-    border: 0;
-    border-radius: 50%;
-    background: transparent;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--lightgray);
+    border-radius: 8px;
+    background: var(--light);
     color: var(--dark);
     cursor: pointer;
     font-size: 1.35rem;
@@ -555,9 +1056,8 @@
     }
   }
 
-  // Details belong to the object in the topology, not to a detached panel.
-  // This text cluster is positioned every frame beside its node or line and
-  // deliberately has no card, border, or interactive chrome.
+  // Hover details stay attached to the object. A deliberate right click opens
+  // the persistent connection inspector instead of pinning this floating text.
   .thought-callout {
     position: absolute;
     z-index: 10001;
@@ -637,6 +1137,13 @@
   }
 }
 
+@keyframes thought-topology-loading-pulse {
+  to {
+    opacity: 0.85;
+    transform: scale(1.35);
+  }
+}
+
 // The inspector keeps its right-side panel wherever the canvas is wide (the
 // full-screen overlay, wide readers). Narrow canvases — the inline card in
 // Quartz's reading column, phones — get a bottom sheet so the map keeps room.
@@ -668,6 +1175,10 @@
 @media (prefers-reduced-motion: reduce) {
   .graph .thought-inspector {
     transition-duration: 1ms;
+  }
+
+  .graph .thought-topology-loading-dots > span {
+    animation: none;
   }
 }
 

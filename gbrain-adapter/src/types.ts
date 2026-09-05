@@ -121,6 +121,12 @@ export interface GBrainRegisterSourceResponse {
   warnings: string[];
 }
 
+export interface GBrainRemoveSourceResponse {
+  sourceId: string;
+  removed: boolean;
+  pagesDeleted: number;
+}
+
 export interface GBrainHealth {
   status: "healthy" | "degraded";
   ready: boolean;

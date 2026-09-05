@@ -5,6 +5,11 @@ import { authOptions } from "@/lib/auth-options";
 import { normalizeChatMessageAttachments } from "@/lib/chat-attachments";
 import { normalizeChatTextSelectionReference } from "@/lib/chat-text-selection";
 import {
+  normalizeFocusedDocumentNames,
+  normalizeFocusedDocumentSlugs,
+} from "@/lib/garden-document-focus";
+import {
+  cancelConversationTurn,
   ensureConversationForLegacyChatSession,
   presentConversationMessage,
   reserveConversationTurn,
@@ -65,6 +70,12 @@ export async function POST(
     const createdAt = optionalCreatedAt(body.createdAt);
     const attachmentNames = optionalStrings(body.attachmentNames, 12);
     const attachments = normalizeChatMessageAttachments(body.attachments);
+    const focusedDocumentNames = normalizeFocusedDocumentNames(
+      body.focusedDocumentNames,
+    );
+    const focusedDocumentSlugs = normalizeFocusedDocumentSlugs(
+      body.focusedDocumentSlugs,
+    );
     const selectedText =
       typeof body.selectedText === "string"
         ? body.selectedText.trim().slice(0, 4_000)
@@ -94,6 +105,8 @@ export async function POST(
           : {}),
         ...(attachmentNames.length ? { attachmentNames } : {}),
         ...(attachments.length ? { attachments } : {}),
+        ...(focusedDocumentNames.length ? { focusedDocumentNames } : {}),
+        ...(focusedDocumentSlugs.length ? { focusedDocumentSlugs } : {}),
         ...(selectedText ? { selectedText } : {}),
         ...(inlineSelection ? { inlineSelection } : {}),
         ...(textSelection ? { textSelection } : {}),
@@ -105,6 +118,66 @@ export async function POST(
       userMessage: presentConversationMessage(turn.userMessage),
       assistantMessage: presentConversationMessage(turn.assistantMessage),
       replayed: !turn.isNew,
+    });
+  } catch (error) {
+    return apiErrorResponse(error);
+  }
+}
+
+/**
+ * Stop the exact Garden turn even when runtime preparation has not emitted a
+ * runtime session id yet. The aborted row is also a durable tombstone: a late
+ * `/api/chat` request cannot revive the turn after the browser pressed Stop.
+ */
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ sessionId: string }> },
+) {
+  try {
+    const session = await getServerSession(authOptions);
+    const userId = Number(
+      (session?.user as { id?: string } | undefined)?.id,
+    );
+    if (!Number.isSafeInteger(userId) || userId < 1) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { sessionId } = await params;
+    const numericSessionId = Number(sessionId);
+    if (!Number.isSafeInteger(numericSessionId) || numericSessionId < 1) {
+      return NextResponse.json({ error: "Invalid session id" }, { status: 400 });
+    }
+    const body = (await request.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const clientMessageId =
+      typeof body.clientMessageId === "string"
+        ? body.clientMessageId.trim()
+        : "";
+    if (!clientMessageId) {
+      return NextResponse.json(
+        { error: "clientMessageId is required" },
+        { status: 400 },
+      );
+    }
+
+    const conversation = ensureConversationForLegacyChatSession(
+      numericSessionId,
+      userId,
+    );
+    const message = cancelConversationTurn({
+      conversationId: conversation.id,
+      clientMessageId,
+    });
+    if (!message) {
+      return NextResponse.json({ error: "Turn not found" }, { status: 404 });
+    }
+    return NextResponse.json({
+      cancelled: message.status === "aborted",
+      alreadyFinished: message.status !== "aborted",
+      conversationId: conversation.public_id,
+      assistantMessage: presentConversationMessage(message),
     });
   } catch (error) {
     return apiErrorResponse(error);

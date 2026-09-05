@@ -1,4 +1,4 @@
-// The composer's Intelligence-menu switches survive a Breadboard restart.
+// Browser switches survive a Breadboard restart.
 //
 // Each switch is a localStorage-backed store, and localStorage is keyed by
 // origin. Runtime V2 serves the desktop dashboard on a fresh loopback port
@@ -38,6 +38,7 @@ function installBrowser(initial = {}) {
     localStorage: {
       getItem: (key) => (store.has(key) ? store.get(key) : null),
       setItem: (key, value) => store.set(key, String(value)),
+      removeItem: (key) => store.delete(key),
     },
     addEventListener() {},
     removeEventListener() {},
@@ -106,6 +107,9 @@ test("unknown keys and non-boolean values are refused, and a corrupt column read
   assert.deepEqual(pickComposerSwitches({}), {});
   assert.deepEqual(parseComposerSwitches("not json"), {});
   assert.deepEqual(parseComposerSwitches('{"yoloMode":true,"junk":1}'), {});
+  assert.deepEqual(pickComposerSwitches({ currentLocation: true }), {
+    currentLocation: true,
+  });
   assert.deepEqual(
     mergeComposerSwitches({ superAgent: true, agentMode: true }, { agentMode: false }),
     { superAgent: false, agentMode: false },
@@ -213,6 +217,62 @@ test("a switch touched while the account copy is in flight keeps the user's choi
   assert.deepEqual(patches, [{ switches: { yoloMode: true } }]);
 });
 
+test("the current-location consent switch hydrates after restart without syncing coordinates", async () => {
+  const { store, dispatched } = installBrowser();
+  const patches = installFetch({ switches: { currentLocation: true } });
+
+  const bootstrap = await import("../src/lib/assistant-bootstrap-client.ts");
+  bootstrap.resetAssistantPreferencesForTest();
+  const preferences = await import("../src/app/components/composer-switch-preferences.ts");
+  preferences.resetComposerSwitchPreferencesForTest();
+  const location = await import(
+    "../src/app/components/current-location-preference.ts"
+  );
+
+  await preferences.hydrateComposerSwitches();
+  assert.deepEqual(JSON.parse(store.get("breadboard:current-location")), {
+    useForAnswers: true,
+    snapshot: null,
+  });
+  assert.ok(dispatched.includes("breadboard:current-location-change"));
+  assert.deepEqual(patches, [], "hydration must not write the preference back");
+
+  // A desktop installation's own setting wins after account hydration. This
+  // is the copy that survives the shell choosing a new loopback port.
+  let desktopEnabled = false;
+  globalThis.window.breadboardDesktop = {
+    getCurrentLocationPreference: async () => desktopEnabled,
+    setCurrentLocationPreference: async (enabled) => {
+      desktopEnabled = enabled;
+      return true;
+    },
+  };
+  await location.hydrateCurrentLocationPreference();
+  assert.equal(store.has("breadboard:current-location"), false);
+
+  await location.persistCurrentLocationPreference(true);
+  assert.equal(desktopEnabled, true);
+  assert.deepEqual(patches, [{ switches: { currentLocation: true } }]);
+
+  await location.hydrateCurrentLocationPreference();
+  assert.deepEqual(JSON.parse(store.get("breadboard:current-location")), {
+    useForAnswers: true,
+    snapshot: null,
+  });
+
+  // Turning the switch off is persisted, while applying the remote off state
+  // removes the device-local fix rather than placing it on the account.
+  await location.persistCurrentLocationPreference(false);
+  assert.equal(desktopEnabled, false);
+  assert.deepEqual(patches, [
+    { switches: { currentLocation: true } },
+    { switches: { currentLocation: false } },
+  ]);
+  location.applyRemoteCurrentLocationPreference(false);
+  assert.equal(store.has("breadboard:current-location"), false);
+  assert.equal(patches.length, 2);
+});
+
 test("the profile's sunrise-to-sunset switch rides the same column and comes back on every page", async () => {
   const { store, dispatched } = installBrowser({ "breadboard:theme-mode": "manual" });
   const patches = installFetch({ switches: { sunTheme: true } });
@@ -230,7 +290,18 @@ test("the profile's sunrise-to-sunset switch rides the same column and comes bac
   // Replaying the account's copy is not a choice; nothing is written back.
   assert.deepEqual(patches, []);
 
-  // Turning it off from the profile (or picking Light/Dark) writes through.
+  // Picking Light or Dark changes the appearance without silently turning off
+  // the separate Sunrise-to-sunset preference.
+  globalThis.document = {
+    documentElement: { dataset: { theme: "light" } },
+    visibilityState: "hidden",
+  };
+  theme.applyAppTheme("dark");
+  assert.equal(store.get("breadboard:theme"), "dark");
+  assert.equal(store.get("breadboard:theme-mode"), "sun");
+  assert.deepEqual(patches, []);
+
+  // Turning the switch off from the profile is the action that writes through.
   theme.applyAppThemeMode("manual");
   assert.equal(store.get("breadboard:theme-mode"), "manual");
   assert.deepEqual(patches, [{ switches: { sunTheme: false } }]);
@@ -245,6 +316,26 @@ test("the profile's sunrise-to-sunset switch rides the same column and comes bac
     /void hydrateComposerSwitches\(\);/,
   );
   assert.deepEqual(pickComposerSwitches({ sunTheme: true }), { sunTheme: true });
+});
+
+test("location hydration completes before the startup refresh reads the new origin", () => {
+  const refresh = source(
+    "../src/app/components/current-location-autorefresh.tsx",
+  );
+  const preference = source(
+    "../src/app/components/current-location-preference.ts",
+  );
+  assert.match(
+    refresh,
+    /hydrateCurrentLocationPreference\(\)\.then\(\(\) =>\s*refreshCurrentLocationAtInitialization\(\)/,
+  );
+  assert.match(preference, /getCurrentLocationPreference/);
+  assert.match(preference, /setCurrentLocationPreference/);
+  assert.match(preference, /const enabled = await desktop\.read\(\)/);
+  assert.match(preference, /if \(current\.useForAnswers\) await desktop\.write\(true\)/);
+  const profile = source("../src/app/profile/profile-client.tsx");
+  assert.match(profile, /await persistCurrentLocationPreference\(true\)/);
+  assert.match(profile, /await persistCurrentLocationPreference\(false\)/);
 });
 
 test("the composer mounts the hydration once beside the switches it renders", () => {

@@ -113,7 +113,16 @@ export function modelSourcePageAnchors(
   selectedSources.forEach((source) => {
     if (typeof source.body !== "string" || !source.body) return;
     const body = source.body.replace(/\r\n/g, "\n");
-    const headings = [...body.matchAll(/^## Page ([1-9]\d*)[ \t]*$/gm)];
+    // VLM + AnyDoc sources retain a supplemental cross-check transcript after
+    // the canonical page sequence. It intentionally repeats a subset of
+    // `## Page N` headings, but those are alternate evidence for the same PDF
+    // pages rather than new structural pages. Catalog only the canonical
+    // section while continuing to fail closed on duplicates within it.
+    const anyDocCrossCheckIndex = body.search(/^## AnyDoc cross-check[ \t]*$/m);
+    const canonicalBody = anyDocCrossCheckIndex >= 0
+      ? body.slice(0, anyDocCrossCheckIndex)
+      : body;
+    const headings = [...canonicalBody.matchAll(/^## Page ([1-9]\d*)[ \t]*$/gm)];
     const seenPages = new Set<number>();
     headings.forEach((heading, headingIndex) => {
       const page = Number(heading[1]);
@@ -124,8 +133,8 @@ export function modelSourcePageAnchors(
       }
       seenPages.add(page);
       const blockStart = (heading.index ?? 0) + heading[0].length;
-      const blockEnd = headings[headingIndex + 1]?.index ?? body.length;
-      const exactText = body
+      const blockEnd = headings[headingIndex + 1]?.index ?? canonicalBody.length;
+      const exactText = canonicalBody
         .slice(blockStart, blockEnd)
         .replace(/^\r?\n/, "")
         .replace(/\s+$/u, "");

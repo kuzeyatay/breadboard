@@ -153,7 +153,7 @@ function samePath(left: string, right: string): boolean {
   const a = path.resolve(left);
   const b = path.resolve(right);
   return process.platform === "win32"
-    ? a.toLowerCase() === b.toLowerCase()
+    ? path.toNamespacedPath(a).toLowerCase() === path.toNamespacedPath(b).toLowerCase()
     : a === b;
 }
 

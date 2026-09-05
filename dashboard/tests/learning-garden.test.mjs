@@ -1,12 +1,15 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import {
+  CONCEPTS_FOLDER,
   INTERNAL_CONCEPT_TYPE,
   LEARNING_PAGE_ORDER,
   TEXTBOOK_PAGE_TYPE,
+  isConceptPageRelPath,
   isLearnAuthoredLesson,
   isInternalConceptMetadata,
   isLegacySubtopicRelPath,
+  isPublicGardenPath,
   readingOrderRank,
   shouldPublishGardenPage,
   showLegacySubtopicPages,
@@ -45,6 +48,19 @@ describe("learning garden metadata", () => {
       }),
       true,
     );
+  });
+
+  test("recognizes Concepts as the public document-ingestion collection", () => {
+    assert.equal(CONCEPTS_FOLDER, "Concepts");
+    assert.equal(
+      isConceptPageRelPath("Concepts/1. Fields/vector-fields.md"),
+      true,
+    );
+    assert.equal(
+      isPublicGardenPath("Concepts/1. Fields/vector-fields.md"),
+      true,
+    );
+    assert.equal(isConceptPageRelPath("learning/1. Fields/vector-fields.md"), false);
   });
 
   test("hides internal ConceptNodes from published/default views", () => {

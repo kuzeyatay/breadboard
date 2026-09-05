@@ -48,6 +48,9 @@ test("creating an artifact refreshes its archive without opening artifact UI", (
 
 test("the artifact viewer uses an icon download action and fits Office pages", () => {
   const viewer = source("../src/app/components/hermes/artifact-viewer.tsx");
+  const genOffice = source("../src/app/components/hermes/artifact-genoffice-editor.tsx");
+  const genOfficeHost = source("../src/genoffice-static/main.tsx");
+  const genOfficeApp = source("../src/vendor/genoffice/docs/src/renderer/App.tsx");
 
   assert.match(viewer, /aria-label=\{`Download \$\{artifact\.filename\}`\}/);
   assert.match(viewer, /title="Download"/);
@@ -60,6 +63,25 @@ test("the artifact viewer uses an icon download action and fits Office pages", (
   assert.match(viewer, /Math\.min\(availableWidth \/ pageWidth, 1\)/);
   assert.match(viewer, /wrapper\.style\.overflow = "hidden"/);
   assert.match(viewer, /data-artifact-office-preview/);
+  assert.match(
+    viewer,
+    /usesGenOfficeFallbackPreview[\s\S]*?<ArtifactGenOfficeEditor[\s\S]*?mode="preview"/,
+  );
+  assert.match(viewer, /usesGenOfficeEditor && artifact\?\.downloadAvailable && !artifact\.previewAvailable/);
+  assert.match(genOffice, /mode\?: "edit" \| "preview"/);
+  assert.match(genOffice, /data-genoffice-artifact-preview/);
+  assert.match(genOfficeHost, /const readOnly = params\.get\('mode'\) === 'preview'/);
+  assert.match(genOfficeHost, /<App readOnly=\{readOnly\} \/>/);
+  // The preview must keep GenOffice's paginated print layout: Read Mode drops
+  // the page gaps and flows the document as one sheet, so a read-only host
+  // locks the editor without entering it.
+  assert.doesNotMatch(genOfficeApp, /useState\(readOnly\)/);
+  assert.match(genOfficeApp, /setEditable\(!readMode && !readOnly && !isProtected\)/);
+  assert.match(genOfficeApp, /\$\{readOnly \? ' read-only' : ''\}/);
+  assert.match(genOfficeApp, /readMode && !readOnly/);
+  const genOfficeHostCss = source("../src/app/genoffice-docs/genoffice-host.css");
+  assert.match(genOfficeHostCss, /body \.app\.read-only \.ribbon,[\s\S]*?display: none !important;/);
+  assert.doesNotMatch(genOfficeHostCss, /\.app\.read-only \.doc-page-gap/);
   assert.match(
     viewer,
     /artifact\.kind === "document" && !editingDocument[\s\S]{0,120}\? "overflow-auto p-0"/,
@@ -142,14 +164,18 @@ test("the archive hides generating and failed artifacts", () => {
   assert.doesNotMatch(panel, />\s*Failed\s*</);
 });
 
-test("Terminal artifacts can be scoped into the composer with a rectangular checkbox", () => {
+test("Terminal artifacts share Garden documents' square color and selection control", () => {
   const panel = source("../src/app/components/hermes/artifact-panel.tsx");
   const terminal = source("../src/app/components/hermes/dashboard-agent-terminal.tsx");
 
-  assert.match(panel, /role="checkbox"/);
-  assert.match(panel, /aria-checked=\{attached\}/);
-  assert.match(panel, /h-\[18px\] w-7/);
-  assert.match(panel, /Attach to this chat/);
+  assert.match(panel, /handleArtifactColorButtonClick/);
+  assert.match(panel, /pendingTimer !== undefined[\s\S]*?onToggleArtifactAttachment\(artifact\)/);
+  assert.match(panel, /flex h-5 w-5 items-center justify-center/);
+  assert.match(panel, /Click twice to select for chat/);
+  assert.match(panel, /Click once to choose a color/);
+  assert.match(panel, /ring-2 ring-\[var\(--botanical\)\]\/70/);
+  assert.match(panel, /backgroundColor: highlight\?\.color \?\? "transparent"/);
+  assert.match(panel, /<ArtifactColorPalette/);
   assert.match(terminal, /fetch\(artifactUrl\(artifact, "download"\)\)/);
   assert.match(terminal, /sourceArtifactId: artifact\.id/);
   assert.match(terminal, /attachedArtifactIds=\{attachedArtifactIds\}/);

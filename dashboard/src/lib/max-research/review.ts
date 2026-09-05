@@ -26,6 +26,10 @@ export const REVIEW_CHECKS: readonly string[] = [
   "A projection is written in the grammar of a measurement.",
   "A figure is given without the scope it only holds inside — the country, the population, the period.",
   "A participant produced nothing, or a source was closed, and the answer does not say so.",
+  "The answer speaks about this system instead of the world — \"the supplied evidence\", \"the record\", \"the findings\", \"the retrieved material\", \"this run\" — or names a participant; rewrite those sentences in the researcher's own first-person voice (\"I found\", \"I could not find\").",
+  "The source list carries entries no sentence cites, or lists papers that do not bear on the question; remove them.",
+  "Citations are inconsistent — some claims carry numbered markers while others carry inline links or bare URLs; convert every inline link to the next free numbered marker with its URL in the source list, so the whole answer cites one way.",
+  "The answer narrates retrieval mechanics — a 404, a CAPTCHA, a paywall, a timeout, a tool that was not installed — or names a study without saying what it found; cut the mechanics to at most one clause about material that mattered, and cut a source named without its finding.",
 ];
 
 /**
@@ -55,7 +59,7 @@ export function maxResearchReviewPrompt(input: {
     "",
     "Then return the answer with every one you found repaired, and nothing else changed. Repair means: cite the claim, name the publisher, add the scope, state the disagreement, use the finding that was dropped or dismiss it in a clause, say what was missing. It does not mean adding claims, hedging a conclusion the evidence supports, or padding.",
     "",
-    "You have only the findings below. If a claim *about the world* in the draft is not supported by any of them, do not invent a source for it — say in the sentence that the run could not trace it. That is the honest repair, and it is the one most likely to be needed.",
+    "You have only the findings below. If a figure, date, quantity or causal claim *about the world* that a reader might act on is not supported by any of them, do not invent a source for it — say in that sentence that it could not be traced to a source. Reserve that annotation for claims a reader would act on: general background a careful reader already holds does not need it, and a decorative sentence with no support is better deleted than annotated. A live audit stamped \"the run could not trace\" onto nearly every paragraph of an answer and buried the sourced findings under it; if you find yourself writing it more than a few times, the draft has too many unsupported sentences and the repair is to remove them.",
     "",
     "That repair applies to evidence and to nothing else. Statements about the run itself — that a participant produced nothing, that a source was closed, which part of the record went unread — are facts reported to you here, not claims needing a source. Leave them as plain statements. A live audit wrapped them in \"the run could not trace the claim that...\" and turned the two most useful sentences in the answer into nonsense.",
     "",

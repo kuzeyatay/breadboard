@@ -794,3 +794,37 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+
+
+class TestAlreadyWrappedSchemas:
+    """A tool module may hand register() the OpenAI envelope instead of the
+    bare function schema. get_definitions() must not wrap it a second time:
+    Gemini rejects a function declaration that carries `type`/`function`
+    keys, and one such tool takes every turn on that provider down."""
+
+    def test_wrapped_schema_is_unwrapped_before_the_envelope_is_added(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="expand_output",
+            toolset="tokenjuice",
+            schema={"type": "function", "function": _make_schema("expand_output")},
+            handler=_dummy_handler,
+        )
+        reg.register(
+            name="plain",
+            toolset="core",
+            schema=_make_schema("plain"),
+            handler=_dummy_handler,
+        )
+        definitions = {d["function"]["name"]: d for d in reg.get_definitions({"expand_output", "plain"})}
+        for definition in definitions.values():
+            assert definition["type"] == "function"
+            assert set(definition["function"]) == {"name", "description", "parameters"}
+        assert definitions["expand_output"]["function"]["description"] == "A expand_output"
+
+    def test_builtin_expand_output_registers_a_bare_schema(self):
+        from tools.expand_output_tool import EXPAND_OUTPUT_SCHEMA
+
+        assert EXPAND_OUTPUT_SCHEMA["name"] == "expand_output"
+        assert "function" not in EXPAND_OUTPUT_SCHEMA
+        assert EXPAND_OUTPUT_SCHEMA["parameters"]["required"] == ["handle"]

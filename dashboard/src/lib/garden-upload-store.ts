@@ -295,8 +295,11 @@ async function runUploadTask(
     setTaskSteps((current) => ({ ...current, [key]: "Starting…" }));
 
     const usesVlm = options.parseWithVlm && VLM_PARSE_FILE_RE.test(file.name);
+    // PDFs can intentionally use both readers: VLM supplies the visual parse
+    // and anydoc adds a text-layer cross-check. Other formats still select the
+    // one reader that supports them.
     const usesAnydoc =
-      !usesVlm && options.parseWithAnydoc && ANYDOC_PARSE_FILE_RE.test(file.name);
+      options.parseWithAnydoc && ANYDOC_PARSE_FILE_RE.test(file.name);
     const usesHandwriting =
       !usesVlm &&
       !usesAnydoc &&

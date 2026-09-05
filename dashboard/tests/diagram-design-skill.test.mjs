@@ -218,7 +218,7 @@ test("both turn pipelines select it, or the feature works on one surface only", 
   ]) {
     const source = fs.readFileSync(new URL(file, import.meta.url), "utf8");
     assert.match(source, /diagramCommandText\(/, file);
-    assert.match(source, /text: audioSelection\.text/, `${file}: chain order`);
+    assert.match(source, /text: asciiDiagramSelection\.text/, `${file}: chain order`);
     assert.match(source, /text: diagramSelection\.text/, `${file}: chain order`);
     assert.match(source, /!diagramSelection\.automatic/, `${file}: unavailable fallback`);
   }

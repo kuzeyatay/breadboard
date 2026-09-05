@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -11,10 +12,19 @@ const CHILD_STOP_GRACE_MS = 2_000;
 export const TREE_KILLER_TIMEOUT_MS = 4_000;
 export const TREE_CLOSE_TIMEOUT_MS = 5_000;
 const NATURAL_BROWSER_CLOSE_GRACE_MS = 1_500;
-const WRAPPER_EXIT_HOLD_MS = 250;
 export const PROCESS_SNAPSHOT_TIMEOUT_MS = 5_000;
+// A full Windows process snapshot can consume its entire deadline under load.
+// Keep the stable wrapper identity resident until that first ownership proof
+// has had time to finish; otherwise a fast headless capture can exit during
+// the snapshot and turn a valid render into an unprovable natural-exit race.
+export const BROWSER_WRAPPER_EXIT_HOLD_MS = PROCESS_SNAPSHOT_TIMEOUT_MS + 1_000;
 const PROCESS_SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024;
-export const TREE_QUIESCENCE_TIMEOUT_MS = 8_000;
+// Edge can leave a short-lived sync/network utility descendant behind after a
+// successful headless DOM capture.  Eight seconds proved too narrow under a
+// concurrent Quartz build: the exact owned lineage was still present and the
+// valid candidate was rejected as ECLEANUP.  Keep the proof finite, but give
+// taskkill plus the required two empty lineage snapshots enough time to settle.
+export const TREE_QUIESCENCE_TIMEOUT_MS = 20_000;
 const BROWSER_PROFILE_REMOVE_TIMEOUT_MS = 5_000;
 const BROWSER_PROFILE_REMOVE_RETRY_BASE_MS = 50;
 const BROWSER_PROFILE_REMOVE_RETRY_MAX_MS = 400;
@@ -864,6 +874,19 @@ export async function removeOwnedBrowserProfile(
   }
 }
 
+export function interactiveVisualizerBrowserProfileRoot({
+  outputDir,
+  platform = process.platform,
+  tempDir = os.tmpdir(),
+}) {
+  // Chromium creates several deeply nested files below --user-data-dir. The
+  // Runtime V2 job fence is already close to the legacy Windows path limit, so
+  // putting the ephemeral browser profile below that fence can fail before the
+  // browser starts. The candidate and durable output stay fenced; only the
+  // disposable, randomly named browser profile uses the shorter OS temp root.
+  return path.resolve(platform === "win32" ? tempDir : outputDir);
+}
+
 async function runIsolatedBrowser({
   executable,
   args,
@@ -871,9 +894,10 @@ async function runIsolatedBrowser({
   signal,
   outputDir,
 }) {
+  const profileRoot = interactiveVisualizerBrowserProfileRoot({ outputDir });
   const profilePath = fs.mkdtempSync(path.join(
-    path.resolve(outputDir),
-    ".browser-profile-",
+    profileRoot,
+    process.platform === "win32" ? "bb-iv-" : ".browser-profile-",
   ));
   let result;
   try {
@@ -896,7 +920,7 @@ async function runIsolatedBrowser({
     });
   } finally {
     try {
-      await removeOwnedBrowserProfile(outputDir, profilePath);
+      await removeOwnedBrowserProfile(profileRoot, profilePath);
     } catch (error) {
       if (!result) throw error;
       result.cleanupConfirmed = false;
@@ -928,7 +952,7 @@ async function runBrowserWrapper() {
   // can arrive one event-loop turn before the child's close record on Windows;
   // the hold prevents PID reuse and gives the owner a deterministic root for
   // its exact /PID /T shutdown without extending the browser's own lifetime.
-  await delay(WRAPPER_EXIT_HOLD_MS);
+  await delay(BROWSER_WRAPPER_EXIT_HOLD_MS);
   if (result.signal) {
     process.kill(process.pid, result.signal);
     return;
@@ -939,6 +963,7 @@ async function runBrowserWrapper() {
 export async function runInteractiveVisualizerBrowserTestsInWorker({
   html,
   mode,
+  requiresWebgl = mode !== "2d",
   outputDir,
   timeoutMs = 22_000,
   browserPath,
@@ -964,6 +989,9 @@ export async function runInteractiveVisualizerBrowserTestsInWorker({
   }
   if (!["2d", "3d", "hybrid"].includes(mode)) {
     fail("The interactive visualizer browser mode is invalid.");
+  }
+  if (typeof requiresWebgl !== "boolean") {
+    fail("The interactive visualizer browser capability requirement is invalid.");
   }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 5_000 || timeoutMs > 90_000) {
     fail("The interactive visualizer browser timeout is invalid.");
@@ -1007,7 +1035,7 @@ export async function runInteractiveVisualizerBrowserTestsInWorker({
         "--no-default-browser-check",
         "--hide-scrollbars",
         "--disable-dev-shm-usage",
-        ...(mode !== "2d"
+        ...(requiresWebgl
           ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
           : ["--disable-gpu"]),
         ...scenario.flags,
@@ -1025,7 +1053,7 @@ export async function runInteractiveVisualizerBrowserTestsInWorker({
       output.includes('data-breadboard-runtime-tests="passed"') &&
       output.includes('data-breadboard-interaction-tests="passed"') &&
       !output.includes('data-breadboard-overflow="true"') &&
-      (mode === "2d" || output.includes('data-breadboard-webgl="ready"'));
+      (!requiresWebgl || output.includes('data-breadboard-webgl="ready"'));
     checks.push({
       name: `browser mount ${scenario.name}`,
       passed,
@@ -1045,7 +1073,7 @@ export async function runInteractiveVisualizerBrowserTestsInWorker({
           ].join("; "),
     });
   }
-  if (mode !== "2d") {
+  if (requiresWebgl) {
     const fallback = await runIsolatedBrowser({
       executable: browser,
       timeoutMs,
@@ -1112,7 +1140,7 @@ export async function runInteractiveVisualizerBrowserTestsInWorker({
         "--no-first-run",
         "--hide-scrollbars",
         "--disable-dev-shm-usage",
-        ...(mode !== "2d"
+        ...(requiresWebgl
           ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
           : ["--disable-gpu"]),
         `--window-size=${preview.width},${preview.height}`,
@@ -1214,6 +1242,7 @@ export async function executeInteractiveVisualizerPublication({
   const tests = await runInteractiveVisualizerBrowserTestsInWorker({
     html: bundle.html,
     mode: compiled.manifest.mode,
+    requiresWebgl: compiled.manifest.runtime.threeVersion !== undefined,
     outputDir,
     timeoutMs,
     browserPath,

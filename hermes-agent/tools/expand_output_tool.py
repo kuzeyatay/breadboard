@@ -13,9 +13,10 @@ from typing import Any
 
 from tools.registry import registry
 
+# Registered as a bare function schema: the registry adds the OpenAI
+# {"type": "function", "function": ...} envelope itself, and a schema handed
+# over already wrapped ends up wrapped twice, which Gemini rejects.
 EXPAND_OUTPUT_SCHEMA = {
-    "type": "function",
-    "function": {
         "name": "expand_output",
         "description": (
             "Recover text that was elided from a compressed tool result. "
@@ -54,7 +55,6 @@ EXPAND_OUTPUT_SCHEMA = {
             },
             "required": ["handle"],
         },
-    },
 }
 
 

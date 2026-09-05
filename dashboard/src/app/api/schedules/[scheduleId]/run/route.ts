@@ -1,6 +1,6 @@
 // "Run now" — the same code path the scheduler tick uses, without waiting for the
 // next occurrence. It deliberately does not advance `next_run_at`: a manual run is
-// an extra run, not a replacement for the scheduled one.
+// an extra run, unless it satisfies a conditional watch and completes that job.
 
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
@@ -25,16 +25,21 @@ export async function POST(
 
     const store = getScheduledChatJobStore();
     const job = store.require(userId, id);
-    const result = await runScheduledChatJob(job);
+    const result = await runScheduledChatJob(job, {
+      waitForCompletion: job.conversation_policy === "open_when_objective_met",
+    });
     store.recordRun(job.id, {
       status: result.status,
       conversationId: result.conversationId,
+      objectiveDecision: result.objectiveDecision,
       error: result.error ?? null,
     });
 
     return NextResponse.json({
       started: result.status === "ok",
       conversationId: result.conversationId,
+      conversationOpened: result.conversationId !== null,
+      objectiveDecision: result.objectiveDecision,
       error: result.error ?? null,
       schedule: presentScheduledChatJob(store.require(userId, id)),
     });

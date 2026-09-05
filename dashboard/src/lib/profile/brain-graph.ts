@@ -57,7 +57,9 @@ function cleanWarnings(warnings: BrainWarning[]): BrainWarning[] {
       (warning, index, all) =>
         all.findIndex(
           (candidate) =>
-            candidate.source === warning.source && candidate.code === warning.code,
+            candidate.source === warning.source &&
+            candidate.code === warning.code &&
+            candidate.message === warning.message,
         ) === index,
     );
 }

@@ -32,6 +32,22 @@ export interface TopologyQueueSubmission {
 
 export type TopologySubmitter = (submission: TopologyQueueSubmission) => Promise<unknown>;
 
+interface QueueDispatchRow extends TopologyQueueSubmission {
+  status: "queued" | "running";
+}
+
+const SUBMISSION_MARKER_PREFIX = "submitting:";
+
+function submissionMarker(queueJobId: number, revision: number): string {
+  return `${SUBMISSION_MARKER_PREFIX}${queueJobId}:${revision}`;
+}
+
+function markerRevision(value: string | null): number | null {
+  if (!value?.startsWith(SUBMISSION_MARKER_PREFIX)) return null;
+  const revision = Number(value.slice(value.lastIndexOf(":") + 1));
+  return Number.isSafeInteger(revision) && revision > 0 ? revision : null;
+}
+
 function boundedReason(reason: string): string {
   return reason.replace(/\p{Cc}+/gu, " ").trim().slice(0, 500) || "garden mutation";
 }
@@ -85,6 +101,112 @@ async function defaultSubmitter(submission: TopologyQueueSubmission): Promise<un
   return runtime.startThoughtTopologyRuntimeJob(submission);
 }
 
+function submittedRuntimeJobId(result: unknown): string | null {
+  if (!result || typeof result !== "object" || !("snapshot" in result)) return null;
+  const snapshot = result.snapshot;
+  if (!snapshot || typeof snapshot !== "object" || !("jobId" in snapshot)) return null;
+  return typeof snapshot.jobId === "string" && snapshot.jobId.length > 0
+    ? snapshot.jobId
+    : null;
+}
+
+function releaseFailedDispatch(
+  database: Database.Database,
+  row: QueueDispatchRow,
+  error: unknown,
+  submissionMarker: string | null,
+): void {
+  const message = (error instanceof Error ? error.message : String(error))
+    .replace(/\p{Cc}+/gu, " ")
+    .slice(0, 500);
+  if (row.status === "queued" && submissionMarker) {
+    database.prepare(
+      `UPDATE thought_topology_jobs
+          SET runtime_job_id = NULL, last_error = ?, attempts = attempts + 1,
+              updated_at = datetime('now')
+        WHERE id = ? AND status = 'queued' AND runtime_job_id = ?`,
+    ).run(message, row.queueJobId, submissionMarker);
+    return;
+  }
+  database.transaction(() => {
+    const newerQueue = database.prepare(
+      `SELECT id
+         FROM thought_topology_jobs
+        WHERE cluster_id = ? AND status = 'queued' AND id <> ?
+        LIMIT 1`,
+    ).get(row.clusterId, row.queueJobId) as { id: number } | undefined;
+    database.prepare(
+      `UPDATE thought_topology_jobs
+          SET status = ?, last_error = ?, attempts = attempts + 1,
+              updated_at = datetime('now')
+        WHERE id = ? AND status = 'running' AND runtime_job_id IS NULL`,
+    ).run(newerQueue ? "stale" : "queued", message, row.queueJobId);
+  })();
+}
+
+/**
+ * Mark a submission before the asynchronous Runtime call. A queued row stays
+ * queued until its worker begins, so further Markdown mutations coalesce by
+ * advancing this row's revision. The worker reads that latest revision when it
+ * starts and incrementally places only the new Markdown into the cached map.
+ */
+async function dispatchTopologyQueueRow(
+  row: QueueDispatchRow,
+  database: Database.Database,
+  submit: TopologySubmitter,
+  existingSubmissionMarker: string | null = null,
+): Promise<boolean> {
+  let activeSubmissionMarker: string | null = null;
+  if (row.status === "queued") {
+    activeSubmissionMarker = existingSubmissionMarker ?? submissionMarker(row.queueJobId, row.revision);
+    const marked = existingSubmissionMarker
+      ? database.prepare(
+          `UPDATE thought_topology_jobs
+              SET updated_at = datetime('now')
+            WHERE id = ? AND status = 'queued' AND runtime_job_id = ?`,
+        ).run(row.queueJobId, existingSubmissionMarker)
+      : database.prepare(
+          `UPDATE thought_topology_jobs
+              SET runtime_job_id = ?, updated_at = datetime('now')
+            WHERE id = ? AND revision = ? AND status = 'queued'
+              AND runtime_job_id IS NULL`,
+        ).run(activeSubmissionMarker, row.queueJobId, row.revision);
+    if (marked.changes !== 1) return false;
+  }
+  try {
+    const submission: TopologyQueueSubmission = {
+      clusterId: row.clusterId,
+      userId: row.userId,
+      gardenId: row.gardenId,
+      revision: row.revision,
+      queueJobId: row.queueJobId,
+    };
+    const result = await submit(submission);
+    const runtimeJobId = submittedRuntimeJobId(result);
+    if (runtimeJobId) {
+      if (activeSubmissionMarker) {
+        database.prepare(
+          `UPDATE thought_topology_jobs
+              SET runtime_job_id = ?, updated_at = datetime('now')
+            WHERE id = ? AND status IN ('queued', 'running')
+              AND runtime_job_id = ?`,
+        ).run(runtimeJobId, row.queueJobId, activeSubmissionMarker);
+      } else {
+        database.prepare(
+          `UPDATE thought_topology_jobs
+              SET runtime_job_id = ?, updated_at = datetime('now')
+            WHERE id = ? AND status = 'running' AND runtime_job_id IS NULL`,
+        ).run(runtimeJobId, row.queueJobId);
+      }
+    }
+    return true;
+  } catch (error) {
+    releaseFailedDispatch(database, row, error, activeSubmissionMarker);
+    logSubmissionFailure(row.gardenId, row.queueJobId, error);
+    return false;
+  }
+}
+
 /**
  * The sole mutation invalidation boundary. The first operation is a bounded DB
  * lookup; disabled Gardens return before filesystem access, hashing, queueing,
@@ -111,8 +233,11 @@ export async function invalidateThoughtTopologyAfterMutation(
     if (updated.changes !== 1) return null;
     const revision = current.revision + 1;
     const queued = database.prepare(
-      "SELECT id FROM thought_topology_jobs WHERE cluster_id = ? AND status = 'queued' LIMIT 1",
-    ).get(current.id) as { id: number } | undefined;
+      `SELECT id, runtime_job_id
+         FROM thought_topology_jobs
+        WHERE cluster_id = ? AND status = 'queued'
+        LIMIT 1`,
+    ).get(current.id) as { id: number; runtime_job_id: string | null } | undefined;
     if (queued) {
       database.prepare(
         `UPDATE thought_topology_jobs
@@ -126,9 +251,11 @@ export async function invalidateThoughtTopologyAfterMutation(
       ).run(current.id, revision, boundedReason(reason));
     }
     const row = database.prepare(
-      "SELECT id FROM thought_topology_jobs WHERE cluster_id = ? AND revision = ? AND status = 'queued'",
-    ).get(current.id, revision) as { id: number };
-    return { revision, queueJobId: row.id };
+      `SELECT id, runtime_job_id
+         FROM thought_topology_jobs
+        WHERE cluster_id = ? AND revision = ? AND status = 'queued'`,
+    ).get(current.id, revision) as { id: number; runtime_job_id: string | null };
+    return { revision, queueJobId: row.id, runtimeJobId: row.runtime_job_id };
   })();
 
   if (!queued) {
@@ -138,16 +265,85 @@ export async function invalidateThoughtTopologyAfterMutation(
   }
 
   const submit = options.submit ?? defaultSubmitter;
-  void submit({
+  if (!queued.runtimeJobId) {
+    void dispatchTopologyQueueRow({
+      clusterId: current.id,
+      userId: current.userId,
+      gardenId: current.slug,
+      revision: queued.revision,
+      queueJobId: queued.queueJobId,
+      status: "queued",
+    }, database, submit);
+  }
+  return {
+    enabled: true,
+    revision: queued.revision,
+    queueJobId: queued.queueJobId,
+  };
+}
+
+function logSubmissionFailure(slug: string, queueJobId: number, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn(`[thought-topology] Runtime submission for ${slug} (queue job ${queueJobId}) failed: ${message}`);
+}
+
+/**
+ * A row whose Runtime submission failed, or whose process stopped between
+ * claiming and persisting the returned Runtime identity, is safe to submit
+ * again: the revision-scoped idempotency key makes repeats harmless.
+ */
+export async function resubmitQueuedThoughtTopologyJob(
+  gardenSlug: string,
+  options: {
+    database?: Database.Database;
+    submit?: TopologySubmitter;
+    /** Rows updated more recently than this are assumed to be in flight. */
+    minimumAgeMs?: number;
+  } = {},
+): Promise<boolean> {
+  const database = options.database ?? db;
+  const current = readThoughtTopologyRolloutState(gardenSlug, database);
+  if (!current?.enabled) return false;
+  const row = database.prepare(
+    `SELECT id, revision, status, runtime_job_id, updated_at
+       FROM thought_topology_jobs
+      WHERE cluster_id = ? AND status IN ('queued', 'running')
+        AND (runtime_job_id IS NULL OR runtime_job_id LIKE ?)
+      ORDER BY revision DESC, id DESC
+      LIMIT 1`,
+  ).get(current.id, `${SUBMISSION_MARKER_PREFIX}%`) as {
+    id: number;
+    revision: number;
+    status: "queued" | "running";
+    runtime_job_id: string | null;
+    updated_at: string;
+  } | undefined;
+  if (!row) return false;
+  const ageMs = Date.now() - Date.parse(`${row.updated_at.replace(" ", "T")}Z`);
+  if (Number.isFinite(ageMs) && ageMs < (options.minimumAgeMs ?? 30_000)) return false;
+  if (row.status === "queued" && row.revision !== current.revision) {
+    // The Garden moved on while the row sat unsubmitted; build the latest.
+    database.prepare(
+      `UPDATE thought_topology_jobs
+          SET revision = ?, updated_at = datetime('now')
+        WHERE id = ? AND status = 'queued'`,
+    ).run(current.revision, row.id);
+  }
+  const submit = options.submit ?? defaultSubmitter;
+  const existingMarker = row.status === "queued" && row.runtime_job_id?.startsWith(SUBMISSION_MARKER_PREFIX)
+    ? row.runtime_job_id
+    : null;
+  const submittedRevision = markerRevision(existingMarker) ?? (
+    row.status === "queued" ? current.revision : row.revision
+  );
+  return dispatchTopologyQueueRow({
     clusterId: current.id,
     userId: current.userId,
     gardenId: current.slug,
-    revision: queued.revision,
-    queueJobId: queued.queueJobId,
-  }).catch(() => {
-    // Durable queued state survives transient Runtime unavailability.
-  });
-  return { enabled: true, ...queued };
+    revision: submittedRevision,
+    queueJobId: row.id,
+    status: row.status,
+  }, database, submit, existingMarker);
 }
 
 /** Future explicit opt-in primitive. Not called by any migration/startup path. */

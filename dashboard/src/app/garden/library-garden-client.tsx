@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import GardenAssistantSwitch from '@/app/components/hermes/garden-assistant-switch';
+import { Toaster, useToast } from '@/app/components/toast';
 import { quartzUrlWithAppTheme } from '@/lib/quartz-url';
 import { exportFolderPdf, type FolderPdfExportMessage } from '@/lib/folder-pdf-export-client';
 import {
@@ -11,11 +12,17 @@ import {
   type QuartzInlineAnswerStopRequest,
   type QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
+import {
+  quartzTopologyInvestigationRequest,
+  type QuartzTopologyInvestigationRequest,
+} from '@/lib/quartz-topology-investigation';
 import { useQuartzViewLease } from './use-quartz-view-lease';
 
 interface Props {
   src: string;
   title: string;
+  /** View lease already held by the Server Component; null if it could not lease Quartz. */
+  quartzViewId?: string | null;
 }
 
 interface QuartzMessage {
@@ -92,14 +99,17 @@ function isMarkdownDocumentSlug(slug: string, clusterSlug: string): boolean {
   );
 }
 
-export default function LibraryGardenClient({ src, title }: Props) {
+export default function LibraryGardenClient({ src, title, quartzViewId = null }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const topologyRequestsRef = useRef(new Set<string>());
-  const quartzLease = useQuartzViewLease();
+  const quartzLease = useQuartzViewLease(true, quartzViewId);
+  const { toasts, dismissToast } = useToast();
   const [loadFailed, setLoadFailed] = useState(false);
   const [activeCluster, setActiveCluster] = useState<string | null>(null);
   const [activeMarkdown, setActiveMarkdown] = useState<ActiveMarkdown | null>(null);
   const [assistantSelection, setAssistantSelection] = useState<QuartzAssistantSelectionRequest | null>(null);
+  const [topologyInvestigation, setTopologyInvestigation] =
+    useState<QuartzTopologyInvestigationRequest | null>(null);
   const [assistantInlineStop, setAssistantInlineStop] = useState<QuartzInlineAnswerStopRequest | null>(null);
   const [markdownEditorOpen, setMarkdownEditorOpen] = useState(false);
   const activeMarkdownCluster = activeMarkdown?.cluster;
@@ -186,6 +196,15 @@ export default function LibraryGardenClient({ src, title }: Props) {
       if (selectionRequest) {
         if (event.source !== iframeRef.current?.contentWindow) return;
         setAssistantSelection(selectionRequest);
+        return;
+      }
+
+      const investigationRequest = quartzTopologyInvestigationRequest(data);
+      if (investigationRequest) {
+        if (event.source !== iframeRef.current?.contentWindow) return;
+        if (!quartzOrigin || event.origin !== quartzOrigin) return;
+        setActiveCluster(investigationRequest.clusterSlug);
+        setTopologyInvestigation(investigationRequest);
         return;
       }
 
@@ -291,6 +310,8 @@ export default function LibraryGardenClient({ src, title }: Props) {
               folder,
               ok,
               error: body.error,
+              retryable: body.retryable === true,
+              retryAfterMs: body.retryAfterMs,
             });
             if (ok) reloadGarden();
           })
@@ -456,10 +477,13 @@ export default function LibraryGardenClient({ src, title }: Props) {
         activeClusterName={activeCluster ?? undefined}
         activeMarkdown={activeMarkdown}
         selectedTextRequest={assistantSelection}
+        topologyInvestigationRequest={topologyInvestigation}
         inlineAnswerStopRequest={assistantInlineStop}
         onInlineAnswerUpdate={postInlineAnswer}
         launcherHidden={markdownEditorOpen}
       />
+
+      <Toaster toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

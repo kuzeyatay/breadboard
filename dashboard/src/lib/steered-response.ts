@@ -4,6 +4,21 @@ export interface CourseCorrectionBoundary {
   offset: number;
 }
 
+/**
+ * A reply to the assistant's own mid-turn question is runtime input, not a new
+ * user-authored turn. New rows carry the explicit flag; the client id keeps
+ * already-persisted clarification replies from reappearing after an upgrade.
+ */
+export function isClarificationAnswerMessage(message: {
+  clientMessageId?: string;
+  clarificationAnswer?: boolean;
+}): boolean {
+  return (
+    message.clarificationAnswer === true ||
+    message.clientMessageId?.startsWith("clarify:") === true
+  );
+}
+
 export type SteeredResponseSegment =
   | { kind: "assistant"; content: string; key: string }
   | { kind: "correction"; content: string; key: string };

@@ -14,6 +14,7 @@ import {
   normalizeTopicTags,
 } from "./tags";
 import {
+  CONCEPTS_FOLDER,
   INTERNAL_CONCEPT_FOLDER,
   INTERNAL_CONCEPT_TYPE,
   LEARNING_FOLDER,
@@ -23,6 +24,7 @@ import {
   LEARNING_SECTION_TYPE,
   LEARNING_SECTION_TYPES,
   LEGACY_GENERATED_TOPIC_FOLDER,
+  isConceptPageRelPath,
   isLearnAuthoredLesson,
   isInternalConceptMetadata,
   isLegacySubtopicRelPath,
@@ -74,6 +76,20 @@ export interface KnowledgeExtraction {
   topics: ExtractedTopic[];
   relationships: TopicRelationship[];
   suggestedTags: string[];
+}
+
+export interface KnowledgeExtractionChunkCheckpoint {
+  load(input: {
+    index: number;
+    total: number;
+    sourceChunk: string;
+  }): KnowledgeExtraction | null;
+  save(input: {
+    index: number;
+    total: number;
+    sourceChunk: string;
+    extraction: KnowledgeExtraction;
+  }): void;
 }
 
 export interface SavedKnowledge {
@@ -247,10 +263,7 @@ function rememberClusterKnowledge(
   // and cannot keep a standalone dashboard process alive.
   const timer = setTimeout(() => {
     const current = clusterKnowledgeCache.get(cacheKey);
-    if (
-      current?.generation === generation &&
-      current.expiresAt <= Date.now()
-    ) {
+    if (current?.generation === generation && current.expiresAt <= Date.now()) {
       clusterKnowledgeCache.delete(cacheKey);
     }
   }, CLUSTER_KNOWLEDGE_CACHE_TTL_MS);
@@ -689,7 +702,8 @@ export { countClusterMarkdown } from "./garden-directory";
 /**
  * Folder (relative to the cluster directory) that ingested source documents are
  * written into. Extracted concepts are now internal ConceptNodes, while public
- * study output is written as ordered textbook pages under numbered sections.
+ * source-derived output is written as concept pages under numbered Concepts
+ * sections; the separate Learn pipeline owns the ordered learning spine.
  * Notes are still identified by basename slug so links resolve across folders
  * (Quartz uses shortest-path link resolution).
  */
@@ -810,37 +824,38 @@ function knowledgeClusterPathSha256(clusterDir: string): string {
 }
 
 function fsyncKnowledgeDirectory(directoryPath: string): void {
+  // Windows does not provide a reliable directory fsync primitive. Opening a
+  // directory and calling FlushFileBuffers can block indefinitely on some
+  // filesystems and antivirus/filter-driver combinations instead of returning
+  // EACCES/EINVAL/EPERM. Each knowledge file is already fsynced before its
+  // atomic rename, so skip the unsupported parent-directory flush on Windows.
+  if (process.platform === "win32") return;
+
   let descriptor: number | undefined;
   try {
     descriptor = fs.openSync(directoryPath, "r");
     fs.fsyncSync(descriptor);
   } catch (error) {
-    // Windows cannot FlushFileBuffers for every directory handle. File data
-    // and the atomic rename are still durable; other hosts fsync the parent.
-    if (
-      process.platform !== "win32" ||
-      !(error instanceof Error) ||
-      !("code" in error) ||
-      !["EACCES", "EINVAL", "EPERM"].includes(String(error.code))
-    ) {
-      throw error;
-    }
+    throw error;
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
   }
 }
 
 function fsyncKnowledgeFile(filePath: string): void {
+  // Atomic knowledge writes on Windows flush the temporary file handle before
+  // renaming it. Reopening the renamed file solely to call FlushFileBuffers is
+  // redundant and can block indefinitely behind filesystem filter drivers.
+  // Other platforms keep the post-rename fsync below.
+  if (process.platform === "win32") return;
+
   const metadata = fs.lstatSync(filePath);
   if (!metadata.isFile() || metadata.isSymbolicLink()) {
     throw new Error("Knowledge transaction durable file is not regular.");
   }
   let descriptor: number | undefined;
   try {
-    descriptor = fs.openSync(
-      filePath,
-      process.platform === "win32" ? "r+" : "r",
-    );
+    descriptor = fs.openSync(filePath, "r");
     fs.fsyncSync(descriptor);
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
@@ -2584,11 +2599,13 @@ export function recoverKnowledgeWriteTransactions(
   runtimeJobsRoot: string,
 ): KnowledgeWriteRecovery[] {
   const clusterDir = path.join(contentPath, clusterSlug.trim());
-  if (!fs.existsSync(registryRoot)) return [];
-  assertDirectKnowledgeDirectory(
-    registryRoot,
-    "Knowledge transaction registry",
-  );
+  const registryExists = fs.existsSync(registryRoot);
+  if (registryExists) {
+    assertDirectKnowledgeDirectory(
+      registryRoot,
+      "Knowledge transaction registry",
+    );
+  }
   let recoveryLease: GardenMutationLease;
   try {
     recoveryLease = acquireGardenMutationLease(
@@ -2615,6 +2632,11 @@ export function recoverKnowledgeWriteTransactions(
   // without touching the garden.
   try {
     assertActiveGardenMutationLease(recoveryLease);
+    // The transaction registry can already be gone while its process-bound
+    // Garden lease remains after a crash or an interrupted cleanup. Acquiring
+    // and releasing the recovery lease above safely fences and clears that
+    // orphan even though there are no journals left to scan.
+    if (!registryExists) return [];
     clearStaleKnowledgeRegistryLock(registryRoot);
     recoveryLock = acquireKnowledgeRegistryLock(
       registryRoot,
@@ -2840,6 +2862,7 @@ function copyKnowledgeFile(
   transaction?.captureFile(targetPath);
   const temporaryPath = `${targetPath}.pending.${process.pid}.${knowledgeFileCopySequence++}`;
   transaction?.captureFile(temporaryPath);
+  let descriptor: number | undefined;
   try {
     fs.copyFileSync(sourcePath, temporaryPath, fs.constants.COPYFILE_EXCL);
     const copied = hashKnowledgeFile(temporaryPath);
@@ -2847,12 +2870,22 @@ function copyKnowledgeFile(
       copied.sha256 !== source.sha256 ||
       copied.sizeBytes !== source.sizeBytes
     ) {
-      throw new Error("Knowledge source asset copy failed its integrity check.");
+      throw new Error(
+        "Knowledge source asset copy failed its integrity check.",
+      );
     }
+    // Match text/binary atomic writes: make the copied bytes durable before
+    // the rename. On Windows this is the authoritative file flush because the
+    // redundant post-rename reopen is intentionally skipped above.
+    descriptor = fs.openSync(temporaryPath, "r+");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
     fs.renameSync(temporaryPath, targetPath);
     fsyncKnowledgeFile(targetPath);
     fsyncKnowledgeDirectory(path.dirname(targetPath));
   } catch (error) {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
     fs.rmSync(temporaryPath, { force: true });
     throw error;
   }
@@ -2871,6 +2904,15 @@ function renameKnowledgeFile(
   if (path.dirname(targetPath) !== path.dirname(sourcePath)) {
     fsyncKnowledgeDirectory(path.dirname(targetPath));
   }
+}
+
+function removeKnowledgeFile(
+  filePath: string,
+  transaction?: KnowledgeWriteTransaction,
+): void {
+  transaction?.captureFile(filePath);
+  fs.rmSync(filePath);
+  fsyncKnowledgeDirectory(path.dirname(filePath));
 }
 
 function ensureDirectory(
@@ -2967,14 +3009,265 @@ export function humanizeSourceTitle(
 
 function sourceSectionNumber(clusterDir: string): number {
   if (!fs.existsSync(clusterDir)) return 1;
-  const existing = fs
-    .readdirSync(clusterDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name.match(/^(\d+)\./)?.[1])
-    .filter((value): value is string => Boolean(value))
-    .map((value) => Number.parseInt(value, 10))
-    .filter(Number.isFinite);
+  const numberedDirectories = (directory: string): number[] => {
+    if (!fs.existsSync(directory)) return [];
+    return fs
+      .readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) =>
+        Number.parseInt(entry.name.match(/^(\d+)\./)?.[1] ?? "", 10),
+      )
+      .filter(Number.isFinite);
+  };
+  // Include legacy root-level ingest sections when selecting the next number,
+  // but write every new section beneath Concepts/.
+  const existing = [
+    ...numberedDirectories(clusterDir),
+    ...numberedDirectories(path.join(clusterDir, CONCEPTS_FOLDER)),
+  ];
   return existing.length > 0 ? Math.max(...existing) + 1 : 1;
+}
+
+interface LegacyIngestSection {
+  directoryPath: string;
+  name: string;
+  indexPath: string;
+  pagePaths: string[];
+}
+
+export interface LegacyConceptSectionMigrationResult {
+  detectedSections: number;
+  detectedPages: number;
+  migratedSections: number;
+  migratedPages: number;
+  collisionCopies: number;
+  sections: string[];
+}
+
+function legacyIngestSections(clusterDir: string): LegacyIngestSection[] {
+  if (!fs.existsSync(clusterDir)) return [];
+
+  return fs
+    .readdirSync(clusterDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^\d+\.\s/.test(entry.name))
+    .flatMap((entry): LegacyIngestSection[] => {
+      const directoryPath = path.join(clusterDir, entry.name);
+      const children = fs.readdirSync(directoryPath, { withFileTypes: true });
+      if (
+        children.some(
+          (child) =>
+            !child.isFile() || !child.name.toLowerCase().endsWith(".md"),
+        )
+      ) {
+        return [];
+      }
+
+      const indexPath = path.join(directoryPath, "_index.md");
+      const pagePaths = children
+        .filter((child) => child.name.toLowerCase() !== "_index.md")
+        .map((child) => path.join(directoryPath, child.name))
+        .sort((left, right) => left.localeCompare(right));
+      if (!fs.existsSync(indexPath) || pagePaths.length === 0) return [];
+
+      const indexData = parseMarkdownFile(
+        fs.readFileSync(indexPath, "utf-8"),
+      ).data;
+      if (
+        !LEARNING_SECTION_TYPES.has(inferKnowledgeType(indexData)) ||
+        frontmatterString(indexData, "internal") !== "true" ||
+        frontmatterString(indexData, "generated_by") === "learn_button" ||
+        !frontmatterString(indexData, "source_document")
+      ) {
+        return [];
+      }
+
+      const pagesAreLegacyIngest = pagePaths.every((pagePath) => {
+        const data = parseMarkdownFile(fs.readFileSync(pagePath, "utf-8")).data;
+        return (
+          LEARNING_PAGE_TYPES.has(inferKnowledgeType(data)) &&
+          frontmatterString(data, "internal") === "true" &&
+          frontmatterString(data, "generated_by") !== "learn_button" &&
+          Boolean(frontmatterString(data, "source_document"))
+        );
+      });
+      return pagesAreLegacyIngest
+        ? [{ directoryPath, name: entry.name, indexPath, pagePaths }]
+        : [];
+    })
+    .sort((left, right) => {
+      const leftNumber = Number.parseInt(
+        left.name.match(/^(\d+)\./)?.[1] ?? "0",
+        10,
+      );
+      const rightNumber = Number.parseInt(
+        right.name.match(/^(\d+)\./)?.[1] ?? "0",
+        10,
+      );
+      return leftNumber - rightNumber || left.name.localeCompare(right.name);
+    });
+}
+
+function publicLegacyConceptPage(content: string): string {
+  const { data, body } = parseMarkdownFile(content);
+  delete data.internal;
+  data.generated_by = "document_ingestion";
+  data.collection = CONCEPTS_FOLDER;
+  return normalizeQuartzMarkdown(`${frontmatter(data)}${body}\n`);
+}
+
+function equivalentConceptPage(left: string, right: string): boolean {
+  const leftParsed = parseMarkdownFile(left);
+  const rightParsed = parseMarkdownFile(right);
+  return (
+    frontmatterString(leftParsed.data, "title") ===
+      frontmatterString(rightParsed.data, "title") &&
+    frontmatterString(leftParsed.data, "source_document") ===
+      frontmatterString(rightParsed.data, "source_document") &&
+    leftParsed.body.replace(/\s+/g, " ").trim() ===
+      rightParsed.body.replace(/\s+/g, " ").trim()
+  );
+}
+
+function writeMigratedConceptSectionIndex({
+  section,
+  sectionDir,
+  date,
+  transaction,
+}: {
+  section: LegacyIngestSection;
+  sectionDir: string;
+  date: string;
+  transaction?: KnowledgeWriteTransaction;
+}): void {
+  const oldIndex = parseMarkdownFile(
+    fs.readFileSync(section.indexPath, "utf-8"),
+  );
+  const title = frontmatterString(oldIndex.data, "title") || section.name;
+  const sourceDocument = frontmatterString(oldIndex.data, "source_document");
+  const pages = fs
+    .readdirSync(sectionDir, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.toLowerCase().endsWith(".md") &&
+        entry.name.toLowerCase() !== "_index.md",
+    )
+    .map((entry) => {
+      const pagePath = path.join(sectionDir, entry.name);
+      const parsed = parseMarkdownFile(fs.readFileSync(pagePath, "utf-8"));
+      return {
+        name: entry.name,
+        title:
+          frontmatterString(parsed.data, "title") ||
+          entry.name.replace(/\.md$/i, ""),
+      };
+    })
+    .sort((left, right) =>
+      left.title.localeCompare(right.title, undefined, { numeric: true }),
+    );
+  const sectionRelPath = `${CONCEPTS_FOLDER}/${section.name}`;
+  const pageLinks = pages.map(
+    (page) =>
+      `- ${wikilinkForRelPath(`${sectionRelPath}/${page.name}`, page.title)}`,
+  );
+  const sectionFrontmatter: Record<string, string | string[]> = {
+    title,
+    date: frontmatterString(oldIndex.data, "date") || date,
+    knowledge_type: "concept-section",
+    breadboardType: "concept_section",
+    generated_by: "document_ingestion",
+    collection: CONCEPTS_FOLDER,
+  };
+  if (sourceDocument) sectionFrontmatter.source_document = sourceDocument;
+  const content =
+    frontmatter(sectionFrontmatter) +
+    `# ${title}\n\n` +
+    `This section collects source-derived concepts created during document ingestion.\n\n` +
+    `## Concepts\n\n` +
+    `${pageLinks.length > 0 ? pageLinks.join("\n") : "- No concepts were extracted from this document."}\n`;
+  writeKnowledgeTextFile(
+    path.join(sectionDir, "_index.md"),
+    normalizeQuartzMarkdown(content),
+    transaction,
+  );
+}
+
+/**
+ * Move the legacy, hidden document-ingestion layout from numbered Garden-root
+ * folders into the public Concepts collection. Detection deliberately requires
+ * an internal generated section plus internal source-linked learning pages, so
+ * Learn-authored curricula and user-created numbered folders are never moved.
+ */
+export function migrateLegacyIngestSectionsToConcepts(
+  contentPath: string,
+  clusterSlug: string,
+  options: {
+    apply?: boolean;
+    date?: string;
+    transaction?: KnowledgeWriteTransaction;
+  } = {},
+): LegacyConceptSectionMigrationResult {
+  const clusterDir = path.join(contentPath, clusterSlug.trim());
+  const sections = legacyIngestSections(clusterDir);
+  const detectedPages = sections.reduce(
+    (total, section) => total + section.pagePaths.length,
+    0,
+  );
+  const result: LegacyConceptSectionMigrationResult = {
+    detectedSections: sections.length,
+    detectedPages,
+    migratedSections: 0,
+    migratedPages: 0,
+    collisionCopies: 0,
+    sections: sections.map((section) => section.name),
+  };
+  if (options.apply === false || sections.length === 0) return result;
+
+  const date = options.date ?? new Date().toISOString();
+  const conceptsDir = ensureDirectory(
+    clusterDir,
+    CONCEPTS_FOLDER,
+    options.transaction,
+  );
+  for (const section of sections) {
+    const sectionDir = ensureKnowledgeDirectory(
+      path.join(conceptsDir, section.name),
+      options.transaction,
+    );
+    for (const sourcePath of section.pagePaths) {
+      const sourceContent = fs.readFileSync(sourcePath, "utf-8");
+      const publicContent = publicLegacyConceptPage(sourceContent);
+      let targetPath = path.join(sectionDir, path.basename(sourcePath));
+      if (fs.existsSync(targetPath)) {
+        const targetContent = fs.readFileSync(targetPath, "utf-8");
+        if (equivalentConceptPage(publicContent, targetContent)) {
+          removeKnowledgeFile(sourcePath, options.transaction);
+          result.migratedPages += 1;
+          continue;
+        }
+        targetPath = uniqueMigrationPath(sectionDir, path.basename(sourcePath));
+        result.collisionCopies += 1;
+      }
+      writeKnowledgeTextFile(targetPath, publicContent, options.transaction);
+      removeKnowledgeFile(sourcePath, options.transaction);
+      result.migratedPages += 1;
+    }
+
+    writeMigratedConceptSectionIndex({
+      section,
+      sectionDir,
+      date,
+      transaction: options.transaction,
+    });
+    removeKnowledgeFile(section.indexPath, options.transaction);
+    if (fs.readdirSync(section.directoryPath).length === 0) {
+      fs.rmdirSync(section.directoryPath);
+      fsyncKnowledgeDirectory(clusterDir);
+    }
+    result.migratedSections += 1;
+  }
+  writeConceptsIndex({ clusterDir, date, transaction: options.transaction });
+  return result;
 }
 
 function wikilinkForRelPath(relPath: string, label: string): string {
@@ -3412,6 +3705,16 @@ async function requestKnowledgeExtraction({
   return normalizeExtraction(parseJsonObject(rawContent), title, text, pages);
 }
 
+export class IncompleteKnowledgeExtractionError extends Error {
+  constructor(index: number, total: number, cause: unknown) {
+    super(
+      `Concept extraction failed for section ${index + 1} of ${total}; refusing to publish an incomplete knowledge map.`,
+    );
+    this.name = "IncompleteKnowledgeExtractionError";
+    this.cause = cause;
+  }
+}
+
 export async function extractDocumentKnowledge({
   client,
   model,
@@ -3422,6 +3725,7 @@ export async function extractDocumentKnowledge({
   pages,
   text,
   onProgress,
+  checkpoint,
 }: {
   client: OpenAI;
   model?: string;
@@ -3432,6 +3736,7 @@ export async function extractDocumentKnowledge({
   pages: DocumentPage[];
   text: string;
   onProgress?: (step: string) => void;
+  checkpoint?: KnowledgeExtractionChunkCheckpoint;
 }): Promise<KnowledgeExtraction> {
   const selectedModel = model?.trim() || DEFAULT_MODEL;
   const cleanPages = cleanDocumentPages(pages);
@@ -3440,47 +3745,100 @@ export async function extractDocumentKnowledge({
 
   try {
     if (chunks.length <= 1) {
+      const sourceChunk = buildLocatedPromptText(cleanPages, cleanText);
+      try {
+        const restored =
+          checkpoint?.load({ index: 0, total: 1, sourceChunk }) ?? null;
+        if (restored) {
+          onProgress?.("Restoring concept checkpoint (1/1 sections)…");
+          return restored;
+        }
+      } catch {
+        // Re-extract when an optimization cannot be read safely.
+      }
       onProgress?.("Analyzing the document for key concepts…");
-      return await requestKnowledgeExtraction({
+      const extraction = await requestKnowledgeExtraction({
         client,
         model: selectedModel,
         title,
         sourceType,
         sourceLabel,
         isHandwriting,
-        locatedText: buildLocatedPromptText(cleanPages, cleanText),
+        locatedText: sourceChunk,
         text: cleanText,
         pages: cleanPages,
       });
+      try {
+        checkpoint?.save({
+          index: 0,
+          total: 1,
+          sourceChunk,
+          extraction,
+        });
+      } catch {
+        // Saving the optimization must not erase a successful model result.
+      }
+      return extraction;
     }
 
     const extractions: KnowledgeExtraction[] = [];
     for (let index = 0; index < chunks.length; index += 1) {
+      let restored: KnowledgeExtraction | null = null;
+      try {
+        restored =
+          checkpoint?.load({
+            index,
+            total: chunks.length,
+            sourceChunk: chunks[index],
+          }) ?? null;
+      } catch {
+        // A stale or partially-written optimization is never authoritative.
+        // Re-extract this section and replace the cache entry below.
+      }
+      if (restored) {
+        extractions.push(restored);
+        onProgress?.(
+          `Restoring concept checkpoint (${index + 1}/${chunks.length} sections)…`,
+        );
+        continue;
+      }
       onProgress?.(
         `Extracting concepts from section ${index + 1} of ${chunks.length}…`,
       );
       try {
-        extractions.push(
-          await requestKnowledgeExtraction({
-            client,
-            model: selectedModel,
-            title,
-            sourceType,
-            sourceLabel,
-            isHandwriting,
-            locatedText: chunks[index],
-            text: cleanText,
-            pages: cleanPages,
-            chunkLabel: `${index + 1} of ${chunks.length}`,
-          }),
-        );
-      } catch {
-        // Keep extracting other chunks; a single bad chunk should not erase the whole map.
+        const extraction = await requestKnowledgeExtraction({
+          client,
+          model: selectedModel,
+          title,
+          sourceType,
+          sourceLabel,
+          isHandwriting,
+          locatedText: chunks[index],
+          text: cleanText,
+          pages: cleanPages,
+          chunkLabel: `${index + 1} of ${chunks.length}`,
+        });
+        extractions.push(extraction);
+        try {
+          checkpoint?.save({
+            index,
+            total: chunks.length,
+            sourceChunk: chunks[index],
+            extraction,
+          });
+        } catch {
+          // Saving the optimization must not erase a successful model result.
+        }
+      } catch (error) {
+        // Completed sections are already durable. Surface the failure so the job
+        // retries the missing section instead of publishing a silently incomplete map.
+        throw new IncompleteKnowledgeExtractionError(index, chunks.length, error);
       }
     }
 
     return mergeKnowledgeExtractions(extractions, title, cleanText, cleanPages);
-  } catch {
+  } catch (error) {
+    if (error instanceof IncompleteKnowledgeExtractionError) throw error;
     return fallbackKnowledgeExtraction(title, cleanText, cleanPages);
   }
 }
@@ -3908,7 +4266,11 @@ async function decideTopicWritePlans({
 
   for (const topic of topics) {
     const candidates = existingNotes
-      .filter((note) => LEARNING_PAGE_TYPES.has(note.type))
+      .filter(
+        (note) =>
+          LEARNING_PAGE_TYPES.has(note.type) &&
+          isConceptPageRelPath(note.relPath),
+      )
       .map((note) => ({ note, score: candidateScore(topic, note) }))
       .filter((candidate) => candidate.score >= 0.16)
       .sort((a, b) => b.score - a.score)
@@ -3935,7 +4297,7 @@ async function decideTopicWritePlans({
             {
               role: "system",
               content:
-                "You decide whether newly extracted concepts should update an existing textbook page or become a new textbook page. " +
+                "You decide whether newly extracted concepts should update an existing concept page or become a new concept page. " +
                 "Merge only when the new concept is the same idea, a direct continuation, or a more specific treatment of the existing page. " +
                 "Create a new page when the concept is merely related, adjacent, or only shares broad keywords. Return only valid JSON.",
             },
@@ -4029,7 +4391,6 @@ async function harmonizeTopicNote({
   sourceTitle,
   sourceLabel,
   imagePages,
-  outputPlainText,
   transaction,
 }: {
   client?: OpenAI;
@@ -4040,7 +4401,6 @@ async function harmonizeTopicNote({
   sourceTitle: string;
   sourceLabel: string;
   imagePages: DocumentPage[];
-  outputPlainText: string;
   transaction?: KnowledgeWriteTransaction;
 }): Promise<void> {
   const sourceLink = wikilink(sourceSlug, sourceTitle);
@@ -4076,7 +4436,7 @@ async function harmonizeTopicNote({
               {
                 role: "system",
                 content:
-                  "Merge two textbook pages on the same concept into one coherent page. " +
+                  "Merge two concept pages on the same concept into one coherent page. " +
                   "Integrate the new content naturally into the existing structure, expanding or refining sections with new details. " +
                   "Eliminate redundancy while preserving unique facts from both. " +
                   "Keep a clean heading hierarchy with no duplicate headings. " +
@@ -4152,6 +4512,7 @@ function writeTextbookSectionIndex({
   sectionTitle,
   sourceSlug,
   sourceTitle,
+  artifacts,
   date,
   transaction,
 }: {
@@ -4160,6 +4521,7 @@ function writeTextbookSectionIndex({
   sectionTitle: string;
   sourceSlug: string;
   sourceTitle: string;
+  artifacts: TextbookArtifact[];
   date: string;
   transaction?: KnowledgeWriteTransaction;
 }): string {
@@ -4167,17 +4529,83 @@ function writeTextbookSectionIndex({
     frontmatter({
       title: `${sectionNumber}. ${sectionTitle}`,
       date,
-      knowledge_type: LEARNING_SECTION_TYPE,
-      breadboardType: "learning_section",
-      internal: "true",
+      knowledge_type: "concept-section",
+      breadboardType: "concept_section",
+      generated_by: "document_ingestion",
       source_document: sourceSlug,
     }) +
     `# ${sectionNumber}. ${sectionTitle}\n\n` +
-    `This section collects the lessons on ${sourceTitle}.\n`;
+    `This section collects the concepts extracted from ${sourceTitle}.\n\n` +
+    `## Concepts\n\n` +
+    `${
+      artifacts.length > 0
+        ? artifacts
+            .map(
+              (artifact) =>
+                `- ${wikilinkForRelPath(artifact.relPath, artifact.title)}`,
+            )
+            .join("\n")
+        : "- No concepts were extracted from this document."
+    }\n`;
 
   const filePath = path.join(sectionDir, "_index.md");
   writeKnowledgeTextFile(filePath, content, transaction);
   return filePath;
+}
+
+function writeConceptsIndex({
+  clusterDir,
+  date,
+  transaction,
+}: {
+  clusterDir: string;
+  date: string;
+  transaction?: KnowledgeWriteTransaction;
+}): void {
+  const conceptsDir = ensureDirectory(clusterDir, CONCEPTS_FOLDER, transaction);
+  const sections = fs
+    .readdirSync(conceptsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((entry) => {
+      const indexPath = path.join(conceptsDir, entry.name, "_index.md");
+      if (!fs.existsSync(indexPath)) return [];
+      const { data } = parseMarkdownFile(fs.readFileSync(indexPath, "utf-8"));
+      const title = frontmatterString(data, "title") || entry.name;
+      const sectionNumber = Number.parseInt(
+        entry.name.match(/^(\d+)\./)?.[1] ?? "0",
+        10,
+      );
+      return [{ entryName: entry.name, title, sectionNumber }];
+    })
+    .sort(
+      (left, right) =>
+        left.sectionNumber - right.sectionNumber ||
+        left.title.localeCompare(right.title),
+    );
+  const sectionLinks = sections.map(
+    (section) =>
+      `- ${wikilinkForRelPath(
+        `${CONCEPTS_FOLDER}/${section.entryName}/_index.md`,
+        section.title,
+      )}`,
+  );
+  const content =
+    frontmatter({
+      title: "Concepts",
+      date,
+      knowledge_type: "concept-index",
+      breadboardType: "concept_index",
+      generated_by: "document_ingestion",
+    }) +
+    `# Concepts\n\n` +
+    `These source-derived concepts are created when documents are added to this Garden.\n\n` +
+    `## Sections\n\n` +
+    `${sectionLinks.length > 0 ? sectionLinks.join("\n") : "- No concepts were extracted from the current documents."}\n`;
+  writeKnowledgeTextFile(
+    path.join(conceptsDir, "_index.md"),
+    content,
+    transaction,
+  );
 }
 
 function textbookPageBody({
@@ -4290,96 +4718,42 @@ function writeInternalConceptNode({
   return `${CONCEPT_NODE_FOLDER}/${conceptSlug}.md`;
 }
 
-function writeLearningReferencePages({
+function writeConceptReferencePages({
   clusterDir,
-  metaTitle,
-  sectionNumber,
-  sectionTitle,
   sourceSlug,
   sourceTitle,
   sourceFileName,
   sourceType,
   sourceLabel,
-  extraction,
   artifacts,
   date,
   transaction,
 }: {
   clusterDir: string;
-  metaTitle: string;
-  sectionNumber: number;
-  sectionTitle: string;
   sourceSlug: string;
   sourceTitle: string;
   sourceFileName: string;
   sourceType: string;
   sourceLabel: string;
-  extraction: KnowledgeExtraction;
   artifacts: TextbookArtifact[];
   date: string;
   transaction?: KnowledgeWriteTransaction;
 }): void {
-  const learningDir = ensureDirectory(clusterDir, LEARNING_FOLDER, transaction);
+  writeConceptsIndex({ clusterDir, date, transaction });
   // Internal planning artifacts (Source Map, Scope Contract) live under
-  // .breadboard/planning/, never under the learner-facing learning/ folder.
+  // .breadboard/planning/, never under the user-facing Concepts/ folder.
   const planningDir = ensureDirectory(
     clusterDir,
     ".breadboard/planning",
     transaction,
-  );
-  const pageLinks = artifacts.map(
-    (artifact) =>
-      `- ${wikilinkForRelPath(artifact.relPath, artifact.title)} - ${artifact.locations.join(", ")}`,
   );
   const sourceEvidenceLines = artifacts.flatMap((artifact) =>
     artifact.topic.sourceEvidence.map(
       (evidence) => `- ${artifact.title}: ${cleanGeneratedText(evidence)}`,
     ),
   );
-  const conceptLines = artifacts.map(
-    (artifact) =>
-      `- ${artifact.topic.title} -> ${wikilinkForRelPath(artifact.relPath, artifact.title)}`,
-  );
-  const currentSectionLine =
-    artifacts.length > 0
-      ? `- ${sectionNumber}. ${sectionTitle}`
-      : `- No lesson sections were generated during ingest. Open ${wikilink(sourceSlug, sourceTitle)} under Sources, then use Learn to build the ordered lessons.`;
-
-  // Learner-facing planning pages live under learning/.
-  const learningPages: Array<{
-    fileName: string;
-    title: string;
-    type: string;
-    body: string;
-  }> = [
-    {
-      fileName: "Topic Overview.md",
-      title: "Topic Overview",
-      type: "topic-overview",
-      body:
-        `# Topic Overview\n\n` +
-        `${metaTitle} is organized as a sequence of lessons you can read in order. The newest material in the learning path comes from ${sourceTitle}.\n\n` +
-        `## Current Section\n\n` +
-        `${currentSectionLine}\n\n` +
-        `## What This Covers\n\n${extraction.summary}\n`,
-    },
-    {
-      fileName: "Learning Map.md",
-      title: "Learning Map",
-      type: "learning-map",
-      body:
-        `# Learning Map\n\n` +
-        `## Ordered Reading Path\n\n` +
-        `${pageLinks.length > 0 ? pageLinks.join("\n") : "- No lesson pages have been generated yet."}\n\n` +
-        `## Internal Concept Graph\n\n` +
-        `${conceptLines.length > 0 ? conceptLines.join("\n") : "- No ConceptNodes were extracted for this source."}\n\n` +
-        `## Confirmation Status\n\n` +
-        `Run Learn to build the confirmed multi-section learning spine. Until then Breadboard keeps the automatic order above and keeps ConceptNodes internal.\n`,
-    },
-  ];
-
   // Internal planning artifacts live under .breadboard/planning/, never under
-  // learning/ (they must not appear in the published garden).
+  // Concepts/ (they must not appear in the published garden).
   const planningPages: Array<{
     fileName: string;
     title: string;
@@ -4418,23 +4792,6 @@ function writeLearningReferencePages({
     },
   ];
 
-  for (const page of learningPages) {
-    // Internal planning pages carry no public tags — tags are reserved for
-    // learner-facing lesson pages.
-    const content =
-      frontmatter({
-        title: page.title,
-        date,
-        knowledge_type: page.type,
-        breadboardType: page.type.replace(/-/g, "_"),
-        source_document: sourceSlug,
-      }) + page.body;
-    writeKnowledgeTextFile(
-      path.join(learningDir, page.fileName),
-      content,
-      transaction,
-    );
-  }
   for (const page of planningPages) {
     const content =
       frontmatter({
@@ -4508,6 +4865,16 @@ export async function writeDocumentKnowledge({
     throwIfAborted(abortSignal);
     const clusterDir = path.join(contentPath, clusterSlug.trim());
     ensureKnowledgeDirectory(clusterDir, transaction);
+    const legacyMigration = migrateLegacyIngestSectionsToConcepts(
+      contentPath,
+      clusterSlug,
+      { transaction },
+    );
+    if (legacyMigration.migratedSections > 0) {
+      onProgress?.(
+        `Organized ${legacyMigration.migratedPages} existing concept page${legacyMigration.migratedPages === 1 ? "" : "s"} into Concepts...`,
+      );
+    }
     const sourcesDir = path.join(clusterDir, SOURCE_NOTE_FOLDER);
     const sectionNumber = sourceSectionNumber(clusterDir);
     const cleanPages = cleanDocumentPages(pages);
@@ -4532,7 +4899,9 @@ export async function writeDocumentKnowledge({
 
     const seenSourceAssetPaths = new Set<string>();
     for (const asset of sourceAssets) {
-      const normalizedRelativePath = asset.relativePath.replace(/\\/g, "/").trim();
+      const normalizedRelativePath = asset.relativePath
+        .replace(/\\/g, "/")
+        .trim();
       if (
         !normalizedRelativePath ||
         normalizedRelativePath.startsWith("/") ||
@@ -4540,7 +4909,10 @@ export async function writeDocumentKnowledge({
       ) {
         throw new Error("Source asset path must stay inside the garden.");
       }
-      const assetFilePath = path.resolve(clusterDir, ...normalizedRelativePath.split("/"));
+      const assetFilePath = path.resolve(
+        clusterDir,
+        ...normalizedRelativePath.split("/"),
+      );
       const resolvedClusterDir = path.resolve(clusterDir);
       if (!assetFilePath.startsWith(`${resolvedClusterDir}${path.sep}`)) {
         throw new Error("Source asset path must stay inside the garden.");
@@ -4579,8 +4951,8 @@ export async function writeDocumentKnowledge({
     const existingNotes = readExistingTopicNotes(clusterDir);
     onProgress?.(
       extraction.topics.length > 0
-        ? `Planning how to organize ${extraction.topics.length} concept${extraction.topics.length === 1 ? "" : "s"} into textbook pages...`
-        : "Planning the textbook structure...",
+        ? `Planning how to organize ${extraction.topics.length} concept${extraction.topics.length === 1 ? "" : "s"}...`
+        : "Preparing the Concepts folder...",
     );
     const topicPlans = await decideTopicWritePlans({
       client,
@@ -4595,6 +4967,8 @@ export async function writeDocumentKnowledge({
         plan.finalSlug,
       ]),
     );
+    const conceptSectionFolder = `${sectionNumber}. ${cleanFileSegment(sectionTitle)}`;
+    const conceptSectionRelFolder = `${CONCEPTS_FOLDER}/${conceptSectionFolder}`;
 
     const relationshipLookup = new Map<string, TopicRelationship[]>();
     for (const relationship of extraction.relationships) {
@@ -4612,7 +4986,11 @@ export async function writeDocumentKnowledge({
         plan.topic.locations.length > 0
           ? ` (${plan.topic.locations.join(", ")})`
           : "";
-      return `- ${wikilink(plan.finalSlug, plan.topic.title)}${locations}`;
+      const relPath =
+        plan.action === "merged" && plan.target
+          ? plan.target.relPath
+          : `${conceptSectionRelFolder}/${plan.finalSlug}.md`;
+      return `- ${wikilinkForRelPath(relPath, plan.topic.title)}${locations}`;
     });
     const sourceImages = uniqueNonEmpty(
       cleanPages.map((page) => page.imagePath ?? "").filter(Boolean),
@@ -4657,7 +5035,7 @@ export async function writeDocumentKnowledge({
     const sourceContent =
       frontmatter(sourceFrontmatter) +
       `## Summary\n\n${extraction.summary}\n\n` +
-      `## Textbook coverage\n\n${sourceLinks.length > 0 ? sourceLinks.join("\n") : "- No textbook pages were generated for this source."}\n\n` +
+      `## Concept coverage\n\n${sourceLinks.length > 0 ? sourceLinks.join("\n") : "- No concept pages were generated for this source."}\n\n` +
       `## Internal planning\n\nExtracted concepts are retained as internal ConceptNodes for the Learning Spine, graph relationships, source coverage, and assistant context.\n\n` +
       `## Source material\n\n${outputMarkdownText.trim() || outputPlainText.trim()}\n`;
 
@@ -4673,35 +5051,29 @@ export async function writeDocumentKnowledge({
 
     const textbookArtifacts: TextbookArtifact[] = [];
     if (topicPlans.length > 0) {
-      const sectionFolder = `${sectionNumber}. ${cleanFileSegment(sectionTitle)}`;
-      const sectionDir = ensureDirectory(
+      const sectionFolder = conceptSectionFolder;
+      const conceptsDir = ensureDirectory(
         clusterDir,
+        CONCEPTS_FOLDER,
+        transaction,
+      );
+      const sectionDir = ensureDirectory(
+        conceptsDir,
         sectionFolder,
         transaction,
       );
+      const sectionRelFolder = conceptSectionRelFolder;
       const conceptDir = ensureDirectory(
         clusterDir,
         CONCEPT_NODE_FOLDER,
         transaction,
       );
-      createdFilePaths.push(
-        writeTextbookSectionIndex({
-          sectionDir,
-          sectionNumber,
-          sectionTitle,
-          sourceSlug,
-          sourceTitle: extraction.documentTitle || sourceTitle,
-          date,
-          transaction,
-        }),
-      );
-
       let writtenCount = 0;
       for (const plan of topicPlans) {
         throwIfAborted(abortSignal);
         writtenCount += 1;
         onProgress?.(
-          `${plan.action === "merged" ? "Merging" : "Writing"} textbook page "${plan.topic.title}" (${writtenCount}/${topicPlans.length})...`,
+          `${plan.action === "merged" ? "Merging" : "Writing"} concept page "${plan.topic.title}" (${writtenCount}/${topicPlans.length})...`,
         );
         const topic = plan.topic;
         const subsectionNumber = writtenCount;
@@ -4754,7 +5126,7 @@ export async function writeDocumentKnowledge({
         const textbookRelPath =
           canMergeIntoTextbook && plan.target
             ? plan.target.relPath
-            : `${sectionFolder}/${textbookSlug}.md`;
+            : `${sectionRelFolder}/${textbookSlug}.md`;
         const relatedSlugs = relatedTitles.map(
           (relatedTitle) =>
             topicSlugByTitle.get(relatedTitle.toLowerCase()) ??
@@ -4771,13 +5143,12 @@ export async function writeDocumentKnowledge({
             sourceTitle: extraction.documentTitle || sourceTitle,
             sourceLabel,
             imagePages,
-            outputPlainText,
             transaction,
           });
         } else {
-          // Ingest pages are internal scaffolding superseded by the Learn pipeline's
-          // lessons; they are hidden from the published garden (no learn_button) and
-          // therefore carry a clean title and no public tags.
+          // Document ingestion creates readable, source-derived concept pages.
+          // Learn-authored lessons remain a separate, ordered curriculum under
+          // learning/ and are never mutated by this ingest path.
           const cleanTopicTitle = humanizeSourceTitle(
             topic.title,
             sourceFileName,
@@ -4789,9 +5160,10 @@ export async function writeDocumentKnowledge({
             source: sourceLabel,
             knowledge_type: LEARNING_PAGE_TYPE,
             breadboardType: "learning_page",
+            generated_by: "document_ingestion",
+            collection: CONCEPTS_FOLDER,
             source_document: sourceSlug,
             source_file: sourceFileName,
-            internal: "true",
             locations,
             related: relatedSlugs,
           };
@@ -4853,26 +5225,34 @@ export async function writeDocumentKnowledge({
           action: canMergeIntoTextbook ? "merged" : "created",
         });
       }
+      createdFilePaths.push(
+        writeTextbookSectionIndex({
+          sectionDir,
+          sectionNumber,
+          sectionTitle,
+          sourceSlug,
+          sourceTitle: extraction.documentTitle || sourceTitle,
+          artifacts: textbookArtifacts,
+          date,
+          transaction,
+        }),
+      );
     }
 
-    writeLearningReferencePages({
+    writeConceptReferencePages({
       clusterDir,
-      metaTitle: extraction.documentTitle || sourceTitle,
-      sectionNumber,
-      sectionTitle,
       sourceSlug,
       sourceTitle: extraction.documentTitle || sourceTitle,
       sourceFileName,
       sourceType,
       sourceLabel,
-      extraction,
       artifacts: textbookArtifacts,
       date,
       transaction,
     });
 
     throwIfAborted(abortSignal);
-    onProgress?.("Refreshing the Learning Map...");
+    onProgress?.("Refreshing the Garden index...");
     refreshClusterIndex(contentPath, clusterSlug, { transaction });
 
     return {
@@ -5029,10 +5409,7 @@ export function scanClusterKnowledge(
     )
     .join("|");
   const cached = clusterKnowledgeCache.get(cacheKey);
-  if (
-    cached?.signature === signature &&
-    cached.expiresAt > Date.now()
-  ) {
+  if (cached?.signature === signature && cached.expiresAt > Date.now()) {
     rememberClusterKnowledge(cacheKey, signature, cached.knowledge);
     return cached.knowledge;
   }
@@ -5197,6 +5574,13 @@ export function scanClusterKnowledge(
 
   const sourceNodes = nodes.filter((node) => node.type === "source-document");
   const textbookNodes = nodes.filter(isLearnAuthoredLesson);
+  const ingestConceptTopics = nodes.filter(
+    (node) =>
+      isConceptPageRelPath(node.relPath) &&
+      LEARNING_PAGE_TYPES.has(node.type) &&
+      node.internal !== "true" &&
+      node.draft !== "true",
+  );
   const legacyPublicTopics = nodes.filter(
     (node) =>
       node.type === "knowledge-topic" &&
@@ -5204,7 +5588,11 @@ export function scanClusterKnowledge(
       node.draft !== "true" &&
       !isLegacySubtopicRelPath(node.relPath),
   );
-  const topicNodes = [...textbookNodes, ...legacyPublicTopics].sort(
+  const topicNodes = [
+    ...textbookNodes,
+    ...ingestConceptTopics,
+    ...legacyPublicTopics,
+  ].sort(
     (a, b) =>
       readingOrderRank(a.relPath, a.type) -
         readingOrderRank(b.relPath, b.type) || a.title.localeCompare(b.title),

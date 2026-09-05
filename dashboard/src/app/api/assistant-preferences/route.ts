@@ -52,10 +52,10 @@ function payload(userId: number | null) {
     // control, but the server needs it too: an artifact and a garden note are
     // written server-side, where no localStorage exists.
     humanizerAuto: settings.humanizerAuto,
-    // The Intelligence-menu switches (YOLO, Agent mode, Super agent, Direct
-    // mode, Personalize). The browser stores hydrate from this on load, since
-    // their localStorage copy belongs to an origin the desktop changes on
-    // every launch.
+    // Browser switches, including the profile's automatic-theme and location
+    // consent controls. Their stores hydrate from this on load, since their
+    // localStorage copy belongs to an origin the desktop changes on every
+    // launch.
     switches: settings.composerSwitches,
   };
 }
@@ -105,7 +105,7 @@ export async function PATCH(request: Request) {
       throw new ApiError(
         400,
         "invalid_switches",
-        "switches must map known composer switches to booleans.",
+        "switches must map known preference switches to booleans.",
       );
     }
     if (

@@ -7,6 +7,8 @@ const source = (relativePath) =>
 
 const ingestRoute = source('../src/app/api/ingest/route.ts');
 const ingestExecutor = source('../src/lib/runtime-v2/ingest-executor.ts');
+const anydocPdfWorker = source('../scripts/runtime-v2-anydoc-pdf-worker.mjs');
+const vlmOcrService = source('../scripts/runtime-v2-vlm-ocr-service.mjs');
 const statusRoute = source('../src/app/api/vlm-ocr/status/route.ts');
 const option = source('../src/app/components/vlm-parse-option.tsx');
 const workspace = source('../src/app/gardens/[clusterSlug]/workspace-client.tsx');
@@ -38,7 +40,7 @@ test('both upload panels offer the option and post it to the ingest route', () =
   }
 });
 
-test('the two page readers are mutually exclusive in both panels', () => {
+test('handwriting OCR yields to selected document readers in both panels', () => {
   for (const client of [workspace, dashboard]) {
     assert.match(client, /if \(next\) setIsHandwriting\(false\)/);
     assert.match(
@@ -69,14 +71,41 @@ test('the ingest route reads the flag and routes PDFs and images through the VLM
     ingestExecutor,
     /const useVlm = parseWithVlm && \(isImageExt\(ext\) \|\| ext === "pdf"\)/,
   );
-  assert.match(ingestExecutor, /parsePagesWithVlm\(\{/);
-  // Pages are rendered at the width the VLM config asks for.
-  assert.match(ingestExecutor, /desiredWidth: vlmConfig\.pageImageWidth/);
+  assert.match(ingestExecutor, /readPdfVlmCheckpoint\(checkpoint, totalPages\)/);
+  assert.match(ingestExecutor, /writePdfVlmCheckpoint\(checkpoint, totalPages, checkpointBatches\)/);
+  assert.match(ingestExecutor, /Restoring VLM checkpoint/);
+  // Textbooks are rendered and OCR'd in bounded batches rather than retaining
+  // every page image until the whole document has finished.
+  assert.match(ingestExecutor, /first \+= PDF_VLM_RENDER_BATCH_PAGES/);
+  assert.match(ingestExecutor, /desiredWidth: config\.pageImageWidth/);
+  assert.match(ingestExecutor, /renderPdfBatchInSubprocess\(\{/);
+  assert.match(ingestExecutor, /process\.execPath/);
+  assert.match(
+    ingestExecutor,
+    /finally \{\s*collectReleasedPdfBatchMemory\(\)/,
+    'released child output is collected before another batch is rendered',
+  );
 });
 
 test('a VLM-parsed source records how it was read', () => {
   assert.match(ingestExecutor, /extraction_method: "hunyuan-ocr-gguf"/);
   assert.match(ingestExecutor, /parse_mode: "vlm"/);
+});
+
+test('PDF anydoc cross-checks run in a bounded disposable process', () => {
+  assert.match(ingestExecutor, /convertPdfWithAnydocInSubprocess\(\{/);
+  assert.match(ingestExecutor, /timeout: PDF_ANYDOC_TIMEOUT_MS/);
+  assert.match(ingestExecutor, /Retrying anydoc with the VLM OCR text companion/);
+  assert.match(anydocPdfWorker, /convertWithAnydoc\(\{/);
+  assert.match(anydocPdfWorker, /ext: "pdf"/);
+});
+
+test('the Runtime-owned OCR service recycles its native child inside the active lease', () => {
+  assert.match(vlmOcrService, /MAX_CHILD_COMPLETED_REQUESTS = 192/);
+  assert.match(vlmOcrService, /SLOT_RELEASE_MARKER/);
+  assert.match(vlmOcrService, /recycling native child after/);
+  assert.match(vlmOcrService, /restarting recycled child/);
+  assert.match(vlmOcrService, /stdio: \["ignore", "pipe", "pipe"\]/);
 });
 
 test('a missing model server fails the upload loudly instead of saving a stub', () => {

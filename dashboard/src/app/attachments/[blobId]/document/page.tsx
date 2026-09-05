@@ -15,7 +15,10 @@ import {
   readOpenDocument,
   type DocumentStructure,
 } from "@/lib/document-structure/index.ts";
-import { getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
+import {
+  getNavbarFlowers,
+  getNavbarShortcuts,
+} from "@/lib/profile/navbar-shortcuts-store.ts";
 import DocumentViewerClient from "./document-viewer-client";
 
 export const dynamic = "force-dynamic";
@@ -125,6 +128,7 @@ export default async function ChatAttachmentDocumentPage({
         warnings={structure.warnings}
         sourceUrl={sourceUrl}
         fastRead={getNavbarShortcuts(userId).fastRead}
+        showNavbarFlowers={getNavbarFlowers(userId)}
       />
     </div>
   );

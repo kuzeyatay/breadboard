@@ -121,7 +121,6 @@ import {
   type AssistantReasoningEffort,
 } from "@/lib/assistant-reasoning";
 import type { IntelligenceMode } from "@/lib/intelligence-modes";
-import type { ModelFailoverNotice as ComposerModelFailover } from "@/app/components/use-assistant-intelligence";
 import {
   externalAgentAbortUrls,
   externalAgentRunInFlight,
@@ -148,6 +147,7 @@ import {
 } from "@/lib/conversations/external-agent-runs";
 import { chatTimeSeparatorLabels } from "@/lib/chat-time-separators";
 import {
+  isClarificationAnswerMessage,
   splitSteeredResponse,
   type CourseCorrectionBoundary,
 } from "@/lib/steered-response";
@@ -187,6 +187,7 @@ import {
   delegatedWorkersOutcome,
   delegatedWorkersOutcomeNote,
   delegatedContinuationPreamble,
+  delegatedThinkingUpdates,
   delegatedAgentStartedAtForMessage,
   delegatedTurnCarriedDurationMs,
   delegatedTurnTotalUsage,
@@ -252,7 +253,10 @@ interface Props {
     question: string,
     selection: ChatTextSelectionReference,
   ) => Promise<void>;
-  onSteer: (text: string) => Promise<boolean>;
+  onSteer: (
+    text: string,
+    attachments: readonly ComposerAttachment[],
+  ) => Promise<boolean>;
   /**
    * Whether a run that can actually take a course correction is behind the
    * working answer. `runState` alone is not enough: a provider-direct turn
@@ -262,7 +266,10 @@ interface Props {
    * does not know keeps the old behaviour.
    */
   steerableRun?: boolean;
-  onSendQueued: (text: string) => Promise<void>;
+  onSendQueued: (
+    text: string,
+    attachments: readonly ComposerAttachment[],
+  ) => Promise<void>;
   onEditMessage?: (
     messageIndex: number,
     text: string,
@@ -298,14 +305,14 @@ interface Props {
   onReasoningEffortChange?: (effort: AssistantReasoningEffort) => void;
   /** Modes the active model honours; forwarded straight to the composer. */
   intelligenceModes?: IntelligenceMode[];
-  /** Quota-failover notice; forwarded straight to the composer. */
-  modelFailover?: ComposerModelFailover | null;
   disabled?: boolean;
   onAddDocuments?: () => void;
   onPasteFiles?: (files: File[]) => void | Promise<void>;
   isAddingDocuments?: boolean;
   attachments?: ComposerAttachment[];
   onRemoveAttachment?: (index: number) => void;
+  /** Returns a queued message's files to the external composer owner for editing. */
+  onRestoreQueuedAttachments?: (attachments: ComposerAttachment[]) => void;
   statusMessage?: string;
   compact?: boolean;
   sessionId?: string | null;
@@ -738,13 +745,13 @@ export default function AgentRuntimePanel({
   reasoningEffort,
   onReasoningEffortChange,
   intelligenceModes,
-  modelFailover,
   disabled,
   onAddDocuments,
   onPasteFiles,
   isAddingDocuments,
   attachments,
   onRemoveAttachment,
+  onRestoreQueuedAttachments,
   statusMessage,
   compact,
   sessionId,
@@ -906,10 +913,13 @@ export default function AgentRuntimePanel({
     useState<string | null>(null);
   const [highlightStorageSession, setHighlightStorageSession] =
     useState<string | null>(null);
-  const [openInlineAnswer, setOpenInlineAnswer] = useState<{
+  const [openInlineAnswers, setOpenInlineAnswers] = useState<Array<{
     id: string;
     anchor: FloatingAnchorRect;
-  } | null>(null);
+  }>>([]);
+  const [inlineSelectionRunId, setInlineSelectionRunId] = useState<
+    string | null
+  >(null);
   const streaming =
     persistedRunActive ||
     connection === "streaming" ||
@@ -950,8 +960,10 @@ export default function AgentRuntimePanel({
       stopping: runState === "stopping",
       externalRunActive,
       onSteer,
-      onRestoreDraft: (text) =>
-        restoreQueuedFollowUpDraft(text, onInputChange, composerTextareaRef),
+      onRestoreDraft: (text, queuedAttachments) => {
+        restoreQueuedFollowUpDraft(text, onInputChange, composerTextareaRef);
+        onRestoreQueuedAttachments?.([...queuedAttachments]);
+      },
       onSendQueued,
     });
   // Until the transcript has landed there is no history to answer against, and
@@ -1154,7 +1166,6 @@ export default function AgentRuntimePanel({
     lastAssistantIndex >= 0 ? messages[lastAssistantIndex] : undefined;
   const newestAssistantVisibleContent = assistantVisibleContent(
     newestAssistant?.content ?? "",
-    newestAssistant?.progressNotes,
   );
   const transcriptRevealKey = sessionId ?? "new";
   // The newest answer's text is revealed at a readable pace rather than drawn
@@ -1198,7 +1209,19 @@ export default function AgentRuntimePanel({
     messages.forEach((message, correctionIndex) => {
       if (
         message.role !== "user" ||
-        message.courseCorrection !== true ||
+        message.courseCorrection !== true
+      ) {
+        return;
+      }
+      // The assistant asked this question inside its current response. Its
+      // answer unblocks that response, but it is not a second user turn and
+      // must not become either a standalone or an inlined chat bubble. Hide it
+      // even when an older/racing persistence path missed the target offset.
+      if (isClarificationAnswerMessage(message)) {
+        hiddenMessageIndices.add(correctionIndex);
+        return;
+      }
+      if (
         typeof message.courseCorrectionTargetClientMessageId !== "string" ||
         typeof message.courseCorrectionOffset !== "number"
       ) {
@@ -1428,8 +1451,9 @@ export default function AgentRuntimePanel({
   );
   const respondingToInlineSelection =
     activeRun &&
-    messages.findLast((message) => !message.modelChange)?.textSelection?.mode ===
-      "inline";
+    (inlineSelectionRunId !== null ||
+      messages.findLast((message) => !message.modelChange)?.textSelection
+        ?.mode === "inline");
   // An external agent's card is the only thing still working after a reload —
   // `runState` is idle and no stream is open — so without it the transcript
   // would look settled while a coding or research run is mid-flight, stop
@@ -1437,6 +1461,9 @@ export default function AgentRuntimePanel({
   const transcriptResponding =
     (activeRun || streaming || externalRunActive) &&
     !respondingToInlineSelection;
+  useEffect(() => {
+    if (!activeRun) setInlineSelectionRunId(null);
+  }, [activeRun]);
   const transcriptVirtual = useChatVirtualBridge();
   const composerInset = useComposerInset();
   const {
@@ -1447,6 +1474,9 @@ export default function AgentRuntimePanel({
     isResponding: transcriptResponding,
     responseKey: visibleResponseKey,
     contentKey: visibleScrollKey,
+    // A restored transcript can already be cached while the loading shell is
+    // still mounted. Arm the landing only when the real rows can receive it.
+    enabled: !conversationLoading,
     // An omitted session and an unsaved one are the same absence of a
     // conversation; the hook reads `undefined` as "this surface does not open
     // conversations at all", which this one very much does.
@@ -1507,7 +1537,8 @@ export default function AgentRuntimePanel({
   useEffect(() => {
     setSelectionMenu(null);
     setComposerSelection(null);
-    setOpenInlineAnswer(null);
+    setInlineSelectionRunId(null);
+    setOpenInlineAnswers([]);
     if (!sessionId) {
       setSavedInlineSelections([]);
       setSavedChatHighlights([]);
@@ -1987,20 +2018,34 @@ export default function AgentRuntimePanel({
       ).find((annotation) => chatTextSelectionsOverlap(annotation, selection));
       if (overlapping?.kind === "answer") {
         setSelectionMenu(null);
-        setOpenInlineAnswer({ id: overlapping.id, anchor: selection.anchor });
+        const thread = inlineSelectionThreads.get(overlapping.id);
+        setOpenInlineAnswers((current) => {
+          const parentIndex = current.findIndex(
+            (openAnswer) =>
+              inlineSelectionThreads.get(openAnswer.id)?.answerMessageId ===
+              thread?.selection.sourceMessageId,
+          );
+          return parentIndex >= 0
+            ? [
+                ...current.slice(0, parentIndex + 1),
+                { id: overlapping.id, anchor: selection.anchor },
+              ]
+            : [{ id: overlapping.id, anchor: selection.anchor }];
+        });
         window.getSelection()?.removeAllRanges();
         return;
       }
       // A selection made inside the open "Ask here" answer keeps its popover on
       // screen: the menu floats above the very answer it is about, which is
       // what lets a follow-up be asked from an answer, recursively.
-      setOpenInlineAnswer((current) =>
-        current &&
-        inlineSelectionThreads.get(current.id)?.answerMessageId ===
-          selection.sourceMessageId
-          ? current
-          : null,
-      );
+      setOpenInlineAnswers((current) => {
+        const parentIndex = current.findIndex(
+          (openAnswer) =>
+            inlineSelectionThreads.get(openAnswer.id)?.answerMessageId ===
+            selection.sourceMessageId,
+        );
+        return parentIndex >= 0 ? current.slice(0, parentIndex + 1) : [];
+      });
       setSelectionMenu(selection);
     },
     [
@@ -2074,7 +2119,7 @@ export default function AgentRuntimePanel({
     }
     setComposerSelection(selection);
     setSelectionMenu(null);
-    setOpenInlineAnswer(null);
+    if (mode === "chat") setOpenInlineAnswers([]);
     window.getSelection()?.removeAllRanges();
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }
@@ -2101,13 +2146,19 @@ export default function AgentRuntimePanel({
       return;
     }
     const question = input.trim();
-    if (!question || activeRun || conversationLocked) return;
+    if (!question || conversationLocked) return;
     const selection = composerSelection;
     setComposerSelection(null);
     setSelectionMenu(null);
-    setOpenInlineAnswer(null);
+    if (selection.mode === "chat") setOpenInlineAnswers([]);
+    if (selection.mode === "inline") setInlineSelectionRunId(selection.id);
     onInputChange("");
-    void onAskSelection(question, selection);
+    void onAskSelection(question, selection).catch(() => {
+      if (selection.mode !== "inline") return;
+      setInlineSelectionRunId((current) =>
+        current === selection.id ? null : current,
+      );
+    });
   }
 
   const openAnnotation = useCallback(
@@ -2116,7 +2167,14 @@ export default function AgentRuntimePanel({
         (candidate) => candidate.id === annotationId,
       );
       if (highlight) {
-        setOpenInlineAnswer(null);
+        setOpenInlineAnswers((current) => {
+          const parentIndex = current.findIndex(
+            (openAnswer) =>
+              inlineSelectionThreads.get(openAnswer.id)?.answerMessageId ===
+              highlight.sourceMessageId,
+          );
+          return parentIndex >= 0 ? current.slice(0, parentIndex + 1) : [];
+        });
         setSelectionMenu({ ...highlight, anchor });
         window.getSelection()?.removeAllRanges();
         return;
@@ -2128,17 +2186,34 @@ export default function AgentRuntimePanel({
         window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
         return;
       }
-      setOpenInlineAnswer((current) =>
-        current?.id === annotationId
-          ? null
-          : { id: annotationId, anchor },
-      );
+      setOpenInlineAnswers((current) => {
+        const openIndex = current.findIndex(
+          (openAnswer) => openAnswer.id === annotationId,
+        );
+        if (openIndex >= 0) return current.slice(0, openIndex);
+        const parentIndex = current.findIndex(
+          (openAnswer) =>
+            inlineSelectionThreads.get(openAnswer.id)?.answerMessageId ===
+            thread.selection.sourceMessageId,
+        );
+        return parentIndex >= 0
+          ? [
+              ...current.slice(0, parentIndex + 1),
+              { id: annotationId, anchor },
+            ]
+          : [{ id: annotationId, anchor }];
+      });
     },
     [composerTextareaRef, inlineSelectionThreads, savedChatHighlights],
   );
 
   function deleteInlineSelection(annotationId: string) {
-    setOpenInlineAnswer(null);
+    setOpenInlineAnswers((current) => {
+      const openIndex = current.findIndex(
+        (openAnswer) => openAnswer.id === annotationId,
+      );
+      return openIndex >= 0 ? current.slice(0, openIndex) : current;
+    });
     setSelectionMenu(null);
     setComposerSelection((current) =>
       current?.id === annotationId ? null : current,
@@ -2171,12 +2246,14 @@ export default function AgentRuntimePanel({
     if (!trimmed || !onAskSelection || activeRun || conversationLocked) return;
     // A question the composer is still holding for some other highlight is
     // left alone: it belongs to that highlight, not to this turn.
-    void onAskSelection(trimmed, selection);
+    setInlineSelectionRunId(selection.id);
+    void onAskSelection(trimmed, selection).catch(() => {
+      setInlineSelectionRunId((current) =>
+        current === selection.id ? null : current,
+      );
+    });
   }
 
-  const openThread = openInlineAnswer
-    ? inlineSelectionThreads.get(openInlineAnswer.id)
-    : undefined;
   // The transcript and composer are one visual column. Full chat keeps both at
   // five-xl; compact embeds intentionally keep their existing three-xl width.
   const chatColumnWidthClass = compact ? "max-w-3xl" : "max-w-5xl";
@@ -2262,6 +2339,10 @@ export default function AgentRuntimePanel({
                 );
                 const continuationPreamble =
                   delegatedContinuationPreamble(messages, index);
+                const thinkingUpdates = delegatedThinkingUpdates(
+                  message,
+                  continuationPreamble,
+                );
                 // Every earlier phase is hidden behind this row, so their time
                 // belongs to this clock. Counting only the adjacent worker
                 // still loses the Super Agent's orchestration phase.
@@ -2275,20 +2356,17 @@ export default function AgentRuntimePanel({
                 );
                 const storedAssistantContent = assistantVisibleContent(
                   message.content,
-                  message.progressNotes,
                 );
-                // Keep one visible assistant row during the hand-back. Until
-                // synthesis emits its first text, the row retains the sentence
-                // the person was already reading instead of collapsing to an
-                // otherwise empty status line.
+                // Keep one visible assistant row during the hand-back. Interim
+                // hand-off prose lives in `thinkingUpdates`; only synthesized
+                // answer text belongs in the response body below it.
                 const visibleAssistantContent =
                   index === lastAssistantIndex
                     ? revealedAssistantContent ||
                       // A restored or finished reply must show its stored text
                       // even when the paced reveal has nothing queued.
-                      (!streaming ? storedAssistantContent : "") ||
-                      continuationPreamble
-                    : storedAssistantContent || continuationPreamble;
+                      (!streaming ? storedAssistantContent : "")
+                    : storedAssistantContent;
                 const assistantMessageEditId =
                   message.role === "assistant"
                     ? message.id ??
@@ -2389,6 +2467,11 @@ export default function AgentRuntimePanel({
                   >
                     <div className={message.role === "user" ? "flex w-fit max-w-[75%] flex-col items-end gap-1" : "w-full"}>
                     <MessageActionsSlot
+                      responseStartedAt={
+                        message.responseStartedAt ?? message.createdAt
+                      }
+                      responseDurationMs={message.responseDurationMs}
+                      responseCompletedAt={message.responseCompletedAt}
                       suppressActions={
                         message.delegatedAgentRun === true ||
                         (index === lastVisibleAssistantIndex && delegationInFlight) ||
@@ -2415,6 +2498,7 @@ export default function AgentRuntimePanel({
                       <div className="mb-3 text-sm leading-7 text-gray-200">
                         <ActivityPanel
                           activities={[]}
+                          progressNotes={thinkingUpdates}
                           connection={delegatedAgentActive ? "streaming" : "idle"}
                           pendingPermission={null}
                           usage={message.usage}
@@ -2423,16 +2507,6 @@ export default function AgentRuntimePanel({
                           onPermissionDecision={onPermissionDecision}
                           stateLabel={delegatedAgentLabel}
                           completedLabel={delegatedAgentCompleted}
-                        />
-                        <SelectableAssistantMarkdown
-                          content={message.delegatedAgentPreamble}
-                          sourceMessageId={`${messageSelectionSourceId(
-                            message,
-                            index,
-                          )}-delegation-preamble`}
-                          annotations={[]}
-                          onSelection={receiveTextSelection}
-                          onOpenAnnotation={openAnnotation}
                         />
                         {delegatedOutcomeNote ? (
                           <div
@@ -2512,7 +2586,7 @@ export default function AgentRuntimePanel({
                           {message.textSelection?.mode === "chat" ? (
                             <QuotedChatSelection selection={message.textSelection} />
                           ) : null}
-                          <div className="neu-chat-message neu-chat-message-user rounded-[22px] px-4 py-2.5 text-sm leading-6">
+                          <div className="neu-chat-message neu-chat-message-user w-fit max-w-full rounded-[22px] px-4 py-2.5 text-sm leading-6">
                             <CollapsibleUserMessage
                               messageKey={messageBranchId(message, index)}
                             >
@@ -3164,6 +3238,7 @@ export default function AgentRuntimePanel({
                           }
                           persistedContent={message.content}
                           persistedOutcome={message.externalAgentOutcome}
+                          persistedUsage={message.usage}
                           onRetry={
                             onRetryMessage &&
                             !activeRun &&
@@ -3565,6 +3640,7 @@ export default function AgentRuntimePanel({
                               ? activities
                               : []
                           }
+                          progressNotes={thinkingUpdates}
                           connection={
                             // A worker running behind this row keeps it alive
                             // even though the chat connection itself is idle:
@@ -3933,34 +4009,46 @@ export default function AgentRuntimePanel({
           onClose={() => setSelectionMenu(null)}
         />
       ) : null}
-      {openInlineAnswer && openThread ? (
-        <InlineSelectionAnswerPopover
-          anchor={openInlineAnswer.anchor}
-          question={openThread.question}
-          answer={openThread.answer}
-          pending={openThread.pending}
-          usage={openThread.usage}
-          responseDurationMs={openThread.responseDurationMs}
-          startedAt={openThread.startedAt}
-          answerMessageId={openThread.answerMessageId}
-          annotations={
-            openThread.answerMessageId
-              ? annotationsByMessage.get(openThread.answerMessageId)
-              : undefined
-          }
-          onSelection={receiveTextSelection}
-          onOpenAnnotation={openAnnotation}
-          onClose={() => setOpenInlineAnswer(null)}
-          onDelete={() => deleteInlineSelection(openThread.selection.id)}
-          onStop={openThread.pending ? stopInlineAnswer : undefined}
-          onAskAgain={
-            onAskSelection && !activeRun && !conversationLocked
-              ? (question: string) =>
-                  askInlineSelectionAgain(openThread.selection, question)
-              : undefined
-          }
-        />
-      ) : null}
+      {openInlineAnswers.map((openAnswer) => {
+        const thread = inlineSelectionThreads.get(openAnswer.id);
+        if (!thread) return null;
+        return (
+          <InlineSelectionAnswerPopover
+            key={openAnswer.id}
+            anchor={openAnswer.anchor}
+            question={thread.question}
+            answer={thread.answer}
+            pending={thread.pending}
+            usage={thread.usage}
+            responseDurationMs={thread.responseDurationMs}
+            startedAt={thread.startedAt}
+            answerMessageId={thread.answerMessageId}
+            annotations={
+              thread.answerMessageId
+                ? annotationsByMessage.get(thread.answerMessageId)
+                : undefined
+            }
+            onSelection={receiveTextSelection}
+            onOpenAnnotation={openAnnotation}
+            onClose={() =>
+              setOpenInlineAnswers((current) => {
+                const openIndex = current.findIndex(
+                  (candidate) => candidate.id === openAnswer.id,
+                );
+                return openIndex >= 0 ? current.slice(0, openIndex) : current;
+              })
+            }
+            onDelete={() => deleteInlineSelection(thread.selection.id)}
+            onStop={thread.pending ? stopInlineAnswer : undefined}
+            onAskAgain={
+              onAskSelection && !activeRun && !conversationLocked
+                ? (question: string) =>
+                    askInlineSelectionAgain(thread.selection, question)
+                : undefined
+            }
+          />
+        );
+      })}
 
       <div ref={composerInset.ref} className="bb-composer-overlay px-4 pb-3">
         {beforeComposer ? (
@@ -3974,6 +4062,7 @@ export default function AgentRuntimePanel({
           <SelectionComposerContext
             selection={composerSelection}
             onCancel={cancelSelectionQuestion}
+            widthClassName={chatColumnWidthClass}
           />
         ) : null}
         <AssistantComposer
@@ -3982,6 +4071,13 @@ export default function AgentRuntimePanel({
           value={input}
           onChange={onInputChange}
           onSubmit={submitComposer}
+          onSubmitDuringRun={
+            composerSelection?.mode === "inline" &&
+            activeRun &&
+            !externalRunActive
+              ? submitComposer
+              : undefined
+          }
           onRunWorkflow={onRunWorkflow}
           history={sentMessages}
           textareaRef={composerTextareaRef}
@@ -3989,12 +4085,14 @@ export default function AgentRuntimePanel({
           // joins the visible queue. Transcript-history loading still keeps the
           // surface's ordinary invitation because no answer is being written.
           placeholder={
-            runInFlight ? "Follow up." : (placeholder ?? "Ask the agent…")
+            runInFlight && !respondingToInlineSelection
+              ? "Follow up."
+              : (placeholder ?? "Ask the agent…")
           }
           disabled={conversationLocked}
           loading={conversationLoading}
           queueDisabled={Boolean(disabled)}
-          isSending={streaming}
+          isSending={streaming && !respondingToInlineSelection}
           canSubmit={Boolean(input.trim() || (!streaming && attachments?.length))}
           model={model ?? ""}
           models={models ?? []}
@@ -4002,7 +4100,6 @@ export default function AgentRuntimePanel({
           reasoningEffort={reasoningEffort ?? DEFAULT_ASSISTANT_REASONING_EFFORT}
           onReasoningEffortChange={onReasoningEffortChange ?? (() => undefined)}
           intelligenceModes={intelligenceModes}
-          modelFailover={modelFailover}
           onAddDocuments={onAddDocuments}
           onPasteFiles={onPasteFiles}
           isAddingDocuments={isAddingDocuments}
@@ -4098,8 +4195,8 @@ export default function AgentRuntimePanel({
           capabilitySessionId={sessionId}
           capabilitySurface={surface}
           capabilityGardenSlug={gardenSlug}
-          runState={runState}
-          externalRunActive={externalRunActive}
+          runState={respondingToInlineSelection ? "idle" : runState}
+          externalRunActive={externalRunActive || respondingToInlineSelection}
           onQueueSteer={queueFollowUp}
           // An "Ask here" turn is the popover's run, not the chat's: its
           // question and answer never enter the transcript, so a square where

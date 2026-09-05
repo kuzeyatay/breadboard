@@ -231,7 +231,7 @@ function recoveryCatalog(input: {
   }
   const seenAnchors = new Set<string>();
   const seenPages = new Set<string>();
-  const catalog = authoritativeAnchors.map((anchor, index) => {
+  const preparedCatalog = authoritativeAnchors.map((anchor, index) => {
     if (!nonEmptyExactString(anchor.id) || seenAnchors.has(anchor.id)) {
       throw new Error(`Syllabus coverage recovery page catalog has a duplicate or invalid anchor id at ${index + 1}.`);
     }
@@ -251,16 +251,49 @@ function recoveryCatalog(input: {
       sourceId: anchor.sourceId,
       pageNumber: anchor.page,
       title: anchor.title,
-      // A bounded, mechanical navigation excerpt only. The independent review
-      // receives the complete raw page selected through this identity.
-      excerpt: anchor.exactText.replace(/\s+/gu, " ").trim().slice(0, 320),
+      navigationText: anchor.exactText.replace(/\s+/gu, " ").trim(),
       navigationTextSha256: sha256(anchor.exactText),
     };
   });
-  if (JSON.stringify(catalog).length > SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS) {
+
+  // Keep every canonical page identity selectable. Large multi-source courses
+  // can exceed the transport cap solely because every navigation excerpt used
+  // its individual 320-character maximum. Shrink that non-authoritative
+  // preview uniformly and deterministically; the chosen page is still hydrated
+  // from its complete canonical bytes for the independent review.
+  const catalogAtExcerptLimit = (excerptLimit: number): RecoveryCatalogEntry[] =>
+    preparedCatalog.map((entry) => ({
+      anchorId: entry.anchorId,
+      sourceId: entry.sourceId,
+      pageNumber: entry.pageNumber,
+      title: entry.title,
+      excerpt: entry.navigationText.slice(0, excerptLimit),
+      navigationTextSha256: entry.navigationTextSha256,
+    }));
+  const catalogChars = (catalog: readonly RecoveryCatalogEntry[]): number =>
+    JSON.stringify(catalog).length;
+
+  let catalog = catalogAtExcerptLimit(320);
+  if (catalogChars(catalog) <= SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS) {
+    return catalog;
+  }
+  catalog = catalogAtExcerptLimit(0);
+  if (catalogChars(catalog) > SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS) {
     throw new Error(
       `Syllabus coverage recovery page catalog exceeds the ${SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS}-character cap.`,
     );
+  }
+  let lower = 1;
+  let upper = 319;
+  while (lower <= upper) {
+    const candidateLimit = Math.floor((lower + upper) / 2);
+    const candidate = catalogAtExcerptLimit(candidateLimit);
+    if (catalogChars(candidate) <= SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS) {
+      catalog = candidate;
+      lower = candidateLimit + 1;
+    } else {
+      upper = candidateLimit - 1;
+    }
   }
   return catalog;
 }

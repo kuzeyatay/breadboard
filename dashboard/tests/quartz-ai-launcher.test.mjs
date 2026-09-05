@@ -102,6 +102,23 @@ test("the sole garden launcher and panel use the Assistant identity", () => {
   assert.doesNotMatch(assistant, /Ask map|Ask this garden/);
 });
 
+test("the garden Assistant opens wide and cannot be resized into its cramped layout", () => {
+  assert.match(assistant, /const DEFAULT_PANEL_WIDTH = 520;/);
+  assert.match(assistant, /const MIN_PANEL_WIDTH = 480;/);
+  assert.match(
+    assistant,
+    /const storedWidth = window\.localStorage\.getItem\(PANEL_WIDTH_KEY\);[\s\S]*?if \(storedWidth !== null\)/,
+  );
+  assert.match(
+    assistant,
+    /Math\.max\(MIN_PANEL_WIDTH, Math\.round\(width\)\)/,
+  );
+  assert.doesNotMatch(
+    assistant,
+    /Number\(window\.localStorage\.getItem\(PANEL_WIDTH_KEY\)\)/,
+  );
+});
+
 test("the page Assistant launcher is absent while its panel is open", () => {
   assert.match(
     quartzAssistantInline,
@@ -219,6 +236,22 @@ test("Quartz selection actions bridge grounded chat and inline answers through t
     gardenAdapter,
     /quartzAssistantSelectionPromptContext\(payload\.selectedText\)/,
   );
+});
+
+test("Thought Topology can hand a selected node or connection directly to Bread", () => {
+  const topologyRenderer = read(
+    "../quartz/quartz/components/scripts/thoughtTopologyRenderer.ts",
+  );
+  const quartzGraph = read("../quartz/quartz/components/scripts/graph.inline.ts");
+  assert.match(topologyRenderer, /Investigate with Bread/);
+  assert.match(topologyRenderer, /context\.onInvestigate/);
+  assert.match(topologyRenderer, /selected Thought Topology connection/);
+  assert.match(quartzGraph, /second-brain:assistant-investigate-topology/);
+  assert.match(quartzGraph, /window\.parent\.postMessage/);
+  assert.match(quartzAssistantInline, /breadboard:assistant-investigate-topology/);
+  assert.match(gardenClient, /quartzTopologyInvestigationRequest\(data\)/);
+  assert.match(libraryClient, /quartzTopologyInvestigationRequest\(data\)/);
+  assert.match(assistant, /topologyInvestigationRequest\.prompt/);
 });
 
 test("Quartz uses Terminal's selection controls and keeps Ask here out of the chat stream", () => {

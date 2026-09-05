@@ -4,6 +4,24 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// TypeScript leaves output behind when a source file is removed. Clear the
+// retired native-Firefox integration explicitly so an incremental local build
+// cannot package it after the Chromium pivot.
+for (const relative of [
+  "dist/main/firefox-launcher.js",
+  "dist/main/firefox-launcher.js.map",
+  "dist/main/firefox-session.js",
+  "dist/main/firefox-session.js.map",
+  "dist/main/firefox-theme.js",
+  "dist/main/firefox-theme.js.map",
+  "dist/main/window-dock.js",
+  "dist/main/window-dock.js.map",
+  "dist/win32/window-dock.ps1",
+]) {
+  fs.rmSync(path.join(desktopRoot, relative), { force: true });
+}
+
 const sourceDir = path.join(desktopRoot, "src", "startup");
 const targetDir = path.join(desktopRoot, "dist", "startup");
 fs.mkdirSync(targetDir, { recursive: true });
@@ -30,3 +48,7 @@ for (const file of ["index.html", "overlay.css", "overlay.js"]) {
   fs.copyFileSync(path.join(overlaySourceDir, file), path.join(overlayTargetDir, file));
 }
 console.log("[copy-static] computer-use overlay assets copied");
+
+const clickyOverlayTarget = path.join(desktopRoot, "dist", "clicky-overlay");
+fs.mkdirSync(clickyOverlayTarget, { recursive: true });
+fs.copyFileSync(path.join(desktopRoot, "src", "clicky-overlay", "index.html"), path.join(clickyOverlayTarget, "index.html"));

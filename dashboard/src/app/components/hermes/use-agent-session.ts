@@ -27,6 +27,7 @@ import {
   type AssistantReasoningEffort,
 } from "@/lib/assistant-reasoning";
 import {
+  attachmentOnlyMessageText,
   chatMessageAttachments,
   normalizeChatMessageAttachments,
   type ChatAttachment,
@@ -237,6 +238,8 @@ export interface AgentMessage {
   createdAt?: string;
   /** Durable instant the user-visible response began, retained across views. */
   responseStartedAt?: string;
+  /** Durable instant the response reached a terminal state. */
+  responseCompletedAt?: string;
   role: "user" | "assistant";
   content: string;
   /** Assistant-authored pre-tool updates, kept separate from private reasoning. */
@@ -249,10 +252,15 @@ export interface AgentMessage {
   modelChangeAfter?: string;
   /** Model-to-model hand-back; kept in context but never rendered as the user. */
   internalAgentContinuation?: boolean;
+  /** External transport that owns delivery of this turn and its hand-backs. */
+  deliveryChannel?: "whatsapp" | "telegram";
   reasoning?: string;
   sources?: string[];
   attachmentNames?: string[];
   attachments?: ChatMessageAttachment[];
+  /** Garden document references retained so Retry can reattach exact context. */
+  focusedDocumentNames?: string[];
+  focusedDocumentSlugs?: string[];
   tools?: ToolActivity[];
   /** Versioned, allow-listed native UI resources emitted by completed tools. */
   uiResources?: GenerativeUiResource[];
@@ -309,6 +317,8 @@ export interface AgentMessage {
   failed?: boolean;
   interrupted?: boolean;
   courseCorrection?: boolean;
+  /** Runtime input that answered the assistant's own mid-turn question. */
+  clarificationAnswer?: boolean;
   /** Assistant turn this mid-run correction was inserted into. */
   courseCorrectionTargetClientMessageId?: string;
   /** UTF-16 character boundary in the assistant response at steer time. */
@@ -869,6 +879,9 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
       if (message.courseCorrection !== true) {
         delete normalized.courseCorrection;
       }
+      if (message.clarificationAnswer !== true) {
+        delete normalized.clarificationAnswer;
+      }
       if (
         typeof message.courseCorrectionTargetClientMessageId !== "string" ||
         !message.courseCorrectionTargetClientMessageId.trim()
@@ -936,6 +949,12 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
         !Number.isFinite(Date.parse(message.responseStartedAt))
       ) {
         delete normalized.responseStartedAt;
+      }
+      if (
+        typeof message.responseCompletedAt !== "string" ||
+        !Number.isFinite(Date.parse(message.responseCompletedAt))
+      ) {
+        delete normalized.responseCompletedAt;
       }
       if (
         message.preDispatchRecovery &&
@@ -1377,7 +1396,10 @@ export interface UseAgentSessionResult {
     text: string,
     options?: AgentSendOptions,
   ) => Promise<void>;
-  steer: (text: string) => Promise<boolean>;
+  steer: (
+    text: string,
+    attachments?: readonly ChatAttachment[],
+  ) => Promise<boolean>;
   /**
    * Remove one exchange — a message and the answer it produced. Resolves false
    * when the delete was refused; the reason is left in `error`.
@@ -2203,6 +2225,7 @@ export function useAgentSession(
         assistant = {
           ...assistant,
           responseDurationMs: Math.max(0, completedAtMs - responseStartedAtMs),
+          responseCompletedAt: new Date(completedAtMs).toISOString(),
         };
         commit(assistant);
       };
@@ -3734,6 +3757,7 @@ export function useAgentSession(
       input.commit({
         ...assistant,
         responseDurationMs: Math.max(0, Date.now() - input.responseStartedAtMs),
+        responseCompletedAt: completedAt,
       });
       setActivities((current) =>
         current.map((item) =>
@@ -3807,8 +3831,8 @@ export function useAgentSession(
             : item,
         ),
       );
-      // The answer is part of the conversation: show it where the server
-      // persisted it, as a course correction on the response in progress.
+      // Mirror the durable runtime-input row locally, but mark it so the
+      // transcript never presents an answer to our own question as a new turn.
       const clientMessageId = `clarify:${prompt.requestId}`;
       setMessages((current) => {
         if (current.some((message) => message.clientMessageId === clientMessageId)) {
@@ -3823,6 +3847,7 @@ export function useAgentSession(
             role: "user",
             content: trimmed,
             courseCorrection: true,
+            clarificationAnswer: true,
             courseCorrectionTargetClientMessageId:
               result.courseCorrectionTargetClientMessageId ??
               activeAssistant?.clientMessageId,
@@ -3976,6 +4001,10 @@ export function useAgentSession(
       };
       assistant.clientMessageId = userMessage.id;
       const baseline = [...transcript, userMessage, assistant];
+      // Stop reads the transcript ref synchronously. Waiting for React's effect
+      // here can make a quick Stop mark the previous assistant id instead of
+      // the turn that was just launched.
+      messagesRef.current = baseline;
       setMessages(baseline);
       const startingSessionId = sessionRef.current;
       const localInFlightTurn = {
@@ -4086,6 +4115,12 @@ export function useAgentSession(
         // attaches a viewer when the person comes back to it.
         const stillViewing = () => viewEpochRef.current === viewEpoch;
         if (stopRequestedRef.current) {
+          // Session creation may have reserved this first turn after Stop was
+          // clicked. Persist the cancellation now so restore does not present
+          // that placeholder as a live, retryable response.
+          await fetch(`/api/hermes/sessions/${activeSessionId}/abort`, {
+            method: "POST",
+          }).catch(() => undefined);
           if (stillViewing()) transition("cancelled");
           return;
         }
@@ -4330,6 +4365,7 @@ export function useAgentSession(
             ...assistant,
             content: responseBody.message.trim(),
             responseDurationMs: Math.max(0, Date.now() - responseStartedAtMs),
+            responseCompletedAt: completedAt,
           });
           setActivities((current) =>
             current.map((item) =>
@@ -4538,8 +4574,11 @@ export function useAgentSession(
   );
 
   const steer = useCallback(
-    async (text: string): Promise<boolean> => {
-      const trimmed = text.trim();
+    async (
+      text: string,
+      attachments: readonly ChatAttachment[] = [],
+    ): Promise<boolean> => {
+      const trimmed = text.trim() || attachmentOnlyMessageText(attachments);
       const activeSessionId = sessionRef.current;
       const runId = activeRunIdRef.current;
       if (!trimmed || !activeSessionId || !runId || steeringRef.current) {
@@ -4563,6 +4602,7 @@ export function useAgentSession(
             body: JSON.stringify({
               runId,
               text: trimmed,
+              attachments,
               clientRequestId,
               assistantContentOffset,
             }),
@@ -4581,7 +4621,10 @@ export function useAgentSession(
           if (isActiveAgentRunState(runStateRef.current)) {
             transition("completed");
           }
-          void send(trimmed, latestSendOptionsRef.current);
+          void send(trimmed, {
+            ...latestSendOptionsRef.current,
+            attachments: [...attachments],
+          });
           return true;
         }
         if (!response.ok) {
@@ -4608,6 +4651,12 @@ export function useAgentSession(
               createdAt: new Date().toISOString(),
               role: "user",
               content: trimmed,
+              ...(attachments.length > 0
+                ? {
+                    attachmentNames: attachments.map((attachment) => attachment.name),
+                    attachments: chatMessageAttachments(attachments),
+                  }
+                : {}),
               courseCorrection: true,
               courseCorrectionTargetClientMessageId:
                 typeof body.courseCorrectionTargetClientMessageId === "string"
@@ -4899,6 +4948,16 @@ export function useAgentSession(
         }).catch(() => undefined);
       }
       abortRef.current?.abort();
+      if (clientMessageId) {
+        setMessages((current) =>
+          current.map((message) =>
+            message.role === "assistant" &&
+            message.clientMessageId === clientMessageId
+              ? { ...message, pending: false, interrupted: true }
+              : message,
+          ),
+        );
+      }
       transition("cancelled");
       setPendingPermission(null);
       setPendingClarification(null);

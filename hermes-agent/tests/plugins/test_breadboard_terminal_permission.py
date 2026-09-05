@@ -607,7 +607,7 @@ def test_product_search_is_declared_in_the_plugin_manifest():
     assert "  - product_search\n" in manifest.replace("\r\n", "\n")
 
 
-def test_chat_search_is_registered_as_a_bounded_navigation_tool():
+def test_chat_search_is_registered_as_bounded_search_and_reference_tool():
     registered = {}
 
     class _Context:
@@ -622,7 +622,10 @@ def test_chat_search_is_registered_as_a_bounded_navigation_tool():
     assert parameters["properties"]["query"]["maxLength"] == 300
     assert parameters["properties"]["count"]["minimum"] == 1
     assert parameters["properties"]["count"]["maximum"] == 8
+    assert parameters["properties"]["reference_ids"]["maxItems"] == 3
+    assert parameters["properties"]["reference_ids"]["uniqueItems"] is True
     assert "compact navigation widget" in tool["schema"]["description"]
+    assert "untrusted context" in tool["schema"]["description"]
     assert breadboard._request_payload(
         route_kind="chat_search",
         tool_name="chat_search",

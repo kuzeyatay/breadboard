@@ -776,6 +776,34 @@ describe("bounded canonical source evidence for syllabus coverage", () => {
     );
   });
 
+  test("excludes repeated AnyDoc cross-check pages from canonical source evidence", () => {
+    const pageOne = "## Page 1\r\nCanonical VLM page one.\r\n";
+    const pageTwo = "## Page 2\r\nCanonical VLM page two.\r\n";
+    const body = [
+      "## Source material\r\n",
+      pageOne,
+      pageTwo,
+      "## AnyDoc cross-check\r\n",
+      "## Page 1\r\nSupplemental AnyDoc page one.\r\n",
+    ].join("");
+
+    assert.deepEqual(canonicalSourceRawPageBlocks("dual-parser", body), [
+      { sourceId: "dual-parser", pageNumber: 1, exactText: pageOne, complete: true },
+      { sourceId: "dual-parser", pageNumber: 2, exactText: pageTwo, complete: true },
+    ]);
+    assert.equal(
+      buildSyllabusCoverageSourceCatalog([{
+        slug: "dual-parser",
+        title: "Dual parser upload",
+        relPath: "sources/dual-parser.md",
+        body,
+      }])[0].canonicalRawPageEvidence.pages.some(
+        (page) => page.exactText.includes("Supplemental AnyDoc"),
+      ),
+      false,
+    );
+  });
+
   test("reserves verbatim canonical title and author pages after internal planning", () => {
     const generatedPreamble = "Generated planning context that must not crowd raw pages.\n".repeat(3_000);
     const pageOne = [
@@ -980,6 +1008,49 @@ describe("bounded canonical source evidence for syllabus coverage", () => {
       }]),
       /cannot carry its complete fixed identity prefix/,
     );
+  });
+
+  test("reserves differently sized complete identity prefixes before sharing planning-index capacity", () => {
+    const largePagedSource = {
+      slug: "large-paged-source",
+      title: "Large paged source",
+      relPath: "sources/large-paged-source.md",
+      body: [
+        "## Summary",
+        "Generated planning context.\n".repeat(1_000),
+        "## Internal planning",
+        "ignored",
+        "## Source material",
+        ...Array.from(
+          { length: 8 },
+          (_, index) => `## Page ${index + 1}\n${String(index + 1).repeat(1_100)}\n`,
+        ),
+      ].join("\n"),
+    };
+    const sources = [
+      largePagedSource,
+      ...Array.from({ length: 34 }, (_, index) => ({
+        slug: `unpaged-${index + 1}`,
+        title: `Unpaged ${index + 1}`,
+        relPath: `sources/unpaged-${index + 1}.md`,
+        body: `Exact unpaged source ${index + 1}.`,
+      })),
+    ];
+
+    const catalog = buildSyllabusCoverageSourceCatalog(sources);
+    const transportedSourceChars = catalog.reduce((total, source) => total
+      + source.navigationMetadata.planningIndex.length
+      + source.canonicalRawPageEvidence.pages.reduce((pageTotal, page) => pageTotal + page.exactText.length, 0)
+      + (source.canonicalRawPageEvidence.unpagedEvidence?.exactText.length ?? 0), 0);
+
+    assert.deepEqual(
+      catalog[0].canonicalRawPageEvidence.pages.map((page) => page.pageNumber),
+      [1, 2, 3, 4, 5, 6, 7, 8],
+    );
+    assert.ok(
+      catalog[0].canonicalRawPageEvidence.pages.reduce((total, page) => total + page.exactText.length, 0) > 2_000,
+    );
+    assert.ok(transportedSourceChars <= 120_000, `transported ${transportedSourceChars} source chars`);
   });
 
   test("carries authored locators verbatim without selecting source pages from their text", () => {

@@ -56,8 +56,18 @@ function fixture(
     entry,
     [
       'import fs from "node:fs";',
+      'import path from "node:path";',
       "const args = process.argv.slice(2);",
-      'if (args[0] === "screenshot") {',
+      'const tabIndex = args.indexOf("tab");',
+      'const desktopTarget = `about:blank#breadboard-browser-agent=${process.env.AGENT_BROWSER_SESSION}`;',
+      'if (tabIndex >= 0 && process.env.AGENT_BROWSER_CDP && args[tabIndex + 1] === "--json") {',
+      '  process.stdout.write(JSON.stringify({ success: true, data: { tabs: [{ active: true, label: null, tabId: "t1", title: "Breadboard", type: "page", url: "http://127.0.0.1/dashboard" }, { active: false, label: null, tabId: "t2", title: "Agent Browser", type: "page", url: desktopTarget }] }, error: null }) + "\\n");',
+      '} else if (tabIndex >= 0 && process.env.AGENT_BROWSER_CDP && args[tabIndex + 1] === "t2") {',
+      '  fs.writeFileSync(path.join(process.env.HOME, "desktop-connect.json"), JSON.stringify({ args, cdp: process.env.AGENT_BROWSER_CDP, executable: process.env.AGENT_BROWSER_EXECUTABLE_PATH ?? null, profile: process.env.AGENT_BROWSER_PROFILE ?? null }));',
+      '  process.stdout.write("switched\\n");',
+      '} else if (args.includes("get") && args.includes("url") && process.env.AGENT_BROWSER_CDP) {',
+      '  process.stdout.write(desktopTarget + "\\n");',
+      '} else if (args[0] === "screenshot") {',
       "  fs.writeFileSync(args[1], Buffer.from([137,80,78,71,13,10,26,10,1]));",
       '} else if (args.includes("eval") && ' + JSON.stringify(options.authRequired === true) + ') {',
       '  process.stdout.write(JSON.stringify(JSON.stringify({ required: true, url: "https://accounts.example.com/login", origin: "https://accounts.example.com", title: "Sign in" })) + "\\n");',
@@ -80,8 +90,9 @@ function fixture(
       approvalMode: "sensitive_actions",
       allowedDomains: [],
       engine: "chrome",
+      browserMode: options.browserMode ?? "external",
       agentBrowserEntry: entry,
-      browserExecutable: browser,
+      browserExecutable: options.browserMode === "desktop" ? null : browser,
       profilePath: null,
     })}\n`,
     "utf8",
@@ -105,7 +116,24 @@ function fixture(
     identity,
     attemptRoot,
     artifactRoot: path.join(dataRoot, "agent-browser-artifacts", identity.jobId),
+    workspacePath,
   };
+}
+
+function publishDesktopBrowserReceipt(current, cdpPort = 9_333) {
+  const directory = path.join(current.dataRoot, "browser-agent-sessions");
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(
+    path.join(directory, `${current.identity.jobId}.json`),
+    `${JSON.stringify({
+      protocolVersion: 1,
+      runId: current.identity.jobId,
+      cdpPort,
+      targetUrl: `about:blank#breadboard-browser-agent=${current.identity.jobId}`,
+      createdAt: new Date().toISOString(),
+    })}\n`,
+    "utf8",
+  );
 }
 
 async function modelServer(handler) {
@@ -259,6 +287,34 @@ test("Agent Browser worker stop input is exact and bounded", () => {
     "{}\n",
   ]) {
     assert.throws(() => parseRuntimeV2AgentBrowserStopRecord(value), /stop record/u);
+  }
+});
+
+test("desktop mode selects the visible Breadboard target without Edge or an external profile", async () => {
+  const server = await modelServer(() => ({
+    choices: [{ message: { role: "assistant", content: "done" } }],
+  }));
+  const current = fixture(server.url, undefined, { browserMode: "desktop" });
+  publishDesktopBrowserReceipt(current);
+  try {
+    const launched = launchWorker(current);
+    launched.child.stdin.end();
+    const exit = await launched.completed;
+    assert.deepEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null }, exit.stderr);
+    const connected = JSON.parse(
+      fs.readFileSync(
+        path.join(current.workspacePath, "runtime-home", "desktop-connect.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(connected.cdp, "9333");
+    assert.equal(connected.executable, null);
+    assert.equal(connected.profile, null);
+    assert.ok(connected.args.includes("t2"));
+    assert.equal(connected.args.includes("--url"), false);
+  } finally {
+    fs.rmSync(current.dataRoot, { recursive: true, force: true });
+    await server.close();
   }
 });
 

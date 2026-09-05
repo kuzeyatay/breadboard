@@ -8,6 +8,10 @@ import { removeConversationStoredFileBlobs } from "./stored-file-uploads.ts";
 import db from "../db.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
 import type { HermesSurface } from "../hermes/config.ts";
+import type { ChatMessageAttachment } from "../chat-attachments.ts";
+// memory.ts imports this module too. The cycle is safe: both sides only touch
+// each other's exports inside function bodies, never during module evaluation.
+import { compactConversationMemoryIfNeeded } from "./memory.ts";
 
 export type ConversationScopeKind = "global" | "garden" | "page";
 export type ConversationMessageStatus = "pending" | "complete" | "failed" | "aborted";
@@ -849,6 +853,17 @@ export function completeAssistantMessage(input: {
     ...input,
     status: "complete",
   }, database);
+  // Rolling compaction is a consequence of the transcript growing, so it
+  // belongs to the one place every finished answer lands rather than to any
+  // single transport. It used to hang off the Hermes event stream alone, and
+  // Garden Chat, the provider-only path, and external-agent turns never
+  // reached it: after 127 conversations not one had a summary. Compaction is
+  // versioned and idempotent, and a failure here must never fail the answer.
+  try {
+    compactConversationMemoryIfNeeded(input.conversationId, database);
+  } catch (error) {
+    console.error("[memory] rolling compaction failed", error);
+  }
   if (database === db) {
     // Loaded lazily to keep the canonical store independent from hook dispatch
     // (which itself starts conversation turns). Delivery dedupe in the hook
@@ -890,6 +905,99 @@ export function failAssistantMessage(input: {
     metadata: { ...input.metadata, ...(input.error ? { error: input.error } : {}) },
     ...(input.tokenUsage === undefined ? {} : { tokenUsage: input.tokenUsage }),
   }, database);
+}
+
+/** True when Stop, rather than a transport failure, owns this turn's end. */
+export function conversationTurnWasCancelled(
+  conversationId: number,
+  clientMessageId: string,
+  database: Database.Database = db,
+): boolean {
+  const row = getMessageByClientRole(
+    conversationId,
+    normalizeClientMessageId(clientMessageId),
+    "assistant",
+    database,
+  );
+  if (!row || row.status !== "aborted") return false;
+  return parseObject(row.metadata).error === "cancelled_by_user";
+}
+
+/**
+ * Seal one turn before cancelling its runtime.
+ *
+ * A first-turn placeholder is already `aborted` while it waits for dispatch,
+ * so ordinary `failAssistantMessage` cannot distinguish Stop from that
+ * recoverable state. Rewriting its marker makes a late dispatch refuse to
+ * revive it. Pending turns use the normal terminal transition.
+ */
+export function cancelConversationTurn(input: {
+  conversationId: number;
+  clientMessageId: string;
+}, database: Database.Database = db): ConversationMessageRow | null {
+  const cancel = database.transaction(() => {
+    const row = getMessageByClientRole(
+      input.conversationId,
+      normalizeClientMessageId(input.clientMessageId),
+      "assistant",
+      database,
+    );
+    if (!row) return null;
+    if (row.status === "pending") {
+      return failAssistantMessage(
+        {
+          conversationId: input.conversationId,
+          clientMessageId: input.clientMessageId,
+          status: "aborted",
+          error: "cancelled_by_user",
+        },
+        database,
+      );
+    }
+    if (!isPreDispatchReservedAssistant(row)) return row;
+    const metadata = {
+      ...parseObject(row.metadata),
+      preDispatchReserved: false,
+      error: "cancelled_by_user",
+      responseCompletedAt: new Date().toISOString(),
+    };
+    database.prepare(`
+      UPDATE conversation_messages
+      SET metadata = ?, updated_at = datetime('now')
+      WHERE id = ? AND status = 'aborted'
+    `).run(JSON.stringify(metadata), row.id);
+    const cancelled = getConversationMessageById(row.id, database)!;
+    const conversation = getConversationById(input.conversationId, database);
+    if (conversation) dualWriteAssistantMessage(conversation, cancelled, database);
+    return cancelled;
+  });
+  return cancel.immediate();
+}
+
+/** Cancel only the newest answer when it is still in its dispatch window. */
+export function cancelLatestConversationTurn(
+  conversationId: number,
+  database: Database.Database = db,
+): ConversationMessageRow | null {
+  const latest = database.prepare(`
+    SELECT * FROM conversation_messages
+    WHERE conversation_id = ? AND role = 'assistant'
+    ORDER BY order_index DESC
+    LIMIT 1
+  `).get(conversationId) as ConversationMessageRow | undefined;
+  if (
+    !latest ||
+    (latest.status !== "pending" && !isPreDispatchReservedAssistant(latest))
+  ) {
+    return null;
+  }
+  return cancelConversationTurn(
+    {
+      conversationId,
+      clientMessageId: latest.client_message_id,
+    },
+    database,
+  );
 }
 
 export function retryAssistantMessage(
@@ -991,6 +1099,9 @@ export function appendConversationSteerMessage(input: {
   clientMessageId: string;
   surface: HermesSurface;
   content: string;
+  attachments?: readonly ChatMessageAttachment[];
+  /** The user is answering a question asked inside the active response. */
+  clarificationAnswer?: boolean;
   targetClientMessageId?: string;
   assistantContentOffset?: number;
 }, database: Database.Database = db): ConversationMessageRow {
@@ -1012,6 +1123,13 @@ export function appendConversationSteerMessage(input: {
   }
   const metadata = JSON.stringify({
     courseCorrection: true,
+    ...(input.clarificationAnswer ? { clarificationAnswer: true } : {}),
+    ...(input.attachments?.length
+      ? {
+          attachmentNames: input.attachments.map((attachment) => attachment.name),
+          attachments: input.attachments,
+        }
+      : {}),
     ...(targetClientMessageId
       ? { courseCorrectionTargetClientMessageId: targetClientMessageId }
       : {}),
@@ -1176,8 +1294,23 @@ function finishAssistantMessage(input: {
       database,
     );
     if (!row) throw new ConversationStoreError(404, "turn_not_found", "Conversation turn not found.");
-    if (row.status !== "pending") return row;
-    const mergedMetadata = { ...parseObject(row.metadata), ...input.metadata };
+    if (row.status !== "pending") {
+      // A compatibility Garden PATCH can race a server-owned completion after
+      // rewriting the legacy projection. Replaying the already-terminal
+      // canonical row must converge that projection again instead of leaving
+      // stale browser text (notably a transport-level "network error") visible.
+      const conversation = getConversationById(input.conversationId, database);
+      if (conversation) dualWriteAssistantMessage(conversation, row, database);
+      return row;
+    }
+    const mergedMetadata: Record<string, unknown> = {
+      ...parseObject(row.metadata),
+      ...input.metadata,
+      // Capture the terminal boundary itself. Deriving this later from a run
+      // duration can be subtly wrong when preflight and runtime clocks start at
+      // different instants.
+      responseCompletedAt: new Date().toISOString(),
+    };
     // Every finished answer, on every surface and from every runtime, lands
     // here — which makes it the one place invisible-Unicode marks can be taken
     // out of what Breadboard says without asking each pipeline to remember.

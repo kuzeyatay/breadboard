@@ -191,7 +191,7 @@ function resolveAttachment(input: {
   return { artifact, file };
 }
 
-async function whatsAppTarget(): Promise<SelfTarget> {
+async function whatsAppTarget(userId?: number): Promise<SelfTarget> {
   if (!whatsAppFeatureEnabled()) {
     throw new MessagingServiceError(
       "messaging_channel_disabled",
@@ -205,6 +205,12 @@ async function whatsAppTarget(): Promise<SelfTarget> {
     throw new MessagingServiceError(
       "messaging_not_linked",
       explainSelfTargetFailure("whatsapp_not_linked"),
+    );
+  }
+  if (userId !== undefined && settings.ownerUserId !== userId) {
+    throw new MessagingServiceError(
+      "messaging_target_owner_mismatch",
+      "WhatsApp is linked to a different Breadboard account.",
     );
   }
   const resolved = resolveWhatsAppSelfTarget({
@@ -222,7 +228,7 @@ async function whatsAppTarget(): Promise<SelfTarget> {
   return resolved.target;
 }
 
-async function telegramTarget(): Promise<{ target: SelfTarget; token: string }> {
+async function telegramTarget(userId?: number): Promise<{ target: SelfTarget; token: string }> {
   if (!telegramFeatureEnabled()) {
     throw new MessagingServiceError(
       "messaging_channel_disabled",
@@ -234,6 +240,16 @@ async function telegramTarget(): Promise<{ target: SelfTarget; token: string }> 
   const { getTelegramStore } = await import("../telegram/instance.ts");
   const store = getTelegramStore();
   const settings = store.settings();
+  if (
+    userId !== undefined &&
+    settings.ownerUserId !== null &&
+    settings.ownerUserId !== userId
+  ) {
+    throw new MessagingServiceError(
+      "messaging_target_owner_mismatch",
+      "Telegram is linked to a different Breadboard account.",
+    );
+  }
   const resolved = resolveTelegramSelfTarget({
     linked: Boolean(token) && Boolean(settings.botId),
     ownerUserId: settings.ownerUserId,
@@ -521,7 +537,7 @@ async function deliverWhatsApp(
   text: string,
   attachment: ResolvedAttachment | null,
 ): Promise<DeliveredOwnerTarget> {
-  const target = await whatsAppTarget();
+  const target = await whatsAppTarget(userId);
   const {
     runtimeGatewayStatus,
     sendRuntimeWhatsAppMedia,
@@ -558,10 +574,11 @@ async function deliverWhatsApp(
 
 /** Deliver to the owner's private Telegram chat. */
 async function deliverTelegram(
+  userId: number,
   text: string,
   attachment: ResolvedAttachment | null,
 ): Promise<DeliveredOwnerTarget> {
-  const { target, token } = await telegramTarget();
+  const { target, token } = await telegramTarget(userId);
   const { sendDocument, sendMessage } = await import("../telegram/client.ts");
   try {
     if (attachment) {
@@ -611,7 +628,7 @@ export async function sendOwnerMessage(
   const delivery =
     channel === "whatsapp"
       ? await deliverWhatsApp(input.userId, text, attachment)
-      : await deliverTelegram(text, attachment);
+      : await deliverTelegram(input.userId, text, attachment);
   const continuation = await recordDeliveredOwnerMessage({
     channel,
     userId: input.userId,
@@ -657,7 +674,7 @@ export async function sendOwnerText(input: {
   const delivery =
     channel === "whatsapp"
       ? await deliverWhatsApp(input.userId, text, null)
-      : await deliverTelegram(text, null);
+      : await deliverTelegram(input.userId, text, null);
   const continuation = await recordDeliveredOwnerMessage({
     channel,
     userId: input.userId,

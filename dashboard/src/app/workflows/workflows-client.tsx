@@ -352,10 +352,12 @@ export default function WorkflowsClient({
   workflowId,
   teachOnOpen = false,
   initialRunId = null,
+  showNavbarFlowers,
 }: {
   workflowId: string | null;
   teachOnOpen?: boolean;
   initialRunId?: string | null;
+  showNavbarFlowers: boolean;
 }) {
   const router = useRouter();
   const [activeId, setActiveId] = useState<string | null>(workflowId);
@@ -457,7 +459,7 @@ export default function WorkflowsClient({
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-[var(--paper-bg)] text-[var(--ink)]">
       <header className="bb-neu-toolbar breadboard-flower-navbar neu-surface-subtle relative flex shrink-0 items-center justify-between gap-4 border-b border-gray-800 px-6 py-3.5">
-        <NavbarFlowerWind />
+        <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           <button
             type="button"

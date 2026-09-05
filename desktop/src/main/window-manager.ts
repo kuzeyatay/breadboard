@@ -1,4 +1,4 @@
-import { BrowserWindow, app, screen } from "electron";
+import { BrowserWindow, app, nativeTheme, screen, shell } from "electron";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -15,6 +15,15 @@ import type {
   BreadboardWindowSurface,
   BreadboardWindowTheme,
 } from "./window-options";
+import {
+  FIRST_PAINT_MAX_WAIT_MS,
+  FIRST_PAINT_PROBE_MAX_WAIT_MS,
+  waitForFirstPaint,
+} from "./first-paint";
+import { isFullScreenShortcut } from "./tab-model";
+import { TabManager } from "./tab-manager";
+
+export { FIRST_PAINT_MAX_WAIT_MS, FIRST_PAINT_PROBE_MAX_WAIT_MS, isFullScreenShortcut };
 
 export interface WindowManagerOptions {
   allowed: AllowedOrigins;
@@ -35,6 +44,11 @@ export interface WindowManagerOptions {
   log?: (line: string) => void;
   /** Lets the shell retire non-main safety windows before the app closes. */
   onMainWindowCloseRequested?: () => void;
+  /** Lets F12 open the inspector in any tab. Development builds only. */
+  devTools?: boolean;
+  /** Durable record of unpacked extensions loaded into the isolated browser profile. */
+  browserExtensionsConfigDir?: string;
+  onBrowserAgentPageReady?: (runId: string, targetUrl: string) => Promise<boolean>;
 }
 
 interface DashboardPreload {
@@ -46,6 +60,23 @@ interface DashboardPreload {
 
 export const DEFAULT_MINIMUM_STARTUP_VISIBLE_MS = 2_200;
 export const WINDOW_VISIBILITY_FALLBACK_MS = 1_500;
+
+interface NativeThemeTarget {
+  themeSource: "system" | BreadboardWindowTheme;
+}
+
+/**
+ * Make sandboxed web pages see the same preferred colour scheme as Breadboard.
+ * Internal pages use `data-theme`; sites such as Google read Chromium's
+ * `prefers-color-scheme` media feature instead.
+ */
+export function synchronizeNativeTheme(
+  theme: BreadboardWindowTheme,
+  target: NativeThemeTarget | undefined = nativeTheme,
+): void {
+  if (target) target.themeSource = theme;
+}
+
 export const LOCAL_PAGE_RECOVERY_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 /**
  * A retry only reschedules itself when the load reports back. A navigation that
@@ -103,18 +134,9 @@ export const DASHBOARD_PRELOAD_GRACE_MS = 1_200;
  * that never paints at all cannot strand a person on the loading field.
  */
 export const DASHBOARD_PAINT_MAX_WAIT_MS = 60_000;
-/**
- * Ceiling on the in-page paint probe, so a page that paints but never settles
- * is discovered here rather than at the much longer outer cap.
- */
-export const FIRST_PAINT_PROBE_MAX_WAIT_MS = 12_000;
-/**
- * The probe caps itself, but only if it runs: a renderer wedged on its main
- * thread never reaches the timer it set. Recovery hands the window back on the
- * far side of this wait, so an unsettled probe is the difference between a
- * dashboard returning and a person staring at the reconnect scene forever.
- */
-export const FIRST_PAINT_MAX_WAIT_MS = FIRST_PAINT_PROBE_MAX_WAIT_MS + 3_000;
+/** Native state changes are normally already settled during preload. This cap
+ * only covers someone changing maximize/full-screen state while it loads. */
+export const NATIVE_WINDOW_STATE_WAIT_MS = 1_500;
 
 /**
  * Where a preloading window waits while it renders. Windows clamps this to
@@ -123,62 +145,6 @@ export const FIRST_PAINT_MAX_WAIT_MS = FIRST_PAINT_PROBE_MAX_WAIT_MS + 3_000;
  * shows nothing.
  */
 export const OFFSCREEN_PRELOAD_ORIGIN = -32_000;
-
-/**
- * Resolves once the hydrated page has actually put pixels up. `did-finish-load`
- * fires when the document is done, which for an App Router page is before React
- * has hydrated and before client-only panels have rendered anything — swapping
- * inside that window is precisely what shows a dashboard of empty frames.
- *
- * A contentful paint is what proves there are pixels: animation frames keep
- * running in a window Chromium is not rasterizing, so rAF alone cannot tell a
- * painted page from a parked one — measured, not assumed. Fonts settling, then
- * an idle main thread, then two animation frames on top of that is the proxy
- * for "hydration is done and its result has been painted too".
- */
-const FIRST_PAINT_PROBE = `new Promise((resolve) => {
-  const done = () => resolve(true);
-  setTimeout(done, ${FIRST_PAINT_PROBE_MAX_WAIT_MS});
-  const afterPaint = () => requestAnimationFrame(() => requestAnimationFrame(done));
-  const whenIdle = () =>
-    typeof requestIdleCallback === "function"
-      ? requestIdleCallback(afterPaint, { timeout: 2000 })
-      : setTimeout(afterPaint, 200);
-  const whenHydrated = () => {
-    const fonts = document.fonts && document.fonts.ready;
-    if (fonts && typeof fonts.then === "function") fonts.then(whenIdle, whenIdle);
-    else whenIdle();
-  };
-  if (typeof PerformanceObserver !== "function") return whenHydrated();
-  let advanced = false;
-  const advance = () => {
-    if (advanced) return;
-    advanced = true;
-    whenHydrated();
-  };
-  try {
-    const observer = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        if (entry.name !== "first-contentful-paint") continue;
-        observer.disconnect();
-        advance();
-      }
-    });
-    // \`buffered\` matters: the paint usually lands before this probe is injected.
-    observer.observe({ type: "paint", buffered: true });
-  } catch (error) {
-    advance();
-  }
-})`;
-
-interface FullScreenShortcutInput {
-  type: string;
-  key: string;
-  control: boolean;
-  meta: boolean;
-  shift: boolean;
-  isAutoRepeat: boolean;
-}
 
 interface LocalPageRecoveryState {
   url: string;
@@ -195,18 +161,30 @@ interface LocalPageRecoveryState {
   heartbeat: ReturnType<typeof setInterval> | null;
 }
 
-export function isFullScreenShortcut(input: FullScreenShortcutInput): boolean {
-  if (input.type !== "keyDown" || input.isAutoRepeat) return false;
-  if (input.key.toUpperCase() === "F11") return true;
-  return input.key.toLowerCase() === "f" && input.shift && (input.control || input.meta);
-}
-
 export function remainingStartupVisibleMs(
   shownAt: number,
   now: number,
   minimumMs = DEFAULT_MINIMUM_STARTUP_VISIBLE_MS,
 ): number {
   return Math.max(0, minimumMs - Math.max(0, now - shownAt));
+}
+
+/**
+ * Carry the shell's persisted theme into a dashboard origin that may not have
+ * existed on the previous launch—or may contain an older choice from a port
+ * used before. The page treats this durable launch value as authoritative.
+ */
+export function dashboardUrlWithTheme(
+  dashboardUrl: string,
+  theme: BreadboardWindowTheme,
+): string {
+  try {
+    const target = new URL(dashboardUrl);
+    target.searchParams.set("theme", theme);
+    return target.toString();
+  } catch {
+    return dashboardUrl;
+  }
 }
 
 /**
@@ -239,14 +217,39 @@ export class WindowManager {
     BrowserWindow,
     BreadboardWindowSurface
   >();
+  /** The browser-style tabs every Breadboard window carries. */
+  readonly tabs: TabManager;
 
   constructor(options: WindowManagerOptions) {
     this.options = options;
     this.currentTheme = options.initialTheme ?? "light";
+    synchronizeNativeTheme(this.currentTheme);
+    this.tabs = new TabManager({
+      allowed: options.allowed,
+      preloadPath: options.preloadPath,
+      loadingHtmlPath: () => this.loadingHtmlPath(),
+      recoveryHtmlPath: () => this.recoveryHtmlPath(),
+      theme: () => this.currentTheme,
+      openWindow: (url) => {
+        this.openPopupWindow(url);
+      },
+      openExternal: (url) => {
+        void shell.openExternal(url);
+      },
+      devTools: options.devTools,
+      browserExtensionsConfigDir: options.browserExtensionsConfigDir,
+      log: options.log,
+      onBrowserAgentPageReady: options.onBrowserAgentPageReady,
+    });
   }
 
   get window(): BrowserWindow | null {
     return this.mainWindow;
+  }
+
+  /** The theme the windows are in, for anything drawn to match them. */
+  get theme(): BreadboardWindowTheme {
+    return this.currentTheme;
   }
 
   /** Read and clear the close intent associated with the last main window. */
@@ -258,18 +261,12 @@ export class WindowManager {
 
   rememberTheme(theme: BreadboardWindowTheme): void {
     this.currentTheme = theme;
+    synchronizeNativeTheme(theme);
+    this.tabs.synchronizeBrowserTheme(theme);
   }
 
   private log(line: string): void {
     this.options.log?.(`[window] ${line}`);
-  }
-
-  private installWindowShortcuts(window: BrowserWindow): void {
-    window.webContents.on("before-input-event", (event, input) => {
-      if (!isFullScreenShortcut(input)) return;
-      event.preventDefault();
-      window.setFullScreen(!window.isFullScreen());
-    });
   }
 
   private revealWhenReady(window: BrowserWindow): void {
@@ -298,8 +295,17 @@ export class WindowManager {
       // the fact would be setting it too late.
       backgroundColor ? { ...options, backgroundColor } : options,
     );
-    hardenWindow(window, this.options.allowed, (url) => this.openPopupWindow(url));
-    this.installWindowShortcuts(window);
+    hardenWindow(
+      window,
+      this.options.allowed,
+      (url) => this.openPopupWindow(url),
+      (url) => this.tabs.openLocalTab(window.webContents, url),
+      (url, background) =>
+        this.tabs.openExternalTab(window.webContents, url, background),
+    );
+    // Keyboard shortcuts — full screen included — are the tab manager's, so
+    // they work the same in a window's own page and in every tab it holds.
+    this.tabs.attach(window);
     this.installTitleBarOverlayUpkeep(window);
     return window;
   }
@@ -337,6 +343,16 @@ export class WindowManager {
     });
     // Not `show`: the startup screen keeps the focus until the person leaves it.
     window.showInactive();
+    // Native maximize/full-screen transitions have their own Windows animation.
+    // If one starts only after the welcome is dismissed, the transparent
+    // replacement becomes visible at its restored bounds in the top-left and
+    // then grows to fill the screen. Put the invisible preload into its final
+    // native state now, before its page even starts loading, so that animation
+    // finishes behind the welcome as well.
+    if (reference && !reference.isDestroyed() && reference !== window) {
+      if (reference.isFullScreen()) window.setFullScreen(true);
+      else if (reference.isMaximized()) window.maximize();
+    }
   }
 
   /** Undoes {@link parkOffscreen}, short of moving the window back on screen —
@@ -348,6 +364,88 @@ export class WindowManager {
     // Opacity is the last thing done to a parked window and the first thing
     // that costs it its caption colour, so the strip is re-stated here.
     this.applyTitleBarOverlay(window);
+  }
+
+  /** Wait for a native window-state transition while the replacement remains
+   * transparent. The event, rather than `isMaximized()` immediately after the
+   * call, marks the end of the platform animation. */
+  private waitForWindowState(
+    window: BrowserWindow,
+    event: "enter-full-screen" | "leave-full-screen" | "maximize" | "unmaximize",
+    alreadySet: () => boolean,
+    setState: () => void,
+  ): Promise<void> {
+    if (window.isDestroyed() || alreadySet()) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      // Electron types each BrowserWindow event as a separate overload, which
+      // does not accept the finite union used by this shared helper.
+      const nativeEvents = window as unknown as {
+        once: (name: string, listener: () => void) => void;
+        removeListener: (name: string, listener: () => void) => void;
+      };
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        nativeEvents.removeListener(event, finish);
+        nativeEvents.removeListener("closed", finish);
+        resolve();
+      };
+      nativeEvents.once(event, finish);
+      nativeEvents.once("closed", finish);
+      setState();
+      if (!settled) timer = setTimeout(finish, NATIVE_WINDOW_STATE_WAIT_MS);
+    });
+  }
+
+  /** Mirror the state as it exists at the instant of the handoff. Normally the
+   * preload already matches; this also covers using the caption controls while
+   * the welcome screen is open. */
+  private async matchWindowState(
+    window: BrowserWindow,
+    reference: BrowserWindow,
+  ): Promise<void> {
+    const fullScreen = reference.isFullScreen();
+    const maximized = !fullScreen && reference.isMaximized();
+    const bounds = reference.getBounds();
+
+    if (fullScreen) {
+      await this.waitForWindowState(
+        window,
+        "enter-full-screen",
+        () => window.isFullScreen(),
+        () => window.setFullScreen(true),
+      );
+      return;
+    }
+
+    await this.waitForWindowState(
+      window,
+      "leave-full-screen",
+      () => !window.isFullScreen(),
+      () => window.setFullScreen(false),
+    );
+    if (window.isDestroyed()) return;
+
+    if (maximized) {
+      await this.waitForWindowState(
+        window,
+        "maximize",
+        () => window.isMaximized(),
+        () => window.maximize(),
+      );
+      return;
+    }
+
+    await this.waitForWindowState(
+      window,
+      "unmaximize",
+      () => !window.isMaximized(),
+      () => window.unmaximize(),
+    );
+    if (!window.isDestroyed()) window.setBounds(bounds);
   }
 
   /**
@@ -774,6 +872,9 @@ export class WindowManager {
     this.mainWindow = replacement;
     this.installLocalPageRecovery(replacement, state.url);
     this.installMainWindowLifetime(replacement);
+    // The tabs beside the failed page are whole pages of their own; they move
+    // over before the window they were in is taken down with it.
+    this.tabs.transfer(failedWindow, replacement);
     replacement.show();
     failedWindow.destroy();
   }
@@ -1005,29 +1106,13 @@ export class WindowManager {
     return preload;
   }
 
-  /** Runs {@link FIRST_PAINT_PROBE} in the loaded page; never throws, always
-   *  settles. The probe's own cap lives inside the renderer, so it is no help
-   *  when the renderer is the thing that has stopped. */
+  /** The shared paint probe, run in this window's own page; see first-paint.ts. */
   private async waitForFirstPaint(
     window: BrowserWindow,
     maxWaitMs = FIRST_PAINT_MAX_WAIT_MS,
   ): Promise<void> {
     if (window.isDestroyed()) return;
-    let ceiling: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        window.webContents.executeJavaScript(FIRST_PAINT_PROBE, true),
-        new Promise((resolve) => {
-          ceiling = setTimeout(resolve, maxWaitMs);
-        }),
-      ]);
-    } catch {
-      // Navigated away, closed, or refused the evaluation. The page is no worse
-      // off than it was before this check existed, and stalling here would cost
-      // the person the whole outer wait for nothing.
-    } finally {
-      if (ceiling) clearTimeout(ceiling);
-    }
+    await waitForFirstPaint(window.webContents, maxWaitMs);
   }
 
   /**
@@ -1062,21 +1147,21 @@ export class WindowManager {
    * one, so the swap reads as the same window continuing rather than a new one
    * opening in front.
    */
-  private swapToDashboardPreload(): boolean {
+  private async swapToDashboardPreload(): Promise<boolean> {
     const preload = this.dashboardPreload;
     if (!preload || preload.window.isDestroyed()) return false;
     this.dashboardPreload = null;
     const dashboard = preload.window;
     const startup = this.mainWindow;
-    // Back on screen first, still transparent: the move is what the compositor
-    // sees, and it should not see a half-placed window at full opacity.
+    // Match any caption-control change made while the welcome was open, still
+    // at zero opacity. In the normal path this is already settled because
+    // parkOffscreen staged the native state before the page started loading.
     if (startup && !startup.isDestroyed() && startup !== dashboard) {
-      if (startup.isFullScreen()) dashboard.setFullScreen(true);
-      else if (startup.isMaximized()) dashboard.maximize();
-      else dashboard.setBounds(startup.getBounds());
+      await this.matchWindowState(dashboard, startup);
     } else {
       dashboard.center();
     }
+    if (dashboard.isDestroyed()) return false;
     this.unparkWindow(dashboard);
     this.mainWindowCloseRequested = false;
     this.mainWindow = dashboard;
@@ -1087,9 +1172,14 @@ export class WindowManager {
   }
 
   async showDashboard(dashboardUrl: string): Promise<void> {
+    // LocalStorage belongs to an origin, and the supervised dashboard can use a
+    // different port on the next launch. Give a fresh or previously reused
+    // origin the durable shell preference before its first paint instead of
+    // letting missing/stale origin storage reset the last active decision.
+    const launchUrl = dashboardUrlWithTheme(dashboardUrl, this.currentTheme);
     const window = this.createMainWindow();
     if (this.startupShownAt !== null) {
-      const preload = this.beginDashboardPreload(dashboardUrl);
+      const preload = this.beginDashboardPreload(launchUrl);
       // Hold the reveal until the person clicks through the welcome, so the
       // dashboard arrives into the dissolve rather than cutting across it.
       await this.waitForStartupContinue();
@@ -1106,7 +1196,7 @@ export class WindowManager {
         preload.settled,
         new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), grace)),
       ]);
-      if (outcome !== "failed" && this.swapToDashboardPreload()) {
+      if (outcome !== "failed" && (await this.swapToDashboardPreload())) {
         this.startupShownAt = null;
         return;
       }
@@ -1114,7 +1204,7 @@ export class WindowManager {
       // already looking at, exactly as it was before it loaded ahead.
       this.discardDashboardPreload();
     }
-    this.installLocalPageRecovery(window, dashboardUrl);
+    this.installLocalPageRecovery(window, launchUrl);
     // A window that already has a page on screen — the startup screen, almost
     // always — keeps showing it until the dashboard has painted. One that has
     // nothing in it yet (the app reopened after its last window was closed)
@@ -1125,13 +1215,15 @@ export class WindowManager {
         .catch(() => undefined);
       if (window.isDestroyed()) return;
     }
-    await window.loadURL(dashboardUrl);
+    await window.loadURL(launchUrl);
     this.startupShownAt = null;
   }
 
-  /** Reload dashboard content without touching backend services. */
+  /** Reload the page in front without touching backend services. */
   reload(): void {
-    this.mainWindow?.webContents.reload();
+    const window = BrowserWindow.getFocusedWindow() ?? this.mainWindow;
+    if (!window || window.isDestroyed()) return;
+    this.tabs.reloadActive(window);
   }
 
   sendToRenderer(channel: string, payload: unknown): void {

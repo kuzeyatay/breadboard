@@ -132,7 +132,7 @@ export async function DELETE(
     const { gardenId } = await params;
     const { cluster } = await requireOwnedClusterFromSlug(gardenId);
     await deleteCluster(cluster.id);
-    return NextResponse.json({ deleted: true });
+    return NextResponse.json({ deleted: true, verified: true });
   } catch (error) {
     return routeErrorResponse(error);
   }

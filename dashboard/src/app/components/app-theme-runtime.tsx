@@ -8,15 +8,17 @@ import {
   APP_THEME_LOCATION_STORAGE_KEY,
   APP_THEME_MODE_CHANGE_EVENT,
   APP_THEME_MODE_STORAGE_KEY,
+  APP_THEME_OVERRIDE_STORAGE_KEY,
   APP_THEME_STORAGE_KEY,
-  appThemeForMoment,
   appThemeScheduleForShell,
+  clearAppThemeOverride,
   getStoredAppTheme,
   getStoredAppThemeLocation,
-  getStoredAppThemeMode,
+  getStoredAppThemeOverrideUntil,
   isAppTheme,
   nextAppThemeTransition,
   rememberEffectiveAppTheme,
+  resolveAppTheme,
   type AppTheme,
   type AppThemeSchedule,
 } from "@/lib/app-theme";
@@ -38,8 +40,20 @@ function postThemeToFrame(frame: HTMLIFrameElement, theme: AppTheme): void {
   frame.contentWindow?.postMessage({ type: APP_THEME_MESSAGE, theme }, "*");
 }
 
+/** Keep the shell-provided launch hint from becoming stale if this exact page
+ * is refreshed or recovered after an in-page theme change. Internal routes
+ * without a launch hint continue to rely on this origin's localStorage. */
+function updateLaunchThemeHint(theme: AppTheme): void {
+  const current = new URL(window.location.href);
+  if (!current.searchParams.has("theme")) return;
+  if (current.searchParams.get("theme") === theme) return;
+  current.searchParams.set("theme", theme);
+  window.history.replaceState(window.history.state, "", current);
+}
+
 function synchronizeTheme(theme: AppTheme): void {
   rememberEffectiveAppTheme(theme);
+  updateLaunchThemeHint(theme);
   // The shell paints the next launch's loading scene from what it is told
   // here, so it hears how the theme was chosen, not only which one it is.
   void desktopThemeBridge()
@@ -79,12 +93,20 @@ export default function AppThemeRuntime() {
     // minute tick leaves it off, so a quiet day costs nothing but the check.
     const refreshFromPreference = (announce: boolean, reapply = false) => {
       clearTransitionTimer();
-      const mode = getStoredAppThemeMode(window.localStorage);
+      const now = new Date();
+      // A manual pick made while following the sun stands until the next
+      // sunrise or sunset; this tick must not put the sun's answer back early.
+      const resolved = resolveAppTheme(window.localStorage, now);
+      const { mode } = resolved;
+      const nextTheme = resolved.theme;
+      if (
+        mode === "sun" &&
+        !resolved.overridden &&
+        getStoredAppThemeOverrideUntil(window.localStorage) !== null
+      ) {
+        clearAppThemeOverride();
+      }
       const location = getStoredAppThemeLocation(window.localStorage);
-      const nextTheme =
-        mode === "sun"
-          ? appThemeForMoment(new Date(), location)
-          : getStoredAppTheme(window.localStorage);
       const changed = nextTheme !== theme;
       theme = nextTheme;
       if (changed || reapply) {
@@ -97,7 +119,7 @@ export default function AppThemeRuntime() {
         );
       }
       if (mode === "sun") {
-        const transition = nextAppThemeTransition(new Date(), location);
+        const transition = nextAppThemeTransition(now, location);
         const delay = Math.max(
           1_000,
           Math.min(
@@ -128,21 +150,18 @@ export default function AppThemeRuntime() {
 
     const handleModeChange = () => refreshFromPreference(true, true);
 
+    // Another tab of this origin changed the preference. Every key goes back
+    // through the resolver: a pick made there under the sun switch arrives as
+    // an override write and a theme write, and only the resolver knows which
+    // of the two the sun still outranks.
     const handleStorage = (event: StorageEvent) => {
       if (
         event.key === APP_THEME_MODE_STORAGE_KEY ||
-        event.key === APP_THEME_LOCATION_STORAGE_KEY
+        event.key === APP_THEME_LOCATION_STORAGE_KEY ||
+        event.key === APP_THEME_OVERRIDE_STORAGE_KEY ||
+        event.key === APP_THEME_STORAGE_KEY
       ) {
         refreshFromPreference(true, true);
-        return;
-      }
-      if (
-        event.key === APP_THEME_STORAGE_KEY &&
-        getStoredAppThemeMode(window.localStorage) === "manual" &&
-        isAppTheme(event.newValue)
-      ) {
-        theme = event.newValue;
-        synchronizeTheme(theme);
       }
     };
 

@@ -27,6 +27,7 @@ const uploadRoute = source("../src/app/api/speech/transcribe-upload/route.ts");
 const pipeline = source("../src/lib/speech/recording-transcription.ts");
 const mediaWorker = source("../scripts/runtime-v2-speech-media-executor.mjs");
 const selectionMenu = source("../src/app/components/chat-text-selection-ui.tsx");
+const globals = source("../src/app/globals.css");
 
 test("the picker offers recordings a phone or a laptop actually produces", () => {
   assert.ok(isTranscribableRecording("standup.m4a"));
@@ -151,7 +152,25 @@ test("the microphone offers its options in the same clothes as the highlight men
   assert.match(dictation, /document\.addEventListener\("pointerdown", closeOnOutsidePointer\)/);
   assert.match(dictation, /event\.key === "Escape"/);
   assert.match(dictation, /shellRef\.current\?\.contains\(event\.target as Node\)/);
-  assert.match(dictation, /<div ref=\{shellRef\}/);
+  assert.match(dictation, /<div\s+ref=\{shellRef\}/);
+});
+
+test("live dictation expands into accessible pause, level, and stop controls", () => {
+  assert.match(dictation, /data-dictation-active=\{dictationActive\}/);
+  assert.match(dictation, /aria-label=\{state === "paused" \? "Resume dictation" : "Pause dictation"\}/);
+  assert.match(dictation, /aria-label="Live microphone level"|"Live microphone level"/);
+  assert.match(dictation, /aria-label="Stop dictation"/);
+  assert.match(dictation, /recorder\.pause\(\)/);
+  assert.match(dictation, /recorder\.resume\(\)/);
+  assert.match(dictation, /paintDictationLevel\(Math\.sqrt\(energy \/ input\.length\)\)/);
+
+  // The anchored transition uses compositor properties, remains interruptible,
+  // and becomes a quiet opacity change when reduced motion is requested.
+  const liveControl = globals.match(/\.dictation-live-control \{[\s\S]*?\n\}/)?.[0] ?? "";
+  assert.match(liveControl, /opacity:/);
+  assert.match(liveControl, /transform:/);
+  assert.doesNotMatch(liveControl, /transition:\s*all/);
+  assert.match(globals, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.dictation-live-control/);
 });
 
 test("a chosen recording is streamed, not loaded into the tab", () => {

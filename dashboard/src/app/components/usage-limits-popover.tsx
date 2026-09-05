@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { ModelFailoverNotice } from "@/app/components/use-assistant-intelligence";
 import { assistantModelVendor, formatAssistantModelName } from "@/lib/ai-models";
 import { providerUsageLink } from "@/lib/provider-usage";
 import { usageLimitRowsWithFiveHour } from "@/lib/usage-limit-display";
@@ -53,7 +52,6 @@ interface UsageLimitsPopoverProps {
    * subscriptions use Anthropic's read-only utilization report.
    */
   activeModel?: string;
-  modelFailover?: ModelFailoverNotice | null;
 }
 
 /** ChatGPT ids are bare; every other provider's are `provider/model`. */
@@ -98,15 +96,6 @@ function formatDuration(seconds: number): string {
     minutes ? `${minutes}m` : "",
   ].filter(Boolean);
   return parts.join(" ") || "<1m";
-}
-
-/** "in about 5 days" / "in about 3h" — the exact second is noise here. */
-function formatResetWindow(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return "";
-  const hours = Math.round(seconds / 3600);
-  if (hours >= 48) return ` in about ${Math.round(hours / 24)} days`;
-  if (hours >= 1) return ` in about ${hours}h`;
-  return " in under an hour";
 }
 
 function formatUpdated(value?: string): string | null {
@@ -214,7 +203,6 @@ export default function UsageLimitsPopover({
   onOpenChange,
   showBackdrop = true,
   activeModel,
-  modelFailover,
 }: UsageLimitsPopoverProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -222,21 +210,16 @@ export default function UsageLimitsPopover({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  // Show the notice only while its exact Gemini model remains selected. The
-  // preferred-model check avoids a stale health poll flashing the old warning
-  // after the reader switches models.
-  const visibleFailover =
-    modelFailover?.usingFallback &&
-    activeModel &&
-    assistantModelVendor(activeModel).id === "google" &&
-    modelFailover.preferredModel === activeModel
-      ? modelFailover
-      : null;
-  const effectiveModel = visibleFailover?.servingModel ?? activeModel;
+  // The Usage field describes the model the person chose and nothing else.
+  // ChatMock's quota fail-over (a stand-in model serving while the chosen one
+  // is cooling down) is deliberately not surfaced here: it once claimed Gemini
+  // had run dry beside a Google report showing 93% of the quota left, because
+  // a short-term throttle and the plan's quota are different things. The
+  // numbers below come from the provider's own report.
+  const effectiveModel = activeModel;
   const googleUsageActive = isGoogleSubscriptionModel(activeModel);
   const claudeUsageActive = isClaudeSubscriptionModel(activeModel);
-  const externalUsage =
-    visibleFailover || claudeUsageActive ? null : providerUsageLink(activeModel);
+  const externalUsage = claudeUsageActive ? null : providerUsageLink(activeModel);
   const effectiveExternalUsage = providerUsageLink(effectiveModel);
 
   const setOpen = useCallback((next: boolean) => {
@@ -374,17 +357,6 @@ export default function UsageLimitsPopover({
                 </button>
               ) : null}
             </div>
-            {visibleFailover ? (
-              <div className={`mb-3 rounded-xl border px-3 py-2.5 ${light ? "border-[var(--line-strong)] bg-[var(--paper-strong)]" : "border-amber-800/50 bg-amber-950/20"}`}>
-                <p className={`font-medium ${light ? "text-[var(--ink-heading)]" : "text-amber-200"}`}>
-                  {formatAssistantModelName(visibleFailover.preferredModel)} is out of quota
-                </p>
-                <p className={`mt-1 leading-4 ${light ? "text-[var(--ink-muted)]" : "text-gray-400"}`}>
-                  Using {formatAssistantModelName(visibleFailover.servingModel)} until it
-                  resets{formatResetWindow(visibleFailover.resetsInSeconds)}.
-                </p>
-              </div>
-            ) : null}
             {/*
               ChatGPT, Google, and Anthropic each provide their own live
               snapshot. For any other provider, say so plainly instead of

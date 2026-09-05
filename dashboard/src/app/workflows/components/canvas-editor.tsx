@@ -33,6 +33,7 @@ import { useWorkflowStore } from "../stores/workflow-store";
 
 const nodeTypes: NodeTypes = { workflowBlock: WorkflowNode };
 const edgeTypes: EdgeTypes = { workflowEdge: WorkflowEdge };
+const CANVAS_REFIT_DELAY_MS = 120;
 
 function useSaveStatusLabel(status: ReturnType<typeof useWorkflowPersistence>): string {
   switch (status) {
@@ -47,6 +48,67 @@ function useSaveStatusLabel(status: ReturnType<typeof useWorkflowPersistence>): 
     default:
       return "";
   }
+}
+
+/**
+ * React Flow updates its viewport dimensions when the host window changes size,
+ * but `fitView` is otherwise a one-time mount operation. That leaves a workflow
+ * at the laptop-sized zoom after Breadboard is maximized on a larger monitor.
+ *
+ * Observe the canvas rather than `window`: sidebars and future shell layout
+ * changes can resize the usable surface without changing the browser window.
+ * The debounce waits until a native resize has settled, then the animation
+ * frame lets React Flow consume the new dimensions before it calculates zoom.
+ */
+function CanvasViewportResizeSync({
+  containerRef,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const { fitView } = useReactFlow();
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+
+    let fitTimer: number | null = null;
+    let fitFrame: number | null = null;
+    let measuredWidth = 0;
+    let measuredHeight = 0;
+
+    const queueFit = () => {
+      if (fitTimer !== null) window.clearTimeout(fitTimer);
+      if (fitFrame !== null) window.cancelAnimationFrame(fitFrame);
+      fitTimer = window.setTimeout(() => {
+        fitTimer = null;
+        fitFrame = window.requestAnimationFrame(() => {
+          fitFrame = null;
+          void fitView({ padding: 0.15 });
+        });
+      }, CANVAS_REFIT_DELAY_MS);
+    };
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const width = Math.round(entry.contentRect.width);
+        const height = Math.round(entry.contentRect.height);
+        if (width <= 0 || height <= 0) continue;
+        if (width === measuredWidth && height === measuredHeight) continue;
+        measuredWidth = width;
+        measuredHeight = height;
+        queueFit();
+      }
+    });
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+      if (fitTimer !== null) window.clearTimeout(fitTimer);
+      if (fitFrame !== null) window.cancelAnimationFrame(fitFrame);
+    };
+  }, [containerRef, fitView]);
+
+  return null;
 }
 
 function CanvasSurface({ workflowId }: { workflowId: string }) {
@@ -170,6 +232,7 @@ function CanvasSurface({ workflowId }: { workflowId: string }) {
         proOptions={{ hideAttribution: true }}
         fitView
       >
+        <CanvasViewportResizeSync containerRef={wrapperRef} />
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--border-1)" />
         <Controls showInteractive={false} />
       </ReactFlow>

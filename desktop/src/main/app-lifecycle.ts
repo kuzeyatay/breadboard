@@ -39,6 +39,7 @@ import {
   defaultPreloadPath,
   defaultStartupHtmlPath,
 } from "./window-manager";
+import { BROWSER_TAB_PATH } from "./tab-manager";
 import {
   allowThemeLocationFor,
   allowedOriginsFor,
@@ -46,7 +47,12 @@ import {
   revokeThemeLocationFor,
   type AllowedOrigins,
 } from "./security";
-import { IPC_CHANNELS } from "../shared/ipc-contract";
+import {
+  IPC_CHANNELS,
+  isBrowserBookmarkOwnerKey,
+  isBrowserBookmarks,
+  isTabsCommand,
+} from "../shared/ipc-contract";
 import {
   runtimeProductCopy,
   runtimeProductText,
@@ -73,7 +79,26 @@ import {
   readStartupSoundEnabled,
   writeStartupSoundEnabled,
 } from "./startup-sound";
+import {
+  readBrowserNavigationEnabled,
+  writeBrowserNavigationEnabled,
+} from "./browser-navigation";
+import {
+  readBrowserBookmarks,
+  writeBrowserBookmarks,
+  readBrowserShortcuts,
+  writeBrowserShortcuts,
+} from "./browser-bookmarks";
+import {
+  readCurrentLocationPreference,
+  writeCurrentLocationPreference,
+} from "./current-location-preference";
 import type { QaServiceProfile } from "./startup-options";
+import {
+  configureBrowserAgentDebugging,
+  resolveBrowserAgentDebuggingPort,
+  writeBrowserAgentSessionReceipt,
+} from "./browser-agent-session";
 import {
   RuntimeProcess,
   type RuntimeLaunchMode,
@@ -93,6 +118,9 @@ import {
   ComputerUseIndicator,
   defaultComputerUseOverlayHtmlPath,
 } from "./computer-use-indicator";
+import { rebuildDevelopmentInstallation } from "./development-rebuild";
+import { createClickyLauncher } from "./clicky-launcher";
+import { ClickyCompanion } from "./clicky-companion";
 
 export interface StartupFailure {
   serviceId: string;
@@ -140,6 +168,35 @@ export const DESKTOP_RUNTIME_EXIT_TIMEOUTS = Object.freeze({
   gracefulShutdownTimeoutMs: 5_000,
   forcedShutdownTimeoutMs: 3_000,
 });
+
+/**
+ * A fail-closed Runtime root is intentionally single-use. The desktop owns
+ * recovery by replacing it with a fresh root, using a capped backoff so a
+ * persistent machine/configuration failure cannot become a tight spawn loop.
+ */
+export const RUNTIME_ROOT_AUTO_RETRY_DELAYS_MS = Object.freeze([
+  1_000,
+  2_000,
+  5_000,
+  10_000,
+  30_000,
+]);
+export const RUNTIME_ROOT_STABILITY_WINDOW_MS = 60_000;
+
+export function runtimeRootAutoRetryDelayMs(attempt: number): number {
+  const boundedAttempt = Number.isFinite(attempt)
+    ? Math.max(0, Math.floor(attempt))
+    : 0;
+  const finalDelay =
+    RUNTIME_ROOT_AUTO_RETRY_DELAYS_MS[
+      RUNTIME_ROOT_AUTO_RETRY_DELAYS_MS.length - 1
+    ] ?? 30_000;
+  return (
+    RUNTIME_ROOT_AUTO_RETRY_DELAYS_MS[
+      Math.min(boundedAttempt, RUNTIME_ROOT_AUTO_RETRY_DELAYS_MS.length - 1)
+    ] ?? finalDelay
+  );
+}
 
 /**
  * Install the fatal unhandled-rejection path through injectable actions so the
@@ -198,6 +255,10 @@ export class AppLifecycle {
   private runtimeStatusTimer: NodeJS.Timeout | null = null;
   private runtimeStatusRefreshInFlight = false;
   private runtimeRestartInFlight: Promise<boolean> | null = null;
+  private runtimeRootRetryTimer: NodeJS.Timeout | null = null;
+  private runtimeRootStabilityTimer: NodeJS.Timeout | null = null;
+  private runtimeRootRetryAttempt = 0;
+  private appRestartInFlight: Promise<boolean> | null = null;
   private lastRuntimeStatusSignature: string | null = null;
   private dashboardShown = false;
   private startupState: StartupState = {
@@ -208,6 +269,9 @@ export class AppLifecycle {
   private quitting = false;
   private runtimeStopped = false;
   private computerUseIndicator: ComputerUseIndicator | null = null;
+  private clickyCompanion: ClickyCompanion | null = null;
+  /** Random loopback-only CDP port reserved for visible browser-agent tabs. */
+  private browserAgentDebuggingPort: number | null = null;
   /** Set only after this process successfully claims a Hot dev checkout. */
   private devInstanceLockRepoRoot: string | null = null;
   private readonly moduleDir: string;
@@ -253,6 +317,10 @@ export class AppLifecycle {
       app.quit();
       return;
     }
+    this.browserAgentDebuggingPort = configureBrowserAgentDebugging(
+      app.commandLine,
+      app.getPath("userData"),
+    );
     app.on("second-instance", () => {
       const window = this.windows?.window;
       if (window) {
@@ -385,7 +453,41 @@ export class AppLifecycle {
           if (!this.quitting) app.quit();
         });
       },
+      devTools: this.paths.mode === "dev",
+      browserExtensionsConfigDir: this.paths.configDir,
+      onBrowserAgentPageReady: async (runId, targetUrl) => {
+        const debuggingPort = this.browserAgentDebuggingPort;
+        if (!debuggingPort) return false;
+        const cdpPort = await resolveBrowserAgentDebuggingPort(
+          debuggingPort,
+          targetUrl,
+        );
+        if (!cdpPort) {
+          supervisorLog.write(
+            `[desktop] could not resolve the built-in browser target for ${runId}`,
+          );
+          return false;
+        }
+        try {
+          writeBrowserAgentSessionReceipt(this.paths.dataRoot, {
+            protocolVersion: 1,
+            runId,
+            cdpPort,
+            targetUrl,
+            createdAt: new Date().toISOString(),
+          });
+          return true;
+        } catch (error) {
+          supervisorLog.write(
+            `[desktop] could not publish the built-in browser target for ${runId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          return false;
+        }
+      },
     });
+    this.windows.tabs.setEnabled(readBrowserNavigationEnabled(this.paths.configDir));
 
     this.computerUseIndicator = new ComputerUseIndicator({
       dataDir: path.join(this.paths.dataRoot, "ui-tars"),
@@ -567,6 +669,8 @@ export class AppLifecycle {
       const ready = await this.runtime.start();
       this.runtimeDashboardUrl = ready.dashboardUrl;
       this.allowDashboardOrigin(ready.dashboardUrl);
+      this.windows.tabs.setNewTabUrl(new URL("/new-tab", ready.dashboardUrl).toString());
+      this.windows.tabs.setBrowserUrl(new URL(BROWSER_TAB_PATH, ready.dashboardUrl).toString());
       const status = await this.runtime.status();
       this.startRuntimeStatusPolling();
       await this.applyRuntimeSnapshot(status);
@@ -580,18 +684,70 @@ export class AppLifecycle {
   }
 
   private retryRuntimeRoot(): Promise<boolean> {
+    this.clearScheduledRuntimeRootRetry();
     if (this.runtimeRestartInFlight) return this.runtimeRestartInFlight;
     const retry = this.retryRuntimeRootOnce();
     this.runtimeRestartInFlight = retry;
-    const clearRetry = () => {
+    const clearRetry = (ready: boolean) => {
       if (this.runtimeRestartInFlight === retry) {
         this.runtimeRestartInFlight = null;
       }
+      if (!ready) this.scheduleRuntimeRootRetry();
     };
     // Observe both outcomes without creating the rejected promise that
     // `finally()` would return and leave detached from the IPC invocation.
-    void retry.then(clearRetry, clearRetry);
+    void retry.then(clearRetry, () => clearRetry(false));
     return retry;
+  }
+
+  private clearScheduledRuntimeRootRetry(): void {
+    if (!this.runtimeRootRetryTimer) return;
+    clearTimeout(this.runtimeRootRetryTimer);
+    this.runtimeRootRetryTimer = null;
+  }
+
+  private clearRuntimeRootStabilityTimer(): void {
+    if (!this.runtimeRootStabilityTimer) return;
+    clearTimeout(this.runtimeRootStabilityTimer);
+    this.runtimeRootStabilityTimer = null;
+  }
+
+  private scheduleRuntimeRootRetry(): void {
+    if (
+      this.quitting ||
+      this.runtimeStopped ||
+      this.runtimeRootRetryTimer ||
+      this.runtimeRestartInFlight
+    ) {
+      return;
+    }
+    const attempt = this.runtimeRootRetryAttempt;
+    const delayMs = runtimeRootAutoRetryDelayMs(attempt);
+    this.runtimeRootRetryAttempt = attempt + 1;
+    this.logs
+      ?.forService("desktop")
+      .write(
+        `[desktop] scheduling Runtime recovery attempt ${attempt + 1} in ${delayMs}ms`,
+      );
+    this.runtimeRootRetryTimer = setTimeout(() => {
+      this.runtimeRootRetryTimer = null;
+      if (this.quitting || this.runtimeStopped) return;
+      void this.retryRuntimeRoot();
+    }, delayMs);
+    this.runtimeRootRetryTimer.unref?.();
+  }
+
+  private armRuntimeRootStabilityReset(): void {
+    this.clearRuntimeRootStabilityTimer();
+    this.runtimeRootStabilityTimer = setTimeout(() => {
+      this.runtimeRootStabilityTimer = null;
+      if (this.quitting || this.runtime?.state !== "ready") return;
+      this.runtimeRootRetryAttempt = 0;
+      this.logs
+        ?.forService("desktop")
+        .write("[desktop] Runtime recovery is stable; retry backoff reset");
+    }, RUNTIME_ROOT_STABILITY_WINDOW_MS);
+    this.runtimeRootStabilityTimer.unref?.();
   }
 
   private async retryRuntimeRootOnce(): Promise<boolean> {
@@ -599,6 +755,7 @@ export class AppLifecycle {
     const previousRuntime = this.runtime;
     if (!previousRuntime) return false;
 
+    this.clearRuntimeRootStabilityTimer();
     this.stopRuntimeStatusPolling();
     const stopped = await previousRuntime.stop();
     if (!stopped.exited) {
@@ -612,6 +769,8 @@ export class AppLifecycle {
       this.allowedOrigins.origins.delete(new URL(this.runtimeDashboardUrl).origin);
     }
     this.runtimeDashboardUrl = null;
+    this.windows.tabs.setNewTabUrl(null);
+    this.windows.tabs.setBrowserUrl(null);
     this.dashboardShown = false;
     this.lastRuntimeStatusSignature = null;
     this.runtime = this.createRuntimeProcess();
@@ -680,6 +839,7 @@ export class AppLifecycle {
     }
 
     this.setStartupState({ phase: "ready", message: "Ready", services });
+    this.armRuntimeRootStabilityReset();
     const dashboardUrl = this.runtimeDashboardUrl;
     if (!this.dashboardShown && dashboardUrl) {
       this.dashboardShown = true;
@@ -746,6 +906,7 @@ export class AppLifecycle {
   }): void {
     if (this.quitting || this.runtimeStopped) return;
     this.stopRuntimeStatusPolling();
+    this.clearRuntimeRootStabilityTimer();
     this.lastRuntimeStatusSignature = null;
     const reason = exit.signal
       ? `Runtime stopped with signal ${exit.signal}.`
@@ -755,6 +916,7 @@ export class AppLifecycle {
     this.failRuntimeStartup(reason);
     this.dashboardShown = false;
     void this.windows.showStartupScreen();
+    this.scheduleRuntimeRootRetry();
   }
 
   private setStartupState(state: StartupState): void {
@@ -826,6 +988,11 @@ export class AppLifecycle {
     ipcMain.handle(IPC_CHANNELS.quit, () => {
       app.quit();
     });
+    ipcMain.handle(IPC_CHANNELS.restartApp, (event) => {
+      const window = this.windowForSender(event.sender);
+      if (!window || window.isDestroyed()) return false;
+      return this.restartApplication();
+    });
     ipcMain.handle(IPC_CHANNELS.startupContinue, () => {
       this.windows.markStartupContinued();
     });
@@ -850,12 +1017,12 @@ export class AppLifecycle {
       }
     });
     ipcMain.handle(IPC_CHANNELS.openMicrophoneSettings, async (event) => {
-      const window = BrowserWindow.fromWebContents(event.sender);
+      const window = this.windowForSender(event.sender);
       if (!window || window.isDestroyed()) return false;
       return openMicrophoneSettings();
     });
     ipcMain.handle(IPC_CHANNELS.allowThemeLocation, (event) => {
-      const window = BrowserWindow.fromWebContents(event.sender);
+      const window = this.windowForSender(event.sender);
       if (!window || window.isDestroyed()) return false;
       const webContentsId = event.sender.id;
       if (allowThemeLocationFor(webContentsId)) {
@@ -869,7 +1036,7 @@ export class AppLifecycle {
       IPC_CHANNELS.setTheme,
       (event, surface: unknown, schedule: unknown) => {
         if (!isWindowSurface(surface)) return false;
-        const window = BrowserWindow.fromWebContents(event.sender);
+        const window = this.windowForSender(event.sender);
         if (!window || window.isDestroyed()) return false;
         window.setBackgroundColor(backgroundColorForSurface(surface));
         if (process.platform === "win32") {
@@ -936,6 +1103,197 @@ export class AppLifecycle {
         return false;
       }
     });
+    // Location consent is installation-scoped. Unlike coordinates, this bit
+    // has to outlive the dashboard's changing loopback origin.
+    ipcMain.handle(IPC_CHANNELS.getCurrentLocationPreference, () =>
+      readCurrentLocationPreference(this.paths.configDir),
+    );
+    ipcMain.handle(
+      IPC_CHANNELS.setCurrentLocationPreference,
+      (_event, enabled: unknown) => {
+        if (typeof enabled !== "boolean") return false;
+        try {
+          writeCurrentLocationPreference(this.paths.configDir, enabled);
+          return true;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          this.logs
+            .forService("desktop")
+            .write(
+              `[desktop] could not persist the current location preference: ${reason}`,
+            );
+          return false;
+        }
+      },
+    );
+    // Browser navigation: the tabs along a window's caption strip. Every page
+    // may only act on the tabs of the window it is itself a tab of; the
+    // manager resolves that from the sender and refuses anyone else.
+    ipcMain.handle(IPC_CHANNELS.getTabsState, (event) =>
+      this.windows.tabs.stateFor(event.sender),
+    );
+    ipcMain.handle(IPC_CHANNELS.tabsCommand, (event, command: unknown) => {
+      if (!isTabsCommand(command)) return false;
+      return this.windows.tabs.handleCommand(event.sender, command);
+    });
+    ipcMain.handle(IPC_CHANNELS.getBrowserNavigation, () => this.windows.tabs.isEnabled);
+    ipcMain.handle(IPC_CHANNELS.setBrowserNavigation, (_event, enabled: unknown) => {
+      if (typeof enabled !== "boolean") return false;
+      try {
+        writeBrowserNavigationEnabled(this.paths.configDir, enabled);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logs
+          .forService("desktop")
+          .write(`[desktop] could not persist the browser navigation preference: ${reason}`);
+        return false;
+      }
+      // Applied only once written down: a switch that took effect now and
+      // came back the other way at the next launch would be lying.
+      this.windows.tabs.setEnabled(enabled);
+      return true;
+    });
+    ipcMain.handle(IPC_CHANNELS.getBrowserBookmarks, (_event, ownerKey: unknown) => {
+      if (!isBrowserBookmarkOwnerKey(ownerKey)) return null;
+      return readBrowserBookmarks(this.paths.configDir, ownerKey);
+    });
+    ipcMain.handle(
+      IPC_CHANNELS.setBrowserBookmarks,
+      (_event, ownerKey: unknown, bookmarks: unknown) => {
+        if (!isBrowserBookmarkOwnerKey(ownerKey) || !isBrowserBookmarks(bookmarks)) return false;
+        try {
+          writeBrowserBookmarks(this.paths.configDir, ownerKey, bookmarks);
+          return true;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          this.logs
+            .forService("desktop")
+            .write(`[desktop] could not persist browser bookmarks: ${reason}`);
+          return false;
+        }
+      },
+    );
+    ipcMain.handle(IPC_CHANNELS.getBrowserShortcuts, (_event, ownerKey: unknown) => {
+      if (!isBrowserBookmarkOwnerKey(ownerKey)) return null;
+      return readBrowserShortcuts(this.paths.configDir, ownerKey);
+    });
+    ipcMain.handle(IPC_CHANNELS.setBrowserShortcuts, (_event, ownerKey: unknown, shortcuts: unknown) => {
+      if (!isBrowserBookmarkOwnerKey(ownerKey) || !isBrowserBookmarks(shortcuts) || shortcuts.length > 8) return false;
+      try {
+        writeBrowserShortcuts(this.paths.configDir, ownerKey, shortcuts);
+        return true;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logs.forService("desktop").write(`[desktop] could not persist browser shortcuts: ${reason}`);
+        return false;
+      }
+    });
+    ipcMain.handle(IPC_CHANNELS.getClickyState, () =>
+      this.clickyLauncher().state(),
+    );
+    ipcMain.handle(IPC_CHANNELS.launchClicky, async (event) => {
+      const window = this.windowForSender(event.sender);
+      if (!window || window.isDestroyed()) {
+        return {
+          ok: false,
+          code: "launch_failed",
+          message: "Clicky can only be launched from a Breadboard window.",
+          state: this.clickyLauncher().state(),
+        };
+      }
+      const launch = await this.clickyLauncher().launch();
+      this.logs
+        .forService("desktop")
+        .write(`[desktop] Clicky launch ${launch.ok ? "accepted" : "refused"}: ${launch.code}`);
+      return launch;
+    });
+    ipcMain.handle(IPC_CHANNELS.openClickyProject, async (event) => {
+      const window = this.windowForSender(event.sender);
+      if (!window || window.isDestroyed()) {
+        return {
+          ok: false,
+          code: "project_open_failed",
+          message: "The Clicky project can only be opened from a Breadboard window.",
+          state: this.clickyLauncher().state(),
+        };
+      }
+      return this.clickyLauncher().openProject();
+    });
+  }
+
+  private clickyLauncher() {
+    return createClickyLauncher({
+      platform: process.platform,
+      appRoot: this.paths.appRoot,
+      resourcesRoot: this.paths.resourcesRoot,
+      homeDirectory: app.getPath("home"),
+      configuredApplicationPath:
+        process.env["BREADBOARD_CLICKY_APP_PATH"]?.trim() || undefined,
+      openPath: (applicationPath) => shell.openPath(applicationPath),
+      launchWindowsCompanion: process.platform === "win32" ? async () => {
+        this.clickyCompanion ??= new ClickyCompanion({
+          dashboardUrl: () => this.runtimeDashboardUrl,
+          allowed: this.allowedOrigins,
+        });
+        await this.clickyCompanion.launch();
+      } : undefined,
+    });
+  }
+
+  /**
+   * The window a request came from. A window's own page is found by Electron;
+   * a page inside one of the window's tabs is known only to the tab manager.
+   */
+  private windowForSender(sender: Electron.WebContents): BrowserWindow | null {
+    return BrowserWindow.fromWebContents(sender) ?? this.windows.tabs.windowFor(sender);
+  }
+
+  /**
+   * Relaunch the whole product, not just the current page. Development has one
+   * extra promise: source changes must be compiled before the old process
+   * leaves, while a failed build keeps the still-working app open.
+   */
+  private restartApplication(): Promise<boolean> {
+    if (this.appRestartInFlight) return this.appRestartInFlight;
+
+    const attempt = (async () => {
+      if (this.paths.mode === "dev") {
+        const launchMode = runtimeLaunchMode(this.paths.mode);
+        const rebuilt = await rebuildDevelopmentInstallation({
+          repoRoot: repoRootFromModuleDir(this.moduleDir),
+          dashboardMode: launchMode === "lean" ? "lean" : "hot",
+          writeLog: (line) =>
+            this.logs.forService("desktop").write(`[desktop restart] ${line}`),
+        });
+        if (!rebuilt) {
+          this.logs
+            .forService("desktop")
+            .write("[desktop restart] rebuild failed; keeping Breadboard open");
+          return false;
+        }
+      }
+
+      this.logs
+        .forService("desktop")
+        .write("[desktop restart] relaunching Breadboard");
+      app.relaunch();
+      app.quit();
+      return true;
+    })().catch((error) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logs
+        .forService("desktop")
+        .write(`[desktop restart] could not prepare relaunch: ${reason}`);
+      return false;
+    });
+
+    this.appRestartInFlight = attempt.finally(() => {
+      // `before-quit` flips this synchronously. Keep the completed promise in
+      // that path so a second tab cannot schedule another relaunch while the
+      // Runtime is still draining.
+      if (!this.quitting) this.appRestartInFlight = null;
+    });
+    return this.appRestartInFlight;
   }
 
   private installApplicationMenu(): void {
@@ -1027,10 +1385,14 @@ export class AppLifecycle {
   private registerExitGuards(): void {
     app.on("before-quit", (event) => {
       this.computerUseIndicator?.stop();
+      this.clickyCompanion?.stop();
+      this.clickyCompanion = null;
       if (this.runtimeStopped) return;
       event.preventDefault();
       if (this.quitting) return;
       this.quitting = true;
+      this.clearScheduledRuntimeRootRetry();
+      this.clearRuntimeRootStabilityTimer();
       void this.shutdownRuntime().then(() => {
         this.runtimeStopped = true;
         app.quit();

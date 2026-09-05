@@ -120,6 +120,15 @@
   will-change: transform;
 }
 
+/* The deterministic first frame is paused until the component has converted
+   its phase to the shared wall clock. This prevents a newly opened tab from
+   visibly starting at the beginning of a gust before snapping into sync. */
+.wind:not([data-animation-ready="true"]) .plant,
+.starField:not([data-animation-ready="true"]) .star,
+.starField:not([data-animation-ready="true"]) .comet {
+  animation-play-state: paused;
+}
+
 .plant:nth-of-type(3n) {
   animation-name: flowerWindSoft;
 }

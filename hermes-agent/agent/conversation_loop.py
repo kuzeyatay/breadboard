@@ -4852,7 +4852,6 @@ def run_conversation(
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
-                    agent._persist_session(messages, conversation_history)
                     _billing_block = None
                     if classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"
@@ -4887,6 +4886,22 @@ def run_conversation(
                             "execute_code with Python's open() for large "
                             "files, or to write in smaller sections."
                         )
+                    # The gateway normally learns the terminal result only
+                    # after run_conversation() returns. Persisting the final
+                    # transcript can block on SQLite or a session hook, so
+                    # publish the already-final failure first; the gateway
+                    # caches it for session.turn_result without pretending the
+                    # remaining cleanup has finished.
+                    _status_callback = getattr(agent, "status_callback", None)
+                    if _status_callback:
+                        try:
+                            _status_callback("turn.failed", _final_response)
+                        except Exception:
+                            logger.debug(
+                                "status_callback error publishing terminal API failure",
+                                exc_info=True,
+                            )
+                    agent._persist_session(messages, conversation_history)
                     return {
                         "final_response": _final_response,
                         "messages": messages,

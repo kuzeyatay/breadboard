@@ -4,6 +4,16 @@ import type { ScheduledChatReceipt } from "@/lib/schedules/types.ts";
 import { requestOpenSchedulesPanel } from "./schedule-client";
 
 function receiptTiming(receipt: ScheduledChatReceipt): string {
+  if (receipt.batchCount && receipt.nextRunAt) {
+    const firstRun = new Date(receipt.nextRunAt);
+    if (!Number.isNaN(firstRun.getTime())) {
+      return `${receipt.cronDescription} · first ${firstRun.toLocaleString([], {
+        weekday: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      })}`;
+    }
+  }
   if (receipt.oneShot && receipt.nextRunAt) {
     const runAt = new Date(receipt.nextRunAt);
     if (!Number.isNaN(runAt.getTime())) {

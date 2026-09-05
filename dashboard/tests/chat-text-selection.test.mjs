@@ -112,8 +112,10 @@ test("a selection follow-up never owes live web evidence", () => {
 });
 
 test("the transcript exposes highlight and both question actions", () => {
+  const composer = source("src/app/components/assistant-composer.tsx");
   const ui = source("src/app/components/chat-text-selection-ui.tsx");
   const panel = source("src/app/components/hermes/agent-runtime-panel.tsx");
+  const garden = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
   assert.match(ui, /CHAT_HIGHLIGHT_COLORS\.map/);
   assert.match(ui, /aria-label="Highlight color"/);
   assert.match(ui, />\s*Ask in chat\s*</);
@@ -129,6 +131,24 @@ test("the transcript exposes highlight and both question actions", () => {
   assert.match(panel, /INLINE_SELECTION_STORAGE_PREFIX/);
   assert.match(panel, /DELETED_INLINE_SELECTION_STORAGE_PREFIX/);
   assert.match(panel, /deleteInlineSelection/);
+  // The selected-text context is part of the composer column, so it must use
+  // the same responsive cap as the dialogue bar on every chat surface.
+  assert.match(ui, /widthClassName = "max-w-3xl"/);
+  assert.match(panel, /widthClassName=\{chatColumnWidthClass\}/);
+  assert.match(garden, /widthClassName="max-w-5xl"/);
+  // "Ask here" replaces a running response and keeps its rich selection
+  // payload. It must never be flattened into the plain-text follow-up queue.
+  assert.match(composer, /if \(canSubmitDuringRun\) \{\s*onSubmitDuringRun\?\.\(\);/);
+  assert.match(
+    panel,
+    /onSubmitDuringRun=\{[\s\S]*?composerSelection\?\.mode === "inline"/,
+  );
+  assert.match(garden, /const replacesActiveTurn =[\s\S]*?mode === "inline"/);
+  assert.match(garden, /agentActivity\.abort\(\)\.finally/);
+  assert.match(
+    garden,
+    /handleSubmit\(question, undefined, \[\], false, undefined, \{\s*textSelection: selection/,
+  );
 });
 
 test("selection context and anchors persist through the canonical turn API", () => {
@@ -147,6 +167,7 @@ test("selection context and anchors persist through the canonical turn API", () 
 test("an inline answer is stopped, retried and edited where it lives", () => {
   const ui = source("src/app/components/chat-text-selection-ui.tsx");
   const panel = source("src/app/components/hermes/agent-runtime-panel.tsx");
+  const garden = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
   const popover = ui.slice(
     ui.indexOf("export function InlineSelectionAnswerPopover"),
     ui.indexOf("function SelectionArrowIcon"),
@@ -160,6 +181,7 @@ test("an inline answer is stopped, retried and edited where it lives", () => {
   // Escape and an outside click still close it, so removing the button leaves
   // no dead end.
   assert.match(popover, /closeOnOutsidePointer/);
+  assert.match(popover, /\.bb-chat-selection-menu, \.bb-inline-answer/);
   assert.match(popover, /if \(editing\) \{\s*setDraft\(null\);/);
   // The question itself is the edit affordance, and sending the edit is the
   // same path as a retry: ask again against the same highlight.
@@ -168,13 +190,33 @@ test("an inline answer is stopped, retried and edited where it lives", () => {
   assert.match(popover, /onAskAgain\?\.\(next\)/);
   assert.match(panel, /function askInlineSelectionAgain\(/);
   assert.match(panel, /void onAskSelection\(trimmed, selection\)/);
-  // The composer's square is withheld for the whole "Ask here" turn, including
-  // the frames before its answer row exists.
+  // The inline card owns its run. The dialogue stays visually free and the
+  // transcript never follows an inline retry down to the bottom of the chat.
   assert.match(panel, /onStop=\{canStop && !respondingToInlineSelection \? stopEverything : undefined\}/);
+  assert.match(panel, /isSending=\{streaming && !respondingToInlineSelection\}/);
+  assert.match(panel, /isResponding: transcriptResponding/);
+  assert.match(garden, /isResponding: transcriptResponding/);
+  assert.match(garden, /isStreaming=\{transcriptResponding \|\| delegationInFlight\}/);
   assert.match(
     panel,
     /if \(activeRun && messageIndex === messages\.length - 1\) \{\s*current\.pending = true;/,
   );
+});
+
+test("nested Ask here cards preserve their ancestors", () => {
+  const ui = source("src/app/components/chat-text-selection-ui.tsx");
+  for (const file of [
+    "src/app/components/hermes/agent-runtime-panel.tsx",
+    "src/app/gardens/[clusterSlug]/workspace-client.tsx",
+  ]) {
+    const surface = source(file);
+    assert.match(surface, /openInlineAnswers\.map/);
+    assert.match(surface, /current\.slice\(0, parentIndex \+ 1\)/);
+    assert.match(surface, /if \(mode === "chat"\) setOpenInlineAnswers\(\[\]\)/);
+    assert.doesNotMatch(surface, /setOpenInlineAnswer\(null\)/);
+  }
+  // Interacting with a child card is not an outside click on its parent.
+  assert.match(ui, /target\.closest\("\.bb-chat-selection-menu, \.bb-inline-answer"\)/);
 });
 
 test("inline answers use Breadboard's pastel-yellow theme token", () => {
@@ -189,6 +231,7 @@ test("inline answers use Breadboard's pastel-yellow theme token", () => {
   assert.match(css, /\.bb-inline-answer[\s\S]*var\(--neu-shadow-strong\)/);
   assert.match(popover, /Math\.min\(580, window\.innerWidth - 32\)/);
   assert.match(popover, /neu-popover/);
+  assert.match(popover, /neu-button-accent[^"]*bg-\[var\(--botanical\)\]/);
   assert.match(popover, /AssistantResponseMeta/);
   assert.match(popover, /aria-label="Delete highlight"/);
   assert.match(popover, /onDelete/);

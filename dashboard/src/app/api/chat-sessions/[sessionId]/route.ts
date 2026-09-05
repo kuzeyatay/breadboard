@@ -16,6 +16,10 @@ import {
   type ChatTextSelectionReference,
 } from "@/lib/chat-text-selection";
 import {
+  normalizeFocusedDocumentNames,
+  normalizeFocusedDocumentSlugs,
+} from "@/lib/garden-document-focus";
+import {
   EXTERNAL_AGENT_RUN_FIELD_BY_KIND,
   EXTERNAL_AGENT_RUN_KINDS,
   parseExternalAgentActivity,
@@ -41,6 +45,7 @@ import {
 import { isChatHighlight } from "@/lib/conversations/highlights";
 import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel";
 import { listRuntimeSessionsForChatSession } from "@/lib/hermes/runtime-store";
+import { getActiveRuntimeRun } from "@/lib/hermes/run-store";
 import {
   normalizeGenerativeUiResources,
   type GenerativeUiResource,
@@ -62,12 +67,16 @@ interface ChatMessage {
   role: ChatRole;
   content: string;
   internalAgentContinuation?: boolean;
+  clarificationAnswer?: boolean;
   createdAt?: string;
   sources?: string[];
   attachmentNames?: string[];
   attachments?: ChatMessageAttachment[];
+  focusedDocumentNames?: string[];
+  focusedDocumentSlugs?: string[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
+  responseCompletedAt?: string;
   progressNotes?: string[];
   verification?: VerificationSummary;
   uiResources?: GenerativeUiResource[];
@@ -127,14 +136,26 @@ function mergeRuntimeMetadata(
     metadata.attachmentNames = message.attachmentNames;
   }
   if (message.attachments?.length) metadata.attachments = message.attachments;
+  if (message.focusedDocumentNames?.length) {
+    metadata.focusedDocumentNames = message.focusedDocumentNames;
+  }
+  if (message.focusedDocumentSlugs?.length) {
+    metadata.focusedDocumentSlugs = message.focusedDocumentSlugs;
+  }
   if (message.responseDurationMs !== undefined) {
     metadata.responseDurationMs = message.responseDurationMs;
+  }
+  if (message.responseCompletedAt) {
+    metadata.responseCompletedAt = message.responseCompletedAt;
   }
   if (message.progressNotes?.length) {
     metadata.progressNotes = message.progressNotes;
   }
   if (message.internalAgentContinuation === true) {
     metadata.internalAgentContinuation = true;
+  }
+  if (message.clarificationAnswer === true) {
+    metadata.clarificationAnswer = true;
   }
   if (message.selectedText) metadata.selectedText = message.selectedText;
   if (message.inlineSelection) metadata.inlineSelection = message.inlineSelection;
@@ -312,6 +333,12 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
       role === "assistant" && Number.isFinite(rawDuration) && rawDuration >= 0
         ? Math.trunc(rawDuration)
         : undefined;
+    const responseCompletedAt =
+      role === "assistant" &&
+      typeof record.responseCompletedAt === "string" &&
+      Number.isFinite(Date.parse(record.responseCompletedAt))
+        ? record.responseCompletedAt
+        : undefined;
     const progressNotes = role === "assistant" && Array.isArray(record.progressNotes)
       ? record.progressNotes
           .filter(
@@ -332,6 +359,14 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
     const attachments = role === "user"
       ? normalizeChatMessageAttachments(record.attachments)
       : [];
+    const focusedDocumentNames =
+      role === "user"
+        ? normalizeFocusedDocumentNames(record.focusedDocumentNames)
+        : [];
+    const focusedDocumentSlugs =
+      role === "user"
+        ? normalizeFocusedDocumentSlugs(record.focusedDocumentSlugs)
+        : [];
     const selectedText =
       role === "user" && typeof record.selectedText === "string"
         ? record.selectedText.trim().slice(0, 4_000)
@@ -357,15 +392,21 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
       ...(role === "user" && record.internalAgentContinuation === true
         ? { internalAgentContinuation: true }
         : {}),
+      ...(role === "user" && record.clarificationAnswer === true
+        ? { clarificationAnswer: true }
+        : {}),
       ...(createdAt ? { createdAt } : {}),
       sources,
       ...(attachmentNames.length ? { attachmentNames } : {}),
       ...(attachments.length ? { attachments } : {}),
+      ...(focusedDocumentNames.length ? { focusedDocumentNames } : {}),
+      ...(focusedDocumentSlugs.length ? { focusedDocumentSlugs } : {}),
       ...(selectedText ? { selectedText } : {}),
       ...(inlineSelection ? { inlineSelection } : {}),
       ...(textSelection ? { textSelection } : {}),
       ...(usage ? { usage } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
+      ...(responseCompletedAt ? { responseCompletedAt } : {}),
       ...(progressNotes.length ? { progressNotes } : {}),
       ...(verification ? { verification } : {}),
       ...externalAgent,
@@ -439,6 +480,17 @@ export async function PATCH(
   if (body.messages !== undefined && !messages) {
     return NextResponse.json({ error: "Invalid messages" }, { status: 400 });
   }
+  // A Garden runtime turn is server-owned after dispatch. If its browser SSE
+  // viewer disappears, that renderer may still attempt one final compatibility
+  // PATCH carrying a transport exception such as "network error". Ignore that
+  // transcript snapshot while the durable run is active; the detached pump is
+  // the only writer allowed to terminalize its assistant placeholder.
+  const runtimeOwnsMessages =
+    messages !== undefined &&
+    listRuntimeSessionsForChatSession(sessionAccess.id).some(
+      (runtimeSession) => getActiveRuntimeRun(runtimeSession.id) !== null,
+    );
+  const messagesToPersist = runtimeOwnsMessages ? undefined : messages;
   if (body.pinned !== undefined && typeof body.pinned !== "boolean") {
     return NextResponse.json(
       { error: "Pinned must be true or false." },
@@ -462,7 +514,7 @@ export async function PATCH(
   // row the Terminal rail marks — one chat cannot be pinned in one view and
   // loose in the other.
   const needsConversation =
-    Boolean(title) || messages !== undefined || body.pinned !== undefined ||
+    Boolean(title) || messagesToPersist !== undefined || body.pinned !== undefined ||
     body.highlight !== undefined;
   let conversation = needsConversation
     ? ensureConversationForLegacyChatSession(sessionAccess.id, userId)
@@ -506,13 +558,13 @@ export async function PATCH(
       renameConversation(conversation, title, db);
     }
 
-    if (messages !== undefined) {
+    if (messagesToPersist !== undefined) {
       db.prepare(
         "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?",
       ).run(sessionAccess.id);
     }
 
-    if (messages) {
+    if (messagesToPersist) {
       const runtimeMetadata = db.prepare(
         `SELECT role, content, canonical_message_id, tool_calls, permission_decisions, runtime_error, runtime_status, created_at
          FROM chat_messages WHERE session_id = ? ORDER BY order_index`,
@@ -543,7 +595,7 @@ export async function PATCH(
            (session_id, role, content, sources, token_usage, tool_calls, permission_decisions, runtime_error, runtime_status, order_index, created_at, canonical_message_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
-      messages.forEach((message, index) => {
+      messagesToPersist.forEach((message, index) => {
         const key = `${message.role}\u0000${message.content}`;
         const publicCanonicalId = message.id?.startsWith("msg_")
           ? Number(message.id.slice(4))
@@ -623,6 +675,7 @@ export async function PATCH(
     | undefined;
   return NextResponse.json({
     success: true,
+    ...(runtimeOwnsMessages ? { deferredToRuntime: true } : {}),
     session: saved
       ? {
           ...saved,

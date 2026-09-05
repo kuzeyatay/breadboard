@@ -17,6 +17,7 @@ export async function GET(request: Request) {
   try {
     await requireUserId();
     const url = new URL(request.url);
+    const layers = url.searchParams.getAll("layer");
     const view = normalizeGodsEyeView({
       label: url.searchParams.get("label") ?? undefined,
       lat: Number(url.searchParams.get("lat")),
@@ -25,14 +26,22 @@ export async function GET(request: Request) {
       headingDeg: Number(url.searchParams.get("heading")),
       pitchDeg: Number(url.searchParams.get("pitch")),
       style: url.searchParams.get("style") ?? undefined,
+      // Old saved open links have no layer query. Let the validator recover an
+      // obvious feed from their label instead of treating absence as "none".
+      ...(layers.length ? { layers } : {}),
     });
     if (!view) {
       return NextResponse.json({ ok: false, error: "invalid_view" }, { status: 400 });
     }
     const service = await ensureService();
-    // `welcome=0` keeps the clone's first-run mission card out of the frame.
+    // `welcome=0` keeps the clone's first-run mission card out of the frame;
+    // `bb=light|dark` dresses the cockpit in Breadboard's own palette (the
+    // clone's breadboard-theme.css) in the scheme the chat is showing.
+    const query = new URLSearchParams({ welcome: "0" });
+    const theme = url.searchParams.get("theme");
+    if (theme === "light" || theme === "dark") query.set("bb", theme);
     return NextResponse.redirect(
-      `${service.baseUrl}/?welcome=0#${godsEyeShareHash(view)}`,
+      `${service.baseUrl}/?${query.toString()}#${godsEyeShareHash(view)}`,
       302,
     );
   } catch (error) {

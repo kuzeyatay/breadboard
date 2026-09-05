@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   runSyllabusCoverageEvidenceRecovery,
+  SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS,
   syllabusCoverageRecoveryReceiptProblems,
 } from "../src/lib/learn-syllabus-coverage-recovery.ts";
 import { modelSourcePageAnchors } from "../src/lib/model-source-anchor-ledger.ts";
@@ -136,6 +137,62 @@ test("model-selected identities hydrate complete raw pages and bind an independe
     expectedSourceSetHash: H1,
     expectedSourceArtifactInventoryHash: H2,
   }), []);
+});
+
+test("large canonical page catalogs retain every identity by uniformly bounding navigation excerpts", async () => {
+  const f = fixture();
+  const pageCount = 1_200;
+  f.sources[0].body = [
+    "## Source material",
+    ...Array.from(
+      { length: pageCount },
+      (_, index) => `## Page ${index + 1}\n${`Navigation text for page ${index + 1}. `.repeat(24)}\n`,
+    ),
+  ].join("\n");
+  f.anchors = modelSourcePageAnchors([{
+    id: "book",
+    slug: "book",
+    title: "Book",
+    relPath: "sources/book.md",
+    body: f.sources[0].body,
+  }]);
+
+  const result = await runSyllabusCoverageEvidenceRecovery({
+    syllabusPlan: f.syllabusPlan,
+    initialCoverageRaw: JSON.stringify(f.initialDecision),
+    initialCoverageDecision: f.initialDecision,
+    sources: f.sources,
+    anchors: f.anchors,
+    sourceSetHash: H1,
+    sourceArtifactInventoryHash: H2,
+    model: "model-a",
+    provider: async (request) => {
+      if (request.phase === "page_selection") {
+        const catalog = JSON.parse(request.user).pageCatalog;
+        assert.equal(catalog.length, pageCount);
+        assert.ok(
+          JSON.stringify(catalog).length <= SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS,
+        );
+        assert.equal(catalog[0].pageNumber, 1);
+        assert.equal(catalog.at(-1).pageNumber, pageCount);
+        assert.ok(catalog.every((entry) => entry.excerpt.length < 320));
+        const page = catalog.at(-1);
+        return { rawResponse: JSON.stringify({
+          selectedPages: [{
+            anchorId: page.anchorId,
+            sourceId: page.sourceId,
+            pageNumber: page.pageNumber,
+            selectionReason: "Use the last canonical page to verify bounded identity retention.",
+          }],
+          selectionReason: "The catalog retained every canonical identity within its fixed cap.",
+        }) };
+      }
+      return { rawResponse: JSON.stringify(f.finalDecision) };
+    },
+  });
+
+  assert.equal(result.receipt.selectedPages[0].pageNumber, pageCount);
+  assert.match(result.receipt.selectedPages[0].exactText, /Navigation text for page 1200/);
 });
 
 test("a valid syllabus unit without its optional label survives receipt persistence and strict replay", async () => {

@@ -24,6 +24,7 @@ import type {
   GBrainGraphResponse,
   GBrainIndexPage,
   GBrainMode,
+  GBrainRemoveSourceResponse,
   GBrainRegisterSourceResponse,
   GBrainRetrieveResponse,
   GBrainScope,
@@ -258,6 +259,34 @@ export class GBrainStore implements RetrievalBackend {
       await db.exec("ROLLBACK").catch(() => {});
       throw err;
     }
+  }
+
+  async removeSource(sourceId: string): Promise<GBrainRemoveSourceResponse> {
+    const db = this.require();
+    const pages = await db.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM pages WHERE source_id = $1",
+      [sourceId],
+    );
+    const existing = await db.query<{ source_id: string }>(
+      "SELECT source_id FROM sources WHERE source_id = $1",
+      [sourceId],
+    );
+    await db.exec("BEGIN");
+    try {
+      await db.query("DELETE FROM chunks WHERE source_id = $1", [sourceId]);
+      await db.query("DELETE FROM pages WHERE source_id = $1", [sourceId]);
+      await db.query("DELETE FROM links WHERE source_id = $1", [sourceId]);
+      await db.query("DELETE FROM sources WHERE source_id = $1", [sourceId]);
+      await db.exec("COMMIT");
+    } catch (error) {
+      await db.exec("ROLLBACK");
+      throw error;
+    }
+    return {
+      sourceId,
+      removed: existing.rows.length > 0,
+      pagesDeleted: pages.rows[0]?.c ?? 0,
+    };
   }
 
   private async lexicalRank(

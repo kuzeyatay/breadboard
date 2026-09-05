@@ -29,6 +29,9 @@ export default function AssistantResponseMeta({
   label = "Thinking",
   action,
   showTokenUsage = true,
+  disclosureExpanded,
+  disclosureControls,
+  onDisclosureToggle,
 }: {
   active: boolean;
   shimmer?: boolean;
@@ -45,6 +48,10 @@ export default function AssistantResponseMeta({
   label?: string;
   action?: ReactNode;
   showTokenUsage?: boolean;
+  /** Makes the lifecycle row the trigger for response-owned progress updates. */
+  disclosureExpanded?: boolean;
+  disclosureControls?: string;
+  onDisclosureToggle?: () => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
 
@@ -130,6 +137,46 @@ export default function AssistantResponseMeta({
   // is doing. Every other label a caller passes ("Interrupted", an artifact's
   // own) already describes a state of its own and is shown exactly as given.
   const displayLabel = label === "Thinking" && !active && !failed ? "Thought" : label;
+  const metaContents = (
+    <>
+      <span className={shimmer ? "thinking-shimmer" : ""}>{displayLabel}</span>
+      {metadata ? (
+        <span title={usageBreakdown}>
+          (
+          {elapsedMs === undefined
+            ? null
+            : formatResponseDuration(elapsedMs)}
+          {elapsedMs !== undefined && tokenLabel ? " · " : null}
+          {tokenLabel ? (
+            <>
+              <span
+                aria-hidden="true"
+                className={active ? "thinking-token-arrow" : undefined}
+              >
+                ↓
+              </span>
+              {tokenLabel.slice(1)}
+            </>
+          ) : null}
+          )
+        </span>
+      ) : null}
+      {onDisclosureToggle ? (
+        <svg
+          aria-hidden="true"
+          className={`ml-0.5 h-3 w-3 self-center transition-transform ${
+            disclosureExpanded ? "rotate-90" : ""
+          }`}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="m9 6 6 6-6 6" />
+        </svg>
+      ) : null}
+    </>
+  );
 
   return (
     <section
@@ -138,30 +185,22 @@ export default function AssistantResponseMeta({
       data-response-state={failed ? "failed" : active ? "active" : "complete"}
     >
       <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1 py-1 text-sm leading-6 text-[var(--ink-muted)]">
-          <span className={shimmer ? "thinking-shimmer" : ""}>{displayLabel}</span>
-          {metadata ? (
-            <span title={usageBreakdown}>
-              (
-              {elapsedMs === undefined
-                ? null
-                : formatResponseDuration(elapsedMs)}
-              {elapsedMs !== undefined && tokenLabel ? " · " : null}
-              {tokenLabel ? (
-                <>
-                  <span
-                    aria-hidden="true"
-                    className={active ? "thinking-token-arrow" : undefined}
-                  >
-                    ↓
-                  </span>
-                  {tokenLabel.slice(1)}
-                </>
-              ) : null}
-              )
-            </span>
-          ) : null}
-        </div>
+        {onDisclosureToggle ? (
+          <button
+            type="button"
+            onClick={onDisclosureToggle}
+            aria-expanded={disclosureExpanded}
+            aria-controls={disclosureControls}
+            title={disclosureExpanded ? "Hide thinking updates" : "Show thinking updates"}
+            className="-ml-1 flex min-w-0 cursor-pointer flex-wrap items-baseline gap-x-1 rounded-md px-1 py-1 text-left text-sm leading-6 text-[var(--ink-muted)] transition-colors hover:text-[var(--ink-heading)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
+          >
+            {metaContents}
+          </button>
+        ) : (
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1 py-1 text-sm leading-6 text-[var(--ink-muted)]">
+            {metaContents}
+          </div>
+        )}
         {action}
       </div>
     </section>

@@ -22,6 +22,17 @@
   --ink: #ccd2c9;
 }
 
+/* A loading tab keeps the live window tabs and Garden navbar above this
+   document. In that embedded form the scene is content, not another window,
+   so it must not reserve or repaint a second title bar of its own. */
+:root[data-embedded="true"] {
+  --titlebar-height: 0px;
+}
+
+:root[data-embedded="true"] .desktop-titlebar {
+  display: none;
+}
+
 * {
   box-sizing: border-box;
 }

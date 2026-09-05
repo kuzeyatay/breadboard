@@ -239,8 +239,7 @@
           "executableAuthority": "runtime-root",
           "allowedExecutable": "runtimes/python/python.exe",
           "arguments": [
-            { "kind": "literal", "value": "-m" },
-            { "kind": "literal", "value": "hermes_cli.main" },
+            { "kind": "app-path", "path": "hermes-agent/breadboard_runtime.py" },
             { "kind": "literal", "value": "serve" },
             { "kind": "literal", "value": "--isolated" },
             { "kind": "literal", "value": "--host" },
@@ -264,6 +263,14 @@
               {
                 "authority": "app-root",
                 "path": "hermes-agent/hermes_cli/main.py"
+              },
+              {
+                "authority": "app-root",
+                "path": "hermes-agent/breadboard_runtime.py"
+              },
+              {
+                "authority": "runtime-root",
+                "path": "runtimes/python/Lib/site-packages/breadboard-hermes.pth"
               }
             ]
           },

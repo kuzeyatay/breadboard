@@ -23,7 +23,7 @@ test("manual usage refresh probes ChatMock while automatic loads remain read-onl
 test("Google subscription usage is selected by model without a generation probe", () => {
   assert.match(popoverSource, /query\.set\("model", activeModel\)/);
   assert.match(routeSource, /antigravityModelId\(model\)/);
-  assert.match(routeSource, /await readGoogleUsageLimits\(model\)/);
+  assert.match(routeSource, /withCliproxyLease\([\s\S]*'subscription-usage-limits'[\s\S]*readGoogleUsageLimits\(model\)/);
 });
 
 test("Anthropic subscription usage is embedded without a generation probe", () => {
